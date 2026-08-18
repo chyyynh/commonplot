@@ -21,6 +21,7 @@ import { updateResourceAfterProcessing } from '@ingest/domain/resource-store';
 import { eq, sql } from 'drizzle-orm';
 import { type PdfExtractionMetadata, pdfExtractionMetadata } from './acquisition';
 import type { ProcessorResult } from './domain/ai-utils';
+import { syncSemanticScholarBibliography } from './domain/resource-bibliography-store';
 import type { PdfTextArtifact } from './platforms/pdf';
 import { persistYouTubeWorkflowData, type YouTubeHighlightsUpdate } from './platforms/youtube';
 
@@ -375,7 +376,12 @@ export async function persistUnchangedResourceResync(
 			.where(eq(resources.id, resourceId))
 			.returning({ id: resources.id });
 		if (!updated.length) throw new Error(`Failed to record resource ${resourceId} resync: not found`);
-		return { persisted: true, changed, indexRelevantChanged };
+		const bibliographyChanged = await syncSemanticScholarBibliography(db, {
+			kind: resourceWithDate.kind,
+			paperEnrichment: merged.paperEnrichment,
+			resourceId,
+		});
+		return { persisted: true, changed: changed || bibliographyChanged, indexRelevantChanged };
 	});
 }
 
@@ -384,7 +390,7 @@ export async function persistAcademicMetadataBackfill(
 	resourceId: string,
 	metadata: PaperMetadata,
 ): Promise<ResourcePersistenceOutcome> {
-	return withCoreTx(env, async (_db, client) => {
+	return withCoreTx(env, async (db, client) => {
 		const locked = await client.query<{
 			created_at: Date | string;
 			kind: string;
@@ -444,7 +450,12 @@ export async function persistAcademicMetadataBackfill(
 				event: 'academic_metadata_backfill_unchanged',
 				resource_id: resourceId,
 			});
-			return { persisted: true, changed: false, indexRelevantChanged: false };
+			const bibliographyChanged = await syncSemanticScholarBibliography(db, {
+				kind: identity.kind,
+				paperEnrichment: academic,
+				resourceId,
+			});
+			return { persisted: true, changed: bibliographyChanged, indexRelevantChanged: false };
 		}
 		const result = await client.query<{ id: string }>(
 			`
@@ -473,6 +484,11 @@ export async function persistAcademicMetadataBackfill(
 			[resourceId, JSON.stringify(academic), publishedDate, identity.kind, identity.resourcePlatform],
 		);
 		if (result.rowCount !== 1) throw new Error(`Failed to persist academic metadata for resource ${resourceId}: not found`);
+		await syncSemanticScholarBibliography(db, {
+			kind: identity.kind,
+			paperEnrichment: academic,
+			resourceId,
+		});
 		console.info({
 			tag: 'S2',
 			event: 'academic_metadata_backfill_persisted',
@@ -511,6 +527,11 @@ export async function persistResourceImageSnapshot(
 			.where(eq(resources.id, resourceId))
 			.returning({ id: resources.id });
 		if (!updated.length) throw new Error(`Failed to persist resource ${resourceId} image snapshot: not found`);
+		await syncSemanticScholarBibliography(db, {
+			kind: merged.resource.kind,
+			paperEnrichment: merged.paperEnrichment,
+			resourceId,
+		});
 		return true;
 	});
 }
@@ -563,6 +584,11 @@ export async function persistProcessedResource(
 			throw new Error(`Refusing to persist enriched resource ${input.resourceId} without content`);
 		}
 		const resourceId = await updateResourceAfterProcessing(db, input.resourceId, resource, updatePayload);
+		await syncSemanticScholarBibliography(db, {
+			kind: resource.kind,
+			paperEnrichment,
+			resourceId,
+		});
 		console.info({
 			tag: 'ENTITIES',
 			msg: 'Stored resource entities',

@@ -202,6 +202,7 @@ export interface PaperMetadata {
 	resolvedAt: string;
 	metricsUpdatedAt: string;
 	doi?: string;
+	arxivId?: string;
 	title?: string;
 	authors: string[];
 	abstract?: string;

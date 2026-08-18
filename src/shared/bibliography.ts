@@ -177,6 +177,7 @@ type CslBibliographicFields = Readonly<{
 	PMID?: string;
 	archive?: string;
 	archive_location?: string;
+	license?: string;
 	URL?: string;
 	custom?: Readonly<Record<string, BibliographicExtraValue>>;
 }>;
@@ -209,6 +210,10 @@ function optionalString(value: unknown): string | undefined {
 
 function isResourceCreatorRole(value: unknown): value is ResourceCreatorRole {
 	return typeof value === 'string' && (RESOURCE_CREATOR_ROLES as readonly string[]).includes(value);
+}
+
+function isSupportedCslType(value: unknown): value is SupportedCslType {
+	return typeof value === 'string' && (SUPPORTED_CSL_TYPES as readonly string[]).includes(value);
 }
 
 function stripDoiPrefix(value: string): string {
@@ -366,6 +371,91 @@ export function normalizeResourceCreators(value: unknown): ResourceCreator[] | n
 	return normalized.sort((left, right) => left.orderIndex - right.orderIndex);
 }
 
+function normalizeBibliographicExtra(value: unknown): Readonly<Record<string, BibliographicExtraValue>> | null {
+	if (!isRecord(value)) return null;
+	const extra: Record<string, BibliographicExtraValue> = {};
+	for (const [key, item] of Object.entries(value)) {
+		if (item !== null && typeof item !== 'string' && typeof item !== 'number' && typeof item !== 'boolean') return null;
+		extra[key] = item;
+	}
+	return extra;
+}
+
+function normalizeBibliographicIdentifiers(value: Record<string, unknown>): Pick<BibliographicMetadata, 'arxivId' | 'doi'> | null {
+	const rawDoi = nonEmptyString(value.doi);
+	const doi = rawDoi ? normalizeDoi(rawDoi) : null;
+	if (rawDoi && !doi) return null;
+	const rawArxivId = nonEmptyString(value.arxivId);
+	const arxivId = rawArxivId ? normalizeArxivId(rawArxivId) : null;
+	if (rawArxivId && !arxivId) return null;
+	return { ...(doi ? { doi } : {}), ...(arxivId ? { arxivId } : {}) };
+}
+
+function normalizeBibliographicStructuredFields(value: Record<string, unknown>): Pick<BibliographicMetadata, 'extra' | 'issued'> | null {
+	const rawIssued = value.issued;
+	const issued = rawIssued === undefined || rawIssued === null ? null : normalizeBibliographicDate(rawIssued);
+	if (rawIssued !== undefined && rawIssued !== null && !issued) return null;
+	const rawExtra = value.extra;
+	const extra = rawExtra === undefined || rawExtra === null ? null : normalizeBibliographicExtra(rawExtra);
+	if (rawExtra !== undefined && rawExtra !== null && !extra) return null;
+	return { ...(issued ? { issued } : {}), ...(extra ? { extra } : {}) };
+}
+
+function normalizeBibliographicStringFields(
+	value: Record<string, unknown>,
+): Omit<BibliographicMetadata, 'arxivId' | 'cslType' | 'doi' | 'extra' | 'issued'> {
+	const abstractText = optionalString(value.abstractText);
+	const containerTitle = optionalString(value.containerTitle);
+	const publisher = optionalString(value.publisher);
+	const publisherPlace = optionalString(value.publisherPlace);
+	const volume = optionalString(value.volume);
+	const issue = optionalString(value.issue);
+	const pages = optionalString(value.pages);
+	const edition = optionalString(value.edition);
+	const isbn = optionalString(value.isbn);
+	const issn = optionalString(value.issn);
+	const pmid = optionalString(value.pmid);
+	const archive = optionalString(value.archive);
+	const archiveLocation = optionalString(value.archiveLocation);
+	const rights = optionalString(value.rights);
+	return {
+		...(abstractText ? { abstractText } : {}),
+		...(containerTitle ? { containerTitle } : {}),
+		...(publisher ? { publisher } : {}),
+		...(publisherPlace ? { publisherPlace } : {}),
+		...(volume ? { volume } : {}),
+		...(issue ? { issue } : {}),
+		...(pages ? { pages } : {}),
+		...(edition ? { edition } : {}),
+		...(isbn ? { isbn } : {}),
+		...(issn ? { issn } : {}),
+		...(pmid ? { pmid } : {}),
+		...(archive ? { archive } : {}),
+		...(archiveLocation ? { archiveLocation } : {}),
+		...(rights ? { rights } : {}),
+	};
+}
+
+export function normalizeBibliographicMetadata(value: unknown): BibliographicMetadata | null {
+	if (!isRecord(value) || !isSupportedCslType(value.cslType)) return null;
+	const identifiers = normalizeBibliographicIdentifiers(value);
+	const structured = normalizeBibliographicStructuredFields(value);
+	if (!identifiers || !structured) return null;
+	return {
+		cslType: value.cslType,
+		...normalizeBibliographicStringFields(value),
+		...identifiers,
+		...structured,
+	};
+}
+
+export function normalizeResourceBibliography(value: unknown): ResourceBibliography | null {
+	if (!isRecord(value)) return null;
+	const metadata = normalizeBibliographicMetadata(value.metadata);
+	const creators = normalizeResourceCreators(value.creators);
+	return metadata && creators ? { metadata, creators } : null;
+}
+
 function normalizedSemanticScholarType(value: string): SemanticScholarPublicationType | null {
 	const comparable = value.replace(/[^a-z]/gi, '').toLowerCase();
 	return SEMANTIC_SCHOLAR_PUBLICATION_TYPES.find((type) => type.toLowerCase() === comparable) ?? null;
@@ -441,10 +531,7 @@ function cslNamesForRoles(creators: readonly ResourceCreator[], roles: readonly 
 }
 
 function cslCustomFields(metadata: BibliographicMetadata): Readonly<Record<string, BibliographicExtraValue>> | undefined {
-	const custom = {
-		...(metadata.extra ?? {}),
-		...(metadata.rights ? { rights: metadata.rights } : {}),
-	};
+	const custom = metadata.extra ?? {};
 	return Object.keys(custom).length > 0 ? custom : undefined;
 }
 
@@ -489,6 +576,7 @@ function cslBibliographicFields(metadata: BibliographicMetadata, url: string | n
 		...(metadata.pmid ? { PMID: metadata.pmid } : {}),
 		...(archive ? { archive } : {}),
 		...(archiveLocation ? { archive_location: archiveLocation } : {}),
+		...(metadata.rights ? { license: metadata.rights } : {}),
 		...(url ? { URL: url } : {}),
 		...(custom ? { custom } : {}),
 	};

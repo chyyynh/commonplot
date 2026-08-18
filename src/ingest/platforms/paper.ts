@@ -3,6 +3,7 @@
 // returns reference metadata (DOI + author) in a single call.
 
 import type { WorkflowDynamicDelayContext, WorkflowSleepDuration, WorkflowStep } from 'cloudflare:workers';
+import { normalizeArxivId } from '@core-shared/bibliography';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import type { PaperMetadata, PaperReference, PlatformMetadata, ResourceForProcessing } from '@core-shared/types';
 import { z } from 'zod';
@@ -66,7 +67,7 @@ type PaperEnrichmentAttempt = {
 };
 
 const S2AuthorSchema = z.object({ name: z.string().nullish() });
-const S2ExternalIdsSchema = z.object({ DOI: z.string().nullish() });
+const S2ExternalIdsSchema = z.object({ ArXiv: z.string().nullish(), DOI: z.string().nullish() });
 const S2ReferenceSchema = z.object({
 	paperId: z.string().nullish(),
 	title: z.string().nullish(),
@@ -304,6 +305,7 @@ function paperPdfUrl(id: PaperId, paper: S2Paper): string | undefined {
 
 function normalizePaper(id: PaperId, paper: S2Paper): PaperMetadata {
 	const doi = paper.externalIds?.DOI?.toLowerCase();
+	const arxivId = normalizeArxivId(paper.externalIds?.ArXiv) ?? (id.kind === 'arxiv' ? id.value : undefined);
 	const references = normalizeReferences(paper.references);
 	const fetchedAt = new Date().toISOString();
 	return {
@@ -312,6 +314,7 @@ function normalizePaper(id: PaperId, paper: S2Paper): PaperMetadata {
 		resolvedAt: fetchedAt,
 		metricsUpdatedAt: fetchedAt,
 		doi,
+		...(arxivId ? { arxivId } : {}),
 		title: paper.title ?? undefined,
 		authors: authorNames(paper.authors),
 		abstract: paper.abstract ?? undefined,
