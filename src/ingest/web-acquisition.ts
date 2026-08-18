@@ -77,6 +77,7 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 
 export type AcquiredWebContent = NormalizedContent<null> & {
 	extraction?: PdfExtractionMetadata;
+	ownedStorageKey?: string;
 };
 
 function urlHost(url: string): string {
@@ -129,7 +130,7 @@ export async function markdownFromHtml(env: CoreEnv, html: string, url: string, 
 	return stripLeadingFrontmatter(result.data);
 }
 
-async function acquirePdfBytes(bytes: Uint8Array, url: string, fileName: string): Promise<AcquiredWebContent> {
+async function acquirePdfBytes(bytes: Uint8Array, url: string, fileName: string, ownedStorageKey?: string): Promise<AcquiredWebContent> {
 	const parsed = await parsePdfBytes(bytes);
 	const title = titleFromFileName(fileName);
 	return {
@@ -151,12 +152,28 @@ async function acquirePdfBytes(bytes: Uint8Array, url: string, fileName: string)
 			representation: { fileName, fileSize: bytes.byteLength },
 		},
 		extraction: pdfExtractionMetadata(parsed),
+		...(ownedStorageKey ? { ownedStorageKey } : {}),
 	};
 }
 
-async function acquirePdfResponse(response: Response, finalUrl: string): Promise<AcquiredWebContent> {
+async function acquirePdfResponse(
+	env: CoreEnv,
+	resourceId: string | undefined,
+	response: Response,
+	finalUrl: string,
+): Promise<AcquiredWebContent> {
 	const bytes = await readBytesWithLimit(response, GENERIC_PDF_MAX_BYTES);
-	return acquirePdfBytes(bytes, finalUrl, fileNameFromUrl(finalUrl));
+	const persisted = resourceId
+		? await env.DOMAIN.persistResourcePdf({
+				body: new Blob([new Uint8Array(bytes).buffer], {
+					type: PDF_MIME,
+				}).stream(),
+				contentLength: bytes.byteLength,
+				resourceId,
+				sourceUrl: finalUrl,
+			})
+		: null;
+	return acquirePdfBytes(bytes, finalUrl, fileNameFromUrl(finalUrl), persisted?.storageKey);
 }
 
 async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, resourceId?: string): Promise<AcquiredWebContent> {
@@ -209,7 +226,7 @@ export async function acquireWebResource(url: string, env: CoreEnv, resourceId?:
 
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
 	if (contentType.includes(PDF_MIME) || new URL(finalUrl).pathname.toLowerCase().endsWith('.pdf')) {
-		return acquirePdfResponse(response, finalUrl);
+		return acquirePdfResponse(env, resourceId, response, finalUrl);
 	}
 	if (
 		contentType &&

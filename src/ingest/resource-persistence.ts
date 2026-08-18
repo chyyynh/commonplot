@@ -1,5 +1,5 @@
 import {
-	hasSemanticScholarAcademicEnrichment,
+	hasAcademicPaperEnrichment,
 	isIncomingResourceSnapshotSuperseded,
 	parseResourceIdentity,
 	type ResourceSourceSnapshot,
@@ -21,7 +21,6 @@ import { updateResourceAfterProcessing } from '@ingest/domain/resource-store';
 import { eq, sql } from 'drizzle-orm';
 import { type PdfExtractionMetadata, pdfExtractionMetadata } from './acquisition';
 import type { ProcessorResult } from './domain/ai-utils';
-import { syncSemanticScholarBibliography } from './domain/resource-bibliography-store';
 import type { PdfTextArtifact } from './platforms/pdf';
 import { persistYouTubeWorkflowData, type YouTubeHighlightsUpdate } from './platforms/youtube';
 
@@ -77,7 +76,7 @@ function isPlatformMetadata(value: unknown): value is PlatformMetadata {
 }
 
 function academicEnrichmentFrom(platformMetadata: unknown): PaperMetadata | null {
-	if (!hasSemanticScholarAcademicEnrichment(platformMetadata)) return null;
+	if (!hasAcademicPaperEnrichment(platformMetadata)) return null;
 	return (platformMetadata as { enrichments: { academic: PaperMetadata } }).enrichments.academic;
 }
 
@@ -98,6 +97,11 @@ function newestAcademicEnrichment(first: PaperMetadata | null, second: PaperMeta
 	if (academicSchemaVersion(first) === 2 && academicSchemaVersion(second) !== 2) return first;
 	if (academicSchemaVersion(first) !== 2 && academicSchemaVersion(second) === 2) return second;
 	return academicTimestamp(second) > academicTimestamp(first) ? second : first;
+}
+
+function compactAcademicSnapshot(metadata: PaperMetadata): PaperMetadata {
+	const { arxivId: _arxivId, doi: _doi, openAlexId: _openAlexId, title: _title, ...snapshot } = metadata;
+	return snapshot;
 }
 
 function mergeLockedPlatformMetadata(resource: ResourceForProcessing, lockedPlatformMetadata: unknown): ResourceForProcessing {
@@ -221,7 +225,10 @@ function mergePaperEnrichment(platformMetadata: PlatformMetadata, paperEnrichmen
 	if (!paperEnrichment) return platformMetadata;
 	return {
 		...platformMetadata,
-		enrichments: { ...(platformMetadata.enrichments || {}), academic: paperEnrichment },
+		enrichments: {
+			...(platformMetadata.enrichments || {}),
+			academic: compactAcademicSnapshot(paperEnrichment),
+		},
 	};
 }
 
@@ -376,128 +383,7 @@ export async function persistUnchangedResourceResync(
 			.where(eq(resources.id, resourceId))
 			.returning({ id: resources.id });
 		if (!updated.length) throw new Error(`Failed to record resource ${resourceId} resync: not found`);
-		const bibliographyChanged = await syncSemanticScholarBibliography(db, {
-			kind: resourceWithDate.kind,
-			paperEnrichment: merged.paperEnrichment,
-			resourceId,
-		});
-		return { persisted: true, changed: changed || bibliographyChanged, indexRelevantChanged };
-	});
-}
-
-export async function persistAcademicMetadataBackfill(
-	env: CoreEnv,
-	resourceId: string,
-	metadata: PaperMetadata,
-): Promise<ResourcePersistenceOutcome> {
-	return withCoreTx(env, async (db, client) => {
-		const locked = await client.query<{
-			created_at: Date | string;
-			kind: string;
-			platform_metadata: unknown;
-			published_date: Date | string | null;
-			resource_platform: string | null;
-			scraped_date: Date | string | null;
-		}>(
-			`
-				SELECT
-					created_at,
-					kind,
-					platform_metadata,
-					published_date,
-					resource_platform,
-					scraped_date
-				FROM resources
-				WHERE id = $1::uuid
-				FOR UPDATE
-			`,
-			[resourceId],
-		);
-		const row = locked.rows[0];
-		if (!row) throw new Error(`Failed to persist academic metadata for resource ${resourceId}: not found`);
-		const currentIdentity = parseResourceIdentity(row.kind, row.resource_platform);
-		if (!currentIdentity) {
-			throw new Error(
-				`Cannot persist academic metadata for resource ${resourceId} with invalid identity ${String(row.kind)} / ${String(row.resource_platform)}`,
-			);
-		}
-		const storedAcademic = academicEnrichmentFrom(row.platform_metadata);
-		const academic = newestAcademicEnrichment(metadata, storedAcademic);
-		if (!academic) throw new Error(`Failed to select academic metadata for resource ${resourceId}`);
-		const identity = resourceIdentityWithAcademic(currentIdentity, true);
-		const academicPublishedDate = academic.publicationDate ? `${academic.publicationDate}T00:00:00.000Z` : null;
-		const publishedDate = row.published_date ?? academicPublishedDate;
-		const academicChanged = !jsonValuesEqual(storedAcademic, academic);
-		const identityChanged = row.kind !== identity.kind || row.resource_platform !== identity.resourcePlatform;
-		const publishedDateChanged = !datesEqual(row.published_date, publishedDate);
-		const changed = academicChanged || identityChanged || publishedDateChanged;
-		const indexRelevantChanged =
-			academicChanged ||
-			identityChanged ||
-			effectiveTimestamp({
-				createdAt: row.created_at,
-				publishedDate: row.published_date,
-				scrapedDate: row.scraped_date,
-			}) !==
-				effectiveTimestamp({
-					createdAt: row.created_at,
-					publishedDate,
-					scrapedDate: row.scraped_date,
-				});
-		if (!changed) {
-			console.info({
-				tag: 'S2',
-				event: 'academic_metadata_backfill_unchanged',
-				resource_id: resourceId,
-			});
-			const bibliographyChanged = await syncSemanticScholarBibliography(db, {
-				kind: identity.kind,
-				paperEnrichment: academic,
-				resourceId,
-			});
-			return { persisted: true, changed: bibliographyChanged, indexRelevantChanged: false };
-		}
-		const result = await client.query<{ id: string }>(
-			`
-					UPDATE resources
-					SET
-						platform_metadata =
-							CASE
-								WHEN jsonb_typeof(platform_metadata) = 'object' THEN platform_metadata
-								ELSE '{}'::jsonb
-							END
-						|| jsonb_build_object(
-							'enrichments',
-							CASE
-								WHEN jsonb_typeof(platform_metadata->'enrichments') = 'object' THEN platform_metadata->'enrichments'
-								ELSE '{}'::jsonb
-							END
-							|| jsonb_build_object('academic', $2::jsonb)
-						),
-					published_date = $3::timestamp,
-					kind = $4,
-					resource_platform = $5,
-					updated_at = NOW()
-				WHERE id = $1::uuid
-				RETURNING id::text AS id
-			`,
-			[resourceId, JSON.stringify(academic), publishedDate, identity.kind, identity.resourcePlatform],
-		);
-		if (result.rowCount !== 1) throw new Error(`Failed to persist academic metadata for resource ${resourceId}: not found`);
-		await syncSemanticScholarBibliography(db, {
-			kind: identity.kind,
-			paperEnrichment: academic,
-			resourceId,
-		});
-		console.info({
-			tag: 'S2',
-			event: 'academic_metadata_backfill_persisted',
-			resource_id: resourceId,
-			references_loaded: academic.references.length,
-			publication_date_available: !!publishedDate,
-			index_relevant_changed: indexRelevantChanged,
-		});
-		return { persisted: true, changed: true, indexRelevantChanged };
+		return { persisted: true, changed, indexRelevantChanged };
 	});
 }
 
@@ -527,11 +413,6 @@ export async function persistResourceImageSnapshot(
 			.where(eq(resources.id, resourceId))
 			.returning({ id: resources.id });
 		if (!updated.length) throw new Error(`Failed to persist resource ${resourceId} image snapshot: not found`);
-		await syncSemanticScholarBibliography(db, {
-			kind: merged.resource.kind,
-			paperEnrichment: merged.paperEnrichment,
-			resourceId,
-		});
 		return true;
 	});
 }
@@ -584,11 +465,6 @@ export async function persistProcessedResource(
 			throw new Error(`Refusing to persist enriched resource ${input.resourceId} without content`);
 		}
 		const resourceId = await updateResourceAfterProcessing(db, input.resourceId, resource, updatePayload);
-		await syncSemanticScholarBibliography(db, {
-			kind: resource.kind,
-			paperEnrichment,
-			resourceId,
-		});
 		console.info({
 			tag: 'ENTITIES',
 			msg: 'Stored resource entities',

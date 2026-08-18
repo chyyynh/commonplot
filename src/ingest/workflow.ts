@@ -1,7 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import {
-	hasSemanticScholarAcademicEnrichment,
+	hasAcademicPaperEnrichment,
 	isResourceSourceSnapshotHash,
 	needsResourcePlatformAcquisition,
 	parseResourceIdentity,
@@ -10,7 +10,7 @@ import {
 	resourceSourceSnapshot,
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
-import type { ResourceForProcessing } from '@core-shared/types';
+import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
 import { loadResourceForProcessing, loadResourceShellForProcessing, loadStalePendingAppResourceIds } from '@ingest/domain/resource-store';
 import { loadFeedSourcePolicy } from '@ingest/domain/source-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
@@ -320,6 +320,69 @@ function matchesExpectedSourceRevision(snapshot: ResourceSourceSnapshot, expecte
 	return expectedRevision === undefined || snapshot.hash === expectedRevision;
 }
 
+type PreparedResource =
+	| { attachedCanonicalResourceId: string }
+	| {
+			acquiredContent: AcquiredContent | undefined;
+			identityPdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
+			paperEnrichment: PaperMetadata | null;
+			resource: ResourceForProcessing;
+	  };
+
+async function prepareResourceForProcessing(
+	env: CoreEnv,
+	step: WorkflowStep,
+	initialResource: ResourceForProcessing,
+	operation: WorkflowOperation,
+): Promise<PreparedResource> {
+	const acquiredContent = await acquireResourceForOperation(env, step, initialResource, operation);
+	const acquiredResource = await stageTweetLinkUnfurl(step, applyAcquiredContent(initialResource, acquiredContent));
+	const initialHasContent = 'has_content' in acquiredResource && !!acquiredResource.has_content;
+	const identityPdfTextArtifact =
+		!acquiredContent && !initialHasContent && acquiredResource.storage_key && acquiredResource.file_type === PDF_MIME
+			? await stagePdfTextExtraction(env, step, { sourceStorageKey: acquiredResource.storage_key })
+			: null;
+	const paperCandidate = identityPdfTextArtifact?.text?.trim()
+		? { ...acquiredResource, content: identityPdfTextArtifact.text }
+		: acquiredResource;
+	const paperEnrichment = await stagePaperEnrichment(env, step, paperCandidate);
+	const convergence =
+		paperEnrichment && (paperEnrichment.doi || paperEnrichment.arxivId || paperEnrichment.openAlexId)
+			? await step.do(
+					'converge-paper-resource-identity-v1',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					() =>
+						env.DOMAIN.convergePaperResource({
+							identity: {
+								...(paperEnrichment.arxivId ? { arxivId: paperEnrichment.arxivId } : {}),
+								...(paperEnrichment.doi ? { doi: paperEnrichment.doi } : {}),
+								...(paperEnrichment.openAlexId ? { openAlexId: paperEnrichment.openAlexId } : {}),
+							},
+							sourceResourceId: initialResource.id,
+						}),
+				)
+			: null;
+	if (convergence?.sourceWasPrivate) {
+		await step.do(
+			'enqueue-canonical-paper-after-private-attachment-v1',
+			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+			() => enqueueProcessing(env, convergence.canonicalResourceId),
+		);
+		return { attachedCanonicalResourceId: convergence.canonicalResourceId };
+	}
+	const acquiredIdentity = requireProcessingResourceIdentity(acquiredResource);
+	const identity = resourceIdentityWithAcademic(
+		acquiredIdentity,
+		!!paperEnrichment || hasAcademicPaperEnrichment(acquiredResource.platform_metadata),
+	);
+	return {
+		acquiredContent,
+		identityPdfTextArtifact,
+		paperEnrichment,
+		resource: { ...acquiredResource, ...toResourceIdentityColumns(identity) },
+	};
+}
+
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, WorkflowPayload> {
 	async run(event: WorkflowEvent<WorkflowPayload>, step: WorkflowStep) {
 		const { resourceId, operation, sourceRevision } = event.payload;
@@ -377,18 +440,16 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 			return { success: true, resource_id: resourceId, operation, superseded: true };
 		}
 		assertOperationCanProcessResource(initialResource, operation);
-		const acquiredContent = await acquireResourceForOperation(this.env, step, initialResource, operation);
-		const acquiredResource = await stageTweetLinkUnfurl(step, applyAcquiredContent(initialResource, acquiredContent));
-		const paperEnrichment = await stagePaperEnrichment(this.env, step, acquiredResource);
-		const acquiredIdentity = requireProcessingResourceIdentity(acquiredResource);
-		const identity = resourceIdentityWithAcademic(
-			acquiredIdentity,
-			!!paperEnrichment || hasSemanticScholarAcademicEnrichment(acquiredResource.platform_metadata),
-		);
-		const resource: ResourceForProcessing = {
-			...acquiredResource,
-			...toResourceIdentityColumns(identity),
-		};
+		const prepared = await prepareResourceForProcessing(this.env, step, initialResource, operation);
+		if ('attachedCanonicalResourceId' in prepared) {
+			return {
+				success: true,
+				resource_id: prepared.attachedCanonicalResourceId,
+				operation,
+				attached_private_file: true,
+			};
+		}
+		const { acquiredContent, identityPdfTextArtifact, paperEnrichment, resource } = prepared;
 		const previousSnapshotHash = initialResource.platform_metadata?.sourceSnapshotHash;
 		const nextSnapshotHash = acquiredContent?.platformMetadata?.sourceSnapshotHash;
 		if (operation === 'resync' && previousSnapshotHash && previousSnapshotHash === nextSnapshotHash && acquiredContent) {
@@ -440,11 +501,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 
 		const hasContent = 'has_content' in resource && !!resource.has_content;
 		const pdfTextArtifact =
-			!hasContent && resource.storage_key && resource.file_type === PDF_MIME
+			identityPdfTextArtifact ??
+			(!hasContent && !acquiredContent && resource.storage_key && resource.file_type === PDF_MIME
 				? await stagePdfTextExtraction(this.env, step, {
 						sourceStorageKey: resource.storage_key,
 					})
-				: null;
+				: null);
 		const extractionSnapshotCurrent = await persistPdfExtractionBeforeValidation(this.env, step, {
 			acquiredExtraction: acquiredContent?.extraction,
 			operation,
@@ -465,7 +527,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 
 		// Reread durable rows unless in-memory acquisition already holds the freshest copy; PDF text always wins.
 		const loadFull = async (): Promise<ResourceForProcessing> => {
-			const base = acquiredContent ? resource : await loadResourceForProcessing(this.env, resourceId);
+			const base = acquiredContent || pdfTextArtifact ? resource : await loadResourceForProcessing(this.env, resourceId);
 			const extractedPdfText = pdfTextArtifact?.text?.trim();
 			return extractedPdfText ? { ...base, content: extractedPdfText } : base;
 		};

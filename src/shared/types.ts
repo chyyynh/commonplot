@@ -187,34 +187,24 @@ interface ResourceRepresentationMetadata {
 	fileSize: number;
 }
 
-export interface PaperReference {
-	paperId?: string;
-	doi?: string;
-	url?: string;
-	title?: string;
-	year?: number;
-	authors?: string[];
-}
-
 export interface PaperMetadata {
 	schemaVersion: 2;
-	source: 'semanticscholar';
+	source: 'openalex' | 'semanticscholar';
 	resolvedAt: string;
 	metricsUpdatedAt: string;
 	doi?: string;
 	arxivId?: string;
+	openAlexId?: string;
 	title?: string;
 	authors: string[];
 	abstract?: string;
 	venue?: string;
 	year?: number;
 	publicationDate?: string;
-	publicationTypes?: string[];
 	citedByCount?: number;
 	referenceCount?: number;
 	pdfUrl?: string;
-	references: PaperReference[];
-	referencesTruncated: boolean;
+	pdfLicense?: string;
 }
 
 interface PlatformEnrichments {

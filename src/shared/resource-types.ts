@@ -159,10 +159,10 @@ export function isIncomingResourceSnapshotSuperseded(incoming: unknown, stored: 
 	return storedFetchedAt >= incomingFetchedAt;
 }
 
-export function hasSemanticScholarAcademicEnrichment(platformMetadata: unknown): boolean {
+export function hasAcademicPaperEnrichment(platformMetadata: unknown): boolean {
 	if (!isRecord(platformMetadata) || !isRecord(platformMetadata.enrichments)) return false;
 	const academic = platformMetadata.enrichments.academic;
-	return isRecord(academic) && academic.source === 'semanticscholar';
+	return isRecord(academic) && (academic.source === 'openalex' || academic.source === 'semanticscholar');
 }
 
 export function resourceIdentityForDetectedPlatform(

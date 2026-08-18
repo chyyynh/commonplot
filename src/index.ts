@@ -1,6 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { KnowledgeResolveResourcesInput, KnowledgeResourceReadInput } from '@app-domain/knowledge-contracts';
-import { AcademicMetadataBackfillV3Workflow, startAcademicMetadataBackfill } from '@ingest/academic-metadata-backfill-workflow';
 import { ResourceTranslationV2Workflow } from '@ingest/content-localization-workflow';
 import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';
@@ -17,12 +16,7 @@ import { relatedCorpusResourceIds, searchCorpusResourceRanks, searchCorpusResour
 import { readCorpusResource, resolveCorpusResources } from './corpus-retrieval';
 import { assertResourceProcessable, isResourceEnrichmentComplete } from './ingest/domain/resource-store';
 
-export {
-	AcademicMetadataBackfillV3Workflow,
-	ResourceProcessingV2Workflow,
-	ResourceTranslationV2Workflow,
-	SearchIndexGeneration5RebuildWorkflow,
-};
+export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexGeneration5RebuildWorkflow };
 
 type MonitorHandler = (env: CoreEnv) => Promise<void>;
 
@@ -112,17 +106,6 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	/** Validate DB/index counts for all six canonical identity pairs immediately before cutover. */
 	probeSearchIndexCutover() {
 		return probeSearchIndexCutover(this.env);
-	}
-
-	/** Start or resume the versioned academic metadata backfill. */
-	async startAcademicMetadataBackfill() {
-		return startAcademicMetadataBackfill(this.env);
-	}
-
-	/** Read academic metadata backfill status for operator polling. */
-	async getAcademicMetadataBackfillStatus(instanceId: string) {
-		const instance = await this.env.ACADEMIC_METADATA_BACKFILL_V3_WORKFLOW.get(instanceId);
-		return instance.status();
 	}
 
 	/** Hybrid AI Search retrieval for the canonical corpus search tool. */

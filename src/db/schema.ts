@@ -1,10 +1,4 @@
 import {
-	type BibliographicDate,
-	type BibliographicExtraValue,
-	RESOURCE_CREATOR_ROLES,
-	SUPPORTED_CSL_TYPES,
-} from '@core-shared/bibliography';
-import {
 	RESOURCE_CATEGORIES,
 	RESOURCE_KINDS,
 	RESOURCE_PLATFORMS,
@@ -81,57 +75,19 @@ export const resources = pgTable(
 	],
 );
 
-export const bibliographicMetadata = pgTable(
-	'bibliographic_metadata',
-	{
-		resourceId: uuid('resource_id')
-			.primaryKey()
-			.references(() => resources.id, { onDelete: 'cascade' }),
-		cslType: text('csl_type', { enum: SUPPORTED_CSL_TYPES }).notNull(),
-		abstractText: text('abstract_text'),
-		containerTitle: text('container_title'),
-		publisher: text('publisher'),
-		publisherPlace: text('publisher_place'),
-		volume: text('volume'),
-		issue: text('issue'),
-		pages: text('pages'),
-		edition: text('edition'),
-		issued: jsonb('issued').$type<BibliographicDate>(),
-		doi: text('doi'),
-		arxivId: text('arxiv_id'),
-		isbn: text('isbn'),
-		issn: text('issn'),
-		pmid: text('pmid'),
-		archive: text('archive'),
-		archiveLocation: text('archive_location'),
-		rights: text('rights'),
-		extra: jsonb('extra').$type<Readonly<Record<string, BibliographicExtraValue>>>(),
-		createdAt: timestamp('created_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
-		updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
-	},
-	(table) => [
-		index('bibliographic_metadata_csl_type_idx').on(table.cslType),
-		index('bibliographic_metadata_doi_idx').on(table.doi),
-		index('bibliographic_metadata_arxiv_id_idx').on(table.arxivId),
-	],
-);
-
-export const resourceCreators = pgTable(
-	'resource_creators',
+export const resourceIdentifiers = pgTable(
+	'resource_identifiers',
 	{
 		resourceId: uuid('resource_id')
 			.notNull()
 			.references(() => resources.id, { onDelete: 'cascade' }),
-		role: text('role', { enum: RESOURCE_CREATOR_ROLES }).notNull(),
-		orderIndex: integer('order_index').notNull(),
-		firstName: text('first_name'),
-		lastName: text('last_name'),
-		name: text('name'),
-		orcid: text('orcid'),
+		scheme: varchar('scheme', { length: 32, enum: ['doi', 'arxiv', 'openalex'] }).notNull(),
+		value: text('value').notNull(),
 	},
 	(table) => [
-		primaryKey({ columns: [table.resourceId, table.orderIndex] }),
-		index('resource_creators_resource_id_role_idx').on(table.resourceId, table.role),
+		primaryKey({ columns: [table.scheme, table.value] }),
+		uniqueIndex('resource_identifiers_resource_id_scheme_key').on(table.resourceId, table.scheme),
+		index('resource_identifiers_resource_id_idx').on(table.resourceId),
 	],
 );
 
@@ -188,13 +144,17 @@ export const userFiles = pgTable(
 			.notNull()
 			.references(() => resources.id, { onDelete: 'cascade' })
 			.unique(),
+		canonicalResourceId: uuid('canonical_resource_id').references(() => resources.id, { onDelete: 'set null' }),
 		kind: varchar('kind', { length: 16 }).notNull(),
 		originalFileName: text('original_file_name').notNull(),
 		byteSize: bigint('byte_size', { mode: 'bigint' }).notNull(),
 		createdAt: timestamp('created_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
 		updatedAt: timestamp('updated_at', { mode: 'date', withTimezone: true }).defaultNow().notNull(),
 	},
-	(table) => [index('user_files_user_id_created_at_idx').on(table.userId, table.createdAt)],
+	(table) => [
+		index('user_files_user_id_created_at_idx').on(table.userId, table.createdAt),
+		index('user_files_canonical_resource_id_user_id_idx').on(table.canonicalResourceId, table.userId),
+	],
 );
 
 export const sources = pgTable(

@@ -1,5 +1,5 @@
 import {
-	hasSemanticScholarAcademicEnrichment,
+	hasAcademicPaperEnrichment,
 	isContentResourceIdentity,
 	isContentResourceKind,
 	isResourcePlatform,
@@ -44,7 +44,7 @@ export function applyAcquiredContent(resource: ResourceForProcessing, acquired?:
 			`Acquired platform ${acquired.resourcePlatform} conflicts with URL platform ${detectedPlatform} for resource ${resource.id}`,
 		);
 	}
-	const hasAcademicEnrichment = hasSemanticScholarAcademicEnrichment(platformMetadata);
+	const hasAcademicEnrichment = hasAcademicPaperEnrichment(platformMetadata);
 	const explicitIdentity = parseResourceIdentity(acquired.kind, acquired.resourcePlatform);
 	if (!explicitIdentity || !isContentResourceIdentity(explicitIdentity)) {
 		throw new Error(`Acquired content has invalid identity ${String(acquired.kind)} / ${String(acquired.resourcePlatform)}`);
@@ -53,6 +53,8 @@ export function applyAcquiredContent(resource: ResourceForProcessing, acquired?:
 	const identity = acquiredPlatform
 		? resourceIdentityForDetectedPlatform(acquiredPlatform, hasAcademicEnrichment)
 		: resourceIdentityWithAcademic(explicitIdentity, hasAcademicEnrichment);
+	const ownedStorageKey =
+		'ownedStorageKey' in acquired && typeof acquired.ownedStorageKey === 'string' ? acquired.ownedStorageKey : undefined;
 	return {
 		...resource,
 		...toResourceIdentityColumns(identity),
@@ -63,6 +65,7 @@ export function applyAcquiredContent(resource: ResourceForProcessing, acquired?:
 		og_image_url: acquired.previewImageUrl?.trim() || resource.og_image_url?.trim() || null,
 		platform_metadata: platformMetadata,
 		file_type: acquired.fileType,
+		storage_key: ownedStorageKey ?? resource.storage_key,
 		published_date: resource.published_date ?? acquiredPublishedDate(acquired.metadata.publishedDate),
 	};
 }
@@ -182,6 +185,7 @@ function isAcquiredContent(value: unknown): value is AcquiredContent {
 		return false;
 	}
 	if (!isResourcePlatform(content.resourcePlatform) || !isNullableString(content.fileType)) return false;
+	if (content.ownedStorageKey !== undefined && !isNonEmptyString(content.ownedStorageKey)) return false;
 	if (!content.metadata || typeof content.metadata !== 'object' || Array.isArray(content.metadata)) return false;
 	if (!content.platformMetadata || typeof content.platformMetadata !== 'object' || Array.isArray(content.platformMetadata)) return false;
 	const metadata = content.metadata as Record<string, unknown>;

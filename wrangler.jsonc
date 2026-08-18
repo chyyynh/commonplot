@@ -71,11 +71,6 @@
 			"binding": "SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW",
 			"name": "newsence-search-index-generation-5-rebuild",
 			"class_name": "SearchIndexGeneration5RebuildWorkflow"
-		},
-		{
-			"binding": "ACADEMIC_METADATA_BACKFILL_V3_WORKFLOW",
-			"name": "newsence-academic-metadata-backfill-v3",
-			"class_name": "AcademicMetadataBackfillV3Workflow"
 		}
 	],
 	/**

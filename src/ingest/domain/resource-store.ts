@@ -3,7 +3,7 @@ import {
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
 	DEFAULT_RESOURCE_LANG,
-	hasSemanticScholarAcademicEnrichment,
+	hasAcademicPaperEnrichment,
 	isContentResourceKind,
 	isResourceSourceSnapshotHash,
 	parseResourceIdentity,
@@ -543,7 +543,7 @@ async function invalidateChangedMachineTranslationFields(db: CoreDb, resourceId:
 
 function preparedRecordToResource(base: SourceResourceDraft): ResourceForProcessing {
 	const detectedPlatform = detectResourcePlatform(base.url);
-	const hasAcademicEnrichment = hasSemanticScholarAcademicEnrichment(base.platformMetadata);
+	const hasAcademicEnrichment = hasAcademicPaperEnrichment(base.platformMetadata);
 	const explicitIdentity = parseResourceIdentity(base.kind, base.resourcePlatform);
 	if (!explicitIdentity || !isContentResourceKind(explicitIdentity.kind)) {
 		throw new Error(`Invalid source resource identity: ${String(base.kind)} / ${String(base.resourcePlatform)}`);
