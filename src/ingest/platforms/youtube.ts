@@ -1,11 +1,5 @@
 import { CORE_JSON_MODEL, generateObject } from '@core-ai/generation';
-import {
-	platformMetadataFor,
-	type ResourceForProcessing,
-	type TranscriptSegment,
-	type YouTubeHighlights,
-	type YoutubeTranscript,
-} from '@core-shared/types';
+import type { ResourceForProcessing, TranscriptSegment, YouTubeHighlights, YoutubeTranscript } from '@core-shared/types';
 import { type CoreDb, withCoreDb } from '@db/client';
 import { youtubeTranscripts } from '@db/schema';
 import { eq, sql } from 'drizzle-orm';
@@ -80,14 +74,10 @@ export async function persistYouTubeWorkflowData(
 export async function prepareYouTubeHighlights(
 	env: CoreEnv,
 	resource: ResourceForProcessing,
+	videoId: string,
 	transcript?: YoutubeTranscript | null,
 ): Promise<YouTubeHighlightsUpdate | null> {
 	if (resource.resource_platform !== 'youtube') return null;
-	const metadata = platformMetadataFor(resource, 'youtube');
-	if (!metadata) return null;
-
-	const videoId = metadata.data.videoId;
-	if (!videoId) return null;
 	if (transcript) {
 		return transcript.segments.length ? prepareYouTubeHighlightsFromTranscript(env, resource.id, videoId, transcript.segments) : null;
 	}

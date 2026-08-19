@@ -1,14 +1,19 @@
 import { normalizePaperIdentifiers, type PaperIdentifier } from '@core-shared/paper-identity';
+import { normalizeResourceIdentifiers, type ResourceIdentifier } from '@core-shared/resource-identifiers';
+import {
+	parseResourceCreators,
+	parseStoredResourceKindMetadata,
+	type ResourceCreator,
+	type ResourceKindMetadata,
+} from '@core-shared/resource-metadata';
 import {
 	type ContentResourceIdentity,
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
 	DEFAULT_RESOURCE_LANG,
-	hasAcademicPaperEnrichment,
 	isContentResourceKind,
 	isResourceSourceSnapshotHash,
 	parseResourceIdentity,
-	RESOURCE_CATEGORIES,
 	RESOURCE_SCOPES,
 	RESOURCE_TRANSLATION_SOURCES,
 	type ResourceCategory,
@@ -16,23 +21,14 @@ import {
 	type ResourcePlatform,
 	type ResourceScope,
 	type ResourceTranslationSource,
-	resourceIdentityForDetectedPlatform,
-	resourceIdentityWithAcademic,
 	type SourceAcquisitionMode,
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
-import type {
-	PlatformMetadata,
-	ResourceForProcessing,
-	ResourceLocaleText,
-	ResourceTranslationMap,
-	StoredResourceEntity,
-} from '@core-shared/types';
-import { detectResourcePlatform } from '@core-shared/url';
+import type { ResourceForProcessing, ResourceLocaleText, ResourceTranslationMap } from '@core-shared/types';
 import { type CoreDb, textArraySql, uuidArraySql, withCoreDb, withCoreTx } from '@db/client';
 import { contentResourceIdentitySql, resourceDisplaySourceSql, translatableResourceIdentitySql } from '@db/resource-identity-sql';
-import { resources, resourceTranslations, youtubeTranscripts } from '@db/schema';
-import { and, asc, eq, isNull, lt, not, type SQL, sql } from 'drizzle-orm';
+import { resourceIdentifiers, resources, resourceTranslations, youtubeTranscripts } from '@db/schema';
+import { and, asc, eq, lt, not, type SQL, sql } from 'drizzle-orm';
 
 /** Failed enrichments to retry before a URL is treated as permanently dead. */
 const MAX_ENRICHMENT_ATTEMPTS = 5;
@@ -42,13 +38,12 @@ type StoredResourceForProcessing = ResourceForProcessing & {
 	has_youtube_transcript?: boolean;
 };
 
-type ResourceUpdate = Pick<ResourceForProcessing, 'summary' | 'content' | 'tags' | 'keywords'> & {
+type ResourceUpdate = Pick<
+	ResourceForProcessing,
+	'summary' | 'content' | 'tags' | 'keywords' | 'creators' | 'kind_metadata' | 'source_revision'
+> & {
+	category: ResourceCategory | null;
 	og_image_url: string | null;
-	platform_metadata: PlatformMetadata | null;
-};
-
-type ProcessedResourceUpdate = ResourceUpdate & {
-	entities: StoredResourceEntity[];
 };
 
 type ResourceStoreRow = {
@@ -73,8 +68,11 @@ type ResourceStoreRow = {
 	created_at: Date | string;
 	tags: string[];
 	keywords: string[];
-	platform_metadata: unknown;
-	paper_identifiers: unknown;
+	creators: unknown;
+	kind_metadata: unknown;
+	source_revision: string | null;
+	subject_resource_id: string | null;
+	resource_identifiers: unknown;
 	has_content?: boolean;
 	has_youtube_transcript?: boolean;
 	storage_key?: string | null;
@@ -157,7 +155,10 @@ export async function isResourceEnrichmentComplete(env: CoreEnv, resourceId: str
 									OR EXISTS (
 										SELECT 1
 										FROM ${youtubeTranscripts}
-										WHERE ${youtubeTranscripts.videoId} = ${resources.platformMetadata}->'data'->>'videoId'
+										JOIN ${resourceIdentifiers} identifier
+										  ON identifier.resource_id = ${resources.id}
+										 AND identifier.scheme = 'youtube'
+										 AND identifier.value = ${youtubeTranscripts.videoId}
 									)
 								)
 								AND EXISTS (
@@ -216,21 +217,23 @@ export async function assertResourceProcessable(env: CoreEnv, resourceId: string
 }
 
 /**
- * App-owned URL and PDF rows are committed before Workflow admission. A
- * transient binding or Workflows failure can therefore leave a durable pending
- * row behind. The row is the outbox: return only stale, unmonitored content
- * resources so the scheduled reconciler can safely retry their fixed workflow
- * instance IDs without competing with revision-scoped source ingestion.
+ * Every Resource row is committed before Workflow admission. A transient
+ * binding or Workflows failure can therefore leave a durable pending row
+ * behind. The row is the outbox; source revisions preserve the same fixed
+ * Workflow identity used by monitored admission.
  */
-export async function loadStalePendingAppResourceIds(env: CoreEnv, olderThan: Date, limit: number): Promise<string[]> {
+export async function loadStalePendingResourceAdmissions(
+	env: CoreEnv,
+	olderThan: Date,
+	limit: number,
+): Promise<Array<{ resourceId: string; sourceRevision: string | null }>> {
 	return withCoreDb(env, async (db) => {
 		const rows = await db
-			.select({ id: resources.id })
+			.select({ id: resources.id, sourceRevision: resources.sourceRevision })
 			.from(resources)
 			.where(
 				and(
 					eq(resources.enrichmentStatus, 'pending'),
-					isNull(resources.sourceId),
 					lt(resources.updatedAt, olderThan),
 					contentResourceIdentitySql({
 						kind: sql`${resources.kind}`,
@@ -240,7 +243,7 @@ export async function loadStalePendingAppResourceIds(env: CoreEnv, olderThan: Da
 			)
 			.orderBy(asc(resources.updatedAt), asc(resources.id))
 			.limit(limit);
-		return rows.map(({ id }) => id);
+		return rows.map(({ id, sourceRevision }) => ({ resourceId: id, sourceRevision }));
 	});
 }
 
@@ -262,7 +265,10 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: bool
 						WHEN rl.resource_platform = 'youtube' THEN EXISTS (
 							SELECT 1
 							FROM ${youtubeTranscripts}
-							WHERE ${youtubeTranscripts.videoId} = rl.platform_metadata->'data'->>'videoId'
+							JOIN resource_identifiers identifier
+							  ON identifier.resource_id = rl.id
+							 AND identifier.scheme = 'youtube'
+							 AND identifier.value = ${youtubeTranscripts.videoId}
 						)
 						ELSE NULL
 					END`
@@ -295,13 +301,13 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: bool
 				)
 				FROM resource_identifiers identifier
 				WHERE identifier.resource_id = rl.id
-			) AS paper_identifiers,
+			) AS resource_identifiers,
 			rl.url AS url,
 			rl.og_image_url AS og_image_url,
 			${resourceDisplaySourceSql({
+				creatorName: sql`COALESCE(rl.creators->0->>'literal', CONCAT_WS(' ', rl.creators->0->>'given', rl.creators->0->>'family'))`,
 				kind: sql`rl.kind`,
 				monitoredSourceName: sql`monitored_source.name`,
-				platformMetadata: sql`rl.platform_metadata`,
 				resourcePlatform: sql`rl.resource_platform`,
 			})} AS source,
 			rl.scope AS scope,
@@ -312,7 +318,10 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: bool
 			rl.created_at AS created_at,
 			rl.tags AS tags,
 			rl.keywords AS keywords,
-			rl.platform_metadata AS platform_metadata,
+			rl.creators AS creators,
+			rl.kind_metadata AS kind_metadata,
+			rl.source_revision AS source_revision,
+			rl.subject_resource_id::text AS subject_resource_id,
 			rl.storage_key AS storage_key,
 			rl.file_type AS file_type,
 			rl.normalized_url AS normalized_url
@@ -345,11 +354,12 @@ function resourceStoreRowToProcessing(row: ResourceStoreRow): StoredResourceForP
 		tags: row.tags,
 		keywords: row.keywords,
 		scope: parseResourceScope(row.scope),
-		platform_metadata:
-			row.platform_metadata === null || row.platform_metadata === undefined
-				? undefined
-				: storedPlatformMetadataValue(row.platform_metadata, row.id),
-		paper_identifiers: paperIdentifiersValue(row.paper_identifiers),
+		creators: storedResourceCreatorsValue(row.creators, row.id),
+		kind_metadata: storedResourceKindMetadataValue(identity, row.kind_metadata, row.id),
+		source_revision: row.source_revision === null ? null : storedResourceSourceRevision(row.source_revision, row.id),
+		subject_resource_id: row.subject_resource_id,
+		resource_identifiers: resourceIdentifiersValue(row.resource_identifiers),
+		paper_identifiers: paperIdentifiersValue(row.resource_identifiers),
 	};
 	if (typeof row.has_content === 'boolean') resource.has_content = row.has_content;
 	if (typeof row.has_youtube_transcript === 'boolean') resource.has_youtube_transcript = row.has_youtube_transcript;
@@ -360,24 +370,32 @@ function resourceStoreRowToProcessing(row: ResourceStoreRow): StoredResourceForP
 }
 
 function paperIdentifiersValue(value: unknown): PaperIdentifier[] {
-	if (!Array.isArray(value)) return [];
 	return normalizePaperIdentifiers(
+		resourceIdentifiersValue(value).filter(
+			(identifier): identifier is PaperIdentifier =>
+				identifier.scheme === 'doi' || identifier.scheme === 'arxiv' || identifier.scheme === 'openalex',
+		),
+	);
+}
+
+function resourceIdentifiersValue(value: unknown): ResourceIdentifier[] {
+	if (!Array.isArray(value)) return [];
+	return normalizeResourceIdentifiers(
 		value.flatMap((item) => {
 			if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
 			const identifier = item as Record<string, unknown>;
 			if (
-				(identifier.scheme !== 'doi' && identifier.scheme !== 'arxiv' && identifier.scheme !== 'openalex') ||
+				(identifier.scheme !== 'doi' &&
+					identifier.scheme !== 'arxiv' &&
+					identifier.scheme !== 'openalex' &&
+					identifier.scheme !== 'hackernews' &&
+					identifier.scheme !== 'twitter' &&
+					identifier.scheme !== 'youtube') ||
 				typeof identifier.value !== 'string'
 			) {
 				return [];
 			}
-			return [
-				{
-					preferred: identifier.preferred !== false,
-					scheme: identifier.scheme,
-					value: identifier.value,
-				},
-			];
+			return [{ preferred: identifier.preferred !== false, scheme: identifier.scheme, value: identifier.value }];
 		}),
 	);
 }
@@ -412,7 +430,6 @@ type SourceResourceDraft = {
 	summary: string | null;
 	originalLang?: string;
 	content: string | null;
-	platformMetadata: PlatformMetadata | null;
 	previewImageUrl?: string | null;
 	keywords?: string[];
 	tags?: string[];
@@ -423,7 +440,6 @@ type ResourceSourceSnapshotInput = {
 	fileType: string | null;
 	kind: string;
 	originalLang: string;
-	platformData: unknown;
 	publishedDate: string | null;
 	resourcePlatform: string | null;
 	summary: string | null;
@@ -443,7 +459,6 @@ function resourceSourceSnapshotInput(resource: ResourceForProcessing): ResourceS
 		fileType: resource.file_type ?? null,
 		kind: resource.kind,
 		originalLang: resource.original_lang,
-		platformData: resource.platform_metadata?.data ?? null,
 		publishedDate: resource.published_date,
 		resourcePlatform: resource.resource_platform,
 		summary: resource.summary,
@@ -473,7 +488,9 @@ type ResourceMirrorRecord = {
 	tags: string[];
 	category: ResourceCategory | null;
 	ogImageUrl: string | null;
-	platformMetadataJson: string | null;
+	creatorsJson: string;
+	kindMetadataJson: string | null;
+	sourceRevision: string | null;
 	enrichmentStatus: ResourceEnrichmentStatus;
 } & ResourceIdentity;
 
@@ -490,110 +507,13 @@ function dateValue(value: unknown, field: string): Date {
 	return date;
 }
 
-/**
- * Core sink dedup policy:
- * - Source resources are globally unique by normalized URL. Discovery may
- *   pre-query with getExistingResourcesByUrl, but pending resource upsert is
- *   the authoritative ON CONFLICT guard.
- * - Stored enrichment targets are canonical resources only.
- */
-export async function updateResourceAfterProcessing(
-	db: CoreDb,
-	resourceId: string,
-	resource: ResourceForProcessing,
-	updatePayload: ProcessedResourceUpdate,
-): Promise<string> {
-	const record = resourceMirrorRecord(resourceId, resource, updatePayload);
-	await invalidateChangedMachineTranslationFields(db, resourceId, record);
-	const tags = textArraySql(record.tags);
-	const entitiesJson = JSON.stringify(updatePayload.entities);
-	const result = await db.execute<{ id: string }>(sql`
-		UPDATE resources
-		   SET source_id = COALESCE(source_id, ${record.sourceId}::uuid),
-		       kind = ${record.kind},
-		       resource_platform = ${record.resourcePlatform},
-		       url = ${record.url},
-		       normalized_url = ${record.normalizedUrl},
-		       storage_key = ${record.storageKey},
-		       file_type = ${record.fileType},
-		       original_lang = ${record.originalLang},
-		       published_date = ${record.publishedDate},
-		       scraped_date = ${record.scrapedDate},
-		       tags = ${tags},
-		       category = ${record.category},
-		       og_image_url = ${record.ogImageUrl},
-		       platform_metadata = ${record.platformMetadataJson}::jsonb,
-		       entities = ${entitiesJson}::jsonb,
-		       enrichment_status = 'enriched',
-		       -- Landing enrichment clears the failure streak, so a row that failed
-		       -- twice and then succeeded does not carry those attempts forever.
-		       enrichment_attempts = 0,
-		       updated_at = now()
-		 WHERE id = ${resourceId}::uuid
-		 RETURNING id::text AS id
-	`);
-	const updatedId = result.rows[0]?.id;
-	if (!updatedId) throw new Error(`Failed to update resource ${resourceId}: no rows matched`);
-	await syncOriginalResourceTranslation(db, updatedId, record);
-	return updatedId;
-}
-
-async function invalidateChangedMachineTranslationFields(db: CoreDb, resourceId: string, record: ResourceMirrorRecord): Promise<void> {
-	await db.execute(sql`
-		WITH original AS (
-			SELECT resource.original_lang, translation.title, translation.summary, translation.content
-			FROM resources resource
-			JOIN resource_translations translation
-			  ON translation.resource_id = resource.id
-			 AND translation.lang = resource.original_lang
-			WHERE resource.id = ${resourceId}::uuid
-			FOR UPDATE OF translation
-		)
-		UPDATE resource_translations AS machine
-		SET title = CASE
-				WHEN original.original_lang IS DISTINCT FROM ${record.originalLang}
-				  OR original.title IS DISTINCT FROM ${record.title}
-				THEN NULL ELSE machine.title
-			END,
-			summary = CASE
-				WHEN original.original_lang IS DISTINCT FROM ${record.originalLang}
-				  OR original.summary IS DISTINCT FROM ${record.summary}
-				THEN NULL ELSE machine.summary
-			END,
-			content = CASE
-				WHEN original.original_lang IS DISTINCT FROM ${record.originalLang}
-				  OR original.content IS DISTINCT FROM ${record.content}
-				THEN NULL ELSE machine.content
-			END,
-			updated_at = NOW()
-		FROM original
-		WHERE machine.resource_id = ${resourceId}::uuid
-		  AND machine.lang <> original.original_lang
-		  AND machine.source = 'machine'
-		  AND (
-			original.original_lang IS DISTINCT FROM ${record.originalLang}
-			OR original.title IS DISTINCT FROM ${record.title}
-			OR original.summary IS DISTINCT FROM ${record.summary}
-			OR original.content IS DISTINCT FROM ${record.content}
-		  )
-	`);
-}
-
 function preparedRecordToResource(base: SourceResourceDraft): ResourceForProcessing {
-	const detectedPlatform = detectResourcePlatform(base.url);
-	const hasAcademicEnrichment = hasAcademicPaperEnrichment(base.platformMetadata);
 	const explicitIdentity = parseResourceIdentity(base.kind, base.resourcePlatform);
 	if (!explicitIdentity || !isContentResourceKind(explicitIdentity.kind)) {
 		throw new Error(`Invalid source resource identity: ${String(base.kind)} / ${String(base.resourcePlatform)}`);
 	}
-	if (detectedPlatform && base.resourcePlatform && detectedPlatform !== base.resourcePlatform) {
-		throw new Error(`Source resource platform ${base.resourcePlatform} conflicts with URL platform ${detectedPlatform}`);
-	}
-	const identity = detectedPlatform
-		? resourceIdentityForDetectedPlatform(detectedPlatform, hasAcademicEnrichment)
-		: resourceIdentityWithAcademic(explicitIdentity, hasAcademicEnrichment);
 	return {
-		...toResourceIdentityColumns(identity),
+		...toResourceIdentityColumns(explicitIdentity),
 		id: base.url,
 		source_id: base.sourceId,
 		original_lang: canonicalizeOptionalResourceLang(base.originalLang) ?? DEFAULT_RESOURCE_LANG,
@@ -609,7 +529,11 @@ function preparedRecordToResource(base: SourceResourceDraft): ResourceForProcess
 		published_date: base.publishedDate === null ? null : dateValue(base.publishedDate, 'published_date').toISOString(),
 		tags: base.tags ?? [],
 		keywords: base.keywords ?? [],
-		platform_metadata: base.platformMetadata ?? undefined,
+		resource_identifiers: [],
+		creators: [],
+		kind_metadata: null,
+		source_revision: null,
+		subject_resource_id: null,
 	};
 }
 
@@ -621,21 +545,9 @@ type PendingSourceResource = {
 
 export async function upsertPendingSourceResource(db: CoreDb, base: SourceResourceDraft): Promise<PendingSourceResource> {
 	const prepared = preparedRecordToResource(base);
-	const resource = base.platformMetadata
-		? {
-				...prepared,
-				platform_metadata: {
-					...base.platformMetadata,
-					sourceSnapshotHash: await resourceSourceSnapshotHash(resourceSourceSnapshotInput(prepared)),
-				},
-			}
-		: prepared;
-	const record = resourceMirrorRecord(
-		crypto.randomUUID(),
-		resource,
-		pendingResourceUpdate(resource, resource.platform_metadata ?? null),
-		'pending',
-	);
+	const sourceRevision = await resourceSourceSnapshotHash(resourceSourceSnapshotInput(prepared));
+	const resource = { ...prepared, source_revision: sourceRevision };
+	const record = resourceMirrorRecord(crypto.randomUUID(), resource, pendingResourceUpdate(resource), 'pending');
 	const result = await db.execute<{ enrichment_status: string; id: string; source_revision: string | null }>(
 		resourceUpsertStatement(record),
 	);
@@ -650,15 +562,17 @@ export async function upsertPendingSourceResource(db: CoreDb, base: SourceResour
 	};
 }
 
-function pendingResourceUpdate(resource: ResourceForProcessing, platformMetadata: PlatformMetadata | null): ResourceUpdate {
-	const sourceName = requiredString(resource.source, 'source');
+function pendingResourceUpdate(resource: ResourceForProcessing): ResourceUpdate {
 	return {
 		summary: resource.summary,
 		content: resource.content,
 		tags: resource.tags,
 		keywords: resource.keywords,
+		creators: resource.creators,
+		kind_metadata: resource.kind_metadata,
+		source_revision: resource.source_revision,
+		category: null,
 		og_image_url: resource.og_image_url?.trim() || null,
-		platform_metadata: platformMetadata ? { ...platformMetadata, sourceName } : null,
 	};
 }
 
@@ -668,7 +582,6 @@ function resourceMirrorRecord(
 	updatePayload: ResourceUpdate,
 	enrichmentStatus: ResourceEnrichmentStatus = 'enriched',
 ): ResourceMirrorRecord {
-	const storedPlatformMetadata = updatePayload.platform_metadata;
 	const identity = parseResourceIdentity(resource.kind, resource.resource_platform);
 	if (!identity) {
 		throw new Error(`Invalid resource identity: ${String(resource.kind)} / ${String(resource.resource_platform)}`);
@@ -698,9 +611,11 @@ function resourceMirrorRecord(
 		scrapedDate: new Date(),
 		keywords,
 		tags,
-		category: deriveResourceCategory(storedPlatformMetadata),
+		category: updatePayload.category,
 		ogImageUrl: cleanString(updatePayload.og_image_url),
-		platformMetadataJson: storedPlatformMetadata === null ? null : JSON.stringify(storedPlatformMetadata),
+		creatorsJson: JSON.stringify(updatePayload.creators),
+		kindMetadataJson: updatePayload.kind_metadata === null ? null : JSON.stringify(updatePayload.kind_metadata),
+		sourceRevision: updatePayload.source_revision === null ? null : storedResourceSourceRevision(updatePayload.source_revision, resourceId),
 		enrichmentStatus,
 	};
 }
@@ -742,7 +657,7 @@ function resourceInsertStatement(record: ResourceMirrorRecord, conflictSql: SQL)
 		INSERT INTO resources (
 			id, source_id, kind, resource_platform, scope, url, normalized_url, storage_key, file_type,
 			original_lang, published_date, scraped_date, tags, category,
-			og_image_url, platform_metadata, enrichment_status,
+			og_image_url, creators, kind_metadata, source_revision, enrichment_status,
 			created_at, updated_at
 		)
 		VALUES (
@@ -761,7 +676,9 @@ function resourceInsertStatement(record: ResourceMirrorRecord, conflictSql: SQL)
 			${tags},
 			${record.category},
 			${record.ogImageUrl},
-			${record.platformMetadataJson}::jsonb,
+			${record.creatorsJson}::jsonb,
+			${record.kindMetadataJson}::jsonb,
+			${record.sourceRevision},
 			${record.enrichmentStatus},
 			now(),
 			now()
@@ -770,7 +687,7 @@ function resourceInsertStatement(record: ResourceMirrorRecord, conflictSql: SQL)
 		RETURNING
 			id::text AS id,
 			enrichment_status,
-			NULLIF(BTRIM(platform_metadata->>'sourceSnapshotHash'), '') AS source_revision
+			source_revision
 	`;
 }
 
@@ -805,10 +722,9 @@ function resourceConflictSetSql(): SQL {
 			WHEN ${preserveEnriched} THEN resources.og_image_url
 			ELSE excluded.og_image_url
 		END,
-		platform_metadata = CASE
-			WHEN ${preserveEnriched} THEN resources.platform_metadata
-			ELSE excluded.platform_metadata
-		END,
+		creators = CASE WHEN ${preserveEnriched} THEN resources.creators ELSE excluded.creators END,
+		kind_metadata = CASE WHEN ${preserveEnriched} THEN resources.kind_metadata ELSE excluded.kind_metadata END,
+		source_revision = CASE WHEN ${preserveEnriched} THEN resources.source_revision ELSE excluded.source_revision END,
 		enrichment_status = CASE
 			WHEN ${preserveEnriched} THEN resources.enrichment_status
 			ELSE excluded.enrichment_status
@@ -950,25 +866,43 @@ function requiredString(value: unknown, field: string): string {
 	return text;
 }
 
-// Production rows were backfilled before this became strict; missing keys are
-// now a persistence bug, not a read-time compatibility case.
-function storedPlatformMetadataValue(value: unknown, resourceId: string): PlatformMetadata {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) {
-		throw new Error('Invalid platform_metadata: expected object');
+function storedResourceCreatorsValue(value: unknown, resourceId: string): ResourceCreator[] {
+	try {
+		return parseResourceCreators(value);
+	} catch (error) {
+		throw new Error(`Invalid creators for ${resourceId}: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	const metadata = value as Record<string, unknown>;
-	const fetchedAt = typeof metadata.fetchedAt === 'string' ? metadata.fetchedAt.trim() : '';
-	if (!fetchedAt) throw new Error(`Invalid platform_metadata for ${resourceId}: missing fetchedAt`);
-	if (!Object.hasOwn(metadata, 'data')) throw new Error(`Invalid platform_metadata for ${resourceId}: missing data`);
-	return value as PlatformMetadata;
 }
 
-function deriveResourceCategory(platformMetadata: unknown): ResourceCategory | null {
-	if (platformMetadata && typeof platformMetadata === 'object' && !Array.isArray(platformMetadata)) {
-		const category = (platformMetadata as { classification?: { category?: unknown } }).classification?.category;
-		if (typeof category === 'string' && (RESOURCE_CATEGORIES as readonly string[]).includes(category)) return category as ResourceCategory;
+function emptyStoredResourceKindMetadata(identity: ResourceIdentity): ResourceKindMetadata | null {
+	switch (identity.kind) {
+		case 'blog':
+		case 'image':
+		case 'file':
+			return null;
+		case 'forum':
+		case 'video':
+		case 'paper':
+			return { schemaVersion: 1 };
+		case 'post':
+			return { schemaVersion: 1, attachments: [] };
 	}
-	return null;
+}
+
+function storedResourceKindMetadataValue(identity: ResourceIdentity, value: unknown, resourceId: string): ResourceKindMetadata | null {
+	if (value === null || value === undefined) return emptyStoredResourceKindMetadata(identity);
+	try {
+		return parseStoredResourceKindMetadata(identity.kind, value);
+	} catch (error) {
+		throw new Error(`Invalid kind_metadata for ${resourceId}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
+function storedResourceSourceRevision(value: unknown, resourceId: string): string {
+	if (!isResourceSourceSnapshotHash(value)) {
+		throw new Error(`Invalid source_revision for ${resourceId}`);
+	}
+	return value;
 }
 
 function parseResourceScope(value: unknown): ResourceScope {
@@ -1032,29 +966,7 @@ export async function attachSourceToResources(db: CoreDb, resourceIds: string[],
 	`);
 }
 
-function reprocessingPlatformMetadata(
-	storedValue: unknown,
-	incoming: PlatformMetadata,
-	resourceId: string,
-	sourceSnapshotHash: string,
-): PlatformMetadata {
-	const stored = storedPlatformMetadataValue(storedValue, resourceId);
-	return {
-		...incoming,
-		sourceSnapshotHash,
-		...(stored.classification === undefined ? {} : { classification: stored.classification }),
-		...(stored.enrichments === undefined ? {} : { enrichments: stored.enrichments }),
-		...(stored.extraction === undefined ? {} : { extraction: stored.extraction }),
-		...(stored.representation === undefined ? {} : { representation: stored.representation }),
-		...(incoming.sourceName || !stored.sourceName ? {} : { sourceName: stored.sourceName }),
-	};
-}
-
-export async function reopenResourceForReprocessing(
-	env: CoreEnv,
-	resourceId: string,
-	update: { content: string; platformMetadata: PlatformMetadata },
-): Promise<string | null> {
+export async function reopenResourceForReprocessing(env: CoreEnv, resourceId: string, update: { content: string }): Promise<string | null> {
 	if (!update.content.trim()) {
 		throw new Error(`Cannot reopen resource ${resourceId} with empty content`);
 	}
@@ -1063,12 +975,11 @@ export async function reopenResourceForReprocessing(
 			file_type: string | null;
 			kind: string;
 			original_lang: string;
-			platform_metadata: unknown;
 			published_date: Date | string | null;
 			resource_platform: string | null;
 			url: string | null;
 		}>(sql`
-			SELECT file_type, kind, original_lang, platform_metadata, published_date, resource_platform, url
+			SELECT file_type, kind, original_lang, published_date, resource_platform, url
 			FROM resources
 			WHERE id = ${resourceId}::uuid
 			FOR UPDATE
@@ -1102,7 +1013,6 @@ export async function reopenResourceForReprocessing(
 			fileType: resource.file_type,
 			kind: resource.kind,
 			originalLang: resource.original_lang,
-			platformData: update.platformMetadata.data,
 			publishedDate: resource.published_date === null ? null : dateValue(resource.published_date, 'published_date').toISOString(),
 			resourcePlatform: resource.resource_platform,
 			summary: preserveOwnedTranslation ? original.summary : null,
@@ -1110,17 +1020,10 @@ export async function reopenResourceForReprocessing(
 			translationSource: original.source,
 			url: resource.url,
 		});
-		const platformMetadata = reprocessingPlatformMetadata(
-			resource.platform_metadata,
-			update.platformMetadata,
-			resourceId,
-			sourceSnapshotHash,
-		);
-
 		await db
 			.update(resources)
 			.set({
-				platformMetadata,
+				sourceRevision: sourceSnapshotHash,
 				enrichmentStatus: 'pending',
 				updatedAt: sql`NOW()`,
 			})

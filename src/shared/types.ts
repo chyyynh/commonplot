@@ -1,6 +1,4 @@
 import type {
-	ContentResourceIdentity,
-	ResourceCategory,
 	ResourceIdentityColumns,
 	ResourcePlatform,
 	ResourceScope,
@@ -8,6 +6,8 @@ import type {
 	SourceAcquisitionMode,
 } from '@core-shared/resource-types';
 import type { PaperIdentifier } from './paper-identity';
+import type { ResourceIdentifier } from './resource-identifiers';
+import type { ResourceCreator, ResourceKindMetadata } from './resource-metadata';
 
 export type ResourceLocaleText = {
 	title?: string | null;
@@ -35,7 +35,11 @@ type ResourceForProcessingBase = {
 	published_date: string | null;
 	tags: string[];
 	keywords: string[];
-	platform_metadata?: PlatformMetadata;
+	creators: ResourceCreator[];
+	kind_metadata: ResourceKindMetadata | null;
+	source_revision: string | null;
+	subject_resource_id: string | null;
+	resource_identifiers: ResourceIdentifier[];
 	paper_identifiers?: PaperIdentifier[];
 	// Blob/private resource raw columns (undefined for source URL drafts).
 	storage_key?: string | null;
@@ -96,7 +100,9 @@ export interface YoutubeTranscript {
 	chaptersFromDescription: boolean;
 }
 
-type NormalizedContentBase<T extends ResourcePlatform> = {
+type AcquiredMaterialBase<T extends ResourcePlatform> = {
+	/** Acquisition adapter identity. This is not the Resource product identity. */
+	provider: T;
 	fileType: string | null;
 	title: string;
 	/** Platform APIs return markdown or plain text for resource drafts. */
@@ -110,12 +116,11 @@ type NormalizedContentBase<T extends ResourcePlatform> = {
 		siteName: string;
 		description: string | null;
 	};
-	platformMetadata: PlatformMetadata<T>;
+	acquisition: AcquisitionEnvelope<T>;
 	youtubeTranscript?: YoutubeTranscript;
 };
 
-export type NormalizedContent<T extends ResourcePlatform = ResourcePlatform> = NormalizedContentBase<T> &
-	Extract<ContentResourceIdentity, { resourcePlatform: T }>;
+export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = AcquiredMaterialBase<T>;
 
 export interface TwitterMedia {
 	url: string;
@@ -226,21 +231,7 @@ export interface PaperRelationSnapshot {
 	items: PaperRelationItem[];
 }
 
-interface PlatformEnrichments {
-	academic?: PaperMetadata | null;
-	links?: string[];
-}
-
-interface ClassificationMetadata {
-	category?: ResourceCategory;
-	classifiedAt?: string;
-}
-
-interface ClassificationEnvelope {
-	classification?: ClassificationMetadata | null;
-}
-
-interface PlatformMetadataDataByResourcePlatform {
+interface AcquisitionDataByProvider {
 	twitter: TwitterMetadata;
 	youtube: YouTubeMetadata;
 	hackernews: HackerNewsMetadata;
@@ -253,34 +244,13 @@ export interface PdfExtractionMetadata {
 	pages: number;
 }
 
-type PlatformMetadataData<T extends ResourcePlatform> = T extends keyof PlatformMetadataDataByResourcePlatform
-	? PlatformMetadataDataByResourcePlatform[T]
-	: null;
+type AcquisitionData<T extends ResourcePlatform> = T extends keyof AcquisitionDataByProvider ? AcquisitionDataByProvider[T] : null;
 
-export type PlatformMetadata<T extends ResourcePlatform = ResourcePlatform> = {
+export type AcquisitionEnvelope<T extends ResourcePlatform = ResourcePlatform> = {
 	fetchedAt: string;
-	data: PlatformMetadataData<T>;
+	data: AcquisitionData<T>;
 	/** Hash of normalized source fields used to skip unchanged resync runs. */
 	sourceSnapshotHash?: string;
-	enrichments?: PlatformEnrichments | null;
-	sourceName?: string;
 	/** Primary file representation facts; MIME and blob identity stay scalar. */
 	representation?: ResourceRepresentationMetadata;
-	extraction?: PdfExtractionMetadata;
-} & ClassificationEnvelope;
-
-export function withPdfExtractionMetadata<T extends ResourcePlatform>(
-	platformMetadata: PlatformMetadata<T>,
-	extraction: PdfExtractionMetadata | undefined,
-): PlatformMetadata<T> {
-	return extraction ? { ...platformMetadata, extraction } : platformMetadata;
-}
-
-export function platformMetadataFor<T extends Exclude<ResourcePlatform, null>>(
-	resource: Pick<ResourceForProcessing, 'resource_platform' | 'platform_metadata'>,
-	resourcePlatform: T,
-): PlatformMetadata<T> | null {
-	return resource.resource_platform === resourcePlatform && resource.platform_metadata
-		? (resource.platform_metadata as PlatformMetadata<T>)
-		: null;
-}
+};

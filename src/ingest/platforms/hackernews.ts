@@ -1,10 +1,9 @@
 import { generateText } from '@core-ai/generation';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import { type HackerNewsMetadata, type NormalizedContent, platformMetadataFor, type ResourceForProcessing } from '@core-shared/types';
+import type { AcquiredMaterial, HackerNewsMetadata, ResourceForProcessing } from '@core-shared/types';
 import { extractHackerNewsId } from '@core-shared/url';
 import { decode } from 'html-entities';
 import { z } from 'zod';
-import { type AcquiredWebContent, acquireWebResource } from '../web-acquisition';
 
 const HN_ALGOLIA_API = 'https://hn.algolia.com/api/v1/items';
 const HN_ITEM_MAX_BYTES = 5 * 1024 * 1024;
@@ -142,58 +141,39 @@ function hackerNewsItemTitle(item: HackerNewsItem, itemId: string): string {
 
 export async function scrapeHackerNews(
 	itemId: string,
-	env: CoreEnv,
-	resourceId?: string,
-): Promise<
-	NormalizedContent<'hackernews'> &
-		Pick<AcquiredWebContent, 'extraction' | 'previewImageUrl'> & {
-			hackerNewsItem: HackerNewsItem;
-		}
-> {
+	_env: CoreEnv,
+	_resourceId?: string,
+): Promise<AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem }> {
 	console.info({ tag: 'HN', msg: 'Fetching item', itemId });
 	const item = await fetchHnItem(itemId);
 	const title = hackerNewsItemTitle(item, itemId);
 	const hnText = item.text ? htmlToText(item.text) : '';
 	if (item.type === 'comment' && !hnText) throw new Error(`Hacker News comment ${itemId} has no text`);
-	let target: AcquiredWebContent | null = null;
-	let markdown: string;
-	let description: string | null;
-	if (item.url) {
-		target = await acquireWebResource(item.url, env, resourceId);
-		markdown = target.markdown.trim();
-		description = target.metadata.description;
-	} else {
-		markdown = buildHnPostMarkdown(item, title);
-		description = hnText.slice(0, 280) || null;
-	}
+	const markdown = buildHnPostMarkdown(item, title);
+	const description = hnText.slice(0, 280) || null;
 	if (!markdown) throw new Error(`Hacker News item ${itemId} has no content`);
 	console.info({
 		tag: 'HN',
 		msg: 'Item fetched',
 		title,
-		targetUrl: item.url ?? null,
-		targetStatus: target?.markdown.trim() ? 'fetched' : 'unavailable',
+		subjectUrl: item.url ?? null,
 	});
 	return {
-		kind: 'forum',
-		resourcePlatform: 'hackernews',
-		fileType: target?.fileType ?? null,
+		provider: 'hackernews',
+		fileType: null,
 		title,
 		markdown,
 		metadata: {
 			author: item.author ?? null,
-			language: target?.metadata.language ?? null,
+			language: null,
 			publishedDate: item.created_at_i ? new Date(item.created_at_i * 1000).toISOString() : null,
 			siteName: 'Hacker News',
 			description,
 		},
-		platformMetadata: {
+		acquisition: {
 			fetchedAt: new Date().toISOString(),
 			data: buildHnMetadata(item),
-			...(target?.platformMetadata.representation ? { representation: target.platformMetadata.representation } : {}),
 		},
-		...(target?.extraction ? { extraction: target.extraction } : {}),
-		...(target?.previewImageUrl ? { previewImageUrl: target.previewImageUrl } : {}),
 		hackerNewsItem: item,
 	};
 }
@@ -275,8 +255,7 @@ export async function buildHackerNewsContent(
 	env: CoreEnv,
 	acquiredItem?: HackerNewsItem,
 ): Promise<string> {
-	const metadata = platformMetadataFor(resource, 'hackernews');
-	const itemId = metadata?.data?.itemId;
+	const itemId = resource.resource_identifiers.find((identifier) => identifier.scheme === 'hackernews')?.value;
 	let item = acquiredItem;
 	if (!item) {
 		if (!itemId) throw new Error(`Hacker News resource ${resource.id} has no item id`);
@@ -289,7 +268,7 @@ export async function buildHackerNewsContent(
 	const comments = item.children?.length ? collectAllComments(item.children) : [];
 	const digest = await generateHnDiscussionDigest(env, resource.id, resource.title, articleContent, item.text ?? null, comments);
 	const discussionUrl = `https://news.ycombinator.com/item?id=${item.id}`;
-	// Count nodes, not text-bearing comments, so this matches platform_metadata.commentCount.
+	// Count nodes, not text-bearing comments, so this matches Forum kind metadata.
 	const commentCount = countHnComments(item.children);
 	const stats = [item.points !== undefined ? `${item.points} points` : null, commentCount > 0 ? `${commentCount} comments` : null]
 		.filter(Boolean)

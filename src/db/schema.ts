@@ -1,3 +1,4 @@
+import type { ResourceCreator, ResourceKindMetadata } from '@core-shared/resource-metadata';
 import {
 	RESOURCE_CATEGORIES,
 	RESOURCE_KINDS,
@@ -11,6 +12,7 @@ import {
 } from '@core-shared/resource-types';
 import type { StoredResourceEntity, TranscriptSegment, YouTubeChapter, YouTubeHighlights } from '@core-shared/types';
 import {
+	type AnyPgColumn,
 	bigint,
 	boolean,
 	index,
@@ -58,7 +60,10 @@ export const resources = pgTable(
 		tags: text('tags').array().default([]).notNull(),
 		category: text('category', { enum: RESOURCE_CATEGORIES }),
 		ogImageUrl: text('og_image_url'),
-		platformMetadata: jsonb('platform_metadata').$type<unknown>(),
+		creators: jsonb('creators').$type<ResourceCreator[]>().default([]).notNull(),
+		kindMetadata: jsonb('kind_metadata').$type<ResourceKindMetadata>(),
+		sourceRevision: varchar('source_revision', { length: 64 }),
+		subjectResourceId: uuid('subject_resource_id').references((): AnyPgColumn => resources.id, { onDelete: 'set null' }),
 		entities: jsonb('entities').$type<StoredResourceEntity[]>(),
 		enrichmentStatus: text('enrichment_status', { enum: ['pending', 'enriched', 'failed'] })
 			.default('pending')
@@ -72,6 +77,7 @@ export const resources = pgTable(
 	(table) => [
 		index('resources_original_lang_idx').on(table.originalLang),
 		index('resources_published_date_id_idx').on(table.publishedDate, table.id),
+		index('resources_subject_resource_id_idx').on(table.subjectResourceId),
 	],
 );
 
@@ -81,7 +87,10 @@ export const resourceIdentifiers = pgTable(
 		resourceId: uuid('resource_id')
 			.notNull()
 			.references(() => resources.id, { onDelete: 'cascade' }),
-		scheme: varchar('scheme', { length: 32, enum: ['doi', 'arxiv', 'openalex'] }).notNull(),
+		scheme: varchar('scheme', {
+			length: 32,
+			enum: ['doi', 'arxiv', 'openalex', 'hackernews', 'twitter', 'youtube'],
+		}).notNull(),
 		value: text('value').notNull(),
 		isPreferred: boolean('is_preferred').default(true).notNull(),
 	},

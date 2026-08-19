@@ -1,15 +1,12 @@
 import assert from 'node:assert/strict';
+import { isResourceIdentifierCompatibleWithIdentity } from '../src/shared/resource-identifiers.ts';
 import {
-	isIncomingResourceSnapshotSuperseded,
 	isResourceSourceSnapshotHash,
 	isResourceTranslationIdentityEligible,
 	isValidKindPlatform,
-	needsResourcePlatformAcquisition,
 	resourceIdentityForDetectedPlatform,
-	resourceIdentityWithAcademic,
 	VALID_KIND_PLATFORMS,
 } from '../src/shared/resource-types.ts';
-import { withPdfExtractionMetadata } from '../src/shared/types.ts';
 import { detectResourcePlatform } from '../src/shared/url.ts';
 
 const canonicalIdentities = Object.entries(VALID_KIND_PLATFORMS).flatMap(([kind, resourcePlatforms]) =>
@@ -21,20 +18,8 @@ for (const identity of canonicalIdentities) {
 assert.equal(isValidKindPlatform('post', null), false);
 assert.equal(isValidKindPlatform('blog', 'hackernews'), false);
 assert.equal(isValidKindPlatform('forum', null), false);
+assert.equal(isValidKindPlatform('paper', 'hackernews'), false);
 assert.equal(isValidKindPlatform('document', null), false);
-
-assert.deepEqual(resourceIdentityWithAcademic({ kind: 'blog', resourcePlatform: null }, true), {
-	kind: 'paper',
-	resourcePlatform: null,
-});
-assert.deepEqual(resourceIdentityWithAcademic({ kind: 'forum', resourcePlatform: 'hackernews' }, true), {
-	kind: 'paper',
-	resourcePlatform: 'hackernews',
-});
-assert.deepEqual(resourceIdentityWithAcademic({ kind: 'post', resourcePlatform: 'twitter' }, true), {
-	kind: 'post',
-	resourcePlatform: 'twitter',
-});
 const translationCases = [
 	['generic blog', { kind: 'blog', resourcePlatform: null, fileType: null }, true],
 	['Hacker News forum with PDF representation', { kind: 'forum', resourcePlatform: 'hackernews', fileType: 'application/pdf' }, true],
@@ -59,66 +44,30 @@ assert.equal(detectResourcePlatform('https://example.com/article'), null);
 assert.deepEqual(resourceIdentityForDetectedPlatform('twitter'), { kind: 'post', resourcePlatform: 'twitter' });
 assert.deepEqual(resourceIdentityForDetectedPlatform('youtube'), { kind: 'video', resourcePlatform: 'youtube' });
 assert.deepEqual(resourceIdentityForDetectedPlatform('hackernews'), { kind: 'forum', resourcePlatform: 'hackernews' });
-assert.deepEqual(resourceIdentityForDetectedPlatform('hackernews', true), {
-	kind: 'paper',
-	resourcePlatform: 'hackernews',
-});
-
-const platformAcquisitionCases = [
-	['pending Twitter', { resourcePlatform: 'twitter', platformData: null }, true],
-	['pending YouTube', { resourcePlatform: 'youtube', platformData: null }, true],
-	['pending Hacker News', { resourcePlatform: 'hackernews', platformData: null }, true],
-	['complete Twitter', { resourcePlatform: 'twitter', platformData: { tweetId: '123' } }, false],
-	['generic blog', { resourcePlatform: null, platformData: null }, false],
-];
-
-for (const [label, resource, expected] of platformAcquisitionCases) {
-	assert.equal(needsResourcePlatformAcquisition(resource), expected, `${label} platform acquisition`);
-}
-
-const oldSnapshot = {
-	fetchedAt: '2026-07-28T00:00:00.000Z',
-	sourceSnapshotHash: 'old',
-};
-const newSnapshot = {
-	fetchedAt: '2026-07-28T00:01:00.000Z',
-	sourceSnapshotHash: 'new',
-};
-assert.equal(isIncomingResourceSnapshotSuperseded(oldSnapshot, newSnapshot), true);
-assert.equal(isIncomingResourceSnapshotSuperseded(newSnapshot, oldSnapshot), false);
-assert.equal(isIncomingResourceSnapshotSuperseded(newSnapshot, newSnapshot), false);
-assert.equal(isIncomingResourceSnapshotSuperseded({}, newSnapshot), true);
-assert.equal(isIncomingResourceSnapshotSuperseded({ fetchedAt: oldSnapshot.fetchedAt }, { fetchedAt: newSnapshot.fetchedAt }), true);
-assert.equal(isIncomingResourceSnapshotSuperseded({ fetchedAt: newSnapshot.fetchedAt }, { fetchedAt: oldSnapshot.fetchedAt }), false);
-assert.equal(
-	isIncomingResourceSnapshotSuperseded({ ...oldSnapshot, sourceSnapshotHash: 'same' }, { ...newSnapshot, sourceSnapshotHash: 'same' }),
-	true,
-);
 assert.equal(isResourceSourceSnapshotHash('a'.repeat(64)), true);
 assert.equal(isResourceSourceSnapshotHash('A'.repeat(64)), false);
 assert.equal(isResourceSourceSnapshotHash('a'.repeat(63)), false);
 assert.equal(isResourceSourceSnapshotHash(null), false);
 
-const pdfPlatformMetadata = {
-	fetchedAt: '2026-07-28T00:00:00.000Z',
-	data: null,
-	representation: { fileName: 'paper.pdf', fileSize: 1024 },
-};
-const pdfExtraction = { status: 'needs_ocr', parser: 'liteparse', chars: 3, pages: 2 };
-assert.deepEqual(withPdfExtractionMetadata(pdfPlatformMetadata, pdfExtraction), {
-	...pdfPlatformMetadata,
-	extraction: pdfExtraction,
-});
-assert.equal(withPdfExtractionMetadata(pdfPlatformMetadata, undefined), pdfPlatformMetadata);
+const identifierCompatibilityCases = [
+	[{ preferred: true, scheme: 'hackernews', value: '123' }, { kind: 'forum', resourcePlatform: 'hackernews' }, true],
+	[{ preferred: true, scheme: 'hackernews', value: '123' }, { kind: 'paper', resourcePlatform: null }, false],
+	[{ preferred: true, scheme: 'doi', value: '10.1000/example' }, { kind: 'paper', resourcePlatform: null }, true],
+	[{ preferred: true, scheme: 'doi', value: '10.1000/example' }, { kind: 'blog', resourcePlatform: null }, false],
+	[{ preferred: true, scheme: 'twitter', value: '123' }, { kind: 'post', resourcePlatform: 'twitter' }, true],
+	[{ preferred: true, scheme: 'youtube', value: 'abcdefghijk' }, { kind: 'video', resourcePlatform: 'youtube' }, true],
+];
+for (const [identifier, identity, expected] of identifierCompatibilityCases) {
+	assert.equal(isResourceIdentifierCompatibleWithIdentity(identifier, identity), expected);
+}
 
 console.info({
 	event: 'resource_identity_smoke_passed',
 	canonicalIdentityCases: canonicalIdentities.length,
-	detectedPlatformIdentityCases: 4,
-	invalidIdentityCases: 4,
-	platformAcquisitionCases: platformAcquisitionCases.length,
-	pdfExtractionCases: 2,
-	snapshotCasCases: 11,
+	detectedPlatformIdentityCases: 3,
+	invalidIdentityCases: 5,
+	identifierCompatibilityCases: identifierCompatibilityCases.length,
+	sourceRevisionCases: 4,
 	translationCases: translationCases.length,
 	urlCases: 4,
 });

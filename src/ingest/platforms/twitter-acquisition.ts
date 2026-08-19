@@ -1,7 +1,7 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import type {
-	NormalizedContent,
-	PlatformMetadata,
+	AcquiredMaterial,
+	AcquisitionEnvelope,
 	QuotedTweetData,
 	RetweetedByData,
 	TwitterAuthorFields,
@@ -203,7 +203,7 @@ export function buildTweetTitle(tweet: Tweet, maxLength = 100): string {
 export function buildThreadResourceParts(tweets: Tweet[]): {
 	first: AuthoredTweet;
 	combinedText: string;
-	platformMetadata: PlatformMetadata<'twitter'>;
+	acquisition: AcquisitionEnvelope<'twitter'>;
 } {
 	const sorted = [...tweets].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 	const firstTweet = sorted[0];
@@ -222,22 +222,22 @@ export function buildThreadResourceParts(tweets: Tweet[]): {
 
 	const media = sorted.flatMap(extractTweetMedia);
 	const quotedTweet = sorted.map(extractQuotedTweet).find(Boolean);
-	const platformMetadata = buildTweetPlatformMetadata(first, { media, quotedTweet });
+	const acquisition = buildTweetAcquisition(first, { media, quotedTweet });
 	return {
 		first,
 		combinedText: uniqueTexts.join('\n\n'),
-		platformMetadata,
+		acquisition,
 	};
 }
 
-function buildTweetPlatformMetadata(
+function buildTweetAcquisition(
 	tweet: Tweet,
 	options: {
 		externalUrl?: string;
 		media?: TwitterMedia[];
 		quotedTweet?: QuotedTweetData;
 	} = {},
-): PlatformMetadata<'twitter'> {
+): AcquisitionEnvelope<'twitter'> {
 	const media = options.media ?? extractTweetMedia(tweet);
 	const base = {
 		tweetId: tweet.id,
@@ -262,11 +262,11 @@ function buildTweetPlatformMetadata(
 	};
 }
 
-function buildTwitterLongformPlatformMetadata(
+function buildTwitterLongformAcquisition(
 	tweetId: string,
 	author: NonNullable<TwitterLongform['author']>,
 	coverImageUrl?: string,
-): PlatformMetadata<'twitter'> {
+): AcquisitionEnvelope<'twitter'> {
 	return {
 		fetchedAt: new Date().toISOString(),
 		data: {
@@ -298,7 +298,7 @@ async function scrapeTwitterLongform(
 	tweetId: string,
 	apiKey: string,
 	language?: string,
-): Promise<NormalizedContent<'twitter'> & { platformMetadata: PlatformMetadata<'twitter'> }> {
+): Promise<AcquiredMaterial<'twitter'> & { acquisition: AcquisitionEnvelope<'twitter'> }> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching longform for tweet', tweetId });
 
 	const response = await fetchWithTimeout(`https://api.twitterapi.io/twitter/article?tweet_id=${tweetId}`, {
@@ -334,8 +334,7 @@ async function scrapeTwitterLongform(
 	console.info({ tag: 'TWITTER', msg: 'Longform fetched', title });
 
 	return {
-		kind: 'post',
-		resourcePlatform: 'twitter',
+		provider: 'twitter',
 		fileType: null,
 		title,
 		markdown: contentText,
@@ -347,7 +346,7 @@ async function scrapeTwitterLongform(
 			description: null,
 		},
 		previewImageUrl: longform.cover_media_img_url ?? null,
-		platformMetadata: buildTwitterLongformPlatformMetadata(tweetId, author, longform.cover_media_img_url),
+		acquisition: buildTwitterLongformAcquisition(tweetId, author, longform.cover_media_img_url),
 	};
 }
 
@@ -355,14 +354,13 @@ function buildExternalLinkTweet(
 	tweet: Tweet,
 	externalUrl: string,
 	media: TwitterMedia[],
-): NormalizedContent<'twitter'> & { platformMetadata: PlatformMetadata<'twitter'> } {
+): AcquiredMaterial<'twitter'> & { acquisition: AcquisitionEnvelope<'twitter'> } {
 	const author = requiredTweetAuthor(tweet);
 	const tweetText = tweet.text.trim();
 	if (!tweetText) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no text`);
 	const title = `@${author.userName}: ${stripTweetUrls(tweetText) || tweetText}`.slice(0, 120);
 	return {
-		kind: 'post',
-		resourcePlatform: 'twitter',
+		provider: 'twitter',
 		fileType: null,
 		title,
 		markdown: expandTweetUrls(tweetText, tweet),
@@ -373,7 +371,7 @@ function buildExternalLinkTweet(
 			siteName: new URL(externalUrl).hostname.replace(/^www\./, ''),
 			description: null,
 		},
-		platformMetadata: buildTweetPlatformMetadata(tweet, {
+		acquisition: buildTweetAcquisition(tweet, {
 			media,
 			externalUrl,
 		}),
@@ -419,8 +417,7 @@ export async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 	return {
 		kind: 'tweet' as const,
 		scraped: {
-			kind: 'post' as const,
-			resourcePlatform: 'twitter' as const,
+			provider: 'twitter' as const,
 			fileType: null,
 			title,
 			markdown: expandTweetUrls(tweet.text, tweet),
@@ -432,14 +429,14 @@ export async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 				description: null,
 			},
 			previewImageUrl: mediaPreviewImageUrl,
-			platformMetadata: buildTweetPlatformMetadata(tweet),
+			acquisition: buildTweetAcquisition(tweet),
 		},
 		canonicalUrl: tweet.url,
 		eventText: tweetText,
 	};
 }
 
-export async function scrapeTweet(tweetId: string, apiKey: string): Promise<NormalizedContent<'twitter'>> {
+export async function scrapeTweet(tweetId: string, apiKey: string): Promise<AcquiredMaterial<'twitter'>> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
 	const response = await fetchWithTimeout(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, {
 		headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
@@ -472,8 +469,7 @@ export async function scrapeTweet(tweetId: string, apiKey: string): Promise<Norm
 
 	const parts = buildThreadResourceParts(thread);
 	return {
-		kind: 'post',
-		resourcePlatform: 'twitter',
+		provider: 'twitter',
 		fileType: null,
 		title: buildTweetTitle(parts.first, 80),
 		markdown: parts.combinedText,
@@ -484,8 +480,8 @@ export async function scrapeTweet(tweetId: string, apiKey: string): Promise<Norm
 			siteName: 'Twitter',
 			description: null,
 		},
-		previewImageUrl: parts.platformMetadata.data.media?.[0]?.url ?? null,
-		platformMetadata: parts.platformMetadata,
+		previewImageUrl: parts.acquisition.data.media?.[0]?.url ?? null,
+		acquisition: parts.acquisition,
 	};
 }
 

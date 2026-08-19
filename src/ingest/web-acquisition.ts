@@ -1,6 +1,6 @@
 import { coreAiRequestOptions, throwCoreAiError } from '@core-ai/generation';
 import { fetchWithTimeout, readBytesWithLimit, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
-import type { NormalizedContent, PdfExtractionMetadata } from '@core-shared/types';
+import type { AcquiredMaterial, PdfExtractionMetadata } from '@core-shared/types';
 import { normalizePreviewImageUrl } from '@core-shared/url';
 import { addTransformations, extractFromHtml } from '@extractus/article-extractor';
 import { type PdfTextArtifact, parsePdfBytes } from './platforms/pdf';
@@ -75,7 +75,7 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 	};
 }
 
-export type AcquiredWebContent = NormalizedContent<null> & {
+export type AcquiredWebContent = AcquiredMaterial<null> & {
 	extraction?: PdfExtractionMetadata;
 	ownedStorageKey?: string;
 };
@@ -152,8 +152,7 @@ async function acquirePdfBytes(bytes: Uint8Array, url: string, fileName: string,
 	const parsed = await parsePdfBytes(bytes);
 	const title = titleFromFileName(fileName);
 	return {
-		kind: 'blog',
-		resourcePlatform: null,
+		provider: null,
 		fileType: PDF_MIME,
 		title,
 		markdown: parsed.text,
@@ -164,7 +163,7 @@ async function acquirePdfBytes(bytes: Uint8Array, url: string, fileName: string,
 			siteName: urlHost(url),
 			description: parsed.text.slice(0, 500) || null,
 		},
-		platformMetadata: {
+		acquisition: {
 			fetchedAt: new Date().toISOString(),
 			data: null,
 			representation: { fileName, fileSize: bytes.byteLength },
@@ -203,8 +202,7 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, resou
 		throw new Error(`Extracted HTML content is too short (${content.length} chars): ${url}`);
 	}
 	return {
-		kind: 'blog',
-		resourcePlatform: null,
+		provider: null,
 		fileType: null,
 		title: article.title,
 		markdown: content,
@@ -215,7 +213,7 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, resou
 			siteName: article.siteName,
 			description: article.description,
 		},
-		platformMetadata: { fetchedAt: new Date().toISOString(), data: null },
+		acquisition: { fetchedAt: new Date().toISOString(), data: null },
 		previewImageUrl: article.previewImageUrl,
 	};
 }

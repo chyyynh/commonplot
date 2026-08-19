@@ -1,5 +1,4 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import type { PlatformMetadata } from '@core-shared/types';
 import { normalizeUrl } from '@core-shared/url';
 import { withCoreDb, withCoreTx } from '@db/client';
 import {
@@ -22,7 +21,6 @@ async function enqueueTwitterResource(
 		publishedDate: Date;
 		originalLang?: string;
 		content: string | null;
-		platformMetadata: PlatformMetadata;
 		previewImageUrl?: string | null;
 		hashTags?: string[];
 	},
@@ -39,7 +37,6 @@ async function enqueueTwitterResource(
 			resourcePlatform: 'twitter',
 			originalLang: data.originalLang,
 			content: data.content,
-			platformMetadata: data.platformMetadata,
 			previewImageUrl: data.previewImageUrl,
 			keywords: data.hashTags,
 		}),
@@ -104,7 +101,6 @@ async function saveTweet(tweet: Tweet, env: CoreEnv, monitoredSource: MonitoredS
 		publishedDate: requiredTweetDate(scraped.metadata.publishedDate, tweetId),
 		originalLang: scraped.metadata.language ?? undefined,
 		content: scraped.markdown,
-		platformMetadata: scraped.platformMetadata,
 		previewImageUrl: scraped.previewImageUrl,
 		hashTags: tweet.hashTags,
 	});
@@ -113,7 +109,7 @@ async function saveTweet(tweet: Tweet, env: CoreEnv, monitoredSource: MonitoredS
 }
 
 async function saveThread(tweets: Tweet[], env: CoreEnv, monitoredSource: MonitoredSource): Promise<boolean> {
-	const { first, combinedText, platformMetadata } = buildThreadResourceParts(tweets);
+	const { first, combinedText, acquisition } = buildThreadResourceParts(tweets);
 	const firstUrl = normalizeUrl(first.url);
 	const tweetCount = tweets.length;
 
@@ -124,7 +120,6 @@ async function saveThread(tweets: Tweet[], env: CoreEnv, monitoredSource: Monito
 		await withCoreDb(env, (db) => attachSourceToResources(db, [existingId], monitoredSource.id));
 		const sourceRevision = await reopenResourceForReprocessing(env, existingId, {
 			content: combinedText,
-			platformMetadata,
 		});
 		if (sourceRevision || existing.shouldRetryEnrichment) {
 			await enqueueProcessing(env, existingId, sourceRevision ?? undefined);
@@ -146,8 +141,7 @@ async function saveThread(tweets: Tweet[], env: CoreEnv, monitoredSource: Monito
 		publishedDate: new Date(first.createdAt),
 		originalLang: first.lang,
 		content: combinedText,
-		platformMetadata,
-		previewImageUrl: platformMetadata.data.media?.[0]?.url ?? null,
+		previewImageUrl: acquisition.data.media?.[0]?.url ?? null,
 		hashTags: first.hashTags,
 	});
 	console.info({ tag: 'TWITTER', msg: 'Saved thread', author: first.author?.userName, tweets: tweetCount });

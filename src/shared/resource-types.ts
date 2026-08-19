@@ -17,7 +17,7 @@ export const VALID_KIND_PLATFORMS = {
 	forum: ['hackernews'],
 	post: ['twitter'],
 	video: ['youtube'],
-	paper: [null, 'hackernews'],
+	paper: [null],
 	image: [null],
 	file: [null],
 } as const satisfies Readonly<Record<ResourceKind, readonly ResourcePlatform[]>>;
@@ -116,67 +116,14 @@ export function isContentResourceIdentity(identity: ResourceIdentity): identity 
 	return isContentResourceKind(identity.kind);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-export function needsResourcePlatformAcquisition(input: { platformData: unknown; resourcePlatform: ResourcePlatform }): boolean {
-	return input.resourcePlatform !== null && !isRecord(input.platformData);
-}
-
-export type ResourceSourceSnapshot = { fetchedAt: string | null; hash: string | null };
-
 const RESOURCE_SOURCE_SNAPSHOT_HASH_RE = /^[0-9a-f]{64}$/;
 
 export function isResourceSourceSnapshotHash(value: unknown): value is string {
 	return typeof value === 'string' && RESOURCE_SOURCE_SNAPSHOT_HASH_RE.test(value);
 }
 
-export function resourceSourceSnapshot(platformMetadata: unknown): ResourceSourceSnapshot {
-	if (!isRecord(platformMetadata)) return { fetchedAt: null, hash: null };
-	const fetchedAt = typeof platformMetadata.fetchedAt === 'string' ? platformMetadata.fetchedAt.trim() || null : null;
-	const hash = typeof platformMetadata.sourceSnapshotHash === 'string' ? platformMetadata.sourceSnapshotHash.trim() || null : null;
-	return { fetchedAt, hash };
-}
-
-export function isIncomingResourceSnapshotSuperseded(incoming: unknown, stored: unknown): boolean {
-	const incomingSnapshot = resourceSourceSnapshot(incoming);
-	const storedSnapshot = resourceSourceSnapshot(stored);
-	const incomingHash = incomingSnapshot.hash;
-	const storedHash = storedSnapshot.hash;
-	const incomingFetchedAt = incomingSnapshot.fetchedAt ? Date.parse(incomingSnapshot.fetchedAt) : Number.NaN;
-	const storedFetchedAt = storedSnapshot.fetchedAt ? Date.parse(storedSnapshot.fetchedAt) : Number.NaN;
-	if (!storedHash) {
-		if (Number.isNaN(storedFetchedAt)) return false;
-		if (Number.isNaN(incomingFetchedAt)) return true;
-		return storedFetchedAt > incomingFetchedAt;
-	}
-	if (!incomingHash) return true;
-	if (storedHash === incomingHash) {
-		return !Number.isNaN(incomingFetchedAt) && !Number.isNaN(storedFetchedAt) && storedFetchedAt > incomingFetchedAt;
-	}
-	if (Number.isNaN(incomingFetchedAt) || Number.isNaN(storedFetchedAt)) return true;
-	return storedFetchedAt >= incomingFetchedAt;
-}
-
-export function hasAcademicPaperEnrichment(platformMetadata: unknown): boolean {
-	if (!isRecord(platformMetadata) || !isRecord(platformMetadata.enrichments)) return false;
-	const academic = platformMetadata.enrichments.academic;
-	return isRecord(academic) && academic.schemaVersion === 3 && academic.source === 'openalex';
-}
-
-export function resourceIdentityForDetectedPlatform(
-	resourcePlatform: Exclude<ResourcePlatform, null>,
-	hasAcademicEnrichment = false,
-): ContentResourceIdentity {
-	return resourceIdentityWithAcademic(DETECTED_PLATFORM_RESOURCE_IDENTITIES[resourcePlatform], hasAcademicEnrichment);
-}
-
-export function resourceIdentityWithAcademic(identity: ContentResourceIdentity, hasAcademicEnrichment: boolean): ContentResourceIdentity;
-export function resourceIdentityWithAcademic(identity: ResourceIdentity, hasAcademicEnrichment: boolean): ResourceIdentity;
-export function resourceIdentityWithAcademic(identity: ResourceIdentity, hasAcademicEnrichment: boolean): ResourceIdentity {
-	if (!hasAcademicEnrichment || (identity.kind !== 'blog' && identity.kind !== 'forum')) return identity;
-	return { kind: 'paper', resourcePlatform: identity.resourcePlatform };
+export function resourceIdentityForDetectedPlatform(resourcePlatform: Exclude<ResourcePlatform, null>): ContentResourceIdentity {
+	return DETECTED_PLATFORM_RESOURCE_IDENTITIES[resourcePlatform];
 }
 
 export function isResourceTranslationIdentityEligible(input: {

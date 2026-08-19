@@ -21,11 +21,23 @@ const CitoidItemSchema = z
 		DOI: z.string().nullish(),
 		archiveID: z.string().nullish(),
 		extra: z.string().nullish(),
+		itemType: z.string().nullish(),
 		url: z.string().nullish(),
 	})
 	.passthrough();
 
 const CitoidResponseSchema = z.array(CitoidItemSchema);
+const ACADEMIC_ITEM_TYPES = new Set(['journalArticle', 'conferencePaper', 'preprint', 'thesis', 'manuscript']);
+
+export type TranslatorEvidence = Readonly<{
+	itemType: string;
+	schemes: PaperIdentifierScheme[];
+}>;
+
+export type BibliographicResolution = Readonly<{
+	identifiers: PaperIdentifier[];
+	translatorEvidence?: TranslatorEvidence;
+}>;
 
 function citoidQueryUrl(value: string | null | undefined): string | null {
 	if (!value?.trim() || resolveExactPaperInput(value)) return null;
@@ -47,7 +59,7 @@ function citoidItemIdentifiers(item: z.infer<typeof CitoidItemSchema>): PaperIde
 	return identity ? paperIdentifiersFromIdentity(identity) : [];
 }
 
-async function resolveCitoidIdentifiers(url: string): Promise<PaperIdentifier[]> {
+async function resolveCitoidIdentifiers(url: string): Promise<BibliographicResolution> {
 	const response = await fetchWithTimeout(
 		`${CITOID_BASE}${encodeURIComponent(url)}`,
 		{
@@ -67,10 +79,24 @@ async function resolveCitoidIdentifiers(url: string): Promise<PaperIdentifier[]>
 			throw new Error(`Citoid request failed with HTTP 429${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
 		}
 		console.warn({ tag: 'CITOID', event: 'translation_unavailable', status });
-		return [];
+		return { identifiers: [] };
 	}
 	const items = CitoidResponseSchema.parse(JSON.parse(await readTextWithLimit(response, CITOID_RESPONSE_MAX_BYTES)));
-	return normalizePaperIdentifiers(items.flatMap(citoidItemIdentifiers));
+	const academicItem = items.find((item) => item.itemType && ACADEMIC_ITEM_TYPES.has(item.itemType));
+	if (!academicItem?.itemType) {
+		return {
+			identifiers: [],
+			...(items[0]?.itemType ? { translatorEvidence: { itemType: items[0].itemType, schemes: [] } } : {}),
+		};
+	}
+	const identifiers = normalizePaperIdentifiers(citoidItemIdentifiers(academicItem));
+	return {
+		identifiers,
+		translatorEvidence: {
+			itemType: academicItem.itemType,
+			schemes: [...new Set(identifiers.map((identifier) => identifier.scheme))],
+		},
+	};
 }
 
 function choosePreferredIdentifiers(identifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
@@ -101,10 +127,10 @@ export async function resolveBibliographicIdentifiers(input: {
 	seedIdentifiers?: readonly PaperIdentifier[];
 	translateUrl?: boolean;
 	url?: string | null;
-}): Promise<PaperIdentifier[]> {
+}): Promise<BibliographicResolution> {
 	const exact = resolveExactPaperInput(input.url)?.identity;
 	const citoidUrl = input.translateUrl ? citoidQueryUrl(input.url) : null;
-	const citoid = citoidUrl
+	const citoid: BibliographicResolution = citoidUrl
 		? await resolveCitoidIdentifiers(citoidUrl).catch((error) => {
 				if (error instanceof Error && error.message.includes('HTTP 429')) throw error;
 				console.warn({
@@ -112,14 +138,17 @@ export async function resolveBibliographicIdentifiers(input: {
 					event: 'translation_failed',
 					error: error instanceof Error ? error.message : String(error),
 				});
-				return [];
+				return { identifiers: [] };
 			})
-		: [];
+		: { identifiers: [] };
 	const fromText = input.identifierText?.trim() ? paperIdentityFromText(input.identifierText.slice(0, IDENTIFIER_SCAN_CHARS)) : null;
-	return choosePreferredIdentifiers([
-		...(exact ? paperIdentifiersFromIdentity(exact) : []),
-		...citoid,
-		...(fromText ? paperIdentifiersFromIdentity(fromText) : []),
-		...(input.seedIdentifiers ?? []),
-	]);
+	return {
+		identifiers: choosePreferredIdentifiers([
+			...(exact ? paperIdentifiersFromIdentity(exact) : []),
+			...citoid.identifiers,
+			...(fromText ? paperIdentifiersFromIdentity(fromText) : []),
+			...(input.seedIdentifiers ?? []),
+		]),
+		...(citoid.translatorEvidence ? { translatorEvidence: citoid.translatorEvidence } : {}),
+	};
 }

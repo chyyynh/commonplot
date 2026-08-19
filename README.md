@@ -38,7 +38,9 @@ Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content
 | **Web**              | Scraper   | Saved URL     | Full content extraction (Readability + Cheerio), OG metadata                |
 | **App Inputs**       | Ingestion | Real-time     | Service-binding RPC — saved URL/blob acquisition + enrichment; membership stays app-owned |
 
-All platforms output a unified `NormalizedContent` shape → same AI pipeline.
+All providers output identity-free acquisition material. One resolver finalizes
+the Resource identity, then an exhaustive kind handler feeds the shared AI and
+graph-persistence tail.
 
 ## How it works
 
@@ -152,8 +154,10 @@ src/
 ├── ai/                   # Workers AI / AI Gateway helpers
 ├── entities/             # resource-local entity normalization
 ├── shared/               # small cross-subsystem primitives
-│   ├── types.ts          # ResourceForProcessing, NormalizedContent, YoutubeTranscript
-│   └── web.ts            # fetch, URL normalization, stream limits
+│   ├── types.ts          # ResourceForProcessing and workflow-local acquisition data
+│   ├── resource-*.ts     # identity, identifiers, and canonical metadata contracts
+│   ├── http.ts           # bounded HTTP primitives
+│   └── url.ts            # URL normalization and exact platform locators
 ├── ingest/               # ── resource ingestion pipeline (the open-source core) ──
 │   ├── workflow.ts       # Workflow class + enqueueProcessing
 │   ├── domain/           # sink and AI merge helpers
@@ -273,14 +277,15 @@ resource identity.
 Minimum to add a new ingest source:
 
 1. **Adapter file** (`ingest/platforms/foo.ts`) — discovery/scrape helpers and optional custom processor.
-2. **Metadata shape** — add only the platform-specific JSON payload needed by `platform_metadata`.
-3. **Monitor** (optional) — if the source is pollable, wire its cron handler from `src/index.ts`.
-4. **Workflow hook** (optional) — only if the source needs behavior beyond the default AI merge.
+2. **Canonical adapter output** — normalize provider data into common creators,
+   versioned kind metadata, exact identifiers, and an optional immediate subject.
+3. **Identity contract** — add the exact locator and valid `(kind, platform)` pair.
+4. **Monitor** (optional) — wire a cron only when discovery is not already a feed.
 
 The new resource goes through the same Workflow pipeline as every other ingest
-source. Add a new canonical platform value only when the product needs durable
-platform-specific behavior or presentation; an RSS feed or ordinary web page
-does not qualify.
+source. Resolver owns the final identity, the narrowed kind handler owns
+provider behavior, and the shared graph sink owns persistence. Adding a
+platform must not add a provider branch to common Workflow or Web rendering.
 
 ## License
 

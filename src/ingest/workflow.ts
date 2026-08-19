@@ -1,17 +1,19 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
+import { normalizePaperIdentifiers, type PaperIdentifier } from '@core-shared/paper-identity';
 import {
-	hasAcademicPaperEnrichment,
+	isContentResourceIdentity,
 	isResourceSourceSnapshotHash,
-	needsResourcePlatformAcquisition,
 	parseResourceIdentity,
-	type ResourceSourceSnapshot,
-	resourceIdentityWithAcademic,
-	resourceSourceSnapshot,
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
-import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
-import { loadResourceForProcessing, loadResourceShellForProcessing, loadStalePendingAppResourceIds } from '@ingest/domain/resource-store';
+import type { AcquisitionEnvelope, PaperMetadata, ResourceForProcessing } from '@core-shared/types';
+import { detectResourceUrl } from '@core-shared/url';
+import {
+	loadResourceForProcessing,
+	loadResourceShellForProcessing,
+	loadStalePendingResourceAdmissions,
+} from '@ingest/domain/resource-store';
 import { loadFeedSourcePolicy } from '@ingest/domain/source-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES, enqueueOrRestartWorkflow } from '../workflow-control';
@@ -19,28 +21,28 @@ import {
 	type AcquiredContent,
 	acquireOpenAlexGrobidArtifact,
 	acquireOpenAlexPdfArtifact,
-	applyAcquiredContent,
+	applyAcquiredMaterial,
 	PDF_MIME,
 	pdfExtractionMetadata,
 	readAcquiredContentArtifact,
 	scrapeRssFeedItemArtifact,
 	scrapeSavedUrlArtifact,
+	stageAcquisitionEnhancements,
 } from './acquisition';
 import { enqueueResourceTranslation, loadEligibleResourceTranslationRevision } from './content-localization-workflow';
 import { classifyResource } from './domain/ai-utils';
-import { buildHackerNewsContent } from './platforms/hackernews';
+import { handleResolvedResource } from './kind-handler';
 import { isExplicitPaperUrl, stagePaperEnrichment } from './platforms/paper';
 import { stagePdfTextExtraction } from './platforms/pdf';
 import type { RssFeedAcquisitionInput } from './platforms/rss-feed';
-import { applyTweetLinkUnfurl, pendingTweetExternalLink, unfurlTweetExternalLink } from './platforms/twitter-unfurl';
-import { prepareYouTubeHighlights } from './platforms/youtube';
+import { markResourceEnrichmentFailed, persistProcessedResource } from './resource-persistence';
 import {
-	markResourceEnrichmentFailed,
-	persistPdfExtractionSnapshot,
-	persistProcessedResource,
-	persistResourceImageSnapshot,
-	persistUnchangedResourceResync,
-} from './resource-persistence';
+	canonicalPlatformUrl,
+	exactPlatformLocator,
+	type ResolvedContentResourceInput,
+	resolveContentResource,
+	resolvedResourceIdentifiers,
+} from './resource-resolver';
 
 type WorkflowOperation = 'ingest' | 'resync';
 type WorkflowPayload = { resourceId: string; operation: WorkflowOperation; sourceRevision?: string };
@@ -64,18 +66,20 @@ export async function enqueueProcessing(env: CoreEnv, resourceId: string, source
 
 /** Re-admits app-owned pending rows whose initial DB -> Workflow handoff was interrupted. */
 export async function reconcilePendingResourceProcessing(env: CoreEnv): Promise<void> {
-	const resourceIds = await loadStalePendingAppResourceIds(
+	const admissions = await loadStalePendingResourceAdmissions(
 		env,
 		new Date(Date.now() - PENDING_RESOURCE_GRACE_MS),
 		PENDING_RESOURCE_RECONCILE_LIMIT,
 	);
-	if (!resourceIds.length) return;
+	if (!admissions.length) return;
 
 	let reconciled = 0;
 	let failed = 0;
-	for (let offset = 0; offset < resourceIds.length; offset += PENDING_RESOURCE_RECONCILE_CONCURRENCY) {
-		const batch = resourceIds.slice(offset, offset + PENDING_RESOURCE_RECONCILE_CONCURRENCY);
-		const results = await Promise.allSettled(batch.map((resourceId) => enqueueProcessing(env, resourceId)));
+	for (let offset = 0; offset < admissions.length; offset += PENDING_RESOURCE_RECONCILE_CONCURRENCY) {
+		const batch = admissions.slice(offset, offset + PENDING_RESOURCE_RECONCILE_CONCURRENCY);
+		const results = await Promise.allSettled(
+			batch.map(({ resourceId, sourceRevision }) => enqueueProcessing(env, resourceId, sourceRevision ?? undefined)),
+		);
 		for (const [index, result] of results.entries()) {
 			if (result.status === 'fulfilled') {
 				reconciled++;
@@ -85,7 +89,7 @@ export async function reconcilePendingResourceProcessing(env: CoreEnv): Promise<
 			console.error({
 				tag: 'RESOURCE_WORKFLOW',
 				event: 'pending_resource_reconciliation_failed',
-				resource_id: batch[index],
+				resource_id: batch[index]?.resourceId,
 				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
 			});
 		}
@@ -93,7 +97,7 @@ export async function reconcilePendingResourceProcessing(env: CoreEnv): Promise<
 	console.info({
 		tag: 'RESOURCE_WORKFLOW',
 		event: 'pending_resource_reconciliation_completed',
-		attempted: resourceIds.length,
+		attempted: admissions.length,
 		reconciled,
 		failed,
 	});
@@ -116,8 +120,8 @@ function workflowIdPart(value: string): string {
 
 function storedWorkflowId(resourceId: string, sourceRevision?: string): string {
 	return sourceRevision
-		? ['resource-v3', workflowIdPart(resourceId), sourceRevision.slice(0, 32)].join('-')
-		: ['resource-v2', workflowIdPart(resourceId)].join('-');
+		? ['resource-v4', workflowIdPart(resourceId), sourceRevision.slice(0, 32)].join('-')
+		: ['resource-v4', workflowIdPart(resourceId)].join('-');
 }
 
 async function stageResourceImageRehost(env: CoreEnv, step: WorkflowStep, resourceId: string): Promise<void> {
@@ -163,16 +167,8 @@ function shouldAcquireContent(
 	if (force) return !resource.storage_key && !!resource.url;
 	const hasContent = 'has_content' in resource && !!resource.has_content;
 	const needsYouTubeAcquisition = resource.resource_platform === 'youtube' && !resource.has_youtube_transcript;
-	const needsPlatformAcquisition = needsResourcePlatformAcquisition({
-		platformData: resource.platform_metadata?.data,
-		resourcePlatform: resource.resource_platform,
-	});
-	const needsAcquisitionIdentity = !resource.source || !resource.platform_metadata;
-	return (
-		(!hasContent || needsYouTubeAcquisition || needsPlatformAcquisition || needsAcquisitionIdentity) &&
-		!resource.storage_key &&
-		!!resource.url
-	);
+	const needsPlatformAcquisition = !!detectResourceUrl(resource.url) && resource.kind_metadata === null;
+	return (!hasContent || needsYouTubeAcquisition || needsPlatformAcquisition) && !resource.storage_key && !!resource.url;
 }
 
 /**
@@ -281,49 +277,16 @@ async function stageOpenAlexGrobidAcquisition(
 }
 
 async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, resource: ResourceForProcessing): Promise<AcquiredContent> {
-	const sourceUrl = resource.url;
+	const locator = exactPlatformLocator(resource.resource_identifiers);
+	const sourceUrl = locator ? canonicalPlatformUrl(locator) : resource.url;
 	if (!sourceUrl) throw new Error(`Resource ${resource.id} has no source URL`);
 	// A monitored source's feed decided to list this; anything else is a person's
 	// explicit save, which feed policies must not veto.
 	const origin = { monitored: !!resource.source_id };
-	return readAcquiredContentArtifact(
+	const acquired = await readAcquiredContentArtifact(
 		await step.do('acquire-content-kind-platform-v1', ACQUISITION_STEP, () => scrapeSavedUrlArtifact(sourceUrl, env, origin, resource.id)),
 	);
-}
-
-/**
- * Fill `externalOgImage` / `externalTitle` for a share tweet so the link-preview
- * card can render (#235). Runs before both persist paths — including the
- * unchanged-resync short-circuit, which is how pre-existing rows get backfilled.
- */
-async function stageTweetLinkUnfurl(step: WorkflowStep, resource: ResourceForProcessing): Promise<ResourceForProcessing> {
-	const externalUrl = pendingTweetExternalLink(resource);
-	if (!externalUrl) return resource;
-	// Wrapped so a failed fetch (null) stays distinguishable from a page that
-	// simply has no OG image ({ unfurl: null }) — both leave the card hidden.
-	const outcome = await step
-		.do('unfurl-tweet-external-link', { retries: { limit: 1, delay: '5 seconds' }, timeout: '30 seconds' }, async () => ({
-			unfurl: await unfurlTweetExternalLink(externalUrl),
-		}))
-		.catch((error) => {
-			// Legitimate absence: the URL still renders inline in the tweet text (#234).
-			console.error({
-				tag: 'TWITTER',
-				msg: 'Optional external-link unfurl failed; card stays hidden',
-				resource_id: resource.id,
-				external_url: externalUrl,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return null;
-		});
-	if (!outcome) return resource;
-	console.info({
-		tag: 'TWITTER',
-		msg: outcome.unfurl ? 'External link unfurled' : 'External link exposed no OG image',
-		resource_id: resource.id,
-		external_url: externalUrl,
-	});
-	return applyTweetLinkUnfurl(resource, outcome.unfurl);
+	return stageAcquisitionEnhancements(step, acquired, resource.id);
 }
 
 function feedSourceId(resource: ResourceForProcessing): string | null {
@@ -338,30 +301,15 @@ async function stageRssFeedAcquisition(env: CoreEnv, step: WorkflowStep, input: 
 	);
 }
 
-async function persistPdfExtractionBeforeValidation(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: {
-		acquiredExtraction: AcquiredContent['extraction'];
-		operation: WorkflowOperation;
-		pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
-		resource: ResourceForProcessing;
-		resourceId: string;
-	},
-): Promise<boolean> {
+function assertPdfExtractionProcessable(input: {
+	acquiredExtraction: AcquiredContent['extraction'];
+	pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
+	resourceId: string;
+}): void {
 	const extraction = input.pdfTextArtifact ? pdfExtractionMetadata(input.pdfTextArtifact) : input.acquiredExtraction;
-	if (extraction && (input.pdfTextArtifact !== null || input.operation === 'resync')) {
-		const persisted = await step.do(
-			'persist-resource-pdf-extraction-snapshot-v1',
-			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			() => persistPdfExtractionSnapshot(env, input.resourceId, input.resource, extraction),
-		);
-		if (!persisted) return false;
-	}
 	if (extraction?.status === 'needs_ocr') {
 		throw new NonRetryableError(`PDF resource ${input.resourceId} requires OCR`, 'PdfOcrRequiredError');
 	}
-	return true;
 }
 
 async function acquireResourceForOperation(
@@ -391,33 +339,122 @@ async function acquireResourceForOperation(
 	return stageSavedUrlAcquisition(env, step, resource);
 }
 
-function requireProcessingResourceIdentity(resource: ResourceForProcessing) {
-	const identity = parseResourceIdentity(resource.kind, resource.resource_platform);
-	if (identity) return identity;
-	throw new NonRetryableError(
-		`Resource ${resource.id} has invalid identity ${String(resource.kind)} / ${String(resource.resource_platform)}`,
-		'ResourceIdentityError',
-	);
-}
-
 function assertOperationCanProcessResource(resource: ResourceForProcessing, operation: WorkflowOperation): void {
 	if (operation === 'resync' && !resource.url) {
 		throw new NonRetryableError(`Resource ${resource.id} has no source URL`, 'ResourceResyncUnsupportedError');
 	}
 }
 
-function matchesExpectedSourceRevision(snapshot: ResourceSourceSnapshot, expectedRevision: string | undefined): boolean {
-	return expectedRevision === undefined || snapshot.hash === expectedRevision;
+type PreparedResource = {
+	acquiredContent: AcquiredContent | undefined;
+	identityPdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
+	paperEnrichment: PaperMetadata | null;
+	resolution: ResolvedContentResourceInput;
+	resource: ResourceForProcessing;
+};
+
+function acquiredSubjectUrl(acquired: AcquiredContent | undefined): string | null {
+	if (!acquired) return null;
+	if (acquired.provider === 'hackernews') return acquired.hackerNewsItem?.url?.trim() || null;
+	if (acquired.provider === 'twitter') {
+		return (acquired.acquisition as AcquisitionEnvelope<'twitter'>).data.externalUrl?.trim() || null;
+	}
+	return null;
 }
 
-type PreparedResource =
-	| { attachedCanonicalResourceId: string }
-	| {
-			acquiredContent: AcquiredContent | undefined;
-			identityPdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
-			paperEnrichment: PaperMetadata | null;
-			resource: ResourceForProcessing;
-	  };
+function openAlexIdFromIdentifiers(identifiers: readonly PaperIdentifier[]): string | null {
+	return (
+		identifiers.find((identifier) => identifier.scheme === 'openalex' && identifier.preferred)?.value ??
+		identifiers.find((identifier) => identifier.scheme === 'openalex')?.value ??
+		null
+	);
+}
+
+type PaperResolution = Awaited<ReturnType<typeof stagePaperEnrichment>>;
+
+type PreliminaryAcquisition = Readonly<{
+	acquiredContent: AcquiredContent | undefined;
+	explicitGrobid: boolean;
+	explicitPdf: boolean;
+	explicitResolution: PaperResolution | null;
+	selectedOpenAlexContent: 'pdf' | 'grobid' | null;
+}>;
+
+async function stagePreliminaryAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	resource: ResourceForProcessing,
+	operation: WorkflowOperation,
+): Promise<PreliminaryAcquisition> {
+	const explicitResolution =
+		resource.resource_platform === null && isExplicitPaperUrl(resource.url)
+			? await stagePaperEnrichment(
+					env,
+					step,
+					{ ...resource, identifiers: resource.paper_identifiers },
+					{ includeCitationSnapshots: false, stepName: 'resolve-explicit-paper-openalex-v2' },
+				)
+			: null;
+	const pdf = explicitResolution
+		? await stageOpenAlexPdfAcquisition(env, step, resource, explicitResolution, 'acquire-preliminary-openalex-content-pdf-v1')
+		: null;
+	const grobid =
+		explicitResolution && !pdf
+			? await stageOpenAlexGrobidAcquisition(env, step, resource, explicitResolution, 'acquire-preliminary-openalex-content-grobid-v1')
+			: null;
+	return {
+		acquiredContent: pdf ?? grobid ?? (await acquireResourceForOperation(env, step, resource, operation)),
+		explicitGrobid: !!grobid,
+		explicitPdf: !!pdf,
+		explicitResolution,
+		selectedOpenAlexContent: pdf ? 'pdf' : grobid ? 'grobid' : null,
+	};
+}
+
+async function stagePreferredOpenAlexContent(
+	env: CoreEnv,
+	step: WorkflowStep,
+	resource: ResourceForProcessing,
+	acquiredContent: AcquiredContent | undefined,
+	paperResolution: PaperResolution,
+	preliminary: Pick<PreliminaryAcquisition, 'explicitGrobid' | 'explicitPdf' | 'selectedOpenAlexContent'>,
+): Promise<{
+	acquiredContent: AcquiredContent | undefined;
+	resource: ResourceForProcessing;
+	selectedOpenAlexContent: 'pdf' | 'grobid' | null;
+}> {
+	if (!preliminary.explicitPdf && !resource.storage_key) {
+		const pdf = await stageOpenAlexPdfAcquisition(env, step, resource, paperResolution, 'acquire-selected-openalex-content-pdf-v1');
+		if (pdf) {
+			return {
+				acquiredContent: pdf,
+				resource: applyAcquiredMaterial(resource, pdf),
+				selectedOpenAlexContent: 'pdf',
+			};
+		}
+	}
+	if (!preliminary.explicitGrobid && !resource.storage_key) {
+		const grobid = await stageOpenAlexGrobidAcquisition(
+			env,
+			step,
+			resource,
+			paperResolution,
+			'acquire-selected-openalex-content-grobid-v1',
+		);
+		if (grobid) {
+			return {
+				acquiredContent: grobid,
+				resource: applyAcquiredMaterial(resource, grobid),
+				selectedOpenAlexContent: 'grobid',
+			};
+		}
+	}
+	return {
+		acquiredContent,
+		resource,
+		selectedOpenAlexContent: preliminary.selectedOpenAlexContent,
+	};
+}
 
 async function prepareResourceForProcessing(
 	env: CoreEnv,
@@ -427,33 +464,10 @@ async function prepareResourceForProcessing(
 ): Promise<PreparedResource> {
 	// Exact DOI/arXiv/OpenAlex URLs can go straight to OpenAlex Content. The
 	// original landing page is only acquired when OpenAlex has no cached PDF.
-	const explicitPaperResolution = isExplicitPaperUrl(initialResource.url)
-		? await stagePaperEnrichment(
-				env,
-				step,
-				{ ...initialResource, identifiers: initialResource.paper_identifiers },
-				{
-					includeCitationSnapshots: false,
-					stepName: 'resolve-explicit-paper-openalex-v2',
-				},
-			)
-		: null;
-	const explicitOpenAlexPdf = explicitPaperResolution
-		? await stageOpenAlexPdfAcquisition(env, step, initialResource, explicitPaperResolution, 'acquire-preliminary-openalex-content-pdf-v1')
-		: null;
-	const explicitOpenAlexGrobid =
-		explicitPaperResolution && !explicitOpenAlexPdf
-			? await stageOpenAlexGrobidAcquisition(
-					env,
-					step,
-					initialResource,
-					explicitPaperResolution,
-					'acquire-preliminary-openalex-content-grobid-v1',
-				)
-			: null;
-	let acquiredContent =
-		explicitOpenAlexPdf ?? explicitOpenAlexGrobid ?? (await acquireResourceForOperation(env, step, initialResource, operation));
-	let acquiredResource = await stageTweetLinkUnfurl(step, applyAcquiredContent(initialResource, acquiredContent));
+	const preliminary = await stagePreliminaryAcquisition(env, step, initialResource, operation);
+	let { acquiredContent } = preliminary;
+	const acquiredResource = applyAcquiredMaterial(initialResource, acquiredContent);
+	const rootCanBePaper = !acquiredResource.url || !detectResourceUrl(acquiredResource.url);
 	const identityPdfTextArtifact =
 		acquiredResource.storage_key && acquiredResource.file_type === PDF_MIME && acquiredContent?.fileType !== PDF_MIME
 			? await stagePdfTextExtraction(env, step, { sourceStorageKey: acquiredResource.storage_key })
@@ -463,68 +477,68 @@ async function prepareResourceForProcessing(
 		: acquiredResource.file_type === PDF_MIME
 			? acquiredResource.content
 			: null;
-	const hackerNewsTargetUrl = acquiredContent?.hackerNewsItem?.url?.trim() || null;
-	const refreshedPaperResolution = await stagePaperEnrichment(
-		env,
-		step,
-		{
-			...acquiredResource,
-			identifierText,
-			identifiers: explicitPaperResolution?.identifiers ?? initialResource.paper_identifiers,
-			...(hackerNewsTargetUrl ? { translateUrl: true, url: hackerNewsTargetUrl } : {}),
-		},
-		{ includeCitationSnapshots: true, stepName: 'resolve-paper-openalex-with-citations-v1' },
-	);
+	const refreshedPaperResolution = rootCanBePaper
+		? await stagePaperEnrichment(
+				env,
+				step,
+				{
+					...acquiredResource,
+					identifierText,
+					identifiers: preliminary.explicitResolution?.identifiers ?? initialResource.paper_identifiers,
+				},
+				{ includeCitationSnapshots: true, stepName: 'resolve-paper-openalex-with-citations-v1' },
+			)
+		: { contentGrobidXmlUrl: null, contentPdfUrl: null, identifiers: [], metadata: null };
 	const paperResolution = refreshedPaperResolution.metadata
 		? refreshedPaperResolution
-		: (explicitPaperResolution ?? refreshedPaperResolution);
+		: (preliminary.explicitResolution ?? refreshedPaperResolution);
 	const paperEnrichment = paperResolution.metadata;
-	const openAlexPdf =
-		explicitOpenAlexPdf || acquiredResource.storage_key
-			? null
-			: await stageOpenAlexPdfAcquisition(env, step, acquiredResource, paperResolution, 'acquire-selected-openalex-content-pdf-v1');
-	if (openAlexPdf) {
-		acquiredContent = openAlexPdf;
-		acquiredResource = applyAcquiredContent(acquiredResource, openAlexPdf);
+	const preferred = await stagePreferredOpenAlexContent(env, step, acquiredResource, acquiredContent, paperResolution, preliminary);
+	acquiredContent = preferred.acquiredContent;
+	const paperIdentifiers = normalizePaperIdentifiers(paperResolution.identifiers);
+	const resolution = resolveContentResource({
+		url: preferred.resource.url,
+		storageKey: preferred.resource.storage_key ?? null,
+		fileType: preferred.resource.file_type ?? null,
+		sourceId: preferred.resource.source_id,
+		sourceAcquisitionMode: preferred.resource.source_acquisition_mode ?? null,
+		paperIdentifiers,
+		resourceIdentifiers: preferred.resource.resource_identifiers,
+		openAlexId: openAlexIdFromIdentifiers(paperIdentifiers),
+		openAlexContent: preferred.selectedOpenAlexContent,
+		translatorEvidence: paperResolution.translatorEvidence,
+		subjectUrl: acquiredSubjectUrl(acquiredContent),
+	});
+	const finalPaperEnrichment = resolution.kind === 'paper' ? paperEnrichment : null;
+	const identity = parseResourceIdentity(resolution.kind, resolution.resourcePlatform);
+	if (!identity || !isContentResourceIdentity(identity)) {
+		throw new NonRetryableError('Resolver produced an invalid content Resource identity', 'ResourceIdentityError');
 	}
-	const openAlexGrobid =
-		explicitOpenAlexGrobid || openAlexPdf || acquiredResource.storage_key
-			? null
-			: await stageOpenAlexGrobidAcquisition(env, step, acquiredResource, paperResolution, 'acquire-selected-openalex-content-grobid-v1');
-	if (openAlexGrobid) {
-		acquiredContent = openAlexGrobid;
-		acquiredResource = applyAcquiredContent(acquiredResource, openAlexGrobid);
-	}
-	const convergence =
-		paperEnrichment && paperResolution.identifiers.length > 0
-			? await step.do(
-					'converge-paper-resource-identity-v1',
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() =>
-						env.DOMAIN.convergePaperResource({
-							identifiers: paperResolution.identifiers,
-							sourceResourceId: initialResource.id,
-						}),
-				)
-			: null;
-	if (convergence?.sourceWasPrivate) {
-		await step.do(
-			'enqueue-canonical-paper-after-private-attachment-v1',
-			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			() => enqueueProcessing(env, convergence.canonicalResourceId),
-		);
-		return { attachedCanonicalResourceId: convergence.canonicalResourceId };
-	}
-	const acquiredIdentity = requireProcessingResourceIdentity(acquiredResource);
-	const identity = resourceIdentityWithAcademic(
-		acquiredIdentity,
-		!!paperEnrichment || hasAcademicPaperEnrichment(acquiredResource.platform_metadata),
-	);
+	const identifiers = resolvedResourceIdentifiers(resolution, preferred.resource.resource_identifiers);
+	const resolvedUrl =
+		resolution.kind === 'forum'
+			? canonicalPlatformUrl({ resourcePlatform: 'hackernews', platformId: resolution.locator.itemId })
+			: resolution.kind === 'post'
+				? canonicalPlatformUrl({ resourcePlatform: 'twitter', platformId: resolution.locator.tweetId })
+				: resolution.kind === 'video'
+					? canonicalPlatformUrl({ resourcePlatform: 'youtube', platformId: resolution.locator.videoId })
+					: preferred.resource.url;
 	return {
 		acquiredContent,
 		identityPdfTextArtifact,
-		paperEnrichment,
-		resource: { ...acquiredResource, ...toResourceIdentityColumns(identity) },
+		paperEnrichment: finalPaperEnrichment,
+		resolution,
+		resource: {
+			...preferred.resource,
+			...toResourceIdentityColumns(identity),
+			url: resolvedUrl,
+			normalized_url: resolvedUrl ?? preferred.resource.normalized_url ?? null,
+			resource_identifiers: identifiers,
+			paper_identifiers: identifiers.filter(
+				(identifier): identifier is PaperIdentifier =>
+					identifier.scheme === 'doi' || identifier.scheme === 'arxiv' || identifier.scheme === 'openalex',
+			),
+		},
 	};
 }
 
@@ -534,10 +548,10 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 		if (sourceRevision !== undefined && !isResourceSourceSnapshotHash(sourceRevision)) {
 			throw new NonRetryableError('Invalid resource source revision', 'ResourceSourceRevisionError');
 		}
-		let persistedSourceSnapshot: ResourceSourceSnapshot | null = null;
+		let persistedSourceRevision: string | null | undefined;
 		try {
-			return await this.runResource(resourceId, step, operation, sourceRevision, (snapshot) => {
-				persistedSourceSnapshot = snapshot;
+			return await this.runResource(resourceId, step, operation, sourceRevision, (revision) => {
+				persistedSourceRevision = revision;
 			});
 		} catch (error) {
 			if (operation === 'resync') throw error;
@@ -553,13 +567,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 					resource_id: resourceId,
 					error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
 				});
-			const failedSourceSnapshot = persistedSourceSnapshot;
-			if (failedSourceSnapshot) {
+			if (persistedSourceRevision !== undefined) {
 				await step
 					.do(
-						'mark-resource-failed-for-source-snapshot-v2',
+						'mark-resource-failed-for-source-revision-v1',
 						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						() => markResourceEnrichmentFailed(this.env, resourceId, failedSourceSnapshot),
+						() => markResourceEnrichmentFailed(this.env, resourceId, persistedSourceRevision ?? null),
 					)
 					.catch(logCleanupFailure('Failed to mark resource as failed'));
 			}
@@ -572,58 +585,20 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 		step: WorkflowStep,
 		operation: WorkflowOperation,
 		expectedSourceRevision: string | undefined,
-		recordPersistedSourceSnapshot: (snapshot: ResourceSourceSnapshot) => void,
+		recordPersistedSourceRevision: (revision: string | null) => void,
 	) {
 		const initialResource = await step.do(
 			'fetch-resource-shell-kind-platform-v1',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 			async () => loadResourceShellForProcessing(this.env, resourceId),
 		);
-		const initialSourceSnapshot = resourceSourceSnapshot(initialResource.platform_metadata);
-		recordPersistedSourceSnapshot(initialSourceSnapshot);
-		if (!matchesExpectedSourceRevision(initialSourceSnapshot, expectedSourceRevision)) {
+		recordPersistedSourceRevision(initialResource.source_revision);
+		if (expectedSourceRevision !== undefined && initialResource.source_revision !== expectedSourceRevision) {
 			return { success: true, resource_id: resourceId, operation, superseded: true };
 		}
 		assertOperationCanProcessResource(initialResource, operation);
 		const prepared = await prepareResourceForProcessing(this.env, step, initialResource, operation);
-		if ('attachedCanonicalResourceId' in prepared) {
-			return {
-				success: true,
-				resource_id: prepared.attachedCanonicalResourceId,
-				operation,
-				attached_private_file: true,
-			};
-		}
-		const { acquiredContent, identityPdfTextArtifact, paperEnrichment, resource } = prepared;
-		const previousSnapshotHash = initialResource.platform_metadata?.sourceSnapshotHash;
-		const nextSnapshotHash = acquiredContent?.platformMetadata?.sourceSnapshotHash;
-		if (operation === 'resync' && previousSnapshotHash && previousSnapshotHash === nextSnapshotHash && acquiredContent) {
-			const persistence = await step.do(
-				'record-unchanged-resync-index-relevance-v2',
-				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() => persistUnchangedResourceResync(this.env, resourceId, resource, paperEnrichment),
-			);
-			if (!persistence.persisted) {
-				return { success: true, resource_id: resourceId, operation, changed: false, superseded: true };
-			}
-			await stageResourceImageRehost(this.env, step, resourceId);
-			if (persistence.indexRelevantChanged) {
-				// Branch only on the persisted step result so replay sees the same
-				// decision. Let exhausted sync retries fail the resync instead of
-				// reporting success with a known index drift.
-				await step.do('sync-ai-search-unchanged-resync-index-relevance-v1', AI_SEARCH_SYNC_STEP_CONFIG, () =>
-					syncCorpusItem(this.env, resourceId),
-				);
-			}
-			return {
-				success: true,
-				resource_id: resourceId,
-				operation,
-				changed: false,
-				metadata_changed: persistence.changed,
-				index_relevant_changed: persistence.indexRelevantChanged,
-			};
-		}
+		const { acquiredContent, identityPdfTextArtifact, paperEnrichment, resolution, resource } = prepared;
 		const logContext = { resource_id: resourceId, table: 'resources' };
 
 		console.info({
@@ -633,17 +608,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 			resourcePlatform: resource.resource_platform,
 			...logContext,
 		});
-		if (operation === 'ingest') {
-			const persisted = await step.do(
-				'persist-resource-acquisition-snapshot-kind-platform-v1',
-				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() => persistResourceImageSnapshot(this.env, resourceId, resource, paperEnrichment),
-			);
-			if (!persisted) return { success: true, resource_id: resourceId, operation, superseded: true };
-			recordPersistedSourceSnapshot(resourceSourceSnapshot(resource.platform_metadata));
-			await stageResourceImageRehost(this.env, step, resourceId);
-		}
-
 		const hasContent = 'has_content' in resource && !!resource.has_content;
 		const pdfTextArtifact =
 			identityPdfTextArtifact ??
@@ -652,16 +616,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 						sourceStorageKey: resource.storage_key,
 					})
 				: null);
-		const extractionSnapshotCurrent = await persistPdfExtractionBeforeValidation(this.env, step, {
+		assertPdfExtractionProcessable({
 			acquiredExtraction: acquiredContent?.extraction,
-			operation,
 			pdfTextArtifact,
-			resource,
 			resourceId,
 		});
-		if (!extractionSnapshotCurrent) {
-			return { success: true, resource_id: resourceId, operation, superseded: true };
-		}
 		await step.do('validate-resource-content', { retries: { limit: 0, delay: '1 second' }, timeout: '5 seconds' }, async () => {
 			const hasProcessableContent = hasContent || !!pdfTextArtifact?.text?.trim() || !!acquiredContent?.markdown?.trim();
 			if (!hasProcessableContent) {
@@ -678,78 +637,31 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 		};
 
 		const previewImageUrl = acquiredContent?.previewImageUrl?.trim() || null;
-
-		const hackerNewsContent =
-			resource.resource_platform === 'hackernews'
-				? await step
-						.do(
-							'build-hacker-news-content',
-							{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
-							async () => buildHackerNewsContent(await loadFull(), this.env, acquiredContent?.hackerNewsItem),
-						)
-						.catch((error) => {
-							console.error({
-								tag: 'HN',
-								msg: 'Optional Hacker News discussion annotation failed after retries',
-								resource_id: resourceId,
-								error: error instanceof Error ? error.message : String(error),
-							});
-							return undefined;
-						})
-				: undefined;
+		const handled = await handleResolvedResource({
+			acquiredContent,
+			env: this.env,
+			loadFull,
+			paperEnrichment,
+			resolution,
+			resource,
+			step,
+		});
 
 		const classificationResult = await step.do(
 			'classify-resource',
 			{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
-			async () => {
-				const fullResource = await loadFull();
-				const resourceToClassify = hackerNewsContent ? { ...fullResource, content: hackerNewsContent } : fullResource;
-				return classifyResource(
-					resourceToClassify,
-					this.env,
-					resource.resource_platform === 'twitter' ? ['Twitter'] : resource.resource_platform === 'hackernews' ? ['HackerNews'] : undefined,
-				);
-			},
+			() => classifyResource(handled.resource, this.env, handled.classificationExclusions),
 		);
-		const processorResult = {
-			...classificationResult,
-			...(hackerNewsContent ? { content: hackerNewsContent } : {}),
-		};
-
-		const youtubeTranscript = resource.resource_platform === 'youtube' ? acquiredContent?.youtubeTranscript : undefined;
-		const youtubeHighlights =
-			resource.resource_platform === 'youtube'
-				? await step
-						.do(
-							'prepare-youtube-highlights',
-							{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
-							async () => prepareYouTubeHighlights(this.env, resource, youtubeTranscript),
-						)
-						.catch((error) => {
-							console.error({
-								tag: 'YOUTUBE',
-								msg: 'Optional YouTube highlights failed after retries',
-								resource_id: resourceId,
-								error: error instanceof Error ? error.message : String(error),
-							});
-							return null;
-						})
-				: null;
 		const persistence = await step.do(
 			'update-db-kind-platform-v1',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 			async () => {
-				const resourceToPersist = await loadFull();
 				return persistProcessedResource(this.env, {
 					resourceId,
-					resource: resourceToPersist,
-					processorResult,
-					pdfTextArtifact,
-					acquisitionExtraction: acquiredContent?.extraction,
-					paperEnrichment,
+					expectedSourceRevision: initialResource.source_revision,
+					handled,
+					processorResult: classificationResult,
 					previewImageUrl,
-					youtubeTranscript,
-					youtubeHighlights,
 				});
 			},
 		);
@@ -757,7 +669,45 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 			return { success: true, resource_id: persistence.resourceId, operation, superseded: true };
 		}
 		const persistedResourceId = persistence.resourceId;
-		if (operation === 'resync') await stageResourceImageRehost(this.env, step, persistedResourceId);
+		if (persistence.resourceNeedsProcessing) {
+			await step
+				.do(
+					'enqueue-private-paper-canonical-v1',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					() => enqueueProcessing(this.env, persistedResourceId),
+				)
+				.catch((error) =>
+					console.error({
+						tag: 'WORKFLOW',
+						msg: 'Canonical paper committed but enqueue failed; pending reconciler will retry',
+						resource_id: persistedResourceId,
+						error: error instanceof Error ? error.message : String(error),
+					}),
+				);
+			return {
+				success: true,
+				resource_id: persistedResourceId,
+				operation,
+				attachedCanonicalResourceId: persistedResourceId,
+			};
+		}
+		if (persistence.subjectNeedsProcessing && persistence.subjectResourceId) {
+			await step
+				.do(
+					'enqueue-resolved-subject-v1',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					() => enqueueProcessing(this.env, persistence.subjectResourceId!),
+				)
+				.catch((error) =>
+					console.error({
+						tag: 'WORKFLOW',
+						msg: 'Subject committed but enqueue failed; pending reconciler will retry',
+						resource_id: persistence.subjectResourceId,
+						error: error instanceof Error ? error.message : String(error),
+					}),
+				);
+		}
+		await stageResourceImageRehost(this.env, step, persistedResourceId);
 		const translationSourceRevision = await step.do(
 			'load-resource-translation-revision-v1',
 			RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG,

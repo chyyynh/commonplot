@@ -4,6 +4,7 @@
 // storing and under WHAT canonical key. Consumed by the ingest
 // pipeline (persistence + prompt exclusion lists).
 
+import type { ResourceCreator } from '@core-shared/resource-metadata';
 import type { ResourcePlatform } from '@core-shared/resource-types';
 import { ENTITY_TYPES, type EntityType, type StoredResourceEntity } from '@core-shared/types';
 
@@ -73,10 +74,6 @@ function normalizeResourceEntity(entity: ResourceEntityInput): NormalizedResourc
 	};
 }
 
-function recordValue(value: unknown): Record<string, unknown> | null {
-	return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
-}
-
 function stringValue(value: unknown): string | null {
 	return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
@@ -115,44 +112,40 @@ function hostFromSource(value: string): string | null {
 	}
 }
 
-function platformMetadataSourceAliases(resourcePlatform: ResourcePlatform, metadata: unknown): string[] {
-	const envelope = recordValue(metadata);
-	const data = recordValue(envelope?.data);
-	if (!data) return [];
-	const aliases: string[] = [];
-	const add = (value: unknown) => {
-		const str = stringValue(value);
-		if (str) aliases.push(str);
-	};
-
-	if (resourcePlatform === 'twitter') {
-		add(data.authorName);
-		const userName = stringValue(data.authorUserName);
-		if (userName) aliases.push(userName, `@${userName}`);
-		aliases.push('Twitter', 'X');
-	} else if (resourcePlatform === 'youtube') {
-		add(data.channelName);
-		aliases.push('YouTube');
-	} else if (resourcePlatform === 'hackernews') {
-		add(data.author);
-		aliases.push('Hacker News');
-	}
-	return aliases;
+function creatorAliases(creators: readonly ResourceCreator[]): string[] {
+	return creators.flatMap((creator) => {
+		const name = creator.literal ?? [creator.given, creator.family].filter(Boolean).join(' ');
+		if (!name) return [];
+		const profileHandle = creator.profileUrl?.match(/\/([^/]+)\/?$/)?.[1];
+		return profileHandle ? [name, profileHandle, `@${profileHandle}`] : [name];
+	});
 }
 
-function excludedEntityCanonicalNames(resourcePlatform: ResourcePlatform, source?: string | null, platformMetadata?: unknown): Set<string> {
-	const names = entityExtractionExclusionNames(resourcePlatform, source, platformMetadata);
+function excludedEntityCanonicalNames(
+	resourcePlatform: ResourcePlatform,
+	source: string | null | undefined,
+	creators: readonly ResourceCreator[],
+): Set<string> {
+	const names = entityExtractionExclusionNames(resourcePlatform, source, creators);
 	return new Set(names.map(canonicalizeEntityName).filter(Boolean));
 }
 
 export function entityExtractionExclusionNames(
 	resourcePlatform: ResourcePlatform,
 	source?: string | null,
-	platformMetadata?: unknown,
+	creators: readonly ResourceCreator[] = [],
 ): string[] {
 	const seen = new Set<string>();
 	const names: string[] = [];
-	for (const name of [...sourceNameAliases(source), ...platformMetadataSourceAliases(resourcePlatform, platformMetadata)]) {
+	const platformAliases =
+		resourcePlatform === 'twitter'
+			? ['Twitter', 'X']
+			: resourcePlatform === 'youtube'
+				? ['YouTube']
+				: resourcePlatform === 'hackernews'
+					? ['Hacker News']
+					: [];
+	for (const name of [...sourceNameAliases(source), ...creatorAliases(creators), ...platformAliases]) {
 		const canonical = canonicalizeEntityName(name);
 		if (!canonical || seen.has(canonical)) continue;
 		seen.add(canonical);
@@ -166,10 +159,10 @@ export function toStoredResourceEntities(
 	entities: ResourceEntityInput[],
 	resourcePlatform: ResourcePlatform,
 	source?: string | null,
-	platformMetadata?: unknown,
+	creators: readonly ResourceCreator[] = [],
 ): StoredResourceEntity[] {
 	const byCanonical = new Map<string, StoredResourceEntity>();
-	const excludedCanonicals = excludedEntityCanonicalNames(resourcePlatform, source, platformMetadata);
+	const excludedCanonicals = excludedEntityCanonicalNames(resourcePlatform, source, creators);
 	for (const entity of entities) {
 		const normalized = normalizeResourceEntity(entity);
 		if (!normalized) continue;

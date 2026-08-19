@@ -2,8 +2,8 @@
 
 import type { WorkflowDynamicDelayContext, WorkflowSleepDuration, WorkflowStep } from 'cloudflare:workers';
 import { type PaperIdentifier, paperIdentityFromText, resolveExactPaperInput } from '@core-shared/paper-identity';
-import type { PaperMetadata, PlatformMetadata, ResourceForProcessing } from '@core-shared/types';
-import { resolveBibliographicIdentifiers } from './bibliographic-resolver';
+import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
+import { resolveBibliographicIdentifiers, type TranslatorEvidence } from './bibliographic-resolver';
 import { resolveOpenAlexPaper } from './openalex';
 
 const DEFAULT_RATE_LIMIT_DELAY_SECONDS = 15;
@@ -16,9 +16,7 @@ type PaperEnrichmentCandidate = {
 	scope?: string;
 	source_id?: string | null;
 	resource_platform?: string | null;
-	platform_metadata?: Pick<PlatformMetadata, 'enrichments'>;
 	identifiers?: readonly PaperIdentifier[];
-	hasExistingAcademic?: boolean;
 	translateUrl?: boolean;
 };
 
@@ -27,6 +25,7 @@ type PaperEnrichmentAttempt = {
 	contentPdfUrl: string | null;
 	identifiers: PaperIdentifier[];
 	metadata: PaperMetadata | null;
+	translatorEvidence?: TranslatorEvidence;
 	outcome: 'resolved' | 'preserved' | 'not_found' | 'failed' | 'not_applicable';
 };
 
@@ -72,7 +71,6 @@ export async function stagePaperEnrichmentAttempt(
 	if (!hasLocalPaperEvidence && !translateSavedUrl) {
 		return { contentGrobidXmlUrl: null, contentPdfUrl: null, identifiers: [], metadata: null, outcome: 'not_applicable' };
 	}
-	const hasExistingAcademic = candidate.hasExistingAcademic ?? !!candidate.platform_metadata?.enrichments?.academic;
 	const attemptStartedAt = Date.now();
 
 	try {
@@ -81,16 +79,18 @@ export async function stagePaperEnrichmentAttempt(
 			{ retries: { limit: 5, delay: paperEnrichmentRetryDelay }, timeout: '30 seconds' },
 			async () => {
 				const startedAt = Date.now();
-				const identifiers = await resolveBibliographicIdentifiers({
+				const bibliographic = await resolveBibliographicIdentifiers({
 					identifierText: candidate.identifierText,
 					seedIdentifiers: candidate.identifiers,
 					url: candidate.url,
 					translateUrl: translateSavedUrl,
 				});
-				if (identifiers.length === 0) return null;
+				if (bibliographic.identifiers.length === 0) {
+					return bibliographic.translatorEvidence ? { ...bibliographic, resolved: null } : null;
+				}
 				const resolved = await resolveOpenAlexPaper({
 					apiKey: env.OPENALEX_API_KEY,
-					identifiers,
+					identifiers: bibliographic.identifiers,
 					includeCitationSnapshots: options.includeCitationSnapshots,
 				});
 				const paper = resolved?.metadata ?? null;
@@ -99,27 +99,28 @@ export async function stagePaperEnrichmentAttempt(
 					event: 'academic_enrichment',
 					provider: 'openalex',
 					resource_id: candidate.id,
-					identity_schemes: [...new Set(identifiers.map(({ scheme }) => scheme))],
-					outcome: paper ? 'resolved' : hasExistingAcademic ? 'preserved' : 'not_found',
+					identity_schemes: [...new Set(bibliographic.identifiers.map(({ scheme }) => scheme))],
+					outcome: paper ? 'resolved' : 'not_found',
 					latency_ms: Date.now() - startedAt,
 				});
-				return resolved;
+				return { ...bibliographic, resolved };
 			},
 		);
-		const metadata = resolution?.metadata ?? null;
+		const metadata = resolution?.resolved?.metadata ?? null;
 		return {
-			contentGrobidXmlUrl: resolution?.contentGrobidXmlUrl ?? null,
-			contentPdfUrl: resolution?.contentPdfUrl ?? null,
-			identifiers: resolution?.identifiers ?? [],
+			contentGrobidXmlUrl: resolution?.resolved?.contentGrobidXmlUrl ?? null,
+			contentPdfUrl: resolution?.resolved?.contentPdfUrl ?? null,
+			identifiers: resolution?.resolved?.identifiers ?? resolution?.identifiers ?? [],
 			metadata,
-			outcome: metadata ? 'resolved' : hasExistingAcademic ? 'preserved' : 'not_found',
+			...(resolution?.translatorEvidence ? { translatorEvidence: resolution.translatorEvidence } : {}),
+			outcome: metadata ? 'resolved' : 'not_found',
 		};
 	} catch (error) {
 		console.warn({
 			tag: 'PAPER_PROVIDER',
 			event: 'academic_enrichment',
 			resource_id: candidate.id,
-			outcome: hasExistingAcademic ? 'preserved' : 'failed',
+			outcome: 'failed',
 			latency_ms: Date.now() - attemptStartedAt,
 			error: error instanceof Error ? error.message : String(error),
 		});
@@ -128,7 +129,7 @@ export async function stagePaperEnrichmentAttempt(
 			contentPdfUrl: null,
 			identifiers: [],
 			metadata: null,
-			outcome: hasExistingAcademic ? 'preserved' : 'failed',
+			outcome: 'failed',
 		};
 	}
 }
@@ -136,13 +137,18 @@ export async function stagePaperEnrichmentAttempt(
 export async function stagePaperEnrichment(
 	env: CoreEnv,
 	step: WorkflowStep,
-	candidate: Pick<ResourceForProcessing, 'id' | 'platform_metadata' | 'url' | 'scope' | 'source_id' | 'resource_platform'> & {
+	candidate: Pick<ResourceForProcessing, 'id' | 'url' | 'scope' | 'source_id' | 'resource_platform'> & {
 		identifierText?: string | null;
 		identifiers?: readonly PaperIdentifier[];
 		translateUrl?: boolean;
 	},
 	options?: { includeCitationSnapshots?: boolean; stepName?: string },
-): Promise<Pick<PaperEnrichmentAttempt, 'contentGrobidXmlUrl' | 'contentPdfUrl' | 'identifiers' | 'metadata'>> {
-	const { contentGrobidXmlUrl, contentPdfUrl, identifiers, metadata } = await stagePaperEnrichmentAttempt(env, step, candidate, options);
-	return { contentGrobidXmlUrl, contentPdfUrl, identifiers, metadata };
+): Promise<Pick<PaperEnrichmentAttempt, 'contentGrobidXmlUrl' | 'contentPdfUrl' | 'identifiers' | 'metadata' | 'translatorEvidence'>> {
+	const { contentGrobidXmlUrl, contentPdfUrl, identifiers, metadata, translatorEvidence } = await stagePaperEnrichmentAttempt(
+		env,
+		step,
+		candidate,
+		options,
+	);
+	return { contentGrobidXmlUrl, contentPdfUrl, identifiers, metadata, translatorEvidence };
 }

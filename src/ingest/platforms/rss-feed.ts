@@ -1,5 +1,5 @@
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
-import type { NormalizedContent } from '@core-shared/types';
+import type { AcquiredMaterial } from '@core-shared/types';
 import { normalizePreviewImageUrl, normalizeUrl } from '@core-shared/url';
 import { sanitizeExtractedMarkdown } from '@ingest/domain/content-sanitization';
 import { parseFeed } from 'feedsmith';
@@ -228,7 +228,7 @@ export async function feedItemMarkdown(env: CoreEnv, item: FeedItem, url: string
 	return markdown;
 }
 
-export async function acquireRssFeedItem(env: CoreEnv, input: RssFeedAcquisitionInput): Promise<NormalizedContent<null>> {
+export async function acquireRssFeedItem(env: CoreEnv, input: RssFeedAcquisitionInput): Promise<AcquiredMaterial<null>> {
 	const articleUrl = normalizeUrl(input.articleUrl);
 	const item = (await loadFeedEntries(input.feedUrl)).find((entry) => canonicalFeedItemUrl(entry) === articleUrl);
 	if (!item) throw new Error(`RSS article is no longer present in the current feed: ${articleUrl}`);
@@ -236,8 +236,7 @@ export async function acquireRssFeedItem(env: CoreEnv, input: RssFeedAcquisition
 	if (!title) throw new Error(`RSS article has no title: ${articleUrl}`);
 	console.info({ tag: 'RSS', msg: 'Acquired feed item', source: input.sourceName, url: articleUrl });
 	return {
-		kind: 'blog',
-		resourcePlatform: null,
+		provider: null,
 		fileType: null,
 		title,
 		markdown: await feedItemMarkdown(env, item, articleUrl, input.resourceId),
@@ -249,7 +248,7 @@ export async function acquireRssFeedItem(env: CoreEnv, input: RssFeedAcquisition
 			siteName: input.sourceName,
 			description: feedSummary(item.summary),
 		},
-		platformMetadata: {
+		acquisition: {
 			fetchedAt: new Date().toISOString(),
 			data: null,
 		},

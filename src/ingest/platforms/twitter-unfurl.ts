@@ -1,5 +1,5 @@
 import { fetchWithTimeout, WEB_FETCH_USER_AGENT } from '@core-shared/http';
-import { type PlatformMetadata, platformMetadataFor, type ResourceForProcessing } from '@core-shared/types';
+import type { AcquiredMaterial, AcquisitionEnvelope } from '@core-shared/types';
 import { normalizePreviewImageUrl } from '@core-shared/url';
 import { firstHtmlMetaValue, parseHtmlHead, readHtmlHead } from '@ingest/source-discovery';
 
@@ -25,8 +25,8 @@ type TweetLinkUnfurl = { externalOgImage: string; externalTitle: string | null }
  * unfurl. A page that had no OG image is retried on the next resync — it may
  * have gained one, and the fetch is bounded.
  */
-export function pendingTweetExternalLink(resource: ResourceForProcessing): string | null {
-	const data = platformMetadataFor(resource, 'twitter')?.data;
+export function pendingTweetExternalLink(acquired: AcquiredMaterial<'twitter'>): string | null {
+	const data = acquired.acquisition.data;
 	const externalUrl = data?.externalUrl?.trim();
 	return externalUrl && !data?.externalOgImage ? externalUrl : null;
 }
@@ -54,12 +54,12 @@ export async function unfurlTweetExternalLink(url: string): Promise<TweetLinkUnf
 	return { externalOgImage, externalTitle: firstHtmlMetaValue(head, OG_TITLE_KEYS) ?? head.title };
 }
 
-export function applyTweetLinkUnfurl(resource: ResourceForProcessing, unfurl: TweetLinkUnfurl | null): ResourceForProcessing {
-	const metadata = platformMetadataFor(resource, 'twitter');
-	if (!unfurl || !metadata) return resource;
-	const platformMetadata: PlatformMetadata<'twitter'> = {
+export function applyTweetLinkUnfurl(acquired: AcquiredMaterial<'twitter'>, unfurl: TweetLinkUnfurl | null): AcquiredMaterial<'twitter'> {
+	if (!unfurl) return acquired;
+	const metadata = acquired.acquisition;
+	const acquisition: AcquisitionEnvelope<'twitter'> = {
 		...metadata,
 		data: { ...metadata.data, externalOgImage: unfurl.externalOgImage, externalTitle: unfurl.externalTitle },
 	};
-	return { ...resource, platform_metadata: platformMetadata };
+	return { ...acquired, acquisition };
 }

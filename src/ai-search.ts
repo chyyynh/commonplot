@@ -29,7 +29,6 @@ const CANONICAL_CONTENT_IDENTITIES = [
 	{ kind: 'post', resourcePlatform: 'twitter' },
 	{ kind: 'video', resourcePlatform: 'youtube' },
 	{ kind: 'paper', resourcePlatform: null },
-	{ kind: 'paper', resourcePlatform: 'hackernews' },
 ] as const satisfies readonly ContentResourceIdentity[];
 if (CANONICAL_CUSTOM_METADATA.length > AI_SEARCH_CUSTOM_METADATA_FIELD_LIMIT) {
 	throw new Error(`AI Search metadata exceeds the ${AI_SEARCH_CUSTOM_METADATA_FIELD_LIMIT}-field limit`);
@@ -40,12 +39,10 @@ const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
 const TRANSLATED_CONTENT_MAX_CHARS = 4_000;
 const MAX_RESULTS = 50;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
-const LIVE_INDEX_POLL_TIMEOUT_MS = 75_000;
-
-// Canonical rows and AI Search cannot share a transaction. Keep the owning
-// Workflow waiting until the derived document is actually indexed instead of
-// completing after a best-effort queue admission. Dynamic native retries stay
-// responsive to short failures, then back off without a custom outbox/alarm.
+// Canonical rows and AI Search cannot share a transaction. The native upload
+// call durably admits the keyed document to AI Search; Workflow retries cover
+// admission failures, while indexing itself remains service-owned and
+// eventually consistent with the canonical database.
 export const AI_SEARCH_SYNC_STEP_CONFIG = {
 	retries: DURABLE_WORKFLOW_RETRIES,
 	timeout: '90 seconds',
@@ -64,7 +61,6 @@ type CorpusDocument = {
 	source_id: string | null;
 	kind: string;
 	resource_platform: string | null;
-	platform_metadata: unknown;
 	original_lang: string;
 	effective_at: Date | string | null;
 	tags: string[] | null;
@@ -160,15 +156,14 @@ async function loadCorpusDocuments(db: CoreDb, resourceIds: readonly string[]): 
 				       r.source_id::text,
 				       r.kind,
 				       r.resource_platform,
-				       r.platform_metadata,
 				       r.original_lang,
 				       COALESCE(r.published_date, r.scraped_date, r.created_at) AS effective_at,
 				       r.tags,
 				       r.category,
 				       ${resourceDisplaySourceSql({
+									creatorName: sql`COALESCE(r.creators->0->>'literal', CONCAT_WS(' ', r.creators->0->>'given', r.creators->0->>'family'))`,
 									kind: sql`r.kind`,
 									monitoredSourceName: sql`s.name`,
-									platformMetadata: sql`r.platform_metadata`,
 									resourcePlatform: sql`r.resource_platform`,
 								})} AS source,
 				       COALESCE((
@@ -238,26 +233,6 @@ function uploadCorpusDocument(env: CoreEnv, document: CorpusDocument): Promise<A
 	return uploadCorpusDocumentTo(env.AI_SEARCH, document, corpusItemMetadata(document));
 }
 
-async function uploadCorpusDocumentAndWait(env: CoreEnv, document: CorpusDocument): Promise<AiSearchItemInfo> {
-	const startedAt = Date.now();
-	const result = await env.AI_SEARCH.items.uploadAndPoll(itemKey(document.id), serializeDocument(document), {
-		metadata: corpusItemMetadata(document),
-		pollIntervalMs: 1_000,
-		timeoutMs: LIVE_INDEX_POLL_TIMEOUT_MS,
-	});
-	if (result.status !== 'completed') {
-		throw new Error(`AI Search item ${result.id} for resource ${document.id} settled as ${result.status}`);
-	}
-	console.info({
-		tag: 'AI_SEARCH',
-		msg: 'Corpus item indexed',
-		resource_id: document.id,
-		item_id: result.id,
-		latency_ms: Date.now() - startedAt,
-	});
-	return result;
-}
-
 export async function syncCorpusItem(env: CoreEnv, resourceId: string): Promise<'uploaded' | 'deleted' | 'skipped'> {
 	if (!isValidUuid(resourceId)) return 'skipped';
 	const document = await withCoreDb(env, (db) => loadCorpusDocument(db, resourceId));
@@ -265,7 +240,7 @@ export async function syncCorpusItem(env: CoreEnv, resourceId: string): Promise<
 		await deleteCorpusItem(env, resourceId);
 		return 'deleted';
 	}
-	await uploadCorpusDocumentAndWait(env, document);
+	await uploadCorpusDocument(env, document);
 	return 'uploaded';
 }
 

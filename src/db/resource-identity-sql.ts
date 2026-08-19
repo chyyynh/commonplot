@@ -19,7 +19,7 @@ export function contentResourceIdentitySql(fields: ResourceIdentitySqlFields): S
 		OR (${fields.kind} = 'forum' AND ${fields.resourcePlatform} = 'hackernews')
 		OR (${fields.kind} = 'post' AND ${fields.resourcePlatform} = 'twitter')
 		OR (${fields.kind} = 'video' AND ${fields.resourcePlatform} = 'youtube')
-		OR (${fields.kind} = 'paper' AND (${fields.resourcePlatform} IS NULL OR ${fields.resourcePlatform} = 'hackernews'))
+		OR (${fields.kind} = 'paper' AND ${fields.resourcePlatform} IS NULL)
 	)`;
 }
 
@@ -59,13 +59,13 @@ export function resourceIdentityFilterSql(fields: ResourceIdentitySqlFields, fil
 
 export function resourceDisplaySourceSql(
 	fields: ResourceIdentitySqlFields & {
+		creatorName: SQL;
 		monitoredSourceName: SQL;
-		platformMetadata: SQL;
 	},
 ): SQL {
 	return sql`COALESCE(
 		NULLIF(BTRIM(${fields.monitoredSourceName}), ''),
-		NULLIF(BTRIM(${fields.platformMetadata}->>'sourceName'), ''),
+		NULLIF(BTRIM(${fields.creatorName}), ''),
 		CASE ${fields.resourcePlatform}
 			WHEN 'twitter' THEN ${RESOURCE_PLATFORM_DISPLAY_LABELS.twitter}
 			WHEN 'youtube' THEN ${RESOURCE_PLATFORM_DISPLAY_LABELS.youtube}

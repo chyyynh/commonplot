@@ -1,5 +1,5 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import type { NormalizedContent, PlatformMetadata, TranscriptSegment, YouTubeChapter } from '@core-shared/types';
+import type { AcquiredMaterial, AcquisitionEnvelope, TranscriptSegment, YouTubeChapter } from '@core-shared/types';
 import { z } from 'zod';
 import type { AcquisitionOrigin } from '../acquisition';
 
@@ -203,7 +203,7 @@ export async function scrapeYouTube(
 	videoId: string,
 	youtubeApiKey: string,
 	origin: AcquisitionOrigin,
-): Promise<NormalizedContent<'youtube'> & { platformMetadata: PlatformMetadata<'youtube'> }> {
+): Promise<AcquiredMaterial<'youtube'> & { acquisition: AcquisitionEnvelope<'youtube'> }> {
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching video', videoId });
 
 	const videoData = await fetchYouTubeVideoData(videoId, youtubeApiKey);
@@ -240,8 +240,7 @@ export async function scrapeYouTube(
 	console.info({ tag: 'YOUTUBE', msg: 'Video fetched', title: snippet.title });
 
 	return {
-		kind: 'video',
-		resourcePlatform: 'youtube',
+		provider: 'youtube',
 		fileType: null,
 		title: snippet.title,
 		markdown: content,
@@ -249,8 +248,8 @@ export async function scrapeYouTube(
 			author: snippet.channelTitle,
 			language: snippet.defaultAudioLanguage ?? null,
 			publishedDate: snippet.publishedAt,
-			// The channel, not the platform. This becomes platform_metadata.sourceName,
-			// the display fallback when a row has no source relation — a literal
+			// The channel is normalized into common creators and remains the display
+			// fallback when a row has no source relation — a literal
 			// 'YouTube' collapses every channel into one byline. Saved YouTube URLs
 			// have always landed that way; the cron only avoided it by pre-filling the
 			// row so acquisition never ran.
@@ -258,7 +257,7 @@ export async function scrapeYouTube(
 			description: snippet.description.substring(0, 500) || null,
 		},
 		previewImageUrl: thumbnailUrl,
-		platformMetadata: {
+		acquisition: {
 			fetchedAt: new Date().toISOString(),
 			data: {
 				videoId: video.id,
