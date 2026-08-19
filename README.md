@@ -120,7 +120,7 @@ AI analysis uses the Workers AI binding through AI Gateway, so no external LLM s
 ```bash
 wrangler secret put KAITO_API_KEY            # Twitter monitoring
 wrangler secret put YOUTUBE_API_KEY          # YouTube monitoring
-wrangler secret put S2_API_KEY               # Semantic Scholar quota
+wrangler secret put OPENALEX_API_KEY          # Paper metadata enrichment
 ```
 
 ### 5. Deploy
@@ -162,7 +162,7 @@ src/
 │       ├── twitter.ts    # monitor + scraper + processor
 │       ├── youtube.ts    # monitor + transcript/highlights
 │       ├── hackernews.ts # HN processor
-│       ├── paper.ts      # Semantic Scholar enrichment stage
+│       ├── paper.ts      # OpenAlex enrichment stage
 │       └── pdf.ts        # PDF text extraction stage
 └── corpus.ts              # engine read/search helpers
 ```
@@ -177,7 +177,6 @@ Bindings (in `wrangler.jsonc`):
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | Fetch, parse, classify, and persist a canonical resource |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | Translate a persisted resource into zh-Hant |
 | `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` | Rebuild and verify the generation-5 canonical search index |
-| `ACADEMIC_METADATA_BACKFILL_V3_WORKFLOW` | Upgrade explicit DOI/arXiv resources to the current academic metadata schema |
 | `R2`               | App-owned uploaded blob reads for PDF extraction |
 | `AI`               | Workers AI binding for AI Gateway text calls |
 | `AI_SEARCH`        | `newsence-corpus-v6` canonical public corpus |
@@ -188,7 +187,7 @@ Secrets (via `wrangler secret put`):
 | ------------------------------ | -------- | ---------------------------------------- |
 | `KAITO_API_KEY`                | Yes      | Enables Twitter monitoring               |
 | `YOUTUBE_API_KEY`              | Yes      | Enables YouTube channel monitoring       |
-| `S2_API_KEY`                   | Yes      | Increases Semantic Scholar quota for paper enrichment |
+| `OPENALEX_API_KEY`             | Yes      | Enables exact paper metadata enrichment  |
 
 ### Canonical AI Search v6
 
@@ -245,23 +244,10 @@ evidence. Generation 4 used `canonical-4-kind-platform` and
 resources are not active bindings and must not be triggered or adopted for the
 generation-5 contract.
 
-### Academic metadata backfill
+### Paper enrichment
 
-After deploying an academic metadata schema change, trigger the versioned
-Workflow through the core service-binding RPC `startAcademicMetadataBackfill()`,
-or directly with Wrangler:
-
-```sh
-pnpm exec wrangler workflows trigger newsence-academic-metadata-backfill-v3 '{}'
-```
-
-The Workflow keyset-pages only through explicit `doi.org` and arXiv
-`/abs`, `/html`, or `/pdf` resources that are missing the current
-`schemaVersion`. Each Semantic Scholar request and database write is an
-independent durable step, with a one-second request interval. Successful
-provider responses atomically replace only `enrichments.academic` and fill a
-missing exact publication date. Provider failures preserve legacy metadata;
-reruns automatically skip already-upgraded rows.
+Exact DOI, arXiv, and OpenAlex identities resolve through the official OpenAlex
+REST API. Provider failures preserve an existing compact academic snapshot.
 
 ## Adding an Ingest Adapter
 
@@ -275,7 +261,7 @@ Keep the axes separate: acquisition (`rss`, `web`, or a specialized adapter) is
 not canonical `ResourcePlatform` (`youtube`, `twitter`, `hackernews`, or null),
 `ResourceKind` (`blog`, `forum`, `post`, `video`, `paper`, `image`, `file`), blob
 representation (MIME/filename/size/pages), or lifecycle origin (`source`,
-`saved_url`, `upload`, `generated`). PDF extraction and Semantic Scholar paper
+`saved_url`, `upload`, `generated`). PDF extraction and external paper
 enrichment are workflow stages keyed from row content/metadata, not additional
 identity values.
 

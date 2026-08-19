@@ -6,6 +6,20 @@ import { z } from 'zod';
 const OPENALEX_BASE = 'https://api.openalex.org';
 const REQUEST_TIMEOUT_MS = 8_000;
 const RESPONSE_MAX_BYTES = 5 * 1024 * 1024;
+const WORK_FIELDS = [
+	'id',
+	'doi',
+	'title',
+	'publication_year',
+	'publication_date',
+	'cited_by_count',
+	'referenced_works_count',
+	'authorships',
+	'abstract_inverted_index',
+	'primary_location',
+	'best_oa_location',
+	'locations',
+].join(',');
 
 const OpenAlexLocationSchema = z.object({
 	is_oa: z.boolean().nullish(),
@@ -109,12 +123,9 @@ function normalizeOpenAlexWork(work: OpenAlexWork, identity: PaperIdentity | nul
 }
 
 async function fetchOpenAlexJson(path: string, apiKey: string): Promise<unknown | null> {
-	const separator = path.includes('?') ? '&' : '?';
-	const response = await fetchWithTimeout(
-		`${OPENALEX_BASE}${path}${separator}api_key=${encodeURIComponent(apiKey)}`,
-		{ headers: { Accept: 'application/json' } },
-		REQUEST_TIMEOUT_MS,
-	);
+	const headers: Record<string, string> = { Accept: 'application/json' };
+	if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+	const response = await fetchWithTimeout(`${OPENALEX_BASE}${path}`, { headers }, REQUEST_TIMEOUT_MS);
 	if (response.ok) {
 		return JSON.parse(await readTextWithLimit(response, RESPONSE_MAX_BYTES));
 	}
@@ -126,11 +137,14 @@ async function fetchOpenAlexJson(path: string, apiKey: string): Promise<unknown 
 }
 
 function workLookupPath(identity: PaperIdentity): string | null {
+	let workId: string | null = null;
 	if (identity.openAlexId) {
-		return `/works/${encodeURIComponent(identity.openAlexId)}`;
+		workId = encodeURIComponent(identity.openAlexId);
+	} else {
+		const doi = identity.doi ?? (identity.arxivId ? `10.48550/arxiv.${identity.arxivId}` : null);
+		if (doi) workId = `https://doi.org/${encodeURIComponent(doi)}`;
 	}
-	const doi = identity.doi ?? (identity.arxivId ? `10.48550/arxiv.${identity.arxivId}` : null);
-	return doi ? `/works/https://doi.org/${encodeURIComponent(doi)}` : null;
+	return workId ? `/works/${workId}?select=${WORK_FIELDS}` : null;
 }
 
 export async function resolveOpenAlexPaper(input: { apiKey?: string; identity: PaperIdentity }): Promise<PaperMetadata | null> {

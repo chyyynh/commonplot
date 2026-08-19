@@ -116,7 +116,7 @@ AI 分析透過 Workers AI binding 與 AI Gateway 執行，不需要外部 LLM s
 ```bash
 wrangler secret put KAITO_API_KEY            # Twitter 監控
 wrangler secret put YOUTUBE_API_KEY          # YouTube 監控
-wrangler secret put S2_API_KEY               # Semantic Scholar quota
+wrangler secret put OPENALEX_API_KEY          # 論文 metadata enrichment
 ```
 
 ### 5. 部署
@@ -156,7 +156,7 @@ src/
 │       ├── twitter.ts    # monitor + scraper + processor
 │       ├── youtube.ts    # monitor + transcript/highlights
 │       ├── hackernews.ts # HN processor
-│       ├── paper.ts      # Semantic Scholar enrichment stage
+│       ├── paper.ts      # OpenAlex enrichment stage
 │       └── pdf.ts        # PDF text extraction stage
 └── corpus.ts              # engine 讀取、搜尋輔助
 ```
@@ -181,7 +181,7 @@ Secrets（透過 `wrangler secret put` 設定）：
 | ------------------------------ | ---- | ----------------------------- |
 | `KAITO_API_KEY`                | 是   | 啟用 Twitter 監控             |
 | `YOUTUBE_API_KEY`              | 是   | 啟用 YouTube 頻道監控         |
-| `S2_API_KEY`                   | 是   | 提高 Semantic Scholar paper enrichment quota |
+| `OPENALEX_API_KEY`             | 是   | 啟用精確論文 metadata enrichment |
 
 ## Canonical resource identity
 
@@ -216,8 +216,8 @@ discovery / scrape / process 邏輯。App-owned saved URL 先寫入 `resources`
 `ResourcePlatform`（`youtube`、`twitter`、`hackernews` 或 null），也不是
 `ResourceKind`（`blog`、`forum`、`post`、`video`、`paper`、`image`、`file`）、
 blob representation（MIME／檔名／大小／頁數）或 lifecycle origin
-（`source`、`saved_url`、`upload`、`generated`）。PDF 解析和 Semantic
-Scholar paper enrichment 是 workflow stage，依 row 內容或 metadata
+（`source`、`saved_url`、`upload`、`generated`）。PDF 解析和外部 paper
+paper enrichment 是 workflow stage，依 row 內容或 metadata
 觸發，不是新的 identity 值。
 
 新增一個來源最少要做：
