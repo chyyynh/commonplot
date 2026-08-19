@@ -1,3 +1,4 @@
+import type { WorkflowStep } from 'cloudflare:workers';
 import { sha256Hex } from '@core-shared/hash';
 import { isResourcePlatform } from '@core-shared/resource-types';
 import type { AcquiredMaterial, PdfExtractionMetadata, ResourceForProcessing } from '@core-shared/types';
@@ -27,8 +28,7 @@ export async function stageAcquisitionEnhancements(
 	resourceId: string,
 ): Promise<AcquiredContent> {
 	if (acquired.provider !== 'twitter') return acquired;
-	const twitter = acquired as AcquiredContent & AcquiredMaterial<'twitter'>;
-	const externalUrl = pendingTweetExternalLink(twitter);
+	const externalUrl = pendingTweetExternalLink(acquired);
 	if (!externalUrl) return acquired;
 	const outcome = await step
 		.do('unfurl-tweet-external-link', { retries: { limit: 1, delay: '5 seconds' }, timeout: '30 seconds' }, async () => ({
@@ -51,7 +51,7 @@ export async function stageAcquisitionEnhancements(
 		resource_id: resourceId,
 		external_url: externalUrl,
 	});
-	return applyTweetLinkUnfurl(twitter, outcome.unfurl);
+	return applyTweetLinkUnfurl(acquired, outcome.unfurl);
 }
 
 function acquiredPublishedDate(value: string | null): string | null {
@@ -104,13 +104,14 @@ function sourceSnapshotHash(acquired: AcquiredContent): Promise<string> {
 async function sanitizeAcquiredContent(acquired: AcquiredContent): Promise<AcquiredContent> {
 	const markdown = sanitizeExtractedMarkdown(acquired.markdown);
 	const sanitized = markdown === acquired.markdown ? acquired : { ...acquired, markdown };
+	// Re-attaching the hash to the envelope loses the provider/data correlation, so assert back to the union.
 	return {
 		...sanitized,
 		acquisition: {
 			...sanitized.acquisition,
 			sourceSnapshotHash: await sourceSnapshotHash(sanitized),
 		},
-	};
+	} as AcquiredContent;
 }
 
 /**
@@ -130,7 +131,7 @@ async function scrapeSavedUrl(url: string, env: CoreEnv, origin: AcquisitionOrig
 			case 'twitter':
 				return sanitizeAcquiredContent(await scrapeTweet(detected.platformId, env.KAITO_API_KEY));
 			case 'hackernews':
-				return sanitizeAcquiredContent(await scrapeHackerNews(detected.platformId, env, resourceId));
+				return sanitizeAcquiredContent(await scrapeHackerNews(detected.platformId));
 			default:
 				detected.resourcePlatform satisfies never;
 		}
@@ -267,5 +268,3 @@ export async function readAcquiredContentArtifact(artifact: ReadableStream<Uint8
 	}
 	return acquired;
 }
-
-import type { WorkflowStep } from 'cloudflare:workers';

@@ -139,11 +139,7 @@ function hackerNewsItemTitle(item: HackerNewsItem, itemId: string): string {
 	return `Hacker News item #${itemId}`;
 }
 
-export async function scrapeHackerNews(
-	itemId: string,
-	_env: CoreEnv,
-	_resourceId?: string,
-): Promise<AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem }> {
+export async function scrapeHackerNews(itemId: string): Promise<AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem }> {
 	console.info({ tag: 'HN', msg: 'Fetching item', itemId });
 	const item = await fetchHnItem(itemId);
 	const title = hackerNewsItemTitle(item, itemId);

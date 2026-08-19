@@ -101,7 +101,7 @@ export function canonicalFieldsFromAcquisition(acquired: AcquiredMaterial): Cano
 				kindMetadata: acquired.metadata.siteName.trim() ? { siteName: acquired.metadata.siteName.trim() } : null,
 			};
 		case 'hackernews': {
-			const metadata = acquired.acquisition as AcquisitionEnvelope<'hackernews'>;
+			const metadata = acquired.acquisition;
 			return {
 				creators: literalCreator('submitter', metadata.data.author),
 				kindMetadata: forumMetadata(metadata),
@@ -109,11 +109,11 @@ export function canonicalFieldsFromAcquisition(acquired: AcquiredMaterial): Cano
 		}
 		case 'twitter':
 			return {
-				creators: twitterCreator(acquired.acquisition as AcquisitionEnvelope<'twitter'>),
-				kindMetadata: postMetadata(acquired.acquisition as AcquisitionEnvelope<'twitter'>),
+				creators: twitterCreator(acquired.acquisition),
+				kindMetadata: postMetadata(acquired.acquisition),
 			};
 		case 'youtube': {
-			const metadata = acquired.acquisition as AcquisitionEnvelope<'youtube'>;
+			const metadata = acquired.acquisition;
 			return {
 				creators: literalCreator('channel', metadata.data.channelName, {
 					...(metadata.data.channelAvatar?.trim() ? { avatarUrl: metadata.data.channelAvatar.trim() } : {}),

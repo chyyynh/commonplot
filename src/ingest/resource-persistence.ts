@@ -1,6 +1,7 @@
 import type { PersistResolvedResourceGraphInput } from '@app-domain/resource-graph-contracts';
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
 import { isPaperIdentifier } from '@core-shared/resource-identifiers';
+import { parseResourceIdentity } from '@core-shared/resource-types';
 import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
 import { type CoreDb, withCoreDb, withCoreTx } from '@db/client';
 import { resources } from '@db/schema';
@@ -77,6 +78,8 @@ export async function markResourceEnrichmentFailed(
 
 async function graphMutation(input: PersistProcessedResourceInput): Promise<PersistResolvedResourceGraphInput> {
 	const resource = finalizedResource(input.handled);
+	const identity = parseResourceIdentity(input.handled.resolution.kind, input.handled.resolution.resourcePlatform);
+	if (!identity) throw new Error(`Resource ${input.resourceId} resolved to an invalid identity`);
 	const sourceRevision = await resourceSourceRevision(resource);
 	const content = input.processorResult.content ?? resource.content;
 	if (!content?.trim()) throw new Error(`Refusing to persist enriched resource ${input.resourceId} without content`);
@@ -89,7 +92,7 @@ async function graphMutation(input: PersistProcessedResourceInput): Promise<Pers
 	return {
 		resourceId: input.resourceId,
 		expectedSourceRevision: input.expectedSourceRevision,
-		identity: input.handled.resolution,
+		identity,
 		identifiers: resource.resource_identifiers,
 		creators: resource.creators,
 		kindMetadata: resource.kind_metadata,

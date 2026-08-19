@@ -301,15 +301,6 @@ export async function searchCorpusRanks(env: CoreEnv, query: string, options: Co
 	const retrievalType = profile === 'related' ? 'vector' : 'hybrid';
 	const filters = searchFilters(options);
 	if (filters === null) return [];
-	if (options.kinds?.length) {
-		console.info({
-			tag: 'AI_SEARCH',
-			msg: 'Corpus search metadata contract selected',
-			metadata_contract: 'canonical-kind-platform',
-			requested_kind_count: options.kinds.length,
-			requested_platform_count: options.resourcePlatforms?.length ?? 0,
-		});
-	}
 	const response = await env.AI_SEARCH.search({
 		query,
 		ai_search_options: {

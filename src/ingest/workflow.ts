@@ -8,7 +8,7 @@ import {
 	parseResourceIdentity,
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
-import type { AcquisitionEnvelope, PaperMetadata, ResourceForProcessing } from '@core-shared/types';
+import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
 import { detectResourceUrl } from '@core-shared/url';
 import {
 	claimStalePendingResourceAdmissions,
@@ -49,10 +49,8 @@ type WorkflowOperation = 'ingest' | 'resync';
 type WorkflowPayload = { resourceId: string; operation: WorkflowOperation; sourceRevision?: string };
 
 const PENDING_RESOURCE_GRACE_MS = 10 * 60 * 1000;
-// #279 intentionally readmits the legacy corpus through the same canonical
-// resolver instead of preserving a second backfill implementation. Pace this
-// well below the Workflow creation limit while clearing the one-time cutover
-// backlog in hours rather than days.
+// Stale pending resources are readmitted through the same canonical resolver
+// as fresh ingest; pace reconciliation well below the Workflow creation limit.
 const PENDING_RESOURCE_RECONCILE_LIMIT = 50;
 const PENDING_RESOURCE_RECONCILE_CONCURRENCY = 10;
 const RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG = {
@@ -362,7 +360,7 @@ function acquiredSubjectUrl(acquired: AcquiredContent | undefined): string | nul
 	if (!acquired) return null;
 	if (acquired.provider === 'hackernews') return acquired.hackerNewsItem?.url?.trim() || null;
 	if (acquired.provider === 'twitter') {
-		return (acquired.acquisition as AcquisitionEnvelope<'twitter'>).data.externalUrl?.trim() || null;
+		return acquired.acquisition.data.externalUrl?.trim() || null;
 	}
 	return null;
 }

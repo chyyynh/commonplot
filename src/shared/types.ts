@@ -120,7 +120,7 @@ type AcquiredMaterialBase<T extends ResourcePlatform> = {
 	youtubeTranscript?: YoutubeTranscript;
 };
 
-export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = AcquiredMaterialBase<T>;
+export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = T extends unknown ? AcquiredMaterialBase<T> : never;
 
 export interface TwitterMedia {
 	url: string;
