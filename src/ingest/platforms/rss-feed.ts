@@ -1,6 +1,7 @@
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
+import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import type { AcquiredMaterial } from '@core-shared/types';
-import { normalizePreviewImageUrl, normalizeUrl } from '@core-shared/url';
+import { normalizeUrl } from '@core-shared/url';
 import { sanitizeExtractedMarkdown } from '@ingest/domain/content-sanitization';
 import { parseFeed } from 'feedsmith';
 import { decode } from 'html-entities';
@@ -83,8 +84,7 @@ function firstHtmlImage(value: string | undefined): string | undefined {
 }
 
 function resolvedHttpUrl(value: string | undefined, baseUrl: string | undefined): string | undefined {
-	if (!value) return undefined;
-	return normalizePreviewImageUrl(value, baseUrl) ?? undefined;
+	return normalizedResourceImageUrl(value, baseUrl) ?? undefined;
 }
 
 function rssFeedItem(item: ParsedRssItem, language: string | undefined): FeedItem {

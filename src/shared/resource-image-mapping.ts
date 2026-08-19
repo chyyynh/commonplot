@@ -1,19 +1,40 @@
 import { hostedResourceImageUrl, type ResourceImageFields, resourcePreviewImageCandidates } from './resource-image-fields.ts';
 import type { PostKindMetadata, ResourceCreator, ResourceKindMetadata } from './resource-metadata.ts';
-import { normalizePreviewImageUrl, validatedExternalMediaUrl } from './url.ts';
+import { validatedExternalMediaUrl } from './url.ts';
+
+const PREVIEW_IMAGE_TARGET_WIDTH = 1200;
+const WORDPRESS_UPLOAD_PATH = /\/wp-content\/uploads\//i;
 
 export type HostedResourceImage = Readonly<{
 	deliveryUrl: string;
 	sourceUrl: string;
 }>;
 
-export function normalizedResourceImageUrl(rawUrl: string | null | undefined): string | null {
-	const sourceUrl = validatedExternalMediaUrl(rawUrl);
-	return validatedExternalMediaUrl(sourceUrl ? normalizePreviewImageUrl(sourceUrl) : null);
+function positiveInteger(value: string | null): number | null {
+	if (!value || !/^\d+$/.test(value)) return null;
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+}
+
+export function normalizedResourceImageUrl(rawUrl: string | null | undefined, baseUrl?: string): string | null {
+	const value = rawUrl?.trim();
+	const sourceUrl = value ? URL.parse(value, baseUrl)?.toString() : null;
+	const normalized = validatedExternalMediaUrl(sourceUrl);
+	if (!normalized) return null;
+
+	const url = new URL(normalized);
+	if (!WORDPRESS_UPLOAD_PATH.test(url.pathname)) return normalized;
+	const width = positiveInteger(url.searchParams.get('w'));
+	const resizeWidth = positiveInteger(url.searchParams.get('resize')?.split(',')[0] ?? null);
+	if ((width ?? resizeWidth ?? PREVIEW_IMAGE_TARGET_WIDTH) >= PREVIEW_IMAGE_TARGET_WIDTH) return normalized;
+
+	url.searchParams.set('w', String(PREVIEW_IMAGE_TARGET_WIDTH));
+	for (const parameter of ['crop', 'h', 'height', 'resize']) url.searchParams.delete(parameter);
+	return url.toString();
 }
 
 function uniqueImageUrls(candidates: Array<string | null | undefined>): string[] {
-	return [...new Set(candidates.map(normalizedResourceImageUrl).filter((url): url is string => url !== null))];
+	return [...new Set(candidates.map((url) => normalizedResourceImageUrl(url)).filter((url): url is string => url !== null))];
 }
 
 export function resourcePreviewImageSourceUrls(resource: ResourceImageFields): string[] {

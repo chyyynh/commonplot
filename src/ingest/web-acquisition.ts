@@ -1,7 +1,7 @@
 import { coreAiRequestOptions, throwCoreAiError } from '@core-ai/generation';
 import { fetchWithTimeout, readBytesWithLimit, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
+import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import type { AcquiredMaterial, PdfExtractionMetadata } from '@core-shared/types';
-import { normalizePreviewImageUrl } from '@core-shared/url';
 import { addTransformations, extractFromHtml } from '@extractus/article-extractor';
 import { type PdfTextArtifact, parsePdfBytes } from './platforms/pdf';
 
@@ -71,7 +71,7 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 		publishedDate: optionalText(article.published),
 		siteName,
 		description: optionalText(article.description),
-		previewImageUrl: article.image ? normalizePreviewImageUrl(article.image, url) : null,
+		previewImageUrl: normalizedResourceImageUrl(article.image, url),
 	};
 }
 

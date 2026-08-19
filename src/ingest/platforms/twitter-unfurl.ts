@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { fetchWithTimeout, WEB_FETCH_USER_AGENT } from '@core-shared/http';
+import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import type { AcquiredMaterial, AcquisitionEnvelope } from '@core-shared/types';
-import { normalizePreviewImageUrl } from '@core-shared/url';
 import { firstHtmlMetaValue, parseHtmlHead, readHtmlHead } from '@ingest/source-discovery';
 
 // A share tweet carries only the linked URL — Kaito never returns the target
@@ -49,7 +49,7 @@ async function unfurlTweetExternalLink(url: string): Promise<TweetLinkUnfurl | n
 	const image = firstHtmlMetaValue(head, OG_IMAGE_KEYS);
 	// No image means no card (#234), so a title alone would never be rendered.
 	if (!image) return null;
-	const externalOgImage = normalizePreviewImageUrl(image, response.url || url);
+	const externalOgImage = normalizedResourceImageUrl(image, response.url || url);
 	if (!externalOgImage) return null;
 
 	return { externalOgImage, externalTitle: firstHtmlMetaValue(head, OG_TITLE_KEYS) ?? head.title };
