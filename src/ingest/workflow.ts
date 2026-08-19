@@ -10,9 +10,9 @@ import {
 import type { AcquisitionEnvelope, PaperMetadata, ResourceForProcessing } from '@core-shared/types';
 import { detectResourceUrl } from '@core-shared/url';
 import {
+	claimStalePendingResourceAdmissions,
 	loadResourceForProcessing,
 	loadResourceShellForProcessing,
-	loadStalePendingResourceAdmissions,
 } from '@ingest/domain/resource-store';
 import { loadFeedSourcePolicy } from '@ingest/domain/source-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
@@ -52,8 +52,8 @@ const PENDING_RESOURCE_GRACE_MS = 10 * 60 * 1000;
 // resolver instead of preserving a second backfill implementation. Pace this
 // well below the Workflow creation limit while clearing the one-time cutover
 // backlog in hours rather than days.
-const PENDING_RESOURCE_RECONCILE_LIMIT = 200;
-const PENDING_RESOURCE_RECONCILE_CONCURRENCY = 10;
+const PENDING_RESOURCE_RECONCILE_LIMIT = 500;
+const PENDING_RESOURCE_RECONCILE_CONCURRENCY = 25;
 const RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG = {
 	retries: DURABLE_WORKFLOW_RETRIES,
 	timeout: '30 seconds',
@@ -70,7 +70,7 @@ export async function enqueueProcessing(env: CoreEnv, resourceId: string, source
 
 /** Re-admits app-owned pending rows whose initial DB -> Workflow handoff was interrupted. */
 export async function reconcilePendingResourceProcessing(env: CoreEnv): Promise<void> {
-	const admissions = await loadStalePendingResourceAdmissions(
+	const admissions = await claimStalePendingResourceAdmissions(
 		env,
 		new Date(Date.now() - PENDING_RESOURCE_GRACE_MS),
 		PENDING_RESOURCE_RECONCILE_LIMIT,

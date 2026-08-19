@@ -28,7 +28,7 @@ import type { ResourceForProcessing, ResourceLocaleText, ResourceTranslationMap 
 import { type CoreDb, textArraySql, uuidArraySql, withCoreDb, withCoreTx } from '@db/client';
 import { contentResourceIdentitySql, resourceDisplaySourceSql, translatableResourceIdentitySql } from '@db/resource-identity-sql';
 import { resourceIdentifiers, resources, resourceTranslations, youtubeTranscripts } from '@db/schema';
-import { and, asc, eq, lt, not, type SQL, sql } from 'drizzle-orm';
+import { and, eq, not, type SQL, sql } from 'drizzle-orm';
 
 /** Failed enrichments to retry before a URL is treated as permanently dead. */
 const MAX_ENRICHMENT_ATTEMPTS = 5;
@@ -222,28 +222,36 @@ export async function assertResourceProcessable(env: CoreEnv, resourceId: string
  * behind. The row is the outbox; source revisions preserve the same fixed
  * Workflow identity used by monitored admission.
  */
-export async function loadStalePendingResourceAdmissions(
+export async function claimStalePendingResourceAdmissions(
 	env: CoreEnv,
 	olderThan: Date,
 	limit: number,
 ): Promise<Array<{ resourceId: string; sourceRevision: string | null }>> {
 	return withCoreDb(env, async (db) => {
-		const rows = await db
-			.select({ id: resources.id, sourceRevision: resources.sourceRevision })
-			.from(resources)
-			.where(
-				and(
-					eq(resources.enrichmentStatus, 'pending'),
-					lt(resources.updatedAt, olderThan),
-					contentResourceIdentitySql({
-						kind: sql`${resources.kind}`,
-						resourcePlatform: sql`${resources.resourcePlatform}`,
-					}),
-				),
+		const claimed = await db.execute<{ resource_id: string; source_revision: string | null }>(sql`
+			WITH candidates AS (
+				SELECT id
+				FROM resources
+				WHERE enrichment_status = 'pending'
+				  AND updated_at < ${olderThan}
+				  AND ${contentResourceIdentitySql({
+						kind: sql`kind`,
+						resourcePlatform: sql`resource_platform`,
+					})}
+				ORDER BY updated_at ASC, id ASC
+				FOR UPDATE SKIP LOCKED
+				LIMIT ${limit}
 			)
-			.orderBy(asc(resources.updatedAt), asc(resources.id))
-			.limit(limit);
-		return rows.map(({ id, sourceRevision }) => ({ resourceId: id, sourceRevision }));
+			UPDATE resources AS resource
+			SET updated_at = NOW()
+			FROM candidates
+			WHERE resource.id = candidates.id
+			RETURNING resource.id::text AS resource_id, resource.source_revision
+		`);
+		return claimed.rows.map(({ resource_id, source_revision }) => ({
+			resourceId: resource_id,
+			sourceRevision: source_revision,
+		}));
 	});
 }
 
