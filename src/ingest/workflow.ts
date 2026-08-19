@@ -370,8 +370,6 @@ type PaperResolution = Awaited<ReturnType<typeof stagePaperEnrichment>>;
 
 type PreliminaryAcquisition = Readonly<{
 	acquiredContent: AcquiredContent | undefined;
-	explicitGrobid: boolean;
-	explicitPdf: boolean;
 	explicitResolution: PaperResolution | null;
 }>;
 
@@ -399,8 +397,6 @@ async function stagePreliminaryAcquisition(
 			: null;
 	return {
 		acquiredContent: pdf ?? grobid ?? (await acquireResourceForOperation(env, step, resource, operation)),
-		explicitGrobid: !!grobid,
-		explicitPdf: !!pdf,
 		explicitResolution,
 	};
 }
@@ -411,39 +407,24 @@ async function stagePreferredOpenAlexContent(
 	resource: ResourceForProcessing,
 	acquiredContent: AcquiredContent | undefined,
 	paperResolution: PaperResolution,
-	preliminary: Pick<PreliminaryAcquisition, 'explicitGrobid' | 'explicitPdf'>,
+	preliminary: Pick<PreliminaryAcquisition, 'explicitResolution'>,
 ): Promise<{
 	acquiredContent: AcquiredContent | undefined;
 	resource: ResourceForProcessing;
 }> {
-	if (!preliminary.explicitPdf && !resource.storage_key) {
-		const pdf = await stageOpenAlexPdfAcquisition(env, step, resource, paperResolution, 'acquire-selected-openalex-content-pdf-v1');
-		if (pdf) {
-			return {
-				acquiredContent: pdf,
-				resource: applyAcquiredMaterial(resource, pdf),
-			};
-		}
+	// The preliminary phase already attempted OpenAlex content for this exact resolution.
+	if (paperResolution === preliminary.explicitResolution) {
+		return { acquiredContent, resource };
 	}
-	if (!preliminary.explicitGrobid && !resource.storage_key) {
-		const grobid = await stageOpenAlexGrobidAcquisition(
-			env,
-			step,
-			resource,
-			paperResolution,
-			'acquire-selected-openalex-content-grobid-v1',
-		);
-		if (grobid) {
-			return {
-				acquiredContent: grobid,
-				resource: applyAcquiredMaterial(resource, grobid),
-			};
-		}
+	const pdf = await stageOpenAlexPdfAcquisition(env, step, resource, paperResolution, 'acquire-selected-openalex-content-pdf-v1');
+	if (pdf) {
+		return { acquiredContent: pdf, resource: applyAcquiredMaterial(resource, pdf) };
 	}
-	return {
-		acquiredContent,
-		resource,
-	};
+	const grobid = await stageOpenAlexGrobidAcquisition(env, step, resource, paperResolution, 'acquire-selected-openalex-content-grobid-v1');
+	if (grobid) {
+		return { acquiredContent: grobid, resource: applyAcquiredMaterial(resource, grobid) };
+	}
+	return { acquiredContent, resource };
 }
 
 async function prepareResourceForProcessing(
