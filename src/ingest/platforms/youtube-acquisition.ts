@@ -1,4 +1,5 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
+import { literalCreator, type ResourceCreator, type VideoKindMetadata } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial, AcquisitionEnvelope, TranscriptSegment, YouTubeChapter } from '@core-shared/types';
 import { z } from 'zod';
 import type { AcquisitionOrigin } from '../acquisition';
@@ -280,6 +281,25 @@ export async function scrapeYouTube(
 			language: snippet.defaultAudioLanguage ?? null,
 			chapters,
 			chaptersFromDescription: chapters.length > 0,
+		},
+	};
+}
+
+export function canonicalVideoFields(acquisition: AcquisitionEnvelope<'youtube'>): {
+	creators: ResourceCreator[];
+	kindMetadata: VideoKindMetadata;
+} {
+	const data = acquisition.data;
+	return {
+		creators: literalCreator('channel', data.channelName, {
+			...(data.channelAvatar?.trim() ? { avatarUrl: data.channelAvatar.trim() } : {}),
+			...(data.channelId?.trim() ? { profileUrl: `https://www.youtube.com/channel/${encodeURIComponent(data.channelId.trim())}` } : {}),
+		}),
+		kindMetadata: {
+			...(data.durationSeconds === undefined ? {} : { durationSeconds: data.durationSeconds }),
+			...(data.viewCount === undefined ? {} : { viewCount: data.viewCount }),
+			...(data.likeCount === undefined ? {} : { likeCount: data.likeCount }),
+			...(data.commentCount === undefined ? {} : { commentCount: data.commentCount }),
 		},
 	};
 }

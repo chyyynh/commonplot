@@ -1,4 +1,5 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
+import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource-metadata';
 import type {
 	AcquiredMaterial,
 	AcquisitionEnvelope,
@@ -525,4 +526,62 @@ async function fetchTwitterThreadContext(tweetId: string, apiKey: string): Promi
 		await scheduler.wait(250);
 	}
 	return tweets;
+}
+
+function twitterCreator(metadata: AcquisitionEnvelope<'twitter'>): ResourceCreator[] {
+	const data = metadata.data;
+	const handle = data.authorUserName?.replace(/^@/, '').trim();
+	const profileUrl = handle ? `https://x.com/${encodeURIComponent(handle)}` : undefined;
+	return literalCreator('author', data.authorName || handle, {
+		...(handle ? { handle } : {}),
+		...(data.authorProfilePicture?.trim() ? { avatarUrl: data.authorProfilePicture.trim() } : {}),
+		...(profileUrl ? { profileUrl } : {}),
+		...(data.authorVerified === undefined ? {} : { verified: data.authorVerified }),
+	});
+}
+
+function postMetadata(metadata: AcquisitionEnvelope<'twitter'>): PostKindMetadata {
+	const data = metadata.data;
+	const attachments: ResourceMediaAttachment[] = (data.media ?? []).flatMap((media) => {
+		if (!media.url?.trim()) return [];
+		return [
+			{
+				kind: media.type === 'photo' ? 'image' : media.type === 'animated_gif' ? 'animated' : 'video',
+				url: media.url.trim(),
+				...(media.videoUrl?.trim() ? { videoUrl: media.videoUrl.trim() } : {}),
+				...(media.width === undefined ? {} : { width: media.width }),
+				...(media.height === undefined ? {} : { height: media.height }),
+			},
+		];
+	});
+	const externalUrl = data.externalUrl?.trim();
+	const quoted = data.quotedTweet;
+	const quoteHandle = quoted?.authorUserName?.replace(/^@/, '').trim();
+	const quoteCreator = quoted
+		? literalCreator('author', quoted.authorName || quoted.authorUserName, {
+				...(quoteHandle ? { handle: quoteHandle } : {}),
+				...(quoted.authorProfilePicture?.trim() ? { avatarUrl: quoted.authorProfilePicture.trim() } : {}),
+				...(quoteHandle ? { profileUrl: `https://x.com/${encodeURIComponent(quoteHandle)}` } : {}),
+			})[0]
+		: undefined;
+	return {
+		attachments,
+		...(externalUrl
+			? {
+					externalLink: {
+						url: externalUrl,
+						...(data.externalTitle?.trim() ? { title: data.externalTitle.trim() } : {}),
+						...(data.externalOgImage?.trim() ? { imageUrl: data.externalOgImage.trim() } : {}),
+					},
+				}
+			: {}),
+		...(quoted?.text.trim() && quoteCreator ? { quote: { creator: quoteCreator, text: quoted.text.trim() } } : {}),
+	};
+}
+
+export function canonicalPostFields(acquisition: AcquisitionEnvelope<'twitter'>): {
+	creators: ResourceCreator[];
+	kindMetadata: PostKindMetadata;
+} {
+	return { creators: twitterCreator(acquisition), kindMetadata: postMetadata(acquisition) };
 }

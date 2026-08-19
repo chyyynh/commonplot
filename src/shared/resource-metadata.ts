@@ -28,6 +28,15 @@ export function resourceCreatorName(creator: ResourceCreator | undefined): strin
 	return creator?.literal ?? ([creator?.given, creator?.family].filter(Boolean).join(' ') || null);
 }
 
+export function literalCreator(
+	role: ResourceCreator['role'],
+	literal: string | null | undefined,
+	extra: Omit<ResourceCreator, 'literal' | 'role'> = {},
+): ResourceCreator[] {
+	const name = literal?.trim();
+	return name ? [{ role, literal: name, ...extra }] : [];
+}
+
 const ResourceMediaAttachmentSchema = z.object({
 	kind: z.enum(['image', 'video', 'animated']),
 	url: optionalHttpUrl,

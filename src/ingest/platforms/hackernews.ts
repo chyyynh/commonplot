@@ -1,6 +1,7 @@
 import { generateText } from '@core-ai/generation';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import type { AcquiredMaterial, HackerNewsMetadata, ResourceForProcessing } from '@core-shared/types';
+import { type ForumKindMetadata, literalCreator, type ResourceCreator } from '@core-shared/resource-metadata';
+import type { AcquiredMaterial, AcquisitionEnvelope, HackerNewsMetadata, ResourceForProcessing } from '@core-shared/types';
 import { extractHackerNewsId } from '@core-shared/url';
 import { decode } from 'html-entities';
 import { z } from 'zod';
@@ -274,4 +275,19 @@ export async function buildHackerNewsContent(
 		.join(' | ');
 
 	return [articleContent, '---', HN_DISCUSSION_HEADING, stats ? `*${stats}*` : null, links, digest].filter(Boolean).join('\n\n');
+}
+
+export function canonicalForumFields(acquisition: AcquisitionEnvelope<'hackernews'>): {
+	creators: ResourceCreator[];
+	kindMetadata: ForumKindMetadata;
+} {
+	const data = acquisition.data;
+	return {
+		creators: literalCreator('submitter', data.author),
+		kindMetadata: {
+			...(data.itemType ? { itemType: data.itemType } : {}),
+			...(data.points === undefined ? {} : { points: data.points }),
+			...(data.commentCount === undefined ? {} : { commentCount: data.commentCount }),
+		},
+	};
 }
