@@ -10,11 +10,8 @@ import {
 } from '@core-shared/resource-types';
 import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
 import { detectResourceUrl } from '@core-shared/url';
-import {
-	claimStalePendingResourceAdmissions,
-	loadResourceForProcessing,
-	loadResourceShellForProcessing,
-} from '@ingest/domain/resource-store';
+import { claimStalePendingResourceAdmissions } from '@ingest/domain/resource-admission-store';
+import { loadResourceForProcessing, loadResourceShellForProcessing } from '@ingest/domain/resource-store';
 import { loadFeedSourcePolicy } from '@ingest/domain/source-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES, enqueueOrRestartWorkflow } from '../workflow-control';

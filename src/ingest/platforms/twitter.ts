@@ -6,7 +6,7 @@ import {
 	getExistingResourcesByUrl,
 	reopenResourceForReprocessing,
 	upsertPendingSourceResource,
-} from '@ingest/domain/resource-store';
+} from '@ingest/domain/resource-admission-store';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
 import { enqueueProcessing } from '@ingest/workflow';
 import { buildThreadResourceParts, buildTweetTitle, resolveTweetContent, type Tweet } from './twitter-acquisition';

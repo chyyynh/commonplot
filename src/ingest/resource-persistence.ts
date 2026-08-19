@@ -6,7 +6,7 @@ import { resources } from '@db/schema';
 import { toStoredResourceEntities } from '@entities/normalize';
 import { eq, sql } from 'drizzle-orm';
 import type { ProcessorResult } from './domain/ai-utils';
-import { resourceSourceRevision } from './domain/resource-store';
+import { resourceSourceRevision } from './domain/resource-revision';
 import type { HandledResourceResult } from './kind-handler';
 import { finalizePaperResource, privatePaperAttachment } from './platforms/paper';
 import { persistYouTubeWorkflowData } from './platforms/youtube';

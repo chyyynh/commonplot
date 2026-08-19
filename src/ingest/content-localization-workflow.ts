@@ -2,13 +2,13 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import { ZH_HANT_RESOURCE_LANG } from '@core-shared/resource-types';
 import { type CoreDb, withCoreDb, withCoreTx } from '@db/client';
 import { resources, resourceTranslations } from '@db/schema';
+import { loadResourceForProcessingFromDb } from '@ingest/domain/resource-store';
 import {
 	isResourceTranslationRevision,
-	loadResourceForProcessingFromDb,
 	resourceTranslationIdentityPredicate,
 	resourceTranslationRevisionSql,
 	upsertResourceTranslation,
-} from '@ingest/domain/resource-store';
+} from '@ingest/domain/resource-translation-store';
 import { sql } from 'drizzle-orm';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { enqueueOrRestartWorkflow } from '../workflow-control';

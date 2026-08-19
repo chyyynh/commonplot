@@ -5,7 +5,7 @@ import {
 	type ExistingResourceRecord,
 	getExistingResourcesByUrl,
 	upsertPendingSourceResource,
-} from '@ingest/domain/resource-store';
+} from '@ingest/domain/resource-admission-store';
 import {
 	loadMonitoredSources,
 	type MonitoredSource,
