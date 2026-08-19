@@ -9,13 +9,11 @@ const drizzlePath = resolve(root, 'src/db/schema.ts');
 const prismaPath = resolve(root, '../../web-tanstack/prisma/schema.prisma');
 const manualIndexesPath = resolve(root, '../../web-tanstack/prisma/manual-indexes.sql');
 const resourceTypesPath = resolve(root, 'src/shared/resource-types.ts');
-const systemIdentitiesPath = resolve(root, 'src/shared/system-identities.ts');
 
 const drizzleSource = readFileSync(drizzlePath, 'utf8');
 const prismaSource = readFileSync(prismaPath, 'utf8');
 const manualIndexesSource = readFileSync(manualIndexesPath, 'utf8');
 const resourceTypesSource = readFileSync(resourceTypesPath, 'utf8');
-const systemIdentitiesSource = readFileSync(systemIdentitiesPath, 'utf8');
 
 const PRISMA_SCALARS = new Set(['String', 'Int', 'BigInt', 'Boolean', 'DateTime', 'Decimal', 'Json', 'Bytes', 'Unsupported']);
 
@@ -116,11 +114,6 @@ function parseStringOrNullArrayRecord(source, name) {
 	return entries.size > 0 ? entries : null;
 }
 
-function parseObjectStringProperty(source, objectName, propertyName) {
-	const objectBody = source.match(new RegExp(`export const ${objectName} = \\{([\\s\\S]*?)\\} as const`))?.[1];
-	return objectBody?.match(new RegExp(`${propertyName}:\\s*'([^']+)'`))?.[1] ?? null;
-}
-
 function sqlStringValues(source) {
 	return [...source.matchAll(/'([^']+)'/g)].map((match) => match[1]);
 }
@@ -167,31 +160,6 @@ const errors = [];
 
 if (/^(?!\s*--)[^\r\n]*\bDROP\s+(?:TABLE|COLUMN)\b/im.test(manualIndexesSource)) {
 	errors.push('manual-indexes.sql must not drop tables or columns; use an explicit cutover');
-}
-
-const accountKinds = parseStringArray(systemIdentitiesSource, 'USER_ACCOUNT_KINDS');
-const accountKindConstraint = manualIndexesSource.match(/ADD CONSTRAINT user_account_kind_check\s+CHECK \(account_kind IN \(([^)]+)\)\);/);
-const constrainedAccountKinds = accountKindConstraint
-	? [...accountKindConstraint[1].matchAll(/'([^']+)'/g)].map((match) => match[1])
-	: null;
-if (!accountKinds || !constrainedAccountKinds || !sameValues(accountKinds, constrainedAccountKinds)) {
-	errors.push('user_account_kind_check differs from canonical USER_ACCOUNT_KINDS');
-}
-if (!/accountKind\s+String\s+@default\("human"\)\s+@map\("account_kind"\)/.test(prismaSource)) {
-	errors.push('Prisma User.accountKind must default to human and map to account_kind');
-}
-
-for (const property of ['id', 'username', 'name', 'email']) {
-	const value = parseObjectStringProperty(systemIdentitiesSource, 'OPENNEWS_SYSTEM_USER', property);
-	if (!value) {
-		errors.push(`OPENNEWS_SYSTEM_USER.${property} is missing`);
-	} else if (!manualIndexesSource.includes(`'${value}'`)) {
-		errors.push(`OpenNews seed SQL does not contain OPENNEWS_SYSTEM_USER.${property}`);
-	}
-}
-const opennewsUserId = parseObjectStringProperty(systemIdentitiesSource, 'OPENNEWS_SYSTEM_USER', 'id');
-if (opennewsUserId && !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(opennewsUserId)) {
-	errors.push('OPENNEWS_SYSTEM_USER.id must be a canonical UUIDv4');
 }
 
 if (drizzleTables.length === 0) errors.push(`No Drizzle pgTable definitions found in ${drizzlePath}`);

@@ -18,35 +18,6 @@ import { assertResourceProcessable, isResourceEnrichmentComplete } from './inges
 
 export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexGeneration5RebuildWorkflow };
 
-type MonitorHandler = (env: CoreEnv) => Promise<void>;
-
-async function reconcileOfficialPublications(env: CoreEnv): Promise<void> {
-	try {
-		const result = await env.DOMAIN.reconcileOfficialPublications();
-		console.info({
-			tag: 'OFFICIAL_PUBLICATIONS',
-			msg: 'Reconciled curated corpus publications',
-			inserted: result.inserted,
-		});
-	} catch (error) {
-		// Publication is derived product state. Never turn a repair failure into
-		// an ingest failure; the next monitor cycle retries the same statement.
-		console.error({
-			tag: 'OFFICIAL_PUBLICATIONS',
-			msg: 'Reconciliation failed; retrying next monitor cycle',
-			error: error instanceof Error ? error.message : String(error),
-		});
-	}
-}
-
-async function runMonitorCycle(env: CoreEnv, handler: MonitorHandler): Promise<void> {
-	try {
-		await handler(env);
-	} finally {
-		await reconcileOfficialPublications(env);
-	}
-}
-
 async function runFiveMinuteCycle(env: CoreEnv): Promise<void> {
 	const results = await Promise.allSettled([handleRSSCron(env), reconcilePendingResourceProcessing(env)]);
 	const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
@@ -69,9 +40,9 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		// YouTube channels ride the RSS monitor: their handles are Atom feed URLs,
 		// so they are ordinary rss sources with a 30-minute poll interval.
 		if (event.cron === '*/5 * * * *') {
-			this.ctx.waitUntil(runMonitorCycle(this.env, runFiveMinuteCycle));
+			this.ctx.waitUntil(runFiveMinuteCycle(this.env));
 		} else if (event.cron === '0 */6 * * *') {
-			this.ctx.waitUntil(runMonitorCycle(this.env, handleTwitterCron));
+			this.ctx.waitUntil(handleTwitterCron(this.env));
 		}
 	}
 
