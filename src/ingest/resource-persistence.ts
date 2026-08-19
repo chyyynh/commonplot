@@ -85,17 +85,9 @@ function academicTimestamp(metadata: PaperMetadata): number {
 	return Number.isNaN(timestamp) ? 0 : timestamp;
 }
 
-function academicSchemaVersion(metadata: unknown): unknown {
-	return isRecord(metadata) ? metadata.schemaVersion : null;
-}
-
 function newestAcademicEnrichment(first: PaperMetadata | null, second: PaperMetadata | null): PaperMetadata | null {
 	if (!first) return second;
 	if (!second) return first;
-	// A schema backfill must not preserve an older payload solely because its
-	// provider timestamp is newer (for example, a concurrent legacy writer).
-	if (academicSchemaVersion(first) === 2 && academicSchemaVersion(second) !== 2) return first;
-	if (academicSchemaVersion(first) !== 2 && academicSchemaVersion(second) === 2) return second;
 	return academicTimestamp(second) > academicTimestamp(first) ? second : first;
 }
 

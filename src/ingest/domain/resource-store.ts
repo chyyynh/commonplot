@@ -1,3 +1,4 @@
+import { normalizePaperIdentifiers, type PaperIdentifier } from '@core-shared/paper-identity';
 import {
 	type ContentResourceIdentity,
 	canonicalizeOptionalResourceLang,
@@ -73,6 +74,7 @@ type ResourceStoreRow = {
 	tags: string[];
 	keywords: string[];
 	platform_metadata: unknown;
+	paper_identifiers: unknown;
 	has_content?: boolean;
 	has_youtube_transcript?: boolean;
 	storage_key?: string | null;
@@ -282,6 +284,18 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: bool
 				FROM resource_translations rt
 				WHERE rt.resource_id = rl.id
 			) AS translations,
+			(
+				SELECT jsonb_agg(
+					jsonb_build_object(
+						'preferred', identifier.is_preferred,
+						'scheme', identifier.scheme,
+						'value', identifier.value
+					)
+					ORDER BY identifier.scheme, identifier.is_preferred DESC, identifier.value
+				)
+				FROM resource_identifiers identifier
+				WHERE identifier.resource_id = rl.id
+			) AS paper_identifiers,
 			rl.url AS url,
 			rl.og_image_url AS og_image_url,
 			${resourceDisplaySourceSql({
@@ -335,6 +349,7 @@ function resourceStoreRowToProcessing(row: ResourceStoreRow): StoredResourceForP
 			row.platform_metadata === null || row.platform_metadata === undefined
 				? undefined
 				: storedPlatformMetadataValue(row.platform_metadata, row.id),
+		paper_identifiers: paperIdentifiersValue(row.paper_identifiers),
 	};
 	if (typeof row.has_content === 'boolean') resource.has_content = row.has_content;
 	if (typeof row.has_youtube_transcript === 'boolean') resource.has_youtube_transcript = row.has_youtube_transcript;
@@ -342,6 +357,29 @@ function resourceStoreRowToProcessing(row: ResourceStoreRow): StoredResourceForP
 	if (row.file_type) resource.file_type = row.file_type;
 	resource.normalized_url = row.normalized_url ?? null;
 	return resource;
+}
+
+function paperIdentifiersValue(value: unknown): PaperIdentifier[] {
+	if (!Array.isArray(value)) return [];
+	return normalizePaperIdentifiers(
+		value.flatMap((item) => {
+			if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+			const identifier = item as Record<string, unknown>;
+			if (
+				(identifier.scheme !== 'doi' && identifier.scheme !== 'arxiv' && identifier.scheme !== 'openalex') ||
+				typeof identifier.value !== 'string'
+			) {
+				return [];
+			}
+			return [
+				{
+					preferred: identifier.preferred !== false,
+					scheme: identifier.scheme,
+					value: identifier.value,
+				},
+			];
+		}),
+	);
 }
 
 function resourceStoreTranslations(row: ResourceStoreRow): ResourceTranslationMap {

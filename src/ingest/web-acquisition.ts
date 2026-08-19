@@ -108,26 +108,44 @@ function stripLeadingFrontmatter(markdown: string): string {
 	return markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '').trim();
 }
 
-export async function markdownFromHtml(env: CoreEnv, html: string, url: string, resourceId?: string): Promise<string> {
-	const context = { feature: 'html-to-markdown', resourceId };
+async function markdownFromDocument(
+	env: CoreEnv,
+	document: MarkdownDocument,
+	context: { feature: string; resourceId?: string },
+	conversionOptions?: ConversionOptions,
+): Promise<string> {
 	let result: ConversionResponse;
 	try {
-		result = await env.AI.toMarkdown(
-			{
-				name: `${urlHost(url)}.html`,
-				blob: new Blob([html], { type: 'text/html' }),
-			},
-			{
-				...coreAiRequestOptions(env, context),
-				conversionOptions: { html: { hostname: new URL(url).hostname } },
-			},
-		);
+		result = await env.AI.toMarkdown(document, {
+			...coreAiRequestOptions(env, context),
+			...(conversionOptions ? { conversionOptions } : {}),
+		});
 	} catch (error) {
 		throwCoreAiError(env, error, { ...context, model: 'workers-ai/to-markdown' });
 	}
 	// The error variant has no structured status, so its message cannot identify a rate limit.
 	if (result.format === 'error') throw new Error(`Workers AI toMarkdown failed: ${result.error}`);
 	return stripLeadingFrontmatter(result.data);
+}
+
+export function markdownFromHtml(env: CoreEnv, html: string, url: string, resourceId?: string): Promise<string> {
+	return markdownFromDocument(
+		env,
+		{
+			name: `${urlHost(url)}.html`,
+			blob: new Blob([html], { type: 'text/html' }),
+		},
+		{ feature: 'html-to-markdown', resourceId },
+		{ html: { hostname: new URL(url).hostname } },
+	);
+}
+
+export function markdownFromXml(env: CoreEnv, xml: string, resourceId?: string): Promise<string> {
+	return markdownFromDocument(
+		env,
+		{ name: 'openalex.grobid.xml', blob: new Blob([xml], { type: 'application/xml' }) },
+		{ feature: 'xml-to-markdown', resourceId },
+	);
 }
 
 async function acquirePdfBytes(bytes: Uint8Array, url: string, fileName: string, ownedStorageKey?: string): Promise<AcquiredWebContent> {

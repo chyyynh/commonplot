@@ -7,6 +7,7 @@ import type {
 	ResourceTranslationSource,
 	SourceAcquisitionMode,
 } from '@core-shared/resource-types';
+import type { PaperIdentifier } from './paper-identity';
 
 export type ResourceLocaleText = {
 	title?: string | null;
@@ -35,6 +36,7 @@ type ResourceForProcessingBase = {
 	tags: string[];
 	keywords: string[];
 	platform_metadata?: PlatformMetadata;
+	paper_identifiers?: PaperIdentifier[];
 	// Blob/private resource raw columns (undefined for source URL drafts).
 	storage_key?: string | null;
 	file_type?: string | null;
@@ -188,8 +190,8 @@ interface ResourceRepresentationMetadata {
 }
 
 export interface PaperMetadata {
-	schemaVersion: 2;
-	source: 'openalex' | 'semanticscholar';
+	schemaVersion: 3;
+	source: 'openalex';
 	resolvedAt: string;
 	metricsUpdatedAt: string;
 	doi?: string;
@@ -205,6 +207,23 @@ export interface PaperMetadata {
 	referenceCount?: number;
 	pdfUrl?: string;
 	pdfLicense?: string;
+	references?: PaperRelationSnapshot;
+	citations?: PaperRelationSnapshot;
+}
+
+export interface PaperRelationItem {
+	openAlexId: string;
+	doi?: string;
+	title: string;
+	authors: string[];
+	venue?: string;
+	year?: number;
+	citedByCount?: number;
+}
+
+export interface PaperRelationSnapshot {
+	total: number;
+	items: PaperRelationItem[];
 }
 
 interface PlatformEnrichments {

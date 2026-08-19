@@ -17,6 +17,7 @@ import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES, enqueueOrRestartWorkflow } from '../workflow-control';
 import {
 	type AcquiredContent,
+	acquireOpenAlexGrobidArtifact,
 	acquireOpenAlexPdfArtifact,
 	applyAcquiredContent,
 	PDF_MIME,
@@ -196,12 +197,13 @@ async function stageOpenAlexPdfAcquisition(
 	step: WorkflowStep,
 	resource: ResourceForProcessing,
 	resolution: Awaited<ReturnType<typeof stagePaperEnrichment>>,
+	stepName = 'acquire-openalex-content-pdf-v1',
 ): Promise<AcquiredContent | null> {
 	const { contentPdfUrl, metadata } = resolution;
 	if (!contentPdfUrl || resource.scope !== 'corpus' || resource.storage_key) return null;
 	const sourceName = resource.source?.trim() || (resource.url ? new URL(resource.url).hostname : 'OpenAlex');
 	const artifact = await step
-		.do('acquire-openalex-content-pdf-v1', ACQUISITION_STEP, () =>
+		.do(stepName, ACQUISITION_STEP, () =>
 			acquireOpenAlexPdfArtifact(
 				{
 					contentPdfUrl,
@@ -231,6 +233,49 @@ async function stageOpenAlexPdfAcquisition(
 		resource_id: resource.id,
 		chars: acquired.markdown.length,
 		pages: acquired.extraction?.pages ?? null,
+	});
+	return acquired;
+}
+
+async function stageOpenAlexGrobidAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	resource: ResourceForProcessing,
+	resolution: Awaited<ReturnType<typeof stagePaperEnrichment>>,
+	stepName = 'acquire-openalex-content-grobid-v1',
+): Promise<AcquiredContent | null> {
+	const { contentGrobidXmlUrl, metadata } = resolution;
+	if (!contentGrobidXmlUrl || resource.scope !== 'corpus' || resource.storage_key) return null;
+	const sourceName = resource.source?.trim() || (resource.url ? new URL(resource.url).hostname : 'OpenAlex');
+	const artifact = await step
+		.do(stepName, ACQUISITION_STEP, () =>
+			acquireOpenAlexGrobidArtifact(
+				{
+					contentGrobidXmlUrl,
+					description: metadata?.abstract?.trim() || resource.summary,
+					publishedDate: metadata?.publicationDate?.trim() || resource.published_date,
+					sourceName,
+					title: metadata?.title?.trim() || resource.title,
+				},
+				env,
+			),
+		)
+		.catch((error) => {
+			console.error({
+				tag: 'OPENALEX_CONTENT',
+				event: 'grobid_acquisition_failed',
+				resource_id: resource.id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return null;
+		});
+	if (!artifact) return null;
+	const acquired = await readAcquiredContentArtifact(artifact);
+	console.info({
+		tag: 'OPENALEX_CONTENT',
+		event: 'grobid_acquired',
+		resource_id: resource.id,
+		chars: acquired.markdown.length,
 	});
 	return acquired;
 }
@@ -383,39 +428,81 @@ async function prepareResourceForProcessing(
 	// Exact DOI/arXiv/OpenAlex URLs can go straight to OpenAlex Content. The
 	// original landing page is only acquired when OpenAlex has no cached PDF.
 	const explicitPaperResolution = isExplicitPaperUrl(initialResource.url)
-		? await stagePaperEnrichment(env, step, initialResource, 'resolve-explicit-paper-openalex-v1')
+		? await stagePaperEnrichment(
+				env,
+				step,
+				{ ...initialResource, identifiers: initialResource.paper_identifiers },
+				{
+					includeCitationSnapshots: false,
+					stepName: 'resolve-explicit-paper-openalex-v2',
+				},
+			)
 		: null;
 	const explicitOpenAlexPdf = explicitPaperResolution
-		? await stageOpenAlexPdfAcquisition(env, step, initialResource, explicitPaperResolution)
+		? await stageOpenAlexPdfAcquisition(env, step, initialResource, explicitPaperResolution, 'acquire-preliminary-openalex-content-pdf-v1')
 		: null;
-	let acquiredContent = explicitOpenAlexPdf ?? (await acquireResourceForOperation(env, step, initialResource, operation));
+	const explicitOpenAlexGrobid =
+		explicitPaperResolution && !explicitOpenAlexPdf
+			? await stageOpenAlexGrobidAcquisition(
+					env,
+					step,
+					initialResource,
+					explicitPaperResolution,
+					'acquire-preliminary-openalex-content-grobid-v1',
+				)
+			: null;
+	let acquiredContent =
+		explicitOpenAlexPdf ?? explicitOpenAlexGrobid ?? (await acquireResourceForOperation(env, step, initialResource, operation));
 	let acquiredResource = await stageTweetLinkUnfurl(step, applyAcquiredContent(initialResource, acquiredContent));
 	const identityPdfTextArtifact =
 		acquiredResource.storage_key && acquiredResource.file_type === PDF_MIME && acquiredContent?.fileType !== PDF_MIME
 			? await stagePdfTextExtraction(env, step, { sourceStorageKey: acquiredResource.storage_key })
 			: null;
-	const paperCandidate = identityPdfTextArtifact?.text?.trim()
-		? { ...acquiredResource, content: identityPdfTextArtifact.text }
-		: acquiredResource;
-	const paperResolution = explicitPaperResolution ?? (await stagePaperEnrichment(env, step, paperCandidate));
+	const identifierText = identityPdfTextArtifact?.text?.trim()
+		? identityPdfTextArtifact.text
+		: acquiredResource.file_type === PDF_MIME
+			? acquiredResource.content
+			: null;
+	const hackerNewsTargetUrl = acquiredContent?.hackerNewsItem?.url?.trim() || null;
+	const refreshedPaperResolution = await stagePaperEnrichment(
+		env,
+		step,
+		{
+			...acquiredResource,
+			identifierText,
+			identifiers: explicitPaperResolution?.identifiers ?? initialResource.paper_identifiers,
+			...(hackerNewsTargetUrl ? { translateUrl: true, url: hackerNewsTargetUrl } : {}),
+		},
+		{ includeCitationSnapshots: true, stepName: 'resolve-paper-openalex-with-citations-v1' },
+	);
+	const paperResolution = refreshedPaperResolution.metadata
+		? refreshedPaperResolution
+		: (explicitPaperResolution ?? refreshedPaperResolution);
 	const paperEnrichment = paperResolution.metadata;
-	const openAlexPdf = explicitOpenAlexPdf ? null : await stageOpenAlexPdfAcquisition(env, step, acquiredResource, paperResolution);
+	const openAlexPdf =
+		explicitOpenAlexPdf || acquiredResource.storage_key
+			? null
+			: await stageOpenAlexPdfAcquisition(env, step, acquiredResource, paperResolution, 'acquire-selected-openalex-content-pdf-v1');
 	if (openAlexPdf) {
 		acquiredContent = openAlexPdf;
 		acquiredResource = applyAcquiredContent(acquiredResource, openAlexPdf);
 	}
+	const openAlexGrobid =
+		explicitOpenAlexGrobid || openAlexPdf || acquiredResource.storage_key
+			? null
+			: await stageOpenAlexGrobidAcquisition(env, step, acquiredResource, paperResolution, 'acquire-selected-openalex-content-grobid-v1');
+	if (openAlexGrobid) {
+		acquiredContent = openAlexGrobid;
+		acquiredResource = applyAcquiredContent(acquiredResource, openAlexGrobid);
+	}
 	const convergence =
-		paperEnrichment && (paperEnrichment.doi || paperEnrichment.arxivId || paperEnrichment.openAlexId)
+		paperEnrichment && paperResolution.identifiers.length > 0
 			? await step.do(
 					'converge-paper-resource-identity-v1',
 					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 					() =>
 						env.DOMAIN.convergePaperResource({
-							identity: {
-								...(paperEnrichment.arxivId ? { arxivId: paperEnrichment.arxivId } : {}),
-								...(paperEnrichment.doi ? { doi: paperEnrichment.doi } : {}),
-								...(paperEnrichment.openAlexId ? { openAlexId: paperEnrichment.openAlexId } : {}),
-							},
+							identifiers: paperResolution.identifiers,
 							sourceResourceId: initialResource.id,
 						}),
 				)

@@ -13,7 +13,7 @@ import { withPdfExtractionMetadata } from '@core-shared/types';
 import { detectResourcePlatform, detectResourceUrl, normalizeUrl } from '@core-shared/url';
 import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
 import { type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
-import { acquireOpenAlexPdf } from './platforms/openalex';
+import { acquireOpenAlexGrobidText, acquireOpenAlexPdf } from './platforms/openalex';
 import { acquireRssFeedItem, type RssFeedAcquisitionInput } from './platforms/rss-feed';
 import { scrapeTweet } from './platforms/twitter-acquisition';
 import { scrapeYouTube } from './platforms/youtube-acquisition';
@@ -189,6 +189,44 @@ export async function acquireOpenAlexPdfArtifact(
 				description: input.description,
 				publishedDate: input.publishedDate,
 				siteName: sourceName,
+			},
+		}),
+	);
+}
+
+export async function acquireOpenAlexGrobidArtifact(
+	input: {
+		contentGrobidXmlUrl: string;
+		description: string | null;
+		publishedDate: string | null;
+		sourceName: string;
+		title: string;
+	},
+	env: CoreEnv,
+): Promise<ReadableStream<Uint8Array>> {
+	const markdown = await acquireOpenAlexGrobidText({
+		contentGrobidXmlUrl: input.contentGrobidXmlUrl,
+		env,
+	});
+	const sourceName = input.sourceName.trim();
+	if (!sourceName) throw new Error('OpenAlex GROBID acquisition has no source name');
+	return acquiredContentArtifact(
+		await sanitizeAcquiredContent({
+			kind: 'blog',
+			resourcePlatform: null,
+			fileType: null,
+			title: input.title,
+			markdown,
+			metadata: {
+				author: null,
+				description: input.description,
+				language: null,
+				publishedDate: input.publishedDate,
+				siteName: sourceName,
+			},
+			platformMetadata: {
+				fetchedAt: new Date().toISOString(),
+				data: null,
 			},
 		}),
 	);

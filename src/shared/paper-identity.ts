@@ -9,6 +9,12 @@ const OPENALEX_ID_RE = /^(?:https?:\/\/openalex\.org\/)?(W\d+)\/?$/i;
 export const PAPER_IDENTIFIER_SCHEMES = ['doi', 'arxiv', 'openalex'] as const;
 export type PaperIdentifierScheme = (typeof PAPER_IDENTIFIER_SCHEMES)[number];
 
+export type PaperIdentifier = Readonly<{
+	preferred: boolean;
+	scheme: PaperIdentifierScheme;
+	value: string;
+}>;
+
 export type PaperIdentity = Readonly<{
 	arxivId?: string;
 	doi?: string;
@@ -19,6 +25,75 @@ export type ResolvedPaperInput = Readonly<{
 	canonicalUrl: string;
 	identity: PaperIdentity;
 }>;
+
+function normalizePaperIdentifier(identifier: Omit<PaperIdentifier, 'preferred'> & { preferred?: boolean }): PaperIdentifier | null {
+	const value =
+		identifier.scheme === 'doi'
+			? normalizeDoi(identifier.value)
+			: identifier.scheme === 'arxiv'
+				? normalizeArxivId(identifier.value)
+				: normalizeOpenAlexId(identifier.value);
+	return value ? { preferred: identifier.preferred !== false, scheme: identifier.scheme, value } : null;
+}
+
+/**
+ * Normalize and deduplicate exact identifiers while keeping at most one
+ * preferred value per scheme. Input order is meaningful: the resolver puts
+ * the selected version of record before aliases from other versions.
+ */
+export function normalizePaperIdentifiers(
+	identifiers: readonly (Omit<PaperIdentifier, 'preferred'> & { preferred?: boolean })[],
+): PaperIdentifier[] {
+	const deduplicated = new Map<string, PaperIdentifier>();
+	for (const candidate of identifiers) {
+		const identifier = normalizePaperIdentifier(candidate);
+		if (!identifier) continue;
+		const key = `${identifier.scheme}:${identifier.value}`;
+		const existing = deduplicated.get(key);
+		deduplicated.set(key, existing ? { ...existing, preferred: existing.preferred || identifier.preferred } : identifier);
+	}
+
+	const preferredSchemes = new Set<PaperIdentifierScheme>();
+	const normalized: PaperIdentifier[] = [];
+	for (const identifier of deduplicated.values()) {
+		const preferred = identifier.preferred && !preferredSchemes.has(identifier.scheme);
+		if (preferred) preferredSchemes.add(identifier.scheme);
+		normalized.push({ ...identifier, preferred });
+	}
+	for (const scheme of PAPER_IDENTIFIER_SCHEMES) {
+		if (preferredSchemes.has(scheme)) continue;
+		const index = normalized.findIndex((identifier) => identifier.scheme === scheme);
+		if (index >= 0) normalized[index] = { ...normalized[index]!, preferred: true };
+	}
+	return normalized;
+}
+
+export function paperIdentifiersFromIdentity(identity: PaperIdentity, preferred = true): PaperIdentifier[] {
+	const normalized = normalizePaperIdentity(identity);
+	if (!normalized) return [];
+	return normalizePaperIdentifiers([
+		...(normalized.doi ? [{ preferred, scheme: 'doi' as const, value: normalized.doi }] : []),
+		...(normalized.arxivId ? [{ preferred, scheme: 'arxiv' as const, value: normalized.arxivId }] : []),
+		...(normalized.openAlexId ? [{ preferred, scheme: 'openalex' as const, value: normalized.openAlexId }] : []),
+	]);
+}
+
+export function paperIdentityFromIdentifiers(identifiers: readonly PaperIdentifier[]): PaperIdentity | null {
+	const normalized = normalizePaperIdentifiers(identifiers);
+	const value = (scheme: PaperIdentifierScheme, accept: (value: string) => boolean = () => true) =>
+		normalized.find((identifier) => identifier.scheme === scheme && identifier.preferred && accept(identifier.value))?.value ??
+		normalized.find((identifier) => identifier.scheme === scheme && accept(identifier.value))?.value;
+	const doi = value('doi', (candidate) => !candidate.startsWith(ARXIV_DOI_PREFIX)) ?? value('doi');
+	const arxivId = value('arxiv');
+	const openAlexId = value('openalex');
+	return normalizePaperIdentity({ doi, arxivId, openAlexId });
+}
+
+export function paperIdentifierLockKeys(identifiers: readonly PaperIdentifier[]): string[] {
+	return normalizePaperIdentifiers(identifiers)
+		.map((identifier) => `${identifier.scheme}:${identifier.value}`)
+		.sort();
+}
 
 function nonEmptyString(value: unknown): string | null {
 	return typeof value === 'string' && value.trim() ? value.trim() : null;
@@ -152,11 +227,5 @@ export function normalizePaperIdentity(identity: PaperIdentity): PaperIdentity |
 }
 
 export function paperIdentityLockKeys(identity: PaperIdentity): string[] {
-	const normalized = normalizePaperIdentity(identity);
-	if (!normalized) return [];
-	return [
-		...(normalized.arxivId ? [`arxiv:${normalized.arxivId}`] : []),
-		...(normalized.doi ? [`doi:${normalized.doi}`] : []),
-		...(normalized.openAlexId ? [`openalex:${normalized.openAlexId}`] : []),
-	].sort();
+	return paperIdentifierLockKeys(paperIdentifiersFromIdentity(identity));
 }

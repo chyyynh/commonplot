@@ -1,14 +1,24 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import { normalizeArxivId, normalizeDoi, normalizeOpenAlexId, type PaperIdentity } from '@core-shared/paper-identity';
-import type { PaperMetadata } from '@core-shared/types';
+import {
+	normalizeArxivId,
+	normalizeDoi,
+	normalizeOpenAlexId,
+	normalizePaperIdentifiers,
+	type PaperIdentifier,
+	type PaperIdentity,
+	paperIdentityFromIdentifiers,
+} from '@core-shared/paper-identity';
+import type { PaperMetadata, PaperRelationItem, PaperRelationSnapshot } from '@core-shared/types';
 import { z } from 'zod';
-import { type AcquiredWebContent, acquireFetchedPdfResponse } from '../web-acquisition';
+import { type AcquiredWebContent, acquireFetchedPdfResponse, markdownFromXml } from '../web-acquisition';
 
 const OPENALEX_BASE = 'https://api.openalex.org';
 const OPENALEX_CONTENT_HOST = 'content.openalex.org';
 const REQUEST_TIMEOUT_MS = 8_000;
 const CONTENT_REQUEST_TIMEOUT_MS = 120_000;
+const GROBID_RESPONSE_MAX_BYTES = 25 * 1024 * 1024;
 const RESPONSE_MAX_BYTES = 5 * 1024 * 1024;
+const MAX_RELATION_ITEMS = 100;
 const WORK_FIELDS = [
 	'id',
 	'doi',
@@ -17,6 +27,7 @@ const WORK_FIELDS = [
 	'publication_date',
 	'cited_by_count',
 	'referenced_works_count',
+	'referenced_works',
 	'authorships',
 	'abstract_inverted_index',
 	'primary_location',
@@ -25,6 +36,7 @@ const WORK_FIELDS = [
 	'has_content',
 	'content_urls',
 ].join(',');
+const RELATION_WORK_FIELDS = ['id', 'doi', 'title', 'publication_year', 'cited_by_count', 'authorships', 'primary_location'].join(',');
 
 const OpenAlexLocationSchema = z.object({
 	is_oa: z.boolean().nullish(),
@@ -42,6 +54,7 @@ const OpenAlexWorkSchema = z.object({
 	publication_date: z.string().nullish(),
 	cited_by_count: z.number().int().nonnegative().nullish(),
 	referenced_works_count: z.number().int().nonnegative().nullish(),
+	referenced_works: z.array(z.string()).nullish(),
 	authorships: z.array(z.object({ author: z.object({ display_name: z.string().nullish() }) })).nullish(),
 	abstract_inverted_index: z.record(z.string(), z.array(z.number().int().nonnegative())).nullish(),
 	primary_location: OpenAlexLocationSchema.nullish(),
@@ -51,11 +64,18 @@ const OpenAlexWorkSchema = z.object({
 	content_urls: z.object({ pdf: z.string().nullish(), grobid_xml: z.string().nullish() }).nullish(),
 });
 
+const OpenAlexListSchema = z.object({
+	meta: z.object({ count: z.number().int().nonnegative() }).passthrough(),
+	results: z.array(OpenAlexWorkSchema),
+});
+
 type OpenAlexLocation = z.infer<typeof OpenAlexLocationSchema>;
 type OpenAlexWork = z.infer<typeof OpenAlexWorkSchema>;
 
 export type OpenAlexPaperResolution = Readonly<{
+	contentGrobidXmlUrl: string | null;
 	contentPdfUrl: string | null;
+	identifiers: PaperIdentifier[];
 	metadata: PaperMetadata;
 }>;
 
@@ -107,9 +127,14 @@ function arxivIdFromWork(work: OpenAlexWork, identity: PaperIdentity | null): st
 	return undefined;
 }
 
-function openAlexContentPdfUrl(work: OpenAlexWork, openAlexId: string | null | undefined): string | null {
-	if (!openAlexId || work.has_content?.pdf !== true) return null;
-	const value = httpsUrl(work.content_urls?.pdf);
+function openAlexContentUrl(input: {
+	extension: 'pdf' | 'grobid-xml';
+	hasContent: boolean;
+	openAlexId: string | null | undefined;
+	value: string | null | undefined;
+}): string | null {
+	if (!input.openAlexId || !input.hasContent) return null;
+	const value = httpsUrl(input.value);
 	if (!value) return null;
 	const url = new URL(value);
 	if (
@@ -118,34 +143,97 @@ function openAlexContentPdfUrl(work: OpenAlexWork, openAlexId: string | null | u
 		url.password ||
 		url.search ||
 		url.hash ||
-		url.pathname !== `/works/${openAlexId}.pdf`
+		url.pathname !== `/works/${input.openAlexId}.${input.extension}`
 	) {
 		return null;
 	}
 	return url.toString();
 }
 
-function normalizeOpenAlexWork(work: OpenAlexWork, identity: PaperIdentity | null): OpenAlexPaperResolution {
-	const fetchedAt = new Date().toISOString();
-	const pdf = licensedPdfLocation(work);
+function openAlexContentPdfUrl(work: OpenAlexWork, openAlexId: string | null | undefined): string | null {
+	return openAlexContentUrl({
+		extension: 'pdf',
+		hasContent: work.has_content?.pdf === true,
+		openAlexId,
+		value: work.content_urls?.pdf,
+	});
+}
+
+function openAlexContentGrobidXmlUrl(work: OpenAlexWork, openAlexId: string | null | undefined): string | null {
+	return openAlexContentUrl({
+		extension: 'grobid-xml',
+		hasContent: work.has_content?.grobid_xml === true,
+		openAlexId,
+		value: work.content_urls?.grobid_xml,
+	});
+}
+
+function resolvedWorkIdentifiers(work: OpenAlexWork, inputIdentifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
+	const identity = paperIdentityFromIdentifiers(inputIdentifiers);
 	const arxivId = arxivIdFromWork(work, identity);
 	const providerDoi = normalizeDoi(work.doi);
-	// arXiv already has its own canonical identifier. Persisting the DataCite
-	// proxy DOI as a second identity is redundant and can conflict with a
-	// publisher DOI already attached to the same Resource.
 	const arxivProxyDoi = arxivId ? normalizeDoi(`10.48550/arxiv.${arxivId}`) : null;
-	const doi = identity?.doi ?? (providerDoi === arxivProxyDoi ? undefined : providerDoi);
+	const doi = providerDoi === arxivProxyDoi ? identity?.doi : (providerDoi ?? identity?.doi);
 	const openAlexId = normalizeOpenAlexId(work.id);
+	return normalizePaperIdentifiers([
+		...(doi && doi !== arxivProxyDoi ? [{ preferred: true, scheme: 'doi' as const, value: doi }] : []),
+		...(arxivId ? [{ preferred: true, scheme: 'arxiv' as const, value: arxivId }] : []),
+		...(openAlexId ? [{ preferred: true, scheme: 'openalex' as const, value: openAlexId }] : []),
+		...inputIdentifiers
+			.filter((identifier) => identifier.scheme !== 'doi' || identifier.value !== arxivProxyDoi)
+			.map((identifier) => ({ ...identifier, preferred: false })),
+	]);
+}
+
+function normalizeRelationItem(work: OpenAlexWork): PaperRelationItem | null {
+	const openAlexId = normalizeOpenAlexId(work.id);
+	const title = work.title?.trim();
+	if (!openAlexId || !title) return null;
+	const doi = normalizeDoi(work.doi);
+	return {
+		openAlexId,
+		...(doi ? { doi } : {}),
+		title,
+		authors: work.authorships?.map(({ author }) => author.display_name?.trim()).filter((name): name is string => !!name) ?? [],
+		venue: work.primary_location?.source?.display_name?.trim() || undefined,
+		year: work.publication_year ?? undefined,
+		citedByCount: work.cited_by_count ?? undefined,
+	};
+}
+
+function relationSnapshot(input: { items: OpenAlexWork[]; total: number }): PaperRelationSnapshot {
+	const items = input.items.flatMap((work) => {
+		const normalized = normalizeRelationItem(work);
+		return normalized ? [normalized] : [];
+	});
+	return {
+		items,
+		total: input.total,
+	};
+}
+
+function normalizeOpenAlexWork(
+	work: OpenAlexWork,
+	inputIdentifiers: readonly PaperIdentifier[],
+	relations?: { citations: PaperRelationSnapshot; references: PaperRelationSnapshot },
+): OpenAlexPaperResolution {
+	const fetchedAt = new Date().toISOString();
+	const pdf = licensedPdfLocation(work);
+	const identifiers = resolvedWorkIdentifiers(work, inputIdentifiers);
+	const identity = paperIdentityFromIdentifiers(identifiers);
+	const openAlexId = identity?.openAlexId;
 	const referenceCount = work.referenced_works_count ?? undefined;
 	return {
+		contentGrobidXmlUrl: openAlexContentGrobidXmlUrl(work, openAlexId),
 		contentPdfUrl: openAlexContentPdfUrl(work, openAlexId),
+		identifiers,
 		metadata: {
-			schemaVersion: 2,
+			schemaVersion: 3,
 			source: 'openalex',
 			resolvedAt: fetchedAt,
 			metricsUpdatedAt: fetchedAt,
-			...(doi ? { doi } : {}),
-			...(arxivId ? { arxivId } : {}),
+			...(identity?.doi ? { doi: identity.doi } : {}),
+			...(identity?.arxivId ? { arxivId: identity.arxivId } : {}),
 			...(openAlexId ? { openAlexId } : {}),
 			title: work.title ?? undefined,
 			authors: work.authorships?.map(({ author }) => author.display_name?.trim()).filter((name): name is string => !!name) ?? [],
@@ -156,6 +244,7 @@ function normalizeOpenAlexWork(work: OpenAlexWork, identity: PaperIdentity | nul
 			citedByCount: work.cited_by_count ?? undefined,
 			referenceCount,
 			...(pdf ? { pdfUrl: pdf.pdf_url, pdfLicense: pdf.license } : {}),
+			...(relations ? { citations: relations.citations, references: relations.references } : {}),
 		},
 	};
 }
@@ -174,25 +263,77 @@ async function fetchOpenAlexJson(path: string, apiKey: string): Promise<unknown 
 	throw new Error(`OpenAlex request failed with HTTP ${status}${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
 }
 
-function workLookupPath(identity: PaperIdentity): string | null {
+function workLookupPath(identifiers: readonly PaperIdentifier[]): string | null {
+	const identity = paperIdentityFromIdentifiers(identifiers);
+	if (!identity) return null;
 	let workId: string | null = null;
-	if (identity.openAlexId) {
-		workId = encodeURIComponent(identity.openAlexId);
-	} else {
-		const doi = identity.doi ?? (identity.arxivId ? `10.48550/arxiv.${identity.arxivId}` : null);
-		if (doi) workId = `https://doi.org/${encodeURIComponent(doi)}`;
-	}
+	const doi = identity.doi ?? (identity.arxivId ? `10.48550/arxiv.${identity.arxivId}` : null);
+	if (doi) workId = `https://doi.org/${encodeURIComponent(doi)}`;
+	else if (identity.openAlexId) workId = encodeURIComponent(identity.openAlexId);
 	return workId ? `/works/${workId}?select=${WORK_FIELDS}` : null;
 }
 
-export async function resolveOpenAlexPaper(input: { apiKey?: string; identity: PaperIdentity }): Promise<OpenAlexPaperResolution | null> {
+function worksListPath(params: Record<string, string>): string {
+	return `/works?${new URLSearchParams(params).toString()}`;
+}
+
+async function fetchOpenAlexRelations(input: {
+	apiKey: string;
+	work: OpenAlexWork;
+}): Promise<{ citations: PaperRelationSnapshot; references: PaperRelationSnapshot }> {
+	const openAlexId = normalizeOpenAlexId(input.work.id);
+	if (!openAlexId) throw new Error('OpenAlex work response has no valid id');
+	const referencedIds = (input.work.referenced_works ?? [])
+		.map(normalizeOpenAlexId)
+		.filter((value): value is string => !!value)
+		.slice(0, MAX_RELATION_ITEMS);
+	const referenceRequest = referencedIds.length
+		? fetchOpenAlexJson(
+				worksListPath({
+					filter: `openalex_id:${referencedIds.join('|')}`,
+					'per-page': String(referencedIds.length),
+					select: RELATION_WORK_FIELDS,
+					sort: 'cited_by_count:desc',
+				}),
+				input.apiKey,
+			)
+		: Promise.resolve({ meta: { count: 0 }, results: [] });
+	const citationRequest = fetchOpenAlexJson(
+		worksListPath({
+			filter: `cites:${openAlexId}`,
+			'per-page': String(MAX_RELATION_ITEMS),
+			select: RELATION_WORK_FIELDS,
+			sort: 'cited_by_count:desc',
+		}),
+		input.apiKey,
+	);
+	const [referenceJson, citationJson] = await Promise.all([referenceRequest, citationRequest]);
+	const references = OpenAlexListSchema.parse(referenceJson);
+	const citations = OpenAlexListSchema.parse(citationJson);
+	return {
+		citations: relationSnapshot({ items: citations.results, total: citations.meta.count }),
+		references: relationSnapshot({
+			items: references.results,
+			total: input.work.referenced_works_count ?? references.meta.count,
+		}),
+	};
+}
+
+export async function resolveOpenAlexPaper(input: {
+	apiKey?: string;
+	identifiers: readonly PaperIdentifier[];
+	includeCitationSnapshots?: boolean;
+}): Promise<OpenAlexPaperResolution | null> {
 	const apiKey = input.apiKey?.trim();
 	if (!apiKey) return null;
-	const lookupPath = workLookupPath(input.identity);
+	const identifiers = normalizePaperIdentifiers(input.identifiers);
+	const lookupPath = workLookupPath(identifiers);
 	if (!lookupPath) return null;
 	const json = await fetchOpenAlexJson(lookupPath, apiKey);
 	if (!json) return null;
-	return normalizeOpenAlexWork(OpenAlexWorkSchema.parse(json), input.identity);
+	const work = OpenAlexWorkSchema.parse(json);
+	const relations = input.includeCitationSnapshots ? await fetchOpenAlexRelations({ apiKey, work }) : undefined;
+	return normalizeOpenAlexWork(work, identifiers, relations);
 }
 
 export async function acquireOpenAlexPdf(input: {
@@ -223,4 +364,38 @@ export async function acquireOpenAlexPdf(input: {
 		throw new Error(`OpenAlex content PDF request failed with HTTP ${status}`);
 	}
 	return acquireFetchedPdfResponse(input.env, input.resourceId, response, contentUrl.toString());
+}
+
+export async function acquireOpenAlexGrobidText(input: {
+	contentGrobidXmlUrl: string;
+	env: CoreEnv;
+	resourceId?: string;
+}): Promise<string> {
+	const apiKey = input.env.OPENALEX_API_KEY?.trim();
+	if (!apiKey) throw new Error('OpenAlex content download requires an API key');
+	const contentUrl = new URL(input.contentGrobidXmlUrl);
+	if (
+		contentUrl.protocol !== 'https:' ||
+		contentUrl.hostname !== OPENALEX_CONTENT_HOST ||
+		contentUrl.username ||
+		contentUrl.password ||
+		contentUrl.search ||
+		contentUrl.hash ||
+		!contentUrl.pathname.endsWith('.grobid-xml')
+	) {
+		throw new Error('OpenAlex content GROBID XML URL is invalid');
+	}
+	const requestUrl = new URL(contentUrl);
+	requestUrl.searchParams.set('api_key', apiKey);
+	const response = await fetchWithTimeout(
+		requestUrl.toString(),
+		{ headers: { Accept: 'application/xml,text/xml' } },
+		CONTENT_REQUEST_TIMEOUT_MS,
+	);
+	if (!response.ok) {
+		const status = response.status;
+		await response.body?.cancel();
+		throw new Error(`OpenAlex content GROBID XML request failed with HTTP ${status}`);
+	}
+	return markdownFromXml(input.env, await readTextWithLimit(response, GROBID_RESPONSE_MAX_BYTES), input.resourceId);
 }

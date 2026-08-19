@@ -83,11 +83,11 @@ export const resourceIdentifiers = pgTable(
 			.references(() => resources.id, { onDelete: 'cascade' }),
 		scheme: varchar('scheme', { length: 32, enum: ['doi', 'arxiv', 'openalex'] }).notNull(),
 		value: text('value').notNull(),
+		isPreferred: boolean('is_preferred').default(true).notNull(),
 	},
 	(table) => [
 		primaryKey({ columns: [table.scheme, table.value] }),
-		uniqueIndex('resource_identifiers_resource_id_scheme_key').on(table.resourceId, table.scheme),
-		index('resource_identifiers_resource_id_idx').on(table.resourceId),
+		index('resource_identifiers_resource_id_scheme_idx').on(table.resourceId, table.scheme),
 	],
 );
 

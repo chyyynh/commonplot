@@ -162,7 +162,7 @@ export function isIncomingResourceSnapshotSuperseded(incoming: unknown, stored: 
 export function hasAcademicPaperEnrichment(platformMetadata: unknown): boolean {
 	if (!isRecord(platformMetadata) || !isRecord(platformMetadata.enrichments)) return false;
 	const academic = platformMetadata.enrichments.academic;
-	return isRecord(academic) && (academic.source === 'openalex' || academic.source === 'semanticscholar');
+	return isRecord(academic) && academic.schemaVersion === 3 && academic.source === 'openalex';
 }
 
 export function resourceIdentityForDetectedPlatform(
