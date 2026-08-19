@@ -7,7 +7,6 @@ import type {
 	ResourceMediaAttachment,
 	VideoKindMetadata,
 } from '@core-shared/resource-metadata';
-import type { ContentResourceKind, ResourcePlatform } from '@core-shared/resource-types';
 import type { AcquiredMaterial, AcquisitionEnvelope, PaperMetadata, ResourceForProcessing } from '@core-shared/types';
 
 type CanonicalAcquisitionFields = Readonly<{
@@ -154,22 +153,4 @@ export function withPaperCanonicalFields(resource: ResourceForProcessing, metada
 		creators: canonical.creators,
 		kind_metadata: canonical.kindMetadata,
 	};
-}
-
-export function emptyKindMetadataFor(kind: ContentResourceKind, resourcePlatform: ResourcePlatform): ResourceKindMetadata {
-	switch (kind) {
-		case 'blog':
-			return null;
-		case 'forum':
-			if (resourcePlatform !== 'hackernews') throw new Error('Forum resource requires a supported platform');
-			return {};
-		case 'post':
-			if (resourcePlatform !== 'twitter') throw new Error('Post resource requires a supported platform');
-			return { attachments: [] };
-		case 'video':
-			if (resourcePlatform !== 'youtube') throw new Error('Video resource requires a supported platform');
-			return {};
-		case 'paper':
-			return {};
-	}
 }

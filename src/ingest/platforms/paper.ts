@@ -9,23 +9,17 @@ import { resolveOpenAlexPaper } from './openalex';
 const DEFAULT_RATE_LIMIT_DELAY_SECONDS = 15;
 const MAX_RATE_LIMIT_DELAY_SECONDS = 5 * 60;
 const IDENTIFIER_SCAN_CHARS = 3_000;
-type PaperEnrichmentCandidate = {
-	id: string;
-	url?: string | null;
+type PaperEnrichmentCandidate = Pick<ResourceForProcessing, 'id' | 'url' | 'scope' | 'source_id' | 'resource_platform'> & {
 	identifierText?: string | null;
-	scope?: string;
-	source_id?: string | null;
-	resource_platform?: string | null;
 	identifiers?: readonly PaperIdentifier[];
 	translateUrl?: boolean;
 };
 
-type PaperEnrichmentAttempt = {
+type PaperEnrichmentResolution = {
 	contentGrobidXmlUrl: string | null;
 	contentPdfUrl: string | null;
 	identifiers: PaperIdentifier[];
 	metadata: PaperMetadata | null;
-	outcome: 'resolved' | 'preserved' | 'not_found' | 'failed' | 'not_applicable';
 };
 
 export function isExplicitPaperUrl(url: string | null | undefined): boolean {
@@ -59,16 +53,16 @@ function paperEnrichmentRetryDelay({ ctx, error }: WorkflowDynamicDelayContext):
 	return `${Math.min(30, ctx.attempt * 5)} seconds`;
 }
 
-export async function stagePaperEnrichmentAttempt(
+export async function stagePaperEnrichment(
 	env: CoreEnv,
 	step: WorkflowStep,
 	candidate: PaperEnrichmentCandidate,
 	options: { stepName?: string } = {},
-): Promise<PaperEnrichmentAttempt> {
+): Promise<PaperEnrichmentResolution> {
 	const hasLocalPaperEvidence = localPaperEvidence(candidate);
 	const translateSavedUrl = !hasLocalPaperEvidence && shouldTranslateSavedUrl(candidate);
 	if (!hasLocalPaperEvidence && !translateSavedUrl) {
-		return { contentGrobidXmlUrl: null, contentPdfUrl: null, identifiers: [], metadata: null, outcome: 'not_applicable' };
+		return { contentGrobidXmlUrl: null, contentPdfUrl: null, identifiers: [], metadata: null };
 	}
 	const attemptStartedAt = Date.now();
 
@@ -104,13 +98,11 @@ export async function stagePaperEnrichmentAttempt(
 				return { ...bibliographic, resolved };
 			},
 		);
-		const metadata = resolution?.resolved?.metadata ?? null;
 		return {
 			contentGrobidXmlUrl: resolution?.resolved?.contentGrobidXmlUrl ?? null,
 			contentPdfUrl: resolution?.resolved?.contentPdfUrl ?? null,
 			identifiers: resolution?.resolved?.identifiers ?? resolution?.identifiers ?? [],
-			metadata,
-			outcome: metadata ? 'resolved' : 'not_found',
+			metadata: resolution?.resolved?.metadata ?? null,
 		};
 	} catch (error) {
 		console.warn({
@@ -126,21 +118,6 @@ export async function stagePaperEnrichmentAttempt(
 			contentPdfUrl: null,
 			identifiers: [],
 			metadata: null,
-			outcome: 'failed',
 		};
 	}
-}
-
-export async function stagePaperEnrichment(
-	env: CoreEnv,
-	step: WorkflowStep,
-	candidate: Pick<ResourceForProcessing, 'id' | 'url' | 'scope' | 'source_id' | 'resource_platform'> & {
-		identifierText?: string | null;
-		identifiers?: readonly PaperIdentifier[];
-		translateUrl?: boolean;
-	},
-	options?: { stepName?: string },
-): Promise<Pick<PaperEnrichmentAttempt, 'contentGrobidXmlUrl' | 'contentPdfUrl' | 'identifiers' | 'metadata'>> {
-	const { contentGrobidXmlUrl, contentPdfUrl, identifiers, metadata } = await stagePaperEnrichmentAttempt(env, step, candidate, options);
-	return { contentGrobidXmlUrl, contentPdfUrl, identifiers, metadata };
 }

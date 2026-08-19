@@ -208,10 +208,6 @@ export function canonicalizeOptionalResourceLang(value: unknown): string | null 
 	}
 }
 
-export function targetResourceLocale(requestedLocale: string | null | undefined, originalLang: string | null | undefined): string | null {
-	return canonicalizeOptionalResourceLang(requestedLocale) ?? canonicalizeOptionalResourceLang(originalLang);
-}
-
 export function selectPreferredResourceTranslation<T extends { lang: string }>(
 	translations: readonly T[],
 	requestedLocale: string | null | undefined,
