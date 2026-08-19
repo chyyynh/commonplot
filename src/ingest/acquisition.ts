@@ -64,7 +64,6 @@ export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?
 		summary: acquired.metadata.description,
 		content: acquired.markdown,
 		source: acquired.metadata.siteName,
-		og_image_url: acquired.previewImageUrl?.trim() || resource.og_image_url?.trim() || null,
 		creators: canonical.creators,
 		kind_metadata: canonical.kindMetadata,
 		source_revision: acquired.acquisition.sourceSnapshotHash ?? resource.source_revision ?? null,

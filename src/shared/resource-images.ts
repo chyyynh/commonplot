@@ -5,7 +5,6 @@ import { normalizePreviewImageUrl } from './url.ts';
 export const RESOURCE_IMAGE_ID_PREFIX = 'resource-';
 
 const RESOURCE_IMAGE_ID_PATTERN = /^resource-[a-f0-9]{64}$/;
-const MAX_RESOURCE_IMAGE_REFS = 64;
 
 export type ResourceImageSourceRecord = Readonly<{
 	creators?: readonly ResourceCreator[] | null;
@@ -13,10 +12,15 @@ export type ResourceImageSourceRecord = Readonly<{
 	ogImageUrl?: string | null;
 }>;
 
-export type ResourceImageRef = Readonly<{
+export type HostedResourceImage = Readonly<{
 	deliveryUrl: string;
-	imageId: string;
 	sourceUrl: string;
+}>;
+
+export type HostedResourceImageFields = Readonly<{
+	creators: ResourceCreator[];
+	kindMetadata: ResourceKindMetadata | null;
+	ogImageUrl: string | null;
 }>;
 
 function isPrivateHostname(hostname: string): boolean {
@@ -93,6 +97,17 @@ export function resourceImageSourceUrls(resource: ResourceImageSourceRecord): st
 	return uniqueImageUrls([...resourcePreviewImageSourceUrls(resource), ...avatarUrls, quoteAvatarUrl]);
 }
 
+function rawResourceImageUrls(resource: ResourceImageSourceRecord): string[] {
+	const metadata = resource.kindMetadata && 'attachments' in resource.kindMetadata ? (resource.kindMetadata as PostKindMetadata) : null;
+	return [
+		resource.ogImageUrl,
+		...(resource.creators?.map((creator) => creator.avatarUrl) ?? []),
+		...(metadata?.attachments.map((attachment) => attachment.url) ?? []),
+		metadata?.externalLink?.imageUrl,
+		metadata?.quote?.creator.avatarUrl,
+	].filter((url): url is string => typeof url === 'string');
+}
+
 export async function resourceImageId(sourceUrl: string): Promise<string> {
 	return RESOURCE_IMAGE_ID_PREFIX + (await sha256Hex(sourceUrl));
 }
@@ -101,41 +116,109 @@ export function isResourceImageId(value: string): boolean {
 	return RESOURCE_IMAGE_ID_PATTERN.test(value);
 }
 
-function isResourceImageDeliveryUrl(value: string, imageId: string): boolean {
+export function hostedResourceImageUrl(value: string | null | undefined): string | null {
+	if (!value) return null;
 	try {
 		const url = new URL(value);
-		return (
-			url.protocol === 'https:' &&
-			url.hostname === 'imagedelivery.net' &&
-			!url.username &&
-			!url.password &&
-			url.search === '' &&
-			url.hash === '' &&
-			url.pathname.endsWith(`/${imageId}/public`)
-		);
+		const [accountHash, imageId, variant, ...rest] = url.pathname.split('/').filter(Boolean);
+		if (
+			url.protocol !== 'https:' ||
+			url.hostname !== 'imagedelivery.net' ||
+			url.username ||
+			url.password ||
+			url.search ||
+			url.hash ||
+			!accountHash ||
+			!/^[a-zA-Z0-9_-]+$/.test(accountHash) ||
+			!imageId ||
+			!isResourceImageId(imageId) ||
+			variant !== 'public' ||
+			rest.length > 0
+		) {
+			return null;
+		}
+		return url.toString();
 	} catch {
-		return false;
+		return null;
 	}
 }
 
-export function parseResourceImageRefs(value: unknown): ResourceImageRef[] {
-	if (!Array.isArray(value) || value.length > MAX_RESOURCE_IMAGE_REFS) {
-		throw new TypeError('Resource image refs are invalid');
+export function resourceImageFieldsAreHosted(resource: ResourceImageSourceRecord): boolean {
+	return rawResourceImageUrls(resource).every((url) => hostedResourceImageUrl(url) === url);
+}
+
+export function resourcePreviewImageUrl(resource: ResourceImageSourceRecord): string | null {
+	for (const candidate of resourcePreviewImageSourceUrls(resource)) {
+		const hosted = hostedResourceImageUrl(candidate);
+		if (hosted) return hosted;
 	}
-	const sourceUrls = new Set<string>();
-	const imageIds = new Set<string>();
-	return value.map((item) => {
-		if (!item || typeof item !== 'object') throw new TypeError('Resource image ref is invalid');
-		const rawSourceUrl = 'sourceUrl' in item && typeof item.sourceUrl === 'string' ? item.sourceUrl : null;
-		const sourceUrl = normalizedResourceImageUrl(rawSourceUrl);
-		const imageId = 'imageId' in item && typeof item.imageId === 'string' ? item.imageId : '';
-		const deliveryUrl = 'deliveryUrl' in item && typeof item.deliveryUrl === 'string' ? item.deliveryUrl : '';
-		if (!sourceUrl || sourceUrl !== rawSourceUrl || !isResourceImageId(imageId) || !isResourceImageDeliveryUrl(deliveryUrl, imageId)) {
-			throw new TypeError('Resource image ref is invalid');
+	return null;
+}
+
+function hostedImageMap(images: readonly HostedResourceImage[]): ReadonlyMap<string, string> {
+	const result = new Map<string, string>();
+	for (const image of images) {
+		const sourceUrl = normalizedResourceImageUrl(image.sourceUrl);
+		const deliveryUrl = hostedResourceImageUrl(image.deliveryUrl);
+		if (!sourceUrl || sourceUrl !== image.sourceUrl || !deliveryUrl || deliveryUrl !== image.deliveryUrl) {
+			throw new TypeError('Hosted Resource image is invalid');
 		}
-		if (sourceUrls.has(sourceUrl) || imageIds.has(imageId)) throw new TypeError('Resource image refs contain duplicates');
-		sourceUrls.add(sourceUrl);
-		imageIds.add(imageId);
-		return { deliveryUrl, imageId, sourceUrl };
+		if (result.has(sourceUrl)) throw new TypeError('Hosted Resource images contain duplicate sources');
+		result.set(sourceUrl, deliveryUrl);
+	}
+	return result;
+}
+
+function mappedImageUrl(rawUrl: string | null | undefined, images: ReadonlyMap<string, string>): string | null {
+	const sourceUrl = normalizedResourceImageUrl(rawUrl);
+	return sourceUrl ? (images.get(sourceUrl) ?? null) : null;
+}
+
+function withHostedAvatar(creator: ResourceCreator, images: ReadonlyMap<string, string>): ResourceCreator {
+	const { avatarUrl: sourceAvatarUrl, ...rest } = creator;
+	const avatarUrl = mappedImageUrl(sourceAvatarUrl, images);
+	return avatarUrl ? { ...rest, avatarUrl } : rest;
+}
+
+function withHostedPostMetadata(metadata: PostKindMetadata, images: ReadonlyMap<string, string>): PostKindMetadata {
+	const attachments = metadata.attachments.flatMap((attachment) => {
+		const url = mappedImageUrl(attachment.url, images);
+		return url ? [{ ...attachment, url }] : [];
 	});
+	const externalLink = metadata.externalLink
+		? (() => {
+				const { imageUrl: sourceImageUrl, ...rest } = metadata.externalLink;
+				const imageUrl = mappedImageUrl(sourceImageUrl, images);
+				return imageUrl ? { ...rest, imageUrl } : rest;
+			})()
+		: undefined;
+	return {
+		...metadata,
+		attachments,
+		...(externalLink ? { externalLink } : {}),
+		...(metadata.quote
+			? {
+					quote: {
+						...metadata.quote,
+						creator: withHostedAvatar(metadata.quote.creator, images),
+					},
+				}
+			: {}),
+	};
+}
+
+export function hostedResourceImageFields(
+	resource: ResourceImageSourceRecord,
+	images: readonly HostedResourceImage[],
+): HostedResourceImageFields {
+	const imageMap = hostedImageMap(images);
+	const kindMetadata =
+		resource.kindMetadata && 'attachments' in resource.kindMetadata
+			? withHostedPostMetadata(resource.kindMetadata as PostKindMetadata, imageMap)
+			: (resource.kindMetadata ?? null);
+	return {
+		creators: resource.creators?.map((creator) => withHostedAvatar(creator, imageMap)) ?? [],
+		kindMetadata,
+		ogImageUrl: mappedImageUrl(resource.ogImageUrl, imageMap),
+	};
 }

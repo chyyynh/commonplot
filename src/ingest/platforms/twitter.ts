@@ -21,7 +21,6 @@ async function enqueueTwitterResource(
 		publishedDate: Date;
 		originalLang?: string;
 		content: string | null;
-		previewImageUrl?: string | null;
 		hashTags?: string[];
 	},
 ): Promise<void> {
@@ -37,7 +36,6 @@ async function enqueueTwitterResource(
 			resourcePlatform: 'twitter',
 			originalLang: data.originalLang,
 			content: data.content,
-			previewImageUrl: data.previewImageUrl,
 			keywords: data.hashTags,
 		}),
 	);
@@ -101,7 +99,6 @@ async function saveTweet(tweet: Tweet, env: CoreEnv, monitoredSource: MonitoredS
 		publishedDate: requiredTweetDate(scraped.metadata.publishedDate, tweetId),
 		originalLang: scraped.metadata.language ?? undefined,
 		content: scraped.markdown,
-		previewImageUrl: scraped.previewImageUrl,
 		hashTags: tweet.hashTags,
 	});
 	console.info({ tag: 'TWITTER', msg: 'Saved tweet content', kind: resolved.kind, title: title.slice(0, 50) });
@@ -109,7 +106,7 @@ async function saveTweet(tweet: Tweet, env: CoreEnv, monitoredSource: MonitoredS
 }
 
 async function saveThread(tweets: Tweet[], env: CoreEnv, monitoredSource: MonitoredSource): Promise<boolean> {
-	const { first, combinedText, acquisition } = buildThreadResourceParts(tweets);
+	const { first, combinedText } = buildThreadResourceParts(tweets);
 	const firstUrl = normalizeUrl(first.url);
 	const tweetCount = tweets.length;
 
@@ -141,7 +138,6 @@ async function saveThread(tweets: Tweet[], env: CoreEnv, monitoredSource: Monito
 		publishedDate: new Date(first.createdAt),
 		originalLang: first.lang,
 		content: combinedText,
-		previewImageUrl: acquisition.data.media?.[0]?.url ?? null,
 		hashTags: first.hashTags,
 	});
 	console.info({ tag: 'TWITTER', msg: 'Saved thread', author: first.author?.userName, tweets: tweetCount });

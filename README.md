@@ -51,7 +51,7 @@ Content arrives (source monitor / saved URL / uploaded blob / resync)
   │
   ├─ 1. Load Resource ──────── Canonical resources row; acquire URL content or extract uploaded PDF text
   ├─ 2. AI Analysis ────────── AI Gateway text/JSON calls → bilingual title, summary, tags, keywords, entities
-  ├─ 3. Save to DB ─────────── Update resources + resource_translations
+  ├─ 3. Save to DB ─────────── Stream remote images to Cloudflare Images; persist canonical resource fields + translations
   ├─    Store Entities ─────── Replace the resource-local resources.entities JSON
   ├─ 4. YouTube Highlights ─── (YouTube only) Transcript → AI highlight segments
   └─ 5. Sync AI Search ─────── Upload the enriched corpus document to Cloudflare AI Search
@@ -181,7 +181,8 @@ Bindings (in `wrangler.jsonc`):
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | Fetch, parse, classify, and persist a canonical resource |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | Translate a persisted resource into zh-Hant |
 | `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` | Rebuild and verify the generation-5 canonical search index |
-| `R2`               | App-owned uploaded PDF reads plus canonical resource preview original writes |
+| `R2`               | App-owned uploaded PDF reads              |
+| `IMAGES`           | Stream remote resource images to Cloudflare Images |
 | `AI`               | Workers AI binding for AI Gateway text calls |
 | `AI_SEARCH`        | `newsence-corpus-v6` canonical public corpus |
 

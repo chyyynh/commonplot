@@ -38,7 +38,6 @@ async function enqueueFeedItem(env: CoreEnv, feed: RssSource, item: FeedItem, ur
 			resourcePlatform: null,
 			originalLang: item.language,
 			content,
-			previewImageUrl: item.previewImageUrl,
 		}),
 	);
 	if (pending.needsProcessing) {

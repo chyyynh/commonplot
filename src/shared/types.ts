@@ -30,7 +30,6 @@ type ResourceForProcessingBase = {
 	content: string | null;
 	translations: ResourceTranslationMap;
 	url: string | null;
-	og_image_url?: string | null;
 	source: string | null;
 	published_date: string | null;
 	tags: string[];

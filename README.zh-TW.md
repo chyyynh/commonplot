@@ -49,7 +49,7 @@
   │
   ├─ 1. 讀取 Resource ───── canonical resources row；抓取 URL 內容或抽取上傳 PDF 文字
   ├─ 2. AI 分析 ──────────── AI Gateway text/JSON calls → 中英標題、摘要、標籤、關鍵字、實體
-  ├─ 3. 存入資料庫 ────────── 更新 resources + resource_translations
+  ├─ 3. 存入資料庫 ────────── 串流遠端圖片到 Cloudflare Images；寫入 canonical resource 欄位與翻譯
   ├─    儲存實體 ─────────── 取代該 resource 的 resources.entities JSON
   ├─ 4. YouTube 精華 ─────── （僅 YouTube）從字幕生成 AI 精華段落
   └─ 5. 同步 AI Search ───── 將完成 enrichment 的 corpus 文件上傳到 Cloudflare AI Search
@@ -172,6 +172,7 @@ Bindings（在 `wrangler.jsonc` 裡設定）：
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | 將已持久化的 resource 翻譯成繁體中文 |
 | `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` | 全量重建並驗證 generation-5 搜尋索引 |
 | `R2`               | 讀取 app-owned uploaded blob，供 PDF extraction 使用 |
+| `IMAGES`           | 將遠端 resource 圖片串流上傳至 Cloudflare Images |
 | `AI`               | Workers AI binding（AI Gateway 文字呼叫）   |
 | `AI_SEARCH`        | `newsence-corpus-v6` canonical public corpus |
 

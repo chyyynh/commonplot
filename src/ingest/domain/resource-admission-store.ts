@@ -29,7 +29,6 @@ type ResourceUpdate = Pick<
 	'summary' | 'content' | 'tags' | 'keywords' | 'creators' | 'kind_metadata' | 'source_revision'
 > & {
 	category: ResourceCategory | null;
-	og_image_url: string | null;
 };
 
 /**
@@ -80,7 +79,6 @@ type SourceResourceDraft = {
 	summary: string | null;
 	originalLang?: string;
 	content: string | null;
-	previewImageUrl?: string | null;
 	keywords?: string[];
 	tags?: string[];
 } & ContentResourceIdentity;
@@ -128,7 +126,6 @@ function preparedRecordToResource(base: SourceResourceDraft): ResourceForProcess
 		translations: {},
 		url: base.url,
 		normalized_url: base.url,
-		og_image_url: base.previewImageUrl ?? null,
 		source: base.source,
 		published_date: base.publishedDate === null ? null : dateValue(base.publishedDate, 'published_date').toISOString(),
 		tags: base.tags ?? [],
@@ -176,7 +173,6 @@ function pendingResourceUpdate(resource: ResourceForProcessing): ResourceUpdate 
 		kind_metadata: resource.kind_metadata,
 		source_revision: resource.source_revision,
 		category: null,
-		og_image_url: resource.og_image_url?.trim() || null,
 	};
 }
 
@@ -216,7 +212,7 @@ function resourceMirrorRecord(
 		keywords,
 		tags,
 		category: updatePayload.category,
-		ogImageUrl: cleanString(updatePayload.og_image_url),
+		ogImageUrl: null,
 		creatorsJson: JSON.stringify(updatePayload.creators),
 		kindMetadataJson: updatePayload.kind_metadata === null ? null : JSON.stringify(updatePayload.kind_metadata),
 		sourceRevision: updatePayload.source_revision === null ? null : storedResourceSourceRevision(updatePayload.source_revision, resourceId),

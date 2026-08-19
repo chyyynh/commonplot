@@ -2,7 +2,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type Workflo
 import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizePaperIdentifiers } from '@core-shared/paper-identity';
 import { isPaperIdentifier } from '@core-shared/resource-identifiers';
-import type { ResourceImageRef } from '@core-shared/resource-images';
+import type { HostedResourceImage } from '@core-shared/resource-images';
 import {
 	isContentResourceIdentity,
 	isResourceSourceSnapshotHash,
@@ -131,8 +131,8 @@ async function stageResourceImages(
 	step: WorkflowStep,
 	resourceId: string,
 	sourceUrls: readonly string[],
-): Promise<ResourceImageRef[]> {
-	const refs: ResourceImageRef[] = [];
+): Promise<HostedResourceImage[]> {
+	const images: HostedResourceImage[] = [];
 	for (let offset = 0; offset < sourceUrls.length; offset += 3) {
 		const batch = sourceUrls.slice(offset, offset + 3);
 		const results = await Promise.all(
@@ -156,18 +156,18 @@ async function stageResourceImages(
 					});
 			}),
 		);
-		for (const result of results) if (result) refs.push(result);
+		for (const result of results) if (result) images.push(result);
 	}
 	if (sourceUrls.length > 0) {
 		console.info({
 			tag: 'RESOURCE_IMAGE',
 			event: 'eager_rehost_completed',
 			resource_id: resourceId,
-			ready: refs.length,
-			failed: sourceUrls.length - refs.length,
+			ready: images.length,
+			failed: sourceUrls.length - images.length,
 		});
 	}
-	return refs;
+	return images;
 }
 
 function shouldAcquireContent(
@@ -455,11 +455,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 			processorResult: classificationResult,
 			previewImageUrl,
 		};
-		const resourceImages = await stageResourceImages(this.env, step, resourceId, processedResourceImageSources(persistenceInput));
+		const hostedImages = await stageResourceImages(this.env, step, resourceId, processedResourceImageSources(persistenceInput));
 		const persistence = await step.do(
 			'update-db-kind-platform-v3',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			() => persistProcessedResource(this.env, persistenceInput, resourceImages),
+			() => persistProcessedResource(this.env, persistenceInput, hostedImages),
 		);
 		if (!persistence.persisted) {
 			return { success: true, resource_id: persistence.resourceId, operation, superseded: true };

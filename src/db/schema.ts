@@ -1,4 +1,3 @@
-import type { ResourceImageRef } from '@core-shared/resource-images';
 import type { ResourceCreator, ResourceKindMetadata } from '@core-shared/resource-metadata';
 import {
 	RESOURCE_CATEGORIES,
@@ -64,7 +63,6 @@ export const resources = pgTable(
 		creators: jsonb('creators').$type<ResourceCreator[]>().default([]).notNull(),
 		kindMetadata: jsonb('kind_metadata').$type<ResourceKindMetadata>(),
 		sourceRevision: varchar('source_revision', { length: 64 }),
-		resourceImages: jsonb('resource_images').$type<ResourceImageRef[]>().default([]).notNull(),
 		subjectResourceId: uuid('subject_resource_id').references((): AnyPgColumn => resources.id, { onDelete: 'set null' }),
 		entities: jsonb('entities').$type<StoredResourceEntity[]>(),
 		enrichmentStatus: text('enrichment_status', { enum: ['pending', 'enriched', 'failed'] })

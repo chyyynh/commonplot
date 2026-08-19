@@ -51,7 +51,6 @@ type ResourceStoreRow = {
 	original_lang: string;
 	translations: unknown;
 	url: string | null;
-	og_image_url: string | null;
 	source: string | null;
 	scope: string | null;
 	enrichment_status: string;
@@ -245,7 +244,6 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: bool
 				WHERE identifier.resource_id = rl.id
 			) AS resource_identifiers,
 			rl.url AS url,
-			rl.og_image_url AS og_image_url,
 			${resourceDisplaySourceSql({
 				creatorName: sql`COALESCE(rl.creators->0->>'literal', CONCAT_WS(' ', rl.creators->0->>'given', rl.creators->0->>'family'))`,
 				kind: sql`rl.kind`,
@@ -291,7 +289,6 @@ function resourceStoreRowToProcessing(row: ResourceStoreRow): StoredResourceForP
 		content: row.content,
 		translations: resourceStoreTranslations(row),
 		url: row.url,
-		og_image_url: row.og_image_url,
 		source: cleanString(row.source),
 		published_date: row.published_date === null ? null : dateValue(row.published_date, 'published_date').toISOString(),
 		tags: row.tags,
