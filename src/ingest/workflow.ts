@@ -52,8 +52,8 @@ const PENDING_RESOURCE_GRACE_MS = 10 * 60 * 1000;
 // resolver instead of preserving a second backfill implementation. Pace this
 // well below the Workflow creation limit while clearing the one-time cutover
 // backlog in hours rather than days.
-const PENDING_RESOURCE_RECONCILE_LIMIT = 500;
-const PENDING_RESOURCE_RECONCILE_CONCURRENCY = 25;
+const PENDING_RESOURCE_RECONCILE_LIMIT = 50;
+const PENDING_RESOURCE_RECONCILE_CONCURRENCY = 10;
 const RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG = {
 	retries: DURABLE_WORKFLOW_RETRIES,
 	timeout: '30 seconds',
