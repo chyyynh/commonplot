@@ -8,7 +8,7 @@ import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
 import { type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
 import { acquireRssFeedItem, type RssFeedAcquisitionInput } from './platforms/rss-feed';
 import { scrapeTweet } from './platforms/twitter-acquisition';
-import { applyTweetLinkUnfurl, pendingTweetExternalLink, unfurlTweetExternalLink } from './platforms/twitter-unfurl';
+import { stageTweetLinkUnfurl } from './platforms/twitter-unfurl';
 import { scrapeYouTube } from './platforms/youtube-acquisition';
 import { acquireWebResource, PDF_MIME, pdfExtractionMetadata } from './web-acquisition';
 
@@ -44,30 +44,7 @@ export async function stageAcquisitionEnhancements(
 	resourceId: string,
 ): Promise<AcquiredContent> {
 	if (acquired.provider !== 'twitter') return acquired;
-	const externalUrl = pendingTweetExternalLink(acquired);
-	if (!externalUrl) return acquired;
-	const outcome = await step
-		.do('unfurl-tweet-external-link', { retries: { limit: 1, delay: '5 seconds' }, timeout: '30 seconds' }, async () => ({
-			unfurl: await unfurlTweetExternalLink(externalUrl),
-		}))
-		.catch((error) => {
-			console.error({
-				tag: 'TWITTER',
-				msg: 'Optional external-link unfurl failed; card stays hidden',
-				resource_id: resourceId,
-				external_url: externalUrl,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return null;
-		});
-	if (!outcome) return acquired;
-	console.info({
-		tag: 'TWITTER',
-		msg: outcome.unfurl ? 'External link unfurled' : 'External link exposed no OG image',
-		resource_id: resourceId,
-		external_url: externalUrl,
-	});
-	return applyTweetLinkUnfurl(acquired, outcome.unfurl);
+	return stageTweetLinkUnfurl(step, acquired, resourceId);
 }
 
 function acquiredPublishedDate(value: string | null): string | null {

@@ -1,3 +1,4 @@
+import type { WorkflowStep } from 'cloudflare:workers';
 import { fetchWithTimeout, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import type { AcquiredMaterial, AcquisitionEnvelope } from '@core-shared/types';
 import { normalizePreviewImageUrl } from '@core-shared/url';
@@ -25,13 +26,13 @@ type TweetLinkUnfurl = { externalOgImage: string; externalTitle: string | null }
  * unfurl. A page that had no OG image is retried on the next resync — it may
  * have gained one, and the fetch is bounded.
  */
-export function pendingTweetExternalLink(acquired: AcquiredMaterial<'twitter'>): string | null {
+function pendingTweetExternalLink(acquired: AcquiredMaterial<'twitter'>): string | null {
 	const data = acquired.acquisition.data;
 	const externalUrl = data?.externalUrl?.trim();
 	return externalUrl && !data?.externalOgImage ? externalUrl : null;
 }
 
-export async function unfurlTweetExternalLink(url: string): Promise<TweetLinkUnfurl | null> {
+async function unfurlTweetExternalLink(url: string): Promise<TweetLinkUnfurl | null> {
 	const response = await fetchWithTimeout(url, { headers: UNFURL_HEADERS });
 	if (!response.ok) {
 		const status = response.status;
@@ -54,7 +55,7 @@ export async function unfurlTweetExternalLink(url: string): Promise<TweetLinkUnf
 	return { externalOgImage, externalTitle: firstHtmlMetaValue(head, OG_TITLE_KEYS) ?? head.title };
 }
 
-export function applyTweetLinkUnfurl(acquired: AcquiredMaterial<'twitter'>, unfurl: TweetLinkUnfurl | null): AcquiredMaterial<'twitter'> {
+function applyTweetLinkUnfurl(acquired: AcquiredMaterial<'twitter'>, unfurl: TweetLinkUnfurl | null): AcquiredMaterial<'twitter'> {
 	if (!unfurl) return acquired;
 	const metadata = acquired.acquisition;
 	const acquisition: AcquisitionEnvelope<'twitter'> = {
@@ -62,4 +63,36 @@ export function applyTweetLinkUnfurl(acquired: AcquiredMaterial<'twitter'>, unfu
 		data: { ...metadata.data, externalOgImage: unfurl.externalOgImage, externalTitle: unfurl.externalTitle },
 	};
 	return { ...acquired, acquisition };
+}
+
+/** Optional link-preview enrichment; failures leave the card hidden and never fail the run. */
+export async function stageTweetLinkUnfurl(
+	step: WorkflowStep,
+	acquired: AcquiredMaterial<'twitter'>,
+	resourceId: string,
+): Promise<AcquiredMaterial<'twitter'>> {
+	const externalUrl = pendingTweetExternalLink(acquired);
+	if (!externalUrl) return acquired;
+	const outcome = await step
+		.do('unfurl-tweet-external-link', { retries: { limit: 1, delay: '5 seconds' }, timeout: '30 seconds' }, async () => ({
+			unfurl: await unfurlTweetExternalLink(externalUrl),
+		}))
+		.catch((error) => {
+			console.error({
+				tag: 'TWITTER',
+				msg: 'Optional external-link unfurl failed; card stays hidden',
+				resource_id: resourceId,
+				external_url: externalUrl,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return null;
+		});
+	if (!outcome) return acquired;
+	console.info({
+		tag: 'TWITTER',
+		msg: outcome.unfurl ? 'External link unfurled' : 'External link exposed no OG image',
+		resource_id: resourceId,
+		external_url: externalUrl,
+	});
+	return applyTweetLinkUnfurl(acquired, outcome.unfurl);
 }
