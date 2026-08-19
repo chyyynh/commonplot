@@ -8,6 +8,7 @@ import { toStoredResourceEntities } from '@entities/normalize';
 import { eq, sql } from 'drizzle-orm';
 import { withPaperCanonicalFields } from './canonical-resource';
 import type { ProcessorResult } from './domain/ai-utils';
+import { resourceSourceRevision } from './domain/resource-store';
 import type { HandledResourceResult } from './kind-handler';
 import { persistYouTubeWorkflowData } from './platforms/youtube';
 import { resolvedSubjectInput } from './resource-resolver';
@@ -66,8 +67,9 @@ export async function markResourceEnrichmentFailed(
 	});
 }
 
-function graphMutation(input: PersistProcessedResourceInput): PersistResolvedResourceGraphInput {
+async function graphMutation(input: PersistProcessedResourceInput): Promise<PersistResolvedResourceGraphInput> {
 	const resource = finalizedResource(input.handled);
+	const sourceRevision = await resourceSourceRevision(resource);
 	const content = input.processorResult.content ?? resource.content;
 	if (!content?.trim()) throw new Error(`Refusing to persist enriched resource ${input.resourceId} without content`);
 	const privatePaperAttachment = (() => {
@@ -83,7 +85,7 @@ function graphMutation(input: PersistProcessedResourceInput): PersistResolvedRes
 		identifiers: resource.resource_identifiers,
 		creators: resource.creators,
 		kindMetadata: resource.kind_metadata,
-		sourceRevision: resource.source_revision,
+		sourceRevision,
 		subject: resolvedSubjectInput(input.handled.resolution),
 		privatePaperAttachment,
 		originalLang: resource.original_lang,
@@ -123,7 +125,7 @@ export async function persistProcessedResource(
 	subjectResourceId: string | null;
 	subjectNeedsProcessing: boolean;
 }> {
-	const result = await env.DOMAIN.persistResolvedResourceGraph(graphMutation(input));
+	const result = await env.DOMAIN.persistResolvedResourceGraph(await graphMutation(input));
 	if (result.persisted && input.handled.kind === 'video') await persistVideoSpecialization(env, input.handled);
 	return result;
 }

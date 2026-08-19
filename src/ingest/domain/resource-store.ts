@@ -476,6 +476,10 @@ function resourceSourceSnapshotInput(resource: ResourceForProcessing): ResourceS
 	};
 }
 
+export async function resourceSourceRevision(resource: ResourceForProcessing): Promise<string> {
+	return resource.source_revision ?? resourceSourceSnapshotHash(resourceSourceSnapshotInput(resource));
+}
+
 type ResourceEnrichmentStatus = 'pending' | 'enriched' | 'failed';
 
 type ResourceMirrorRecord = {

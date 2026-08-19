@@ -5,6 +5,7 @@
 	"packageManager": "pnpm@11.9.0",
 	"type": "module",
 	"scripts": {
+		"backfill:canonical-resource-contract": "node scripts/backfill-canonical-resource-contract-279.mjs",
 		"deploy": "wrangler deploy",
 		"deploy:dry-run": "pnpm run typecheck && wrangler deploy --dry-run",
 		"check:db-schema": "node scripts/check-drizzle-prisma-drift.mjs",
