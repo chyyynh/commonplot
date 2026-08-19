@@ -1,16 +1,14 @@
 import type { PersistResolvedResourceGraphInput } from '@app-domain/resource-graph-contracts';
-import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
-import { isPaperIdentifier } from '@core-shared/resource-identifiers';
 import { parseResourceIdentity } from '@core-shared/resource-types';
-import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
+import type { ResourceForProcessing } from '@core-shared/types';
 import { type CoreDb, withCoreDb, withCoreTx } from '@db/client';
 import { resources } from '@db/schema';
 import { toStoredResourceEntities } from '@entities/normalize';
 import { eq, sql } from 'drizzle-orm';
-import { withPaperCanonicalFields } from './canonical-resource';
 import type { ProcessorResult } from './domain/ai-utils';
 import { resourceSourceRevision } from './domain/resource-store';
 import type { HandledResourceResult } from './kind-handler';
+import { finalizePaperResource, privatePaperAttachment } from './platforms/paper';
 import { persistYouTubeWorkflowData } from './platforms/youtube';
 import { resolvedSubjectInput } from './resource-resolver';
 
@@ -22,24 +20,8 @@ type PersistProcessedResourceInput = {
 	previewImageUrl: string | null;
 };
 
-function withAcademicPublishedDate(resource: ResourceForProcessing, paper: PaperMetadata | null): ResourceForProcessing {
-	if (resource.published_date || !paper?.publicationDate) return resource;
-	const publishedDate = new Date(`${paper.publicationDate}T00:00:00.000Z`);
-	return Number.isNaN(publishedDate.getTime()) ? resource : { ...resource, published_date: publishedDate.toISOString() };
-}
-
-function withPaperAbstractSummary(resource: ResourceForProcessing, paper: PaperMetadata | null): ResourceForProcessing {
-	const abstract = paper?.abstract?.trim();
-	return abstract ? { ...resource, summary: abstract } : resource;
-}
-
 function finalizedResource(handled: HandledResourceResult): ResourceForProcessing {
-	return handled.kind === 'paper'
-		? withPaperCanonicalFields(
-				withPaperAbstractSummary(withAcademicPublishedDate(handled.resource, handled.paperEnrichment), handled.paperEnrichment),
-				handled.paperEnrichment,
-			)
-		: handled.resource;
+	return handled.kind === 'paper' ? finalizePaperResource(handled.resource, handled.paperEnrichment) : handled.resource;
 }
 
 export async function markResourceEnrichmentFailed(
@@ -83,12 +65,6 @@ async function graphMutation(input: PersistProcessedResourceInput): Promise<Pers
 	const sourceRevision = await resourceSourceRevision(resource);
 	const content = input.processorResult.content ?? resource.content;
 	if (!content?.trim()) throw new Error(`Refusing to persist enriched resource ${input.resourceId} without content`);
-	const privatePaperAttachment = (() => {
-		if (input.handled.kind !== 'paper' || resource.scope !== 'private' || !resource.storage_key) return null;
-		const identity = paperIdentityFromIdentifiers(resource.resource_identifiers.filter(isPaperIdentifier));
-		if (!identity) throw new Error(`Private paper ${input.resourceId} has no canonical identity`);
-		return { canonicalUrl: canonicalPaperUrl(identity) };
-	})();
 	return {
 		resourceId: input.resourceId,
 		expectedSourceRevision: input.expectedSourceRevision,
@@ -98,7 +74,7 @@ async function graphMutation(input: PersistProcessedResourceInput): Promise<Pers
 		kindMetadata: resource.kind_metadata,
 		sourceRevision,
 		subject: resolvedSubjectInput(input.handled.resolution),
-		privatePaperAttachment,
+		privatePaperAttachment: input.handled.kind === 'paper' ? privatePaperAttachment(resource) : null,
 		originalLang: resource.original_lang,
 		title: resource.title,
 		summary: resource.summary,

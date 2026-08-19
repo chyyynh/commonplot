@@ -6,7 +6,6 @@ import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
 import { canonicalFieldsFromAcquisition } from './canonical-resource';
 import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
 import { type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
-import { acquireOpenAlexGrobidText, acquireOpenAlexPdf } from './platforms/openalex';
 import { acquireRssFeedItem, type RssFeedAcquisitionInput } from './platforms/rss-feed';
 import { scrapeTweet } from './platforms/twitter-acquisition';
 import { applyTweetLinkUnfurl, pendingTweetExternalLink, unfurlTweetExternalLink } from './platforms/twitter-unfurl';
@@ -20,6 +19,23 @@ export type AcquiredContent = AcquiredMaterial & {
 	extraction?: PdfExtractionMetadata;
 	hackerNewsItem?: HackerNewsItem;
 };
+
+/**
+ * Acquisition gets one attempt, not three.
+ *
+ * Measured, because the docs suggest otherwise: NonRetryableError thrown inside
+ * a step does *not* skip its retries — three runs against a page with no
+ * article recorded three attempts whether it was thrown from the step callback
+ * or from the scraper, with the class serialised away to plain `Error` each
+ * time. The only lever the platform actually honours is retries.limit.
+ *
+ * Setting it to 0 also removes a duplicated layer: a failed acquisition is
+ * already retried by the monitors, on a 30m/1h/2h/4h backoff that gives up after
+ * MAX_ENRICHMENT_ATTEMPTS. Ten-second retries only ever helped a blip shorter
+ * than the outer schedule, and cost every doomed URL three fetches instead of
+ * one.
+ */
+export const ACQUISITION_STEP = { retries: { limit: 0, delay: '10 seconds' }, timeout: '120 seconds' } as const;
 
 /** Optional provider enrichments remain inside acquisition, never Workflow orchestration. */
 export async function stageAcquisitionEnhancements(
@@ -101,7 +117,7 @@ function sourceSnapshotHash(acquired: AcquiredContent): Promise<string> {
 	return sha256Hex(input);
 }
 
-async function sanitizeAcquiredContent(acquired: AcquiredContent): Promise<AcquiredContent> {
+export async function sanitizeAcquiredContent(acquired: AcquiredContent): Promise<AcquiredContent> {
 	const markdown = sanitizeExtractedMarkdown(acquired.markdown);
 	const sanitized = markdown === acquired.markdown ? acquired : { ...acquired, markdown };
 	// Re-attaching the hash to the envelope loses the provider/data correlation, so assert back to the union.
@@ -150,81 +166,11 @@ export async function scrapeSavedUrlArtifact(
 	return acquiredContentArtifact(acquired);
 }
 
-export async function acquireOpenAlexPdfArtifact(
-	input: {
-		contentPdfUrl: string;
-		description: string | null;
-		publishedDate: string | null;
-		resourceId: string;
-		sourceName: string;
-		title: string;
-	},
-	env: CoreEnv,
-): Promise<ReadableStream<Uint8Array>> {
-	const acquired = await acquireOpenAlexPdf({
-		apiKey: env.OPENALEX_API_KEY,
-		contentPdfUrl: input.contentPdfUrl,
-		env,
-		resourceId: input.resourceId,
-	});
-	const sourceName = input.sourceName.trim();
-	if (!sourceName) throw new Error(`Resource ${input.resourceId} has no source name for its OpenAlex PDF`);
-	return acquiredContentArtifact(
-		await sanitizeAcquiredContent({
-			...acquired,
-			title: input.title,
-			metadata: {
-				...acquired.metadata,
-				description: input.description,
-				publishedDate: input.publishedDate,
-				siteName: sourceName,
-			},
-		}),
-	);
-}
-
-export async function acquireOpenAlexGrobidArtifact(
-	input: {
-		contentGrobidXmlUrl: string;
-		description: string | null;
-		publishedDate: string | null;
-		sourceName: string;
-		title: string;
-	},
-	env: CoreEnv,
-): Promise<ReadableStream<Uint8Array>> {
-	const markdown = await acquireOpenAlexGrobidText({
-		contentGrobidXmlUrl: input.contentGrobidXmlUrl,
-		env,
-	});
-	const sourceName = input.sourceName.trim();
-	if (!sourceName) throw new Error('OpenAlex GROBID acquisition has no source name');
-	return acquiredContentArtifact(
-		await sanitizeAcquiredContent({
-			provider: null,
-			fileType: null,
-			title: input.title,
-			markdown,
-			metadata: {
-				author: null,
-				description: input.description,
-				language: null,
-				publishedDate: input.publishedDate,
-				siteName: sourceName,
-			},
-			acquisition: {
-				fetchedAt: new Date().toISOString(),
-				data: null,
-			},
-		}),
-	);
-}
-
 export async function scrapeRssFeedItemArtifact(input: RssFeedAcquisitionInput, env: CoreEnv): Promise<ReadableStream<Uint8Array>> {
 	return acquiredContentArtifact(await sanitizeAcquiredContent(await acquireRssFeedItem(env, input)));
 }
 
-function acquiredContentArtifact(acquired: AcquiredContent): ReadableStream<Uint8Array> {
+export function acquiredContentArtifact(acquired: AcquiredContent): ReadableStream<Uint8Array> {
 	const bytes = new TextEncoder().encode(JSON.stringify(acquired));
 	return new Blob([bytes], { type: 'application/json' }).stream();
 }

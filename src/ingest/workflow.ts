@@ -19,9 +19,8 @@ import { loadFeedSourcePolicy } from '@ingest/domain/source-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES, enqueueOrRestartWorkflow } from '../workflow-control';
 import {
+	ACQUISITION_STEP,
 	type AcquiredContent,
-	acquireOpenAlexGrobidArtifact,
-	acquireOpenAlexPdfArtifact,
 	applyAcquiredMaterial,
 	PDF_MIME,
 	pdfExtractionMetadata,
@@ -33,7 +32,8 @@ import {
 import { enqueueResourceTranslation, loadEligibleResourceTranslationRevision } from './content-localization-workflow';
 import { classifyResource } from './domain/ai-utils';
 import { handleResolvedResource } from './kind-handler';
-import { isExplicitPaperUrl, stagePaperEnrichment } from './platforms/paper';
+import { stagePaperEnrichment } from './platforms/paper';
+import { stagePreferredOpenAlexContent, stagePreliminaryAcquisition } from './platforms/paper-content';
 import { stagePdfTextExtraction } from './platforms/pdf';
 import type { RssFeedAcquisitionInput } from './platforms/rss-feed';
 import { markResourceEnrichmentFailed, persistProcessedResource } from './resource-persistence';
@@ -174,111 +174,6 @@ function shouldAcquireContent(
 	return (!hasContent || needsYouTubeAcquisition || needsPlatformAcquisition) && !resource.storage_key && !!resource.url;
 }
 
-/**
- * Acquisition gets one attempt, not three.
- *
- * Measured, because the docs suggest otherwise: NonRetryableError thrown inside
- * a step does *not* skip its retries — three runs against a page with no
- * article recorded three attempts whether it was thrown from the step callback
- * or from the scraper, with the class serialised away to plain `Error` each
- * time. The only lever the platform actually honours is retries.limit.
- *
- * Setting it to 0 also removes a duplicated layer: a failed acquisition is
- * already retried by the monitors, on a 30m/1h/2h/4h backoff that gives up after
- * MAX_ENRICHMENT_ATTEMPTS. Ten-second retries only ever helped a blip shorter
- * than the outer schedule, and cost every doomed URL three fetches instead of
- * one.
- */
-const ACQUISITION_STEP = { retries: { limit: 0, delay: '10 seconds' }, timeout: '120 seconds' } as const;
-
-async function stageOpenAlexPdfAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	resource: ResourceForProcessing,
-	resolution: Awaited<ReturnType<typeof stagePaperEnrichment>>,
-	stepName = 'acquire-openalex-content-pdf-v1',
-): Promise<AcquiredContent | null> {
-	const { contentPdfUrl, metadata } = resolution;
-	if (!contentPdfUrl || resource.scope !== 'corpus' || resource.storage_key) return null;
-	const sourceName = resource.source?.trim() || (resource.url ? new URL(resource.url).hostname : 'OpenAlex');
-	const artifact = await step
-		.do(stepName, ACQUISITION_STEP, () =>
-			acquireOpenAlexPdfArtifact(
-				{
-					contentPdfUrl,
-					description: metadata?.abstract?.trim() || resource.summary,
-					publishedDate: metadata?.publicationDate?.trim() || resource.published_date,
-					resourceId: resource.id,
-					sourceName,
-					title: metadata?.title?.trim() || resource.title,
-				},
-				env,
-			),
-		)
-		.catch((error) => {
-			console.error({
-				tag: 'OPENALEX_CONTENT',
-				event: 'pdf_acquisition_failed',
-				resource_id: resource.id,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return null;
-		});
-	if (!artifact) return null;
-	const acquired = await readAcquiredContentArtifact(artifact);
-	console.info({
-		tag: 'OPENALEX_CONTENT',
-		event: 'pdf_acquired',
-		resource_id: resource.id,
-		chars: acquired.markdown.length,
-		pages: acquired.extraction?.pages ?? null,
-	});
-	return acquired;
-}
-
-async function stageOpenAlexGrobidAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	resource: ResourceForProcessing,
-	resolution: Awaited<ReturnType<typeof stagePaperEnrichment>>,
-	stepName = 'acquire-openalex-content-grobid-v1',
-): Promise<AcquiredContent | null> {
-	const { contentGrobidXmlUrl, metadata } = resolution;
-	if (!contentGrobidXmlUrl || resource.scope !== 'corpus' || resource.storage_key) return null;
-	const sourceName = resource.source?.trim() || (resource.url ? new URL(resource.url).hostname : 'OpenAlex');
-	const artifact = await step
-		.do(stepName, ACQUISITION_STEP, () =>
-			acquireOpenAlexGrobidArtifact(
-				{
-					contentGrobidXmlUrl,
-					description: metadata?.abstract?.trim() || resource.summary,
-					publishedDate: metadata?.publicationDate?.trim() || resource.published_date,
-					sourceName,
-					title: metadata?.title?.trim() || resource.title,
-				},
-				env,
-			),
-		)
-		.catch((error) => {
-			console.error({
-				tag: 'OPENALEX_CONTENT',
-				event: 'grobid_acquisition_failed',
-				resource_id: resource.id,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return null;
-		});
-	if (!artifact) return null;
-	const acquired = await readAcquiredContentArtifact(artifact);
-	console.info({
-		tag: 'OPENALEX_CONTENT',
-		event: 'grobid_acquired',
-		resource_id: resource.id,
-		chars: acquired.markdown.length,
-	});
-	return acquired;
-}
-
 async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, resource: ResourceForProcessing): Promise<AcquiredContent> {
 	const locator = exactPlatformLocator(resource.resource_identifiers);
 	const sourceUrl = locator ? canonicalPlatformUrl(locator) : resource.url;
@@ -365,67 +260,6 @@ function acquiredSubjectUrl(acquired: AcquiredContent | undefined): string | nul
 	return null;
 }
 
-type PaperResolution = Awaited<ReturnType<typeof stagePaperEnrichment>>;
-
-type PreliminaryAcquisition = Readonly<{
-	acquiredContent: AcquiredContent | undefined;
-	explicitResolution: PaperResolution | null;
-}>;
-
-async function stagePreliminaryAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	resource: ResourceForProcessing,
-	operation: WorkflowOperation,
-): Promise<PreliminaryAcquisition> {
-	const explicitResolution =
-		resource.resource_platform === null && isExplicitPaperUrl(resource.url)
-			? await stagePaperEnrichment(
-					env,
-					step,
-					{ ...resource, identifiers: resource.paper_identifiers },
-					{ stepName: 'resolve-explicit-paper-openalex-with-citations-v1' },
-				)
-			: null;
-	const pdf = explicitResolution
-		? await stageOpenAlexPdfAcquisition(env, step, resource, explicitResolution, 'acquire-preliminary-openalex-content-pdf-v1')
-		: null;
-	const grobid =
-		explicitResolution && !pdf
-			? await stageOpenAlexGrobidAcquisition(env, step, resource, explicitResolution, 'acquire-preliminary-openalex-content-grobid-v1')
-			: null;
-	return {
-		acquiredContent: pdf ?? grobid ?? (await acquireResourceForOperation(env, step, resource, operation)),
-		explicitResolution,
-	};
-}
-
-async function stagePreferredOpenAlexContent(
-	env: CoreEnv,
-	step: WorkflowStep,
-	resource: ResourceForProcessing,
-	acquiredContent: AcquiredContent | undefined,
-	paperResolution: PaperResolution,
-	preliminary: Pick<PreliminaryAcquisition, 'explicitResolution'>,
-): Promise<{
-	acquiredContent: AcquiredContent | undefined;
-	resource: ResourceForProcessing;
-}> {
-	// The preliminary phase already attempted OpenAlex content for this exact resolution.
-	if (paperResolution === preliminary.explicitResolution) {
-		return { acquiredContent, resource };
-	}
-	const pdf = await stageOpenAlexPdfAcquisition(env, step, resource, paperResolution, 'acquire-selected-openalex-content-pdf-v1');
-	if (pdf) {
-		return { acquiredContent: pdf, resource: applyAcquiredMaterial(resource, pdf) };
-	}
-	const grobid = await stageOpenAlexGrobidAcquisition(env, step, resource, paperResolution, 'acquire-selected-openalex-content-grobid-v1');
-	if (grobid) {
-		return { acquiredContent: grobid, resource: applyAcquiredMaterial(resource, grobid) };
-	}
-	return { acquiredContent, resource };
-}
-
 async function prepareResourceForProcessing(
 	env: CoreEnv,
 	step: WorkflowStep,
@@ -434,7 +268,9 @@ async function prepareResourceForProcessing(
 ): Promise<PreparedResource> {
 	// Exact DOI/arXiv/OpenAlex URLs can go straight to OpenAlex Content. The
 	// original landing page is only acquired when OpenAlex has no cached PDF.
-	const preliminary = await stagePreliminaryAcquisition(env, step, initialResource, operation);
+	const preliminary = await stagePreliminaryAcquisition(env, step, initialResource, () =>
+		acquireResourceForOperation(env, step, initialResource, operation),
+	);
 	let { acquiredContent } = preliminary;
 	const acquiredResource = applyAcquiredMaterial(initialResource, acquiredContent);
 	const rootCanBePaper = !acquiredResource.url || !detectResourceUrl(acquiredResource.url);
