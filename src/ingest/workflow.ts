@@ -48,8 +48,12 @@ type WorkflowOperation = 'ingest' | 'resync';
 type WorkflowPayload = { resourceId: string; operation: WorkflowOperation; sourceRevision?: string };
 
 const PENDING_RESOURCE_GRACE_MS = 10 * 60 * 1000;
-const PENDING_RESOURCE_RECONCILE_LIMIT = 50;
-const PENDING_RESOURCE_RECONCILE_CONCURRENCY = 5;
+// #279 intentionally readmits the legacy corpus through the same canonical
+// resolver instead of preserving a second backfill implementation. Pace this
+// well below the Workflow creation limit while clearing the one-time cutover
+// backlog in hours rather than days.
+const PENDING_RESOURCE_RECONCILE_LIMIT = 200;
+const PENDING_RESOURCE_RECONCILE_CONCURRENCY = 10;
 const RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG = {
 	retries: DURABLE_WORKFLOW_RETRIES,
 	timeout: '30 seconds',
