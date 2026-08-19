@@ -4,7 +4,7 @@
 // storing and under WHAT canonical key. Consumed by the ingest
 // pipeline (persistence + prompt exclusion lists).
 
-import type { ResourceCreator } from '@core-shared/resource-metadata';
+import { type ResourceCreator, resourceCreatorName } from '@core-shared/resource-metadata';
 import type { ResourcePlatform } from '@core-shared/resource-types';
 import { ENTITY_TYPES, type EntityType, type StoredResourceEntity } from '@core-shared/types';
 
@@ -114,7 +114,7 @@ function hostFromSource(value: string): string | null {
 
 function creatorAliases(creators: readonly ResourceCreator[]): string[] {
 	return creators.flatMap((creator) => {
-		const name = creator.literal ?? [creator.given, creator.family].filter(Boolean).join(' ');
+		const name = resourceCreatorName(creator);
 		if (!name) return [];
 		const profileHandle = creator.profileUrl?.match(/\/([^/]+)\/?$/)?.[1];
 		return profileHandle ? [name, profileHandle, `@${profileHandle}`] : [name];

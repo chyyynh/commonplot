@@ -90,7 +90,7 @@ function videoMetadata(metadata: AcquisitionEnvelope<'youtube'>): VideoKindMetad
 	const data = metadata.data;
 	return {
 		schemaVersion: 1,
-		...(data.duration?.trim() ? { duration: data.duration.trim() } : {}),
+		...(data.durationSeconds === undefined ? {} : { durationSeconds: data.durationSeconds }),
 		...(data.viewCount === undefined ? {} : { viewCount: data.viewCount }),
 		...(data.likeCount === undefined ? {} : { likeCount: data.likeCount }),
 		...(data.commentCount === undefined ? {} : { commentCount: data.commentCount }),
@@ -139,7 +139,6 @@ export function paperCanonicalFields(metadata: PaperMetadata): {
 		creators: metadata.authors.flatMap((author) => literalCreator('author', author)),
 		kindMetadata: {
 			schemaVersion: 1,
-			...(metadata.abstract?.trim() ? { abstract: metadata.abstract.trim() } : {}),
 			...(metadata.venue?.trim() ? { venue: metadata.venue.trim() } : {}),
 			...(metadata.year === undefined ? {} : { year: metadata.year }),
 			...(metadata.citedByCount === undefined ? {} : { citedByCount: metadata.citedByCount }),

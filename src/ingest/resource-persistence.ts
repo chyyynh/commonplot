@@ -27,9 +27,17 @@ function withAcademicPublishedDate(resource: ResourceForProcessing, paper: Paper
 	return Number.isNaN(publishedDate.getTime()) ? resource : { ...resource, published_date: publishedDate.toISOString() };
 }
 
+function withPaperAbstractSummary(resource: ResourceForProcessing, paper: PaperMetadata | null): ResourceForProcessing {
+	const abstract = paper?.abstract?.trim();
+	return abstract ? { ...resource, summary: abstract } : resource;
+}
+
 function finalizedResource(handled: HandledResourceResult): ResourceForProcessing {
 	return handled.kind === 'paper'
-		? withPaperCanonicalFields(withAcademicPublishedDate(handled.resource, handled.paperEnrichment), handled.paperEnrichment)
+		? withPaperCanonicalFields(
+				withPaperAbstractSummary(withAcademicPublishedDate(handled.resource, handled.paperEnrichment), handled.paperEnrichment),
+				handled.paperEnrichment,
+			)
 		: handled.resource;
 }
 

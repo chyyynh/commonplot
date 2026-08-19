@@ -24,6 +24,10 @@ export const ResourceCreatorSchema = z
 export type ResourceCreator = Readonly<z.infer<typeof ResourceCreatorSchema>>;
 export type ResourceCreatorRole = ResourceCreator['role'];
 
+export function resourceCreatorName(creator: ResourceCreator | undefined): string | null {
+	return creator?.literal ?? ([creator?.given, creator?.family].filter(Boolean).join(' ') || null);
+}
+
 const ResourceMediaAttachmentSchema = z.object({
 	kind: z.enum(['image', 'video', 'animated']),
 	url: optionalHttpUrl,
@@ -68,7 +72,7 @@ const PostKindMetadataSchema = z.object({
 
 const VideoKindMetadataSchema = z.object({
 	schemaVersion: z.literal(1),
-	duration: z.string().trim().min(1).optional(),
+	durationSeconds: z.number().int().positive().optional(),
 	viewCount: z.number().int().nonnegative().optional(),
 	likeCount: z.number().int().nonnegative().optional(),
 	commentCount: z.number().int().nonnegative().optional(),
@@ -91,7 +95,6 @@ const PaperRelationSnapshotSchema = z.object({
 
 const PaperKindMetadataSchema = z.object({
 	schemaVersion: z.literal(1),
-	abstract: z.string().trim().min(1).optional(),
 	venue: z.string().trim().min(1).optional(),
 	year: z.number().int().positive().optional(),
 	citedByCount: z.number().int().nonnegative().optional(),

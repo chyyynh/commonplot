@@ -74,6 +74,18 @@ ${includeContent ? '- content: 將完整貼文內容翻譯成自然流暢的繁�
 - 若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然繁體中文
 - 不要使用 Markdown。`;
 	}
+	if (resource.kind === 'paper') {
+		return `你是專業的學術翻譯編輯。請只輸出符合 schema 的繁體中文結果。
+
+任務：
+- title: 將論文標題翻譯成自然、準確的繁體中文
+${resource.summary?.trim() ? '- summary: 將作者原始摘要完整翻譯成繁體中文，不要濃縮或改寫' : ''}
+
+規則：
+- 忠實保留學術術語、論證與限定語
+- 不要新增資訊，不要把摘要改寫成 AI summary
+- 不要使用 Markdown。`;
+	}
 	return `你是專業的新聞翻譯和摘要編輯。請只輸出符合 schema 的繁體中文結果。
 
 任務：
@@ -172,6 +184,7 @@ export function needsZhHantMetadataTranslation(resource: ResourceForProcessing):
 	if (resource.resource_platform === 'twitter') {
 		return isEmpty(translation?.title) || (usesInlineTwitterContentTranslation(resource) && isEmpty(translation?.content));
 	}
+	if (resource.kind === 'paper' && isEmpty(resource.summary)) return isEmpty(translation?.title);
 	return isEmpty(translation?.title) || isEmpty(translation?.summary);
 }
 
@@ -205,6 +218,22 @@ ${content.slice(0, MAX_CONTENT_LENGTH)}`;
 			...context,
 			schema: ZhHantTitleTranslationSchema,
 			maxTokens: 400,
+			systemPrompt: zhHantMetadataTranslationSystemPrompt(resource),
+		});
+	}
+	if (resource.kind === 'paper') {
+		if (isEmpty(resource.summary)) {
+			return generateObject(env, prompt, {
+				...context,
+				schema: ZhHantTitleTranslationSchema,
+				maxTokens: 500,
+				systemPrompt: zhHantMetadataTranslationSystemPrompt(resource),
+			});
+		}
+		return generateObject(env, prompt, {
+			...context,
+			schema: ZhHantMetadataTranslationSchema,
+			maxTokens: 2400,
 			systemPrompt: zhHantMetadataTranslationSystemPrompt(resource),
 		});
 	}

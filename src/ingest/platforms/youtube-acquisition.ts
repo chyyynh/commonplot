@@ -264,7 +264,7 @@ export async function scrapeYouTube(
 				channelName: snippet.channelTitle,
 				channelId: snippet.channelId,
 				...(channelAvatar ? { channelAvatar } : {}),
-				duration: video.contentDetails.duration,
+				...(durationSeconds && durationSeconds > 0 ? { durationSeconds } : {}),
 				...(thumbnailUrl ? { thumbnailUrl } : {}),
 				viewCount: stats.viewCount ? Number.parseInt(stats.viewCount, 10) : undefined,
 				likeCount: stats.likeCount ? Number.parseInt(stats.likeCount, 10) : undefined,

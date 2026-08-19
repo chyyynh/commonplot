@@ -170,7 +170,7 @@ interface YouTubeMetadata {
 	channelName: string;
 	channelId?: string;
 	channelAvatar?: string;
-	duration?: string;
+	durationSeconds?: number;
 	thumbnailUrl?: string;
 	viewCount?: number;
 	likeCount?: number;
