@@ -17,6 +17,7 @@ import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES, enqueueOrRestartWorkflow } from '../workflow-control';
 import {
 	type AcquiredContent,
+	acquireOpenAlexPdfArtifact,
 	applyAcquiredContent,
 	PDF_MIME,
 	pdfExtractionMetadata,
@@ -27,7 +28,7 @@ import {
 import { enqueueResourceTranslation, loadEligibleResourceTranslationRevision } from './content-localization-workflow';
 import { classifyResource } from './domain/ai-utils';
 import { buildHackerNewsContent } from './platforms/hackernews';
-import { stagePaperEnrichment } from './platforms/paper';
+import { isExplicitPaperUrl, stagePaperEnrichment } from './platforms/paper';
 import { stagePdfTextExtraction } from './platforms/pdf';
 import type { RssFeedAcquisitionInput } from './platforms/rss-feed';
 import { applyTweetLinkUnfurl, pendingTweetExternalLink, unfurlTweetExternalLink } from './platforms/twitter-unfurl';
@@ -158,7 +159,7 @@ function shouldAcquireContent(
 	resource: ResourceForProcessing & { has_content?: boolean; has_youtube_transcript?: boolean },
 	force = false,
 ): boolean {
-	if (force) return !!resource.url;
+	if (force) return !resource.storage_key && !!resource.url;
 	const hasContent = 'has_content' in resource && !!resource.has_content;
 	const needsYouTubeAcquisition = resource.resource_platform === 'youtube' && !resource.has_youtube_transcript;
 	const needsPlatformAcquisition = needsResourcePlatformAcquisition({
@@ -189,6 +190,50 @@ function shouldAcquireContent(
  * one.
  */
 const ACQUISITION_STEP = { retries: { limit: 0, delay: '10 seconds' }, timeout: '120 seconds' } as const;
+
+async function stageOpenAlexPdfAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	resource: ResourceForProcessing,
+	resolution: Awaited<ReturnType<typeof stagePaperEnrichment>>,
+): Promise<AcquiredContent | null> {
+	const { contentPdfUrl, metadata } = resolution;
+	if (!contentPdfUrl || resource.scope !== 'corpus' || resource.storage_key) return null;
+	const sourceName = resource.source?.trim() || (resource.url ? new URL(resource.url).hostname : 'OpenAlex');
+	const artifact = await step
+		.do('acquire-openalex-content-pdf-v1', ACQUISITION_STEP, () =>
+			acquireOpenAlexPdfArtifact(
+				{
+					contentPdfUrl,
+					description: metadata?.abstract?.trim() || resource.summary,
+					publishedDate: metadata?.publicationDate?.trim() || resource.published_date,
+					resourceId: resource.id,
+					sourceName,
+					title: metadata?.title?.trim() || resource.title,
+				},
+				env,
+			),
+		)
+		.catch((error) => {
+			console.error({
+				tag: 'OPENALEX_CONTENT',
+				event: 'pdf_acquisition_failed',
+				resource_id: resource.id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return null;
+		});
+	if (!artifact) return null;
+	const acquired = await readAcquiredContentArtifact(artifact);
+	console.info({
+		tag: 'OPENALEX_CONTENT',
+		event: 'pdf_acquired',
+		resource_id: resource.id,
+		chars: acquired.markdown.length,
+		pages: acquired.extraction?.pages ?? null,
+	});
+	return acquired;
+}
 
 async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, resource: ResourceForProcessing): Promise<AcquiredContent> {
 	const sourceUrl = resource.url;
@@ -335,17 +380,30 @@ async function prepareResourceForProcessing(
 	initialResource: ResourceForProcessing,
 	operation: WorkflowOperation,
 ): Promise<PreparedResource> {
-	const acquiredContent = await acquireResourceForOperation(env, step, initialResource, operation);
-	const acquiredResource = await stageTweetLinkUnfurl(step, applyAcquiredContent(initialResource, acquiredContent));
-	const initialHasContent = 'has_content' in acquiredResource && !!acquiredResource.has_content;
+	// Exact DOI/arXiv/OpenAlex URLs can go straight to OpenAlex Content. The
+	// original landing page is only acquired when OpenAlex has no cached PDF.
+	const explicitPaperResolution = isExplicitPaperUrl(initialResource.url)
+		? await stagePaperEnrichment(env, step, initialResource, 'resolve-explicit-paper-openalex-v1')
+		: null;
+	const explicitOpenAlexPdf = explicitPaperResolution
+		? await stageOpenAlexPdfAcquisition(env, step, initialResource, explicitPaperResolution)
+		: null;
+	let acquiredContent = explicitOpenAlexPdf ?? (await acquireResourceForOperation(env, step, initialResource, operation));
+	let acquiredResource = await stageTweetLinkUnfurl(step, applyAcquiredContent(initialResource, acquiredContent));
 	const identityPdfTextArtifact =
-		!acquiredContent && !initialHasContent && acquiredResource.storage_key && acquiredResource.file_type === PDF_MIME
+		acquiredResource.storage_key && acquiredResource.file_type === PDF_MIME && acquiredContent?.fileType !== PDF_MIME
 			? await stagePdfTextExtraction(env, step, { sourceStorageKey: acquiredResource.storage_key })
 			: null;
 	const paperCandidate = identityPdfTextArtifact?.text?.trim()
 		? { ...acquiredResource, content: identityPdfTextArtifact.text }
 		: acquiredResource;
-	const paperEnrichment = await stagePaperEnrichment(env, step, paperCandidate);
+	const paperResolution = explicitPaperResolution ?? (await stagePaperEnrichment(env, step, paperCandidate));
+	const paperEnrichment = paperResolution.metadata;
+	const openAlexPdf = explicitOpenAlexPdf ? null : await stageOpenAlexPdfAcquisition(env, step, acquiredResource, paperResolution);
+	if (openAlexPdf) {
+		acquiredContent = openAlexPdf;
+		acquiredResource = applyAcquiredContent(acquiredResource, openAlexPdf);
+	}
 	const convergence =
 		paperEnrichment && (paperEnrichment.doi || paperEnrichment.arxivId || paperEnrichment.openAlexId)
 			? await step.do(

@@ -21,6 +21,7 @@ type PaperEnrichmentCandidate = {
 };
 
 type PaperEnrichmentAttempt = {
+	contentPdfUrl: string | null;
 	metadata: PaperMetadata | null;
 	outcome: 'resolved' | 'preserved' | 'not_found' | 'failed' | 'not_applicable';
 };
@@ -77,20 +78,21 @@ export async function stagePaperEnrichmentAttempt(
 	stepName = 'enrich-paper-metadata',
 ): Promise<PaperEnrichmentAttempt> {
 	const paperId = detectPaperIdentity({ text: candidate.content, url: candidate.url });
-	if (!paperId) return { metadata: null, outcome: 'not_applicable' };
+	if (!paperId) return { contentPdfUrl: null, metadata: null, outcome: 'not_applicable' };
 	const hasExistingAcademic = candidate.hasExistingAcademic ?? !!candidate.platform_metadata?.enrichments?.academic;
 	const attemptStartedAt = Date.now();
 
 	try {
-		const metadata = await step.do(
+		const resolution = await step.do(
 			stepName,
 			{ retries: { limit: 5, delay: paperEnrichmentRetryDelay }, timeout: '30 seconds' },
 			async () => {
 				const startedAt = Date.now();
-				const paper = await resolveOpenAlexPaper({
+				const resolved = await resolveOpenAlexPaper({
 					apiKey: env.OPENALEX_API_KEY,
 					identity: providerIdentity(paperId),
 				});
+				const paper = resolved?.metadata ?? null;
 				console.info({
 					tag: 'PAPER_PROVIDER',
 					event: 'academic_enrichment',
@@ -100,10 +102,12 @@ export async function stagePaperEnrichmentAttempt(
 					outcome: paper ? 'resolved' : hasExistingAcademic ? 'preserved' : 'not_found',
 					latency_ms: Date.now() - startedAt,
 				});
-				return paper;
+				return resolved;
 			},
 		);
+		const metadata = resolution?.metadata ?? null;
 		return {
+			contentPdfUrl: resolution?.contentPdfUrl ?? null,
 			metadata,
 			outcome: metadata ? 'resolved' : hasExistingAcademic ? 'preserved' : 'not_found',
 		};
@@ -117,7 +121,7 @@ export async function stagePaperEnrichmentAttempt(
 			latency_ms: Date.now() - attemptStartedAt,
 			error: error instanceof Error ? error.message : String(error),
 		});
-		return { metadata: null, outcome: hasExistingAcademic ? 'preserved' : 'failed' };
+		return { contentPdfUrl: null, metadata: null, outcome: hasExistingAcademic ? 'preserved' : 'failed' };
 	}
 }
 
@@ -125,6 +129,8 @@ export async function stagePaperEnrichment(
 	env: CoreEnv,
 	step: WorkflowStep,
 	candidate: Pick<ResourceForProcessing, 'id' | 'platform_metadata' | 'url' | 'content'>,
-): Promise<PaperMetadata | null> {
-	return (await stagePaperEnrichmentAttempt(env, step, candidate)).metadata;
+	stepName?: string,
+): Promise<Pick<PaperEnrichmentAttempt, 'contentPdfUrl' | 'metadata'>> {
+	const { contentPdfUrl, metadata } = await stagePaperEnrichmentAttempt(env, step, candidate, stepName);
+	return { contentPdfUrl, metadata };
 }

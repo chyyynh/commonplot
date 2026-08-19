@@ -13,6 +13,7 @@ import { withPdfExtractionMetadata } from '@core-shared/types';
 import { detectResourcePlatform, detectResourceUrl, normalizeUrl } from '@core-shared/url';
 import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
 import { type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
+import { acquireOpenAlexPdf } from './platforms/openalex';
 import { acquireRssFeedItem, type RssFeedAcquisitionInput } from './platforms/rss-feed';
 import { scrapeTweet } from './platforms/twitter-acquisition';
 import { scrapeYouTube } from './platforms/youtube-acquisition';
@@ -158,6 +159,39 @@ export async function scrapeSavedUrlArtifact(
 ): Promise<ReadableStream<Uint8Array>> {
 	const acquired = await scrapeSavedUrl(url, env, origin, resourceId);
 	return acquiredContentArtifact(acquired);
+}
+
+export async function acquireOpenAlexPdfArtifact(
+	input: {
+		contentPdfUrl: string;
+		description: string | null;
+		publishedDate: string | null;
+		resourceId: string;
+		sourceName: string;
+		title: string;
+	},
+	env: CoreEnv,
+): Promise<ReadableStream<Uint8Array>> {
+	const acquired = await acquireOpenAlexPdf({
+		apiKey: env.OPENALEX_API_KEY,
+		contentPdfUrl: input.contentPdfUrl,
+		env,
+		resourceId: input.resourceId,
+	});
+	const sourceName = input.sourceName.trim();
+	if (!sourceName) throw new Error(`Resource ${input.resourceId} has no source name for its OpenAlex PDF`);
+	return acquiredContentArtifact(
+		await sanitizeAcquiredContent({
+			...acquired,
+			title: input.title,
+			metadata: {
+				...acquired.metadata,
+				description: input.description,
+				publishedDate: input.publishedDate,
+				siteName: sourceName,
+			},
+		}),
+	);
 }
 
 export async function scrapeRssFeedItemArtifact(input: RssFeedAcquisitionInput, env: CoreEnv): Promise<ReadableStream<Uint8Array>> {

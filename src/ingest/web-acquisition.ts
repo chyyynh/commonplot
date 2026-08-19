@@ -156,7 +156,7 @@ async function acquirePdfBytes(bytes: Uint8Array, url: string, fileName: string,
 	};
 }
 
-async function acquirePdfResponse(
+export async function acquireFetchedPdfResponse(
 	env: CoreEnv,
 	resourceId: string | undefined,
 	response: Response,
@@ -226,7 +226,7 @@ export async function acquireWebResource(url: string, env: CoreEnv, resourceId?:
 
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
 	if (contentType.includes(PDF_MIME) || new URL(finalUrl).pathname.toLowerCase().endsWith('.pdf')) {
-		return acquirePdfResponse(env, resourceId, response, finalUrl);
+		return acquireFetchedPdfResponse(env, resourceId, response, finalUrl);
 	}
 	if (
 		contentType &&
