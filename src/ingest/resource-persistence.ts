@@ -1,5 +1,5 @@
 import type { PersistResolvedResourceGraphInput, PersistResolvedResourceGraphResult } from '@app-domain/resource-graph-contracts';
-import { createResourceImagePlan, type ResourceImagePlan } from '@core-shared/resource-images';
+import { type ResourceImageRef, resourceImageSourceUrls } from '@core-shared/resource-images';
 import { parseResourceIdentity } from '@core-shared/resource-types';
 import type { ResourceForProcessing } from '@core-shared/types';
 import { type CoreDb, withCoreDb, withCoreTx } from '@db/client';
@@ -61,7 +61,8 @@ export async function markResourceEnrichmentFailed(
 
 async function graphMutation(
 	input: PersistProcessedResourceInput,
-): Promise<{ imagePlan: ResourceImagePlan; mutation: PersistResolvedResourceGraphInput }> {
+	resourceImages: readonly ResourceImageRef[],
+): Promise<PersistResolvedResourceGraphInput> {
 	const resource = finalizedResource(input.handled);
 	const identity = parseResourceIdentity(input.handled.resolution.kind, input.handled.resolution.resourcePlatform);
 	if (!identity) throw new Error(`Resource ${input.resourceId} resolved to an invalid identity`);
@@ -69,36 +70,42 @@ async function graphMutation(
 	const content = input.processorResult.content ?? resource.content;
 	if (!content?.trim()) throw new Error(`Refusing to persist enriched resource ${input.resourceId} without content`);
 	const ogImageUrl = input.previewImageUrl?.trim() || resource.og_image_url?.trim() || null;
-	const imagePlan = await createResourceImagePlan({ kindMetadata: resource.kind_metadata, ogImageUrl });
 	return {
-		imagePlan,
-		mutation: {
-			resourceId: input.resourceId,
-			expectedSourceRevision: input.expectedSourceRevision,
-			identity,
-			identifiers: resource.resource_identifiers,
-			creators: resource.creators,
-			kindMetadata: resource.kind_metadata,
-			sourceRevision,
-			subject: resolvedSubjectInput(input.handled.resolution),
-			privatePaperAttachment: input.handled.kind === 'paper' ? privatePaperAttachment(resource) : null,
-			originalLang: resource.original_lang,
-			title: resource.title,
-			summary: resource.summary,
-			content,
-			keywords: input.processorResult.keywords ?? resource.keywords,
-			tags: input.processorResult.tags ?? resource.tags,
-			category: input.processorResult.category,
-			entities: toStoredResourceEntities(input.processorResult.entities, resource.resource_platform, resource.source, resource.creators),
-			url: resource.url,
-			normalizedUrl: resource.normalized_url ?? resource.url,
-			storageKey: resource.storage_key ?? null,
-			fileType: resource.file_type ?? null,
-			publishedDate: resource.published_date,
-			ogImageUrl,
-			imageSourceRevision: imagePlan.revision,
-		},
+		resourceId: input.resourceId,
+		expectedSourceRevision: input.expectedSourceRevision,
+		identity,
+		identifiers: resource.resource_identifiers,
+		creators: resource.creators,
+		kindMetadata: resource.kind_metadata,
+		sourceRevision,
+		subject: resolvedSubjectInput(input.handled.resolution),
+		privatePaperAttachment: input.handled.kind === 'paper' ? privatePaperAttachment(resource) : null,
+		originalLang: resource.original_lang,
+		title: resource.title,
+		summary: resource.summary,
+		content,
+		keywords: input.processorResult.keywords ?? resource.keywords,
+		tags: input.processorResult.tags ?? resource.tags,
+		category: input.processorResult.category,
+		entities: toStoredResourceEntities(input.processorResult.entities, resource.resource_platform, resource.source, resource.creators),
+		url: resource.url,
+		normalizedUrl: resource.normalized_url ?? resource.url,
+		storageKey: resource.storage_key ?? null,
+		fileType: resource.file_type ?? null,
+		publishedDate: resource.published_date,
+		ogImageUrl,
+		resourceImages,
 	};
+}
+
+export function processedResourceImageSources(input: Pick<PersistProcessedResourceInput, 'handled' | 'previewImageUrl'>): string[] {
+	const resource = finalizedResource(input.handled);
+	if (input.handled.kind === 'paper' && privatePaperAttachment(resource)) return [];
+	return resourceImageSourceUrls({
+		creators: resource.creators,
+		kindMetadata: resource.kind_metadata,
+		ogImageUrl: input.previewImageUrl?.trim() || resource.og_image_url?.trim() || null,
+	});
 }
 
 async function persistVideoSpecialization(env: CoreEnv, handled: Extract<HandledResourceResult, { kind: 'video' }>): Promise<void> {
@@ -114,9 +121,10 @@ async function persistVideoSpecialization(env: CoreEnv, handled: Extract<Handled
 export async function persistProcessedResource(
 	env: CoreEnv,
 	input: PersistProcessedResourceInput,
-): Promise<PersistResolvedResourceGraphResult & { imagePlan: ResourceImagePlan }> {
-	const { imagePlan, mutation } = await graphMutation(input);
+	resourceImages: readonly ResourceImageRef[],
+): Promise<PersistResolvedResourceGraphResult> {
+	const mutation = await graphMutation(input, resourceImages);
 	const result = await env.DOMAIN.persistResolvedResourceGraph(mutation);
 	if (result.persisted && input.handled.kind === 'video') await persistVideoSpecialization(env, input.handled);
-	return { ...result, imagePlan };
+	return result;
 }

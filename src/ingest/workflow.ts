@@ -2,7 +2,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type Workflo
 import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizePaperIdentifiers } from '@core-shared/paper-identity';
 import { isPaperIdentifier } from '@core-shared/resource-identifiers';
-import type { ResourceImagePlan } from '@core-shared/resource-images';
+import type { ResourceImageRef } from '@core-shared/resource-images';
 import {
 	isContentResourceIdentity,
 	isResourceSourceSnapshotHash,
@@ -34,8 +34,8 @@ import { stagePaperEnrichment } from './platforms/paper';
 import { stagePreferredOpenAlexContent, stagePreliminaryAcquisition } from './platforms/paper-content';
 import { stagePdfTextExtraction } from './platforms/pdf';
 import type { RssFeedAcquisitionInput } from './platforms/rss-feed';
-import { rehostResourceImages } from './resource-image-rehosting';
-import { markResourceEnrichmentFailed, persistProcessedResource } from './resource-persistence';
+import { rehostResourceImage } from './resource-image-rehosting';
+import { markResourceEnrichmentFailed, persistProcessedResource, processedResourceImageSources } from './resource-persistence';
 import {
 	canonicalPlatformUrl,
 	exactPlatformLocator,
@@ -126,32 +126,48 @@ function storedWorkflowId(resourceId: string, sourceRevision?: string): string {
 		: ['resource-v4', workflowIdPart(resourceId)].join('-');
 }
 
-async function stageResourceImages(env: CoreEnv, step: WorkflowStep, resourceId: string, plan: ResourceImagePlan): Promise<void> {
-	const imageSourceRevision = plan.revision;
-	if (imageSourceRevision === null) return;
-	await step
-		.do(
-			'rehost-resource-images-v2',
-			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-			async () => {
-				await rehostResourceImages(env.R2, plan);
-				await env.DOMAIN.markResourceImagesReady({ resourceId, imageSourceRevision });
-				console.info({
-					tag: 'RESOURCE_IMAGE',
-					event: 'eager_rehost_completed',
-					resource_id: resourceId,
-					image_source_revision: imageSourceRevision,
-				});
-			},
-		)
-		.catch((error) =>
-			console.error({
-				tag: 'RESOURCE_IMAGE',
-				event: 'eager_rehost_failed',
-				resource_id: resourceId,
-				error: error instanceof Error ? error.message : String(error),
+async function stageResourceImages(
+	env: CoreEnv,
+	step: WorkflowStep,
+	resourceId: string,
+	sourceUrls: readonly string[],
+): Promise<ResourceImageRef[]> {
+	const refs: ResourceImageRef[] = [];
+	for (let offset = 0; offset < sourceUrls.length; offset += 3) {
+		const batch = sourceUrls.slice(offset, offset + 3);
+		const results = await Promise.all(
+			batch.map((sourceUrl, batchIndex) => {
+				const index = offset + batchIndex;
+				return step
+					.do(
+						`rehost-resource-image-${index + 1}-v1`,
+						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+						() => rehostResourceImage(env.IMAGES, sourceUrl),
+					)
+					.catch((error) => {
+						console.error({
+							tag: 'RESOURCE_IMAGE',
+							event: 'eager_rehost_failed',
+							resource_id: resourceId,
+							source_host: new URL(sourceUrl).hostname,
+							error: error instanceof Error ? error.message : String(error),
+						});
+						return null;
+					});
 			}),
 		);
+		for (const result of results) if (result) refs.push(result);
+	}
+	if (sourceUrls.length > 0) {
+		console.info({
+			tag: 'RESOURCE_IMAGE',
+			event: 'eager_rehost_completed',
+			resource_id: resourceId,
+			ready: refs.length,
+			failed: sourceUrls.length - refs.length,
+		});
+	}
+	return refs;
 }
 
 function shouldAcquireContent(
@@ -432,18 +448,18 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 			{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
 			() => classifyResource(handled.resource, this.env, handled.classificationExclusions),
 		);
+		const persistenceInput = {
+			resourceId,
+			expectedSourceRevision: initialResource.source_revision,
+			handled,
+			processorResult: classificationResult,
+			previewImageUrl,
+		};
+		const resourceImages = await stageResourceImages(this.env, step, resourceId, processedResourceImageSources(persistenceInput));
 		const persistence = await step.do(
-			'update-db-kind-platform-v2',
+			'update-db-kind-platform-v3',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			async () => {
-				return persistProcessedResource(this.env, {
-					resourceId,
-					expectedSourceRevision: initialResource.source_revision,
-					handled,
-					processorResult: classificationResult,
-					previewImageUrl,
-				});
-			},
+			() => persistProcessedResource(this.env, persistenceInput, resourceImages),
 		);
 		if (!persistence.persisted) {
 			return { success: true, resource_id: persistence.resourceId, operation, superseded: true };
@@ -487,7 +503,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 					}),
 				);
 		}
-		await stageResourceImages(this.env, step, persistedResourceId, persistence.imagePlan);
 		const translationSourceRevision = await step.do(
 			'load-resource-translation-revision-v1',
 			RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG,

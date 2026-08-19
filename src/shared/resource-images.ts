@@ -1,20 +1,22 @@
-import { sha256Hex } from './hash';
-import type { PostKindMetadata, ResourceKindMetadata } from './resource-metadata';
-import { normalizePreviewImageUrl } from './url';
+import { sha256Hex } from './hash.ts';
+import type { PostKindMetadata, ResourceCreator, ResourceKindMetadata } from './resource-metadata.ts';
+import { normalizePreviewImageUrl } from './url.ts';
 
-export const RESOURCE_IMAGE_PREFIX = 'resource-images/originals/';
-export const RESOURCE_IMAGE_CACHE_CONTROL = 'public, max-age=31536000, immutable';
+export const RESOURCE_IMAGE_ID_PREFIX = 'resource-';
 
-const RESOURCE_IMAGE_HASH_PATTERN = /^[a-f0-9]{64}$/;
+const RESOURCE_IMAGE_ID_PATTERN = /^resource-[a-f0-9]{64}$/;
+const MAX_RESOURCE_IMAGE_REFS = 64;
 
 export type ResourceImageSourceRecord = Readonly<{
+	creators?: readonly ResourceCreator[] | null;
 	kindMetadata?: ResourceKindMetadata | null;
 	ogImageUrl?: string | null;
 }>;
 
-export type ResourceImagePlan = Readonly<{
-	revision: string | null;
-	urls: readonly string[];
+export type ResourceImageRef = Readonly<{
+	deliveryUrl: string;
+	imageId: string;
+	sourceUrl: string;
 }>;
 
 function isPrivateHostname(hostname: string): boolean {
@@ -66,7 +68,11 @@ export function normalizedResourceImageUrl(rawUrl: string | null | undefined): s
 	return validatedExternalMediaUrl(sourceUrl ? normalizePreviewImageUrl(sourceUrl) : null);
 }
 
-export function resourceImageSourceUrls(resource: ResourceImageSourceRecord): string[] {
+function uniqueImageUrls(candidates: Array<string | null | undefined>): string[] {
+	return [...new Set(candidates.map(normalizedResourceImageUrl).filter((url): url is string => url !== null))];
+}
+
+export function resourcePreviewImageSourceUrls(resource: ResourceImageSourceRecord): string[] {
 	const candidates: Array<string | null | undefined> = [];
 	if (resource.kindMetadata && 'attachments' in resource.kindMetadata) {
 		const post = resource.kindMetadata as PostKindMetadata;
@@ -75,25 +81,61 @@ export function resourceImageSourceUrls(resource: ResourceImageSourceRecord): st
 	} else {
 		candidates.push(resource.ogImageUrl);
 	}
-	return [...new Set(candidates.map(normalizedResourceImageUrl).filter((url): url is string => url !== null))];
+	return uniqueImageUrls(candidates);
 }
 
-export async function createResourceImagePlan(resource: ResourceImageSourceRecord): Promise<ResourceImagePlan> {
-	const urls = resourceImageSourceUrls(resource);
-	return {
-		revision: urls.length > 0 ? await sha256Hex(JSON.stringify(urls)) : null,
-		urls,
-	};
+export function resourceImageSourceUrls(resource: ResourceImageSourceRecord): string[] {
+	const avatarUrls = resource.creators?.map((creator) => creator.avatarUrl) ?? [];
+	const quoteAvatarUrl =
+		resource.kindMetadata && 'attachments' in resource.kindMetadata
+			? (resource.kindMetadata as PostKindMetadata).quote?.creator.avatarUrl
+			: undefined;
+	return uniqueImageUrls([...resourcePreviewImageSourceUrls(resource), ...avatarUrls, quoteAvatarUrl]);
 }
 
-export function isResourceImageRevision(value: string): boolean {
-	return RESOURCE_IMAGE_HASH_PATTERN.test(value);
+export async function resourceImageId(sourceUrl: string): Promise<string> {
+	return RESOURCE_IMAGE_ID_PREFIX + (await sha256Hex(sourceUrl));
 }
 
-export async function resourceImageStorageKey(sourceUrl: string): Promise<string> {
-	return RESOURCE_IMAGE_PREFIX + (await sha256Hex(sourceUrl));
+export function isResourceImageId(value: string): boolean {
+	return RESOURCE_IMAGE_ID_PATTERN.test(value);
 }
 
-export function isResourceImageStorageKey(key: string): boolean {
-	return key.startsWith(RESOURCE_IMAGE_PREFIX) && RESOURCE_IMAGE_HASH_PATTERN.test(key.slice(RESOURCE_IMAGE_PREFIX.length));
+function isResourceImageDeliveryUrl(value: string, imageId: string): boolean {
+	try {
+		const url = new URL(value);
+		return (
+			url.protocol === 'https:' &&
+			url.hostname === 'imagedelivery.net' &&
+			!url.username &&
+			!url.password &&
+			url.search === '' &&
+			url.hash === '' &&
+			url.pathname.endsWith(`/${imageId}/public`)
+		);
+	} catch {
+		return false;
+	}
+}
+
+export function parseResourceImageRefs(value: unknown): ResourceImageRef[] {
+	if (!Array.isArray(value) || value.length > MAX_RESOURCE_IMAGE_REFS) {
+		throw new TypeError('Resource image refs are invalid');
+	}
+	const sourceUrls = new Set<string>();
+	const imageIds = new Set<string>();
+	return value.map((item) => {
+		if (!item || typeof item !== 'object') throw new TypeError('Resource image ref is invalid');
+		const rawSourceUrl = 'sourceUrl' in item && typeof item.sourceUrl === 'string' ? item.sourceUrl : null;
+		const sourceUrl = normalizedResourceImageUrl(rawSourceUrl);
+		const imageId = 'imageId' in item && typeof item.imageId === 'string' ? item.imageId : '';
+		const deliveryUrl = 'deliveryUrl' in item && typeof item.deliveryUrl === 'string' ? item.deliveryUrl : '';
+		if (!sourceUrl || sourceUrl !== rawSourceUrl || !isResourceImageId(imageId) || !isResourceImageDeliveryUrl(deliveryUrl, imageId)) {
+			throw new TypeError('Resource image ref is invalid');
+		}
+		if (sourceUrls.has(sourceUrl) || imageIds.has(imageId)) throw new TypeError('Resource image refs contain duplicates');
+		sourceUrls.add(sourceUrl);
+		imageIds.add(imageId);
+		return { deliveryUrl, imageId, sourceUrl };
+	});
 }

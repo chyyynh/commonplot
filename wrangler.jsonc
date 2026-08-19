@@ -97,12 +97,15 @@
 			"id": "5d7b16cf287e4dcc8b36d43461ccbf5c"
 		}
 	],
+	/** Cloudflare Images — hosted resource previews and creator avatars. */
+	"images": {
+		"binding": "IMAGES"
+	},
 	/**
 	 * R2 buckets.
 	 *
 	 * `R2` — shared resource blob storage. The app worker owns uploaded
-	 *   blob lifecycle; Core reads uploaded PDFs for LiteParse extraction and
-	 *   writes content-addressed remote preview originals during ingest.
+	 *   blob lifecycle; Core only reads uploaded PDFs for LiteParse extraction.
 	 */
 	"r2_buckets": [
 		{

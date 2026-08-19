@@ -1,26 +1,26 @@
 import { fetchWithTimeout, readBytesWithLimit } from '@core-shared/http';
 import {
-	isResourceImageRevision,
-	RESOURCE_IMAGE_CACHE_CONTROL,
-	type ResourceImagePlan,
-	resourceImageStorageKey,
+	normalizedResourceImageUrl,
+	type ResourceImageRef,
+	resourceImageId,
 	validatedExternalMediaUrl,
 } from '@core-shared/resource-images';
 
-const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+const MAX_HOSTED_UPLOAD_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 const REHOST_TIMEOUT_MS = 8_000;
 const MAX_SOURCE_REDIRECTS = 3;
-const REHOST_CONCURRENCY = 3;
 const SOURCE_USER_AGENT = 'Newsence-Media-Rehost/1.0 (+https://newsence.app)';
 
 type ResourceImageFailureCode =
 	| 'empty_body'
 	| 'fetch_error'
+	| 'images_read_error'
+	| 'images_transform_error'
+	| 'images_write_error'
+	| 'images_write_invalid'
 	| 'invalid_content_type'
 	| 'missing_body'
-	| 'r2_read_error'
-	| 'r2_write_error'
-	| 'r2_write_invalid'
 	| 'redirect_limit'
 	| 'source_too_large'
 	| 'unsafe_redirect'
@@ -74,7 +74,7 @@ async function assertImageResponse(response: Response, sourceUrl: string): Promi
 	}
 	if (!response.body) throw failure('missing_body', sourceUrl);
 	const contentType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() ?? '';
-	if (!contentType.startsWith('image/') || contentType.startsWith('image/svg')) {
+	if (!contentType.startsWith('image/')) {
 		await cancelBody(response.body);
 		throw failure('invalid_content_type', sourceUrl, contentType || 'missing content-type');
 	}
@@ -117,29 +117,52 @@ function contentLength(response: Response): number | null {
 	return Number.isSafeInteger(value) ? value : null;
 }
 
-function putOptions(contentType: string): R2PutOptions {
-	return {
-		httpMetadata: {
-			cacheControl: RESOURCE_IMAGE_CACHE_CONTROL,
-			contentType,
-		},
-	};
+function deliveryUrl(image: ImageMetadata, sourceUrl: string): string {
+	const value = image.variants.find((variant) => variant.endsWith(`/${image.id}/public`));
+	if (!value) throw failure('images_write_invalid', sourceUrl, 'public delivery variant missing');
+	return value;
 }
 
-async function storeImage(bucket: R2Bucket, key: string, sourceUrl: string, response: Response): Promise<number> {
+function imageRef(image: ImageMetadata, sourceUrl: string): ResourceImageRef {
+	return { deliveryUrl: deliveryUrl(image, sourceUrl), imageId: image.id, sourceUrl };
+}
+
+function imageFilename(sourceUrl: string): string {
+	const filename = new URL(sourceUrl).pathname.split('/').filter(Boolean).at(-1)?.slice(0, 180);
+	return filename || 'resource-image';
+}
+
+async function transformLargeImage(images: ImagesBinding, response: Response, sourceUrl: string): Promise<ReadableStream<Uint8Array>> {
+	if (!response.body) throw failure('missing_body', sourceUrl);
+	try {
+		return (
+			await images
+				.input(response.body)
+				.transform({ fit: 'scale-down', height: 4096, width: 4096 })
+				.output({ anim: true, format: 'image/webp', quality: 82 })
+		).image();
+	} catch (error) {
+		throw failure('images_transform_error', sourceUrl, error instanceof Error ? error.message : String(error));
+	}
+}
+
+async function uploadImage(images: ImagesBinding, imageId: string, sourceUrl: string, response: Response): Promise<ImageMetadata> {
 	const declaredLength = contentLength(response);
 	if (declaredLength !== null && declaredLength > MAX_IMAGE_BYTES) {
 		await cancelBody(response.body);
 		throw failure('source_too_large', sourceUrl);
 	}
-	const contentType = response.headers.get('content-type')?.split(';')[0]?.trim().toLowerCase() ?? 'application/octet-stream';
 
 	try {
-		if (declaredLength !== null && declaredLength > 0 && response.body) {
-			const { readable, writable } = new FixedLengthStream(declaredLength);
-			const [object] = await Promise.all([bucket.put(key, readable, putOptions(contentType)), response.body.pipeTo(writable)]);
-			if (object.size !== declaredLength || object.size <= 0) throw failure('r2_write_invalid', sourceUrl);
-			return object.size;
+		if (declaredLength !== null && declaredLength > 0) {
+			const upload = declaredLength <= MAX_HOSTED_UPLOAD_BYTES ? response.body : await transformLargeImage(images, response, sourceUrl);
+			if (!upload) throw failure('missing_body', sourceUrl);
+			return await images.hosted.upload(upload, {
+				id: imageId,
+				filename: imageFilename(sourceUrl),
+				metadata: { sourceUrl },
+				requireSignedURLs: false,
+			});
 		}
 
 		let bytes: Uint8Array;
@@ -151,66 +174,51 @@ async function storeImage(bucket: R2Bucket, key: string, sourceUrl: string, resp
 			throw error;
 		}
 		if (bytes.byteLength === 0) throw failure('empty_body', sourceUrl);
-		const object = await bucket.put(key, bytes, putOptions(contentType));
-		if (object.size !== bytes.byteLength || object.size <= 0) throw failure('r2_write_invalid', sourceUrl);
-		return object.size;
+		const upload =
+			bytes.byteLength <= MAX_HOSTED_UPLOAD_BYTES
+				? (bytes.slice().buffer as ArrayBuffer)
+				: await transformLargeImage(images, new Response(bytes), sourceUrl);
+		return await images.hosted.upload(upload, {
+			id: imageId,
+			filename: imageFilename(sourceUrl),
+			metadata: { sourceUrl },
+			requireSignedURLs: false,
+		});
 	} catch (error) {
 		if (error instanceof ResourceImageRehostError) throw error;
-		throw failure('r2_write_error', sourceUrl, error instanceof Error ? error.message : String(error));
+		throw failure('images_write_error', sourceUrl, error instanceof Error ? error.message : String(error));
 	}
 }
 
-async function ensureResourceImage(bucket: R2Bucket, sourceUrl: string): Promise<void> {
-	const key = await resourceImageStorageKey(sourceUrl);
-	let existing: R2Object | null;
+export async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Promise<ResourceImageRef> {
+	if (normalizedResourceImageUrl(sourceUrl) !== sourceUrl) throw new TypeError('Resource image source URL is invalid');
+	const imageId = await resourceImageId(sourceUrl);
+	let existing: ImageMetadata | null;
 	try {
-		existing = await bucket.head(key);
+		existing = await images.hosted.image(imageId).details();
 	} catch (error) {
-		throw failure('r2_read_error', sourceUrl, error instanceof Error ? error.message : String(error));
+		throw failure('images_read_error', sourceUrl, error instanceof Error ? error.message : String(error));
 	}
-	if (existing && existing.size > 0) return;
+	if (existing) return imageRef(existing, sourceUrl);
 
 	const startedAt = performance.now();
-	const bytes = await storeImage(bucket, key, sourceUrl, await fetchImageSource(sourceUrl));
+	let image: ImageMetadata;
+	try {
+		image = await uploadImage(images, imageId, sourceUrl, await fetchImageSource(sourceUrl));
+	} catch (error) {
+		const raced = await images.hosted
+			.image(imageId)
+			.details()
+			.catch(() => null);
+		if (!raced) throw error;
+		image = raced;
+	}
 	console.info({
 		tag: 'RESOURCE_IMAGE',
 		event: 'original_ready',
-		bytes,
 		duration_ms: Math.round(performance.now() - startedAt),
+		image_id: image.id,
 		source_host: new URL(sourceUrl).hostname,
 	});
-}
-
-export async function rehostResourceImages(bucket: R2Bucket, plan: ResourceImagePlan): Promise<void> {
-	if (plan.revision === null) {
-		if (plan.urls.length !== 0) throw new Error('Resource image plan has sources without a revision');
-		return;
-	}
-	if (!isResourceImageRevision(plan.revision) || plan.urls.length === 0) throw new Error('Resource image plan is invalid');
-
-	const failures: ResourceImageRehostError[] = [];
-	for (let offset = 0; offset < plan.urls.length; offset += REHOST_CONCURRENCY) {
-		const results = await Promise.allSettled(
-			plan.urls.slice(offset, offset + REHOST_CONCURRENCY).map((url) => ensureResourceImage(bucket, url)),
-		);
-		for (const result of results) {
-			if (result.status === 'fulfilled') continue;
-			failures.push(
-				result.reason instanceof ResourceImageRehostError
-					? result.reason
-					: new ResourceImageRehostError(
-							'fetch_error',
-							'unknown',
-							result.reason instanceof Error ? result.reason.message : String(result.reason),
-						),
-			);
-		}
-	}
-	if (failures.length > 0) {
-		throw new Error(
-			`Failed to rehost ${failures.length} of ${plan.urls.length} resource images (${failures
-				.map((error) => `${error.sourceHost}:${error.code}`)
-				.join(', ')})`,
-		);
-	}
+	return imageRef(image, sourceUrl);
 }
