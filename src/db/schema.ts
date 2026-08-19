@@ -63,6 +63,8 @@ export const resources = pgTable(
 		creators: jsonb('creators').$type<ResourceCreator[]>().default([]).notNull(),
 		kindMetadata: jsonb('kind_metadata').$type<ResourceKindMetadata>(),
 		sourceRevision: varchar('source_revision', { length: 64 }),
+		imageSourceRevision: varchar('image_source_revision', { length: 64 }),
+		imageReadyRevision: varchar('image_ready_revision', { length: 64 }),
 		subjectResourceId: uuid('subject_resource_id').references((): AnyPgColumn => resources.id, { onDelete: 'set null' }),
 		entities: jsonb('entities').$type<StoredResourceEntity[]>(),
 		enrichmentStatus: text('enrichment_status', { enum: ['pending', 'enriched', 'failed'] })

@@ -181,7 +181,7 @@ Bindings (in `wrangler.jsonc`):
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | Fetch, parse, classify, and persist a canonical resource |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | Translate a persisted resource into zh-Hant |
 | `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` | Rebuild and verify the generation-5 canonical search index |
-| `R2`               | App-owned uploaded blob reads for PDF extraction |
+| `R2`               | App-owned uploaded PDF reads plus canonical resource preview original writes |
 | `AI`               | Workers AI binding for AI Gateway text calls |
 | `AI_SEARCH`        | `newsence-corpus-v6` canonical public corpus |
 

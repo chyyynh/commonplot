@@ -100,9 +100,9 @@
 	/**
 	 * R2 buckets.
 	 *
-	 * `R2` — uploaded PDF storage used for text extraction.
-	 *   Also written by the app worker; the core worker reads
-	 *   uploaded PDFs here for LiteParse WASM text extraction.
+	 * `R2` — shared resource blob storage. The app worker owns uploaded
+	 *   blob lifecycle; Core reads uploaded PDFs for LiteParse extraction and
+	 *   writes content-addressed remote preview originals during ingest.
 	 */
 	"r2_buckets": [
 		{
