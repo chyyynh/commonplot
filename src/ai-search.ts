@@ -10,7 +10,7 @@ import {
 import { type CoreDb, isValidUuid, queryRows, textArraySql, uuidArraySql, withCoreDb } from '@db/client';
 import { contentResourceIdentitySql, resourceDisplaySourceSql } from '@db/resource-identity-sql';
 import { sql } from 'drizzle-orm';
-import { DURABLE_WORKFLOW_RETRIES, enqueueOrRestartWorkflow } from './workflow-control';
+import { DURABLE_WORKFLOW_RETRIES } from './workflow-control';
 
 // Cloudflare AI Search allows at most five custom metadata fields per instance.
 // https://developers.cloudflare.com/ai-search/configuration/indexing/metadata/
@@ -342,9 +342,6 @@ type SearchIndexRebuildPayload = Record<string, never>;
 
 const SEARCH_INDEX_NAME = 'public-corpus-v6';
 const SEARCH_INDEX_GENERATION = { key: 'canonical-5-blog-forum-kind', ordinal: 5 } as const;
-// The physical Workflow resource is generation-specific. This runner id is
-// stable only inside that isolated resource; it is not itself a replay boundary.
-const SEARCH_INDEX_REBUILD_INSTANCE_ID = `search-index-rebuild-${SEARCH_INDEX_GENERATION.key}-canonical-v1`;
 const REINDEX_PAGE_SIZE = 50;
 // Workers allow at most six simultaneous outgoing connections per invocation.
 // Stay below that ceiling instead of relying on the runtime to queue the
@@ -1235,22 +1232,6 @@ async function reconcileSearchItems(env: CoreEnv, step: WorkflowStep, lease: Sea
 		if (passDeleted === 0) return { deleted, passes: pass + 1 };
 	}
 	throw new Error(`AI Search stale-item reconciliation did not converge after ${REINDEX_MAX_PRUNE_PASSES} passes`);
-}
-
-export async function startSearchIndexRebuild(env: CoreEnv): Promise<string> {
-	return enqueueOrRestartWorkflow(env.SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW, SEARCH_INDEX_REBUILD_INSTANCE_ID, {});
-}
-
-export async function probeSearchIndexCutover(env: CoreEnv) {
-	const observation = await loadSearchIndexReadiness(env);
-	const indexed = observation.indexed ?? (await loadIndexedIdentityCounts(env));
-	const completeObservation = { ...observation, indexed };
-	return {
-		indexName: SEARCH_INDEX_NAME,
-		generation: SEARCH_INDEX_GENERATION,
-		ready: searchIndexReady(completeObservation),
-		...completeObservation,
-	};
 }
 
 // This class must remain attached to its own physical Workflow resource. Durable

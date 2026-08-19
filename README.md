@@ -136,7 +136,7 @@ Or run locally with `pnpm dev` (uses `wrangler dev --test-scheduled`, so you can
 
 ## API surface
 
-The HTTP surface only exposes `GET /health`. App/chat integrations use Cloudflare service-binding RPC with persisted resource IDs, while cron monitors run through scheduled triggers. URL acquisition is an internal stage of the canonical resource workflow.
+Core exposes no product HTTP API; its default fetch handler only returns 404. App/chat integrations use Cloudflare service-binding RPC with persisted resource IDs, while cron monitors run through scheduled triggers. URL acquisition is an internal stage of the canonical resource workflow.
 
 ## Hosted MCP
 
@@ -207,9 +207,8 @@ The canonical rebuild verifies every searchable identity pair, not only totals:
 owned items to leave queued, running, outdated, error, and skipped states, then
 compares AI Search with PostgreSQL before marking the generation ready.
 
-Run the static gates, start the generation-specific Workflow through
-`startSearchIndexRebuild()`, and poll
-`getSearchIndexRebuildStatus(instanceId)`. The equivalent operator trigger is:
+Run the static gates, then start and inspect the generation-specific Workflow
+with Wrangler:
 
 ```sh
 pnpm exec wrangler workflows trigger \
@@ -226,13 +225,12 @@ Wrangler's native instance description is the operator view of Workflow status,
 steps, retries, and errors. A completed run has already passed the Workflow's
 PostgreSQL/AI Search convergence checks and persisted generation readiness.
 
-Immediately before a reader or schema cutover, call
-`probeSearchIndexCutover()` for an independent six-pair DB/index comparison.
-Cloudflare Workflow executions replay the graph attached to their physical
-Workflow resource, so incompatible graph revisions require a new binding,
-resource name, class, and runner ID; changing only a runner ID is not isolation.
-See `AI_SEARCH_V6_RUNBOOK.md` for the active rebuild and verification
-procedure.
+The Workflow performs a fresh six-pair PostgreSQL/AI Search comparison before
+it marks the generation ready. Cloudflare Workflow executions replay the graph
+attached to their physical Workflow resource, so incompatible graph revisions
+require a new binding, resource name, class, and runner ID; changing only a
+runner ID is not isolation. See `AI_SEARCH_V6_RUNBOOK.md` for the active rebuild
+and verification procedure.
 
 Generation 5 and the canonical `blog`/`forum` database cutover are complete.
 The one-shot migration lives in git history; current operations start from the

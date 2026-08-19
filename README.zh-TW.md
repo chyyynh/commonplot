@@ -130,7 +130,7 @@ pnpm run deploy
 
 ## API Surface
 
-HTTP surface 只提供 `GET /health`。App/chat 透過 Cloudflare service-binding RPC 傳入已持久化的 resource ID，cron monitor 使用 scheduled triggers；URL acquisition 只存在於 canonical resource workflow 內部。
+Core 沒有產品 HTTP API；default fetch handler 只回傳 404。App/chat 透過 Cloudflare service-binding RPC 傳入已持久化的 resource ID，cron monitor 使用 scheduled triggers；URL acquisition 只存在於 canonical resource workflow 內部。
 
 ## Hosted MCP
 

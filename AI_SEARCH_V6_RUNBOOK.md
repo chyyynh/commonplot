@@ -78,8 +78,7 @@ pnpm -C workers/core-worker lint
 pnpm -C workers/core-worker run deploy
 ```
 
-Prefer the service-binding RPC `startSearchIndexRebuild()`. The equivalent
-operator trigger is:
+Start the rebuild with Wrangler:
 
 ```sh
 pnpm -C workers/core-worker exec wrangler workflows trigger \
@@ -119,9 +118,9 @@ A completed Workflow has already verified:
 - canonical resource identity constraints;
 - matching PostgreSQL and AI Search counts for all six identity pairs.
 
-Before a reader or schema change, also call `probeSearchIndexCutover()` through
-the deployed Core service binding. This fresh probe is independent of the
-durable ready row.
+The final Workflow readiness step performs a fresh PostgreSQL/AI Search
+comparison before it writes the durable ready row. Do not cut over from an
+older ready row; inspect the exact runner triggered for the current revision.
 
 ## Failure handling
 
@@ -131,7 +130,7 @@ If a rebuild fails:
 2. leave the serving instance and current database schema intact;
 3. restart the same runner only for a transient, source-compatible failure;
 4. deploy a newly isolated physical Workflow for any graph change;
-5. require the native Workflow inspection and fresh cutover probe again.
+5. require the native Workflow inspection and final readiness comparison again.
 
 Do not revive the removed #251 single-item or terminal-repair tooling. The
 canonical rebuild owns current retry, stale-item pruning, convergence, and

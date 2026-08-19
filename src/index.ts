@@ -10,7 +10,7 @@ import {
 	ResourceProcessingV2Workflow,
 	reconcilePendingResourceProcessing,
 } from '@ingest/workflow';
-import { probeSearchIndexCutover, SearchIndexGeneration5RebuildWorkflow, startSearchIndexRebuild } from './ai-search';
+import { SearchIndexGeneration5RebuildWorkflow } from './ai-search';
 import type { RelatedResourceSearchInput, ResourceSearchInput } from './corpus';
 import { relatedCorpusResourceIds, searchCorpusResourceRanks, searchCorpusResources } from './corpus';
 import { readCorpusResource, resolveCorpusResources } from './corpus-retrieval';
@@ -59,9 +59,7 @@ async function runFiveMinuteCycle(env: CoreEnv): Promise<void> {
 }
 
 export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
-	override fetch(request: Request): Response {
-		const url = new URL(request.url);
-		if (request.method === 'GET' && url.pathname === '/health') return Response.json({ status: 'ok' });
+	override fetch(_request: Request): Response {
 		return new Response('Not found', { status: 404 });
 	}
 
@@ -90,22 +88,6 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	async resyncResource(resourceId: string) {
 		await assertResourceProcessable(this.env, resourceId);
 		return enqueueResourceResync(this.env, resourceId);
-	}
-
-	/** Start or resume the revision-scoped public corpus AI Search rebuild. */
-	async startSearchIndexRebuild() {
-		return startSearchIndexRebuild(this.env);
-	}
-
-	/** Read search-index rebuild status for operator polling. */
-	async getSearchIndexRebuildStatus(instanceId: string) {
-		const instance = await this.env.SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW.get(instanceId);
-		return instance.status();
-	}
-
-	/** Validate DB/index counts for all six canonical identity pairs immediately before cutover. */
-	probeSearchIndexCutover() {
-		return probeSearchIndexCutover(this.env);
 	}
 
 	/** Hybrid AI Search retrieval for the canonical corpus search tool. */
