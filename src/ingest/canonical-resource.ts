@@ -29,6 +29,7 @@ function twitterCreator(metadata: AcquisitionEnvelope<'twitter'>): ResourceCreat
 	const handle = data.authorUserName?.replace(/^@/, '').trim();
 	const profileUrl = handle ? `https://x.com/${encodeURIComponent(handle)}` : undefined;
 	return literalCreator('author', data.authorName || handle, {
+		...(handle ? { handle } : {}),
 		...(data.authorProfilePicture?.trim() ? { avatarUrl: data.authorProfilePicture.trim() } : {}),
 		...(profileUrl ? { profileUrl } : {}),
 		...(data.authorVerified === undefined ? {} : { verified: data.authorVerified }),
@@ -51,12 +52,12 @@ function postMetadata(metadata: AcquisitionEnvelope<'twitter'>): PostKindMetadat
 	});
 	const externalUrl = data.externalUrl?.trim();
 	const quoted = data.quotedTweet;
+	const quoteHandle = quoted?.authorUserName?.replace(/^@/, '').trim();
 	const quoteCreator = quoted
 		? literalCreator('author', quoted.authorName || quoted.authorUserName, {
+				...(quoteHandle ? { handle: quoteHandle } : {}),
 				...(quoted.authorProfilePicture?.trim() ? { avatarUrl: quoted.authorProfilePicture.trim() } : {}),
-				...(quoted.authorUserName?.trim()
-					? { profileUrl: `https://x.com/${encodeURIComponent(quoted.authorUserName.replace(/^@/, '').trim())}` }
-					: {}),
+				...(quoteHandle ? { profileUrl: `https://x.com/${encodeURIComponent(quoteHandle)}` } : {}),
 			})[0]
 		: undefined;
 	return {

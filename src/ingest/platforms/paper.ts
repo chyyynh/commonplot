@@ -3,7 +3,7 @@
 import type { WorkflowDynamicDelayContext, WorkflowSleepDuration, WorkflowStep } from 'cloudflare:workers';
 import { type PaperIdentifier, paperIdentityFromText, resolveExactPaperInput } from '@core-shared/paper-identity';
 import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
-import { resolveBibliographicIdentifiers, type TranslatorEvidence } from './bibliographic-resolver';
+import { resolveBibliographicIdentifiers } from './bibliographic-resolver';
 import { resolveOpenAlexPaper } from './openalex';
 
 const DEFAULT_RATE_LIMIT_DELAY_SECONDS = 15;
@@ -25,7 +25,6 @@ type PaperEnrichmentAttempt = {
 	contentPdfUrl: string | null;
 	identifiers: PaperIdentifier[];
 	metadata: PaperMetadata | null;
-	translatorEvidence?: TranslatorEvidence;
 	outcome: 'resolved' | 'preserved' | 'not_found' | 'failed' | 'not_applicable';
 };
 
@@ -86,7 +85,7 @@ export async function stagePaperEnrichmentAttempt(
 					translateUrl: translateSavedUrl,
 				});
 				if (bibliographic.identifiers.length === 0) {
-					return bibliographic.translatorEvidence ? { ...bibliographic, resolved: null } : null;
+					return null;
 				}
 				const resolved = await resolveOpenAlexPaper({
 					apiKey: env.OPENALEX_API_KEY,
@@ -112,7 +111,6 @@ export async function stagePaperEnrichmentAttempt(
 			contentPdfUrl: resolution?.resolved?.contentPdfUrl ?? null,
 			identifiers: resolution?.resolved?.identifiers ?? resolution?.identifiers ?? [],
 			metadata,
-			...(resolution?.translatorEvidence ? { translatorEvidence: resolution.translatorEvidence } : {}),
 			outcome: metadata ? 'resolved' : 'not_found',
 		};
 	} catch (error) {
@@ -143,12 +141,7 @@ export async function stagePaperEnrichment(
 		translateUrl?: boolean;
 	},
 	options?: { includeCitationSnapshots?: boolean; stepName?: string },
-): Promise<Pick<PaperEnrichmentAttempt, 'contentGrobidXmlUrl' | 'contentPdfUrl' | 'identifiers' | 'metadata' | 'translatorEvidence'>> {
-	const { contentGrobidXmlUrl, contentPdfUrl, identifiers, metadata, translatorEvidence } = await stagePaperEnrichmentAttempt(
-		env,
-		step,
-		candidate,
-		options,
-	);
-	return { contentGrobidXmlUrl, contentPdfUrl, identifiers, metadata, translatorEvidence };
+): Promise<Pick<PaperEnrichmentAttempt, 'contentGrobidXmlUrl' | 'contentPdfUrl' | 'identifiers' | 'metadata'>> {
+	const { contentGrobidXmlUrl, contentPdfUrl, identifiers, metadata } = await stagePaperEnrichmentAttempt(env, step, candidate, options);
+	return { contentGrobidXmlUrl, contentPdfUrl, identifiers, metadata };
 }

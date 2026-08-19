@@ -223,7 +223,7 @@ paper enrichment 是 workflow stage，依 row 內容或 metadata
 新增一個來源最少要做：
 
 1. **Adapter file**（`ingest/platforms/foo.ts`）— discovery / scrape helpers 和可選自訂 processor。
-2. **Metadata shape** — 只加入 `platform_metadata` 真的需要的平台 JSON payload。
+2. **Canonical fields** — provider payload 在 Core 內正規化成 creators、kind metadata、identifiers 與 optional subject；不保存 provider JSON。
 3. **Monitor**（可選）— 如果來源可以輪詢，從 `src/index.ts` 接上 cron handler。
 4. **Workflow hook**（可選）— 只有在來源需要不同於預設 AI merge 的行為時才加。
 

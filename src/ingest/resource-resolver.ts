@@ -5,43 +5,17 @@ import {
 	type PlatformResourceIdentifierScheme,
 	type ResourceIdentifier,
 } from '../shared/resource-identifiers.ts';
-import {
-	type ContentResourceIdentity,
-	type ResourcePlatform,
-	resourceIdentityForDetectedPlatform,
-	type SourceAcquisitionMode,
-} from '../shared/resource-types.ts';
+import { type ContentResourceIdentity, type ResourcePlatform, resourceIdentityForDetectedPlatform } from '../shared/resource-types.ts';
 import { detectResourceUrl, normalizeUrl } from '../shared/url.ts';
-
-const PDF_MIME = 'application/pdf';
-
-export type ResourceAdmissionOrigin =
-	| Readonly<{ type: 'saved-url' }>
-	| Readonly<{ type: 'upload'; storageKey: string; mimeType: string }>
-	| Readonly<{
-			type: 'monitored-source';
-			sourceId: string;
-			acquisitionMode: SourceAcquisitionMode;
-	  }>;
-
-export type ResolutionEvidence =
-	| Readonly<{ type: 'url-pattern'; pattern: 'hackernews' | 'twitter' | 'youtube' }>
-	| Readonly<{ type: 'platform-identifier'; scheme: PlatformResourceIdentifierScheme }>
-	| Readonly<{ type: 'identifier'; schemes: PaperIdentifier['scheme'][] }>
-	| Readonly<{ type: 'mime'; mimeType: string }>
-	| Readonly<{ type: 'translator'; itemType: string; schemes: PaperIdentifier['scheme'][] }>
-	| Readonly<{ type: 'openalex'; openAlexId: string }>;
 
 type ResolvedBase<K extends ContentResourceIdentity['kind']> = Readonly<{
 	kind: K;
-	evidence: ResolutionEvidence[];
 }>;
 
 export type ResolvedContentResourceInput =
 	| (ResolvedBase<'blog'> &
 			Readonly<{
 				resourcePlatform: null;
-				acquisition: 'web' | 'feed' | 'pdf';
 			}>)
 	| (ResolvedBase<'forum'> &
 			Readonly<{
@@ -64,43 +38,14 @@ export type ResolvedContentResourceInput =
 			Readonly<{
 				resourcePlatform: null;
 				identifiers: PaperIdentifier[];
-				acquisition: 'openalex-pdf' | 'openalex-grobid' | 'uploaded-pdf' | 'publisher-page' | 'metadata-only';
 			}>);
 
 type ResolveContentResourceInput = Readonly<{
 	url: string | null;
-	storageKey: string | null;
-	fileType: string | null;
-	sourceId: string | null;
-	sourceAcquisitionMode: SourceAcquisitionMode | null;
 	paperIdentifiers: PaperIdentifier[];
 	resourceIdentifiers: ResourceIdentifier[];
-	openAlexId: string | null;
-	openAlexContent: 'pdf' | 'grobid' | null;
-	translatorEvidence?: { itemType: string; schemes: PaperIdentifier['scheme'][] };
 	subjectUrl?: string | null;
 }>;
-
-export function resourceAdmissionOrigin(input: {
-	fileType: string | null;
-	sourceAcquisitionMode: SourceAcquisitionMode | null;
-	sourceId: string | null;
-	storageKey: string | null;
-}): ResourceAdmissionOrigin {
-	if (input.storageKey) {
-		if (!input.fileType) throw new Error('Uploaded resource is missing its MIME type');
-		return { type: 'upload', storageKey: input.storageKey, mimeType: input.fileType };
-	}
-	if (input.sourceId) {
-		if (!input.sourceAcquisitionMode) throw new Error('Monitored resource is missing its acquisition mode');
-		return {
-			type: 'monitored-source',
-			sourceId: input.sourceId,
-			acquisitionMode: input.sourceAcquisitionMode,
-		};
-	}
-	return { type: 'saved-url' };
-}
 
 export type ExactPlatformLocator = Readonly<{
 	resourcePlatform: PlatformResourceIdentifierScheme;
@@ -129,25 +74,10 @@ export function canonicalPlatformUrl(locator: ExactPlatformLocator): string {
 	}
 }
 
-function acquisitionForPaper(input: ResolveContentResourceInput, origin: ResourceAdmissionOrigin) {
-	if (origin.type === 'upload') return 'uploaded-pdf' as const;
-	if (input.openAlexContent === 'pdf') return 'openalex-pdf' as const;
-	if (input.openAlexContent === 'grobid') return 'openalex-grobid' as const;
-	if (input.url) return 'publisher-page' as const;
-	return 'metadata-only' as const;
-}
-
-function genericBlogAcquisition(input: ResolveContentResourceInput, origin: ResourceAdmissionOrigin) {
-	if (input.fileType === PDF_MIME) return 'pdf' as const;
-	if (origin.type === 'monitored-source' && origin.acquisitionMode === 'feed') return 'feed' as const;
-	return 'web' as const;
-}
-
 function resolvedPlatformInput(
 	platform: Exclude<ResourcePlatform, null>,
 	locator: ExactPlatformLocator,
 	input: ResolveContentResourceInput,
-	evidence: ResolutionEvidence[],
 ): ResolvedContentResourceInput {
 	if (locator.resourcePlatform !== platform) {
 		throw new Error(`${platform} resource is missing an exact URL locator`);
@@ -159,7 +89,6 @@ function resolvedPlatformInput(
 				resourcePlatform: platform,
 				locator: { itemId: locator.platformId },
 				subjectUrl: input.subjectUrl?.trim() || null,
-				evidence,
 			};
 		case 'twitter':
 			return {
@@ -167,37 +96,19 @@ function resolvedPlatformInput(
 				resourcePlatform: platform,
 				locator: { tweetId: locator.platformId },
 				subjectUrl: input.subjectUrl?.trim() || null,
-				evidence,
 			};
 		case 'youtube':
 			return {
 				kind: 'video',
 				resourcePlatform: platform,
 				locator: { videoId: locator.platformId },
-				evidence,
 			};
 	}
 }
 
 export function resolveContentResource(input: ResolveContentResourceInput): ResolvedContentResourceInput {
-	const origin = resourceAdmissionOrigin({
-		fileType: input.fileType,
-		sourceAcquisitionMode: input.sourceAcquisitionMode,
-		sourceId: input.sourceId,
-		storageKey: input.storageKey,
-	});
 	const detected = input.url ? detectResourceUrl(input.url) : null;
 	const storedLocator = exactPlatformLocator(input.resourceIdentifiers);
-	const evidence: ResolutionEvidence[] = [];
-	if (input.fileType) evidence.push({ type: 'mime', mimeType: input.fileType });
-	if (input.paperIdentifiers.length) {
-		evidence.push({ type: 'identifier', schemes: [...new Set(input.paperIdentifiers.map(({ scheme }) => scheme))] });
-	}
-	if (input.translatorEvidence) evidence.push({ type: 'translator', ...input.translatorEvidence });
-	if (input.openAlexId) evidence.push({ type: 'openalex', openAlexId: input.openAlexId });
-
-	if (detected) evidence.push({ type: 'url-pattern', pattern: detected.resourcePlatform });
-	if (storedLocator) evidence.push({ type: 'platform-identifier', scheme: storedLocator.resourcePlatform });
 	if (
 		detected &&
 		storedLocator &&
@@ -207,23 +118,19 @@ export function resolveContentResource(input: ResolveContentResourceInput): Reso
 	}
 
 	const locator = detected ?? storedLocator;
-	if (locator) return resolvedPlatformInput(locator.resourcePlatform, locator, input, evidence);
+	if (locator) return resolvedPlatformInput(locator.resourcePlatform, locator, input);
 
-	if (input.paperIdentifiers.length > 0 && input.openAlexId) {
+	if (input.paperIdentifiers.some((identifier) => identifier.scheme === 'openalex')) {
 		return {
 			kind: 'paper',
 			resourcePlatform: null,
 			identifiers: input.paperIdentifiers,
-			acquisition: acquisitionForPaper(input, origin),
-			evidence,
 		};
 	}
 
 	return {
 		kind: 'blog',
 		resourcePlatform: null,
-		acquisition: genericBlogAcquisition(input, origin),
-		evidence,
 	};
 }
 

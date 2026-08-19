@@ -366,14 +366,6 @@ function acquiredSubjectUrl(acquired: AcquiredContent | undefined): string | nul
 	return null;
 }
 
-function openAlexIdFromIdentifiers(identifiers: readonly PaperIdentifier[]): string | null {
-	return (
-		identifiers.find((identifier) => identifier.scheme === 'openalex' && identifier.preferred)?.value ??
-		identifiers.find((identifier) => identifier.scheme === 'openalex')?.value ??
-		null
-	);
-}
-
 type PaperResolution = Awaited<ReturnType<typeof stagePaperEnrichment>>;
 
 type PreliminaryAcquisition = Readonly<{
@@ -381,7 +373,6 @@ type PreliminaryAcquisition = Readonly<{
 	explicitGrobid: boolean;
 	explicitPdf: boolean;
 	explicitResolution: PaperResolution | null;
-	selectedOpenAlexContent: 'pdf' | 'grobid' | null;
 }>;
 
 async function stagePreliminaryAcquisition(
@@ -411,7 +402,6 @@ async function stagePreliminaryAcquisition(
 		explicitGrobid: !!grobid,
 		explicitPdf: !!pdf,
 		explicitResolution,
-		selectedOpenAlexContent: pdf ? 'pdf' : grobid ? 'grobid' : null,
 	};
 }
 
@@ -421,11 +411,10 @@ async function stagePreferredOpenAlexContent(
 	resource: ResourceForProcessing,
 	acquiredContent: AcquiredContent | undefined,
 	paperResolution: PaperResolution,
-	preliminary: Pick<PreliminaryAcquisition, 'explicitGrobid' | 'explicitPdf' | 'selectedOpenAlexContent'>,
+	preliminary: Pick<PreliminaryAcquisition, 'explicitGrobid' | 'explicitPdf'>,
 ): Promise<{
 	acquiredContent: AcquiredContent | undefined;
 	resource: ResourceForProcessing;
-	selectedOpenAlexContent: 'pdf' | 'grobid' | null;
 }> {
 	if (!preliminary.explicitPdf && !resource.storage_key) {
 		const pdf = await stageOpenAlexPdfAcquisition(env, step, resource, paperResolution, 'acquire-selected-openalex-content-pdf-v1');
@@ -433,7 +422,6 @@ async function stagePreferredOpenAlexContent(
 			return {
 				acquiredContent: pdf,
 				resource: applyAcquiredMaterial(resource, pdf),
-				selectedOpenAlexContent: 'pdf',
 			};
 		}
 	}
@@ -449,14 +437,12 @@ async function stagePreferredOpenAlexContent(
 			return {
 				acquiredContent: grobid,
 				resource: applyAcquiredMaterial(resource, grobid),
-				selectedOpenAlexContent: 'grobid',
 			};
 		}
 	}
 	return {
 		acquiredContent,
 		resource,
-		selectedOpenAlexContent: preliminary.selectedOpenAlexContent,
 	};
 }
 
@@ -502,15 +488,8 @@ async function prepareResourceForProcessing(
 	const paperIdentifiers = normalizePaperIdentifiers(paperResolution.identifiers);
 	const resolution = resolveContentResource({
 		url: preferred.resource.url,
-		storageKey: preferred.resource.storage_key ?? null,
-		fileType: preferred.resource.file_type ?? null,
-		sourceId: preferred.resource.source_id,
-		sourceAcquisitionMode: preferred.resource.source_acquisition_mode ?? null,
 		paperIdentifiers,
 		resourceIdentifiers: preferred.resource.resource_identifiers,
-		openAlexId: openAlexIdFromIdentifiers(paperIdentifiers),
-		openAlexContent: preferred.selectedOpenAlexContent,
-		translatorEvidence: paperResolution.translatorEvidence,
 		subjectUrl: acquiredSubjectUrl(acquiredContent),
 	});
 	const finalPaperEnrichment = resolution.kind === 'paper' ? paperEnrichment : null;

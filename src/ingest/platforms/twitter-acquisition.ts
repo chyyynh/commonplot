@@ -163,6 +163,13 @@ function collapseRemovedUrlGaps(text: string): string {
 		.trim();
 }
 
+function stripTrailingExternalUrl(text: string, externalUrl: string): string {
+	const match = text.match(/(https?:\/\/\S+)\s*$/);
+	if (!match || match.index === undefined) return text;
+	const normalize = (value: string) => value.replace(/\/+$/, '');
+	return normalize(match[1]) === normalize(externalUrl) ? text.slice(0, match.index).trimEnd() : text;
+}
+
 function stripTweetUrls(text: string): string {
 	return text.replace(/https?:\/\/\S+/g, '').trim();
 }
@@ -359,11 +366,12 @@ function buildExternalLinkTweet(
 	const tweetText = tweet.text.trim();
 	if (!tweetText) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no text`);
 	const title = `@${author.userName}: ${stripTweetUrls(tweetText) || tweetText}`.slice(0, 120);
+	const expandedText = expandTweetUrls(tweetText, tweet);
 	return {
 		provider: 'twitter',
 		fileType: null,
 		title,
-		markdown: expandTweetUrls(tweetText, tweet),
+		markdown: stripTrailingExternalUrl(expandedText, externalUrl),
 		metadata: {
 			author: author.userName,
 			language: tweet.lang ?? null,

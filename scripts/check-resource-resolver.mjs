@@ -3,46 +3,42 @@ import { resolveContentResource, resolvedResourceIdentifiers } from '../src/inge
 
 const base = {
 	url: 'https://example.com/article',
-	storageKey: null,
-	fileType: null,
-	sourceId: null,
-	sourceAcquisitionMode: null,
 	paperIdentifiers: [],
 	resourceIdentifiers: [],
-	openAlexId: null,
-	openAlexContent: null,
 };
 
 const cases = [
 	{
 		name: 'generic blog',
 		input: {},
-		expected: { kind: 'blog', resourcePlatform: null, acquisition: 'web' },
+		expected: { kind: 'blog', resourcePlatform: null },
 	},
 	{
 		name: 'exact DOI URL',
 		input: {
 			url: 'https://doi.org/10.1000/example',
-			paperIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
-			openAlexId: 'W1',
+			paperIdentifiers: [
+				{ preferred: true, scheme: 'doi', value: '10.1000/example' },
+				{ preferred: true, scheme: 'openalex', value: 'W1' },
+			],
 		},
-		expected: { kind: 'paper', resourcePlatform: null, acquisition: 'publisher-page' },
+		expected: { kind: 'paper', resourcePlatform: null },
 	},
 	{
 		name: 'Citoid academic URL',
 		input: {
-			paperIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
-			openAlexId: 'W1',
-			translatorEvidence: { itemType: 'journalArticle', schemes: ['doi'] },
+			paperIdentifiers: [
+				{ preferred: true, scheme: 'doi', value: '10.1000/example' },
+				{ preferred: true, scheme: 'openalex', value: 'W1' },
+			],
 		},
-		expected: { kind: 'paper', resourcePlatform: null, acquisition: 'publisher-page' },
+		expected: { kind: 'paper', resourcePlatform: null },
 	},
 	{
 		name: 'HN carrier with academic subject stays forum',
 		input: {
 			url: 'https://news.ycombinator.com/item?id=123',
 			paperIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
-			openAlexId: 'W1',
 			subjectUrl: 'https://doi.org/10.1000/example',
 		},
 		expected: { kind: 'forum', resourcePlatform: 'hackernews', locator: { itemId: '123' } },
@@ -79,20 +75,12 @@ const cases = [
 		expected: { kind: 'video', resourcePlatform: 'youtube', locator: { videoId: 'abcdefghijk' } },
 	},
 	{
-		name: 'uploaded academic PDF',
+		name: 'OpenAlex-resolved paper',
 		input: {
 			url: null,
-			storageKey: 'users/u/resources/r/source.pdf',
-			fileType: 'application/pdf',
 			paperIdentifiers: [{ preferred: true, scheme: 'openalex', value: 'W2' }],
-			openAlexId: 'W2',
 		},
-		expected: { kind: 'paper', resourcePlatform: null, acquisition: 'uploaded-pdf' },
-	},
-	{
-		name: 'generic PDF',
-		input: { fileType: 'application/pdf' },
-		expected: { kind: 'blog', resourcePlatform: null, acquisition: 'pdf' },
+		expected: { kind: 'paper', resourcePlatform: null },
 	},
 ];
 

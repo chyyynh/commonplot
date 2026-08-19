@@ -14,6 +14,7 @@ export const ResourceCreatorSchema = z
 		given: z.string().trim().min(1).optional(),
 		family: z.string().trim().min(1).optional(),
 		literal: z.string().trim().min(1).optional(),
+		handle: z.string().trim().min(1).optional(),
 		avatarUrl: optionalHttpUrl.optional(),
 		profileUrl: optionalHttpUrl.optional(),
 		verified: z.boolean().optional(),

@@ -29,14 +29,8 @@ const CitoidItemSchema = z
 const CitoidResponseSchema = z.array(CitoidItemSchema);
 const ACADEMIC_ITEM_TYPES = new Set(['journalArticle', 'conferencePaper', 'preprint', 'thesis', 'manuscript']);
 
-export type TranslatorEvidence = Readonly<{
-	itemType: string;
-	schemes: PaperIdentifierScheme[];
-}>;
-
 export type BibliographicResolution = Readonly<{
 	identifiers: PaperIdentifier[];
-	translatorEvidence?: TranslatorEvidence;
 }>;
 
 function citoidQueryUrl(value: string | null | undefined): string | null {
@@ -83,20 +77,9 @@ async function resolveCitoidIdentifiers(url: string): Promise<BibliographicResol
 	}
 	const items = CitoidResponseSchema.parse(JSON.parse(await readTextWithLimit(response, CITOID_RESPONSE_MAX_BYTES)));
 	const academicItem = items.find((item) => item.itemType && ACADEMIC_ITEM_TYPES.has(item.itemType));
-	if (!academicItem?.itemType) {
-		return {
-			identifiers: [],
-			...(items[0]?.itemType ? { translatorEvidence: { itemType: items[0].itemType, schemes: [] } } : {}),
-		};
-	}
+	if (!academicItem) return { identifiers: [] };
 	const identifiers = normalizePaperIdentifiers(citoidItemIdentifiers(academicItem));
-	return {
-		identifiers,
-		translatorEvidence: {
-			itemType: academicItem.itemType,
-			schemes: [...new Set(identifiers.map((identifier) => identifier.scheme))],
-		},
-	};
+	return { identifiers };
 }
 
 function choosePreferredIdentifiers(identifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
@@ -149,6 +132,5 @@ export async function resolveBibliographicIdentifiers(input: {
 			...(fromText ? paperIdentifiersFromIdentity(fromText) : []),
 			...(input.seedIdentifiers ?? []),
 		]),
-		...(citoid.translatorEvidence ? { translatorEvidence: citoid.translatorEvidence } : {}),
 	};
 }
