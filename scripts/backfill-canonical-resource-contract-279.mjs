@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import pg from 'pg';
+import { detectResourceUrl } from '../src/shared/url.ts';
 
 const { Client } = pg;
 
@@ -171,6 +172,82 @@ function printSnapshot(label, snapshot) {
 	process.stdout.write(`\n${label}\n${JSON.stringify(snapshot, null, 2)}\n`);
 }
 
+async function planPlatformIdentifiers(client, cutoff) {
+	const result = await client.query(
+		`
+			SELECT r.id::text, r.resource_platform, r.url
+			FROM resources r
+			WHERE r.scope = 'corpus'
+			  AND r.created_at < $1::timestamp
+			  AND r.resource_platform IN ('hackernews', 'twitter', 'youtube')
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM resource_identifiers identifier
+				WHERE identifier.resource_id = r.id
+				  AND identifier.scheme = r.resource_platform
+			  )
+		`,
+		[cutoff],
+	);
+	const detected = result.rows.flatMap((row) => {
+		const locator = detectResourceUrl(row.url);
+		if (!locator || locator.resourcePlatform !== row.resource_platform) return [];
+		return [{ resourceId: row.id, scheme: locator.resourcePlatform, value: locator.platformId }];
+	});
+	if (detected.length === 0) return { conflicts: 0, recoverable: [], unresolved: result.rows.length };
+
+	const claims = new Map();
+	for (const candidate of detected) {
+		const key = `${candidate.scheme}:${candidate.value}`;
+		claims.set(key, (claims.get(key) ?? 0) + 1);
+	}
+	const owners = await client.query(
+		`
+			WITH candidate AS (
+				SELECT *
+				FROM JSONB_TO_RECORDSET($1::jsonb)
+				  AS value("resourceId" uuid, scheme varchar(32), value text)
+			)
+			SELECT candidate.scheme, candidate.value, identifier.resource_id::text AS owner_id
+			FROM candidate
+			JOIN resource_identifiers identifier
+			  ON identifier.scheme = candidate.scheme
+			 AND identifier.value = candidate.value
+		`,
+		[JSON.stringify(detected)],
+	);
+	const ownerByIdentifier = new Map(owners.rows.map((row) => [`${row.scheme}:${row.value}`, row.owner_id]));
+	const recoverable = detected.filter((candidate) => {
+		const key = `${candidate.scheme}:${candidate.value}`;
+		return claims.get(key) === 1 && !ownerByIdentifier.has(key);
+	});
+	return {
+		conflicts: detected.length - recoverable.length,
+		recoverable,
+		unresolved: result.rows.length - detected.length,
+	};
+}
+
+async function applyPlatformIdentifiers(client, candidates) {
+	if (candidates.length === 0) return 0;
+	const result = await client.query(
+		`
+			WITH candidate AS (
+				SELECT *
+				FROM JSONB_TO_RECORDSET($1::jsonb)
+				  AS value("resourceId" uuid, scheme varchar(32), value text)
+			)
+			INSERT INTO resource_identifiers (resource_id, scheme, value, is_preferred)
+			SELECT "resourceId", scheme, value, TRUE
+			FROM candidate
+			ON CONFLICT (scheme, value) DO NOTHING
+			RETURNING resource_id
+		`,
+		[JSON.stringify(candidates)],
+	);
+	return result.rowCount;
+}
+
 async function applyBatch(client, cutoff) {
 	const result = await client.query(
 		`
@@ -255,8 +332,20 @@ async function run() {
 
 		const cutoffResult = await client.query(`SELECT TO_CHAR(clock_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS.US') AS cutoff`);
 		const cutoff = cutoffResult.rows[0].cutoff;
+		const identifierPlan = await planPlatformIdentifiers(client, cutoff);
 		const before = await loadSnapshot(client, cutoff);
 		printSnapshot(`Canonical resource backfill #279 (${apply ? 'apply' : 'dry-run'}, cutoff ${cutoff} UTC)`, before);
+		process.stdout.write(
+			`${JSON.stringify(
+				{
+					identifierConflicts: identifierPlan.conflicts,
+					recoverablePlatformIdentifiers: identifierPlan.recoverable.length,
+					unresolvedPlatformIdentifiers: identifierPlan.unresolved,
+				},
+				null,
+				2,
+			)}\n`,
+		);
 		if (before.invalidContractRows > 0) {
 			throw new Error(`Refusing to continue: ${before.invalidContractRows} content-complete rows have an invalid canonical contract`);
 		}
@@ -264,6 +353,7 @@ async function run() {
 			process.stdout.write('\nDry-run only. Re-run with --apply to persist these changes.\n');
 			return;
 		}
+		const identifiersAdded = await applyPlatformIdentifiers(client, identifierPlan.recoverable);
 
 		let batches = 0;
 		let updatedRows = 0;
@@ -294,7 +384,7 @@ async function run() {
 
 		const after = await loadSnapshot(client, cutoff);
 		printSnapshot('Post-backfill state', after);
-		process.stdout.write(`${JSON.stringify({ batches, updatedRows, revisionsAdded, statusesTransitioned }, null, 2)}\n`);
+		process.stdout.write(`${JSON.stringify({ batches, identifiersAdded, updatedRows, revisionsAdded, statusesTransitioned }, null, 2)}\n`);
 		if (after.candidateRows !== 0) throw new Error(`${after.candidateRows} eligible rows remain after backfill`);
 	} finally {
 		if (locked) await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [LOCK_NAME]).catch(() => undefined);
