@@ -895,9 +895,9 @@ function emptyStoredResourceKindMetadata(identity: ResourceIdentity): ResourceKi
 		case 'forum':
 		case 'video':
 		case 'paper':
-			return { schemaVersion: 1 };
+			return {};
 		case 'post':
-			return { schemaVersion: 1, attachments: [] };
+			return { attachments: [] };
 	}
 }
 

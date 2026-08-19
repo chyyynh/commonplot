@@ -63,7 +63,7 @@ export async function stagePaperEnrichmentAttempt(
 	env: CoreEnv,
 	step: WorkflowStep,
 	candidate: PaperEnrichmentCandidate,
-	options: { includeCitationSnapshots?: boolean; stepName?: string } = {},
+	options: { stepName?: string } = {},
 ): Promise<PaperEnrichmentAttempt> {
 	const hasLocalPaperEvidence = localPaperEvidence(candidate);
 	const translateSavedUrl = !hasLocalPaperEvidence && shouldTranslateSavedUrl(candidate);
@@ -90,7 +90,6 @@ export async function stagePaperEnrichmentAttempt(
 				const resolved = await resolveOpenAlexPaper({
 					apiKey: env.OPENALEX_API_KEY,
 					identifiers: bibliographic.identifiers,
-					includeCitationSnapshots: options.includeCitationSnapshots,
 				});
 				const paper = resolved?.metadata ?? null;
 				console.info({
@@ -140,7 +139,7 @@ export async function stagePaperEnrichment(
 		identifiers?: readonly PaperIdentifier[];
 		translateUrl?: boolean;
 	},
-	options?: { includeCitationSnapshots?: boolean; stepName?: string },
+	options?: { stepName?: string },
 ): Promise<Pick<PaperEnrichmentAttempt, 'contentGrobidXmlUrl' | 'contentPdfUrl' | 'identifiers' | 'metadata'>> {
 	const { contentGrobidXmlUrl, contentPdfUrl, identifiers, metadata } = await stagePaperEnrichmentAttempt(env, step, candidate, options);
 	return { contentGrobidXmlUrl, contentPdfUrl, identifiers, metadata };

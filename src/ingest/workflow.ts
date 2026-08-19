@@ -387,7 +387,7 @@ async function stagePreliminaryAcquisition(
 					env,
 					step,
 					{ ...resource, identifiers: resource.paper_identifiers },
-					{ includeCitationSnapshots: false, stepName: 'resolve-explicit-paper-openalex-v2' },
+					{ stepName: 'resolve-explicit-paper-openalex-with-citations-v1' },
 				)
 			: null;
 	const pdf = explicitResolution
@@ -467,21 +467,20 @@ async function prepareResourceForProcessing(
 		: acquiredResource.file_type === PDF_MIME
 			? acquiredResource.content
 			: null;
-	const refreshedPaperResolution = rootCanBePaper
-		? await stagePaperEnrichment(
-				env,
-				step,
-				{
-					...acquiredResource,
-					identifierText,
-					identifiers: preliminary.explicitResolution?.identifiers ?? initialResource.paper_identifiers,
-				},
-				{ includeCitationSnapshots: true, stepName: 'resolve-paper-openalex-with-citations-v1' },
-			)
-		: { contentGrobidXmlUrl: null, contentPdfUrl: null, identifiers: [], metadata: null };
-	const paperResolution = refreshedPaperResolution.metadata
-		? refreshedPaperResolution
-		: (preliminary.explicitResolution ?? refreshedPaperResolution);
+	const paperResolution = preliminary.explicitResolution?.metadata
+		? preliminary.explicitResolution
+		: rootCanBePaper
+			? await stagePaperEnrichment(
+					env,
+					step,
+					{
+						...acquiredResource,
+						identifierText,
+						identifiers: preliminary.explicitResolution?.identifiers ?? initialResource.paper_identifiers,
+					},
+					{ stepName: 'resolve-paper-openalex-with-citations-v1' },
+				)
+			: { contentGrobidXmlUrl: null, contentPdfUrl: null, identifiers: [], metadata: null };
 	const paperEnrichment = paperResolution.metadata;
 	const preferred = await stagePreferredOpenAlexContent(env, step, acquiredResource, acquiredContent, paperResolution, preliminary);
 	acquiredContent = preferred.acquiredContent;

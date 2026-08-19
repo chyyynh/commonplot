@@ -1,11 +1,11 @@
 import type {
-	ForumKindMetadataV1,
-	PaperKindMetadataV1,
-	PostKindMetadataV1,
+	ForumKindMetadata,
+	PaperKindMetadata,
+	PostKindMetadata,
 	ResourceCreator,
 	ResourceKindMetadata,
 	ResourceMediaAttachment,
-	VideoKindMetadataV1,
+	VideoKindMetadata,
 } from '@core-shared/resource-metadata';
 import type { ContentResourceKind, ResourcePlatform } from '@core-shared/resource-types';
 import type { AcquiredMaterial, AcquisitionEnvelope, PaperMetadata, ResourceForProcessing } from '@core-shared/types';
@@ -36,7 +36,7 @@ function twitterCreator(metadata: AcquisitionEnvelope<'twitter'>): ResourceCreat
 	});
 }
 
-function postMetadata(metadata: AcquisitionEnvelope<'twitter'>): PostKindMetadataV1 {
+function postMetadata(metadata: AcquisitionEnvelope<'twitter'>): PostKindMetadata {
 	const data = metadata.data;
 	const attachments: ResourceMediaAttachment[] = (data.media ?? []).flatMap((media) => {
 		if (!media.url?.trim()) return [];
@@ -61,7 +61,6 @@ function postMetadata(metadata: AcquisitionEnvelope<'twitter'>): PostKindMetadat
 			})[0]
 		: undefined;
 	return {
-		schemaVersion: 1,
 		attachments,
 		...(externalUrl
 			? {
@@ -76,20 +75,18 @@ function postMetadata(metadata: AcquisitionEnvelope<'twitter'>): PostKindMetadat
 	};
 }
 
-function forumMetadata(metadata: AcquisitionEnvelope<'hackernews'>): ForumKindMetadataV1 {
+function forumMetadata(metadata: AcquisitionEnvelope<'hackernews'>): ForumKindMetadata {
 	const data = metadata.data;
 	return {
-		schemaVersion: 1,
 		...(data.itemType ? { itemType: data.itemType } : {}),
 		...(data.points === undefined ? {} : { points: data.points }),
 		...(data.commentCount === undefined ? {} : { commentCount: data.commentCount }),
 	};
 }
 
-function videoMetadata(metadata: AcquisitionEnvelope<'youtube'>): VideoKindMetadataV1 {
+function videoMetadata(metadata: AcquisitionEnvelope<'youtube'>): VideoKindMetadata {
 	const data = metadata.data;
 	return {
-		schemaVersion: 1,
 		...(data.durationSeconds === undefined ? {} : { durationSeconds: data.durationSeconds }),
 		...(data.viewCount === undefined ? {} : { viewCount: data.viewCount }),
 		...(data.likeCount === undefined ? {} : { likeCount: data.likeCount }),
@@ -102,7 +99,7 @@ export function canonicalFieldsFromAcquisition(acquired: AcquiredMaterial): Cano
 		case null:
 			return {
 				creators: literalCreator('author', acquired.metadata.author),
-				kindMetadata: acquired.metadata.siteName.trim() ? { schemaVersion: 1, siteName: acquired.metadata.siteName.trim() } : null,
+				kindMetadata: acquired.metadata.siteName.trim() ? { siteName: acquired.metadata.siteName.trim() } : null,
 			};
 		case 'hackernews': {
 			const metadata = acquired.acquisition as AcquisitionEnvelope<'hackernews'>;
@@ -133,12 +130,11 @@ export function canonicalFieldsFromAcquisition(acquired: AcquiredMaterial): Cano
 
 export function paperCanonicalFields(metadata: PaperMetadata): {
 	creators: ResourceCreator[];
-	kindMetadata: PaperKindMetadataV1;
+	kindMetadata: PaperKindMetadata;
 } {
 	return {
 		creators: metadata.authors.flatMap((author) => literalCreator('author', author)),
 		kindMetadata: {
-			schemaVersion: 1,
 			...(metadata.venue?.trim() ? { venue: metadata.venue.trim() } : {}),
 			...(metadata.year === undefined ? {} : { year: metadata.year }),
 			...(metadata.citedByCount === undefined ? {} : { citedByCount: metadata.citedByCount }),
@@ -166,14 +162,14 @@ export function emptyKindMetadataFor(kind: ContentResourceKind, resourcePlatform
 			return null;
 		case 'forum':
 			if (resourcePlatform !== 'hackernews') throw new Error('Forum resource requires a supported platform');
-			return { schemaVersion: 1 };
+			return {};
 		case 'post':
 			if (resourcePlatform !== 'twitter') throw new Error('Post resource requires a supported platform');
-			return { schemaVersion: 1, attachments: [] };
+			return { attachments: [] };
 		case 'video':
 			if (resourcePlatform !== 'youtube') throw new Error('Video resource requires a supported platform');
-			return { schemaVersion: 1 };
+			return {};
 		case 'paper':
-			return { schemaVersion: 1 };
+			return {};
 	}
 }

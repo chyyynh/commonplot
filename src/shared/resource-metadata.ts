@@ -46,12 +46,10 @@ export type ResourceMediaAttachment = Readonly<z.infer<typeof ResourceMediaAttac
 export type ResourceLinkAttachment = Readonly<z.infer<typeof ResourceLinkAttachmentSchema>>;
 
 const BlogKindMetadataSchema = z.object({
-	schemaVersion: z.literal(1),
 	siteName: z.string().trim().min(1).optional(),
 });
 
 const ForumKindMetadataSchema = z.object({
-	schemaVersion: z.literal(1),
 	itemType: z.enum(['story', 'ask', 'show', 'job']).optional(),
 	points: z.number().int().nonnegative().optional(),
 	commentCount: z.number().int().nonnegative().optional(),
@@ -63,7 +61,6 @@ const PostQuoteSchema = z.object({
 });
 
 const PostKindMetadataSchema = z.object({
-	schemaVersion: z.literal(1),
 	attachments: z.array(ResourceMediaAttachmentSchema).max(16),
 	externalLink: ResourceLinkAttachmentSchema.optional(),
 	quote: PostQuoteSchema.optional(),
@@ -71,7 +68,6 @@ const PostKindMetadataSchema = z.object({
 });
 
 const VideoKindMetadataSchema = z.object({
-	schemaVersion: z.literal(1),
 	durationSeconds: z.number().int().positive().optional(),
 	viewCount: z.number().int().nonnegative().optional(),
 	likeCount: z.number().int().nonnegative().optional(),
@@ -94,7 +90,6 @@ const PaperRelationSnapshotSchema = z.object({
 });
 
 const PaperKindMetadataSchema = z.object({
-	schemaVersion: z.literal(1),
 	venue: z.string().trim().min(1).optional(),
 	year: z.number().int().positive().optional(),
 	citedByCount: z.number().int().nonnegative().optional(),
@@ -104,21 +99,20 @@ const PaperKindMetadataSchema = z.object({
 	citations: PaperRelationSnapshotSchema.optional(),
 });
 
-export type BlogKindMetadataV1 = Readonly<z.infer<typeof BlogKindMetadataSchema>>;
-export type ForumKindMetadataV1 = Readonly<z.infer<typeof ForumKindMetadataSchema>>;
-export type PostQuoteV1 = Readonly<z.infer<typeof PostQuoteSchema>>;
-export type PostKindMetadataV1 = Readonly<z.infer<typeof PostKindMetadataSchema>>;
-export type VideoKindMetadataV1 = Readonly<z.infer<typeof VideoKindMetadataSchema>>;
+export type BlogKindMetadata = Readonly<z.infer<typeof BlogKindMetadataSchema>>;
+export type ForumKindMetadata = Readonly<z.infer<typeof ForumKindMetadataSchema>>;
+export type PostKindMetadata = Readonly<z.infer<typeof PostKindMetadataSchema>>;
+export type VideoKindMetadata = Readonly<z.infer<typeof VideoKindMetadataSchema>>;
 export type PaperRelationItem = Readonly<z.infer<typeof PaperRelationItemSchema>>;
 export type PaperRelationSnapshot = Readonly<z.infer<typeof PaperRelationSnapshotSchema>>;
-export type PaperKindMetadataV1 = Readonly<z.infer<typeof PaperKindMetadataSchema>>;
+export type PaperKindMetadata = Readonly<z.infer<typeof PaperKindMetadataSchema>>;
 
 export type ResourceKindMetadataByKind = Readonly<{
-	blog: BlogKindMetadataV1 | null;
-	forum: ForumKindMetadataV1;
-	post: PostKindMetadataV1;
-	video: VideoKindMetadataV1;
-	paper: PaperKindMetadataV1;
+	blog: BlogKindMetadata | null;
+	forum: ForumKindMetadata;
+	post: PostKindMetadata;
+	video: VideoKindMetadata;
+	paper: PaperKindMetadata;
 }>;
 
 export type ResourceKindMetadata = ResourceKindMetadataByKind[keyof ResourceKindMetadataByKind];

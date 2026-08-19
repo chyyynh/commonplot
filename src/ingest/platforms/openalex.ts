@@ -322,7 +322,6 @@ async function fetchOpenAlexRelations(input: {
 export async function resolveOpenAlexPaper(input: {
 	apiKey?: string;
 	identifiers: readonly PaperIdentifier[];
-	includeCitationSnapshots?: boolean;
 }): Promise<OpenAlexPaperResolution | null> {
 	const apiKey = input.apiKey?.trim();
 	if (!apiKey) return null;
@@ -332,7 +331,7 @@ export async function resolveOpenAlexPaper(input: {
 	const json = await fetchOpenAlexJson(lookupPath, apiKey);
 	if (!json) return null;
 	const work = OpenAlexWorkSchema.parse(json);
-	const relations = input.includeCitationSnapshots ? await fetchOpenAlexRelations({ apiKey, work }) : undefined;
+	const relations = await fetchOpenAlexRelations({ apiKey, work });
 	return normalizeOpenAlexWork(work, identifiers, relations);
 }
 
