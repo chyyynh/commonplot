@@ -1,3 +1,4 @@
+import { sha256Hex } from '@core-shared/hash';
 import { isResourcePlatform } from '@core-shared/resource-types';
 import type { AcquiredMaterial, PdfExtractionMetadata, ResourceForProcessing } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
@@ -87,7 +88,7 @@ function validateAcquisitionUrl(url: string): string {
 	return normalizeUrl(parsed.toString());
 }
 
-async function sourceSnapshotHash(acquired: AcquiredContent): Promise<string> {
+function sourceSnapshotHash(acquired: AcquiredContent): Promise<string> {
 	const input = JSON.stringify({
 		provider: acquired.provider,
 		fileType: acquired.fileType,
@@ -97,8 +98,7 @@ async function sourceSnapshotHash(acquired: AcquiredContent): Promise<string> {
 		platformData: acquired.acquisition.data,
 		representation: acquired.acquisition.representation,
 	});
-	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
-	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+	return sha256Hex(input);
 }
 
 async function sanitizeAcquiredContent(acquired: AcquiredContent): Promise<AcquiredContent> {

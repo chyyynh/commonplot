@@ -1,6 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { normalizePaperIdentifiers, type PaperIdentifier } from '@core-shared/paper-identity';
+import { normalizePaperIdentifiers } from '@core-shared/paper-identity';
+import { isPaperIdentifier } from '@core-shared/resource-identifiers';
 import {
 	isContentResourceIdentity,
 	isResourceSourceSnapshotHash,
@@ -478,14 +479,8 @@ async function prepareResourceForProcessing(
 		throw new NonRetryableError('Resolver produced an invalid content Resource identity', 'ResourceIdentityError');
 	}
 	const identifiers = resolvedResourceIdentifiers(resolution, preferred.resource.resource_identifiers);
-	const resolvedUrl =
-		resolution.kind === 'forum'
-			? canonicalPlatformUrl({ resourcePlatform: 'hackernews', platformId: resolution.locator.itemId })
-			: resolution.kind === 'post'
-				? canonicalPlatformUrl({ resourcePlatform: 'twitter', platformId: resolution.locator.tweetId })
-				: resolution.kind === 'video'
-					? canonicalPlatformUrl({ resourcePlatform: 'youtube', platformId: resolution.locator.videoId })
-					: preferred.resource.url;
+	const locator = exactPlatformLocator(identifiers);
+	const resolvedUrl = locator ? canonicalPlatformUrl(locator) : preferred.resource.url;
 	return {
 		acquiredContent,
 		identityPdfTextArtifact,
@@ -497,10 +492,7 @@ async function prepareResourceForProcessing(
 			url: resolvedUrl,
 			normalized_url: resolvedUrl ?? preferred.resource.normalized_url ?? null,
 			resource_identifiers: identifiers,
-			paper_identifiers: identifiers.filter(
-				(identifier): identifier is PaperIdentifier =>
-					identifier.scheme === 'doi' || identifier.scheme === 'arxiv' || identifier.scheme === 'openalex',
-			),
+			paper_identifiers: identifiers.filter(isPaperIdentifier),
 		},
 	};
 }

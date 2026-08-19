@@ -1,5 +1,11 @@
+import { sha256Hex } from '@core-shared/hash';
 import { normalizePaperIdentifiers, type PaperIdentifier } from '@core-shared/paper-identity';
-import { normalizeResourceIdentifiers, type ResourceIdentifier } from '@core-shared/resource-identifiers';
+import {
+	isPaperIdentifier,
+	isResourceIdentifierScheme,
+	normalizeResourceIdentifiers,
+	type ResourceIdentifier,
+} from '@core-shared/resource-identifiers';
 import {
 	parseResourceCreators,
 	parseStoredResourceKindMetadata,
@@ -123,23 +129,11 @@ export async function loadResourceForProcessing(env: CoreEnv, resourceId: string
 }
 
 export async function loadResourceShellForProcessing(env: CoreEnv, resourceId: string): Promise<StoredResourceForProcessing> {
-	return loadResource(env, resourceId, true);
-}
-
-async function loadResource(env: CoreEnv, resourceId: string, shell: boolean): Promise<StoredResourceForProcessing> {
-	return withCoreDb(env, async (db) => {
-		return requireStoredResourceRow(db, resourceId, shell);
-	});
+	return withCoreDb(env, (db) => loadStoredResourceRow(db, resourceId, true));
 }
 
 export function loadResourceForProcessingFromDb(db: CoreDb, resourceId: string): Promise<StoredResourceForProcessing> {
-	return requireStoredResourceRow(db, resourceId, false);
-}
-
-async function requireStoredResourceRow(db: CoreDb, resourceId: string, shell: boolean): Promise<StoredResourceForProcessing> {
-	const row = await loadStoredResourceRow(db, resourceId, shell);
-	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
-	return row;
+	return loadStoredResourceRow(db, resourceId, false);
 }
 
 export async function isResourceEnrichmentComplete(env: CoreEnv, resourceId: string): Promise<boolean> {
@@ -255,7 +249,7 @@ export async function claimStalePendingResourceAdmissions(
 	});
 }
 
-async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: boolean): Promise<StoredResourceForProcessing | undefined> {
+async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: boolean): Promise<StoredResourceForProcessing> {
 	const result = await db.execute<ResourceStoreRow>(sql`
 		SELECT
 			rl.id::text AS id,
@@ -340,7 +334,8 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: bool
 		LIMIT 1
 	`);
 	const row = result.rows[0];
-	return row ? resourceStoreRowToProcessing(row) : undefined;
+	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
+	return resourceStoreRowToProcessing(row);
 }
 
 function resourceStoreRowToProcessing(row: ResourceStoreRow): StoredResourceForProcessing {
@@ -378,12 +373,7 @@ function resourceStoreRowToProcessing(row: ResourceStoreRow): StoredResourceForP
 }
 
 function paperIdentifiersValue(value: unknown): PaperIdentifier[] {
-	return normalizePaperIdentifiers(
-		resourceIdentifiersValue(value).filter(
-			(identifier): identifier is PaperIdentifier =>
-				identifier.scheme === 'doi' || identifier.scheme === 'arxiv' || identifier.scheme === 'openalex',
-		),
-	);
+	return normalizePaperIdentifiers(resourceIdentifiersValue(value).filter(isPaperIdentifier));
 }
 
 function resourceIdentifiersValue(value: unknown): ResourceIdentifier[] {
@@ -392,15 +382,7 @@ function resourceIdentifiersValue(value: unknown): ResourceIdentifier[] {
 		value.flatMap((item) => {
 			if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
 			const identifier = item as Record<string, unknown>;
-			if (
-				(identifier.scheme !== 'doi' &&
-					identifier.scheme !== 'arxiv' &&
-					identifier.scheme !== 'openalex' &&
-					identifier.scheme !== 'hackernews' &&
-					identifier.scheme !== 'twitter' &&
-					identifier.scheme !== 'youtube') ||
-				typeof identifier.value !== 'string'
-			) {
+			if (!isResourceIdentifierScheme(identifier.scheme) || typeof identifier.value !== 'string') {
 				return [];
 			}
 			return [{ preferred: identifier.preferred !== false, scheme: identifier.scheme, value: identifier.value }];
@@ -456,9 +438,8 @@ type ResourceSourceSnapshotInput = {
 	url: string | null;
 };
 
-async function resourceSourceSnapshotHash(input: ResourceSourceSnapshotInput): Promise<string> {
-	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(input)));
-	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+function resourceSourceSnapshotHash(input: ResourceSourceSnapshotInput): Promise<string> {
+	return sha256Hex(JSON.stringify(input));
 }
 
 function resourceSourceSnapshotInput(resource: ResourceForProcessing): ResourceSourceSnapshotInput {
