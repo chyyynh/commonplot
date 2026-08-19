@@ -1,0 +1,49 @@
+import type { PostKindMetadata, ResourceCreator, ResourceKindMetadata } from './resource-metadata.ts';
+
+const HOSTED_RESOURCE_IMAGE_PATTERN = /^https:\/\/imagedelivery\.net\/[a-zA-Z0-9_-]+\/resource-[a-f0-9]{64}\/public$/;
+
+export type ResourceImageFields = Readonly<{
+	creators?: readonly ResourceCreator[] | null;
+	kindMetadata?: ResourceKindMetadata | null;
+	ogImageUrl?: string | null;
+}>;
+
+function postMetadata(resource: ResourceImageFields): PostKindMetadata | null {
+	return resource.kindMetadata && 'attachments' in resource.kindMetadata ? (resource.kindMetadata as PostKindMetadata) : null;
+}
+
+export function resourcePreviewImageCandidates(resource: ResourceImageFields): string[] {
+	const metadata = postMetadata(resource);
+	const attachments = metadata?.attachments.map((item) => item.url) ?? [];
+	return [attachments[0], metadata?.externalLink?.imageUrl, resource.ogImageUrl, ...attachments.slice(1)].filter(
+		(url): url is string => typeof url === 'string',
+	);
+}
+
+export function resourceImageUrls(resource: ResourceImageFields): string[] {
+	const metadata = postMetadata(resource);
+	return [
+		resource.ogImageUrl,
+		...(resource.creators?.map((creator) => creator.avatarUrl) ?? []),
+		...(metadata?.attachments.map((attachment) => attachment.url) ?? []),
+		metadata?.externalLink?.imageUrl,
+		metadata?.quote?.creator.avatarUrl,
+	].filter((url): url is string => typeof url === 'string');
+}
+
+export function hostedResourceImageUrl(value: string | null | undefined): string | null {
+	const url = value?.trim();
+	return url && HOSTED_RESOURCE_IMAGE_PATTERN.test(url) ? url : null;
+}
+
+export function resourceImageFieldsAreHosted(resource: ResourceImageFields): boolean {
+	return resourceImageUrls(resource).every((url) => hostedResourceImageUrl(url) === url);
+}
+
+export function resourcePreviewImageUrl(resource: ResourceImageFields): string | null {
+	for (const candidate of resourcePreviewImageCandidates(resource)) {
+		const hosted = hostedResourceImageUrl(candidate);
+		if (hosted) return hosted;
+	}
+	return null;
+}

@@ -47,6 +47,46 @@ function parseUrl(rawUrl: string): URL | null {
 	}
 }
 
+function isPrivateHostname(hostname: string): boolean {
+	const host = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+	if (host === 'localhost' || host.endsWith('.localhost') || host.endsWith('.local')) return true;
+	if (host.includes(':')) {
+		return (
+			host === '::' ||
+			host === '::1' ||
+			host.startsWith('::ffff:') ||
+			host.startsWith('fc') ||
+			host.startsWith('fd') ||
+			/^fe[89ab]/.test(host) ||
+			host.startsWith('ff')
+		);
+	}
+	const octets = host.split('.').map(Number);
+	if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return false;
+	return (
+		octets[0] === 0 ||
+		octets[0] === 10 ||
+		octets[0] === 127 ||
+		(octets[0] === 100 && (octets[1] ?? 0) >= 64 && (octets[1] ?? 0) <= 127) ||
+		(octets[0] === 169 && octets[1] === 254) ||
+		(octets[0] === 172 && (octets[1] ?? 0) >= 16 && (octets[1] ?? 0) <= 31) ||
+		(octets[0] === 192 && (octets[1] === 0 || octets[1] === 168)) ||
+		(octets[0] === 198 && ((octets[1] ?? 0) === 18 || (octets[1] ?? 0) === 19)) ||
+		(octets[0] ?? 0) >= 224
+	);
+}
+
+/** External media URL safe for a Worker origin fetch. */
+export function validatedExternalMediaUrl(rawUrl: string | null | undefined): string | null {
+	const value = rawUrl?.trim();
+	if (!value) return null;
+	const normalized = /^http:\/\//i.test(value) ? value.replace(/^http:/i, 'https:') : value;
+	const url = parseUrl(normalized);
+	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:')) return null;
+	if (url.username || url.password || isPrivateHostname(url.hostname)) return null;
+	return url.toString();
+}
+
 export function normalizeUrl(url: string): string {
 	const parsed = parseUrl(url);
 	if (!parsed) return url;

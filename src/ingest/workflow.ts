@@ -2,7 +2,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type Workflo
 import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizePaperIdentifiers } from '@core-shared/paper-identity';
 import { isPaperIdentifier } from '@core-shared/resource-identifiers';
-import type { HostedResourceImage } from '@core-shared/resource-images';
+import type { HostedResourceImage } from '@core-shared/resource-image-mapping';
 import {
 	isContentResourceIdentity,
 	isResourceSourceSnapshotHash,

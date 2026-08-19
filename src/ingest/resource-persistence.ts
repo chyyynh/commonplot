@@ -1,5 +1,5 @@
 import type { PersistResolvedResourceGraphInput, PersistResolvedResourceGraphResult } from '@app-domain/resource-graph-contracts';
-import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/resource-images';
+import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
 import { parseResourceIdentity } from '@core-shared/resource-types';
 import type { ResourceForProcessing } from '@core-shared/types';
 import { type CoreDb, withCoreDb, withCoreTx } from '@db/client';

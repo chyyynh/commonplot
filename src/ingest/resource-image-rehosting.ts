@@ -1,15 +1,16 @@
+import { sha256Hex } from '@core-shared/hash';
 import { fetchWithTimeout } from '@core-shared/http';
-import {
-	type HostedResourceImage,
-	hostedResourceImageUrl,
-	normalizedResourceImageUrl,
-	resourceImageId,
-	validatedExternalMediaUrl,
-} from '@core-shared/resource-images';
+import { hostedResourceImageUrl } from '@core-shared/resource-image-fields';
+import { type HostedResourceImage, normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
+import { validatedExternalMediaUrl } from '@core-shared/url';
 
 const REHOST_TIMEOUT_MS = 8_000;
 const MAX_SOURCE_REDIRECTS = 3;
 const SOURCE_USER_AGENT = 'Newsence-Media-Rehost/1.0 (+https://newsence.app)';
+
+async function resourceImageId(sourceUrl: string): Promise<string> {
+	return `resource-${await sha256Hex(sourceUrl)}`;
+}
 
 function failure(code: string, detail?: string): Error {
 	return new Error(detail ? `${code}: ${detail}` : code);
