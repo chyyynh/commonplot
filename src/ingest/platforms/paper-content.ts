@@ -81,92 +81,78 @@ async function acquireOpenAlexGrobidArtifact(
 	);
 }
 
-async function stageOpenAlexPdfAcquisition(
+async function stageOpenAlexContentAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	resource: ResourceForProcessing,
 	resolution: PaperEnrichmentResolution,
-	stepName: string,
+	phase: 'preliminary' | 'selected',
 ): Promise<AcquiredContent | null> {
-	const { contentPdfUrl, metadata } = resolution;
-	if (!contentPdfUrl || resource.scope !== 'corpus' || resource.storage_key) return null;
-	const sourceName = resource.source?.trim() || (resource.url ? new URL(resource.url).hostname : 'OpenAlex');
-	const artifact = await step
-		.do(stepName, ACQUISITION_STEP, () =>
-			acquireOpenAlexPdfArtifact(
-				{
-					contentPdfUrl,
-					description: metadata?.abstract?.trim() || resource.summary,
-					publishedDate: metadata?.publicationDate?.trim() || resource.published_date,
-					resourceId: resource.id,
-					sourceName,
-					title: metadata?.title?.trim() || resource.title,
-				},
-				env,
-			),
-		)
-		.catch((error) => {
-			console.error({
-				tag: 'OPENALEX_CONTENT',
-				event: 'pdf_acquisition_failed',
-				resource_id: resource.id,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return null;
-		});
-	if (!artifact) return null;
-	const acquired = await readAcquiredContentArtifact(artifact);
-	console.info({
-		tag: 'OPENALEX_CONTENT',
-		event: 'pdf_acquired',
-		resource_id: resource.id,
-		chars: acquired.markdown.length,
-		pages: acquired.provider === null ? (acquired.extraction?.pages ?? null) : null,
-	});
-	return acquired;
-}
+	const { contentGrobidXmlUrl, contentPdfUrl, metadata } = resolution;
+	if ((!contentPdfUrl && !contentGrobidXmlUrl) || resource.scope !== 'corpus' || resource.storage_key) return null;
 
-async function stageOpenAlexGrobidAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	resource: ResourceForProcessing,
-	resolution: PaperEnrichmentResolution,
-	stepName: string,
-): Promise<AcquiredContent | null> {
-	const { contentGrobidXmlUrl, metadata } = resolution;
-	if (!contentGrobidXmlUrl || resource.scope !== 'corpus' || resource.storage_key) return null;
 	const sourceName = resource.source?.trim() || (resource.url ? new URL(resource.url).hostname : 'OpenAlex');
-	const artifact = await step
-		.do(stepName, ACQUISITION_STEP, () =>
-			acquireOpenAlexGrobidArtifact(
-				{
-					contentGrobidXmlUrl,
-					description: metadata?.abstract?.trim() || resource.summary,
-					publishedDate: metadata?.publicationDate?.trim() || resource.published_date,
-					sourceName,
-					title: metadata?.title?.trim() || resource.title,
-				},
-				env,
-			),
-		)
-		.catch((error) => {
-			console.error({
-				tag: 'OPENALEX_CONTENT',
-				event: 'grobid_acquisition_failed',
-				resource_id: resource.id,
-				error: error instanceof Error ? error.message : String(error),
+	const description = metadata?.abstract?.trim() || resource.summary;
+	const publishedDate = metadata?.publicationDate?.trim() || resource.published_date;
+	const title = metadata?.title?.trim() || resource.title;
+	const pdfStepName = phase === 'preliminary' ? 'acquire-preliminary-openalex-content-pdf-v1' : 'acquire-selected-openalex-content-pdf-v1';
+	const grobidStepName =
+		phase === 'preliminary' ? 'acquire-preliminary-openalex-content-grobid-v1' : 'acquire-selected-openalex-content-grobid-v1';
+
+	if (contentPdfUrl) {
+		const artifact = await step
+			.do(pdfStepName, ACQUISITION_STEP, () =>
+				acquireOpenAlexPdfArtifact({ contentPdfUrl, description, publishedDate, resourceId: resource.id, sourceName, title }, env),
+			)
+			.catch((error) => {
+				console.error({
+					tag: 'OPENALEX_CONTENT',
+					event: 'pdf_acquisition_failed',
+					resource_id: resource.id,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				return null;
 			});
-			return null;
-		});
-	if (!artifact) return null;
-	const acquired = await readAcquiredContentArtifact(artifact);
-	console.info({
-		tag: 'OPENALEX_CONTENT',
-		event: 'grobid_acquired',
-		resource_id: resource.id,
-		chars: acquired.markdown.length,
-	});
-	return acquired;
+		if (artifact) {
+			const acquired = await readAcquiredContentArtifact(artifact);
+			console.info({
+				tag: 'OPENALEX_CONTENT',
+				event: 'pdf_acquired',
+				resource_id: resource.id,
+				chars: acquired.markdown.length,
+				pages: acquired.provider === null ? (acquired.extraction?.pages ?? null) : null,
+			});
+			return acquired;
+		}
+	}
+
+	if (contentGrobidXmlUrl) {
+		const artifact = await step
+			.do(grobidStepName, ACQUISITION_STEP, () =>
+				acquireOpenAlexGrobidArtifact({ contentGrobidXmlUrl, description, publishedDate, sourceName, title }, env),
+			)
+			.catch((error) => {
+				console.error({
+					tag: 'OPENALEX_CONTENT',
+					event: 'grobid_acquisition_failed',
+					resource_id: resource.id,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				return null;
+			});
+		if (artifact) {
+			const acquired = await readAcquiredContentArtifact(artifact);
+			console.info({
+				tag: 'OPENALEX_CONTENT',
+				event: 'grobid_acquired',
+				resource_id: resource.id,
+				chars: acquired.markdown.length,
+			});
+			return acquired;
+		}
+	}
+
+	return null;
 }
 
 type PreliminaryAcquisition = Readonly<{
@@ -189,15 +175,11 @@ export async function stagePreliminaryAcquisition(
 					{ stepName: 'resolve-explicit-paper-openalex-with-citations-v1' },
 				)
 			: null;
-	const pdf = explicitResolution
-		? await stageOpenAlexPdfAcquisition(env, step, resource, explicitResolution, 'acquire-preliminary-openalex-content-pdf-v1')
+	const openAlexContent = explicitResolution
+		? await stageOpenAlexContentAcquisition(env, step, resource, explicitResolution, 'preliminary')
 		: null;
-	const grobid =
-		explicitResolution && !pdf
-			? await stageOpenAlexGrobidAcquisition(env, step, resource, explicitResolution, 'acquire-preliminary-openalex-content-grobid-v1')
-			: null;
 	return {
-		acquiredContent: pdf ?? grobid ?? (await acquireFallback()),
+		acquiredContent: openAlexContent ?? (await acquireFallback()),
 		explicitResolution,
 	};
 }
@@ -217,13 +199,9 @@ export async function stagePreferredOpenAlexContent(
 	if (paperResolution === preliminary.explicitResolution) {
 		return { acquiredContent, resource };
 	}
-	const pdf = await stageOpenAlexPdfAcquisition(env, step, resource, paperResolution, 'acquire-selected-openalex-content-pdf-v1');
-	if (pdf) {
-		return { acquiredContent: pdf, resource: applyAcquiredMaterial(resource, pdf) };
-	}
-	const grobid = await stageOpenAlexGrobidAcquisition(env, step, resource, paperResolution, 'acquire-selected-openalex-content-grobid-v1');
-	if (grobid) {
-		return { acquiredContent: grobid, resource: applyAcquiredMaterial(resource, grobid) };
+	const openAlexContent = await stageOpenAlexContentAcquisition(env, step, resource, paperResolution, 'selected');
+	if (openAlexContent) {
+		return { acquiredContent: openAlexContent, resource: applyAcquiredMaterial(resource, openAlexContent) };
 	}
 	return { acquiredContent, resource };
 }
