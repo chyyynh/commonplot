@@ -64,7 +64,7 @@ async function graphMutation(
 	hostedImages: readonly HostedResourceImage[],
 ): Promise<PersistResolvedResourceGraphInput> {
 	const resource = finalizedResource(input.handled);
-	const identity = parseResourceIdentity(input.handled.resolution.kind, input.handled.resolution.resourcePlatform);
+	const identity = parseResourceIdentity(input.handled.kind, input.handled.resourcePlatform);
 	if (!identity) throw new Error(`Resource ${input.resourceId} resolved to an invalid identity`);
 	const sourceRevision = await resourceSourceRevision(resource);
 	const content = resource.content;
@@ -79,7 +79,7 @@ async function graphMutation(
 		creators: media.creators,
 		kindMetadata: media.kindMetadata,
 		sourceRevision,
-		subject: resolvedSubjectInput(input.handled.resolution),
+		subject: resolvedSubjectInput(input.handled),
 		privatePaperAttachment: input.handled.kind === 'paper' ? privatePaperAttachment(resource) : null,
 		originalLang: resource.original_lang,
 		title: resource.title,

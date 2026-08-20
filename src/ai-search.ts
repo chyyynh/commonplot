@@ -194,10 +194,6 @@ async function loadCorpusDocuments(db: CoreDb, resourceIds: readonly string[]): 
 	);
 }
 
-async function loadCorpusDocument(db: CoreDb, resourceId: string): Promise<CorpusDocument | null> {
-	return (await loadCorpusDocuments(db, [resourceId]))[0] ?? null;
-}
-
 function corpusItemMetadata(document: CorpusDocument): Record<string, unknown> {
 	const effectiveAt = documentEffectiveAt(document);
 	const identity = corpusDocumentIdentity(document);
@@ -210,14 +206,10 @@ function corpusItemMetadata(document: CorpusDocument): Record<string, unknown> {
 	};
 }
 
-async function uploadCorpusDocumentTo(
-	index: AiSearchInstance,
-	document: CorpusDocument,
-	metadata: Record<string, unknown>,
-): Promise<AiSearchItemInfo | null> {
+async function uploadCorpusDocument(env: CoreEnv, document: CorpusDocument): Promise<AiSearchItemInfo | null> {
 	const startedAt = Date.now();
-	const result: AiSearchItemInfo | null = await index.items.upload(itemKey(document.id), serializeDocument(document), {
-		metadata,
+	const result: AiSearchItemInfo | null = await env.AI_SEARCH.items.upload(itemKey(document.id), serializeDocument(document), {
+		metadata: corpusItemMetadata(document),
 	});
 	console.info({
 		tag: 'AI_SEARCH',
@@ -229,13 +221,9 @@ async function uploadCorpusDocumentTo(
 	return result;
 }
 
-function uploadCorpusDocument(env: CoreEnv, document: CorpusDocument): Promise<AiSearchItemInfo | null> {
-	return uploadCorpusDocumentTo(env.AI_SEARCH, document, corpusItemMetadata(document));
-}
-
 export async function syncCorpusItem(env: CoreEnv, resourceId: string): Promise<'uploaded' | 'deleted' | 'skipped'> {
 	if (!isValidUuid(resourceId)) return 'skipped';
-	const document = await withCoreDb(env, (db) => loadCorpusDocument(db, resourceId));
+	const document = await withCoreDb(env, async (db) => (await loadCorpusDocuments(db, [resourceId]))[0] ?? null);
 	if (!document) {
 		await deleteCorpusItem(env, resourceId);
 		return 'deleted';
@@ -244,16 +232,16 @@ export async function syncCorpusItem(env: CoreEnv, resourceId: string): Promise<
 	return 'uploaded';
 }
 
-async function deleteCorpusItemFrom(index: AiSearchInstance, resourceId: string): Promise<boolean> {
+async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<boolean> {
 	const key = itemKey(resourceId);
 	// Search by the bare id, not the full key: a value containing `/` is parsed as
 	// a folder metadata filter and rejected with 7001 "metadata filter pattern
 	// exceeds maximum length", so passing `resources/<id>.md` failed every call.
 	// The REST API grew an exact-`key` parameter, but the Workers binding type has
 	// no such field yet — the exact-match filter below covers the difference.
-	const listed = await index.items.list({ search: resourceId, source: 'builtin', per_page: 1 });
+	const listed = await env.AI_SEARCH.items.list({ search: resourceId, source: 'builtin', per_page: 1 });
 	const matches = listed.result.filter((item) => item.key === key && item.source_id === 'builtin');
-	await Promise.all(matches.map((item) => index.items.delete(item.id)));
+	await Promise.all(matches.map((item) => env.AI_SEARCH.items.delete(item.id)));
 	if (matches.length) {
 		console.info({
 			tag: 'AI_SEARCH',
@@ -263,10 +251,6 @@ async function deleteCorpusItemFrom(index: AiSearchInstance, resourceId: string)
 		});
 	}
 	return matches.length > 0;
-}
-
-async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<boolean> {
-	return deleteCorpusItemFrom(env.AI_SEARCH, resourceId);
 }
 
 function searchFilters(options: CorpusSearchOptions): VectorizeVectorMetadataFilter | null | undefined {
@@ -415,10 +399,6 @@ async function writeSearchIndexRebuildingState(env: CoreEnv, advanceEpoch: boole
 		);
 	}
 	return { rebuildEpoch: row.rebuild_epoch, startedAt: row.started_at };
-}
-
-async function beginSearchIndexRebuild(env: CoreEnv): Promise<SearchIndexRebuildLease> {
-	return writeSearchIndexRebuildingState(env, true);
 }
 
 async function assertSearchIndexRebuildLease(env: CoreEnv, lease: SearchIndexRebuildLease): Promise<void> {
@@ -1231,7 +1211,9 @@ async function reconcileSearchItems(env: CoreEnv, step: WorkflowStep, lease: Sea
 export class SearchIndexGeneration5RebuildWorkflow extends WorkflowEntrypoint<CoreEnv, SearchIndexRebuildPayload> {
 	async run(event: WorkflowEvent<SearchIndexRebuildPayload>, step: WorkflowStep) {
 		const startedAt = await step.do('capture-generation-5-rebuild-started-at', async () => event.timestamp.toISOString());
-		const lease = await step.do('begin-generation-5-search-index', SHORT_STEP_OPTIONS, () => beginSearchIndexRebuild(this.env));
+		const lease = await step.do('begin-generation-5-search-index', SHORT_STEP_OPTIONS, () =>
+			writeSearchIndexRebuildingState(this.env, true),
+		);
 
 		const identityPreflight = await step.do('validate-generation-5-resource-identities', SHORT_STEP_OPTIONS, () =>
 			withSearchIndexRebuildLease(this.env, lease, () => loadSearchIdentityCounts(this.env)),

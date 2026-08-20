@@ -5,12 +5,11 @@ import { applyHackerNewsAnnotation, buildHackerNewsAnnotation } from './platform
 import { prepareYouTubeHighlights, type YouTubeHighlightsUpdate } from './platforms/youtube';
 import type { ResolvedContentResourceInput } from './resource-resolver';
 
-type HandledBase<K extends ResolvedContentResourceInput['kind']> = Readonly<{
-	kind: K;
-	resolution: Extract<ResolvedContentResourceInput, { kind: K }>;
-	resource: ResourceForProcessing;
-	classificationExclusions?: string[];
-}>;
+type HandledBase<K extends ResolvedContentResourceInput['kind']> = Extract<ResolvedContentResourceInput, { kind: K }> &
+	Readonly<{
+		resource: ResourceForProcessing;
+		classificationExclusions?: string[];
+	}>;
 
 export type HandledResourceResult =
 	| HandledBase<'blog'>
@@ -32,7 +31,10 @@ type HandleContext = Readonly<{
 	step: WorkflowStep;
 }>;
 
-async function handleForum(context: HandleContext): Promise<HandledResourceResult> {
+async function handleForum(
+	context: HandleContext,
+	resolution: Extract<ResolvedContentResourceInput, { kind: 'forum' }>,
+): Promise<HandledResourceResult> {
 	const hackerNewsItem = context.acquiredContent?.provider === 'hackernews' ? context.acquiredContent.hackerNewsItem : undefined;
 	const annotation = await context.step
 		.do(
@@ -50,8 +52,7 @@ async function handleForum(context: HandleContext): Promise<HandledResourceResul
 			return null;
 		});
 	return {
-		kind: 'forum',
-		resolution: context.resolution as Extract<ResolvedContentResourceInput, { kind: 'forum' }>,
+		...resolution,
 		resource:
 			annotation && context.resource.content
 				? { ...context.resource, content: applyHackerNewsAnnotation(context.resource.content, annotation) }
@@ -79,8 +80,7 @@ async function handleVideo(
 			return null;
 		});
 	return {
-		kind: 'video',
-		resolution,
+		...resolution,
 		resource: context.resource,
 		youtubeTranscript,
 		youtubeHighlights,
@@ -90,13 +90,12 @@ async function handleVideo(
 export async function handleResolvedResource(context: HandleContext): Promise<HandledResourceResult> {
 	switch (context.resolution.kind) {
 		case 'blog':
-			return { kind: 'blog', resolution: context.resolution, resource: context.resource };
+			return { ...context.resolution, resource: context.resource };
 		case 'forum':
-			return handleForum(context);
+			return handleForum(context, context.resolution);
 		case 'post':
 			return {
-				kind: 'post',
-				resolution: context.resolution,
+				...context.resolution,
 				resource: context.resource,
 				classificationExclusions: ['Twitter'],
 			};
@@ -104,8 +103,7 @@ export async function handleResolvedResource(context: HandleContext): Promise<Ha
 			return handleVideo(context, context.resolution);
 		case 'paper':
 			return {
-				kind: 'paper',
-				resolution: context.resolution,
+				...context.resolution,
 				resource: context.resource,
 				paperEnrichment: context.paperEnrichment,
 			};
