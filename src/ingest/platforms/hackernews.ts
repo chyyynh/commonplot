@@ -16,31 +16,18 @@ interface HnComment {
 	children?: HnComment[];
 }
 
-// Shape of Algolia's /items/{id} response. It carries the whole comment tree in
-// `children` but has no `descendants` — that is a Firebase field, so discussion
-// size has to be counted from the tree.
-export interface HackerNewsItem {
-	id: number;
-	title?: string;
-	url?: string;
-	author?: string;
-	points?: number;
-	type?: 'story' | 'ask' | 'show' | 'job' | 'comment' | 'poll';
-	created_at_i?: number;
-	text?: string;
-	children?: HnComment[];
-}
-
 const optionalStringSchema = z
 	.string()
-	.nullish()
-	.transform((value) => value ?? undefined);
+	.nullable()
+	.transform((value) => value ?? undefined)
+	.optional();
 const optionalNonnegativeIntegerSchema = z
 	.number()
 	.int()
 	.nonnegative()
-	.nullish()
-	.transform((value) => value ?? undefined);
+	.nullable()
+	.transform((value) => value ?? undefined)
+	.optional();
 
 const HnCommentSchema: z.ZodType<HnComment> = z.lazy(() =>
 	z.object({
@@ -48,12 +35,16 @@ const HnCommentSchema: z.ZodType<HnComment> = z.lazy(() =>
 		text: optionalStringSchema,
 		children: z
 			.array(HnCommentSchema)
-			.nullish()
-			.transform((value) => value ?? undefined),
+			.nullable()
+			.transform((value) => value ?? undefined)
+			.optional(),
 	}),
 );
 
-const HackerNewsItemSchema: z.ZodType<HackerNewsItem> = z.object({
+// Shape of Algolia's /items/{id} response. It carries the whole comment tree in
+// `children` but has no `descendants` — that is a Firebase field, so discussion
+// size has to be counted from the tree.
+const HackerNewsItemSchema = z.object({
 	id: z.number().int().positive(),
 	title: optionalStringSchema,
 	url: optionalStringSchema,
@@ -61,15 +52,19 @@ const HackerNewsItemSchema: z.ZodType<HackerNewsItem> = z.object({
 	points: optionalNonnegativeIntegerSchema,
 	type: z
 		.enum(['story', 'ask', 'show', 'job', 'comment', 'poll'])
-		.nullish()
-		.transform((value) => value ?? undefined),
+		.nullable()
+		.transform((value) => value ?? undefined)
+		.optional(),
 	created_at_i: optionalNonnegativeIntegerSchema,
 	text: optionalStringSchema,
 	children: z
 		.array(HnCommentSchema)
-		.nullish()
-		.transform((value) => value ?? undefined),
+		.nullable()
+		.transform((value) => value ?? undefined)
+		.optional(),
 });
+
+export type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
 
 export function hackerNewsDiscussionUrl(value: string): string | null {
 	const itemId = extractHackerNewsId(value);

@@ -11,6 +11,8 @@ const DOMAIN_ALIASES: Record<string, string> = {
 const YOUTUBE_HOST = 'youtube.com';
 const YOUTUBE_SHORT_HOST = 'youtu.be';
 const YOUTUBE_VIDEO_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
+const TWITTER_USERNAME_RE = /^[A-Za-z0-9_]{1,15}$/;
+const TWITTER_NON_PROFILE_PATHS = new Set(['home', 'i', 'intent', 'search', 'share']);
 
 function hostMatches(hostname: string, host: string): boolean {
 	return hostname === host || hostname.endsWith(`.${host}`);
@@ -34,6 +36,17 @@ export function parseExternalHttpUrl(value: string | null | undefined, base?: st
 	const url = value?.trim() ? URL.parse(value, base) : null;
 	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null;
 	return url;
+}
+
+export function parseTwitterUsername(value: string | null | undefined): string | null {
+	const input = value?.trim();
+	if (!input) return null;
+
+	const url = parseExternalHttpUrl(input);
+	const candidate = url ? url.pathname.split('/').filter(Boolean)[0] : input.replace(/^@/, '');
+	if (url && !isTwitterHost(url.hostname)) return null;
+	if (!candidate || TWITTER_NON_PROFILE_PATHS.has(candidate.toLowerCase())) return null;
+	return TWITTER_USERNAME_RE.test(candidate) ? candidate : null;
 }
 
 /** Canonical HTTPS URL for external media. */

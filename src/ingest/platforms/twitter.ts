@@ -1,5 +1,5 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import { normalizeUrl } from '@core-shared/url';
+import { normalizeUrl, parseTwitterUsername } from '@core-shared/url';
 import { withCoreDb } from '@db/client';
 import { attachSourceToResources, getExistingResourcesByUrl, reopenResourceForReprocessing } from '@ingest/domain/resource-admission-store';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
@@ -135,8 +135,6 @@ const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/adv
 
 /** Max usernames per query batch to stay within query length limits */
 const TWITTER_BATCH_SIZE = 20;
-const TWITTER_USERNAME_RE = /^[A-Za-z0-9_]{1,15}$/;
-const TWITTER_NON_PROFILE_PATHS = new Set(['home', 'i', 'intent', 'search', 'share']);
 const TWITTER_WATERMARK_OVERLAP_MS = 60 * 60 * 1000;
 
 function normalizeRetweet(tweet: Tweet): Tweet | null {
@@ -167,24 +165,6 @@ function normalizeRetweet(tweet: Tweet): Tweet | null {
 		throw new Error(`Tweet ${tweet.id ?? tweet.url} has no complete author`);
 	}
 	return tweet;
-}
-
-function normalizeTwitterUserName(input: string | null | undefined): string | null {
-	const trimmed = input?.trim();
-	if (!trimmed) return null;
-
-	let candidate = trimmed.replace(/^@/, '');
-	try {
-		const url = new URL(trimmed);
-		if (!/(^|\.)x\.com$|(^|\.)twitter\.com$/.test(url.hostname.toLowerCase())) return null;
-		candidate = url.pathname.split('/').filter(Boolean)[0] ?? '';
-		if (TWITTER_NON_PROFILE_PATHS.has(candidate.toLowerCase())) return null;
-	} catch {
-		// Plain handle input.
-	}
-
-	const userName = candidate.replace(/^@/, '').trim();
-	return TWITTER_USERNAME_RE.test(userName) ? userName : null;
 }
 
 /** Oldest effective watermark in one API batch, minus a one-hour overlap. */
@@ -312,7 +292,7 @@ type MonitoredTwitterIdentity = {
 
 function monitoredTwitterUsers(users: MonitoredSource[]): MonitoredTwitterUser[] {
 	return users.flatMap((user) => {
-		const twitterUserName = normalizeTwitterUserName(user.handle);
+		const twitterUserName = parseTwitterUsername(user.handle);
 		return twitterUserName ? [{ ...user, twitterUserName: twitterUserName.toLowerCase() }] : [];
 	});
 }

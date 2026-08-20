@@ -6,7 +6,7 @@ import {
 	resourceIdentityForDetectedPlatform,
 	VALID_KIND_PLATFORMS,
 } from '../src/shared/resource-types.ts';
-import { detectResourceUrl } from '../src/shared/url.ts';
+import { detectResourceUrl, parseTwitterUsername } from '../src/shared/url.ts';
 
 const canonicalIdentities = Object.entries(VALID_KIND_PLATFORMS).flatMap(([kind, resourcePlatforms]) =>
 	resourcePlatforms.map((resourcePlatform) => ({ kind, resourcePlatform })),
@@ -33,6 +33,17 @@ assert.deepEqual(detectResourceUrl('https://news.ycombinator.com/item?id=1234567
 	platformId: '12345678',
 });
 assert.equal(detectResourceUrl('https://example.com/article'), null);
+
+const twitterUsernameCases = [
+	['openai', 'openai'],
+	['@OpenAI', 'OpenAI'],
+	['https://x.com/openai', 'openai'],
+	['https://twitter.com/OpenAI/status/123', 'OpenAI'],
+	['https://x.com/home', null],
+	['https://x.com/search?q=openai', null],
+	['https://example.com/openai', null],
+];
+for (const [input, expected] of twitterUsernameCases) assert.equal(parseTwitterUsername(input), expected);
 
 assert.deepEqual(resourceIdentityForDetectedPlatform('twitter'), { kind: 'post', resourcePlatform: 'twitter' });
 assert.deepEqual(resourceIdentityForDetectedPlatform('youtube'), { kind: 'video', resourcePlatform: 'youtube' });
@@ -61,5 +72,6 @@ console.info({
 	invalidIdentityCases: 5,
 	identifierCompatibilityCases: identifierCompatibilityCases.length,
 	sourceRevisionCases: 4,
+	twitterUsernameCases: twitterUsernameCases.length,
 	urlCases: 4,
 });

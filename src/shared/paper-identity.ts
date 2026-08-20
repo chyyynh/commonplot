@@ -6,8 +6,12 @@ const ARXIV_IN_TEXT_RE = /\barxiv\s*:\s*([a-z-]+(?:\.[A-Z]{2})?\/\d{7}|\d{4}\.\d
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
 const OPENALEX_ID_RE = /^(?:https?:\/\/openalex\.org\/)?(W\d+)\/?$/i;
 
-const PAPER_IDENTIFIER_SCHEMES = ['doi', 'arxiv', 'openalex'] as const;
+export const PAPER_IDENTIFIER_SCHEMES = ['doi', 'arxiv', 'openalex'] as const;
 export type PaperIdentifierScheme = (typeof PAPER_IDENTIFIER_SCHEMES)[number];
+
+export function isPaperIdentifierScheme(value: unknown): value is PaperIdentifierScheme {
+	return typeof value === 'string' && (PAPER_IDENTIFIER_SCHEMES as readonly string[]).includes(value);
+}
 
 export type PaperIdentifier = Readonly<{
 	preferred: boolean;

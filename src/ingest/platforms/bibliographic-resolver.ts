@@ -1,6 +1,7 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import {
 	normalizePaperIdentifiers,
+	PAPER_IDENTIFIER_SCHEMES,
 	type PaperIdentifier,
 	type PaperIdentifierScheme,
 	paperIdentifiersFromIdentity,
@@ -74,7 +75,7 @@ async function resolveCitoidIdentifiers(url: string): Promise<PaperIdentifier[]>
 function choosePreferredIdentifiers(identifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
 	const normalized = normalizePaperIdentifiers(identifiers.map((identifier) => ({ ...identifier, preferred: false })));
 	const preferred = new Map<PaperIdentifierScheme, string>();
-	for (const scheme of ['doi', 'arxiv', 'openalex'] as const) {
+	for (const scheme of PAPER_IDENTIFIER_SCHEMES) {
 		const candidates = normalized.filter((identifier) => identifier.scheme === scheme);
 		const selected =
 			scheme === 'doi' ? (candidates.find((identifier) => !identifier.value.startsWith(ARXIV_DOI_PREFIX)) ?? candidates[0]) : candidates[0];

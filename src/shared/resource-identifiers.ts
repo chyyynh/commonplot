@@ -1,4 +1,4 @@
-import { normalizePaperIdentifiers, type PaperIdentifier, type PaperIdentifierScheme } from './paper-identity.ts';
+import { isPaperIdentifierScheme, normalizePaperIdentifiers, type PaperIdentifier, type PaperIdentifierScheme } from './paper-identity.ts';
 import type { ResourceIdentity } from './resource-types.ts';
 
 const PLATFORM_RESOURCE_IDENTIFIER_SCHEMES = ['hackernews', 'twitter', 'youtube'] as const;
@@ -7,11 +7,12 @@ export type PlatformResourceIdentifierScheme = (typeof PLATFORM_RESOURCE_IDENTIF
 
 export type ResourceIdentifierScheme = PaperIdentifierScheme | PlatformResourceIdentifierScheme;
 
+function isPlatformResourceIdentifierScheme(value: unknown): value is PlatformResourceIdentifierScheme {
+	return typeof value === 'string' && (PLATFORM_RESOURCE_IDENTIFIER_SCHEMES as readonly string[]).includes(value);
+}
+
 export function isResourceIdentifierScheme(value: unknown): value is ResourceIdentifierScheme {
-	return (
-		typeof value === 'string' &&
-		(['doi', 'arxiv', 'openalex', ...PLATFORM_RESOURCE_IDENTIFIER_SCHEMES] as readonly string[]).includes(value)
-	);
+	return isPaperIdentifierScheme(value) || isPlatformResourceIdentifierScheme(value);
 }
 
 export type ResourceIdentifier = Readonly<{
@@ -21,7 +22,7 @@ export type ResourceIdentifier = Readonly<{
 }>;
 
 export function isPaperIdentifier(identifier: ResourceIdentifier): identifier is PaperIdentifier {
-	return identifier.scheme === 'doi' || identifier.scheme === 'arxiv' || identifier.scheme === 'openalex';
+	return isPaperIdentifierScheme(identifier.scheme);
 }
 
 export function isResourceIdentifierCompatibleWithIdentity(identifier: ResourceIdentifier, identity: ResourceIdentity): boolean {
@@ -56,13 +57,12 @@ export function normalizeResourceIdentifiers(
 	identifiers: readonly (Omit<ResourceIdentifier, 'preferred'> & { preferred?: boolean })[],
 ): ResourceIdentifier[] {
 	const papers = normalizePaperIdentifiers(
-		identifiers.filter(
-			(identifier): identifier is Omit<PaperIdentifier, 'preferred'> & { preferred?: boolean } =>
-				identifier.scheme === 'doi' || identifier.scheme === 'arxiv' || identifier.scheme === 'openalex',
+		identifiers.filter((identifier): identifier is Omit<PaperIdentifier, 'preferred'> & { preferred?: boolean } =>
+			isPaperIdentifierScheme(identifier.scheme),
 		),
 	);
 	const platforms = identifiers.flatMap((identifier) => {
-		if (identifier.scheme === 'doi' || identifier.scheme === 'arxiv' || identifier.scheme === 'openalex') return [];
+		if (isPaperIdentifierScheme(identifier.scheme)) return [];
 		const normalized = normalizePlatformIdentifier(identifier);
 		return normalized ? [normalized] : [];
 	});

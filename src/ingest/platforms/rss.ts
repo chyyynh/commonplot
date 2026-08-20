@@ -4,7 +4,7 @@ import { attachSourceToResources, type ExistingResourceRecord, getExistingResour
 import {
 	loadMonitoredSources,
 	type MonitoredSource,
-	markSourceScraped,
+	markSourcesScraped,
 	parseRssAcquisitionMode,
 	recordSourceFailure,
 } from '@ingest/domain/source-store';
@@ -83,7 +83,7 @@ async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
 	const items = await loadFeedEntries(feed.handle);
 	if (!items.length) {
 		console.info({ tag: 'RSS', msg: 'Feed has no items', feed: feed.name });
-		await markSourceScraped(env, feed.id);
+		await markSourcesScraped(env, [feed.id]);
 		return;
 	}
 
@@ -114,7 +114,7 @@ async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
 		({ item, url }) => enqueueFeedItem(env, feed, item, url),
 	);
 	console.info({ tag: 'RSS', msg: 'Feed enqueue done', feed: feed.name, queued, total: newItems.length });
-	await markSourceScraped(env, feed.id);
+	await markSourcesScraped(env, [feed.id]);
 }
 
 export async function handleRSSCron(env: CoreEnv): Promise<void> {

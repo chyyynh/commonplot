@@ -12,7 +12,7 @@ export function resourcePostMetadata(resource: ResourceImageFields): PostKindMet
 	return resource.kindMetadata && 'attachments' in resource.kindMetadata ? (resource.kindMetadata as PostKindMetadata) : null;
 }
 
-export function resourcePreviewImageCandidates(resource: ResourceImageFields): string[] {
+function resourcePreviewImageCandidates(resource: ResourceImageFields): string[] {
 	const metadata = resourcePostMetadata(resource);
 	const attachments = metadata?.attachments.map((item) => item.url) ?? [];
 	return [attachments[0], metadata?.externalLink?.imageUrl, resource.ogImageUrl, ...attachments.slice(1)].filter(

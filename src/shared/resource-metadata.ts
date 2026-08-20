@@ -49,7 +49,6 @@ const ResourceLinkAttachmentSchema = z.object({
 });
 
 export type ResourceMediaAttachment = Readonly<z.infer<typeof ResourceMediaAttachmentSchema>>;
-export type ResourceLinkAttachment = Readonly<z.infer<typeof ResourceLinkAttachmentSchema>>;
 
 const BlogKindMetadataSchema = z.object({
 	siteName: z.string().trim().min(1).optional(),

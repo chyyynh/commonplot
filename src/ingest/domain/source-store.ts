@@ -65,10 +65,6 @@ export async function loadMonitoredSources(env: CoreEnv, monitor: 'feed' | 'plat
 	);
 }
 
-export async function markSourceScraped(env: CoreEnv, sourceId: string, scrapedAt: Date = new Date()): Promise<void> {
-	await markSourcesScraped(env, [sourceId], scrapedAt);
-}
-
 /** Policy for a source the feed monitor owns; the mode, not the platform, decides how entries are acquired. */
 export async function loadFeedSourcePolicy(env: CoreEnv, sourceId: string): Promise<RssSourcePolicy> {
 	return withCoreDb(env, async (db) => {

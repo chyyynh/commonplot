@@ -1,6 +1,6 @@
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { isSourcePlatform, SOURCE_INPUT_MAX_LENGTH, type SourceAcquisitionMode, type SourcePlatform } from '@core-shared/resource-types';
-import { parseExternalHttpUrl } from '@core-shared/url';
+import { parseExternalHttpUrl, parseTwitterUsername } from '@core-shared/url';
 import { parseFeed } from 'feedsmith';
 import { decode } from 'html-entities';
 
@@ -25,7 +25,6 @@ const MAX_DISCOVERY_BYTES = 1024 * 1024;
 const FEED_MIME_TYPES = new Set(['application/atom+xml', 'application/rss+xml']);
 /** Channels publish on the order of once a day; the RSS default of every 5 minutes is waste. */
 const YOUTUBE_POLL_INTERVAL_MINUTES = 30;
-const TWITTER_HANDLE_RE = /^[A-Za-z0-9_]{1,15}$/;
 const YOUTUBE_CHANNEL_ID_RE = /^UC[A-Za-z0-9_-]{22}$/;
 const YOUTUBE_HANDLE_RE = /^@?[A-Za-z0-9._-]{3,30}$/;
 
@@ -230,16 +229,7 @@ async function resolveRssCandidate(input: string): Promise<ResolvedSourceCandida
 }
 
 function resolveTwitterCandidate(input: string): ResolvedSourceCandidate {
-	const direct = input.trim().replace(/^@/, '');
-	let handle = TWITTER_HANDLE_RE.test(direct) ? direct : null;
-	if (!handle) {
-		const url = parseExternalHttpUrl(input);
-		const host = url?.hostname.toLowerCase().replace(/^www\./, '');
-		if (url && (host === 'x.com' || host === 'twitter.com')) {
-			const [segment] = url.pathname.split('/').filter(Boolean);
-			if (segment && TWITTER_HANDLE_RE.test(segment)) handle = segment;
-		}
-	}
+	const handle = parseTwitterUsername(input);
 	if (!handle) throw new Error('Enter a valid X/Twitter handle or profile URL.');
 	const lower = handle.toLowerCase();
 	return {
