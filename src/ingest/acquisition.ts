@@ -1,9 +1,10 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { sha256Hex } from '@core-shared/hash';
 import { literalCreator, type ResourceCreator, type ResourceKindMetadata } from '@core-shared/resource-metadata';
-import { isResourcePlatform } from '@core-shared/resource-types';
+import type { ResourcePlatform } from '@core-shared/resource-types';
 import type { AcquiredMaterial, ResourceForProcessing } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
+import { z } from 'zod';
 import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
 import { canonicalForumFields, type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
 import { acquireRssFeedItem, type RssFeedAcquisitionInput } from './platforms/rss-feed';
@@ -20,6 +21,70 @@ export type AcquiredContent =
 	| (AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem })
 	| AcquiredMaterial<'twitter'>
 	| AcquiredMaterial<'youtube'>;
+
+const nullableStringSchema = z.string().nullable();
+const acquiredMetadataSchema = z.object({
+	author: nullableStringSchema,
+	language: nullableStringSchema,
+	publishedDate: nullableStringSchema,
+	siteName: z.string().trim().min(1),
+	description: nullableStringSchema,
+});
+const resourceRepresentationSchema = z.object({
+	fileName: z.string(),
+	fileSize: z.number().nonnegative(),
+});
+const acquisitionEnvelopeShape = {
+	fetchedAt: z.string().min(1),
+	sourceSnapshotHash: z
+		.string()
+		.regex(/^[0-9a-f]{64}$/)
+		.optional(),
+	representation: resourceRepresentationSchema.optional(),
+};
+const acquiredContentShape = {
+	fileType: nullableStringSchema,
+	title: z.string().trim().min(1),
+	markdown: z.string(),
+	previewImageUrl: nullableStringSchema.optional(),
+	metadata: acquiredMetadataSchema,
+};
+const youtubeTranscriptSchema = z.object({
+	videoId: z.string().min(1),
+	segments: z.array(z.object({ startTime: z.number(), endTime: z.number(), text: z.string() })),
+	language: nullableStringSchema,
+	chapters: z.array(z.object({ title: z.string(), startTime: z.number(), endTime: z.number().optional() })),
+	chaptersFromDescription: z.boolean(),
+});
+
+function acquiredMaterialSchema<const T extends ResourcePlatform, Data extends z.ZodType, Extra extends z.ZodRawShape>(
+	provider: T,
+	data: Data,
+	extra: Extra,
+) {
+	return z.looseObject({
+		provider: z.literal(provider),
+		...acquiredContentShape,
+		acquisition: z.looseObject({ ...acquisitionEnvelopeShape, data }),
+		...extra,
+	});
+}
+
+const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('provider', [
+	acquiredMaterialSchema(null, z.null(), {
+		extraction: z
+			.object({ status: z.enum(['ok', 'needs_ocr']), parser: z.literal('liteparse'), chars: z.number(), pages: z.number() })
+			.optional(),
+		ownedStorageKey: z.string().min(1).optional(),
+	}),
+	acquiredMaterialSchema('hackernews', z.looseObject({ itemId: z.string().min(1) }), {
+		hackerNewsItem: z.looseObject({ id: z.number().int().positive() }),
+	}),
+	acquiredMaterialSchema('twitter', z.looseObject({ authorName: z.string(), authorUserName: z.string() }), {}),
+	acquiredMaterialSchema('youtube', z.looseObject({ videoId: z.string().min(1), channelName: z.string() }), {
+		youtubeTranscript: youtubeTranscriptSchema,
+	}),
+]);
 
 /**
  * Acquisition gets one attempt, not three.
@@ -99,12 +164,12 @@ function validateAcquisitionUrl(url: string): string {
 	return normalizeUrl(parsed.toString());
 }
 
-function sourceSnapshotHash(acquired: AcquiredContent): Promise<string> {
+function sourceSnapshotHash(acquired: AcquiredContent, markdown: string): Promise<string> {
 	const input = JSON.stringify({
 		provider: acquired.provider,
 		fileType: acquired.fileType,
 		title: acquired.title,
-		markdown: acquired.markdown,
+		markdown,
 		metadata: acquired.metadata,
 		platformData: acquired.acquisition.data,
 		representation: acquired.acquisition.representation,
@@ -114,15 +179,17 @@ function sourceSnapshotHash(acquired: AcquiredContent): Promise<string> {
 
 export async function sanitizeAcquiredContent(acquired: AcquiredContent): Promise<AcquiredContent> {
 	const markdown = sanitizeExtractedMarkdown(acquired.markdown);
-	const sanitized = markdown === acquired.markdown ? acquired : { ...acquired, markdown };
-	// Object spread cannot preserve the provider/acquisition correlation, so restore the validated union at this boundary.
-	return {
-		...sanitized,
-		acquisition: {
-			...sanitized.acquisition,
-			sourceSnapshotHash: await sourceSnapshotHash(sanitized),
-		},
-	} as AcquiredContent;
+	const sourceSnapshotHashValue = await sourceSnapshotHash(acquired, markdown);
+	switch (acquired.provider) {
+		case null:
+			return { ...acquired, markdown, acquisition: { ...acquired.acquisition, sourceSnapshotHash: sourceSnapshotHashValue } };
+		case 'hackernews':
+			return { ...acquired, markdown, acquisition: { ...acquired.acquisition, sourceSnapshotHash: sourceSnapshotHashValue } };
+		case 'twitter':
+			return { ...acquired, markdown, acquisition: { ...acquired.acquisition, sourceSnapshotHash: sourceSnapshotHashValue } };
+		case 'youtube':
+			return { ...acquired, markdown, acquisition: { ...acquired.acquisition, sourceSnapshotHash: sourceSnapshotHashValue } };
+	}
 }
 
 async function scrapeSavedUrl(url: string, env: CoreEnv, monitored: boolean, resourceId: string): Promise<AcquiredContent> {
@@ -163,45 +230,8 @@ export function acquiredContentArtifact(acquired: AcquiredContent): ReadableStre
 	return new Blob([bytes], { type: 'application/json' }).stream();
 }
 
-function isNullableString(value: unknown): value is string | null {
-	return value === null || typeof value === 'string';
-}
-
-function isNonEmptyString(value: unknown): value is string {
-	return typeof value === 'string' && !!value.trim();
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isAcquiredContent(value: unknown): value is AcquiredContent {
-	if (!isRecord(value)) return false;
-	const content = value as Record<string, unknown>;
-	if (!isNonEmptyString(content.title) || typeof content.markdown !== 'string') {
-		return false;
-	}
-	if (!isResourcePlatform(content.provider) || !isNullableString(content.fileType)) return false;
-	if (content.ownedStorageKey !== undefined && !isNonEmptyString(content.ownedStorageKey)) return false;
-	if (content.provider === 'hackernews' && !isRecord(content.hackerNewsItem)) return false;
-	if (content.provider === 'youtube' && !isRecord(content.youtubeTranscript)) return false;
-	if (!isRecord(content.metadata) || !isRecord(content.acquisition)) return false;
-	const metadata = content.metadata as Record<string, unknown>;
-	const acquisition = content.acquisition as Record<string, unknown>;
-	return (
-		isNullableString(metadata.author) &&
-		isNullableString(metadata.language) &&
-		isNullableString(metadata.publishedDate) &&
-		isNonEmptyString(metadata.siteName) &&
-		isNullableString(metadata.description) &&
-		isNonEmptyString(acquisition.fetchedAt) &&
-		Object.hasOwn(acquisition, 'data')
-	);
-}
-
 export async function readAcquiredContentArtifact(artifact: ReadableStream<Uint8Array>): Promise<AcquiredContent> {
-	const acquired: unknown = await new Response(artifact).json();
-	if (!isAcquiredContent(acquired)) throw new Error('Acquisition artifact did not contain valid content');
+	const acquired = AcquiredContentSchema.parse(await new Response(artifact).json());
 	if (acquired.fileType === PDF_MIME && !acquired.acquisition.representation) {
 		throw new Error('PDF acquisition artifact has no representation metadata; rerun canonical acquisition');
 	}
