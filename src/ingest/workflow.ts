@@ -27,7 +27,6 @@ import {
 	scrapeSavedUrlArtifact,
 	stageAcquisitionEnhancements,
 } from './acquisition';
-import { enqueueResourceTranslation, loadEligibleResourceTranslationRevision } from './content-localization-workflow';
 import { classifyResource } from './domain/resource-classification';
 import { handleResolvedResource } from './kind-handler';
 import { stagePaperEnrichment } from './platforms/paper';
@@ -43,6 +42,7 @@ import {
 	resolveContentResource,
 	resolvedResourceIdentifiers,
 } from './resource-resolver';
+import { enqueueResourceTranslation, loadEligibleResourceTranslationRevision } from './resource-translation-workflow';
 
 type WorkflowOperation = 'ingest' | 'resync';
 type WorkflowPayload = { resourceId: string; operation: WorkflowOperation; sourceRevision?: string };

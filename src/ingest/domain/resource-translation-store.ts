@@ -1,9 +1,9 @@
 // resource_translations ownership and revisioned upserts.
 
-import type { ResourceTranslationSource } from '@core-shared/resource-types';
-import { type CoreDb, textArraySql } from '@db/client';
+import { type ResourceTranslationSource, ZH_HANT_RESOURCE_LANG } from '@core-shared/resource-types';
+import { type CoreDb, textArraySql, withCoreDb } from '@db/client';
 import { translatableResourceIdentitySql } from '@db/resource-identity-sql';
-import { resources } from '@db/schema';
+import { resources, resourceTranslations } from '@db/schema';
 import { type SQL, sql } from 'drizzle-orm';
 
 export function resourceTranslationIdentityPredicate(): SQL {
@@ -33,6 +33,43 @@ export function isResourceTranslationRevision(value: unknown): value is string {
 
 export function resourceTranslationRevisionSql(input: { content: SQL; lang: SQL; summary: SQL; title: SQL }): SQL {
 	return sql`MD5(jsonb_build_array(${input.lang}, ${input.title}, ${input.summary}, ${input.content})::text)`;
+}
+
+export async function loadEligibleResourceTranslationRevisionFromDb(
+	db: CoreDb,
+	resourceId: string,
+	contentMaxLength: number,
+): Promise<string | null> {
+	const result = await db.execute<{ source_revision: string }>(sql`
+		SELECT ${resourceTranslationRevisionSql({
+			content: sql`original.content`,
+			lang: sql`original.lang`,
+			summary: sql`original.summary`,
+			title: sql`original.title`,
+		})} AS source_revision
+		FROM ${resources}
+		JOIN ${resourceTranslations} original
+		  ON original.resource_id = ${resources.id}
+		 AND original.lang = ${resources.originalLang}
+		WHERE ${resources.id} = ${resourceId}::uuid
+		  AND ${resources.scope} = 'corpus'
+		  AND ${resourceTranslationIdentityPredicate()}
+		  AND ${resources.url} IS NOT NULL
+		  AND ${resources.originalLang} <> 'zh-Hant'
+		  AND NULLIF(BTRIM(original.title), '') IS NOT NULL
+		  AND NULLIF(BTRIM(original.content), '') IS NOT NULL
+		  AND length(original.content) <= ${contentMaxLength}
+		LIMIT 1
+	`);
+	return result.rows[0]?.source_revision ?? null;
+}
+
+export function loadEligibleResourceTranslationRevision(
+	env: CoreEnv,
+	resourceId: string,
+	contentMaxLength: number,
+): Promise<string | null> {
+	return withCoreDb(env, (db) => loadEligibleResourceTranslationRevisionFromDb(db, resourceId, contentMaxLength));
 }
 
 /**
@@ -116,4 +153,32 @@ export async function upsertResourceTranslation(db: CoreDb, input: ResourceTrans
 		RETURNING resource_id::text AS resource_id
 	`);
 	return result.rows.length > 0;
+}
+
+export type MachineTranslationPatch = {
+	title?: string;
+	summary?: string;
+	content?: string;
+};
+
+export function persistMachineZhHantTranslation(
+	env: CoreEnv,
+	resourceId: string,
+	sourceRevision: string,
+	patch: MachineTranslationPatch,
+): Promise<boolean> {
+	return withCoreDb(env, (db) =>
+		upsertResourceTranslation(db, {
+			resourceId,
+			lang: ZH_HANT_RESOURCE_LANG,
+			...patch,
+			keywords: [],
+			source: 'machine',
+			expectedOriginalRevision: sourceRevision,
+		}),
+	);
+}
+
+export function persistMachineZhHantContent(env: CoreEnv, resourceId: string, sourceRevision: string, content: string): Promise<boolean> {
+	return persistMachineZhHantTranslation(env, resourceId, sourceRevision, { content });
 }

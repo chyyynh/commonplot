@@ -1,8 +1,8 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { KnowledgeResolveResourcesInput, KnowledgeResourceReadInput } from '@app-domain/knowledge-contracts';
-import { ResourceTranslationV2Workflow } from '@ingest/content-localization-workflow';
 import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';
+import { ResourceTranslationV2Workflow } from '@ingest/resource-translation-workflow';
 import { type ResolveSourceCandidateInput, resolveSourceCandidate } from '@ingest/source-discovery';
 import {
 	enqueueProcessing,

@@ -1,123 +1,33 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { ZH_HANT_RESOURCE_LANG } from '@core-shared/resource-types';
-import { type CoreDb, withCoreDb, withCoreTx } from '@db/client';
-import { resources, resourceTranslations } from '@db/schema';
+import { withCoreTx } from '@db/client';
 import { loadResourceForProcessingFromDb } from '@ingest/domain/resource-store';
 import {
 	isResourceTranslationRevision,
-	resourceTranslationIdentityPredicate,
-	resourceTranslationRevisionSql,
-	upsertResourceTranslation,
+	loadEligibleResourceTranslationRevisionFromDb,
+	loadEligibleResourceTranslationRevision as loadEligibleResourceTranslationRevisionFromStore,
+	persistMachineZhHantContent,
+	persistMachineZhHantTranslation,
 } from '@ingest/domain/resource-translation-store';
-import { sql } from 'drizzle-orm';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { enqueueOrRestartWorkflow } from '../workflow-control';
-import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
 import {
 	CONTENT_TRANSLATION_MAX_LENGTH,
 	generateZhHantMetadataTranslation,
-	hasTranslatableContent,
 	planZhHantTranslation,
 	translateZhHantContent,
 } from './domain/resource-translation';
 
-async function loadEligibleResourceTranslationRevisionFromDb(db: CoreDb, resourceId: string): Promise<string | null> {
-	const result = await db.execute<{ source_revision: string }>(sql`
-			SELECT ${resourceTranslationRevisionSql({
-				content: sql`original.content`,
-				lang: sql`original.lang`,
-				summary: sql`original.summary`,
-				title: sql`original.title`,
-			})} AS source_revision
-			FROM ${resources}
-			JOIN ${resourceTranslations} original
-			  ON original.resource_id = ${resources.id}
-			 AND original.lang = ${resources.originalLang}
-			WHERE ${resources.id} = ${resourceId}::uuid
-			  AND ${resources.scope} = 'corpus'
-			  AND ${resourceTranslationIdentityPredicate()}
-			  AND ${resources.url} IS NOT NULL
-			  AND ${resources.originalLang} <> 'zh-Hant'
-			  AND NULLIF(BTRIM(original.title), '') IS NOT NULL
-			  AND NULLIF(BTRIM(original.content), '') IS NOT NULL
-			  -- Length gate lives here as well as in planZhHantTranslation:
-			  -- loading a multi-megabyte body blows the 1MiB step-output limit
-			  -- before any in-workflow check can run.
-			  AND length(original.content) <= ${CONTENT_TRANSLATION_MAX_LENGTH}
-			LIMIT 1
-		`);
-	return result.rows[0]?.source_revision ?? null;
-}
-
 export function loadEligibleResourceTranslationRevision(env: CoreEnv, resourceId: string): Promise<string | null> {
-	return withCoreDb(env, (db) => loadEligibleResourceTranslationRevisionFromDb(db, resourceId));
+	return loadEligibleResourceTranslationRevisionFromStore(env, resourceId, CONTENT_TRANSLATION_MAX_LENGTH);
 }
 
 async function loadEligibleResourceTranslationInput(env: CoreEnv, resourceId: string) {
 	return withCoreTx(env, async (db, client) => {
 		await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY');
-		const sourceRevision = await loadEligibleResourceTranslationRevisionFromDb(db, resourceId);
+		const sourceRevision = await loadEligibleResourceTranslationRevisionFromDb(db, resourceId, CONTENT_TRANSLATION_MAX_LENGTH);
 		if (!sourceRevision) return null;
 		const resource = await loadResourceForProcessingFromDb(db, resourceId);
 		return { resource, sourceRevision };
-	});
-}
-
-type MachineTranslationPatch = {
-	title?: string;
-	summary?: string;
-	content?: string;
-};
-
-async function persistMachineZhHantTranslation(
-	env: CoreEnv,
-	resourceId: string,
-	sourceRevision: string,
-	patch: MachineTranslationPatch,
-): Promise<boolean> {
-	return withCoreDb(env, (db) =>
-		upsertResourceTranslation(db, {
-			resourceId,
-			lang: ZH_HANT_RESOURCE_LANG,
-			...patch,
-			keywords: [],
-			source: 'machine',
-			expectedOriginalRevision: sourceRevision,
-		}),
-	);
-}
-
-function persistMachineZhHantContent(env: CoreEnv, resourceId: string, sourceRevision: string, content: string): Promise<boolean> {
-	return persistMachineZhHantTranslation(env, resourceId, sourceRevision, { content });
-}
-
-async function clearMachineZhHantContent(env: CoreEnv, resourceId: string, sourceRevision: string): Promise<boolean> {
-	return withCoreDb(env, async (db) => {
-		const result = await db.execute(sql`
-			WITH current_source AS (
-				SELECT resource.id
-				FROM resources resource
-				JOIN resource_translations original
-				  ON original.resource_id = resource.id
-				 AND original.lang = resource.original_lang
-				WHERE resource.id = ${resourceId}::uuid
-				  AND ${resourceTranslationRevisionSql({
-						content: sql`original.content`,
-						lang: sql`original.lang`,
-						summary: sql`original.summary`,
-						title: sql`original.title`,
-					})} = ${sourceRevision}
-				FOR UPDATE OF resource
-			)
-			UPDATE resource_translations translation
-			SET content = NULL, updated_at = NOW()
-			FROM current_source
-			WHERE translation.resource_id = current_source.id
-			  AND translation.lang = ${ZH_HANT_RESOURCE_LANG}
-			  AND translation.source = 'machine'
-			RETURNING translation.resource_id
-		`);
-		return result.rows.length > 0;
 	});
 }
 
@@ -166,44 +76,9 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			return { success: true, resource_id: resourceId, skipped: true, superseded: true };
 		}
 
-		let resource = input.resource;
+		const resource = input.resource;
 		const initialContent = resource.content?.trim();
 		if (!initialContent) throw new Error(`Resource ${resourceId} has no persisted original content`);
-
-		const zhHantTranslation = resource.translations[ZH_HANT_RESOURCE_LANG];
-		const zhHantContent = zhHantTranslation?.source === 'human' ? null : zhHantTranslation?.content?.trim();
-		if (resource.content && !hasTranslatableContent(resource.content) && zhHantContent) {
-			resource = {
-				...resource,
-				translations: {
-					...resource.translations,
-					[ZH_HANT_RESOURCE_LANG]: { ...zhHantTranslation, content: null },
-				},
-			};
-			const persisted = await step.do(
-				'clear-nontext-zh-hant-content',
-				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() => clearMachineZhHantContent(this.env, resourceId, sourceRevision),
-			);
-			if (!persisted) return { success: true, resource_id: resourceId, skipped: true, superseded: true };
-		} else if (zhHantContent) {
-			const sanitizedContent = sanitizeExtractedMarkdown(zhHantContent);
-			if (sanitizedContent !== zhHantContent) {
-				resource = {
-					...resource,
-					translations: {
-						...resource.translations,
-						[ZH_HANT_RESOURCE_LANG]: { ...zhHantTranslation, content: sanitizedContent || null },
-					},
-				};
-				const persisted = await step.do(
-					'persist-sanitized-zh-hant-content',
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() => persistMachineZhHantContent(this.env, resourceId, sourceRevision, sanitizedContent),
-				);
-				if (!persisted) return { success: true, resource_id: resourceId, skipped: true, superseded: true };
-			}
-		}
 
 		const translationPlan = planZhHantTranslation(resource);
 		if (translationPlan.content === 'skip-too-long') {
@@ -245,11 +120,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			const persisted = await step.do(
 				'persist-zh-hant-content',
 				{
-					retries: {
-						limit: 3,
-						delay: '5 seconds',
-						backoff: 'exponential',
-					},
+					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 					timeout: '30 seconds',
 				},
 				() => persistMachineZhHantContent(this.env, resourceId, sourceRevision, translated),
@@ -257,11 +128,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			if (!persisted) return { success: true, resource_id: resourceId, skipped: true, superseded: true };
 		}
 		await step.do('sync-translated-resource-to-ai-search', AI_SEARCH_SYNC_STEP_CONFIG, () => syncCorpusItem(this.env, resourceId));
-		console.info({
-			tag: 'RESOURCE_TRANSLATION',
-			msg: 'Completed',
-			resource_id: resourceId,
-		});
+		console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Completed', resource_id: resourceId });
 		return { success: true, resource_id: resourceId };
 	}
 }
