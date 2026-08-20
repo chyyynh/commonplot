@@ -248,9 +248,6 @@ export async function acquireRssFeedItem(env: CoreEnv, input: RssFeedAcquisition
 			siteName: input.sourceName,
 			description: feedSummary(item.summary),
 		},
-		acquisition: {
-			fetchedAt: new Date().toISOString(),
-			data: null,
-		},
+		acquisition: { data: null },
 	};
 }

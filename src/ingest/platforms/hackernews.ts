@@ -92,12 +92,10 @@ function countHnComments(children: HnComment[] | undefined): number {
 
 function buildHnMetadata(item: HackerNewsItem): HackerNewsMetadata {
 	return {
-		itemId: item.id.toString(),
 		author: item.author,
 		points: item.points,
 		commentCount: countHnComments(item.children),
 		itemType: hnItemTypeForMetadata(item.type),
-		storyUrl: item.url,
 	};
 }
 
@@ -169,7 +167,6 @@ export async function scrapeHackerNews(itemId: string): Promise<AcquiredMaterial
 			description,
 		},
 		acquisition: {
-			fetchedAt: new Date().toISOString(),
 			data: buildHnMetadata(item),
 		},
 		hackerNewsItem: item,

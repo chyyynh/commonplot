@@ -1,5 +1,6 @@
 import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '../shared/paper-identity.ts';
 import {
+	isPaperIdentifier,
 	isResourceIdentifierCompatibleWithIdentity,
 	normalizeResourceIdentifiers,
 	type PlatformResourceIdentifierScheme,
@@ -42,7 +43,6 @@ export type ResolvedContentResourceInput =
 
 type ResolveContentResourceInput = Readonly<{
 	url: string | null;
-	paperIdentifiers: PaperIdentifier[];
 	resourceIdentifiers: ResourceIdentifier[];
 	subjectUrl?: string | null;
 }>;
@@ -109,6 +109,7 @@ function resolvedPlatformInput(
 export function resolveContentResource(input: ResolveContentResourceInput): ResolvedContentResourceInput {
 	const detected = input.url ? detectResourceUrl(input.url) : null;
 	const storedLocator = exactPlatformLocator(input.resourceIdentifiers);
+	const paperIdentifiers = input.resourceIdentifiers.filter(isPaperIdentifier);
 	if (
 		detected &&
 		storedLocator &&
@@ -120,11 +121,11 @@ export function resolveContentResource(input: ResolveContentResourceInput): Reso
 	const locator = detected ?? storedLocator;
 	if (locator) return resolvedPlatformInput(locator.resourcePlatform, locator, input);
 
-	if (input.paperIdentifiers.some((identifier) => identifier.scheme === 'openalex')) {
+	if (paperIdentifiers.some((identifier) => identifier.scheme === 'openalex')) {
 		return {
 			kind: 'paper',
 			resourcePlatform: null,
-			identifiers: input.paperIdentifiers,
+			identifiers: paperIdentifiers,
 		};
 	}
 

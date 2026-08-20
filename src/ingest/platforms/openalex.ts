@@ -70,7 +70,6 @@ const OpenAlexListSchema = z.object({
 	results: z.array(OpenAlexWorkSchema),
 });
 
-type OpenAlexLocation = z.infer<typeof OpenAlexLocationSchema>;
 type OpenAlexWork = z.infer<typeof OpenAlexWorkSchema>;
 
 type OpenAlexPaperResolution = Readonly<{
@@ -102,16 +101,11 @@ function httpsUrl(value: string | null | undefined): string | undefined {
 	}
 }
 
-function licensedPdfLocation(work: OpenAlexWork): (OpenAlexLocation & { license: string; pdf_url: string }) | null {
+function licensedPdfUrl(work: OpenAlexWork): string | null {
 	const locations = [work.best_oa_location, work.primary_location, ...(work.locations ?? [])];
 	for (const location of locations) {
-		if (location?.is_oa === true && location.license?.trim() && httpsUrl(location.pdf_url)) {
-			return {
-				...location,
-				license: location.license.trim(),
-				pdf_url: httpsUrl(location.pdf_url) as string,
-			};
-		}
+		const pdfUrl = location?.is_oa === true && location.license?.trim() ? httpsUrl(location.pdf_url) : undefined;
+		if (pdfUrl) return pdfUrl;
 	}
 	return null;
 }
@@ -218,8 +212,7 @@ function normalizeOpenAlexWork(
 	inputIdentifiers: readonly PaperIdentifier[],
 	relations?: { citations: PaperRelationSnapshot; references: PaperRelationSnapshot },
 ): OpenAlexPaperResolution {
-	const fetchedAt = new Date().toISOString();
-	const pdf = licensedPdfLocation(work);
+	const pdfUrl = licensedPdfUrl(work);
 	const identifiers = resolvedWorkIdentifiers(work, inputIdentifiers);
 	const identity = paperIdentityFromIdentifiers(identifiers);
 	const openAlexId = identity?.openAlexId;
@@ -229,13 +222,6 @@ function normalizeOpenAlexWork(
 		contentPdfUrl: openAlexContentPdfUrl(work, openAlexId),
 		identifiers,
 		metadata: {
-			schemaVersion: 3,
-			source: 'openalex',
-			resolvedAt: fetchedAt,
-			metricsUpdatedAt: fetchedAt,
-			...(identity?.doi ? { doi: identity.doi } : {}),
-			...(identity?.arxivId ? { arxivId: identity.arxivId } : {}),
-			...(openAlexId ? { openAlexId } : {}),
 			title: work.title ?? undefined,
 			authors: work.authorships?.map(({ author }) => author.display_name?.trim()).filter((name): name is string => !!name) ?? [],
 			abstract: abstractFromInvertedIndex(work.abstract_inverted_index),
@@ -244,7 +230,7 @@ function normalizeOpenAlexWork(
 			publicationDate: work.publication_date ?? undefined,
 			citedByCount: work.cited_by_count ?? undefined,
 			referenceCount,
-			...(pdf ? { pdfUrl: pdf.pdf_url, pdfLicense: pdf.license } : {}),
+			...(pdfUrl ? { pdfUrl } : {}),
 			...(relations ? { citations: relations.citations, references: relations.references } : {}),
 		},
 	};

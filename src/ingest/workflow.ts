@@ -1,7 +1,6 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { normalizePaperIdentifiers } from '@core-shared/paper-identity';
-import { isPaperIdentifier } from '@core-shared/resource-identifiers';
+import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource-identifiers';
 import type { HostedResourceImage } from '@core-shared/resource-image-mapping';
 import {
 	isContentResourceIdentity,
@@ -318,7 +317,7 @@ async function prepareResourceForProcessing(
 					{
 						...acquiredResource,
 						identifierText,
-						identifiers: preliminary.explicitResolution?.identifiers ?? initialResource.paper_identifiers,
+						identifiers: preliminary.explicitResolution?.identifiers ?? initialResource.resource_identifiers.filter(isPaperIdentifier),
 					},
 					{ stepName: 'resolve-paper-openalex-with-citations-v1' },
 				)
@@ -326,11 +325,10 @@ async function prepareResourceForProcessing(
 	const paperEnrichment = paperResolution.metadata;
 	const preferred = await stagePreferredOpenAlexContent(env, step, acquiredResource, acquiredContent, paperResolution, preliminary);
 	acquiredContent = preferred.acquiredContent;
-	const paperIdentifiers = normalizePaperIdentifiers(paperResolution.identifiers);
+	const resourceIdentifiers = normalizeResourceIdentifiers([...paperResolution.identifiers, ...preferred.resource.resource_identifiers]);
 	const resolution = resolveContentResource({
 		url: preferred.resource.url,
-		paperIdentifiers,
-		resourceIdentifiers: preferred.resource.resource_identifiers,
+		resourceIdentifiers,
 		subjectUrl: acquiredSubjectUrl(acquiredContent),
 	});
 	const finalPaperEnrichment = resolution.kind === 'paper' ? paperEnrichment : null;
@@ -338,7 +336,7 @@ async function prepareResourceForProcessing(
 	if (!identity || !isContentResourceIdentity(identity)) {
 		throw new NonRetryableError('Resolver produced an invalid content Resource identity', 'ResourceIdentityError');
 	}
-	const identifiers = resolvedResourceIdentifiers(resolution, preferred.resource.resource_identifiers);
+	const identifiers = resolvedResourceIdentifiers(resolution, resourceIdentifiers);
 	const locator = exactPlatformLocator(identifiers);
 	const resolvedUrl = locator ? canonicalPlatformUrl(locator) : preferred.resource.url;
 	return {
@@ -352,7 +350,6 @@ async function prepareResourceForProcessing(
 			url: resolvedUrl,
 			normalized_url: resolvedUrl ?? preferred.resource.normalized_url ?? null,
 			resource_identifiers: identifiers,
-			paper_identifiers: identifiers.filter(isPaperIdentifier),
 		},
 	};
 }

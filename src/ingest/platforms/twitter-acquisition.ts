@@ -248,15 +248,12 @@ function buildTweetAcquisition(
 ): AcquisitionEnvelope<'twitter'> {
 	const media = options.media ?? extractTweetMedia(tweet);
 	const base = {
-		tweetId: tweet.id,
 		...extractTweetAuthor(tweet),
 		media,
-		createdAt: tweet.createdAt,
 	};
 
 	if (options.externalUrl) {
 		return {
-			fetchedAt: new Date().toISOString(),
 			data: {
 				...base,
 				externalUrl: options.externalUrl,
@@ -265,25 +262,20 @@ function buildTweetAcquisition(
 	}
 
 	return {
-		fetchedAt: new Date().toISOString(),
 		data: { ...base, quotedTweet: options.quotedTweet ?? extractQuotedTweet(tweet) },
 	};
 }
 
 function buildTwitterLongformAcquisition(
-	tweetId: string,
 	author: NonNullable<TwitterLongform['author']>,
 	coverImageUrl?: string,
 ): AcquisitionEnvelope<'twitter'> {
 	return {
-		fetchedAt: new Date().toISOString(),
 		data: {
-			tweetId,
 			authorName: author.name,
 			authorUserName: author.userName,
 			authorProfilePicture: author.profilePicture,
 			authorVerified: author.isBlueVerified,
-			coverImageUrl,
 			media: coverImageUrl ? [{ url: coverImageUrl, type: 'photo' }] : [],
 		},
 	};
@@ -350,7 +342,7 @@ async function scrapeTwitterLongform(tweetId: string, apiKey: string, language?:
 			description: null,
 		},
 		previewImageUrl: longform.cover_media_img_url ?? null,
-		acquisition: buildTwitterLongformAcquisition(tweetId, author, longform.cover_media_img_url),
+		acquisition: buildTwitterLongformAcquisition(author, longform.cover_media_img_url),
 	};
 }
 

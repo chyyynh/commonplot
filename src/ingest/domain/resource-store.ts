@@ -1,12 +1,6 @@
 // Read store: canonical resource loading and processability gates for the Workflow.
 
-import { normalizePaperIdentifiers } from '@core-shared/paper-identity';
-import {
-	isPaperIdentifier,
-	isResourceIdentifierScheme,
-	normalizeResourceIdentifiers,
-	type ResourceIdentifier,
-} from '@core-shared/resource-identifiers';
+import { isResourceIdentifierScheme, normalizeResourceIdentifiers, type ResourceIdentifier } from '@core-shared/resource-identifiers';
 import {
 	parseResourceCreators,
 	parseStoredResourceKindMetadata,
@@ -284,7 +278,6 @@ function resourceStoreRowToProcessing(row: ResourceStoreRow): ResourceForProcess
 		kind_metadata: storedResourceKindMetadataValue(identity, row.kind_metadata, row.id),
 		source_revision: row.source_revision === null ? null : storedResourceSourceRevision(row.source_revision, row.id),
 		resource_identifiers: resourceIdentifiers,
-		paper_identifiers: normalizePaperIdentifiers(resourceIdentifiers.filter(isPaperIdentifier)),
 		storage_key: row.storage_key,
 		file_type: row.file_type,
 		normalized_url: row.normalized_url,

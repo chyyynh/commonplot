@@ -1,6 +1,7 @@
 // OpenAlex-hosted paper content: cached PDF and GROBID TEI staging for the processing Workflow.
 
 import type { WorkflowStep } from 'cloudflare:workers';
+import { isPaperIdentifier } from '@core-shared/resource-identifiers';
 import type { ResourceForProcessing } from '@core-shared/types';
 import {
 	ACQUISITION_STEP,
@@ -75,10 +76,7 @@ async function acquireOpenAlexGrobidArtifact(
 				publishedDate: input.publishedDate,
 				siteName: sourceName,
 			},
-			acquisition: {
-				fetchedAt: new Date().toISOString(),
-				data: null,
-			},
+			acquisition: { data: null },
 		}),
 	);
 }
@@ -187,7 +185,7 @@ export async function stagePreliminaryAcquisition(
 			? await stagePaperEnrichment(
 					env,
 					step,
-					{ ...resource, identifiers: resource.paper_identifiers },
+					{ ...resource, identifiers: resource.resource_identifiers.filter(isPaperIdentifier) },
 					{ stepName: 'resolve-explicit-paper-openalex-with-citations-v1' },
 				)
 			: null;

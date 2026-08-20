@@ -32,7 +32,6 @@ const resourceRepresentationSchema = z.object({
 	fileSize: z.number().nonnegative(),
 });
 const acquisitionEnvelopeShape = {
-	fetchedAt: z.string().min(1),
 	sourceSnapshotHash: z
 		.string()
 		.regex(/^[0-9a-f]{64}$/)
@@ -69,16 +68,14 @@ function acquiredMaterialSchema<const T extends ResourcePlatform, Data extends z
 
 const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('provider', [
 	acquiredMaterialSchema(null, z.null(), {
-		extraction: z
-			.object({ status: z.enum(['ok', 'needs_ocr']), parser: z.literal('liteparse'), chars: z.number(), pages: z.number() })
-			.optional(),
+		extraction: z.object({ status: z.enum(['ok', 'needs_ocr']), pages: z.number() }).optional(),
 		ownedStorageKey: z.string().min(1).optional(),
 	}),
-	acquiredMaterialSchema('hackernews', z.looseObject({ itemId: z.string().min(1) }), {
+	acquiredMaterialSchema('hackernews', z.looseObject({}), {
 		hackerNewsItem: z.looseObject({ id: z.number().int().positive() }),
 	}),
 	acquiredMaterialSchema('twitter', z.looseObject({ authorName: z.string(), authorUserName: z.string() }), {}),
-	acquiredMaterialSchema('youtube', z.looseObject({ videoId: z.string().min(1), channelName: z.string() }), {
+	acquiredMaterialSchema('youtube', z.looseObject({ channelName: z.string() }), {
 		youtubeTranscript: youtubeTranscriptSchema,
 	}),
 ]);

@@ -100,7 +100,7 @@ function titleFromFileName(fileName: string): string {
 }
 
 export function pdfExtractionMetadata(pdf: PdfTextArtifact): PdfExtractionMetadata {
-	return { status: pdf.status, parser: 'liteparse', chars: pdf.chars, pages: pdf.pages };
+	return { status: pdf.status, pages: pdf.pages };
 }
 
 function stripLeadingFrontmatter(markdown: string): string {
@@ -168,7 +168,6 @@ async function acquirePdfBytes(bytes: Uint8Array, url: string, fileName: string,
 			description: parsed.text.slice(0, 500) || null,
 		},
 		acquisition: {
-			fetchedAt: new Date().toISOString(),
 			data: null,
 			representation: { fileName, fileSize: bytes.byteLength },
 		},
@@ -217,7 +216,7 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, resou
 			siteName: article.siteName,
 			description: article.description,
 		},
-		acquisition: { fetchedAt: new Date().toISOString(), data: null },
+		acquisition: { data: null },
 		previewImageUrl: article.previewImageUrl,
 	};
 }

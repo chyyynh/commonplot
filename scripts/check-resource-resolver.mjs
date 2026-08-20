@@ -3,7 +3,6 @@ import { resolveContentResource, resolvedResourceIdentifiers } from '../src/inge
 
 const base = {
 	url: 'https://example.com/article',
-	paperIdentifiers: [],
 	resourceIdentifiers: [],
 };
 
@@ -17,7 +16,7 @@ const cases = [
 		name: 'exact DOI URL',
 		input: {
 			url: 'https://doi.org/10.1000/example',
-			paperIdentifiers: [
+			resourceIdentifiers: [
 				{ preferred: true, scheme: 'doi', value: '10.1000/example' },
 				{ preferred: true, scheme: 'openalex', value: 'W1' },
 			],
@@ -27,7 +26,7 @@ const cases = [
 	{
 		name: 'Citoid academic URL',
 		input: {
-			paperIdentifiers: [
+			resourceIdentifiers: [
 				{ preferred: true, scheme: 'doi', value: '10.1000/example' },
 				{ preferred: true, scheme: 'openalex', value: 'W1' },
 			],
@@ -38,7 +37,7 @@ const cases = [
 		name: 'HN carrier with academic subject stays forum',
 		input: {
 			url: 'https://news.ycombinator.com/item?id=123',
-			paperIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
+			resourceIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
 			subjectUrl: 'https://doi.org/10.1000/example',
 		},
 		expected: { kind: 'forum', resourcePlatform: 'hackernews', locator: { itemId: '123' } },
@@ -78,7 +77,7 @@ const cases = [
 		name: 'OpenAlex-resolved paper',
 		input: {
 			url: null,
-			paperIdentifiers: [{ preferred: true, scheme: 'openalex', value: 'W2' }],
+			resourceIdentifiers: [{ preferred: true, scheme: 'openalex', value: 'W2' }],
 		},
 		expected: { kind: 'paper', resourcePlatform: null },
 	},

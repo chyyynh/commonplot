@@ -33,7 +33,6 @@ const YouTubeVideoItemSchema = z.object({
 		defaultAudioLanguage: z.string().optional(),
 		publishedAt: z.string().min(1),
 		thumbnails: YouTubeThumbnailsSchema,
-		tags: z.array(z.string()).optional(),
 	}),
 	contentDetails: z.object({ duration: z.string().min(1) }),
 	statistics: z.object({
@@ -254,20 +253,14 @@ export async function scrapeYouTube(videoId: string, youtubeApiKey: string, moni
 		},
 		previewImageUrl: thumbnailUrl,
 		acquisition: {
-			fetchedAt: new Date().toISOString(),
 			data: {
-				videoId: video.id,
 				channelName: snippet.channelTitle,
 				channelId: snippet.channelId,
 				...(channelAvatar ? { channelAvatar } : {}),
 				...(durationSeconds && durationSeconds > 0 ? { durationSeconds } : {}),
-				...(thumbnailUrl ? { thumbnailUrl } : {}),
 				viewCount: stats.viewCount ? Number.parseInt(stats.viewCount, 10) : undefined,
 				likeCount: stats.likeCount ? Number.parseInt(stats.likeCount, 10) : undefined,
 				commentCount: stats.commentCount ? Number.parseInt(stats.commentCount, 10) : undefined,
-				tags: snippet.tags,
-				publishedAt: snippet.publishedAt,
-				description: snippet.description,
 			},
 		},
 		youtubeTranscript: {

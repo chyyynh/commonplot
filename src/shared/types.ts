@@ -1,5 +1,4 @@
 import type { ResourceIdentityColumns, ResourcePlatform, ResourceScope, SourceAcquisitionMode } from '@core-shared/resource-types';
-import type { PaperIdentifier } from './paper-identity';
 import type { ResourceIdentifier } from './resource-identifiers';
 import type { PaperRelationSnapshot, ResourceCreator, ResourceKindMetadata } from './resource-metadata';
 
@@ -21,7 +20,6 @@ type ResourceForProcessingBase = {
 	kind_metadata: ResourceKindMetadata | null;
 	source_revision: string | null;
 	resource_identifiers: ResourceIdentifier[];
-	paper_identifiers: PaperIdentifier[];
 	storage_key: string | null;
 	file_type: string | null;
 	normalized_url: string | null;
@@ -138,10 +136,7 @@ export interface RetweetedByData {
 }
 
 interface TwitterMetadata extends TwitterAuthorFields {
-	tweetId?: string;
-	coverImageUrl?: string;
 	media?: TwitterMedia[];
-	createdAt?: string;
 	quotedTweet?: QuotedTweetData;
 	externalUrl?: string;
 	externalOgImage?: string | null;
@@ -149,27 +144,20 @@ interface TwitterMetadata extends TwitterAuthorFields {
 }
 
 interface YouTubeMetadata {
-	videoId: string;
 	channelName: string;
 	channelId?: string;
 	channelAvatar?: string;
 	durationSeconds?: number;
-	thumbnailUrl?: string;
 	viewCount?: number;
 	likeCount?: number;
 	commentCount?: number;
-	publishedAt?: string;
-	description?: string;
-	tags?: string[];
 }
 
 export interface HackerNewsMetadata {
-	itemId: string;
 	author?: string;
 	points?: number;
 	commentCount?: number;
 	itemType?: 'story' | 'ask' | 'show' | 'job';
-	storyUrl?: string | null;
 }
 
 interface ResourceRepresentationMetadata {
@@ -178,13 +166,6 @@ interface ResourceRepresentationMetadata {
 }
 
 export interface PaperMetadata {
-	schemaVersion: 3;
-	source: 'openalex';
-	resolvedAt: string;
-	metricsUpdatedAt: string;
-	doi?: string;
-	arxivId?: string;
-	openAlexId?: string;
 	title?: string;
 	authors: string[];
 	abstract?: string;
@@ -194,7 +175,6 @@ export interface PaperMetadata {
 	citedByCount?: number;
 	referenceCount?: number;
 	pdfUrl?: string;
-	pdfLicense?: string;
 	references?: PaperRelationSnapshot;
 	citations?: PaperRelationSnapshot;
 }
@@ -207,15 +187,12 @@ interface AcquisitionDataByProvider {
 
 export interface PdfExtractionMetadata {
 	status: 'ok' | 'needs_ocr';
-	parser: 'liteparse';
-	chars: number;
 	pages: number;
 }
 
 type AcquisitionData<T extends ResourcePlatform> = T extends keyof AcquisitionDataByProvider ? AcquisitionDataByProvider[T] : null;
 
 export type AcquisitionEnvelope<T extends ResourcePlatform = ResourcePlatform> = {
-	fetchedAt: string;
 	data: AcquisitionData<T>;
 	/** Hash of normalized source fields used to skip unchanged resync runs. */
 	sourceSnapshotHash?: string;
