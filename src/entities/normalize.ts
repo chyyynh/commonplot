@@ -144,7 +144,9 @@ export function entityExtractionExclusionNames(
 				? ['YouTube']
 				: resourcePlatform === 'hackernews'
 					? ['Hacker News']
-					: [];
+					: resourcePlatform === 'lesswrong'
+						? ['LessWrong']
+						: [];
 	for (const name of [...sourceNameAliases(source), ...creatorAliases(creators), ...platformAliases]) {
 		const canonical = canonicalizeEntityName(name);
 		if (!canonical || seen.has(canonical)) continue;

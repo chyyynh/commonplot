@@ -1,5 +1,5 @@
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
-import { isSourcePlatform, SOURCE_INPUT_MAX_LENGTH, type SourceAcquisitionMode, type SourcePlatform } from '@core-shared/resource-types';
+import { isSourcePlatform, SOURCE_INPUT_MAX_LENGTH, type SourcePlatform } from '@core-shared/resource-types';
 import { parseExternalHttpUrl, parseTwitterUsername } from '@core-shared/url';
 import { parseFeed } from 'feedsmith';
 import { decode } from 'html-entities';
@@ -16,7 +16,6 @@ type ResolvedSourceCandidate = {
 	name: string;
 	siteUrl: string | null;
 	avatarUrl: string | null;
-	acquisitionMode: SourceAcquisitionMode;
 	/** Minimum minutes between polls; omitted means every cron firing. */
 	pollIntervalMinutes?: number;
 };
@@ -201,12 +200,11 @@ async function resolveRssCandidate(input: string): Promise<ResolvedSourceCandida
 	const directFeed = parsedFeedTitle(document.body);
 	if (directFeed) {
 		return {
-			platform: 'rss',
+			platform: host === 'lesswrong.com' ? 'lesswrong' : 'rss',
 			handle: canonicalFeedHandle(document.url),
 			name: directFeed.title ?? host,
 			siteUrl: document.url.origin,
 			avatarUrl: null,
-			acquisitionMode: 'web',
 		};
 	}
 
@@ -219,12 +217,11 @@ async function resolveRssCandidate(input: string): Promise<ResolvedSourceCandida
 	const feedMeta = parsedFeedTitle(feedDocument.body);
 	if (!feedMeta) throw new Error('Discovered feed could not be read.');
 	return {
-		platform: 'rss',
+		platform: [host, feedDocument.url.hostname.toLowerCase().replace(/^www\./, '')].includes('lesswrong.com') ? 'lesswrong' : 'rss',
 		handle: canonicalFeedHandle(feedDocument.url),
 		name: feedMeta.title ?? head.title?.slice(0, 120) ?? host,
 		siteUrl: document.url.origin,
 		avatarUrl: null,
-		acquisitionMode: 'web',
 	};
 }
 
@@ -238,7 +235,6 @@ function resolveTwitterCandidate(input: string): ResolvedSourceCandidate {
 		name: `@${lower}`,
 		siteUrl: `https://x.com/${lower}`,
 		avatarUrl: null,
-		acquisitionMode: 'platform',
 	};
 }
 
@@ -309,10 +305,8 @@ async function resolveYouTubeCandidate(env: CoreEnv, input: string): Promise<Res
 		name: channel.title ?? channel.id,
 		siteUrl: `https://www.youtube.com/channel/${channel.id}`,
 		avatarUrl: channel.avatarUrl,
-		// The handle is an Atom feed, so the RSS monitor polls it and each entry is
-		// acquired from its own URL — 'web', not 'platform'. Channels publish far
-		// less often than a news feed, so they opt out of the 5-minute cadence.
-		acquisitionMode: 'web',
+		// The handle is an Atom feed, so the RSS monitor polls it. Channels publish
+		// far less often than a news feed, so they opt out of the 5-minute cadence.
 		pollIntervalMinutes: YOUTUBE_POLL_INTERVAL_MINUTES,
 	};
 }
@@ -325,6 +319,11 @@ export async function resolveSourceCandidate(env: CoreEnv, input: ResolveSourceC
 	switch (input.platform) {
 		case 'rss':
 			return resolveRssCandidate(raw);
+		case 'lesswrong': {
+			const candidate = await resolveRssCandidate(raw);
+			if (candidate.platform !== 'lesswrong') throw new Error('Enter a LessWrong RSS feed URL.');
+			return candidate;
+		}
 		case 'twitter':
 			return resolveTwitterCandidate(raw);
 		case 'youtube':

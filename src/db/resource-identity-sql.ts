@@ -16,7 +16,7 @@ type ResourceIdentitySqlFields = {
 
 export function contentResourceIdentitySql(fields: ResourceIdentitySqlFields): SQL {
 	return sql`(
-		(${fields.kind} = 'blog' AND ${fields.resourcePlatform} IS NULL)
+		(${fields.kind} = 'blog' AND (${fields.resourcePlatform} IS NULL OR ${fields.resourcePlatform} = 'lesswrong'))
 		OR (${fields.kind} = 'forum' AND ${fields.resourcePlatform} = 'hackernews')
 		OR (${fields.kind} = 'post' AND ${fields.resourcePlatform} = 'twitter')
 		OR (${fields.kind} = 'video' AND ${fields.resourcePlatform} = 'youtube')
@@ -79,6 +79,7 @@ export function resourceDisplaySourceSql(
 			WHEN 'twitter' THEN ${RESOURCE_PLATFORM_DISPLAY_LABELS.twitter}
 			WHEN 'youtube' THEN ${RESOURCE_PLATFORM_DISPLAY_LABELS.youtube}
 			WHEN 'hackernews' THEN ${RESOURCE_PLATFORM_DISPLAY_LABELS.hackernews}
+			WHEN 'lesswrong' THEN ${RESOURCE_PLATFORM_DISPLAY_LABELS.lesswrong}
 		END,
 		CASE ${fields.kind}
 			WHEN 'blog' THEN ${RESOURCE_KIND_DISPLAY_LABELS.blog}

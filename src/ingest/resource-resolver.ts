@@ -14,10 +14,7 @@ type ResolvedBase<K extends ContentResourceIdentity['kind']> = Readonly<{
 }>;
 
 export type ResolvedContentResourceInput =
-	| (ResolvedBase<'blog'> &
-			Readonly<{
-				resourcePlatform: null;
-			}>)
+	| (ResolvedBase<'blog'> & Readonly<{ resourcePlatform: null } | { resourcePlatform: 'lesswrong'; locator: { postId: string } }>)
 	| (ResolvedBase<'forum'> &
 			Readonly<{
 				resourcePlatform: 'hackernews';
@@ -55,7 +52,10 @@ type ExactPlatformLocator = Readonly<{
 export function exactPlatformLocator(identifiers: readonly ResourceIdentifier[]): ExactPlatformLocator | null {
 	const platformIdentifiers = normalizeResourceIdentifiers(identifiers).filter(
 		(identifier): identifier is ResourceIdentifier & { scheme: PlatformResourceIdentifierScheme } =>
-			identifier.scheme === 'hackernews' || identifier.scheme === 'twitter' || identifier.scheme === 'youtube',
+			identifier.scheme === 'hackernews' ||
+			identifier.scheme === 'lesswrong' ||
+			identifier.scheme === 'twitter' ||
+			identifier.scheme === 'youtube',
 	);
 	const locators = new Map(platformIdentifiers.map((identifier) => [identifier.scheme, identifier.value]));
 	if (locators.size > 1) throw new Error('Resource has conflicting exact platform identifiers');
@@ -67,6 +67,8 @@ export function canonicalPlatformUrl(locator: ExactPlatformLocator): string {
 	switch (locator.resourcePlatform) {
 		case 'hackernews':
 			return `https://news.ycombinator.com/item?id=${locator.platformId}`;
+		case 'lesswrong':
+			return `https://lesswrong.com/posts/${locator.platformId}`;
 		case 'twitter':
 			return `https://x.com/i/status/${locator.platformId}`;
 		case 'youtube':
@@ -83,6 +85,12 @@ function resolvedPlatformInput(
 		throw new Error(`${platform} resource is missing an exact URL locator`);
 	}
 	switch (platform) {
+		case 'lesswrong':
+			return {
+				kind: 'blog',
+				resourcePlatform: platform,
+				locator: { postId: locator.platformId },
+			};
 		case 'hackernews':
 			return {
 				kind: 'forum',
@@ -143,13 +151,15 @@ export function resolvedResourceIdentifiers(
 	const resolved: ResourceIdentifier[] =
 		resolution.kind === 'paper'
 			? resolution.identifiers
-			: resolution.kind === 'forum'
-				? [{ preferred: true, scheme: 'hackernews', value: resolution.locator.itemId }]
-				: resolution.kind === 'post'
-					? [{ preferred: true, scheme: 'twitter', value: resolution.locator.tweetId }]
-					: resolution.kind === 'video'
-						? [{ preferred: true, scheme: 'youtube', value: resolution.locator.videoId }]
-						: [];
+			: resolution.kind === 'blog' && resolution.resourcePlatform === 'lesswrong'
+				? [{ preferred: true, scheme: 'lesswrong', value: resolution.locator.postId }]
+				: resolution.kind === 'forum'
+					? [{ preferred: true, scheme: 'hackernews', value: resolution.locator.itemId }]
+					: resolution.kind === 'post'
+						? [{ preferred: true, scheme: 'twitter', value: resolution.locator.tweetId }]
+						: resolution.kind === 'video'
+							? [{ preferred: true, scheme: 'youtube', value: resolution.locator.videoId }]
+							: [];
 	return normalizeResourceIdentifiers([...resolved, ...compatibleCurrent.map((identifier) => ({ ...identifier, preferred: false }))]);
 }
 

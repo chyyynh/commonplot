@@ -1,15 +1,10 @@
-import { normalizeUrl } from '@core-shared/url';
+import { resourceIdentityForDetectedPlatform } from '@core-shared/resource-types';
+import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
 import { withCoreDb } from '@db/client';
 import { attachSourceToResources, type ExistingResourceRecord, getExistingResourcesByUrl } from '@ingest/domain/resource-admission-store';
-import {
-	loadMonitoredSources,
-	type MonitoredSource,
-	markSourcesScraped,
-	parseRssAcquisitionMode,
-	recordSourceFailure,
-} from '@ingest/domain/source-store';
+import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
 import { admitPendingSourceResource, enqueueProcessing } from '@ingest/workflow';
-import { canonicalFeedItemUrl, type FeedItem, feedItemMarkdown, feedPublishedDate, feedSummary, loadFeedEntries } from './rss-feed';
+import { canonicalFeedItemUrl, type FeedItem, feedPublishedDate, feedSummary, loadFeedEntries } from './rss-feed';
 
 const FEED_CONCURRENCY = 4;
 const ITEM_CONCURRENCY = 5;
@@ -17,18 +12,19 @@ const ITEM_CONCURRENCY = 5;
 async function enqueueFeedItem(env: CoreEnv, feed: MonitoredSource, item: FeedItem, url: string): Promise<void> {
 	const title = item.title?.trim();
 	if (!title) throw new Error(`RSS item from ${feed.name} has no title: ${url}`);
-	const mode = parseRssAcquisitionMode(feed.acquisitionMode, feed.name);
-	const content = mode === 'feed' ? await feedItemMarkdown(env, item, url) : null;
+	const detected = detectResourceUrl(url);
+	const identity = detected
+		? resourceIdentityForDetectedPlatform(detected.resourcePlatform)
+		: ({ kind: 'blog', resourcePlatform: null } as const);
 	await admitPendingSourceResource(env, {
 		sourceId: feed.id,
 		url,
 		title,
 		publishedDate: feedPublishedDate(item.published),
 		summary: feedSummary(item.summary),
-		kind: 'blog',
-		resourcePlatform: null,
+		...identity,
 		originalLang: item.language,
-		content,
+		content: null,
 	});
 }
 
@@ -79,7 +75,6 @@ async function enqueueInBatches<T>(items: T[], describe: (item: T) => string, ms
 }
 
 async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
-	const mode = parseRssAcquisitionMode(feed.acquisitionMode, feed.name);
 	const items = await loadFeedEntries(feed.handle);
 	if (!items.length) {
 		console.info({ tag: 'RSS', msg: 'Feed has no items', feed: feed.name });
@@ -105,7 +100,7 @@ async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
 		'Existing resource retry enqueue failed',
 		(r) => enqueueProcessing(env, r.id),
 	);
-	console.info({ tag: 'RSS', msg: 'Feed processed', feed: feed.name, mode, newCount: newItems.length, retried, totalCount: items.length });
+	console.info({ tag: 'RSS', msg: 'Feed processed', feed: feed.name, newCount: newItems.length, retried, totalCount: items.length });
 
 	const queued = await enqueueInBatches(
 		newItems,

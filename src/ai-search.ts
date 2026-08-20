@@ -18,6 +18,7 @@ const CANONICAL_CUSTOM_METADATA = [
 ] as const satisfies NonNullable<AiSearchConfig['custom_metadata']>;
 const CANONICAL_CONTENT_IDENTITIES = [
 	{ kind: 'blog', resourcePlatform: null },
+	{ kind: 'blog', resourcePlatform: 'lesswrong' },
 	{ kind: 'forum', resourcePlatform: 'hackernews' },
 	{ kind: 'post', resourcePlatform: 'twitter' },
 	{ kind: 'video', resourcePlatform: 'youtube' },

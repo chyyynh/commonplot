@@ -261,18 +261,17 @@ The workflow receives a `resourceId`. Core reads canonical rows through
 `DOMAIN.persistResolvedResourceGraph` transaction boundary. Core-owned admission,
 translation, and YouTube stores remain local specializations.
 
-Keep the axes separate: acquisition (`rss`, `web`, or a specialized adapter) is
-not canonical `ResourcePlatform` (`youtube`, `twitter`, `hackernews`, or null),
+Keep the axes separate: acquisition (generic web or a specialized adapter) is
+not canonical `ResourcePlatform` (`youtube`, `twitter`, `hackernews`, `lesswrong`, or null),
 `ResourceKind` (`blog`, `forum`, `post`, `video`, `paper`, `image`, `file`), blob
 representation (MIME/filename/size/pages), or lifecycle origin (`source`,
 `saved_url`, `upload`, `generated`). PDF extraction and external paper
 enrichment are workflow stages keyed from row content/metadata, not additional
 identity values.
 
-Monitored `Source.kind` (`blog` or `news`) remains a separate feed/editorial
-classification. Both source kinds produce the canonical `blog` resource shell;
-the source classification may change feed copy or filtering, but never the
-resource identity.
+Source monitor routing comes directly from `Source.platform`: RSS, LessWrong,
+and YouTube handles are feeds, while Twitter uses its provider monitor. Feed
+entries acquire their canonical URL; LessWrong posts use its GraphQL adapter.
 
 Minimum to add a new ingest source:
 

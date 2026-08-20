@@ -190,14 +190,15 @@ Secrets（透過 `wrangler secret put` 設定）：
 ## Canonical resource identity
 
 `ResourceKind` 是產品呈現語意，合法的 `(kind, resource_platform)` 組合只有
-`blog / null`、`forum / hackernews`、`post / twitter`、
+`blog / null`、`blog / lesswrong`、`forum / hackernews`、`post / twitter`、
 `video / youtube`、`paper / null`、
 `image / null` 與 `file / null`。PDF 是 representation，不是另一個 kind；
 一般 PDF 是 `blog`；HN/Twitter carrier 保持原 identity，學術辨識後透過
 `subject_resource_id` 指向另一筆 canonical `paper / null` resource。
 
-`Source.kind` 的 `blog | news` 是獨立的 feed/editorial 分類；兩者建立的
-resource 都使用 `blog` shell，來源分類只負責 feed 層級的文案與篩選。
+Source monitor 直接由 `Source.platform` 分流：RSS、LessWrong 與 YouTube
+handle 交給 feed monitor，Twitter 交給 provider monitor；LessWrong 文章由
+GraphQL adapter 擷取 canonical Markdown。
 
 AI Search 沿用 `newsence-corpus-v6`，目前 durable contract 是
 generation `5 / canonical-5-blog-forum-kind`。Rebuild 使用實體 Workflow
@@ -219,8 +220,8 @@ canonical rows；processed graph 寫入則跨越 app-owned
 `DOMAIN.persistResolvedResourceGraph` transaction boundary。Admission、
 translation 與 YouTube 的 Core-owned stores 仍保留在本地。
 
-各軸要分開：acquisition（`rss`、`web` 或專用 adapter）不是 canonical
-`ResourcePlatform`（`youtube`、`twitter`、`hackernews` 或 null），也不是
+各軸要分開：acquisition（generic web 或專用 adapter）不是 canonical
+`ResourcePlatform`（`youtube`、`twitter`、`hackernews`、`lesswrong` 或 null），也不是
 `ResourceKind`（`blog`、`forum`、`post`、`video`、`paper`、`image`、`file`）、
 blob representation（MIME／檔名／大小／頁數）或 lifecycle origin
 （`source`、`saved_url`、`upload`、`generated`）。PDF 解析和外部 paper

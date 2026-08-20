@@ -245,48 +245,29 @@ if (!resourceKinds || !resourcePlatforms || !validKindPlatforms) {
 }
 
 const sourcePlatforms = parseStringArray(resourceTypesSource, 'SOURCE_PLATFORMS');
-const sourceKinds = parseStringArray(resourceTypesSource, 'SOURCE_KINDS');
-const sourceAcquisitionModes = parseStringArray(resourceTypesSource, 'SOURCE_ACQUISITION_MODES');
-if (!sourcePlatforms || !sourceKinds || !sourceAcquisitionModes) {
-	errors.push(`Unable to parse canonical source policy domains from ${resourceTypesPath}`);
+if (!sourcePlatforms) {
+	errors.push(`Unable to parse canonical source platforms from ${resourceTypesPath}`);
 } else {
 	if (!/platform:\s*text\('platform',\s*\{\s*enum:\s*SOURCE_PLATFORMS\s*\}\)/.test(drizzleSource)) {
 		errors.push('Drizzle sources.platform must use the canonical SOURCE_PLATFORMS domain');
 	}
-	if (!/kind:\s*text\('kind',\s*\{\s*enum:\s*SOURCE_KINDS\s*\}\)\.default\('blog'\)\.notNull\(\),/.test(drizzleSource)) {
-		errors.push('Drizzle sources.kind must use the canonical SOURCE_KINDS domain and default to blog');
-	}
-	const sourceModelBody = prismaSource.match(/model Source \{([\s\S]*?)\n\}/)?.[1] ?? '';
-	if (!/^\s*kind\s+String\s+@default\("blog"\)\s*$/m.test(sourceModelBody)) {
-		errors.push('Prisma Source.kind must be required and default to blog');
-	}
-	if (!/acquisitionMode:\s*text\('content_mode',\s*\{\s*enum:\s*SOURCE_ACQUISITION_MODES\s*\}\)/.test(drizzleSource)) {
-		errors.push('Drizzle sources.acquisitionMode must use the canonical SOURCE_ACQUISITION_MODES domain');
+	if (!/acquisitionMode:\s*text\('content_mode'\)\.notNull\(\)/.test(drizzleSource)) {
+		errors.push('Drizzle sources.acquisitionMode must retain the content_mode compatibility column');
 	}
 	const platformConstraint = manualIndexesSource.match(/ADD CONSTRAINT sources_platform_check\s+CHECK \(platform IN \(([^)]+)\)\);/);
 	const constrainedPlatforms = platformConstraint ? [...platformConstraint[1].matchAll(/'([^']+)'/g)].map((match) => match[1]) : null;
 	if (!constrainedPlatforms || !sameMembers(constrainedPlatforms, sourcePlatforms)) {
 		errors.push('sources_platform_check differs from canonical SOURCE_PLATFORMS');
 	}
-	const constrainedKinds = parseDomainConstraint(manualIndexesSource, 'sources_kind_check', 'kind');
-	if (!constrainedKinds || !sameValues(constrainedKinds, sourceKinds)) {
-		errors.push('sources_kind_check differs from canonical SOURCE_KINDS');
-	}
 	const acquisitionConstraint = manualIndexesSource.match(
 		/ADD CONSTRAINT sources_acquisition_mode_check\s+CHECK \(([\s\S]*?)\n {2}\);/,
 	)?.[1];
-	const constrainedModes = acquisitionConstraint
-		? [
-				...new Set(
-					[...acquisitionConstraint.matchAll(/content_mode\s+(?:IN\s+\(([^)]+)\)|=\s*'([^']+)')/g)].flatMap((match) => {
-						if (match[2]) return [match[2]];
-						return [...match[1].matchAll(/'([^']+)'/g)].map((value) => value[1]);
-					}),
-				),
-			]
-		: null;
-	if (!constrainedModes || !sameMembers(constrainedModes, sourceAcquisitionModes)) {
-		errors.push('sources_acquisition_mode_check differs from canonical SOURCE_ACQUISITION_MODES');
+	const normalizedAcquisitionConstraint = acquisitionConstraint?.replace(/\s+/g, ' ').trim();
+	if (
+		!normalizedAcquisitionConstraint?.includes("platform IN ('rss', 'lesswrong', 'youtube') AND content_mode = 'web'") ||
+		!normalizedAcquisitionConstraint.includes("platform = 'twitter' AND content_mode = 'platform'")
+	) {
+		errors.push('sources_acquisition_mode_check must derive its compatibility value from platform');
 	}
 }
 

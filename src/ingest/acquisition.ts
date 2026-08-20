@@ -7,7 +7,7 @@ import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-sha
 import { z } from 'zod';
 import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
 import { canonicalForumFields, type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
-import { acquireRssFeedItem, type RssFeedAcquisitionInput } from './platforms/rss-feed';
+import { scrapeLessWrong } from './platforms/lesswrong';
 import { canonicalPostFields, scrapeTweet } from './platforms/twitter-acquisition';
 import { stageTweetLinkUnfurl } from './platforms/twitter-unfurl';
 import { canonicalVideoFields, scrapeYouTube } from './platforms/youtube-acquisition';
@@ -16,6 +16,7 @@ import { type AcquiredWebContent, acquireWebResource, PDF_MIME } from './web-acq
 export type AcquiredContent =
 	| AcquiredWebContent
 	| (AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem })
+	| AcquiredMaterial<'lesswrong'>
 	| AcquiredMaterial<'twitter'>
 	| AcquiredMaterial<'youtube'>;
 
@@ -74,6 +75,7 @@ const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('
 	acquiredMaterialSchema('hackernews', z.looseObject({}), {
 		hackerNewsItem: z.looseObject({ id: z.number().int().positive() }),
 	}),
+	acquiredMaterialSchema('lesswrong', z.null(), {}),
 	acquiredMaterialSchema('twitter', z.looseObject({ authorName: z.string(), authorUserName: z.string() }), {}),
 	acquiredMaterialSchema('youtube', z.looseObject({ channelName: z.string() }), {
 		youtubeTranscript: youtubeTranscriptSchema,
@@ -119,6 +121,7 @@ function canonicalFieldsFromAcquisition(acquired: AcquiredMaterial): {
 } {
 	switch (acquired.provider) {
 		case null:
+		case 'lesswrong':
 			return {
 				creators: literalCreator('author', acquired.metadata.author),
 				kindMetadata: acquired.metadata.siteName.trim() ? { siteName: acquired.metadata.siteName.trim() } : null,
@@ -139,7 +142,7 @@ export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?
 	return {
 		...resource,
 		title: acquired.title.trim(),
-		summary: acquired.metadata.description,
+		summary: acquired.metadata.description ?? resource.summary,
 		content: acquired.markdown,
 		source: acquired.metadata.siteName,
 		creators: canonical.creators,
@@ -178,6 +181,8 @@ export async function sanitizeAcquiredContent(acquired: AcquiredContent): Promis
 			return { ...acquired, markdown, acquisition: { ...acquired.acquisition, sourceSnapshotHash: sourceSnapshotHashValue } };
 		case 'hackernews':
 			return { ...acquired, markdown, acquisition: { ...acquired.acquisition, sourceSnapshotHash: sourceSnapshotHashValue } };
+		case 'lesswrong':
+			return { ...acquired, markdown, acquisition: { ...acquired.acquisition, sourceSnapshotHash: sourceSnapshotHashValue } };
 		case 'twitter':
 			return { ...acquired, markdown, acquisition: { ...acquired.acquisition, sourceSnapshotHash: sourceSnapshotHashValue } };
 		case 'youtube':
@@ -196,6 +201,8 @@ async function scrapeSavedUrl(url: string, env: CoreEnv, monitored: boolean, res
 				return sanitizeAcquiredContent(await scrapeTweet(detected.platformId, env.KAITO_API_KEY));
 			case 'hackernews':
 				return sanitizeAcquiredContent(await scrapeHackerNews(detected.platformId));
+			case 'lesswrong':
+				return sanitizeAcquiredContent(await scrapeLessWrong(detected.platformId));
 			default:
 				detected.resourcePlatform satisfies never;
 		}
@@ -212,10 +219,6 @@ export async function scrapeSavedUrlArtifact(
 ): Promise<ReadableStream<Uint8Array>> {
 	const acquired = await scrapeSavedUrl(url, env, monitored, resourceId);
 	return acquiredContentArtifact(acquired);
-}
-
-export async function scrapeRssFeedItemArtifact(input: RssFeedAcquisitionInput, env: CoreEnv): Promise<ReadableStream<Uint8Array>> {
-	return acquiredContentArtifact(await sanitizeAcquiredContent(await acquireRssFeedItem(env, input)));
 }
 
 export function acquiredContentArtifact(acquired: AcquiredContent): ReadableStream<Uint8Array> {

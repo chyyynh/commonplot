@@ -1,11 +1,8 @@
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
-import type { AcquiredMaterial } from '@core-shared/types';
 import { extractHackerNewsId, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
-import { sanitizeExtractedMarkdown } from '@ingest/domain/content-sanitization';
 import { parseFeed } from 'feedsmith';
 import { decode } from 'html-entities';
-import { markdownFromHtml } from '../web-acquisition';
 
 const MAX_FEED_BYTES = 3 * 1024 * 1024;
 const MAX_FEED_ITEMS = 30;
@@ -26,27 +23,14 @@ interface FeedMedia {
 	}>;
 }
 
-interface FeedItemContent {
-	format: 'html' | 'text';
-	value: string;
-}
-
 export interface FeedItem {
 	id: string;
 	link?: string;
 	title?: string;
 	summary?: string;
-	content?: FeedItemContent;
 	published?: string;
 	language?: string;
 	previewImageUrl?: string;
-}
-
-export interface RssFeedAcquisitionInput {
-	feedUrl: string;
-	articleUrl: string;
-	resourceId: string;
-	sourceName: string;
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -100,7 +84,6 @@ function rssFeedItem(item: ParsedRssItem, language: string | undefined): FeedIte
 		link,
 		title: decodedString(item.title),
 		summary,
-		content: content ? { format: 'html', value: content } : undefined,
 		published: optionalString(item.pubDate) ?? optionalString(item.dc?.dates?.[0]),
 		language,
 		previewImageUrl: resolvedHttpUrl(previewImage, link),
@@ -116,7 +99,6 @@ function atomFeedItem(entry: ParsedAtomEntry): FeedItem {
 		link,
 		title: decodedString(entry.title),
 		summary: optionalString(entry.summary),
-		content: content ? { format: 'html', value: content } : undefined,
 		published: optionalString(entry.published) ?? optionalString(entry.updated),
 		language: optionalString(entry.dc?.languages?.[0]),
 		previewImageUrl: resolvedHttpUrl(previewImage, link),
@@ -134,7 +116,6 @@ function rdfFeedItem(item: ParsedRdfItem, language: string | undefined): FeedIte
 		link,
 		title: decodedString(item.title),
 		summary,
-		content: content ? { format: 'html', value: content } : undefined,
 		published: optionalString(item.dc?.dates?.[0]),
 		language,
 		previewImageUrl: resolvedHttpUrl(previewImage, link),
@@ -143,14 +124,11 @@ function rdfFeedItem(item: ParsedRdfItem, language: string | undefined): FeedIte
 
 function jsonFeedItem(item: ParsedJsonItem, feedLanguage: string | undefined): FeedItem {
 	const link = optionalString(item.url) ?? optionalString(item.external_url);
-	const html = optionalString(item.content_html);
-	const text = optionalString(item.content_text);
 	return {
 		id: optionalString(item.id) ?? link ?? '',
 		link,
 		title: decodedString(item.title),
 		summary: optionalString(item.summary),
-		content: html ? { format: 'html', value: html } : text ? { format: 'text', value: text } : undefined,
 		published: optionalString(item.date_published) ?? optionalString(item.date_modified),
 		language: optionalString(item.language) ?? feedLanguage,
 		previewImageUrl: resolvedHttpUrl(optionalString(item.image) ?? optionalString(item.banner_image), link),
@@ -202,46 +180,10 @@ export function feedPublishedDate(value: string | undefined): Date | null {
 	return Number.isNaN(date.getTime()) ? null : date;
 }
 
-function stablePublishedDate(value: string | undefined): string | null {
-	return feedPublishedDate(value)?.toISOString() ?? null;
-}
-
 export function feedSummary(value: string | undefined): string | null {
 	if (!value) return null;
 	const summary = decode(value.replace(/<[^>]*>/g, ' '))
 		.replace(/\s+/g, ' ')
 		.trim();
 	return summary ? summary.slice(0, FEED_SUMMARY_MAX_CHARS) : null;
-}
-
-export async function feedItemMarkdown(env: CoreEnv, item: FeedItem, url: string, resourceId?: string): Promise<string> {
-	if (!item.content) throw new Error(`RSS feed item has no content: ${url}`);
-	const converted = item.content.format === 'html' ? await markdownFromHtml(env, item.content.value, url, resourceId) : item.content.value;
-	const markdown = sanitizeExtractedMarkdown(converted);
-	if (!markdown) throw new Error(`RSS feed item produced empty Markdown: ${url}`);
-	return markdown;
-}
-
-export async function acquireRssFeedItem(env: CoreEnv, input: RssFeedAcquisitionInput): Promise<AcquiredMaterial<null>> {
-	const articleUrl = normalizeUrl(input.articleUrl);
-	const item = (await loadFeedEntries(input.feedUrl)).find((entry) => canonicalFeedItemUrl(entry) === articleUrl);
-	if (!item) throw new Error(`RSS article is no longer present in the current feed: ${articleUrl}`);
-	const title = item.title?.trim();
-	if (!title) throw new Error(`RSS article has no title: ${articleUrl}`);
-	console.info({ tag: 'RSS', msg: 'Acquired feed item', source: input.sourceName, url: articleUrl });
-	return {
-		provider: null,
-		fileType: null,
-		title,
-		markdown: await feedItemMarkdown(env, item, articleUrl, input.resourceId),
-		previewImageUrl: item.previewImageUrl,
-		metadata: {
-			author: null,
-			language: item.language ?? null,
-			publishedDate: stablePublishedDate(item.published),
-			siteName: input.sourceName,
-			description: feedSummary(item.summary),
-		},
-		acquisition: { data: null },
-	};
 }

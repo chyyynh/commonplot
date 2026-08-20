@@ -1,39 +1,18 @@
-import type { SourceAcquisitionMode } from '@core-shared/resource-types';
 import { type CoreDb, withCoreDb } from '@db/client';
 import { sources } from '@db/schema';
-import { and, eq, inArray, not, sql } from 'drizzle-orm';
+import { and, eq, inArray, sql } from 'drizzle-orm';
 
 export type MonitoredSource = {
 	id: string;
 	name: string;
 	handle: string;
-	acquisitionMode: SourceAcquisitionMode;
 	scrapedAt: Date | null;
 	createdAt: Date;
 };
 
-type RssAcquisitionMode = Extract<SourceAcquisitionMode, 'feed' | 'web'>;
-
-type RssSourcePolicy = {
-	id: string;
-	name: string;
-	handle: string;
-	acquisitionMode: RssAcquisitionMode;
-};
-
-export function parseRssAcquisitionMode(value: unknown, source: string): RssAcquisitionMode {
-	if (value === 'feed' || value === 'web') return value;
-	throw new Error(`RSS source ${source} has invalid acquisition mode: ${String(value)}`);
-}
-
 /**
- * Enabled sources due to be polled, selected by how their entries are acquired
- * rather than by platform. A feed source ('web' or 'feed') is polled by the RSS
- * monitor whatever its platform says — a YouTube channel stays
- * platform='youtube' for the plan quota and the source list, and its handle is
- * still an Atom feed. Only Twitter needs its own monitor, and 'platform' is
- * exactly what marks that. A new feed-discovered platform therefore needs no
- * change here at all.
+ * Enabled sources due to be polled. Twitter has its provider monitor; RSS,
+ * LessWrong, and YouTube handles are feeds and share the feed monitor.
  *
  * A null pollIntervalMinutes means every firing, so sources that never set one
  * behave exactly as before; setting it lets one monitor carry feeds whose
@@ -46,7 +25,6 @@ export async function loadMonitoredSources(env: CoreEnv, monitor: 'feed' | 'plat
 				id: sources.id,
 				name: sources.name,
 				handle: sources.handle,
-				acquisitionMode: sources.acquisitionMode,
 				scrapedAt: sources.scrapedAt,
 				createdAt: sources.createdAt,
 			})
@@ -54,7 +32,7 @@ export async function loadMonitoredSources(env: CoreEnv, monitor: 'feed' | 'plat
 			.where(
 				and(
 					eq(sources.monitoringEnabled, true),
-					monitor === 'platform' ? eq(sources.acquisitionMode, 'platform') : not(eq(sources.acquisitionMode, 'platform')),
+					monitor === 'platform' ? eq(sources.platform, 'twitter') : inArray(sources.platform, ['rss', 'lesswrong', 'youtube']),
 					sql`(
 						${sources.pollIntervalMinutes} IS NULL
 						OR ${sources.scrapedAt} IS NULL
@@ -63,21 +41,6 @@ export async function loadMonitoredSources(env: CoreEnv, monitor: 'feed' | 'plat
 				),
 			),
 	);
-}
-
-/** Policy for a source the feed monitor owns; the mode, not the platform, decides how entries are acquired. */
-export async function loadFeedSourcePolicy(env: CoreEnv, sourceId: string): Promise<RssSourcePolicy> {
-	return withCoreDb(env, async (db) => {
-		const source = (
-			await db
-				.select({ id: sources.id, name: sources.name, handle: sources.handle, acquisitionMode: sources.acquisitionMode })
-				.from(sources)
-				.where(and(eq(sources.id, sourceId), not(eq(sources.acquisitionMode, 'platform'))))
-				.limit(1)
-		)[0];
-		if (!source) throw new Error(`Feed source ${sourceId} was not found`);
-		return { ...source, acquisitionMode: parseRssAcquisitionMode(source.acquisitionMode, source.name) };
-	});
 }
 
 export async function markSourcesScraped(env: CoreEnv, sourceIds: string[], scrapedAt: Date = new Date()): Promise<void> {

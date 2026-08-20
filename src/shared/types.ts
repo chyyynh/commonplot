@@ -1,11 +1,10 @@
-import type { ResourceIdentityColumns, ResourcePlatform, ResourceScope, SourceAcquisitionMode } from '@core-shared/resource-types';
+import type { ResourceIdentityColumns, ResourcePlatform, ResourceScope } from '@core-shared/resource-types';
 import type { ResourceIdentifier } from './resource-identifiers';
 import type { PaperRelationSnapshot, ResourceCreator, ResourceKindMetadata } from './resource-metadata';
 
 type ResourceForProcessingBase = {
 	id: string;
 	source_id: string | null;
-	source_acquisition_mode: SourceAcquisitionMode | null;
 	scope: ResourceScope;
 	original_lang: string;
 	title: string;

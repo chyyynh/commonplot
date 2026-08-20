@@ -8,12 +8,12 @@ export type ContentResourceKind = (typeof CONTENT_RESOURCE_KINDS)[number];
 
 export const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const satisfies readonly ResourceKind[];
 
-export const RESOURCE_PLATFORMS = ['hackernews', 'twitter', 'youtube'] as const;
+export const RESOURCE_PLATFORMS = ['hackernews', 'lesswrong', 'twitter', 'youtube'] as const;
 
 export type ResourcePlatform = (typeof RESOURCE_PLATFORMS)[number] | null;
 
 export const VALID_KIND_PLATFORMS = {
-	blog: [null],
+	blog: [null, 'lesswrong'],
 	forum: ['hackernews'],
 	post: ['twitter'],
 	video: ['youtube'],
@@ -65,6 +65,7 @@ export type ResourceIdentityFilters = Readonly<{
 
 const DETECTED_PLATFORM_RESOURCE_IDENTITIES = {
 	hackernews: { kind: 'forum', resourcePlatform: 'hackernews' },
+	lesswrong: { kind: 'blog', resourcePlatform: 'lesswrong' },
 	twitter: { kind: 'post', resourcePlatform: 'twitter' },
 	youtube: { kind: 'video', resourcePlatform: 'youtube' },
 } as const satisfies Readonly<Record<Exclude<ResourcePlatform, null>, ContentResourceIdentity>>;
@@ -81,6 +82,7 @@ export const RESOURCE_KIND_DISPLAY_LABELS = {
 
 export const RESOURCE_PLATFORM_DISPLAY_LABELS = {
 	hackernews: 'Hacker News',
+	lesswrong: 'LessWrong',
 	twitter: 'Twitter',
 	youtube: 'YouTube',
 } as const satisfies Readonly<Record<Exclude<ResourcePlatform, null>, string>>;
@@ -122,7 +124,7 @@ export function resourceIdentityForDetectedPlatform(resourcePlatform: Exclude<Re
 	return DETECTED_PLATFORM_RESOURCE_IDENTITIES[resourcePlatform];
 }
 
-export const SOURCE_PLATFORMS = ['rss', 'twitter', 'youtube'] as const;
+export const SOURCE_PLATFORMS = ['rss', 'lesswrong', 'twitter', 'youtube'] as const;
 
 export type SourcePlatform = (typeof SOURCE_PLATFORMS)[number];
 
@@ -131,25 +133,6 @@ export const SOURCE_INPUT_MAX_LENGTH = 2048;
 export function isSourcePlatform(value: unknown): value is SourcePlatform {
 	return typeof value === 'string' && (SOURCE_PLATFORMS as readonly string[]).includes(value);
 }
-
-// Editorial kind of an article-family source. Distinguishes reader-facing Blog
-// vs News independently from the canonical resource identity. Only meaningful
-// for rss/web sources.
-export const SOURCE_KINDS = ['blog', 'news'] as const;
-
-export type SourceKind = (typeof SOURCE_KINDS)[number];
-
-export function isSourceKind(value: unknown): value is SourceKind {
-	return typeof value === 'string' && (SOURCE_KINDS as readonly string[]).includes(value);
-}
-
-export const SOURCE_ACQUISITION_MODES = ['platform', 'web', 'feed'] as const;
-
-export type SourceAcquisitionMode = (typeof SOURCE_ACQUISITION_MODES)[number];
-
-// Add-source validation lifecycle for user-added sources (#237); failure
-// details live in scrape_state.
-export const SOURCE_STATUSES = ['pending', 'active', 'failed'] as const;
 
 export const RESOURCE_SCOPES = ['corpus', 'private'] as const;
 

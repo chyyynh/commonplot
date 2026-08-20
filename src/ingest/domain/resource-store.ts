@@ -16,7 +16,6 @@ import {
 	type ResourceIdentity,
 	type ResourcePlatform,
 	type ResourceScope,
-	type SourceAcquisitionMode,
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
 import type { ResourceForProcessing } from '@core-shared/types';
@@ -35,7 +34,6 @@ export type ResourceProcessingShell = {
 type ResourceStoreRow = {
 	id: string;
 	source_id: string | null;
-	source_acquisition_mode: string | null;
 	kind: string;
 	resource_platform: string | null;
 	title: string | null;
@@ -68,12 +66,6 @@ function storedResourceIdentity(row: StoredResourceIdentityRow) {
 	const stored = parseResourceIdentity(row.kind, row.resource_platform);
 	if (stored) return stored;
 	throw new Error(`Invalid stored resource identity: ${String(row.kind)} / ${String(row.resource_platform)}`);
-}
-
-function parseSourceAcquisitionMode(value: unknown): SourceAcquisitionMode | null {
-	if (value === null || value === undefined) return null;
-	if (value === 'platform' || value === 'web' || value === 'feed') return value;
-	throw new Error(`Invalid source acquisition mode: ${String(value)}`);
 }
 
 function storedResourceSourceRevision(value: unknown, resourceId: string): string {
@@ -203,7 +195,6 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<Re
 		SELECT
 			rl.id::text AS id,
 			rl.source_id::text AS source_id,
-			monitored_source.content_mode AS source_acquisition_mode,
 			rl.kind AS kind,
 			rl.resource_platform AS resource_platform,
 			rl.title AS title,
@@ -269,7 +260,6 @@ function resourceStoreRowToProcessing(row: ResourceStoreRow): ResourceForProcess
 		...toResourceIdentityColumns(identity),
 		id: row.id,
 		source_id: row.source_id,
-		source_acquisition_mode: parseSourceAcquisitionMode(row.source_acquisition_mode),
 		original_lang: canonicalizeResourceLang(row.original_lang),
 		title: requiredString(row.title, 'title'),
 		summary: row.summary,

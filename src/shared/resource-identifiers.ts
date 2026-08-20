@@ -1,7 +1,7 @@
 import { isPaperIdentifierScheme, normalizePaperIdentifiers, type PaperIdentifier, type PaperIdentifierScheme } from './paper-identity.ts';
 import type { ResourceIdentity } from './resource-types.ts';
 
-const PLATFORM_RESOURCE_IDENTIFIER_SCHEMES = ['hackernews', 'twitter', 'youtube'] as const;
+const PLATFORM_RESOURCE_IDENTIFIER_SCHEMES = ['hackernews', 'lesswrong', 'twitter', 'youtube'] as const;
 
 export type PlatformResourceIdentifierScheme = (typeof PLATFORM_RESOURCE_IDENTIFIER_SCHEMES)[number];
 
@@ -28,6 +28,7 @@ export function isPaperIdentifier(identifier: ResourceIdentifier): identifier is
 export function isResourceIdentifierCompatibleWithIdentity(identifier: ResourceIdentifier, identity: ResourceIdentity): boolean {
 	switch (identity.kind) {
 		case 'blog':
+			return identity.resourcePlatform === 'lesswrong' && identifier.scheme === 'lesswrong';
 		case 'image':
 		case 'file':
 			return false;
@@ -48,6 +49,7 @@ function normalizePlatformIdentifier(
 	const value = identifier.value.trim();
 	if (!value) return null;
 	if (identifier.scheme === 'hackernews' && !/^[1-9]\d*$/.test(value)) return null;
+	if (identifier.scheme === 'lesswrong' && !/^[A-Za-z0-9_-]{8,64}$/.test(value)) return null;
 	if (identifier.scheme === 'twitter' && !/^\d+$/.test(value)) return null;
 	if (identifier.scheme === 'youtube' && !/^[A-Za-z0-9_-]{6,20}$/.test(value)) return null;
 	return { preferred: identifier.preferred !== false, scheme: identifier.scheme, value };

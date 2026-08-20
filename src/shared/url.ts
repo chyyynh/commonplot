@@ -10,6 +10,7 @@ const DOMAIN_ALIASES: Record<string, string> = {
 };
 const YOUTUBE_HOST = 'youtube.com';
 const YOUTUBE_SHORT_HOST = 'youtu.be';
+const LESSWRONG_HOST = 'lesswrong.com';
 const YOUTUBE_VIDEO_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
 const TWITTER_USERNAME_RE = /^[A-Za-z0-9_]{1,15}$/;
 const TWITTER_NON_PROFILE_PATHS = new Set(['home', 'i', 'intent', 'search', 'share']);
@@ -66,6 +67,8 @@ export function normalizeUrl(url: string): string {
 		const videoId = extractYouTubeId(parsed.toString());
 		if (videoId) return `https://youtube.com/watch?v=${videoId}`;
 	}
+	const lessWrongPostId = extractLessWrongPostId(parsed.toString());
+	if (lessWrongPostId) return `https://lesswrong.com/posts/${lessWrongPostId}`;
 
 	for (const param of TRACKING_PARAMS) parsed.searchParams.delete(param);
 	parsed.searchParams.sort();
@@ -98,6 +101,12 @@ export function extractHackerNewsId(url: string): string | null {
 	return parsed.searchParams.get('id')?.match(/^\d+$/)?.[0] ?? null;
 }
 
+export function extractLessWrongPostId(url: string): string | null {
+	const parsed = URL.parse(url);
+	if (!parsed || !hostMatches(parsed.hostname.toLowerCase(), LESSWRONG_HOST)) return null;
+	return parsed.pathname.match(/^\/posts\/([A-Za-z0-9_-]{8,64})(?:\/|$)/)?.[1] ?? null;
+}
+
 type DetectedResourceUrl = Readonly<{
 	resourcePlatform: Exclude<ResourcePlatform, null>;
 	platformId: string;
@@ -111,5 +120,7 @@ export function detectResourceUrl(url: string | null | undefined): DetectedResou
 	if (tweetId) return { resourcePlatform: 'twitter', platformId: tweetId };
 	const hackerNewsId = extractHackerNewsId(url);
 	if (hackerNewsId) return { resourcePlatform: 'hackernews', platformId: hackerNewsId };
+	const lessWrongPostId = extractLessWrongPostId(url);
+	if (lessWrongPostId) return { resourcePlatform: 'lesswrong', platformId: lessWrongPostId };
 	return null;
 }

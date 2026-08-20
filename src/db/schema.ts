@@ -5,10 +5,7 @@ import {
 	RESOURCE_PLATFORMS,
 	RESOURCE_SCOPES,
 	RESOURCE_TRANSLATION_SOURCES,
-	SOURCE_ACQUISITION_MODES,
-	SOURCE_KINDS,
 	SOURCE_PLATFORMS,
-	SOURCE_STATUSES,
 } from '@core-shared/resource-types';
 import type { StoredResourceEntity, TranscriptSegment, YouTubeChapter, YouTubeHighlights } from '@core-shared/types';
 import {
@@ -89,7 +86,7 @@ export const resourceIdentifiers = pgTable(
 			.references(() => resources.id, { onDelete: 'cascade' }),
 		scheme: varchar('scheme', {
 			length: 32,
-			enum: ['doi', 'arxiv', 'openalex', 'hackernews', 'twitter', 'youtube'],
+			enum: ['doi', 'arxiv', 'openalex', 'hackernews', 'lesswrong', 'twitter', 'youtube'],
 		}).notNull(),
 		value: text('value').notNull(),
 		isPreferred: boolean('is_preferred').default(true).notNull(),
@@ -176,13 +173,16 @@ export const sources = pgTable(
 		siteUrl: text('site_url'),
 		avatarUrl: text('avatar_url'),
 		category: text('category'),
-		kind: text('kind', { enum: SOURCE_KINDS }).default('blog').notNull(),
 		displayGroup: text('display_group'),
-		acquisitionMode: text('content_mode', { enum: SOURCE_ACQUISITION_MODES }).notNull(),
+		// Compatibility column until the app-owned schema drops content_mode.
+		// Runtime routing is derived exclusively from platform.
+		acquisitionMode: text('content_mode').notNull(),
 		monitoringEnabled: boolean('enabled').default(true).notNull(),
 		curated: boolean('curated').default(false).notNull(),
 		createdBy: text('created_by'),
-		status: text('status', { enum: SOURCE_STATUSES }).default('active').notNull(),
+		status: text('status', { enum: ['pending', 'active', 'failed'] })
+			.default('active')
+			.notNull(),
 		scrapedAt: timestamp('scraped_at', { mode: 'date' }),
 		// Minimum minutes between polls. Null means every cron firing, which is what
 		// every source did before YouTube's channel feeds joined the RSS monitor and

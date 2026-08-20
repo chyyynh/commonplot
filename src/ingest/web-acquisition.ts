@@ -1,7 +1,7 @@
 import { fetchWithTimeout, readBytesWithLimit, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import type { AcquiredMaterial, PdfExtractionMetadata } from '@core-shared/types';
-import { addTransformations, extractFromHtml } from '@extractus/article-extractor';
+import { extractFromHtml } from '@extractus/article-extractor';
 import { type PdfTextArtifact, parsePdfBytes } from './platforms/pdf';
 
 export const PDF_MIME = 'application/pdf';
@@ -10,31 +10,6 @@ const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_PDF_MAX_BYTES = 25 * 1024 * 1024;
 const MIN_ARTICLE_CONTENT_CHARS = 180;
-
-type TransformElement = {
-	parentElement: TransformElement | null;
-	removeAttribute(name: string): void;
-};
-
-// Direct saved LessWrong URLs still use web acquisition. RSS sources in feed mode never reach this transformation.
-addTransformations({
-	patterns: [/^https:\/\/(?:www\.)?lesswrong\.com\/posts\//],
-	pre(document) {
-		// article-extractor relies on the ambient DOM Document type, while Workers
-		// exposes a different global Document in service-binding consumers.
-		const postContent = (
-			document as typeof document & {
-				querySelector(selector: string): TransformElement | null;
-			}
-		).querySelector('.PostsPage-postContent');
-		let container = postContent?.parentElement;
-		while (container) {
-			container.removeAttribute('hidden');
-			container = container.parentElement;
-		}
-		return document;
-	},
-});
 
 type ExtractedHtmlArticle = {
 	html: string;

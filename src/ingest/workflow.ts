@@ -22,7 +22,6 @@ import {
 	type ResourceProcessingShell,
 	readOriginalResourceContentArtifact,
 } from '@ingest/domain/resource-store';
-import { loadFeedSourcePolicy } from '@ingest/domain/source-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES, enqueueOrRestartWorkflow } from '../workflow-control';
 import {
@@ -30,7 +29,6 @@ import {
 	type AcquiredContent,
 	applyAcquiredMaterial,
 	readAcquiredContentArtifact,
-	scrapeRssFeedItemArtifact,
 	scrapeSavedUrlArtifact,
 	stageAcquisitionEnhancements,
 } from './acquisition';
@@ -40,7 +38,6 @@ import { handleResolvedResource } from './kind-handler';
 import { stagePaperEnrichment } from './platforms/paper';
 import { stagePreferredOpenAlexContent, stagePreliminaryAcquisition } from './platforms/paper-content';
 import { stagePdfTextExtraction } from './platforms/pdf';
-import type { RssFeedAcquisitionInput } from './platforms/rss-feed';
 import { rehostResourceImage } from './resource-image-rehosting';
 import { markResourceEnrichmentFailed, persistProcessedResource, processedResourceImageSources } from './resource-persistence';
 import {
@@ -210,18 +207,6 @@ async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, resour
 	return stageAcquisitionEnhancements(step, acquired, resource.id);
 }
 
-function feedSourceId(resource: ResourceForProcessing): string | null {
-	// A detected special platform remains authoritative even when its URL came
-	// from an RSS/Atom source. Feed content policy applies only to generic docs.
-	return resource.resource_platform === null && resource.source_acquisition_mode === 'feed' ? resource.source_id : null;
-}
-
-async function stageRssFeedAcquisition(env: CoreEnv, step: WorkflowStep, input: RssFeedAcquisitionInput): Promise<AcquiredContent> {
-	return readAcquiredContentArtifact(
-		await step.do('acquire-rss-feed-content-kind-platform-v1', ACQUISITION_STEP, () => scrapeRssFeedItemArtifact(input, env)),
-	);
-}
-
 function assertPdfExtractionProcessable(input: {
 	acquiredExtraction: PdfExtractionMetadata | undefined;
 	pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
@@ -250,25 +235,7 @@ async function acquireResourceForOperation(
 	operation: WorkflowOperation,
 ): Promise<AcquiredContent | undefined> {
 	if (!shouldAcquireContent(shell, operation === 'resync')) return undefined;
-	const { resource } = shell;
-	const sourceId = feedSourceId(resource);
-	if (sourceId) {
-		const source = await step.do(
-			'load-rss-source-policy',
-			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			() => loadFeedSourcePolicy(env, sourceId),
-		);
-		if (source.acquisitionMode === 'feed') {
-			if (!resource.url) throw new Error(`RSS resource ${resource.id} has no article URL`);
-			return stageRssFeedAcquisition(env, step, {
-				feedUrl: source.handle,
-				articleUrl: resource.url,
-				resourceId: resource.id,
-				sourceName: source.name,
-			});
-		}
-	}
-	return stageSavedUrlAcquisition(env, step, resource);
+	return stageSavedUrlAcquisition(env, step, shell.resource);
 }
 
 function assertOperationCanProcessResource(resource: ResourceForProcessing, operation: WorkflowOperation): void {

@@ -32,6 +32,10 @@ assert.deepEqual(detectResourceUrl('https://news.ycombinator.com/item?id=1234567
 	resourcePlatform: 'hackernews',
 	platformId: '12345678',
 });
+assert.deepEqual(detectResourceUrl('https://www.lesswrong.com/posts/A2kJKqnHhh5Hq4p2S/example-slug'), {
+	resourcePlatform: 'lesswrong',
+	platformId: 'A2kJKqnHhh5Hq4p2S',
+});
 assert.equal(detectResourceUrl('https://example.com/article'), null);
 
 const twitterUsernameCases = [
@@ -48,6 +52,7 @@ for (const [input, expected] of twitterUsernameCases) assert.equal(parseTwitterU
 assert.deepEqual(resourceIdentityForDetectedPlatform('twitter'), { kind: 'post', resourcePlatform: 'twitter' });
 assert.deepEqual(resourceIdentityForDetectedPlatform('youtube'), { kind: 'video', resourcePlatform: 'youtube' });
 assert.deepEqual(resourceIdentityForDetectedPlatform('hackernews'), { kind: 'forum', resourcePlatform: 'hackernews' });
+assert.deepEqual(resourceIdentityForDetectedPlatform('lesswrong'), { kind: 'blog', resourcePlatform: 'lesswrong' });
 assert.equal(isResourceSourceSnapshotHash('a'.repeat(64)), true);
 assert.equal(isResourceSourceSnapshotHash('A'.repeat(64)), false);
 assert.equal(isResourceSourceSnapshotHash('a'.repeat(63)), false);
@@ -60,6 +65,8 @@ const identifierCompatibilityCases = [
 	[{ preferred: true, scheme: 'doi', value: '10.1000/example' }, { kind: 'blog', resourcePlatform: null }, false],
 	[{ preferred: true, scheme: 'twitter', value: '123' }, { kind: 'post', resourcePlatform: 'twitter' }, true],
 	[{ preferred: true, scheme: 'youtube', value: 'abcdefghijk' }, { kind: 'video', resourcePlatform: 'youtube' }, true],
+	[{ preferred: true, scheme: 'lesswrong', value: 'A2kJKqnHhh5Hq4p2S' }, { kind: 'blog', resourcePlatform: 'lesswrong' }, true],
+	[{ preferred: true, scheme: 'lesswrong', value: 'A2kJKqnHhh5Hq4p2S' }, { kind: 'blog', resourcePlatform: null }, false],
 ];
 for (const [identifier, identity, expected] of identifierCompatibilityCases) {
 	assert.equal(isResourceIdentifierCompatibleWithIdentity(identifier, identity), expected);
@@ -68,10 +75,10 @@ for (const [identifier, identity, expected] of identifierCompatibilityCases) {
 console.info({
 	event: 'resource_identity_smoke_passed',
 	canonicalIdentityCases: canonicalIdentities.length,
-	detectedPlatformIdentityCases: 3,
+	detectedPlatformIdentityCases: 4,
 	invalidIdentityCases: 5,
 	identifierCompatibilityCases: identifierCompatibilityCases.length,
 	sourceRevisionCases: 4,
 	twitterUsernameCases: twitterUsernameCases.length,
-	urlCases: 4,
+	urlCases: 5,
 });

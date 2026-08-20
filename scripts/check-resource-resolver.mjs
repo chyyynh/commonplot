@@ -74,6 +74,13 @@ const cases = [
 		expected: { kind: 'video', resourcePlatform: 'youtube', locator: { videoId: 'abcdefghijk' } },
 	},
 	{
+		name: 'LessWrong stays a platform blog',
+		input: {
+			url: 'https://www.lesswrong.com/posts/A2kJKqnHhh5Hq4p2S/example-slug',
+		},
+		expected: { kind: 'blog', resourcePlatform: 'lesswrong', locator: { postId: 'A2kJKqnHhh5Hq4p2S' } },
+	},
+	{
 		name: 'OpenAlex-resolved paper',
 		input: {
 			url: null,
