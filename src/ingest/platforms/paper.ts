@@ -86,12 +86,12 @@ export async function stagePaperEnrichment(
 					url: candidate.url,
 					translateUrl: translateSavedUrl,
 				});
-				if (bibliographic.identifiers.length === 0) {
+				if (bibliographic.length === 0) {
 					return null;
 				}
 				const resolved = await resolveOpenAlexPaper({
 					apiKey: env.OPENALEX_API_KEY,
-					identifiers: bibliographic.identifiers,
+					identifiers: bibliographic,
 				});
 				const paper = resolved?.metadata ?? null;
 				console.info({
@@ -99,11 +99,11 @@ export async function stagePaperEnrichment(
 					event: 'academic_enrichment',
 					provider: 'openalex',
 					resource_id: candidate.id,
-					identity_schemes: [...new Set(bibliographic.identifiers.map(({ scheme }) => scheme))],
+					identity_schemes: [...new Set(bibliographic.map(({ scheme }) => scheme))],
 					outcome: paper ? 'resolved' : 'not_found',
 					latency_ms: Date.now() - startedAt,
 				});
-				return { ...bibliographic, resolved };
+				return { identifiers: bibliographic, resolved };
 			},
 		);
 		return {

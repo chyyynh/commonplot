@@ -11,10 +11,7 @@ import { acquireRssFeedItem, type RssFeedAcquisitionInput } from './platforms/rs
 import { canonicalPostFields, scrapeTweet } from './platforms/twitter-acquisition';
 import { stageTweetLinkUnfurl } from './platforms/twitter-unfurl';
 import { canonicalVideoFields, scrapeYouTube } from './platforms/youtube-acquisition';
-import { type AcquiredWebContent, acquireWebResource, PDF_MIME, pdfExtractionMetadata } from './web-acquisition';
-
-export type { PdfExtractionMetadata } from '@core-shared/types';
-export { PDF_MIME, pdfExtractionMetadata };
+import { type AcquiredWebContent, acquireWebResource, PDF_MIME } from './web-acquisition';
 
 export type AcquiredContent =
 	| AcquiredWebContent

@@ -1,9 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { withCoreDb } from '@db/client';
 import {
 	isResourceTranslationRevision,
-	loadEligibleResourceTranslationInputFromDb,
-	loadEligibleResourceTranslationRevisionFromDb,
+	loadEligibleResourceTranslationInput,
 	persistMachineZhHantTranslation,
 } from '@ingest/domain/resource-translation-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
@@ -14,14 +12,6 @@ import {
 	planZhHantTranslation,
 	translateZhHantContent,
 } from './domain/resource-translation';
-
-export function loadEligibleResourceTranslationRevision(env: CoreEnv, resourceId: string): Promise<string | null> {
-	return withCoreDb(env, (db) => loadEligibleResourceTranslationRevisionFromDb(db, resourceId, CONTENT_TRANSLATION_MAX_LENGTH));
-}
-
-async function loadEligibleResourceTranslationInput(env: CoreEnv, resourceId: string) {
-	return withCoreDb(env, (db) => loadEligibleResourceTranslationInputFromDb(db, resourceId, CONTENT_TRANSLATION_MAX_LENGTH));
-}
 
 type ResourceTranslationPayload = { resourceId: string; sourceRevision: string };
 

@@ -199,11 +199,7 @@ async function fetchTranscript(videoId: string): Promise<TranscriptSegment[]> {
 	return segments;
 }
 
-export async function scrapeYouTube(
-	videoId: string,
-	youtubeApiKey: string,
-	monitored: boolean,
-): Promise<AcquiredMaterial<'youtube'> & { acquisition: AcquisitionEnvelope<'youtube'> }> {
+export async function scrapeYouTube(videoId: string, youtubeApiKey: string, monitored: boolean): Promise<AcquiredMaterial<'youtube'>> {
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching video', videoId });
 
 	const videoData = await fetchYouTubeVideoData(videoId, youtubeApiKey);

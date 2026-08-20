@@ -20,7 +20,7 @@ export function resourcePreviewImageCandidates(resource: ResourceImageFields): s
 	);
 }
 
-export function resourceImageUrls(resource: ResourceImageFields): string[] {
+function resourceImageUrls(resource: ResourceImageFields): string[] {
 	const metadata = postMetadata(resource);
 	return [
 		resource.ogImageUrl,

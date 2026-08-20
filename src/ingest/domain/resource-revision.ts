@@ -4,7 +4,7 @@ import { sha256Hex } from '@core-shared/hash';
 import type { ResourceTranslationSource } from '@core-shared/resource-types';
 import type { ResourceForProcessing } from '@core-shared/types';
 
-export type ResourceSourceSnapshotInput = {
+type ResourceSourceSnapshotInput = {
 	content: string | null;
 	fileType: string | null;
 	kind: string;

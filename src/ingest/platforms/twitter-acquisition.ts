@@ -302,11 +302,7 @@ interface TwitterLongform {
 	createdAt?: string;
 }
 
-async function scrapeTwitterLongform(
-	tweetId: string,
-	apiKey: string,
-	language?: string,
-): Promise<AcquiredMaterial<'twitter'> & { acquisition: AcquisitionEnvelope<'twitter'> }> {
+async function scrapeTwitterLongform(tweetId: string, apiKey: string, language?: string): Promise<AcquiredMaterial<'twitter'>> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching longform for tweet', tweetId });
 
 	const response = await fetchWithTimeout(`https://api.twitterapi.io/twitter/article?tweet_id=${tweetId}`, {
@@ -358,11 +354,7 @@ async function scrapeTwitterLongform(
 	};
 }
 
-function buildExternalLinkTweet(
-	tweet: Tweet,
-	externalUrl: string,
-	media: TwitterMedia[],
-): AcquiredMaterial<'twitter'> & { acquisition: AcquisitionEnvelope<'twitter'> } {
+function buildExternalLinkTweet(tweet: Tweet, externalUrl: string, media: TwitterMedia[]): AcquiredMaterial<'twitter'> {
 	const author = requiredTweetAuthor(tweet);
 	const tweetText = tweet.text.trim();
 	if (!tweetText) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no text`);

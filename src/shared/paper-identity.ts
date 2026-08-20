@@ -21,7 +21,7 @@ export type PaperIdentity = Readonly<{
 	openAlexId?: string;
 }>;
 
-export type ResolvedPaperInput = Readonly<{
+type ResolvedPaperInput = Readonly<{
 	canonicalUrl: string;
 	identity: PaperIdentity;
 }>;
@@ -87,12 +87,6 @@ export function paperIdentityFromIdentifiers(identifiers: readonly PaperIdentifi
 	const arxivId = value('arxiv');
 	const openAlexId = value('openalex');
 	return normalizePaperIdentity({ doi, arxivId, openAlexId });
-}
-
-export function paperIdentifierLockKeys(identifiers: readonly PaperIdentifier[]): string[] {
-	return normalizePaperIdentifiers(identifiers)
-		.map((identifier) => `${identifier.scheme}:${identifier.value}`)
-		.sort();
 }
 
 function nonEmptyString(value: unknown): string | null {
@@ -224,8 +218,4 @@ export function normalizePaperIdentity(identity: PaperIdentity): PaperIdentity |
 				...(openAlexId ? { openAlexId } : {}),
 			}
 		: null;
-}
-
-export function paperIdentityLockKeys(identity: PaperIdentity): string[] {
-	return paperIdentifierLockKeys(paperIdentifiersFromIdentity(identity));
 }

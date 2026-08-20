@@ -51,7 +51,7 @@ export type ZhHantMetadataTranslationTask =
 	| 'twitter-title'
 	| 'twitter-title-content';
 
-export type ZhHantTranslationPlan = {
+type ZhHantTranslationPlan = {
 	metadata: ZhHantMetadataTranslationTask | null;
 	content: 'translate' | 'skip-too-long' | null;
 };
@@ -80,7 +80,7 @@ function metadataTranslationTask(resource: ResourceTranslationInput): ZhHantMeta
 	return isBlank(translation?.title) || isBlank(translation?.summary) ? 'article-title-summary' : null;
 }
 
-export function hasTranslatableContent(content: string): boolean {
+function hasTranslatableContent(content: string): boolean {
 	const text = content
 		.replace(/https?:\/\/\S+/gi, ' ')
 		.replace(/<[^>]+>/g, ' ')

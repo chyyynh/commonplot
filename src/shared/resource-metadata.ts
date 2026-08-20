@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { ResourceKind } from './resource-types';
 
-export const RESOURCE_CREATOR_ROLES = ['author', 'editor', 'submitter', 'channel'] as const;
+const RESOURCE_CREATOR_ROLES = ['author', 'editor', 'submitter', 'channel'] as const;
 
 const optionalHttpUrl = z.url().refine((value) => {
 	const protocol = new URL(value).protocol;
@@ -22,7 +22,6 @@ export const ResourceCreatorSchema = z
 	.refine((creator) => creator.given || creator.family || creator.literal, 'Creator must have a name');
 
 export type ResourceCreator = Readonly<z.infer<typeof ResourceCreatorSchema>>;
-export type ResourceCreatorRole = ResourceCreator['role'];
 
 export function resourceCreatorName(creator: ResourceCreator | undefined): string | null {
 	return creator?.literal ?? ([creator?.given, creator?.family].filter(Boolean).join(' ') || null);
@@ -108,7 +107,7 @@ const PaperKindMetadataSchema = z.object({
 	citations: PaperRelationSnapshotSchema.optional(),
 });
 
-export type BlogKindMetadata = Readonly<z.infer<typeof BlogKindMetadataSchema>>;
+type BlogKindMetadata = Readonly<z.infer<typeof BlogKindMetadataSchema>>;
 export type ForumKindMetadata = Readonly<z.infer<typeof ForumKindMetadataSchema>>;
 export type PostKindMetadata = Readonly<z.infer<typeof PostKindMetadataSchema>>;
 export type VideoKindMetadata = Readonly<z.infer<typeof VideoKindMetadataSchema>>;
@@ -130,10 +129,7 @@ export function parseResourceCreators(value: unknown): ResourceCreator[] {
 	return z.array(ResourceCreatorSchema).parse(value);
 }
 
-export function parseResourceKindMetadata<K extends keyof ResourceKindMetadataByKind>(
-	kind: K,
-	value: unknown,
-): ResourceKindMetadataByKind[K] {
+function parseResourceKindMetadata<K extends keyof ResourceKindMetadataByKind>(kind: K, value: unknown): ResourceKindMetadataByKind[K] {
 	switch (kind) {
 		case 'blog':
 			return (value === null ? null : BlogKindMetadataSchema.parse(value)) as ResourceKindMetadataByKind[K];

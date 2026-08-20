@@ -37,10 +37,6 @@ function uniqueImageUrls(candidates: Array<string | null | undefined>): string[]
 	return [...new Set(candidates.map((url) => normalizedResourceImageUrl(url)).filter((url): url is string => url !== null))];
 }
 
-export function resourcePreviewImageSourceUrls(resource: ResourceImageFields): string[] {
-	return uniqueImageUrls(resourcePreviewImageCandidates(resource));
-}
-
 export function resourceImageSourceUrls(resource: ResourceImageFields): string[] {
 	const avatarUrls = resource.creators?.map((creator) => creator.avatarUrl) ?? [];
 	const quoteAvatarUrl =

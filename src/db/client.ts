@@ -1,4 +1,3 @@
-import type { ResourceContentSurface } from '@core-shared/resource-types';
 import { type SQL, sql } from 'drizzle-orm';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Client } from 'pg';
@@ -33,10 +32,6 @@ export async function queryRows<T>(db: CoreDb, statement: SQL): Promise<T[]> {
 	return result.rows as T[];
 }
 
-export function resourceContentAccessSql(surface: ResourceContentSurface, input: { viewerHasOwnership: SQL; scope: SQL }): SQL {
-	return surface === 'app' ? sql`(${input.scope} = 'corpus' OR ${input.viewerHasOwnership})` : input.viewerHasOwnership;
-}
-
 export async function withCoreDb<T>(env: CoreEnv, operation: CoreDbOperation<T>): Promise<T> {
 	return withCoreDbClient(env, operation);
 }
@@ -65,9 +60,5 @@ async function withCoreDbClient<T>(env: CoreEnv, operation: CoreDbOperation<T>):
 	// when the request, Workflow, Queue consumer, or Durable Object ends.
 	const client = new Client({ connectionString: env.HYPERDRIVE.connectionString });
 	await client.connect();
-	return operation(createCoreDb(client), client);
-}
-
-function createCoreDb(client: Client): CoreDb {
-	return drizzle(client, { schema });
+	return operation(drizzle(client, { schema }), client);
 }

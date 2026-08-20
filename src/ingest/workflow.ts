@@ -9,7 +9,7 @@ import {
 	parseResourceIdentity,
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
-import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
+import type { PaperMetadata, PdfExtractionMetadata, ResourceForProcessing } from '@core-shared/types';
 import { detectResourceUrl } from '@core-shared/url';
 import { claimStalePendingResourceAdmissions } from '@ingest/domain/resource-admission-store';
 import {
@@ -25,15 +25,13 @@ import {
 	ACQUISITION_STEP,
 	type AcquiredContent,
 	applyAcquiredMaterial,
-	PDF_MIME,
-	type PdfExtractionMetadata,
-	pdfExtractionMetadata,
 	readAcquiredContentArtifact,
 	scrapeRssFeedItemArtifact,
 	scrapeSavedUrlArtifact,
 	stageAcquisitionEnhancements,
 } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
+import { loadEligibleResourceTranslationRevision } from './domain/resource-translation-store';
 import { handleResolvedResource } from './kind-handler';
 import { stagePaperEnrichment } from './platforms/paper';
 import { stagePreferredOpenAlexContent, stagePreliminaryAcquisition } from './platforms/paper-content';
@@ -48,7 +46,8 @@ import {
 	resolveContentResource,
 	resolvedResourceIdentifiers,
 } from './resource-resolver';
-import { enqueueResourceTranslation, loadEligibleResourceTranslationRevision } from './resource-translation-workflow';
+import { enqueueResourceTranslation } from './resource-translation-workflow';
+import { PDF_MIME, pdfExtractionMetadata } from './web-acquisition';
 
 type WorkflowOperation = 'ingest' | 'resync';
 type WorkflowPayload = { resourceId: string; operation: WorkflowOperation; sourceRevision?: string };

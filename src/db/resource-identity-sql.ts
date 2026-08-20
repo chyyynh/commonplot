@@ -24,7 +24,7 @@ export function contentResourceIdentitySql(fields: ResourceIdentitySqlFields): S
 	)`;
 }
 
-export function translatableResourceIdentitySql(fields: ResourceIdentitySqlFields & { fileType: SQL }): SQL {
+function translatableResourceIdentitySql(fields: ResourceIdentitySqlFields & { fileType: SQL }): SQL {
 	return sql`(
 		${fields.kind} = ANY(${textArraySql(TRANSLATABLE_RESOURCE_KINDS)})
 		AND (

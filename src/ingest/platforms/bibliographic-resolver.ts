@@ -29,10 +29,6 @@ const CitoidItemSchema = z
 const CitoidResponseSchema = z.array(CitoidItemSchema);
 const ACADEMIC_ITEM_TYPES = new Set(['journalArticle', 'conferencePaper', 'preprint', 'thesis', 'manuscript']);
 
-export type BibliographicResolution = Readonly<{
-	identifiers: PaperIdentifier[];
-}>;
-
 function citoidQueryUrl(value: string | null | undefined): string | null {
 	if (!value?.trim() || resolveExactPaperInput(value)) return null;
 	try {
@@ -53,7 +49,7 @@ function citoidItemIdentifiers(item: z.infer<typeof CitoidItemSchema>): PaperIde
 	return identity ? paperIdentifiersFromIdentity(identity) : [];
 }
 
-async function resolveCitoidIdentifiers(url: string): Promise<BibliographicResolution> {
+async function resolveCitoidIdentifiers(url: string): Promise<PaperIdentifier[]> {
 	const response = await fetchWithTimeout(
 		`${CITOID_BASE}${encodeURIComponent(url)}`,
 		{
@@ -73,13 +69,11 @@ async function resolveCitoidIdentifiers(url: string): Promise<BibliographicResol
 			throw new Error(`Citoid request failed with HTTP 429${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
 		}
 		console.warn({ tag: 'CITOID', event: 'translation_unavailable', status });
-		return { identifiers: [] };
+		return [];
 	}
 	const items = CitoidResponseSchema.parse(JSON.parse(await readTextWithLimit(response, CITOID_RESPONSE_MAX_BYTES)));
 	const academicItem = items.find((item) => item.itemType && ACADEMIC_ITEM_TYPES.has(item.itemType));
-	if (!academicItem) return { identifiers: [] };
-	const identifiers = normalizePaperIdentifiers(citoidItemIdentifiers(academicItem));
-	return { identifiers };
+	return academicItem ? normalizePaperIdentifiers(citoidItemIdentifiers(academicItem)) : [];
 }
 
 function choosePreferredIdentifiers(identifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
@@ -110,10 +104,10 @@ export async function resolveBibliographicIdentifiers(input: {
 	seedIdentifiers?: readonly PaperIdentifier[];
 	translateUrl?: boolean;
 	url?: string | null;
-}): Promise<BibliographicResolution> {
+}): Promise<PaperIdentifier[]> {
 	const exact = resolveExactPaperInput(input.url)?.identity;
 	const citoidUrl = input.translateUrl ? citoidQueryUrl(input.url) : null;
-	const citoid: BibliographicResolution = citoidUrl
+	const citoid = citoidUrl
 		? await resolveCitoidIdentifiers(citoidUrl).catch((error) => {
 				if (error instanceof Error && error.message.includes('HTTP 429')) throw error;
 				console.warn({
@@ -121,16 +115,14 @@ export async function resolveBibliographicIdentifiers(input: {
 					event: 'translation_failed',
 					error: error instanceof Error ? error.message : String(error),
 				});
-				return { identifiers: [] };
+				return [];
 			})
-		: { identifiers: [] };
+		: [];
 	const fromText = input.identifierText?.trim() ? paperIdentityFromText(input.identifierText.slice(0, IDENTIFIER_SCAN_CHARS)) : null;
-	return {
-		identifiers: choosePreferredIdentifiers([
-			...(exact ? paperIdentifiersFromIdentity(exact) : []),
-			...citoid.identifiers,
-			...(fromText ? paperIdentifiersFromIdentity(fromText) : []),
-			...(input.seedIdentifiers ?? []),
-		]),
-	};
+	return choosePreferredIdentifiers([
+		...(exact ? paperIdentifiersFromIdentity(exact) : []),
+		...citoid,
+		...(fromText ? paperIdentifiersFromIdentity(fromText) : []),
+		...(input.seedIdentifiers ?? []),
+	]);
 }

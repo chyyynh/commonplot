@@ -152,7 +152,7 @@ export function resolvedResourceIdentifiers(
 	return normalizeResourceIdentifiers([...resolved, ...compatibleCurrent.map((identifier) => ({ ...identifier, preferred: false }))]);
 }
 
-export type ResolvedSubjectInput = Readonly<{
+type ResolvedSubjectInput = Readonly<{
 	identity: ContentResourceIdentity;
 	identifiers: ResourceIdentifier[];
 	normalizedUrl: string;
