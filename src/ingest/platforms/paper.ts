@@ -9,7 +9,6 @@ import {
 	resolveExactPaperInput,
 } from '@core-shared/paper-identity';
 import { isPaperIdentifier } from '@core-shared/resource-identifiers';
-import { literalCreator, type PaperKindMetadata, type ResourceCreator } from '@core-shared/resource-metadata';
 import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
 import { resolveBibliographicIdentifiers } from './bibliographic-resolver';
 import { resolveOpenAlexPaper } from './openalex';
@@ -128,50 +127,6 @@ export async function stagePaperEnrichment(
 			metadata: null,
 		};
 	}
-}
-
-function paperCanonicalFields(metadata: PaperMetadata): {
-	creators: ResourceCreator[];
-	kindMetadata: PaperKindMetadata;
-} {
-	return {
-		creators: metadata.authors.flatMap((author) => literalCreator('author', author)),
-		kindMetadata: {
-			...(metadata.venue?.trim() ? { venue: metadata.venue.trim() } : {}),
-			...(metadata.year === undefined ? {} : { year: metadata.year }),
-			...(metadata.citedByCount === undefined ? {} : { citedByCount: metadata.citedByCount }),
-			...(metadata.referenceCount === undefined ? {} : { referenceCount: metadata.referenceCount }),
-			...(metadata.pdfUrl?.trim() ? { pdfUrl: metadata.pdfUrl.trim() } : {}),
-			...(metadata.references ? { references: metadata.references } : {}),
-			...(metadata.citations ? { citations: metadata.citations } : {}),
-		},
-	};
-}
-
-function withAcademicPublishedDate(resource: ResourceForProcessing, paper: PaperMetadata | null): ResourceForProcessing {
-	if (resource.published_date || !paper?.publicationDate) return resource;
-	const publishedDate = new Date(`${paper.publicationDate}T00:00:00.000Z`);
-	return Number.isNaN(publishedDate.getTime()) ? resource : { ...resource, published_date: publishedDate.toISOString() };
-}
-
-function withPaperAbstractSummary(resource: ResourceForProcessing, paper: PaperMetadata | null): ResourceForProcessing {
-	const abstract = paper?.abstract?.trim();
-	return abstract ? { ...resource, summary: abstract } : resource;
-}
-
-function withPaperCanonicalFields(resource: ResourceForProcessing, metadata: PaperMetadata | null): ResourceForProcessing {
-	if (!metadata) return resource;
-	const canonical = paperCanonicalFields(metadata);
-	return {
-		...resource,
-		creators: canonical.creators,
-		kind_metadata: canonical.kindMetadata,
-	};
-}
-
-/** Canonical paper fields win over scraped ones once OpenAlex has resolved the work. */
-export function finalizePaperResource(resource: ResourceForProcessing, paper: PaperMetadata | null): ResourceForProcessing {
-	return withPaperCanonicalFields(withPaperAbstractSummary(withAcademicPublishedDate(resource, paper), paper), paper);
 }
 
 export function privatePaperAttachment(resource: ResourceForProcessing): { canonicalUrl: string } | null {

@@ -1,7 +1,6 @@
 import type { PersistResolvedResourceGraphInput, PersistResolvedResourceGraphResult } from '@app-domain/resource-graph-contracts';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
 import { parseResourceIdentity } from '@core-shared/resource-types';
-import type { ResourceForProcessing } from '@core-shared/types';
 import { type CoreDb, withCoreDb, withCoreTx } from '@db/client';
 import { resources } from '@db/schema';
 import { toStoredResourceEntities } from '@entities/normalize';
@@ -9,7 +8,7 @@ import { eq, sql } from 'drizzle-orm';
 import type { ResourceClassificationResult } from './domain/resource-classification';
 import { resourceSourceRevision } from './domain/resource-revision';
 import type { HandledResourceResult } from './kind-handler';
-import { finalizePaperResource, privatePaperAttachment } from './platforms/paper';
+import { privatePaperAttachment } from './platforms/paper';
 import { persistYouTubeWorkflowData } from './platforms/youtube';
 import { resolvedSubjectInput } from './resource-resolver';
 
@@ -20,10 +19,6 @@ type PersistProcessedResourceInput = {
 	classification: ResourceClassificationResult;
 	previewImageUrl: string | null;
 };
-
-function finalizedResource(handled: HandledResourceResult): ResourceForProcessing {
-	return handled.kind === 'paper' ? finalizePaperResource(handled.resource, handled.paperEnrichment) : handled.resource;
-}
 
 export async function markResourceEnrichmentFailed(
 	env: CoreEnv,
@@ -63,7 +58,7 @@ async function graphMutation(
 	input: PersistProcessedResourceInput,
 	hostedImages: readonly HostedResourceImage[],
 ): Promise<PersistResolvedResourceGraphInput> {
-	const resource = finalizedResource(input.handled);
+	const resource = input.handled.resource;
 	const identity = parseResourceIdentity(input.handled.kind, input.handled.resourcePlatform);
 	if (!identity) throw new Error(`Resource ${input.resourceId} resolved to an invalid identity`);
 	const sourceRevision = await resourceSourceRevision(resource);
@@ -99,7 +94,7 @@ async function graphMutation(
 }
 
 export function processedResourceImageSources(input: Pick<PersistProcessedResourceInput, 'handled' | 'previewImageUrl'>): string[] {
-	const resource = finalizedResource(input.handled);
+	const resource = input.handled.resource;
 	if (input.handled.kind === 'paper' && privatePaperAttachment(resource)) return [];
 	return resourceImageSourceUrls({
 		creators: resource.creators,

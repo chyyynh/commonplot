@@ -1,12 +1,11 @@
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import type { AcquiredMaterial } from '@core-shared/types';
-import { normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
+import { extractHackerNewsId, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { sanitizeExtractedMarkdown } from '@ingest/domain/content-sanitization';
 import { parseFeed } from 'feedsmith';
 import { decode } from 'html-entities';
 import { markdownFromHtml } from '../web-acquisition';
-import { hackerNewsDiscussionUrl } from './hackernews';
 
 const MAX_FEED_BYTES = 3 * 1024 * 1024;
 const MAX_FEED_ITEMS = 30;
@@ -193,7 +192,8 @@ function normalizeFeedItemUrl(value: string | undefined): string | null {
 }
 
 export function canonicalFeedItemUrl(item: FeedItem): string | null {
-	return normalizeFeedItemUrl(hackerNewsDiscussionUrl(item.id) ?? item.link);
+	const hackerNewsId = extractHackerNewsId(item.id);
+	return normalizeFeedItemUrl(hackerNewsId ? `https://news.ycombinator.com/item?id=${hackerNewsId}` : item.link);
 }
 
 export function feedPublishedDate(value: string | undefined): Date | null {

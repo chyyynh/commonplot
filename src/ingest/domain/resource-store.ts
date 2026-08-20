@@ -10,6 +10,7 @@ import {
 import {
 	canonicalizeResourceLang,
 	isContentResourceKind,
+	isResourceSourceSnapshotHash,
 	parseResourceIdentity,
 	RESOURCE_SCOPES,
 	type ResourceIdentity,
@@ -23,7 +24,7 @@ import { type CoreDb, withCoreDb } from '@db/client';
 import { resourceDisplaySourceSql, resourceTranslationIdentityPredicate } from '@db/resource-identity-sql';
 import { resourceIdentifiers, resources, resourceTranslations, youtubeTranscripts } from '@db/schema';
 import { and, eq, type SQL, sql } from 'drizzle-orm';
-import { cleanString, dateValue, requiredString, storedResourceSourceRevision } from './resource-values';
+import { cleanString, dateValue, requiredString } from './resource-values';
 
 export type ResourceProcessingShell = {
 	resource: ResourceForProcessing;
@@ -73,6 +74,11 @@ function parseSourceAcquisitionMode(value: unknown): SourceAcquisitionMode | nul
 	if (value === null || value === undefined) return null;
 	if (value === 'platform' || value === 'web' || value === 'feed') return value;
 	throw new Error(`Invalid source acquisition mode: ${String(value)}`);
+}
+
+function storedResourceSourceRevision(value: unknown, resourceId: string): string {
+	if (!isResourceSourceSnapshotHash(value)) throw new Error(`Invalid source_revision for ${resourceId}`);
+	return value;
 }
 
 function effectiveResourcePlatformPredicate(platform: Exclude<ResourcePlatform, null>): SQL {

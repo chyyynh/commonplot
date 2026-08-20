@@ -1,7 +1,6 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { type ForumKindMetadata, literalCreator, type ResourceCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial, AcquisitionEnvelope, HackerNewsMetadata, ResourceForProcessing } from '@core-shared/types';
-import { extractHackerNewsId } from '@core-shared/url';
 import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
@@ -65,11 +64,6 @@ const HackerNewsItemSchema = z.object({
 });
 
 export type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
-
-export function hackerNewsDiscussionUrl(value: string): string | null {
-	const itemId = extractHackerNewsId(value);
-	return itemId ? `https://news.ycombinator.com/item?id=${itemId}` : null;
-}
 
 function hnItemTypeForMetadata(type: HackerNewsItem['type'] | undefined): HackerNewsMetadata['itemType'] {
 	if (type === 'story' || type === 'ask' || type === 'show' || type === 'job') return type;
