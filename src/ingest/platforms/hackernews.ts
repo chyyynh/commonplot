@@ -1,9 +1,10 @@
-import { generateText } from '@core-ai/generation';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { type ForumKindMetadata, literalCreator, type ResourceCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial, AcquisitionEnvelope, HackerNewsMetadata, ResourceForProcessing } from '@core-shared/types';
 import { extractHackerNewsId } from '@core-shared/url';
+import { generateText } from 'ai';
 import { decode } from 'html-entities';
+import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 
 const HN_ALGOLIA_API = 'https://hn.algolia.com/api/v1/items';
@@ -236,11 +237,29 @@ async function generateHnDiscussionDigest(
 		.join('\n')
 		.slice(0, 30000);
 
-	return generateText(env, buildDiscussionPrompt(title, articleContent, hnText, commentInput, comments.length), {
-		feature: 'hn-discussion-digest-en',
-		resourceId,
-		systemPrompt: HN_DISCUSSION_SYSTEM,
+	const { finishReason, text } = await generateText({
+		model: createWorkersAI({ binding: env.AI })('@cf/qwen/qwen3-30b-a3b-fp8', {
+			gateway: {
+				id: 'core-ingest',
+				collectLog: true,
+				retries: { maxAttempts: 1 },
+				metadata: {
+					feature: 'hn-discussion-digest-en',
+					environment: env.AI_GATEWAY_ENVIRONMENT,
+					resource_id: resourceId,
+				},
+			},
+			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
+		}),
+		prompt: buildDiscussionPrompt(title, articleContent, hnText, commentInput, comments.length),
+		system: HN_DISCUSSION_SYSTEM,
+		temperature: 0.3,
+		maxRetries: 0,
 	});
+	if (finishReason === 'length') throw new Error('Hacker News discussion digest hit its output token cap');
+	const digest = text.trim();
+	if (!digest) throw new Error('Hacker News discussion digest returned no text');
+	return digest;
 }
 
 function withoutPreviousDiscussion(content: string): string {

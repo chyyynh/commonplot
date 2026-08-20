@@ -12,15 +12,14 @@ import {
 import { sql } from 'drizzle-orm';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { enqueueOrRestartWorkflow } from '../workflow-control';
+import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
 import {
 	CONTENT_TRANSLATION_MAX_LENGTH,
 	generateZhHantMetadataTranslation,
 	hasTranslatableContent,
-	needsZhHantContentTranslation,
-	needsZhHantMetadataTranslation,
+	planZhHantTranslation,
 	translateZhHantContent,
-} from './domain/ai-utils';
-import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
+} from './domain/resource-translation';
 
 async function loadEligibleResourceTranslationRevisionFromDb(db: CoreDb, resourceId: string): Promise<string | null> {
 	const result = await db.execute<{ source_revision: string }>(sql`
@@ -41,7 +40,7 @@ async function loadEligibleResourceTranslationRevisionFromDb(db: CoreDb, resourc
 			  AND ${resources.originalLang} <> 'zh-Hant'
 			  AND NULLIF(BTRIM(original.title), '') IS NOT NULL
 			  AND NULLIF(BTRIM(original.content), '') IS NOT NULL
-			  -- Length gate lives here as well as in needsZhHantContentTranslation:
+			  -- Length gate lives here as well as in planZhHantTranslation:
 			  -- loading a multi-megabyte body blows the 1MiB step-output limit
 			  -- before any in-workflow check can run.
 			  AND length(original.content) <= ${CONTENT_TRANSLATION_MAX_LENGTH}
@@ -206,14 +205,26 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			}
 		}
 
-		if (needsZhHantMetadataTranslation(resource)) {
+		const translationPlan = planZhHantTranslation(resource);
+		if (translationPlan.content === 'skip-too-long') {
+			console.info({
+				tag: 'RESOURCE_TRANSLATION',
+				msg: 'Body too long to translate in one call; keeping the original',
+				resource_id: resource.id,
+				chars: initialContent.length,
+				limit: CONTENT_TRANSLATION_MAX_LENGTH,
+			});
+		}
+
+		const metadataTask = translationPlan.metadata;
+		if (metadataTask) {
 			const translatedMetadata = await step.do(
 				'translate-zh-hant-title-summary',
 				{
 					retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' },
 					timeout: '180 seconds',
 				},
-				() => generateZhHantMetadataTranslation(resource, this.env),
+				() => generateZhHantMetadataTranslation(resource, this.env, metadataTask),
 			);
 			const persisted = await step.do(
 				'persist-zh-hant-title-summary',
@@ -221,27 +232,15 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				() => persistMachineZhHantTranslation(this.env, resourceId, sourceRevision, translatedMetadata),
 			);
 			if (!persisted) return { success: true, resource_id: resourceId, skipped: true, superseded: true };
-			resource = {
-				...resource,
-				translations: {
-					...resource.translations,
-					[ZH_HANT_RESOURCE_LANG]: {
-						...resource.translations[ZH_HANT_RESOURCE_LANG],
-						...translatedMetadata,
-						source: 'machine',
-					},
-				},
-			};
 		}
 
-		if (needsZhHantContentTranslation(resource)) {
-			const source = resource.content!.trim();
+		if (translationPlan.content === 'translate') {
 			const translated = await step.do(
 				'translate-zh-hant-content',
 				// A body at the 36k-character ceiling emits ~11.1k tokens at a
 				// measured ~90 tokens/s, so 180s left almost no margin.
 				{ retries: { limit: 3, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
-				() => translateZhHantContent(source, this.env, resourceId),
+				() => translateZhHantContent(initialContent, this.env, resourceId),
 			);
 			const persisted = await step.do(
 				'persist-zh-hant-content',

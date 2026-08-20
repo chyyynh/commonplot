@@ -6,7 +6,7 @@ import { type CoreDb, withCoreDb, withCoreTx } from '@db/client';
 import { resources } from '@db/schema';
 import { toStoredResourceEntities } from '@entities/normalize';
 import { eq, sql } from 'drizzle-orm';
-import type { ProcessorResult } from './domain/ai-utils';
+import type { ResourceClassificationResult } from './domain/resource-classification';
 import { resourceSourceRevision } from './domain/resource-revision';
 import type { HandledResourceResult } from './kind-handler';
 import { finalizePaperResource, privatePaperAttachment } from './platforms/paper';
@@ -17,7 +17,7 @@ type PersistProcessedResourceInput = {
 	resourceId: string;
 	expectedSourceRevision: string | null;
 	handled: HandledResourceResult;
-	processorResult: ProcessorResult;
+	classification: ResourceClassificationResult;
 	previewImageUrl: string | null;
 };
 
@@ -67,7 +67,7 @@ async function graphMutation(
 	const identity = parseResourceIdentity(input.handled.resolution.kind, input.handled.resolution.resourcePlatform);
 	if (!identity) throw new Error(`Resource ${input.resourceId} resolved to an invalid identity`);
 	const sourceRevision = await resourceSourceRevision(resource);
-	const content = input.processorResult.content ?? resource.content;
+	const content = resource.content;
 	if (!content?.trim()) throw new Error(`Refusing to persist enriched resource ${input.resourceId} without content`);
 	const ogImageUrl = input.previewImageUrl?.trim() || null;
 	const media = hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kind_metadata, ogImageUrl }, hostedImages);
@@ -85,10 +85,10 @@ async function graphMutation(
 		title: resource.title,
 		summary: resource.summary,
 		content,
-		keywords: input.processorResult.keywords ?? resource.keywords,
-		tags: input.processorResult.tags ?? resource.tags,
-		category: input.processorResult.category,
-		entities: toStoredResourceEntities(input.processorResult.entities, resource.resource_platform, resource.source, resource.creators),
+		keywords: input.classification.keywords ?? resource.keywords,
+		tags: input.classification.tags ?? resource.tags,
+		category: input.classification.category,
+		entities: toStoredResourceEntities(input.classification.entities, resource.resource_platform, resource.source, resource.creators),
 		url: resource.url,
 		normalizedUrl: resource.normalized_url ?? resource.url,
 		storageKey: resource.storage_key ?? null,

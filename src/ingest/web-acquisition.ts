@@ -1,4 +1,3 @@
-import { coreAiRequestOptions, throwCoreAiError } from '@core-ai/generation';
 import { fetchWithTimeout, readBytesWithLimit, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import type { AcquiredMaterial, PdfExtractionMetadata } from '@core-shared/types';
@@ -114,16 +113,21 @@ async function markdownFromDocument(
 	context: { feature: string; resourceId?: string },
 	conversionOptions?: ConversionOptions,
 ): Promise<string> {
-	let result: ConversionResponse;
-	try {
-		result = await env.AI.toMarkdown(document, {
-			...coreAiRequestOptions(env, context),
-			...(conversionOptions ? { conversionOptions } : {}),
-		});
-	} catch (error) {
-		throwCoreAiError(env, error, { ...context, model: 'workers-ai/to-markdown' });
-	}
-	// The error variant has no structured status, so its message cannot identify a rate limit.
+	const result = await env.AI.toMarkdown(document, {
+		gateway: {
+			id: 'core-ingest',
+			collectLog: true,
+			retries: { maxAttempts: 1 },
+			metadata: {
+				feature: context.feature,
+				environment: env.AI_GATEWAY_ENVIRONMENT,
+				...(context.resourceId ? { resource_id: context.resourceId } : {}),
+			},
+		},
+		extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
+		...(conversionOptions ? { conversionOptions } : {}),
+	});
+	// Conversion failures are returned in-band rather than thrown.
 	if (result.format === 'error') throw new Error(`Workers AI toMarkdown failed: ${result.error}`);
 	return stripLeadingFrontmatter(result.data);
 }

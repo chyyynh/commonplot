@@ -151,7 +151,6 @@ Worker.
 ```
 src/
 ├── index.ts              # Cloudflare WorkerEntrypoint class only
-├── ai/                   # Workers AI / AI Gateway helpers
 ├── entities/             # resource-local entity normalization
 ├── shared/               # small cross-subsystem primitives
 │   ├── types.ts          # ResourceForProcessing and workflow-local acquisition data
@@ -160,7 +159,7 @@ src/
 │   └── url.ts            # URL normalization and exact platform locators
 ├── ingest/               # ── resource ingestion pipeline (the open-source core) ──
 │   ├── workflow.ts       # Workflow class + enqueueProcessing
-│   ├── domain/           # sink and AI merge helpers
+│   ├── domain/           # translation/classification policy and persistence
 │   └── platforms/        # one file per source/stage
 │       ├── rss.ts        # feed polling
 │       ├── twitter.ts    # monitor + scraper + processor

@@ -1,8 +1,9 @@
-import { CORE_JSON_MODEL, generateObject } from '@core-ai/generation';
 import type { ResourceForProcessing, TranscriptSegment, YouTubeHighlights, YoutubeTranscript } from '@core-shared/types';
 import { type CoreDb, withCoreDb } from '@db/client';
 import { youtubeTranscripts } from '@db/schema';
+import { generateText, Output } from 'ai';
 import { eq, sql } from 'drizzle-orm';
+import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 
 // Enrichment only. Channel discovery is the feed monitor's job: a channel handle
@@ -36,6 +37,7 @@ const HIGHLIGHTS_SYSTEM_PROMPT = `你是專業的影片內容分析師。分析 
 const YouTubeHighlightsSchema = z.object({
 	highlights: z.array(YouTubeHighlightSchema).min(1),
 });
+const YOUTUBE_HIGHLIGHTS_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 
 export async function persistYouTubeWorkflowData(
 	db: CoreDb,
@@ -110,14 +112,28 @@ async function prepareYouTubeHighlightsFromTranscript(
 	const last = transcript[transcript.length - 1];
 	const duration = Math.ceil(last.endTime);
 
-	const highlights = await generateObject(env, `影片總長度：${duration} 秒\n\n逐字稿：\n${transcriptText}`, {
-		feature: 'youtube-highlights',
-		resourceId,
-		schema: YouTubeHighlightsSchema,
-		maxTokens: 2000,
+	const { finishReason, output: highlights } = await generateText({
+		model: createWorkersAI({ binding: env.AI })(YOUTUBE_HIGHLIGHTS_MODEL, {
+			gateway: {
+				id: 'core-ingest',
+				collectLog: true,
+				retries: { maxAttempts: 1 },
+				metadata: {
+					feature: 'youtube-highlights',
+					environment: env.AI_GATEWAY_ENVIRONMENT,
+					resource_id: resourceId,
+				},
+			},
+			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
+		}),
+		prompt: `影片總長度：${duration} 秒\n\n逐字稿：\n${transcriptText}`,
+		system: HIGHLIGHTS_SYSTEM_PROMPT,
+		output: Output.object({ schema: YouTubeHighlightsSchema }),
+		maxOutputTokens: 2000,
 		temperature: 0.3,
-		systemPrompt: HIGHLIGHTS_SYSTEM_PROMPT,
+		maxRetries: 0,
 	});
+	if (finishReason === 'length') throw new Error(`YouTube highlights hit the output token cap for ${videoId}`);
 
 	if (!highlights?.highlights.length) {
 		throw new Error(`YouTube highlights did not return valid output for ${videoId}`);
@@ -129,7 +145,7 @@ async function prepareYouTubeHighlightsFromTranscript(
 		videoId,
 		value: {
 			version: '1.0',
-			model: CORE_JSON_MODEL,
+			model: YOUTUBE_HIGHLIGHTS_MODEL,
 			highlights: highlights.highlights,
 			generatedAt,
 		},

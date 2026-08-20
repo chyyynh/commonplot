@@ -28,7 +28,7 @@ import {
 	stageAcquisitionEnhancements,
 } from './acquisition';
 import { enqueueResourceTranslation, loadEligibleResourceTranslationRevision } from './content-localization-workflow';
-import { classifyResource } from './domain/ai-utils';
+import { classifyResource } from './domain/resource-classification';
 import { handleResolvedResource } from './kind-handler';
 import { stagePaperEnrichment } from './platforms/paper';
 import { stagePreferredOpenAlexContent, stagePreliminaryAcquisition } from './platforms/paper-content';
@@ -177,7 +177,7 @@ function shouldAcquireContent(
 	if (force) return !resource.storage_key && !!resource.url;
 	const hasContent = 'has_content' in resource && !!resource.has_content;
 	const needsYouTubeAcquisition = resource.resource_platform === 'youtube' && !resource.has_youtube_transcript;
-	const needsPlatformAcquisition = !!detectResourceUrl(resource.url) && resource.kind_metadata === null;
+	const needsPlatformAcquisition = !!detectResourceUrl(resource.url) && (resource.kind_metadata === null || resource.creators.length === 0);
 	return (!hasContent || needsYouTubeAcquisition || needsPlatformAcquisition) && !resource.storage_key && !!resource.url;
 }
 
@@ -443,7 +443,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 			step,
 		});
 
-		const classificationResult = await step.do(
+		const classification = await step.do(
 			'classify-resource',
 			{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
 			() => classifyResource(handled.resource, this.env, handled.classificationExclusions),
@@ -452,7 +452,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 			resourceId,
 			expectedSourceRevision: initialResource.source_revision,
 			handled,
-			processorResult: classificationResult,
+			classification,
 			previewImageUrl,
 		};
 		const hostedImages = await stageResourceImages(this.env, step, resourceId, processedResourceImageSources(persistenceInput));
