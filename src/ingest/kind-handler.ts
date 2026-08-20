@@ -26,7 +26,6 @@ export type HandledResourceResult =
 type HandleContext = Readonly<{
 	acquiredContent: AcquiredContent | undefined;
 	env: CoreEnv;
-	loadFull: () => Promise<ResourceForProcessing>;
 	paperEnrichment: PaperMetadata | null;
 	resolution: ResolvedContentResourceInput;
 	resource: ResourceForProcessing;
@@ -34,10 +33,9 @@ type HandleContext = Readonly<{
 }>;
 
 async function handleForum(context: HandleContext): Promise<HandledResourceResult> {
-	const fullResource = await context.loadFull();
 	const content = await context.step
 		.do('build-hacker-news-content', { retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' }, () =>
-			buildHackerNewsContent(fullResource, context.env, context.acquiredContent?.hackerNewsItem),
+			buildHackerNewsContent(context.resource, context.env, context.acquiredContent?.hackerNewsItem),
 		)
 		.catch((error) => {
 			console.error({
@@ -51,7 +49,7 @@ async function handleForum(context: HandleContext): Promise<HandledResourceResul
 	return {
 		kind: 'forum',
 		resolution: context.resolution as Extract<ResolvedContentResourceInput, { kind: 'forum' }>,
-		resource: content ? { ...fullResource, content } : fullResource,
+		resource: content ? { ...context.resource, content } : context.resource,
 		classificationExclusions: ['HackerNews'],
 	};
 }
@@ -77,7 +75,7 @@ async function handleVideo(
 	return {
 		kind: 'video',
 		resolution,
-		resource: await context.loadFull(),
+		resource: context.resource,
 		youtubeTranscript,
 		youtubeHighlights,
 	};
@@ -86,14 +84,14 @@ async function handleVideo(
 export async function handleResolvedResource(context: HandleContext): Promise<HandledResourceResult> {
 	switch (context.resolution.kind) {
 		case 'blog':
-			return { kind: 'blog', resolution: context.resolution, resource: await context.loadFull() };
+			return { kind: 'blog', resolution: context.resolution, resource: context.resource };
 		case 'forum':
 			return handleForum(context);
 		case 'post':
 			return {
 				kind: 'post',
 				resolution: context.resolution,
-				resource: await context.loadFull(),
+				resource: context.resource,
 				classificationExclusions: ['Twitter'],
 			};
 		case 'video':
@@ -102,7 +100,7 @@ export async function handleResolvedResource(context: HandleContext): Promise<Ha
 			return {
 				kind: 'paper',
 				resolution: context.resolution,
-				resource: await context.loadFull(),
+				resource: context.resource,
 				paperEnrichment: context.paperEnrichment,
 			};
 	}

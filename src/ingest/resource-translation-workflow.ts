@@ -49,10 +49,7 @@ export async function enqueueResourceTranslation(env: CoreEnv, resourceId: strin
 
 export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceTranslationPayload> {
 	async run(event: WorkflowEvent<ResourceTranslationPayload>, step: WorkflowStep) {
-		return this.translateResource(event.payload.resourceId, event.payload.sourceRevision, step);
-	}
-
-	private async translateResource(resourceId: string, sourceRevision: string, step: WorkflowStep) {
+		const { resourceId, sourceRevision } = event.payload;
 		if (!isResourceTranslationRevision(sourceRevision)) {
 			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Legacy source revision missing; skipping', resource_id: resourceId });
 			return { success: true, resource_id: resourceId, skipped: true, superseded: true };

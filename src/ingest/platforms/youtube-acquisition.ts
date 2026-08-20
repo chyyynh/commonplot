@@ -2,7 +2,6 @@ import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { literalCreator, type ResourceCreator, type VideoKindMetadata } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial, AcquisitionEnvelope, TranscriptSegment, YouTubeChapter } from '@core-shared/types';
 import { z } from 'zod';
-import type { AcquisitionOrigin } from '../acquisition';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
@@ -203,7 +202,7 @@ async function fetchTranscript(videoId: string): Promise<TranscriptSegment[]> {
 export async function scrapeYouTube(
 	videoId: string,
 	youtubeApiKey: string,
-	origin: AcquisitionOrigin,
+	monitored: boolean,
 ): Promise<AcquiredMaterial<'youtube'> & { acquisition: AcquisitionEnvelope<'youtube'> }> {
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching video', videoId });
 
@@ -219,7 +218,7 @@ export async function scrapeYouTube(
 	// Checked before the transcript and avatar calls, so a video we do not want
 	// costs one request instead of three.
 	const durationSeconds = isoDurationSeconds(video.contentDetails.duration);
-	if (origin.monitored && (durationSeconds === null || durationSeconds <= MIN_VIDEO_DURATION_SECONDS)) {
+	if (monitored && (durationSeconds === null || durationSeconds <= MIN_VIDEO_DURATION_SECONDS)) {
 		const reason = durationSeconds === null ? 'is a live stream or unstarted premiere' : `runs ${durationSeconds}s`;
 		throw new Error(`YouTube video ${videoId} ${reason}; wanted over ${MIN_VIDEO_DURATION_SECONDS}s`);
 	}

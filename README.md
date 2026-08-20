@@ -153,7 +153,7 @@ src/
 ├── index.ts              # Cloudflare WorkerEntrypoint class only
 ├── entities/             # resource-local entity normalization
 ├── shared/               # small cross-subsystem primitives
-│   ├── types.ts          # ResourceForProcessing and workflow-local acquisition data
+│   ├── types.ts          # Resource processing, acquisition, and transcript contracts
 │   ├── resource-*.ts     # identity, identifiers, and canonical metadata contracts
 │   ├── http.ts           # bounded HTTP primitives
 │   └── url.ts            # URL normalization and exact platform locators
@@ -203,7 +203,7 @@ platforms use the reserved `none` sentinel. Durable readiness lives in
 
 The canonical rebuild verifies every searchable identity pair, not only totals:
 `blog / none`, `forum / hackernews`, `post / twitter`,
-`video / youtube`, `paper / none`, and `paper / hackernews`. It waits for all
+`video / youtube`, and `paper / none`. It waits for all
 owned items to leave queued, running, outdated, error, and skipped states, then
 compares AI Search with PostgreSQL before marking the generation ready.
 
@@ -225,12 +225,12 @@ Wrangler's native instance description is the operator view of Workflow status,
 steps, retries, and errors. A completed run has already passed the Workflow's
 PostgreSQL/AI Search convergence checks and persisted generation readiness.
 
-The Workflow performs a fresh six-pair PostgreSQL/AI Search comparison before
-it marks the generation ready. Cloudflare Workflow executions replay the graph
-attached to their physical Workflow resource, so incompatible graph revisions
-require a new binding, resource name, class, and runner ID; changing only a
-runner ID is not isolation. See `AI_SEARCH_V6_RUNBOOK.md` for the active rebuild
-and verification procedure.
+The Workflow performs a fresh five-pair PostgreSQL/AI Search comparison before
+it marks the generation ready. Each deployment creates a versioned Workflow
+graph and each instance remains pinned to its `version_id`. An incompatible graph
+revision therefore needs a new source-controlled runner ID after deployment, not
+a duplicate binding and entrypoint. See `AI_SEARCH_V6_RUNBOOK.md` for the active
+rebuild and verification procedure.
 
 Generation 5 and the canonical `blog`/`forum` database cutover are complete.
 The one-shot migration lives in git history; current operations start from the
@@ -256,8 +256,10 @@ REST API. Provider failures preserve an existing compact academic snapshot.
 Ingest adapters live in `ingest/platforms/*.ts` with the
 discovery/scrape/process pieces they actually need. App-owned saved URLs create
 `resources` plus `resource_saves`; uploads create `resources` plus `user_files`.
-The workflow receives a `resourceId`. SQL writes stay in
-`ingest/domain/resource-store.ts`.
+The workflow receives a `resourceId`. Core reads canonical rows through
+`ingest/domain/resource-store.ts`; processed graph writes cross the app-owned
+`DOMAIN.persistResolvedResourceGraph` transaction boundary. Core-owned admission,
+translation, and YouTube stores remain local specializations.
 
 Keep the axes separate: acquisition (`rss`, `web`, or a specialized adapter) is
 not canonical `ResourcePlatform` (`youtube`, `twitter`, `hackernews`, or null),

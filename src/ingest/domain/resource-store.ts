@@ -101,8 +101,26 @@ function effectiveResourcePlatformPredicate(platform: Exclude<ResourcePlatform, 
 	return sql`${resources.resourcePlatform} = ${platform}`;
 }
 
-export async function loadResourceForProcessing(env: CoreEnv, resourceId: string): Promise<StoredResourceForProcessing> {
-	return withCoreDb(env, (db) => loadResourceForProcessingFromDb(db, resourceId));
+export async function loadResourceForProcessingArtifact(env: CoreEnv, resourceId: string): Promise<ReadableStream<Uint8Array>> {
+	const resource = await withCoreDb(env, (db) => loadResourceForProcessingFromDb(db, resourceId));
+	const bytes = new TextEncoder().encode(JSON.stringify(resource));
+	return new Blob([bytes], { type: 'application/json' }).stream();
+}
+
+export async function readResourceForProcessingArtifact(
+	artifact: ReadableStream<Uint8Array>,
+	expectedResourceId: string,
+): Promise<StoredResourceForProcessing> {
+	const value: unknown = await new Response(artifact).json();
+	if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid resource processing artifact');
+	const resource = value as Record<string, unknown>;
+	const identity = parseResourceIdentity(resource.kind, resource.resource_platform);
+	// The versioned step serializes the already-validated DB mapper output; only
+	// recheck its identity at the durable serialization boundary.
+	if (!identity || !isContentResourceKind(identity.kind) || resource.id !== expectedResourceId) {
+		throw new Error(`Resource processing artifact for ${expectedResourceId} is invalid`);
+	}
+	return resource as StoredResourceForProcessing;
 }
 
 export async function loadResourceShellForProcessing(env: CoreEnv, resourceId: string): Promise<StoredResourceForProcessing> {

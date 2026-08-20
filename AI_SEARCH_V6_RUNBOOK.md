@@ -26,22 +26,23 @@ Readiness compares PostgreSQL and AI Search for every searchable identity pair:
 - `post / twitter`
 - `video / youtube`
 - `paper / none`
-- `paper / hackernews`
 
 Private image and file resources are not part of the public search corpus.
 
 ## Workflow graph isolation
 
-Cloudflare Workflow executions replay the graph attached to the physical
-Workflow resource that started them. A new runner ID on an existing physical
-resource does not select newly deployed code.
+Each deploy creates a versioned Workflow graph, and every instance records the
+`version_id` it executes. Existing instances remain on their original graph;
+new instances created after deployment use the newly deployed graph.
 
-For an incompatible rebuild graph revision, create all four together:
+For an incompatible rebuild graph revision:
 
-1. a new binding;
-2. a new physical Workflow name;
-3. a new exported `WorkflowEntrypoint` class;
-4. a new source-controlled runner ID.
+1. deploy the new Workflow version;
+2. use a new source-controlled runner ID;
+3. confirm the new instance's `version_id` and graph before adopting its result.
+
+A separate binding, physical Workflow, and entrypoint are unnecessary when the
+only goal is graph-version isolation.
 
 Never trigger historical generation-3/generation-4, shadow-rollout, or one-shot
 repair Workflow resources. Local source cleanup does not delete their remote
@@ -116,7 +117,7 @@ A completed Workflow has already verified:
 - zero queued, running, outdated, error, and skipped owned items;
 - completed item count equal to the enriched searchable corpus;
 - canonical resource identity constraints;
-- matching PostgreSQL and AI Search counts for all six identity pairs.
+- matching PostgreSQL and AI Search counts for all five identity pairs.
 
 The final Workflow readiness step performs a fresh PostgreSQL/AI Search
 comparison before it writes the durable ready row. Do not cut over from an
@@ -129,7 +130,7 @@ If a rebuild fails:
 1. inspect only the active canonical runner and its failed step;
 2. leave the serving instance and current database schema intact;
 3. restart the same runner only for a transient, source-compatible failure;
-4. deploy a newly isolated physical Workflow for any graph change;
+4. deploy the graph change and use a new source-controlled runner ID;
 5. require the native Workflow inspection and final readiness comparison again.
 
 Do not revive the removed #251 single-item or terminal-repair tooling. The

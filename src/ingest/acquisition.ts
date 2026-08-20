@@ -1,15 +1,15 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { sha256Hex } from '@core-shared/hash';
+import { literalCreator, type ResourceCreator, type ResourceKindMetadata } from '@core-shared/resource-metadata';
 import { isResourcePlatform } from '@core-shared/resource-types';
 import type { AcquiredMaterial, PdfExtractionMetadata, ResourceForProcessing } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
-import { canonicalFieldsFromAcquisition } from './canonical-resource';
 import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
-import { type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
+import { canonicalForumFields, type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
 import { acquireRssFeedItem, type RssFeedAcquisitionInput } from './platforms/rss-feed';
-import { scrapeTweet } from './platforms/twitter-acquisition';
+import { canonicalPostFields, scrapeTweet } from './platforms/twitter-acquisition';
 import { stageTweetLinkUnfurl } from './platforms/twitter-unfurl';
-import { scrapeYouTube } from './platforms/youtube-acquisition';
+import { canonicalVideoFields, scrapeYouTube } from './platforms/youtube-acquisition';
 import { acquireWebResource, PDF_MIME, pdfExtractionMetadata } from './web-acquisition';
 
 export type { PdfExtractionMetadata } from '@core-shared/types';
@@ -51,6 +51,25 @@ function acquiredPublishedDate(value: string | null): string | null {
 	if (!value?.trim()) return null;
 	const parsed = new Date(value);
 	return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function canonicalFieldsFromAcquisition(acquired: AcquiredMaterial): {
+	creators: ResourceCreator[];
+	kindMetadata: ResourceKindMetadata;
+} {
+	switch (acquired.provider) {
+		case null:
+			return {
+				creators: literalCreator('author', acquired.metadata.author),
+				kindMetadata: acquired.metadata.siteName.trim() ? { siteName: acquired.metadata.siteName.trim() } : null,
+			};
+		case 'hackernews':
+			return canonicalForumFields(acquired.acquisition);
+		case 'twitter':
+			return canonicalPostFields(acquired.acquisition);
+		case 'youtube':
+			return canonicalVideoFields(acquired.acquisition);
+	}
 }
 
 export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?: AcquiredContent): ResourceForProcessing {
@@ -119,7 +138,7 @@ async function scrapeSavedUrl(url: string, env: CoreEnv, origin: AcquisitionOrig
 	if (detected) {
 		switch (detected.resourcePlatform) {
 			case 'youtube':
-				return sanitizeAcquiredContent(await scrapeYouTube(detected.platformId, env.YOUTUBE_API_KEY, origin));
+				return sanitizeAcquiredContent(await scrapeYouTube(detected.platformId, env.YOUTUBE_API_KEY, origin.monitored));
 			case 'twitter':
 				return sanitizeAcquiredContent(await scrapeTweet(detected.platformId, env.KAITO_API_KEY));
 			case 'hackernews':

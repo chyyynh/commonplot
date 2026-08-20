@@ -38,7 +38,9 @@
 | **網頁**        | 爬蟲   | saved URL  | 全文擷取（Readability + Cheerio）、OG metadata   |
 | **App 輸入**    | 入口   | 即時       | Service-binding RPC — saved URL/blob acquisition + enrichment；membership 由 app 擁有 |
 
-所有平台輸出統一的 `NormalizedContent` 格式 → 進入同一個 AI 管線。
+所有 provider 只輸出不帶產品 identity 的 acquisition material；單一 resolver
+決定最終 Resource identity，再由 exhaustive kind handler 進入共用的 AI 與
+graph-persistence tail。
 
 ## 運作流程
 
@@ -143,14 +145,15 @@ resource 讀取。已退役的本機 CLI／MCP 套件不屬於這個 Worker。
 ```
 src/
 ├── index.ts              # 只保留 Cloudflare WorkerEntrypoint class
-├── ai/                   # Workers AI / AI Gateway helpers
 ├── entities/             # resource-local entity normalization
 ├── shared/               # 小型跨子系統 primitives
-│   ├── types.ts          # ResourceForProcessing、NormalizedContent、YoutubeTranscript
-│   └── web.ts            # fetch、URL normalization、stream limits
+│   ├── types.ts          # resource processing、acquisition、transcript contracts
+│   ├── resource-*.ts     # identity、identifier、canonical metadata contracts
+│   ├── http.ts           # 有界 HTTP primitives
+│   └── url.ts            # URL normalization 與精確 platform locator
 ├── ingest/               # ── resource 入庫 pipeline（開源核心）──
 │   ├── workflow.ts       # Workflow class + enqueueProcessing
-│   ├── domain/           # sink、AI merge helpers
+│   ├── domain/           # translation/classification policy 與 Core-owned stores
 │   └── platforms/        # 每個來源或 stage 一個檔案
 │       ├── rss.ts        # feed polling
 │       ├── twitter.ts    # monitor + scraper + processor
@@ -188,10 +191,10 @@ Secrets（透過 `wrangler secret put` 設定）：
 
 `ResourceKind` 是產品呈現語意，合法的 `(kind, resource_platform)` 組合只有
 `blog / null`、`forum / hackernews`、`post / twitter`、
-`video / youtube`、`paper / null`、`paper / hackernews`、
+`video / youtube`、`paper / null`、
 `image / null` 與 `file / null`。PDF 是 representation，不是另一個 kind；
-一般 PDF 是 `blog`，HN-linked PDF 是 `forum / hackernews`，經學術辨識後
-才可升級為對應的 `paper` identity。
+一般 PDF 是 `blog`；HN/Twitter carrier 保持原 identity，學術辨識後透過
+`subject_resource_id` 指向另一筆 canonical `paper / null` resource。
 
 `Source.kind` 的 `blog | news` 是獨立的 feed/editorial 分類；兩者建立的
 resource 都使用 `blog` shell，來源分類只負責 feed 層級的文案與篩選。
@@ -211,7 +214,10 @@ migration 保留在 git history；目前操作直接從 target schema 開始，�
 擷取 adapter 集中在 `ingest/platforms/*.ts`，只放它真正需要的
 discovery / scrape / process 邏輯。App-owned saved URL 先寫入 `resources`
 與 `resource_saves`；upload 則寫入 `resources` 與 `user_files`。Workflow
-收到的是 `resourceId`，SQL 寫入留在 `ingest/domain/resource-store.ts`。
+收到的是 `resourceId`。Core 透過 `ingest/domain/resource-store.ts` 讀取
+canonical rows；processed graph 寫入則跨越 app-owned
+`DOMAIN.persistResolvedResourceGraph` transaction boundary。Admission、
+translation 與 YouTube 的 Core-owned stores 仍保留在本地。
 
 各軸要分開：acquisition（`rss`、`web` 或專用 adapter）不是 canonical
 `ResourcePlatform`（`youtube`、`twitter`、`hackernews` 或 null），也不是
