@@ -1,11 +1,9 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { withCoreTx } from '@db/client';
+import { withCoreDb, withCoreTx } from '@db/client';
 import { loadResourceForProcessingFromDb } from '@ingest/domain/resource-store';
 import {
 	isResourceTranslationRevision,
 	loadEligibleResourceTranslationRevisionFromDb,
-	loadEligibleResourceTranslationRevision as loadEligibleResourceTranslationRevisionFromStore,
-	persistMachineZhHantContent,
 	persistMachineZhHantTranslation,
 } from '@ingest/domain/resource-translation-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
@@ -18,7 +16,7 @@ import {
 } from './domain/resource-translation';
 
 export function loadEligibleResourceTranslationRevision(env: CoreEnv, resourceId: string): Promise<string | null> {
-	return loadEligibleResourceTranslationRevisionFromStore(env, resourceId, CONTENT_TRANSLATION_MAX_LENGTH);
+	return withCoreDb(env, (db) => loadEligibleResourceTranslationRevisionFromDb(db, resourceId, CONTENT_TRANSLATION_MAX_LENGTH));
 }
 
 async function loadEligibleResourceTranslationInput(env: CoreEnv, resourceId: string) {
@@ -123,7 +121,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 					timeout: '30 seconds',
 				},
-				() => persistMachineZhHantContent(this.env, resourceId, sourceRevision, translated),
+				() => persistMachineZhHantTranslation(this.env, resourceId, sourceRevision, { content: translated }),
 			);
 			if (!persisted) return { success: true, resource_id: resourceId, skipped: true, superseded: true };
 		}

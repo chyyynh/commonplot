@@ -2,17 +2,9 @@
 
 import { type ResourceTranslationSource, ZH_HANT_RESOURCE_LANG } from '@core-shared/resource-types';
 import { type CoreDb, textArraySql, withCoreDb } from '@db/client';
-import { translatableResourceIdentitySql } from '@db/resource-identity-sql';
+import { resourceTranslationIdentityPredicate } from '@db/resource-identity-sql';
 import { resources, resourceTranslations } from '@db/schema';
 import { type SQL, sql } from 'drizzle-orm';
-
-export function resourceTranslationIdentityPredicate(): SQL {
-	return translatableResourceIdentitySql({
-		fileType: sql`${resources.fileType}`,
-		kind: sql`${resources.kind}`,
-		resourcePlatform: sql`${resources.resourcePlatform}`,
-	});
-}
 
 type ResourceTranslationWrite = {
 	resourceId: string;
@@ -62,14 +54,6 @@ export async function loadEligibleResourceTranslationRevisionFromDb(
 		LIMIT 1
 	`);
 	return result.rows[0]?.source_revision ?? null;
-}
-
-export function loadEligibleResourceTranslationRevision(
-	env: CoreEnv,
-	resourceId: string,
-	contentMaxLength: number,
-): Promise<string | null> {
-	return withCoreDb(env, (db) => loadEligibleResourceTranslationRevisionFromDb(db, resourceId, contentMaxLength));
 }
 
 /**
@@ -177,8 +161,4 @@ export function persistMachineZhHantTranslation(
 			expectedOriginalRevision: sourceRevision,
 		}),
 	);
-}
-
-export function persistMachineZhHantContent(env: CoreEnv, resourceId: string, sourceRevision: string, content: string): Promise<boolean> {
-	return persistMachineZhHantTranslation(env, resourceId, sourceRevision, { content });
 }

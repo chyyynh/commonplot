@@ -8,7 +8,8 @@ import {
 	type PaperIdentity,
 	paperIdentityFromIdentifiers,
 } from '@core-shared/paper-identity';
-import type { PaperMetadata, PaperRelationItem, PaperRelationSnapshot } from '@core-shared/types';
+import type { PaperRelationItem, PaperRelationSnapshot } from '@core-shared/resource-metadata';
+import type { PaperMetadata } from '@core-shared/types';
 import { z } from 'zod';
 import { type AcquiredWebContent, acquireFetchedPdfResponse, markdownFromXml } from '../web-acquisition';
 

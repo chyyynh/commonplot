@@ -7,7 +7,7 @@ import type {
 } from '@core-shared/resource-types';
 import type { PaperIdentifier } from './paper-identity';
 import type { ResourceIdentifier } from './resource-identifiers';
-import type { ResourceCreator, ResourceKindMetadata } from './resource-metadata';
+import type { PaperRelationSnapshot, ResourceCreator, ResourceKindMetadata } from './resource-metadata';
 
 export type ResourceLocaleText = {
 	title?: string | null;
@@ -213,21 +213,6 @@ export interface PaperMetadata {
 	pdfLicense?: string;
 	references?: PaperRelationSnapshot;
 	citations?: PaperRelationSnapshot;
-}
-
-export interface PaperRelationItem {
-	openAlexId: string;
-	doi?: string;
-	title: string;
-	authors: string[];
-	venue?: string;
-	year?: number;
-	citedByCount?: number;
-}
-
-export interface PaperRelationSnapshot {
-	total: number;
-	items: PaperRelationItem[];
 }
 
 interface AcquisitionDataByProvider {

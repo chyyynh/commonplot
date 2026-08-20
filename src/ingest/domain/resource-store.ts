@@ -28,10 +28,9 @@ import {
 } from '@core-shared/resource-types';
 import type { ResourceForProcessing, ResourceLocaleText, ResourceTranslationMap } from '@core-shared/types';
 import { type CoreDb, withCoreDb } from '@db/client';
-import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
+import { resourceDisplaySourceSql, resourceTranslationIdentityPredicate } from '@db/resource-identity-sql';
 import { resourceIdentifiers, resources, resourceTranslations, youtubeTranscripts } from '@db/schema';
 import { eq, type SQL, sql } from 'drizzle-orm';
-import { resourceTranslationIdentityPredicate } from './resource-translation-store';
 import { cleanString, dateValue, requiredString, storedResourceSourceRevision, stringArrayValue } from './resource-values';
 
 type StoredResourceForProcessing = ResourceForProcessing & {

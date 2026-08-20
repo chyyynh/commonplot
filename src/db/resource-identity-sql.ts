@@ -7,6 +7,7 @@ import {
 } from '@core-shared/resource-types';
 import { type SQL, sql } from 'drizzle-orm';
 import { textArraySql } from './client';
+import { resources } from './schema';
 
 type ResourceIdentitySqlFields = {
 	kind: SQL;
@@ -31,6 +32,14 @@ export function translatableResourceIdentitySql(fields: ResourceIdentitySqlField
 			OR ${fields.resourcePlatform} IS NOT NULL
 		)
 	)`;
+}
+
+export function resourceTranslationIdentityPredicate(): SQL {
+	return translatableResourceIdentitySql({
+		fileType: sql`${resources.fileType}`,
+		kind: sql`${resources.kind}`,
+		resourcePlatform: sql`${resources.resourcePlatform}`,
+	});
 }
 
 function resourceKindFilterSql(field: SQL, kinds: ResourceIdentityFilters['kinds']): SQL {
