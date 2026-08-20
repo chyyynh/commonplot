@@ -1,7 +1,7 @@
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import type { AcquiredMaterial } from '@core-shared/types';
-import { normalizeUrl } from '@core-shared/url';
+import { normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { sanitizeExtractedMarkdown } from '@ingest/domain/content-sanitization';
 import { parseFeed } from 'feedsmith';
 import { decode } from 'html-entities';
@@ -188,14 +188,8 @@ export async function loadFeedEntries(feedUrl: string): Promise<FeedItem[]> {
 }
 
 function normalizeFeedItemUrl(value: string | undefined): string | null {
-	if (!value) return null;
-	try {
-		const parsed = new URL(value);
-		if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
-		return normalizeUrl(parsed.toString());
-	} catch {
-		return null;
-	}
+	const url = parseExternalHttpUrl(value);
+	return url ? normalizeUrl(url.toString()) : null;
 }
 
 export function canonicalFeedItemUrl(item: FeedItem): string | null {

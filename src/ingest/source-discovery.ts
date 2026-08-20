@@ -1,5 +1,6 @@
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { isSourcePlatform, SOURCE_INPUT_MAX_LENGTH, type SourceAcquisitionMode, type SourcePlatform } from '@core-shared/resource-types';
+import { parseExternalHttpUrl } from '@core-shared/url';
 import { parseFeed } from 'feedsmith';
 import { decode } from 'html-entities';
 
@@ -141,18 +142,6 @@ export async function readHtmlHead(response: Response, maxBytes: number): Promis
 	}
 }
 
-function parseHttpUrl(value: string): URL | null {
-	let url: URL;
-	try {
-		url = new URL(value.trim());
-	} catch {
-		return null;
-	}
-	if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
-	if (url.username || url.password) return null;
-	return url;
-}
-
 // Canonical handle form keeps UNIQUE(platform, handle) deduping equivalent inputs.
 function canonicalFeedHandle(url: URL): string {
 	url.hash = '';
@@ -193,7 +182,7 @@ async function fetchTextForDiscovery(url: string): Promise<DiscoveryDocument> {
 		await response.body?.cancel();
 		throw new Error(`Fetch failed with HTTP ${status}: ${url}`);
 	}
-	const effectiveUrl = parseHttpUrl(response.url);
+	const effectiveUrl = parseExternalHttpUrl(response.url);
 	if (!effectiveUrl) {
 		await response.body?.cancel();
 		throw new Error('Fetch redirected to an invalid URL.');
@@ -205,7 +194,7 @@ async function fetchTextForDiscovery(url: string): Promise<DiscoveryDocument> {
 }
 
 async function resolveRssCandidate(input: string): Promise<ResolvedSourceCandidate> {
-	const requestedUrl = parseHttpUrl(input);
+	const requestedUrl = parseExternalHttpUrl(input);
 	if (!requestedUrl) throw new Error('Enter a valid site or feed URL (http/https).');
 	const document = await fetchTextForDiscovery(requestedUrl.toString());
 	const host = document.url.hostname.toLowerCase().replace(/^www\./, '');
@@ -225,7 +214,7 @@ async function resolveRssCandidate(input: string): Promise<ResolvedSourceCandida
 	const head = await parseHtmlHead(document.body, document.url);
 	const feedHref = head.feedHref;
 	if (!feedHref) throw new Error('No RSS/Atom feed found at this URL.');
-	const requestedFeedUrl = parseHttpUrl(feedHref);
+	const requestedFeedUrl = parseExternalHttpUrl(feedHref);
 	if (!requestedFeedUrl) throw new Error('Discovered feed URL is invalid.');
 	const feedDocument = await fetchTextForDiscovery(requestedFeedUrl.toString());
 	const feedMeta = parsedFeedTitle(feedDocument.body);
@@ -244,7 +233,7 @@ function resolveTwitterCandidate(input: string): ResolvedSourceCandidate {
 	const direct = input.trim().replace(/^@/, '');
 	let handle = TWITTER_HANDLE_RE.test(direct) ? direct : null;
 	if (!handle) {
-		const url = parseHttpUrl(input);
+		const url = parseExternalHttpUrl(input);
 		const host = url?.hostname.toLowerCase().replace(/^www\./, '');
 		if (url && (host === 'x.com' || host === 'twitter.com')) {
 			const [segment] = url.pathname.split('/').filter(Boolean);
@@ -266,7 +255,7 @@ function resolveTwitterCandidate(input: string): ResolvedSourceCandidate {
 function youtubeChannelIdFromInput(input: string): string | null {
 	const trimmed = input.trim();
 	if (YOUTUBE_CHANNEL_ID_RE.test(trimmed)) return trimmed;
-	const url = parseHttpUrl(trimmed);
+	const url = parseExternalHttpUrl(trimmed);
 	if (!url) return null;
 	const host = url.hostname.toLowerCase().replace(/^(www|m)\./, '');
 	if (host !== 'youtube.com') return null;
@@ -279,7 +268,7 @@ function youtubeChannelIdFromInput(input: string): string | null {
 function youtubeHandleFromInput(input: string): string | null {
 	const trimmed = input.trim();
 	if (trimmed.startsWith('@') && YOUTUBE_HANDLE_RE.test(trimmed)) return trimmed.replace(/^@/, '');
-	const url = parseHttpUrl(trimmed);
+	const url = parseExternalHttpUrl(trimmed);
 	if (!url) return null;
 	const host = url.hostname.toLowerCase().replace(/^(www|m)\./, '');
 	if (host !== 'youtube.com') return null;

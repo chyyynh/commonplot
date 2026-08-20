@@ -8,25 +8,23 @@ export type ResourceImageFields = Readonly<{
 	ogImageUrl?: string | null;
 }>;
 
-function postMetadata(resource: ResourceImageFields): PostKindMetadata | null {
+export function resourcePostMetadata(resource: ResourceImageFields): PostKindMetadata | null {
 	return resource.kindMetadata && 'attachments' in resource.kindMetadata ? (resource.kindMetadata as PostKindMetadata) : null;
 }
 
 export function resourcePreviewImageCandidates(resource: ResourceImageFields): string[] {
-	const metadata = postMetadata(resource);
+	const metadata = resourcePostMetadata(resource);
 	const attachments = metadata?.attachments.map((item) => item.url) ?? [];
 	return [attachments[0], metadata?.externalLink?.imageUrl, resource.ogImageUrl, ...attachments.slice(1)].filter(
 		(url): url is string => typeof url === 'string',
 	);
 }
 
-function resourceImageUrls(resource: ResourceImageFields): string[] {
-	const metadata = postMetadata(resource);
+export function resourceImageCandidates(resource: ResourceImageFields): string[] {
+	const metadata = resourcePostMetadata(resource);
 	return [
-		resource.ogImageUrl,
+		...resourcePreviewImageCandidates(resource),
 		...(resource.creators?.map((creator) => creator.avatarUrl) ?? []),
-		...(metadata?.attachments.map((attachment) => attachment.url) ?? []),
-		metadata?.externalLink?.imageUrl,
 		metadata?.quote?.creator.avatarUrl,
 	].filter((url): url is string => typeof url === 'string');
 }
@@ -37,7 +35,7 @@ export function hostedResourceImageUrl(value: string | null | undefined): string
 }
 
 export function resourceImageFieldsAreHosted(resource: ResourceImageFields): boolean {
-	return resourceImageUrls(resource).every((url) => hostedResourceImageUrl(url) === url);
+	return resourceImageCandidates(resource).every((url) => hostedResourceImageUrl(url) === url);
 }
 
 export function resourcePreviewImageUrl(resource: ResourceImageFields): string | null {

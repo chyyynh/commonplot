@@ -30,13 +30,16 @@ function isTwitterHost(hostname: string): boolean {
 	return hostMatches(lower, 'twitter.com') || hostMatches(lower, 'x.com');
 }
 
+export function parseExternalHttpUrl(value: string | null | undefined, base?: string): URL | null {
+	const url = value?.trim() ? URL.parse(value, base) : null;
+	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null;
+	return url;
+}
+
 /** Canonical HTTPS URL for external media. */
-export function validatedExternalMediaUrl(rawUrl: string | null | undefined): string | null {
-	const value = rawUrl?.trim();
-	if (!value) return null;
-	const url = URL.parse(value);
-	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:')) return null;
-	if (url.username || url.password) return null;
+export function validatedExternalMediaUrl(rawUrl: string | null | undefined, base?: string): string | null {
+	const url = parseExternalHttpUrl(rawUrl, base);
+	if (!url) return null;
 	url.protocol = 'https:';
 	return url.toString();
 }

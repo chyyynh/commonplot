@@ -3,7 +3,7 @@ import { sha256Hex } from '@core-shared/hash';
 import { literalCreator, type ResourceCreator, type ResourceKindMetadata } from '@core-shared/resource-metadata';
 import type { ResourcePlatform } from '@core-shared/resource-types';
 import type { AcquiredMaterial, ResourceForProcessing } from '@core-shared/types';
-import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
+import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { z } from 'zod';
 import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
 import { canonicalForumFields, type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
@@ -152,9 +152,8 @@ export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?
 }
 
 function validateAcquisitionUrl(url: string): string {
-	const parsed = new URL(url);
-	if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('Only http(s) URLs are allowed');
-	if (parsed.username || parsed.password) throw new Error('URL must not include credentials');
+	const parsed = parseExternalHttpUrl(url);
+	if (!parsed) throw new Error('Only http(s) URLs without credentials are allowed');
 	return normalizeUrl(parsed.toString());
 }
 

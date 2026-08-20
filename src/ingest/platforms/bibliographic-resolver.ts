@@ -7,6 +7,7 @@ import {
 	paperIdentityFromText,
 	resolveExactPaperInput,
 } from '@core-shared/paper-identity';
+import { parseExternalHttpUrl } from '@core-shared/url';
 import { z } from 'zod';
 
 const CITOID_BASE = 'https://en.wikipedia.org/api/rest_v1/data/citation/zotero/';
@@ -31,13 +32,7 @@ const ACADEMIC_ITEM_TYPES = new Set(['journalArticle', 'conferencePaper', 'prepr
 
 function citoidQueryUrl(value: string | null | undefined): string | null {
 	if (!value?.trim() || resolveExactPaperInput(value)) return null;
-	try {
-		const url = new URL(value);
-		if ((url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null;
-		return url.toString();
-	} catch {
-		return null;
-	}
+	return parseExternalHttpUrl(value)?.toString() ?? null;
 }
 
 function citoidItemIdentifiers(item: z.infer<typeof CitoidItemSchema>): PaperIdentifier[] {

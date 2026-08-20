@@ -1,12 +1,10 @@
 import { z } from 'zod';
 import type { ResourceKind } from './resource-types';
+import { parseExternalHttpUrl } from './url.ts';
 
 const RESOURCE_CREATOR_ROLES = ['author', 'editor', 'submitter', 'channel'] as const;
 
-const optionalHttpUrl = z.url().refine((value) => {
-	const protocol = new URL(value).protocol;
-	return protocol === 'http:' || protocol === 'https:';
-});
+const optionalHttpUrl = z.url().refine((value) => parseExternalHttpUrl(value) !== null);
 
 const ResourceCreatorSchema = z
 	.object({

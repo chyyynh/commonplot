@@ -1,4 +1,9 @@
-import { hostedResourceImageUrl, type ResourceImageFields, resourcePreviewImageCandidates } from './resource-image-fields.ts';
+import {
+	hostedResourceImageUrl,
+	type ResourceImageFields,
+	resourceImageCandidates,
+	resourcePostMetadata,
+} from './resource-image-fields.ts';
 import type { PostKindMetadata, ResourceCreator, ResourceKindMetadata } from './resource-metadata.ts';
 import { validatedExternalMediaUrl } from './url.ts';
 
@@ -17,9 +22,7 @@ function positiveInteger(value: string | null): number | null {
 }
 
 export function normalizedResourceImageUrl(rawUrl: string | null | undefined, baseUrl?: string): string | null {
-	const value = rawUrl?.trim();
-	const sourceUrl = value ? URL.parse(value, baseUrl)?.toString() : null;
-	const normalized = validatedExternalMediaUrl(sourceUrl);
+	const normalized = validatedExternalMediaUrl(rawUrl, baseUrl);
 	if (!normalized) return null;
 
 	const url = new URL(normalized);
@@ -38,12 +41,7 @@ function uniqueImageUrls(candidates: Array<string | null | undefined>): string[]
 }
 
 export function resourceImageSourceUrls(resource: ResourceImageFields): string[] {
-	const avatarUrls = resource.creators?.map((creator) => creator.avatarUrl) ?? [];
-	const quoteAvatarUrl =
-		resource.kindMetadata && 'attachments' in resource.kindMetadata
-			? (resource.kindMetadata as PostKindMetadata).quote?.creator.avatarUrl
-			: undefined;
-	return uniqueImageUrls([...resourcePreviewImageCandidates(resource), ...avatarUrls, quoteAvatarUrl]);
+	return uniqueImageUrls(resourceImageCandidates(resource));
 }
 
 function hostedImageMap(images: readonly HostedResourceImage[]): ReadonlyMap<string, string> {
@@ -103,10 +101,8 @@ export function hostedResourceImageFields(
 	images: readonly HostedResourceImage[],
 ): { creators: ResourceCreator[]; kindMetadata: ResourceKindMetadata | null; ogImageUrl: string | null } {
 	const imageMap = hostedImageMap(images);
-	const kindMetadata =
-		resource.kindMetadata && 'attachments' in resource.kindMetadata
-			? withHostedPostMetadata(resource.kindMetadata as PostKindMetadata, imageMap)
-			: (resource.kindMetadata ?? null);
+	const postMetadata = resourcePostMetadata(resource);
+	const kindMetadata = postMetadata ? withHostedPostMetadata(postMetadata, imageMap) : (resource.kindMetadata ?? null);
 	return {
 		creators: resource.creators?.map((creator) => withHostedAvatar(creator, imageMap)) ?? [],
 		kindMetadata,
