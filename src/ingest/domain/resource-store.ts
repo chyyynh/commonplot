@@ -1,6 +1,6 @@
 // Read store: canonical resource loading and processability gates for the Workflow.
 
-import { normalizePaperIdentifiers, type PaperIdentifier } from '@core-shared/paper-identity';
+import { normalizePaperIdentifiers } from '@core-shared/paper-identity';
 import {
 	isPaperIdentifier,
 	isResourceIdentifierScheme,
@@ -18,20 +18,18 @@ import {
 	isContentResourceKind,
 	parseResourceIdentity,
 	RESOURCE_SCOPES,
-	RESOURCE_TRANSLATION_SOURCES,
 	type ResourceIdentity,
 	type ResourcePlatform,
 	type ResourceScope,
-	type ResourceTranslationSource,
 	type SourceAcquisitionMode,
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
-import type { ResourceForProcessing, ResourceLocaleText, ResourceTranslationMap } from '@core-shared/types';
+import type { ResourceForProcessing } from '@core-shared/types';
 import { type CoreDb, withCoreDb } from '@db/client';
 import { resourceDisplaySourceSql, resourceTranslationIdentityPredicate } from '@db/resource-identity-sql';
 import { resourceIdentifiers, resources, resourceTranslations, youtubeTranscripts } from '@db/schema';
 import { and, eq, type SQL, sql } from 'drizzle-orm';
-import { cleanString, dateValue, requiredString, storedResourceSourceRevision, stringArrayValue } from './resource-values';
+import { cleanString, dateValue, requiredString, storedResourceSourceRevision } from './resource-values';
 
 export type ResourceProcessingShell = {
 	resource: ResourceForProcessing;
@@ -49,36 +47,21 @@ type ResourceStoreRow = {
 	summary: string | null;
 	content: string | null;
 	original_lang: string;
-	translations: unknown;
 	url: string | null;
 	source: string | null;
 	scope: string | null;
-	enrichment_status: string;
 	published_date: Date | string | null;
-	scraped_date: Date | string | null;
-	updated_at: Date | string;
-	created_at: Date | string;
 	tags: string[];
 	keywords: string[];
 	creators: unknown;
 	kind_metadata: unknown;
 	source_revision: string | null;
-	subject_resource_id: string | null;
 	resource_identifiers: unknown;
-	has_content: boolean | null;
+	has_content: boolean;
 	has_youtube_transcript: boolean | null;
-	storage_key?: string | null;
-	file_type?: string | null;
-	normalized_url?: string | null;
-};
-
-type ResourceStoreTranslationRow = {
-	lang?: unknown;
-	title?: unknown;
-	summary?: unknown;
-	content?: unknown;
-	keywords?: unknown;
-	source?: unknown;
+	storage_key: string | null;
+	file_type: string | null;
+	normalized_url: string | null;
 };
 
 type StoredResourceIdentityRow = {
@@ -133,16 +116,12 @@ export async function readOriginalResourceContentArtifact(
 }
 
 export async function loadResourceShellForProcessing(env: CoreEnv, resourceId: string): Promise<ResourceProcessingShell> {
-	const row = await withCoreDb(env, (db) => loadStoredResourceRow(db, resourceId, true));
+	const row = await withCoreDb(env, (db) => loadStoredResourceRow(db, resourceId));
 	return {
 		resource: resourceStoreRowToProcessing(row),
-		hasPersistedContent: row.has_content === true,
+		hasPersistedContent: row.has_content,
 		hasYoutubeTranscript: row.has_youtube_transcript === true,
 	};
-}
-
-export async function loadResourceForProcessingFromDb(db: CoreDb, resourceId: string): Promise<ResourceForProcessing> {
-	return resourceStoreRowToProcessing(await loadStoredResourceRow(db, resourceId, false));
 }
 
 export async function isResourceEnrichmentComplete(env: CoreEnv, resourceId: string): Promise<boolean> {
@@ -219,7 +198,7 @@ export async function assertResourceProcessable(env: CoreEnv, resourceId: string
 	});
 }
 
-async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: boolean): Promise<ResourceStoreRow> {
+async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<ResourceStoreRow> {
 	const result = await db.execute<ResourceStoreRow>(sql`
 		SELECT
 			rl.id::text AS id,
@@ -229,39 +208,20 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: bool
 			rl.resource_platform AS resource_platform,
 			rl.title AS title,
 			rl.summary AS summary,
-			${shell ? sql`NULL::text` : sql`rl.content`} AS content,
-			${shell ? sql`rl.content IS NOT NULL AND length(rl.content) > 0` : sql`NULL::boolean`} AS has_content,
-			${
-				shell
-					? sql`CASE
-						WHEN rl.resource_platform = 'youtube' THEN EXISTS (
-							SELECT 1
-							FROM ${youtubeTranscripts}
-							JOIN resource_identifiers identifier
-							  ON identifier.resource_id = rl.id
-							 AND identifier.scheme = 'youtube'
-							 AND identifier.value = ${youtubeTranscripts.videoId}
-						)
-						ELSE NULL
-					END`
-					: sql`NULL::boolean`
-			} AS has_youtube_transcript,
-			rl.original_lang AS original_lang,
-			(
-				SELECT jsonb_agg(
-					jsonb_build_object(
-						'lang', rt.lang,
-						'title', rt.title,
-						'summary', rt.summary,
-						'content', ${shell ? sql`NULL::text` : sql`rt.content`},
-						'keywords', rt.keywords,
-						'source', rt.source
-					)
-					ORDER BY (rt.lang = rl.original_lang) DESC, rt.lang ASC
+			NULL::text AS content,
+			rl.content IS NOT NULL AND length(rl.content) > 0 AS has_content,
+			CASE
+				WHEN rl.resource_platform = 'youtube' THEN EXISTS (
+					SELECT 1
+					FROM ${youtubeTranscripts}
+					JOIN resource_identifiers identifier
+					  ON identifier.resource_id = rl.id
+					 AND identifier.scheme = 'youtube'
+					 AND identifier.value = ${youtubeTranscripts.videoId}
 				)
-				FROM resource_translations rt
-				WHERE rt.resource_id = rl.id
-			) AS translations,
+				ELSE NULL
+			END AS has_youtube_transcript,
+			rl.original_lang AS original_lang,
 			(
 				SELECT jsonb_agg(
 					jsonb_build_object(
@@ -282,17 +242,12 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: bool
 				resourcePlatform: sql`rl.resource_platform`,
 			})} AS source,
 			rl.scope AS scope,
-			rl.enrichment_status AS enrichment_status,
 			rl.published_date AS published_date,
-			rl.scraped_date AS scraped_date,
-			rl.updated_at AS updated_at,
-			rl.created_at AS created_at,
 			rl.tags AS tags,
 			rl.keywords AS keywords,
 			rl.creators AS creators,
 			rl.kind_metadata AS kind_metadata,
 			rl.source_revision AS source_revision,
-			rl.subject_resource_id::text AS subject_resource_id,
 			rl.storage_key AS storage_key,
 			rl.file_type AS file_type,
 			rl.normalized_url AS normalized_url
@@ -309,7 +264,8 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: bool
 
 function resourceStoreRowToProcessing(row: ResourceStoreRow): ResourceForProcessing {
 	const identity = storedResourceIdentity(row);
-	const resource: ResourceForProcessing = {
+	const resourceIdentifiers = resourceIdentifiersValue(row.resource_identifiers);
+	return {
 		...toResourceIdentityColumns(identity),
 		id: row.id,
 		source_id: row.source_id,
@@ -318,7 +274,6 @@ function resourceStoreRowToProcessing(row: ResourceStoreRow): ResourceForProcess
 		title: requiredString(row.title, 'title'),
 		summary: row.summary,
 		content: row.content,
-		translations: resourceStoreTranslations(row),
 		url: row.url,
 		source: cleanString(row.source),
 		published_date: row.published_date === null ? null : dateValue(row.published_date, 'published_date').toISOString(),
@@ -328,18 +283,12 @@ function resourceStoreRowToProcessing(row: ResourceStoreRow): ResourceForProcess
 		creators: storedResourceCreatorsValue(row.creators, row.id),
 		kind_metadata: storedResourceKindMetadataValue(identity, row.kind_metadata, row.id),
 		source_revision: row.source_revision === null ? null : storedResourceSourceRevision(row.source_revision, row.id),
-		subject_resource_id: row.subject_resource_id,
-		resource_identifiers: resourceIdentifiersValue(row.resource_identifiers),
-		paper_identifiers: paperIdentifiersValue(row.resource_identifiers),
+		resource_identifiers: resourceIdentifiers,
+		paper_identifiers: normalizePaperIdentifiers(resourceIdentifiers.filter(isPaperIdentifier)),
+		storage_key: row.storage_key,
+		file_type: row.file_type,
+		normalized_url: row.normalized_url,
 	};
-	resource.storage_key = row.storage_key ?? null;
-	if (row.file_type) resource.file_type = row.file_type;
-	resource.normalized_url = row.normalized_url ?? null;
-	return resource;
-}
-
-function paperIdentifiersValue(value: unknown): PaperIdentifier[] {
-	return normalizePaperIdentifiers(resourceIdentifiersValue(value).filter(isPaperIdentifier));
 }
 
 function resourceIdentifiersValue(value: unknown): ResourceIdentifier[] {
@@ -354,44 +303,6 @@ function resourceIdentifiersValue(value: unknown): ResourceIdentifier[] {
 			return [{ preferred: identifier.preferred !== false, scheme: identifier.scheme, value: identifier.value }];
 		}),
 	);
-}
-
-function resourceStoreTranslations(row: ResourceStoreRow): ResourceTranslationMap {
-	const map: ResourceTranslationMap = {};
-	if (!Array.isArray(row.translations)) throw new Error(`Invalid translations for resource ${row.id}: expected array`);
-	for (const item of row.translations) {
-		if (!item || typeof item !== 'object' || Array.isArray(item)) {
-			throw new Error(`Invalid translation for resource ${row.id}: expected object`);
-		}
-		const translation = item as ResourceStoreTranslationRow;
-		const lang = canonicalizeResourceLang(translation.lang);
-		const compact = compactLocaleText({
-			title: translation.title as ResourceLocaleText['title'],
-			summary: translation.summary as ResourceLocaleText['summary'],
-			content: translation.content as ResourceLocaleText['content'],
-			keywords: stringArrayValue(translation.keywords, 'translation keywords'),
-			source: translation.source as ResourceLocaleText['source'],
-		});
-		if (compact) map[lang] = compact;
-	}
-	return map;
-}
-
-function compactLocaleText(value: ResourceLocaleText): ResourceLocaleText | null {
-	const title = cleanString(value.title);
-	const summary = cleanString(value.summary);
-	const content = cleanString(value.content);
-	const keywords =
-		value.keywords === null || value.keywords === undefined ? null : stringArrayValue(value.keywords, 'translation keywords');
-	const source = parseTranslationSource(value.source);
-	if (!title && !summary && !content && !keywords?.length) return null;
-	return {
-		...(title ? { title } : {}),
-		...(summary ? { summary } : {}),
-		...(content ? { content } : {}),
-		...(keywords?.length ? { keywords } : {}),
-		...(source ? { source } : {}),
-	};
 }
 
 function storedResourceCreatorsValue(value: unknown, resourceId: string): ResourceCreator[] {
@@ -431,12 +342,4 @@ function parseResourceScope(value: unknown): ResourceScope {
 		throw new Error(`Invalid resource scope: ${String(value)}`);
 	}
 	return value as ResourceScope;
-}
-
-function parseTranslationSource(value: unknown): ResourceTranslationSource | null {
-	if (value === null || value === undefined) return null;
-	if (typeof value !== 'string' || !(RESOURCE_TRANSLATION_SOURCES as readonly string[]).includes(value)) {
-		throw new Error(`Invalid translation source: ${String(value)}`);
-	}
-	return value as ResourceTranslationSource;
 }

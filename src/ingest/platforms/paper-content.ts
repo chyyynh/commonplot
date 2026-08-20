@@ -123,7 +123,7 @@ async function stageOpenAlexPdfAcquisition(
 		event: 'pdf_acquired',
 		resource_id: resource.id,
 		chars: acquired.markdown.length,
-		pages: acquired.extraction?.pages ?? null,
+		pages: acquired.provider === null ? (acquired.extraction?.pages ?? null) : null,
 	});
 	return acquired;
 }

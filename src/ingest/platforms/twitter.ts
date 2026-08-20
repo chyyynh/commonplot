@@ -17,7 +17,6 @@ async function enqueueTwitterResource(
 		sourceId: string;
 		url: string;
 		title: string;
-		source: string;
 		publishedDate: Date;
 		originalLang?: string;
 		content: string | null;
@@ -29,7 +28,6 @@ async function enqueueTwitterResource(
 			sourceId: data.sourceId,
 			url: data.url,
 			title: data.title,
-			source: data.source,
 			publishedDate: data.publishedDate,
 			summary: null,
 			kind: 'post',
@@ -90,12 +88,10 @@ async function saveTweet(tweet: Tweet, env: CoreEnv, monitoredSource: MonitoredS
 	const { scraped } = resolved;
 	const tweetId = tweet.id ?? resourceUrl;
 	const title = requiredTweetText(scraped.title, 'title', tweetId);
-	const source = requiredTweetText(scraped.metadata.siteName, 'siteName', tweetId);
 	await enqueueTwitterResource(env, {
 		sourceId: monitoredSource.id,
 		url: resourceUrl,
 		title,
-		source,
 		publishedDate: requiredTweetDate(scraped.metadata.publishedDate, tweetId),
 		originalLang: scraped.metadata.language ?? undefined,
 		content: scraped.markdown,
@@ -134,7 +130,6 @@ async function saveThread(tweets: Tweet[], env: CoreEnv, monitoredSource: Monito
 		sourceId: monitoredSource.id,
 		url: firstUrl,
 		title: buildTweetTitle(first),
-		source: first.author.name,
 		publishedDate: new Date(first.createdAt),
 		originalLang: first.lang,
 		content: combinedText,

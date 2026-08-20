@@ -266,7 +266,7 @@ function withoutPreviousDiscussion(content: string): string {
 	return content.split(`\n\n---\n\n${HN_DISCUSSION_HEADING}`, 1)[0].trim();
 }
 
-export async function buildHackerNewsContent(
+export async function buildHackerNewsAnnotation(
 	resource: ResourceForProcessing,
 	env: CoreEnv,
 	acquiredItem?: HackerNewsItem,
@@ -293,7 +293,13 @@ export async function buildHackerNewsContent(
 		.filter(Boolean)
 		.join(' | ');
 
-	return [articleContent, '---', HN_DISCUSSION_HEADING, stats ? `*${stats}*` : null, links, digest].filter(Boolean).join('\n\n');
+	return [HN_DISCUSSION_HEADING, stats ? `*${stats}*` : null, links, digest].filter(Boolean).join('\n\n');
+}
+
+export function applyHackerNewsAnnotation(content: string, annotation: string): string {
+	const articleContent = withoutPreviousDiscussion(content);
+	if (!articleContent) throw new Error('Hacker News resource has no content to annotate');
+	return [articleContent, '---', annotation].join('\n\n');
 }
 
 export function canonicalForumFields(acquisition: AcquisitionEnvelope<'hackernews'>): {

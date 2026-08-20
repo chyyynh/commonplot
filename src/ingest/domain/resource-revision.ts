@@ -21,8 +21,9 @@ export function resourceSourceSnapshotHash(input: ResourceSourceSnapshotInput): 
 	return sha256Hex(JSON.stringify(input));
 }
 
-export function resourceSourceSnapshotInput(resource: ResourceForProcessing): ResourceSourceSnapshotInput {
-	return {
+export async function resourceSourceRevision(resource: ResourceForProcessing): Promise<string> {
+	if (resource.source_revision) return resource.source_revision;
+	return resourceSourceSnapshotHash({
 		content: resource.content,
 		fileType: resource.file_type ?? null,
 		kind: resource.kind,
@@ -33,9 +34,5 @@ export function resourceSourceSnapshotInput(resource: ResourceForProcessing): Re
 		title: resource.title,
 		translationSource: 'original',
 		url: resource.url,
-	};
-}
-
-export async function resourceSourceRevision(resource: ResourceForProcessing): Promise<string> {
-	return resource.source_revision ?? resourceSourceSnapshotHash(resourceSourceSnapshotInput(resource));
+	});
 }

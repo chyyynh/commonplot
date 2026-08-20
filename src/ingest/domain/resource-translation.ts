@@ -1,5 +1,4 @@
-import { ZH_HANT_RESOURCE_LANG } from '@core-shared/resource-types';
-import type { ResourceForProcessing } from '@core-shared/types';
+import { type ResourceIdentityColumns, type ResourceTranslationSource, ZH_HANT_RESOURCE_LANG } from '@core-shared/resource-types';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
@@ -16,6 +15,20 @@ export const CONTENT_TRANSLATION_MAX_LENGTH = 36000;
 const PARTIAL_CONTENT_TRANSLATION_RATIO = 0.2;
 const MIN_TRANSLATABLE_TEXT_LENGTH = 20;
 const INLINE_TWITTER_CONTENT_TRANSLATION_MAX_LENGTH = 1000;
+
+export type ResourceTranslationInput = {
+	id: string;
+	original_lang: string;
+	title: string;
+	summary: string | null;
+	content: string;
+	zhHantTranslation: {
+		title: string | null;
+		summary: string | null;
+		content: string | null;
+		source: ResourceTranslationSource;
+	} | null;
+} & ResourceIdentityColumns;
 
 const ZhHantMetadataTranslationSchema = z.object({
 	title: z.string().min(1),
@@ -47,13 +60,13 @@ function isBlank(value: string | null | undefined): boolean {
 	return !value?.trim();
 }
 
-function usesInlineTwitterContentTranslation(resource: ResourceForProcessing): boolean {
-	const content = resource.content?.trim();
+function usesInlineTwitterContentTranslation(resource: ResourceTranslationInput): boolean {
+	const content = resource.content.trim();
 	return resource.resource_platform === 'twitter' && !!content && content.length <= INLINE_TWITTER_CONTENT_TRANSLATION_MAX_LENGTH;
 }
 
-function metadataTranslationTask(resource: ResourceForProcessing): ZhHantMetadataTranslationTask | null {
-	const translation = resource.translations[ZH_HANT_RESOURCE_LANG];
+function metadataTranslationTask(resource: ResourceTranslationInput): ZhHantMetadataTranslationTask | null {
+	const translation = resource.zhHantTranslation;
 	if (resource.resource_platform === 'twitter') {
 		if (usesInlineTwitterContentTranslation(resource)) {
 			return isBlank(translation?.title) || isBlank(translation?.content) ? 'twitter-title-content' : null;
@@ -75,22 +88,22 @@ export function hasTranslatableContent(content: string): boolean {
 	return text.length >= MIN_TRANSLATABLE_TEXT_LENGTH;
 }
 
-function needsMachineContentTranslation(resource: ResourceForProcessing): boolean {
-	const translated = resource.translations[ZH_HANT_RESOURCE_LANG]?.content?.trim();
+function needsMachineContentTranslation(resource: ResourceTranslationInput): boolean {
+	const translated = resource.zhHantTranslation?.content?.trim();
 	if (!translated) return true;
-	const content = resource.content?.trim();
+	const content = resource.content.trim();
 	if (!content || content.length < 1000) return false;
 	return translated.length / content.length < PARTIAL_CONTENT_TRANSLATION_RATIO;
 }
 
-export function planZhHantTranslation(resource: ResourceForProcessing): ZhHantTranslationPlan {
-	const translation = resource.translations[ZH_HANT_RESOURCE_LANG];
+export function planZhHantTranslation(resource: ResourceTranslationInput): ZhHantTranslationPlan {
+	const translation = resource.zhHantTranslation;
 	if (resource.original_lang === ZH_HANT_RESOURCE_LANG || translation?.source === 'human') {
 		return { metadata: null, content: null };
 	}
 
 	const metadata = metadataTranslationTask(resource);
-	const content = resource.content?.trim();
+	const content = resource.content.trim();
 	if (!content || !hasTranslatableContent(content) || !needsMachineContentTranslation(resource)) {
 		return { metadata, content: null };
 	}
@@ -163,14 +176,14 @@ ${task === 'paper-title-summary' ? '- summary: 將作者原始摘要完整翻譯
 	}
 }
 
-function requiredResourceContent(resource: ResourceForProcessing): string {
-	const content = resource.content?.trim();
+function requiredResourceContent(resource: ResourceTranslationInput): string {
+	const content = resource.content.trim();
 	if (!content) throw new Error(`Resource ${resource.id} has no content`);
 	return content;
 }
 
 export async function generateZhHantMetadataTranslation(
-	resource: ResourceForProcessing,
+	resource: ResourceTranslationInput,
 	env: CoreEnv,
 	task: ZhHantMetadataTranslationTask,
 ): Promise<

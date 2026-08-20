@@ -1,8 +1,8 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { withCoreDb, withCoreTx } from '@db/client';
-import { loadResourceForProcessingFromDb } from '@ingest/domain/resource-store';
+import { withCoreDb } from '@db/client';
 import {
 	isResourceTranslationRevision,
+	loadEligibleResourceTranslationInputFromDb,
 	loadEligibleResourceTranslationRevisionFromDb,
 	persistMachineZhHantTranslation,
 } from '@ingest/domain/resource-translation-store';
@@ -20,18 +20,12 @@ export function loadEligibleResourceTranslationRevision(env: CoreEnv, resourceId
 }
 
 async function loadEligibleResourceTranslationInput(env: CoreEnv, resourceId: string) {
-	return withCoreTx(env, async (db, client) => {
-		await client.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY');
-		const sourceRevision = await loadEligibleResourceTranslationRevisionFromDb(db, resourceId, CONTENT_TRANSLATION_MAX_LENGTH);
-		if (!sourceRevision) return null;
-		const resource = await loadResourceForProcessingFromDb(db, resourceId);
-		return { resource, sourceRevision };
-	});
+	return withCoreDb(env, (db) => loadEligibleResourceTranslationInputFromDb(db, resourceId, CONTENT_TRANSLATION_MAX_LENGTH));
 }
 
 type ResourceTranslationPayload = { resourceId: string; sourceRevision: string };
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v3';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v4';
 
 function workflowId(resourceId: string, sourceRevision: string): string {
 	return `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${sourceRevision}`;
@@ -55,7 +49,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			return { success: true, resource_id: resourceId, skipped: true, superseded: true };
 		}
 		const input = await step.do(
-			'load-resource-translation-input-kind-platform-v1',
+			'load-resource-translation-input-kind-platform-v2',
 			{
 				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 				timeout: '30 seconds',
@@ -72,7 +66,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		}
 
 		const resource = input.resource;
-		const initialContent = resource.content?.trim();
+		const initialContent = resource.content.trim();
 		if (!initialContent) throw new Error(`Resource ${resourceId} has no persisted original content`);
 
 		const translationPlan = planZhHantTranslation(resource);

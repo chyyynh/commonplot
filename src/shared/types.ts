@@ -1,34 +1,17 @@
-import type {
-	ResourceIdentityColumns,
-	ResourcePlatform,
-	ResourceScope,
-	ResourceTranslationSource,
-	SourceAcquisitionMode,
-} from '@core-shared/resource-types';
+import type { ResourceIdentityColumns, ResourcePlatform, ResourceScope, SourceAcquisitionMode } from '@core-shared/resource-types';
 import type { PaperIdentifier } from './paper-identity';
 import type { ResourceIdentifier } from './resource-identifiers';
 import type { PaperRelationSnapshot, ResourceCreator, ResourceKindMetadata } from './resource-metadata';
 
-export type ResourceLocaleText = {
-	title?: string | null;
-	summary?: string | null;
-	content?: string | null;
-	keywords?: string[] | null;
-	source?: ResourceTranslationSource;
-};
-
-export type ResourceTranslationMap = Record<string, ResourceLocaleText | undefined>;
-
 type ResourceForProcessingBase = {
 	id: string;
 	source_id: string | null;
-	source_acquisition_mode?: SourceAcquisitionMode | null;
+	source_acquisition_mode: SourceAcquisitionMode | null;
 	scope: ResourceScope;
 	original_lang: string;
 	title: string;
 	summary: string | null;
 	content: string | null;
-	translations: ResourceTranslationMap;
 	url: string | null;
 	source: string | null;
 	published_date: string | null;
@@ -37,13 +20,11 @@ type ResourceForProcessingBase = {
 	creators: ResourceCreator[];
 	kind_metadata: ResourceKindMetadata | null;
 	source_revision: string | null;
-	subject_resource_id: string | null;
 	resource_identifiers: ResourceIdentifier[];
-	paper_identifiers?: PaperIdentifier[];
-	// Blob/private resource raw columns (undefined for source URL drafts).
-	storage_key?: string | null;
-	file_type?: string | null;
-	normalized_url?: string | null;
+	paper_identifiers: PaperIdentifier[];
+	storage_key: string | null;
+	file_type: string | null;
+	normalized_url: string | null;
 };
 
 export type ResourceForProcessing = ResourceForProcessingBase & ResourceIdentityColumns;
@@ -116,10 +97,13 @@ type AcquiredMaterialBase<T extends ResourcePlatform> = {
 		description: string | null;
 	};
 	acquisition: AcquisitionEnvelope<T>;
-	youtubeTranscript?: YoutubeTranscript;
 };
 
-export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = T extends unknown ? AcquiredMaterialBase<T> : never;
+type AcquiredMaterialSpecialization<T extends ResourcePlatform> = T extends 'youtube' ? { youtubeTranscript: YoutubeTranscript } : unknown;
+
+export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = T extends unknown
+	? AcquiredMaterialBase<T> & AcquiredMaterialSpecialization<T>
+	: never;
 
 export interface TwitterMedia {
 	url: string;

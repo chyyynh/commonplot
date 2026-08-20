@@ -26,6 +26,7 @@ import {
 	type AcquiredContent,
 	applyAcquiredMaterial,
 	PDF_MIME,
+	type PdfExtractionMetadata,
 	pdfExtractionMetadata,
 	readAcquiredContentArtifact,
 	scrapeRssFeedItemArtifact,
@@ -55,7 +56,7 @@ type WorkflowPayload = { resourceId: string; operation: WorkflowOperation; sourc
 const PENDING_RESOURCE_GRACE_MS = 10 * 60 * 1000;
 // Completed instance IDs restart on their pinned Workflow version. Bump this
 // namespace when a new graph must not reuse an older instance.
-const RESOURCE_PROCESSING_WORKFLOW_REVISION = 'resource-v5';
+const RESOURCE_PROCESSING_WORKFLOW_REVISION = 'resource-v6';
 // Stale pending resources are readmitted through the same canonical resolver
 // as fresh ingest; pace reconciliation well below the Workflow creation limit.
 const PENDING_RESOURCE_RECONCILE_LIMIT = 50;
@@ -214,7 +215,7 @@ async function stageRssFeedAcquisition(env: CoreEnv, step: WorkflowStep, input: 
 }
 
 function assertPdfExtractionProcessable(input: {
-	acquiredExtraction: AcquiredContent['extraction'];
+	acquiredExtraction: PdfExtractionMetadata | undefined;
 	pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
 	resourceId: string;
 }): void {
@@ -222,6 +223,16 @@ function assertPdfExtractionProcessable(input: {
 	if (extraction?.status === 'needs_ocr') {
 		throw new NonRetryableError(`PDF resource ${input.resourceId} requires OCR`, 'PdfOcrRequiredError');
 	}
+}
+
+function assertResourceContentProcessable(input: {
+	acquiredContent: AcquiredContent | undefined;
+	hasPersistedContent: boolean;
+	pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
+	resourceId: string;
+}): void {
+	if (input.hasPersistedContent || input.pdfTextArtifact?.text?.trim() || input.acquiredContent?.markdown?.trim()) return;
+	throw new NonRetryableError(`Resource ${input.resourceId} has no extractable content`, 'ResourceContentMissingError');
 }
 
 async function acquireResourceForOperation(
@@ -268,7 +279,7 @@ type PreparedResource = {
 
 function acquiredSubjectUrl(acquired: AcquiredContent | undefined): string | null {
 	if (!acquired) return null;
-	if (acquired.provider === 'hackernews') return acquired.hackerNewsItem?.url?.trim() || null;
+	if (acquired.provider === 'hackernews') return acquired.hackerNewsItem.url?.trim() || null;
 	if (acquired.provider === 'twitter') {
 		return acquired.acquisition.data.externalUrl?.trim() || null;
 	}
@@ -386,17 +397,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 						})
 					: null);
 			assertPdfExtractionProcessable({
-				acquiredExtraction: acquiredContent?.extraction,
+				acquiredExtraction: acquiredContent?.provider === null ? acquiredContent.extraction : undefined,
 				pdfTextArtifact,
 				resourceId,
 			});
-			await step.do('validate-resource-content', { retries: { limit: 0, delay: '1 second' }, timeout: '5 seconds' }, async () => {
-				const hasProcessableContent = hasContent || !!pdfTextArtifact?.text?.trim() || !!acquiredContent?.markdown?.trim();
-				if (!hasProcessableContent) {
-					throw new NonRetryableError(`Resource ${resourceId} has no extractable content`, 'ResourceContentMissingError');
-				}
-				return true;
-			});
+			assertResourceContentProcessable({ acquiredContent, hasPersistedContent: hasContent, pdfTextArtifact, resourceId });
 
 			// Read only the original content when the shell is otherwise sufficient. The stream keeps large content outside Workflow's persisted-value
 			// size limit; acquired or extracted content always wins.

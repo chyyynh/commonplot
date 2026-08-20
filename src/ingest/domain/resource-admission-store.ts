@@ -1,35 +1,22 @@
 import {
 	type ContentResourceIdentity,
 	canonicalizeOptionalResourceLang,
-	canonicalizeResourceLang,
 	DEFAULT_RESOURCE_LANG,
-	isContentResourceKind,
+	isContentResourceIdentity,
 	isResourceSourceSnapshotHash,
 	parseResourceIdentity,
-	type ResourceCategory,
-	type ResourceIdentity,
-	type ResourceScope,
 	type ResourceTranslationSource,
-	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
-import type { ResourceForProcessing } from '@core-shared/types';
 import { type CoreDb, textArraySql, uuidArraySql, withCoreDb, withCoreTx } from '@db/client';
 import { contentResourceIdentitySql } from '@db/resource-identity-sql';
 import { resources, resourceTranslations } from '@db/schema';
 import { and, eq, not, type SQL, sql } from 'drizzle-orm';
-import { resourceSourceSnapshotHash, resourceSourceSnapshotInput } from './resource-revision';
+import { resourceSourceSnapshotHash } from './resource-revision';
 import { upsertResourceTranslation } from './resource-translation-store';
-import { cleanString, dateValue, requiredString, storedResourceSourceRevision, stringArrayValue } from './resource-values';
+import { cleanString, dateValue, requiredString, stringArrayValue } from './resource-values';
 
 /** Failed enrichments to retry before a URL is treated as permanently dead. */
 const MAX_ENRICHMENT_ATTEMPTS = 5;
-
-type ResourceUpdate = Pick<
-	ResourceForProcessing,
-	'summary' | 'content' | 'tags' | 'keywords' | 'creators' | 'kind_metadata' | 'source_revision'
-> & {
-	category: ResourceCategory | null;
-};
 
 /**
  * Every Resource row is committed before Workflow admission. A transient
@@ -74,7 +61,6 @@ type SourceResourceDraft = {
 	sourceId: string;
 	url: string;
 	title: string;
-	source: string;
 	publishedDate: Date | string | null;
 	summary: string | null;
 	originalLang?: string;
@@ -83,16 +69,11 @@ type SourceResourceDraft = {
 	tags?: string[];
 } & ContentResourceIdentity;
 
-type ResourceEnrichmentStatus = 'pending' | 'enriched' | 'failed';
-
-type ResourceMirrorRecord = {
+type PendingSourceResourceRecord = {
 	id: string;
 	sourceId: string | null;
-	scope: ResourceScope;
 	url: string | null;
 	normalizedUrl: string | null;
-	storageKey: string | null;
-	fileType: string | null;
 	originalLang: string;
 	title: string | null;
 	summary: string | null;
@@ -101,40 +82,43 @@ type ResourceMirrorRecord = {
 	scrapedDate: Date;
 	keywords: string[];
 	tags: string[];
-	category: ResourceCategory | null;
-	ogImageUrl: string | null;
-	creatorsJson: string;
-	kindMetadataJson: string | null;
-	sourceRevision: string | null;
-	enrichmentStatus: ResourceEnrichmentStatus;
-} & ResourceIdentity;
+	sourceRevision: string;
+} & ContentResourceIdentity;
 
-function preparedRecordToResource(base: SourceResourceDraft): ResourceForProcessing {
+async function pendingSourceResourceRecord(base: SourceResourceDraft): Promise<PendingSourceResourceRecord> {
 	const explicitIdentity = parseResourceIdentity(base.kind, base.resourcePlatform);
-	if (!explicitIdentity || !isContentResourceKind(explicitIdentity.kind)) {
+	if (!explicitIdentity || !isContentResourceIdentity(explicitIdentity)) {
 		throw new Error(`Invalid source resource identity: ${String(base.kind)} / ${String(base.resourcePlatform)}`);
 	}
-	return {
-		...toResourceIdentityColumns(explicitIdentity),
-		id: base.url,
-		source_id: base.sourceId,
-		original_lang: canonicalizeOptionalResourceLang(base.originalLang) ?? DEFAULT_RESOURCE_LANG,
-		title: base.title,
-		scope: 'corpus',
-		summary: base.summary,
+	const originalLang = canonicalizeOptionalResourceLang(base.originalLang) ?? DEFAULT_RESOURCE_LANG;
+	const publishedDate = base.publishedDate === null ? null : dateValue(base.publishedDate, 'published_date');
+	const sourceRevision = await resourceSourceSnapshotHash({
 		content: base.content,
-		translations: {},
+		fileType: null,
+		kind: explicitIdentity.kind,
+		originalLang,
+		publishedDate: publishedDate?.toISOString() ?? null,
+		resourcePlatform: explicitIdentity.resourcePlatform,
+		summary: base.summary,
+		title: base.title,
+		translationSource: 'original',
 		url: base.url,
-		normalized_url: base.url,
-		source: base.source,
-		published_date: base.publishedDate === null ? null : dateValue(base.publishedDate, 'published_date').toISOString(),
-		tags: base.tags ?? [],
-		keywords: base.keywords ?? [],
-		resource_identifiers: [],
-		creators: [],
-		kind_metadata: null,
-		source_revision: null,
-		subject_resource_id: null,
+	});
+	return {
+		...explicitIdentity,
+		id: crypto.randomUUID(),
+		sourceId: cleanString(base.sourceId),
+		url: cleanString(base.url),
+		normalizedUrl: cleanString(base.url),
+		originalLang,
+		title: cleanString(base.title),
+		summary: cleanString(base.summary),
+		content: cleanString(base.content),
+		publishedDate,
+		scrapedDate: new Date(),
+		keywords: stringArrayValue(base.keywords ?? [], 'keywords'),
+		tags: stringArrayValue(base.tags ?? [], 'tags'),
+		sourceRevision,
 	};
 }
 
@@ -145,10 +129,7 @@ type PendingSourceResource = {
 };
 
 export async function upsertPendingSourceResource(db: CoreDb, base: SourceResourceDraft): Promise<PendingSourceResource> {
-	const prepared = preparedRecordToResource(base);
-	const sourceRevision = await resourceSourceSnapshotHash(resourceSourceSnapshotInput(prepared));
-	const resource = { ...prepared, source_revision: sourceRevision };
-	const record = resourceMirrorRecord(crypto.randomUUID(), resource, pendingResourceUpdate(resource), 'pending');
+	const record = await pendingSourceResourceRecord(base);
 	const result = await db.execute<{ enrichment_status: string; id: string; source_revision: string | null }>(
 		resourceUpsertStatement(record),
 	);
@@ -163,64 +144,7 @@ export async function upsertPendingSourceResource(db: CoreDb, base: SourceResour
 	};
 }
 
-function pendingResourceUpdate(resource: ResourceForProcessing): ResourceUpdate {
-	return {
-		summary: resource.summary,
-		content: resource.content,
-		tags: resource.tags,
-		keywords: resource.keywords,
-		creators: resource.creators,
-		kind_metadata: resource.kind_metadata,
-		source_revision: resource.source_revision,
-		category: null,
-	};
-}
-
-function resourceMirrorRecord(
-	resourceId: string,
-	resource: ResourceForProcessing,
-	updatePayload: ResourceUpdate,
-	enrichmentStatus: ResourceEnrichmentStatus = 'enriched',
-): ResourceMirrorRecord {
-	const identity = parseResourceIdentity(resource.kind, resource.resource_platform);
-	if (!identity) {
-		throw new Error(`Invalid resource identity: ${String(resource.kind)} / ${String(resource.resource_platform)}`);
-	}
-	const url = cleanString(resource.url);
-	const tags = stringArrayValue(updatePayload.tags, 'tags');
-	const keywords = stringArrayValue(updatePayload.keywords, 'keywords');
-	const summary = cleanString(updatePayload.summary);
-	const content = cleanString(updatePayload.content);
-	return {
-		...identity,
-		id: resourceId,
-		sourceId: cleanString(resource.source_id),
-		scope: resource.scope,
-		url,
-		normalizedUrl: cleanString(resource.normalized_url),
-		storageKey: cleanString(resource.storage_key),
-		fileType: cleanString(resource.file_type),
-		originalLang: canonicalizeResourceLang(resource.original_lang),
-		title: cleanString(resource.title),
-		summary,
-		content,
-		publishedDate:
-			resource.published_date === null || resource.published_date === undefined || resource.published_date === ''
-				? null
-				: dateValue(resource.published_date, 'published_date'),
-		scrapedDate: new Date(),
-		keywords,
-		tags,
-		category: updatePayload.category,
-		ogImageUrl: null,
-		creatorsJson: JSON.stringify(updatePayload.creators),
-		kindMetadataJson: updatePayload.kind_metadata === null ? null : JSON.stringify(updatePayload.kind_metadata),
-		sourceRevision: updatePayload.source_revision === null ? null : storedResourceSourceRevision(updatePayload.source_revision, resourceId),
-		enrichmentStatus,
-	};
-}
-
-function resourceUpsertStatement(record: ResourceMirrorRecord): SQL {
+function resourceUpsertStatement(record: PendingSourceResourceRecord): SQL {
 	if (record.normalizedUrl) {
 		return resourceInsertStatement(
 			record,
@@ -228,13 +152,10 @@ function resourceUpsertStatement(record: ResourceMirrorRecord): SQL {
 				WHERE resources.scope <> 'private' OR excluded.scope = 'private'`,
 		);
 	}
-	if (record.storageKey) {
-		return resourceInsertStatement(record, sql`ON CONFLICT (storage_key) DO UPDATE SET ${resourceConflictSetSql()}`);
-	}
 	return resourceInsertStatement(record, sql`ON CONFLICT (id) DO UPDATE SET ${resourceConflictSetSql()}`);
 }
 
-function resourceInsertStatement(record: ResourceMirrorRecord, conflictSql: SQL): SQL {
+function resourceInsertStatement(record: PendingSourceResourceRecord, conflictSql: SQL): SQL {
 	const tags = textArraySql(record.tags);
 	return sql`
 		INSERT INTO resources (
@@ -248,21 +169,21 @@ function resourceInsertStatement(record: ResourceMirrorRecord, conflictSql: SQL)
 			${record.sourceId}::uuid,
 			${record.kind},
 			${record.resourcePlatform},
-			${record.scope},
+			'corpus',
 			${record.url},
 			${record.normalizedUrl},
-			${record.storageKey},
-			${record.fileType},
+			NULL,
+			NULL,
 			${record.originalLang},
 			${record.publishedDate},
 			${record.scrapedDate},
 			${tags},
-			${record.category},
-			${record.ogImageUrl},
-			${record.creatorsJson}::jsonb,
-			${record.kindMetadataJson}::jsonb,
+			NULL,
+			NULL,
+			'[]'::jsonb,
+			NULL,
 			${record.sourceRevision},
-			${record.enrichmentStatus},
+			'pending',
 			now(),
 			now()
 		)
@@ -316,7 +237,7 @@ function resourceConflictSetSql(): SQL {
 	`;
 }
 
-async function syncOriginalResourceTranslation(db: CoreDb, resourceId: string, record: ResourceMirrorRecord): Promise<void> {
+async function syncOriginalResourceTranslation(db: CoreDb, resourceId: string, record: PendingSourceResourceRecord): Promise<void> {
 	if (
 		!(await upsertResourceTranslation(db, {
 			resourceId,

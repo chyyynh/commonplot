@@ -31,7 +31,6 @@ async function enqueueFeedItem(env: CoreEnv, feed: RssSource, item: FeedItem, ur
 			sourceId: feed.id,
 			url,
 			title,
-			source: feed.name,
 			publishedDate: feedPublishedDate(item.published),
 			summary: feedSummary(item.summary),
 			kind: 'blog',

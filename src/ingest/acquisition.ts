@@ -2,7 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { sha256Hex } from '@core-shared/hash';
 import { literalCreator, type ResourceCreator, type ResourceKindMetadata } from '@core-shared/resource-metadata';
 import { isResourcePlatform } from '@core-shared/resource-types';
-import type { AcquiredMaterial, PdfExtractionMetadata, ResourceForProcessing } from '@core-shared/types';
+import type { AcquiredMaterial, ResourceForProcessing } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
 import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
 import { canonicalForumFields, type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
@@ -10,15 +10,16 @@ import { acquireRssFeedItem, type RssFeedAcquisitionInput } from './platforms/rs
 import { canonicalPostFields, scrapeTweet } from './platforms/twitter-acquisition';
 import { stageTweetLinkUnfurl } from './platforms/twitter-unfurl';
 import { canonicalVideoFields, scrapeYouTube } from './platforms/youtube-acquisition';
-import { acquireWebResource, PDF_MIME, pdfExtractionMetadata } from './web-acquisition';
+import { type AcquiredWebContent, acquireWebResource, PDF_MIME, pdfExtractionMetadata } from './web-acquisition';
 
 export type { PdfExtractionMetadata } from '@core-shared/types';
 export { PDF_MIME, pdfExtractionMetadata };
 
-export type AcquiredContent = AcquiredMaterial & {
-	extraction?: PdfExtractionMetadata;
-	hackerNewsItem?: HackerNewsItem;
-};
+export type AcquiredContent =
+	| AcquiredWebContent
+	| (AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem })
+	| AcquiredMaterial<'twitter'>
+	| AcquiredMaterial<'youtube'>;
 
 /**
  * Acquisition gets one attempt, not three.
@@ -75,8 +76,7 @@ function canonicalFieldsFromAcquisition(acquired: AcquiredMaterial): {
 export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?: AcquiredContent): ResourceForProcessing {
 	if (!acquired) return resource;
 	const canonical = canonicalFieldsFromAcquisition(acquired);
-	const ownedStorageKey =
-		'ownedStorageKey' in acquired && typeof acquired.ownedStorageKey === 'string' ? acquired.ownedStorageKey : undefined;
+	const ownedStorageKey = acquired.provider === null ? acquired.ownedStorageKey : undefined;
 	return {
 		...resource,
 		title: acquired.title.trim(),
@@ -115,7 +115,7 @@ function sourceSnapshotHash(acquired: AcquiredContent): Promise<string> {
 export async function sanitizeAcquiredContent(acquired: AcquiredContent): Promise<AcquiredContent> {
 	const markdown = sanitizeExtractedMarkdown(acquired.markdown);
 	const sanitized = markdown === acquired.markdown ? acquired : { ...acquired, markdown };
-	// Re-attaching the hash to the envelope loses the provider/data correlation, so assert back to the union.
+	// Object spread cannot preserve the provider/acquisition correlation, so restore the validated union at this boundary.
 	return {
 		...sanitized,
 		acquisition: {
@@ -171,16 +171,21 @@ function isNonEmptyString(value: unknown): value is string {
 	return typeof value === 'string' && !!value.trim();
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
 function isAcquiredContent(value: unknown): value is AcquiredContent {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+	if (!isRecord(value)) return false;
 	const content = value as Record<string, unknown>;
 	if (!isNonEmptyString(content.title) || typeof content.markdown !== 'string') {
 		return false;
 	}
 	if (!isResourcePlatform(content.provider) || !isNullableString(content.fileType)) return false;
 	if (content.ownedStorageKey !== undefined && !isNonEmptyString(content.ownedStorageKey)) return false;
-	if (!content.metadata || typeof content.metadata !== 'object' || Array.isArray(content.metadata)) return false;
-	if (!content.acquisition || typeof content.acquisition !== 'object' || Array.isArray(content.acquisition)) return false;
+	if (content.provider === 'hackernews' && !isRecord(content.hackerNewsItem)) return false;
+	if (content.provider === 'youtube' && !isRecord(content.youtubeTranscript)) return false;
+	if (!isRecord(content.metadata) || !isRecord(content.acquisition)) return false;
 	const metadata = content.metadata as Record<string, unknown>;
 	const acquisition = content.acquisition as Record<string, unknown>;
 	return (

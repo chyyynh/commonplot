@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import type { PaperMetadata, ResourceForProcessing, YoutubeTranscript } from '@core-shared/types';
 import type { AcquiredContent } from './acquisition';
-import { buildHackerNewsContent } from './platforms/hackernews';
+import { applyHackerNewsAnnotation, buildHackerNewsAnnotation } from './platforms/hackernews';
 import { prepareYouTubeHighlights, type YouTubeHighlightsUpdate } from './platforms/youtube';
 import type { ResolvedContentResourceInput } from './resource-resolver';
 
@@ -33,9 +33,12 @@ type HandleContext = Readonly<{
 }>;
 
 async function handleForum(context: HandleContext): Promise<HandledResourceResult> {
-	const content = await context.step
-		.do('build-hacker-news-content', { retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' }, () =>
-			buildHackerNewsContent(context.resource, context.env, context.acquiredContent?.hackerNewsItem),
+	const hackerNewsItem = context.acquiredContent?.provider === 'hackernews' ? context.acquiredContent.hackerNewsItem : undefined;
+	const annotation = await context.step
+		.do(
+			'build-hacker-news-annotation-v1',
+			{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
+			() => buildHackerNewsAnnotation(context.resource, context.env, hackerNewsItem),
 		)
 		.catch((error) => {
 			console.error({
@@ -49,7 +52,10 @@ async function handleForum(context: HandleContext): Promise<HandledResourceResul
 	return {
 		kind: 'forum',
 		resolution: context.resolution as Extract<ResolvedContentResourceInput, { kind: 'forum' }>,
-		resource: content ? { ...context.resource, content } : context.resource,
+		resource:
+			annotation && context.resource.content
+				? { ...context.resource, content: applyHackerNewsAnnotation(context.resource.content, annotation) }
+				: context.resource,
 		classificationExclusions: ['HackerNews'],
 	};
 }
@@ -58,7 +64,7 @@ async function handleVideo(
 	context: HandleContext,
 	resolution: Extract<ResolvedContentResourceInput, { kind: 'video' }>,
 ): Promise<HandledResourceResult> {
-	const youtubeTranscript = context.acquiredContent?.youtubeTranscript;
+	const youtubeTranscript = context.acquiredContent?.provider === 'youtube' ? context.acquiredContent.youtubeTranscript : undefined;
 	const youtubeHighlights = await context.step
 		.do('prepare-youtube-highlights', { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' }, () =>
 			prepareYouTubeHighlights(context.env, context.resource, resolution.locator.videoId, youtubeTranscript),
