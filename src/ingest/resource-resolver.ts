@@ -47,7 +47,7 @@ type ResolveContentResourceInput = Readonly<{
 	subjectUrl?: string | null;
 }>;
 
-export type ExactPlatformLocator = Readonly<{
+type ExactPlatformLocator = Readonly<{
 	resourcePlatform: PlatformResourceIdentifierScheme;
 	platformId: string;
 }>;

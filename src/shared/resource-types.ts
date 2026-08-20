@@ -103,10 +103,6 @@ function isResourceIdentity(identity: { kind: unknown; resourcePlatform: unknown
 	return validPlatforms.includes(identity.resourcePlatform);
 }
 
-export function isValidKindPlatform(kind: unknown, resourcePlatform: unknown): kind is ResourceKind {
-	return isResourceIdentity({ kind, resourcePlatform });
-}
-
 export function parseResourceIdentity(kind: unknown, resourcePlatform: unknown): ResourceIdentity | null {
 	const identity = { kind, resourcePlatform };
 	return isResourceIdentity(identity) ? identity : null;
@@ -124,16 +120,6 @@ export function isResourceSourceSnapshotHash(value: unknown): value is string {
 
 export function resourceIdentityForDetectedPlatform(resourcePlatform: Exclude<ResourcePlatform, null>): ContentResourceIdentity {
 	return DETECTED_PLATFORM_RESOURCE_IDENTITIES[resourcePlatform];
-}
-
-export function isResourceTranslationIdentityEligible(input: {
-	kind: unknown;
-	resourcePlatform: unknown;
-	fileType: string | null | undefined;
-}): boolean {
-	const identity = parseResourceIdentity(input.kind, input.resourcePlatform);
-	if (!identity || !(TRANSLATABLE_RESOURCE_KINDS as readonly ResourceKind[]).includes(identity.kind)) return false;
-	return !(input.fileType === 'application/pdf' && identity.resourcePlatform === null);
 }
 
 export const SOURCE_PLATFORMS = ['rss', 'twitter', 'youtube'] as const;

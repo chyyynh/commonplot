@@ -32,7 +32,7 @@ export function isResourceTranslationRevision(value: unknown): value is string {
 	return typeof value === 'string' && RESOURCE_TRANSLATION_REVISION_RE.test(value);
 }
 
-export function resourceTranslationRevisionSql(input: { content: SQL; lang: SQL; summary: SQL; title: SQL }): SQL {
+function resourceTranslationRevisionSql(input: { content: SQL; lang: SQL; summary: SQL; title: SQL }): SQL {
 	return sql`MD5(jsonb_build_array(${input.lang}, ${input.title}, ${input.summary}, ${input.content})::text)`;
 }
 

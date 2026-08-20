@@ -44,7 +44,7 @@ const ZhHantTwitterTranslationSchema = z.object({
 	content: z.string().min(1),
 });
 
-export type ZhHantMetadataTranslationTask =
+type ZhHantMetadataTranslationTask =
 	| 'article-title-summary'
 	| 'paper-title'
 	| 'paper-title-summary'

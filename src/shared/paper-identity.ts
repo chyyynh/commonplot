@@ -6,7 +6,7 @@ const ARXIV_IN_TEXT_RE = /\barxiv\s*:\s*([a-z-]+(?:\.[A-Z]{2})?\/\d{7}|\d{4}\.\d
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
 const OPENALEX_ID_RE = /^(?:https?:\/\/openalex\.org\/)?(W\d+)\/?$/i;
 
-export const PAPER_IDENTIFIER_SCHEMES = ['doi', 'arxiv', 'openalex'] as const;
+const PAPER_IDENTIFIER_SCHEMES = ['doi', 'arxiv', 'openalex'] as const;
 export type PaperIdentifierScheme = (typeof PAPER_IDENTIFIER_SCHEMES)[number];
 
 export type PaperIdentifier = Readonly<{
@@ -207,7 +207,7 @@ export function paperIdentityFromText(value: unknown): PaperIdentity | null {
 	};
 }
 
-export function normalizePaperIdentity(identity: PaperIdentity): PaperIdentity | null {
+function normalizePaperIdentity(identity: PaperIdentity): PaperIdentity | null {
 	const doi = normalizeDoi(identity.doi);
 	const arxivId = normalizeArxivId(identity.arxivId) ?? (doi ? arxivIdFromDoi(doi) : null);
 	const openAlexId = normalizeOpenAlexId(identity.openAlexId);

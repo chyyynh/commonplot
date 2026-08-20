@@ -1,7 +1,7 @@
 import { normalizePaperIdentifiers, type PaperIdentifier, type PaperIdentifierScheme } from './paper-identity.ts';
 import type { ResourceIdentity } from './resource-types.ts';
 
-export const PLATFORM_RESOURCE_IDENTIFIER_SCHEMES = ['hackernews', 'twitter', 'youtube'] as const;
+const PLATFORM_RESOURCE_IDENTIFIER_SCHEMES = ['hackernews', 'twitter', 'youtube'] as const;
 
 export type PlatformResourceIdentifierScheme = (typeof PLATFORM_RESOURCE_IDENTIFIER_SCHEMES)[number];
 

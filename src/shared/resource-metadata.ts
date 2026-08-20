@@ -8,7 +8,7 @@ const optionalHttpUrl = z.url().refine((value) => {
 	return protocol === 'http:' || protocol === 'https:';
 });
 
-export const ResourceCreatorSchema = z
+const ResourceCreatorSchema = z
 	.object({
 		role: z.enum(RESOURCE_CREATOR_ROLES),
 		given: z.string().trim().min(1).optional(),

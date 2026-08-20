@@ -73,7 +73,7 @@ const OpenAlexListSchema = z.object({
 type OpenAlexLocation = z.infer<typeof OpenAlexLocationSchema>;
 type OpenAlexWork = z.infer<typeof OpenAlexWorkSchema>;
 
-export type OpenAlexPaperResolution = Readonly<{
+type OpenAlexPaperResolution = Readonly<{
 	contentGrobidXmlUrl: string | null;
 	contentPdfUrl: string | null;
 	identifiers: PaperIdentifier[];

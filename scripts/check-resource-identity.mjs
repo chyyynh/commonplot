@@ -2,44 +2,37 @@ import assert from 'node:assert/strict';
 import { isResourceIdentifierCompatibleWithIdentity } from '../src/shared/resource-identifiers.ts';
 import {
 	isResourceSourceSnapshotHash,
-	isResourceTranslationIdentityEligible,
-	isValidKindPlatform,
+	parseResourceIdentity,
 	resourceIdentityForDetectedPlatform,
 	VALID_KIND_PLATFORMS,
 } from '../src/shared/resource-types.ts';
-import { detectResourcePlatform } from '../src/shared/url.ts';
+import { detectResourceUrl } from '../src/shared/url.ts';
 
 const canonicalIdentities = Object.entries(VALID_KIND_PLATFORMS).flatMap(([kind, resourcePlatforms]) =>
 	resourcePlatforms.map((resourcePlatform) => ({ kind, resourcePlatform })),
 );
 for (const identity of canonicalIdentities) {
-	assert.equal(isValidKindPlatform(identity.kind, identity.resourcePlatform), true, JSON.stringify(identity));
+	assert.deepEqual(parseResourceIdentity(identity.kind, identity.resourcePlatform), identity);
 }
-assert.equal(isValidKindPlatform('post', null), false);
-assert.equal(isValidKindPlatform('blog', 'hackernews'), false);
-assert.equal(isValidKindPlatform('forum', null), false);
-assert.equal(isValidKindPlatform('paper', 'hackernews'), false);
-assert.equal(isValidKindPlatform('document', null), false);
-const translationCases = [
-	['generic blog', { kind: 'blog', resourcePlatform: null, fileType: null }, true],
-	['Hacker News forum with PDF representation', { kind: 'forum', resourcePlatform: 'hackernews', fileType: 'application/pdf' }, true],
-	['direct PDF', { kind: 'blog', resourcePlatform: null, fileType: 'application/pdf' }, false],
-	['post', { kind: 'post', resourcePlatform: 'twitter', fileType: null }, true],
-	['video', { kind: 'video', resourcePlatform: 'youtube', fileType: null }, false],
-	['web paper', { kind: 'paper', resourcePlatform: null, fileType: null }, true],
-	['direct PDF paper', { kind: 'paper', resourcePlatform: null, fileType: 'application/pdf' }, false],
-	['image', { kind: 'image', resourcePlatform: null, fileType: 'image/png' }, false],
-	['file', { kind: 'file', resourcePlatform: null, fileType: 'text/csv' }, false],
-];
+assert.equal(parseResourceIdentity('post', null), null);
+assert.equal(parseResourceIdentity('blog', 'hackernews'), null);
+assert.equal(parseResourceIdentity('forum', null), null);
+assert.equal(parseResourceIdentity('paper', 'hackernews'), null);
+assert.equal(parseResourceIdentity('document', null), null);
 
-for (const [label, identity, expected] of translationCases) {
-	assert.equal(isResourceTranslationIdentityEligible(identity), expected, `${label} translation eligibility`);
-}
-
-assert.equal(detectResourcePlatform('https://x.com/openai/status/1234567890'), 'twitter');
-assert.equal(detectResourcePlatform('https://youtu.be/dQw4w9WgXcQ'), 'youtube');
-assert.equal(detectResourcePlatform('https://news.ycombinator.com/item?id=12345678'), 'hackernews');
-assert.equal(detectResourcePlatform('https://example.com/article'), null);
+assert.deepEqual(detectResourceUrl('https://x.com/openai/status/1234567890'), {
+	resourcePlatform: 'twitter',
+	platformId: '1234567890',
+});
+assert.deepEqual(detectResourceUrl('https://youtu.be/dQw4w9WgXcQ'), {
+	resourcePlatform: 'youtube',
+	platformId: 'dQw4w9WgXcQ',
+});
+assert.deepEqual(detectResourceUrl('https://news.ycombinator.com/item?id=12345678'), {
+	resourcePlatform: 'hackernews',
+	platformId: '12345678',
+});
+assert.equal(detectResourceUrl('https://example.com/article'), null);
 
 assert.deepEqual(resourceIdentityForDetectedPlatform('twitter'), { kind: 'post', resourcePlatform: 'twitter' });
 assert.deepEqual(resourceIdentityForDetectedPlatform('youtube'), { kind: 'video', resourcePlatform: 'youtube' });
@@ -68,6 +61,5 @@ console.info({
 	invalidIdentityCases: 5,
 	identifierCompatibilityCases: identifierCompatibilityCases.length,
 	sourceRevisionCases: 4,
-	translationCases: translationCases.length,
 	urlCases: 4,
 });

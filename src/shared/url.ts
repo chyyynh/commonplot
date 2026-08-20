@@ -97,7 +97,3 @@ export function detectResourceUrl(url: string | null | undefined): DetectedResou
 	if (hackerNewsId) return { resourcePlatform: 'hackernews', platformId: hackerNewsId };
 	return null;
 }
-
-export function detectResourcePlatform(url: string | null | undefined): ResourcePlatform {
-	return detectResourceUrl(url)?.resourcePlatform ?? null;
-}
