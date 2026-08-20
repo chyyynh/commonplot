@@ -194,9 +194,11 @@ async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, resour
 	if (!sourceUrl) throw new Error(`Resource ${resource.id} has no source URL`);
 	// A monitored source's feed decided to list this; anything else is a person's
 	// explicit save, which feed policies must not veto.
-	const origin = { monitored: !!resource.source_id };
+	const monitored = !!resource.source_id;
 	const acquired = await readAcquiredContentArtifact(
-		await step.do('acquire-content-kind-platform-v1', ACQUISITION_STEP, () => scrapeSavedUrlArtifact(sourceUrl, env, origin, resource.id)),
+		await step.do('acquire-content-kind-platform-v1', ACQUISITION_STEP, () =>
+			scrapeSavedUrlArtifact(sourceUrl, env, monitored, resource.id),
+		),
 	);
 	return stageAcquisitionEnhancements(step, acquired, resource.id);
 }

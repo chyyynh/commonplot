@@ -125,20 +125,13 @@ export async function sanitizeAcquiredContent(acquired: AcquiredContent): Promis
 	} as AcquiredContent;
 }
 
-/**
- * What a monitored feed contributes is a curation decision; what someone types in
- * is not. Only the monitored path applies the feed policies, so a deliberately
- * saved URL is never rejected for being the kind of thing we don't crawl.
- */
-export type AcquisitionOrigin = { monitored: boolean };
-
-async function scrapeSavedUrl(url: string, env: CoreEnv, origin: AcquisitionOrigin, resourceId: string): Promise<AcquiredContent> {
+async function scrapeSavedUrl(url: string, env: CoreEnv, monitored: boolean, resourceId: string): Promise<AcquiredContent> {
 	const validatedUrl = validateAcquisitionUrl(url);
 	const detected = detectResourceUrl(validatedUrl);
 	if (detected) {
 		switch (detected.resourcePlatform) {
 			case 'youtube':
-				return sanitizeAcquiredContent(await scrapeYouTube(detected.platformId, env.YOUTUBE_API_KEY, origin.monitored));
+				return sanitizeAcquiredContent(await scrapeYouTube(detected.platformId, env.YOUTUBE_API_KEY, monitored));
 			case 'twitter':
 				return sanitizeAcquiredContent(await scrapeTweet(detected.platformId, env.KAITO_API_KEY));
 			case 'hackernews':
@@ -154,10 +147,10 @@ async function scrapeSavedUrl(url: string, env: CoreEnv, origin: AcquisitionOrig
 export async function scrapeSavedUrlArtifact(
 	url: string,
 	env: CoreEnv,
-	origin: AcquisitionOrigin,
+	monitored: boolean,
 	resourceId: string,
 ): Promise<ReadableStream<Uint8Array>> {
-	const acquired = await scrapeSavedUrl(url, env, origin, resourceId);
+	const acquired = await scrapeSavedUrl(url, env, monitored, resourceId);
 	return acquiredContentArtifact(acquired);
 }
 
