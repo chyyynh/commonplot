@@ -13,9 +13,10 @@ import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
 import { detectResourceUrl } from '@core-shared/url';
 import { claimStalePendingResourceAdmissions } from '@ingest/domain/resource-admission-store';
 import {
-	loadResourceForProcessingArtifact,
+	loadOriginalResourceContentArtifact,
 	loadResourceShellForProcessing,
-	readResourceForProcessingArtifact,
+	type ResourceProcessingShell,
+	readOriginalResourceContentArtifact,
 } from '@ingest/domain/resource-store';
 import { loadFeedSourcePolicy } from '@ingest/domain/source-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
@@ -177,15 +178,12 @@ async function stageResourceImages(
 	return images;
 }
 
-function shouldAcquireContent(
-	resource: ResourceForProcessing & { has_content?: boolean; has_youtube_transcript?: boolean },
-	force = false,
-): boolean {
+function shouldAcquireContent(shell: ResourceProcessingShell, force = false): boolean {
+	const { resource } = shell;
 	if (force) return !resource.storage_key && !!resource.url;
-	const hasContent = 'has_content' in resource && !!resource.has_content;
-	const needsYouTubeAcquisition = resource.resource_platform === 'youtube' && !resource.has_youtube_transcript;
+	const needsYouTubeAcquisition = resource.resource_platform === 'youtube' && !shell.hasYoutubeTranscript;
 	const needsPlatformAcquisition = !!detectResourceUrl(resource.url) && (resource.kind_metadata === null || resource.creators.length === 0);
-	return (!hasContent || needsYouTubeAcquisition || needsPlatformAcquisition) && !resource.storage_key && !!resource.url;
+	return (!shell.hasPersistedContent || needsYouTubeAcquisition || needsPlatformAcquisition) && !resource.storage_key && !!resource.url;
 }
 
 async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, resource: ResourceForProcessing): Promise<AcquiredContent> {
@@ -229,10 +227,11 @@ function assertPdfExtractionProcessable(input: {
 async function acquireResourceForOperation(
 	env: CoreEnv,
 	step: WorkflowStep,
-	resource: ResourceForProcessing,
+	shell: ResourceProcessingShell,
 	operation: WorkflowOperation,
 ): Promise<AcquiredContent | undefined> {
-	if (!shouldAcquireContent(resource, operation === 'resync')) return undefined;
+	if (!shouldAcquireContent(shell, operation === 'resync')) return undefined;
+	const { resource } = shell;
 	const sourceId = feedSourceId(resource);
 	if (sourceId) {
 		const source = await step.do(
@@ -279,13 +278,14 @@ function acquiredSubjectUrl(acquired: AcquiredContent | undefined): string | nul
 async function prepareResourceForProcessing(
 	env: CoreEnv,
 	step: WorkflowStep,
-	initialResource: ResourceForProcessing,
+	initialShell: ResourceProcessingShell,
 	operation: WorkflowOperation,
 ): Promise<PreparedResource> {
+	const { resource: initialResource } = initialShell;
 	// Exact DOI/arXiv/OpenAlex URLs can go straight to OpenAlex Content. The
 	// original landing page is only acquired when OpenAlex has no cached PDF.
 	const preliminary = await stagePreliminaryAcquisition(env, step, initialResource, () =>
-		acquireResourceForOperation(env, step, initialResource, operation),
+		acquireResourceForOperation(env, step, initialShell, operation),
 	);
 	let { acquiredContent } = preliminary;
 	const acquiredResource = applyAcquiredMaterial(initialResource, acquiredContent);
@@ -355,17 +355,18 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 		}
 		let persistedSourceRevision: string | null | undefined;
 		try {
-			const initialResource = await step.do(
+			const initialShell = await step.do(
 				'fetch-resource-shell-kind-platform-v1',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 				async () => loadResourceShellForProcessing(this.env, resourceId),
 			);
+			const { resource: initialResource } = initialShell;
 			persistedSourceRevision = initialResource.source_revision;
 			if (sourceRevision !== undefined && initialResource.source_revision !== sourceRevision) {
 				return { success: true, resource_id: resourceId, operation, superseded: true };
 			}
 			assertOperationCanProcessResource(initialResource, operation);
-			const prepared = await prepareResourceForProcessing(this.env, step, initialResource, operation);
+			const prepared = await prepareResourceForProcessing(this.env, step, initialShell, operation);
 			const { acquiredContent, identityPdfTextArtifact, paperEnrichment, resolution, resource } = prepared;
 			const logContext = { resource_id: resourceId, table: 'resources' };
 
@@ -376,7 +377,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 				resourcePlatform: resource.resource_platform,
 				...logContext,
 			});
-			const hasContent = 'has_content' in resource && !!resource.has_content;
+			const hasContent = initialShell.hasPersistedContent;
 			const pdfTextArtifact =
 				identityPdfTextArtifact ??
 				(!hasContent && !acquiredContent && resource.storage_key && resource.file_type === PDF_MIME
@@ -397,21 +398,22 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 				return true;
 			});
 
-			// Reread durable rows unless in-memory acquisition already holds the freshest copy. The stream keeps large content outside Workflow's
-			// persisted-value size limit; PDF text always wins.
-			const fullResource =
+			// Read only the original content when the shell is otherwise sufficient. The stream keeps large content outside Workflow's persisted-value
+			// size limit; acquired or extracted content always wins.
+			const persistedContent =
 				acquiredContent || pdfTextArtifact
-					? resource
-					: await readResourceForProcessingArtifact(
+					? null
+					: await readOriginalResourceContentArtifact(
 							await step.do(
-								'load-full-resource-content-kind-platform-v1',
+								'load-original-resource-content-kind-platform-v1',
 								{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-								() => loadResourceForProcessingArtifact(this.env, resourceId),
+								() => loadOriginalResourceContentArtifact(this.env, resourceId),
 							),
 							resourceId,
 						);
+			const resourceWithContent = persistedContent === null ? resource : { ...resource, content: persistedContent };
 			const extractedPdfText = pdfTextArtifact?.text?.trim();
-			const processableResource = extractedPdfText ? { ...fullResource, content: extractedPdfText } : fullResource;
+			const processableResource = extractedPdfText ? { ...resourceWithContent, content: extractedPdfText } : resourceWithContent;
 
 			const previewImageUrl = acquiredContent?.previewImageUrl?.trim() || null;
 			const handled = await handleResolvedResource({

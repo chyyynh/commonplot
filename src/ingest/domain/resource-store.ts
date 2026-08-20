@@ -30,12 +30,13 @@ import type { ResourceForProcessing, ResourceLocaleText, ResourceTranslationMap 
 import { type CoreDb, withCoreDb } from '@db/client';
 import { resourceDisplaySourceSql, resourceTranslationIdentityPredicate } from '@db/resource-identity-sql';
 import { resourceIdentifiers, resources, resourceTranslations, youtubeTranscripts } from '@db/schema';
-import { eq, type SQL, sql } from 'drizzle-orm';
+import { and, eq, type SQL, sql } from 'drizzle-orm';
 import { cleanString, dateValue, requiredString, storedResourceSourceRevision, stringArrayValue } from './resource-values';
 
-type StoredResourceForProcessing = ResourceForProcessing & {
-	has_content?: boolean;
-	has_youtube_transcript?: boolean;
+export type ResourceProcessingShell = {
+	resource: ResourceForProcessing;
+	hasPersistedContent: boolean;
+	hasYoutubeTranscript: boolean;
 };
 
 type ResourceStoreRow = {
@@ -64,8 +65,8 @@ type ResourceStoreRow = {
 	source_revision: string | null;
 	subject_resource_id: string | null;
 	resource_identifiers: unknown;
-	has_content?: boolean;
-	has_youtube_transcript?: boolean;
+	has_content: boolean | null;
+	has_youtube_transcript: boolean | null;
 	storage_key?: string | null;
 	file_type?: string | null;
 	normalized_url?: string | null;
@@ -101,34 +102,47 @@ function effectiveResourcePlatformPredicate(platform: Exclude<ResourcePlatform, 
 	return sql`${resources.resourcePlatform} = ${platform}`;
 }
 
-export async function loadResourceForProcessingArtifact(env: CoreEnv, resourceId: string): Promise<ReadableStream<Uint8Array>> {
-	const resource = await withCoreDb(env, (db) => loadResourceForProcessingFromDb(db, resourceId));
-	const bytes = new TextEncoder().encode(JSON.stringify(resource));
-	return new Blob([bytes], { type: 'application/json' }).stream();
+export async function loadOriginalResourceContentArtifact(env: CoreEnv, resourceId: string): Promise<ReadableStream<Uint8Array>> {
+	const content = await withCoreDb(env, async (db) => {
+		const row = (
+			await db
+				.select({ content: resourceTranslations.content })
+				.from(resources)
+				.innerJoin(
+					resourceTranslations,
+					and(eq(resourceTranslations.resourceId, resources.id), eq(resourceTranslations.lang, resources.originalLang)),
+				)
+				.where(eq(resources.id, resourceId))
+				.limit(1)
+		)[0];
+		if (!row || row.content === null || row.content.length === 0) {
+			throw new Error(`Resource ${resourceId} has no persisted original content`);
+		}
+		return row.content;
+	});
+	return new Blob([content], { type: 'text/plain; charset=utf-8' }).stream();
 }
 
-export async function readResourceForProcessingArtifact(
+export async function readOriginalResourceContentArtifact(
 	artifact: ReadableStream<Uint8Array>,
 	expectedResourceId: string,
-): Promise<StoredResourceForProcessing> {
-	const value: unknown = await new Response(artifact).json();
-	if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid resource processing artifact');
-	const resource = value as Record<string, unknown>;
-	const identity = parseResourceIdentity(resource.kind, resource.resource_platform);
-	// The versioned step serializes the already-validated DB mapper output; only
-	// recheck its identity at the durable serialization boundary.
-	if (!identity || !isContentResourceKind(identity.kind) || resource.id !== expectedResourceId) {
-		throw new Error(`Resource processing artifact for ${expectedResourceId} is invalid`);
-	}
-	return resource as StoredResourceForProcessing;
+): Promise<string> {
+	const content = await new Response(artifact).text();
+	if (content.length === 0) throw new Error(`Resource ${expectedResourceId} has no persisted original content`);
+	return content;
 }
 
-export async function loadResourceShellForProcessing(env: CoreEnv, resourceId: string): Promise<StoredResourceForProcessing> {
-	return withCoreDb(env, (db) => loadStoredResourceRow(db, resourceId, true));
+export async function loadResourceShellForProcessing(env: CoreEnv, resourceId: string): Promise<ResourceProcessingShell> {
+	const row = await withCoreDb(env, (db) => loadStoredResourceRow(db, resourceId, true));
+	return {
+		resource: resourceStoreRowToProcessing(row),
+		hasPersistedContent: row.has_content === true,
+		hasYoutubeTranscript: row.has_youtube_transcript === true,
+	};
 }
 
-export function loadResourceForProcessingFromDb(db: CoreDb, resourceId: string): Promise<StoredResourceForProcessing> {
-	return loadStoredResourceRow(db, resourceId, false);
+export async function loadResourceForProcessingFromDb(db: CoreDb, resourceId: string): Promise<ResourceForProcessing> {
+	return resourceStoreRowToProcessing(await loadStoredResourceRow(db, resourceId, false));
 }
 
 export async function isResourceEnrichmentComplete(env: CoreEnv, resourceId: string): Promise<boolean> {
@@ -205,7 +219,7 @@ export async function assertResourceProcessable(env: CoreEnv, resourceId: string
 	});
 }
 
-async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: boolean): Promise<StoredResourceForProcessing> {
+async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: boolean): Promise<ResourceStoreRow> {
 	const result = await db.execute<ResourceStoreRow>(sql`
 		SELECT
 			rl.id::text AS id,
@@ -290,12 +304,12 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string, shell: bool
 	`);
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
-	return resourceStoreRowToProcessing(row);
+	return row;
 }
 
-function resourceStoreRowToProcessing(row: ResourceStoreRow): StoredResourceForProcessing {
+function resourceStoreRowToProcessing(row: ResourceStoreRow): ResourceForProcessing {
 	const identity = storedResourceIdentity(row);
-	const resource: StoredResourceForProcessing = {
+	const resource: ResourceForProcessing = {
 		...toResourceIdentityColumns(identity),
 		id: row.id,
 		source_id: row.source_id,
@@ -318,8 +332,6 @@ function resourceStoreRowToProcessing(row: ResourceStoreRow): StoredResourceForP
 		resource_identifiers: resourceIdentifiersValue(row.resource_identifiers),
 		paper_identifiers: paperIdentifiersValue(row.resource_identifiers),
 	};
-	if (typeof row.has_content === 'boolean') resource.has_content = row.has_content;
-	if (typeof row.has_youtube_transcript === 'boolean') resource.has_youtube_transcript = row.has_youtube_transcript;
 	resource.storage_key = row.storage_key ?? null;
 	if (row.file_type) resource.file_type = row.file_type;
 	resource.normalized_url = row.normalized_url ?? null;
