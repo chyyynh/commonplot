@@ -1,21 +1,14 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
-import {
-	type ContentResourceIdentity,
-	type ContentResourceKind,
-	isContentResourceIdentity,
-	parseResourceIdentity,
-	type ResourceCategory,
-	type ResourcePlatform,
-} from '@core-shared/resource-types';
+import { type ContentResourceIdentity, isContentResourceIdentity, parseResourceIdentity } from '@core-shared/resource-types';
 import { type CoreDb, isValidUuid, queryRows, textArraySql, uuidArraySql, withCoreDb } from '@db/client';
 import { contentResourceIdentitySql, resourceDisplaySourceSql } from '@db/resource-identity-sql';
 import { sql } from 'drizzle-orm';
+import { CORPUS_ITEM_PREFIX, corpusItemKey, corpusResourceIdFromItemKey, corpusResourcePlatformMetadata } from './corpus';
 import { DURABLE_WORKFLOW_RETRIES } from './workflow-control';
 
 // Cloudflare AI Search allows at most five custom metadata fields per instance.
 // https://developers.cloudflare.com/ai-search/configuration/indexing/metadata/
 const AI_SEARCH_CUSTOM_METADATA_FIELD_LIMIT = 5;
-const NULL_RESOURCE_PLATFORM_METADATA = 'none';
 const CANONICAL_CUSTOM_METADATA = [
 	{ field_name: 'effective_at', data_type: 'datetime' },
 	{ field_name: 'source_id', data_type: 'text' },
@@ -33,11 +26,8 @@ const CANONICAL_CONTENT_IDENTITIES = [
 if (CANONICAL_CUSTOM_METADATA.length > AI_SEARCH_CUSTOM_METADATA_FIELD_LIMIT) {
 	throw new Error(`AI Search metadata exceeds the ${AI_SEARCH_CUSTOM_METADATA_FIELD_LIMIT}-field limit`);
 }
-const ITEM_PREFIX = 'resources/';
-const ITEM_SUFFIX = '.md';
 const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
 const TRANSLATED_CONTENT_MAX_CHARS = 4_000;
-const MAX_RESULTS = 50;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 // Canonical rows and AI Search cannot share a transaction. The native upload
 // call durably admits the keyed document to AI Search; Workflow retries cover
@@ -68,29 +58,6 @@ type CorpusDocument = {
 	source: string | null;
 	translations: CorpusTranslationRow[];
 };
-
-type AiSearchRank = { id: string; score: number };
-type CorpusSearchProfile = 'discovery' | 'related';
-
-type CorpusSearchOptions = {
-	categories?: readonly ResourceCategory[];
-	effectiveAfter?: Date | null;
-	effectiveBefore?: Date | null;
-	kinds?: readonly ContentResourceKind[];
-	profile?: CorpusSearchProfile;
-	resourcePlatforms?: readonly ResourcePlatform[];
-	sourceIds?: readonly string[];
-};
-
-function itemKey(id: string): string {
-	return `${ITEM_PREFIX}${id}${ITEM_SUFFIX}`;
-}
-
-function idFromItemKey(key: string): string | null {
-	if (!key.startsWith(ITEM_PREFIX) || !key.endsWith(ITEM_SUFFIX)) return null;
-	const id = key.slice(ITEM_PREFIX.length, -ITEM_SUFFIX.length);
-	return isValidUuid(id) ? id : null;
-}
 
 function markdownSection(label: string, value: string | null | undefined): string {
 	return value?.trim() ? `\n## ${label}\n\n${value.trim()}\n` : '';
@@ -202,13 +169,13 @@ function corpusItemMetadata(document: CorpusDocument): Record<string, unknown> {
 		...(document.source_id ? { source_id: document.source_id } : {}),
 		...(document.category ? { category: document.category } : {}),
 		kind: identity.kind,
-		resource_platform: identity.resourcePlatform ?? NULL_RESOURCE_PLATFORM_METADATA,
+		resource_platform: corpusResourcePlatformMetadata(identity.resourcePlatform),
 	};
 }
 
 async function uploadCorpusDocument(env: CoreEnv, document: CorpusDocument): Promise<AiSearchItemInfo | null> {
 	const startedAt = Date.now();
-	const result: AiSearchItemInfo | null = await env.AI_SEARCH.items.upload(itemKey(document.id), serializeDocument(document), {
+	const result: AiSearchItemInfo | null = await env.AI_SEARCH.items.upload(corpusItemKey(document.id), serializeDocument(document), {
 		metadata: corpusItemMetadata(document),
 	});
 	console.info({
@@ -233,7 +200,7 @@ export async function syncCorpusItem(env: CoreEnv, resourceId: string): Promise<
 }
 
 async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<boolean> {
-	const key = itemKey(resourceId);
+	const key = corpusItemKey(resourceId);
 	// Search by the bare id, not the full key: a value containing `/` is parsed as
 	// a folder metadata filter and rejected with 7001 "metadata filter pattern
 	// exceeds maximum length", so passing `resources/<id>.md` failed every call.
@@ -251,66 +218,6 @@ async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<boole
 		});
 	}
 	return matches.length > 0;
-}
-
-function searchFilters(options: CorpusSearchOptions): VectorizeVectorMetadataFilter | null | undefined {
-	if (
-		options.sourceIds?.length === 0 ||
-		options.categories?.length === 0 ||
-		options.kinds?.length === 0 ||
-		options.resourcePlatforms?.length === 0
-	) {
-		return null;
-	}
-	const filters: VectorizeVectorMetadataFilter = {};
-	if (options.sourceIds?.length) {
-		filters.source_id = { $in: [...options.sourceIds] };
-	}
-	if (options.categories?.length) filters.category = { $in: [...options.categories] };
-	if (options.kinds?.length) filters.kind = { $in: [...options.kinds] };
-	if (options.resourcePlatforms?.length) {
-		filters.resource_platform = { $in: options.resourcePlatforms.map(resourcePlatformMetadata) };
-	}
-	if (options.effectiveAfter || options.effectiveBefore) {
-		filters.effective_at = {
-			...(options.effectiveAfter ? { $gte: options.effectiveAfter.toISOString() } : {}),
-			...(options.effectiveBefore ? { $lte: options.effectiveBefore.toISOString() } : {}),
-		};
-	}
-	return Object.keys(filters).length ? filters : undefined;
-}
-
-export async function searchCorpusRanks(env: CoreEnv, query: string, options: CorpusSearchOptions = {}): Promise<AiSearchRank[]> {
-	const profile = options.profile ?? 'discovery';
-	const retrievalType = profile === 'related' ? 'vector' : 'hybrid';
-	const filters = searchFilters(options);
-	if (filters === null) return [];
-	const response = await env.AI_SEARCH.search({
-		query,
-		ai_search_options: {
-			query_rewrite: { enabled: false },
-			reranking: { enabled: false },
-			retrieval: {
-				retrieval_type: retrievalType,
-				...(retrievalType === 'hybrid' ? { fusion_method: 'rrf' as const } : {}),
-				keyword_match_mode: 'or',
-				max_num_results: MAX_RESULTS,
-				metadata_only: true,
-				return_on_failure: false,
-				...(profile === 'related' ? {} : { boost_by: [{ field: 'effective_at', direction: 'desc' as const }] }),
-				...(filters ? { filters } : {}),
-			},
-		},
-	});
-	const ranks = new Map<string, AiSearchRank>();
-	for (const [index, chunk] of response.chunks.entries()) {
-		const id = idFromItemKey(chunk.item.key);
-		if (!id || ranks.has(id)) continue;
-		// Consumers hydrate rows in PostgreSQL, so return a unique order-preserving
-		// score instead of the tied scores commonly produced by RRF.
-		ranks.set(id, { id, score: response.chunks.length - index });
-	}
-	return [...ranks.values()];
 }
 
 type SearchIndexRebuildPayload = Record<string, never>;
@@ -466,12 +373,8 @@ type SearchIdentityCounts = {
 	byIdentity: Record<string, number>;
 };
 
-function resourcePlatformMetadata(resourcePlatform: ResourcePlatform): string {
-	return resourcePlatform ?? NULL_RESOURCE_PLATFORM_METADATA;
-}
-
 function searchIdentityKey(identity: ContentResourceIdentity): string {
-	return `${identity.kind}/${resourcePlatformMetadata(identity.resourcePlatform)}`;
+	return `${identity.kind}/${corpusResourcePlatformMetadata(identity.resourcePlatform)}`;
 }
 
 function emptySearchIdentityCounts(): Record<string, number> {
@@ -630,11 +533,11 @@ async function pruneSearchItemPage(env: CoreEnv, page: number): Promise<number> 
 		sort_by: 'modified_at',
 		source: 'builtin',
 	});
-	const ownedItems = listed.result.filter((item) => item.source_id === 'builtin' && item.key.startsWith(ITEM_PREFIX));
-	const resourceIds = ownedItems.map((item) => idFromItemKey(item.key)).filter((id): id is string => id !== null);
+	const ownedItems = listed.result.filter((item) => item.source_id === 'builtin' && item.key.startsWith(CORPUS_ITEM_PREFIX));
+	const resourceIds = ownedItems.map((item) => corpusResourceIdFromItemKey(item.key)).filter((id): id is string => id !== null);
 	const eligibleIds = await loadEligibleCorpusIds(env, resourceIds);
 	const staleItems = ownedItems.filter((item) => {
-		const resourceId = idFromItemKey(item.key);
+		const resourceId = corpusResourceIdFromItemKey(item.key);
 		return resourceId === null || !eligibleIds.has(resourceId);
 	});
 
@@ -842,7 +745,7 @@ async function listOwnedSearchRepairStatusItems(env: CoreEnv, status: SearchInde
 	const items: AiSearchItemInfo[] = [];
 	for (let page = 1; page <= REINDEX_REPAIR_MAX_LIST_PAGES; page++) {
 		const listed = await env.AI_SEARCH.items.list({
-			metadata_filter: JSON.stringify({ folder: ITEM_PREFIX }),
+			metadata_filter: JSON.stringify({ folder: CORPUS_ITEM_PREFIX }),
 			page,
 			per_page: REINDEX_REPAIR_LIST_PAGE_SIZE,
 			sort_by: 'modified_at',
@@ -858,8 +761,8 @@ async function listOwnedSearchRepairStatusItems(env: CoreEnv, status: SearchInde
 }
 
 function parseSearchIndexRepairTarget(item: AiSearchItemInfo, status: SearchIndexRepairTargetStatus): SearchIndexRepairTarget {
-	const resourceId = idFromItemKey(item.key);
-	if (!item.id.trim() || !resourceId || item.key !== itemKey(resourceId) || item.source_id !== 'builtin') {
+	const resourceId = corpusResourceIdFromItemKey(item.key);
+	if (!item.id.trim() || !resourceId || item.key !== corpusItemKey(resourceId) || item.source_id !== 'builtin') {
 		throw new Error(`AI Search repair candidate ${item.id} is not an owned ${status} corpus item`);
 	}
 	return {
@@ -1013,7 +916,7 @@ function listedItemCount(listed: AiSearchListItemsResponse, label: string): numb
 }
 
 async function loadIndexedIdentityCounts(env: CoreEnv): Promise<SearchIdentityCounts> {
-	const folderFilter = { folder: ITEM_PREFIX };
+	const folderFilter = { folder: CORPUS_ITEM_PREFIX };
 	const all = await env.AI_SEARCH.items.list({
 		metadata_filter: JSON.stringify(folderFilter),
 		page: 1,
@@ -1025,7 +928,7 @@ async function loadIndexedIdentityCounts(env: CoreEnv): Promise<SearchIdentityCo
 	// one fanout would exceed the Worker's six simultaneous connection ceiling.
 	for (const identity of CANONICAL_CONTENT_IDENTITIES) {
 		const { kind, resourcePlatform } = identity;
-		const platform = resourcePlatformMetadata(resourcePlatform);
+		const platform = corpusResourcePlatformMetadata(resourcePlatform);
 		const listed = await env.AI_SEARCH.items.list({
 			metadata_filter: JSON.stringify({
 				...folderFilter,
@@ -1045,7 +948,7 @@ async function loadOwnedSearchItemStatuses(env: CoreEnv): Promise<SearchIndexSta
 	const statusCount = async (status: AiSearchItemInfo['status']) =>
 		listedItemCount(
 			await env.AI_SEARCH.items.list({
-				metadata_filter: JSON.stringify({ folder: ITEM_PREFIX }),
+				metadata_filter: JSON.stringify({ folder: CORPUS_ITEM_PREFIX }),
 				page: 1,
 				per_page: 1,
 				source: 'builtin',

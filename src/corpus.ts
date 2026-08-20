@@ -12,7 +12,6 @@ import {
 import { type CoreDb, isValidUuid, queryRows, textArraySql, uuidArraySql, withCoreDb } from '@db/client';
 import { contentResourceIdentitySql, resourceDisplaySourceSql, resourceIdentityFilterSql } from '@db/resource-identity-sql';
 import { type SQL, sql } from 'drizzle-orm';
-import { searchCorpusRanks } from './ai-search';
 
 type ResourceSummary = {
 	id: string;
@@ -67,6 +66,23 @@ const SEARCH_TAGS_MAX = 8;
 const SEARCH_TAG_MAX = 64;
 const SEARCH_TITLE_MAX = 512;
 const SEARCH_URL_MAX = 2_048;
+export const CORPUS_ITEM_PREFIX = 'resources/';
+const CORPUS_ITEM_SUFFIX = '.md';
+const NULL_RESOURCE_PLATFORM_METADATA = 'none';
+
+export function corpusItemKey(resourceId: string): string {
+	return `${CORPUS_ITEM_PREFIX}${resourceId}${CORPUS_ITEM_SUFFIX}`;
+}
+
+export function corpusResourceIdFromItemKey(key: string): string | null {
+	if (!key.startsWith(CORPUS_ITEM_PREFIX) || !key.endsWith(CORPUS_ITEM_SUFFIX)) return null;
+	const resourceId = key.slice(CORPUS_ITEM_PREFIX.length, -CORPUS_ITEM_SUFFIX.length);
+	return isValidUuid(resourceId) ? resourceId : null;
+}
+
+export function corpusResourcePlatformMetadata(resourcePlatform: ResourcePlatform): string {
+	return resourcePlatform ?? NULL_RESOURCE_PLATFORM_METADATA;
+}
 
 type NormalizedSearchFilters = {
 	categories?: ResourceCategory[];
@@ -77,6 +93,59 @@ type NormalizedSearchFilters = {
 	resourcePlatforms?: ResourcePlatform[];
 	sourceIds?: string[];
 };
+
+function aiSearchFilters(filters: NormalizedSearchFilters): VectorizeVectorMetadataFilter | undefined {
+	const metadata: VectorizeVectorMetadataFilter = {};
+	if (filters.sourceIds?.length) metadata.source_id = { $in: filters.sourceIds };
+	if (filters.categories?.length) metadata.category = { $in: filters.categories };
+	if (filters.kinds?.length) metadata.kind = { $in: filters.kinds };
+	if (filters.resourcePlatforms?.length) {
+		metadata.resource_platform = { $in: filters.resourcePlatforms.map(corpusResourcePlatformMetadata) };
+	}
+	if (filters.effectiveAfter || filters.effectiveBefore) {
+		metadata.effective_at = {
+			...(filters.effectiveAfter ? { $gte: filters.effectiveAfter.toISOString() } : {}),
+			...(filters.effectiveBefore ? { $lte: filters.effectiveBefore.toISOString() } : {}),
+		};
+	}
+	return Object.keys(metadata).length ? metadata : undefined;
+}
+
+async function searchCorpusRanks(
+	env: CoreEnv,
+	query: string,
+	filters: NormalizedSearchFilters,
+	profile: 'discovery' | 'related' = 'discovery',
+): Promise<Array<{ id: string; score: number }>> {
+	const retrievalType = profile === 'related' ? 'vector' : 'hybrid';
+	const metadataFilters = aiSearchFilters(filters);
+	const response = await env.AI_SEARCH.search({
+		query,
+		ai_search_options: {
+			query_rewrite: { enabled: false },
+			reranking: { enabled: false },
+			retrieval: {
+				retrieval_type: retrievalType,
+				...(retrievalType === 'hybrid' ? { fusion_method: 'rrf' as const } : {}),
+				keyword_match_mode: 'or',
+				max_num_results: RESULT_LIMIT_MAX,
+				metadata_only: true,
+				return_on_failure: false,
+				...(profile === 'related' ? {} : { boost_by: [{ field: 'effective_at', direction: 'desc' as const }] }),
+				...(metadataFilters ? { filters: metadataFilters } : {}),
+			},
+		},
+	});
+	const ranks = new Map<string, { id: string; score: number }>();
+	for (const [index, chunk] of response.chunks.entries()) {
+		const id = corpusResourceIdFromItemKey(chunk.item.key);
+		if (!id || ranks.has(id)) continue;
+		// Consumers hydrate rows in PostgreSQL, so return a unique order-preserving
+		// score instead of the tied scores commonly produced by RRF.
+		ranks.set(id, { id, score: response.chunks.length - index });
+	}
+	return [...ranks.values()];
+}
 
 async function filterReadableCorpusRanks(
 	env: CoreEnv,
@@ -117,8 +186,9 @@ export async function relatedCorpusResourceIds(env: CoreEnv, input: RelatedResou
 	const offset = clampInt(input.offset, 0, Number.MAX_SAFE_INTEGER, 0);
 	const seedText = await withCoreDb(env, (db) => relatedSeedText(db, seed.id));
 	if (!seedText) return [];
-	const ranks = await searchCorpusRanks(env, seedText, { profile: 'related' });
-	const readableRanks = await filterReadableCorpusRanks(env, ranks, normalizeSearchFilters({ query: seedText }));
+	const filters = normalizeSearchFilters({ query: seedText });
+	const ranks = await searchCorpusRanks(env, seedText, filters, 'related');
+	const readableRanks = await filterReadableCorpusRanks(env, ranks, filters);
 	return readableRanks
 		.map((rank) => rank.id)
 		.filter((id) => id !== seed.id)
