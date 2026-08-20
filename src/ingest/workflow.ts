@@ -10,7 +10,12 @@ import {
 } from '@core-shared/resource-types';
 import type { PaperMetadata, PdfExtractionMetadata, ResourceForProcessing } from '@core-shared/types';
 import { detectResourceUrl } from '@core-shared/url';
-import { claimStalePendingResourceAdmissions } from '@ingest/domain/resource-admission-store';
+import { withCoreTx } from '@db/client';
+import {
+	claimStalePendingResourceAdmissions,
+	type SourceResourceDraft,
+	upsertPendingSourceResource,
+} from '@ingest/domain/resource-admission-store';
 import {
 	loadOriginalResourceContentArtifact,
 	loadResourceShellForProcessing,
@@ -71,6 +76,11 @@ export async function enqueueProcessing(env: CoreEnv, resourceId: string, source
 		operation: 'ingest',
 		...(sourceRevision ? { sourceRevision } : {}),
 	});
+}
+
+export async function admitPendingSourceResource(env: CoreEnv, draft: SourceResourceDraft): Promise<void> {
+	const pending = await withCoreTx(env, (db) => upsertPendingSourceResource(db, draft));
+	if (pending.needsProcessing) await enqueueProcessing(env, pending.resourceId, pending.sourceRevision ?? undefined);
 }
 
 /** Re-admits app-owned pending rows whose initial DB -> Workflow handoff was interrupted. */

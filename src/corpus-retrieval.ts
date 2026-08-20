@@ -205,15 +205,6 @@ function localizedTranslationSql(preferredLocale: string | null, selectedLang?: 
 	`;
 }
 
-function displaySourceSql(): SQL {
-	return resourceDisplaySourceSql({
-		creatorName: sql`COALESCE(r.creators->0->>'literal', CONCAT_WS(' ', r.creators->0->>'given', r.creators->0->>'family'))`,
-		kind: sql`r.kind`,
-		monitoredSourceName: sql`monitored_source.name`,
-		resourcePlatform: sql`r.resource_platform`,
-	});
-}
-
 function titleForRow(title: string | null): string {
 	return title?.trim().slice(0, MAX_TITLE_CHARS) || 'Untitled resource';
 }
@@ -336,7 +327,12 @@ async function readResource(db: CoreDb, input: KnowledgeResourceReadInput): Prom
 			       r.file_type,
 			       r.original_lang,
 			       COALESCE(r.published_date, r.scraped_date, r.created_at) AS published_date,
-			       ${displaySourceSql()} AS source,
+			       ${resourceDisplaySourceSql({
+								creatorName: sql`COALESCE(r.creators->0->>'literal', CONCAT_WS(' ', r.creators->0->>'given', r.creators->0->>'family'))`,
+								kind: sql`r.kind`,
+								monitoredSourceName: sql`monitored_source.name`,
+								resourcePlatform: sql`r.resource_platform`,
+							})} AS source,
 			       r.tags,
 			       localized.title,
 			       localized.summary,

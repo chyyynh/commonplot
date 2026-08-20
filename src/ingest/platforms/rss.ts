@@ -1,11 +1,6 @@
 import { normalizeUrl } from '@core-shared/url';
-import { withCoreDb, withCoreTx } from '@db/client';
-import {
-	attachSourceToResources,
-	type ExistingResourceRecord,
-	getExistingResourcesByUrl,
-	upsertPendingSourceResource,
-} from '@ingest/domain/resource-admission-store';
+import { withCoreDb } from '@db/client';
+import { attachSourceToResources, type ExistingResourceRecord, getExistingResourcesByUrl } from '@ingest/domain/resource-admission-store';
 import {
 	loadMonitoredSources,
 	type MonitoredSource,
@@ -13,35 +8,28 @@ import {
 	parseRssAcquisitionMode,
 	recordSourceFailure,
 } from '@ingest/domain/source-store';
-import { enqueueProcessing } from '@ingest/workflow';
+import { admitPendingSourceResource, enqueueProcessing } from '@ingest/workflow';
 import { canonicalFeedItemUrl, type FeedItem, feedItemMarkdown, feedPublishedDate, feedSummary, loadFeedEntries } from './rss-feed';
 
 const FEED_CONCURRENCY = 4;
 const ITEM_CONCURRENCY = 5;
 
-type RssSource = MonitoredSource;
-
-async function enqueueFeedItem(env: CoreEnv, feed: RssSource, item: FeedItem, url: string): Promise<void> {
+async function enqueueFeedItem(env: CoreEnv, feed: MonitoredSource, item: FeedItem, url: string): Promise<void> {
 	const title = item.title?.trim();
 	if (!title) throw new Error(`RSS item from ${feed.name} has no title: ${url}`);
 	const mode = parseRssAcquisitionMode(feed.acquisitionMode, feed.name);
 	const content = mode === 'feed' ? await feedItemMarkdown(env, item, url) : null;
-	const pending = await withCoreTx(env, (db) =>
-		upsertPendingSourceResource(db, {
-			sourceId: feed.id,
-			url,
-			title,
-			publishedDate: feedPublishedDate(item.published),
-			summary: feedSummary(item.summary),
-			kind: 'blog',
-			resourcePlatform: null,
-			originalLang: item.language,
-			content,
-		}),
-	);
-	if (pending.needsProcessing) {
-		await enqueueProcessing(env, pending.resourceId, pending.sourceRevision ?? undefined);
-	}
+	await admitPendingSourceResource(env, {
+		sourceId: feed.id,
+		url,
+		title,
+		publishedDate: feedPublishedDate(item.published),
+		summary: feedSummary(item.summary),
+		kind: 'blog',
+		resourcePlatform: null,
+		originalLang: item.language,
+		content,
+	});
 }
 
 function dedupedFeedItems(items: FeedItem[], feedName: string): Array<{ item: FeedItem; url: string }> {
@@ -62,7 +50,7 @@ function dedupedFeedItems(items: FeedItem[], feedName: string): Array<{ item: Fe
  * YouTube from a channel feed). Only unowned rows are sent, so after the first cycle
  * this issues no statement at all.
  */
-async function reattachFeedProvenance(env: CoreEnv, feed: RssSource, existing: ExistingResourceRecord[]): Promise<void> {
+async function reattachFeedProvenance(env: CoreEnv, feed: MonitoredSource, existing: ExistingResourceRecord[]): Promise<void> {
 	const unowned = existing.filter((resource) => resource.needsSourceAttach).map((resource) => resource.id);
 	if (!unowned.length) return;
 	await withCoreDb(env, (db) => attachSourceToResources(db, unowned, feed.id));
@@ -90,7 +78,7 @@ async function enqueueInBatches<T>(items: T[], describe: (item: T) => string, ms
 	return done;
 }
 
-async function processFeed(env: CoreEnv, feed: RssSource): Promise<void> {
+async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
 	const mode = parseRssAcquisitionMode(feed.acquisitionMode, feed.name);
 	const items = await loadFeedEntries(feed.handle);
 	if (!items.length) {

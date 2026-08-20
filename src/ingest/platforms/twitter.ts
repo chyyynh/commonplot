@@ -1,14 +1,9 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { normalizeUrl } from '@core-shared/url';
-import { withCoreDb, withCoreTx } from '@db/client';
-import {
-	attachSourceToResources,
-	getExistingResourcesByUrl,
-	reopenResourceForReprocessing,
-	upsertPendingSourceResource,
-} from '@ingest/domain/resource-admission-store';
+import { withCoreDb } from '@db/client';
+import { attachSourceToResources, getExistingResourcesByUrl, reopenResourceForReprocessing } from '@ingest/domain/resource-admission-store';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
-import { enqueueProcessing } from '@ingest/workflow';
+import { admitPendingSourceResource, enqueueProcessing } from '@ingest/workflow';
 import { buildThreadResourceParts, buildTweetTitle, resolveTweetContent, type Tweet } from './twitter-acquisition';
 
 async function enqueueTwitterResource(
@@ -23,23 +18,18 @@ async function enqueueTwitterResource(
 		hashTags?: string[];
 	},
 ): Promise<void> {
-	const pending = await withCoreTx(env, (db) =>
-		upsertPendingSourceResource(db, {
-			sourceId: data.sourceId,
-			url: data.url,
-			title: data.title,
-			publishedDate: data.publishedDate,
-			summary: null,
-			kind: 'post',
-			resourcePlatform: 'twitter',
-			originalLang: data.originalLang,
-			content: data.content,
-			keywords: data.hashTags,
-		}),
-	);
-	if (pending.needsProcessing) {
-		await enqueueProcessing(env, pending.resourceId, pending.sourceRevision ?? undefined);
-	}
+	await admitPendingSourceResource(env, {
+		sourceId: data.sourceId,
+		url: data.url,
+		title: data.title,
+		publishedDate: data.publishedDate,
+		summary: null,
+		kind: 'post',
+		resourcePlatform: 'twitter',
+		originalLang: data.originalLang,
+		content: data.content,
+		keywords: data.hashTags,
+	});
 }
 
 const MIN_TWEET_LENGTH = 150;

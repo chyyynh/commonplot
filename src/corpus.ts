@@ -331,17 +331,13 @@ function resourceSearchSelect(): SQL {
 		r.kind,
 		r.resource_platform,
 		${recencySql()} AS published_date,
-		${resourceDisplaySource()} AS source,
+		${resourceDisplaySourceSql({
+			creatorName: sql`COALESCE(r.creators->0->>'literal', CONCAT_WS(' ', r.creators->0->>'given', r.creators->0->>'family'))`,
+			kind: sql`r.kind`,
+			monitoredSourceName: sql`monitored_source.name`,
+			resourcePlatform: sql`r.resource_platform`,
+		})} AS source,
 		rt.summary AS summary,
 		r.tags
 	`;
-}
-
-function resourceDisplaySource(): SQL {
-	return resourceDisplaySourceSql({
-		creatorName: sql`COALESCE(r.creators->0->>'literal', CONCAT_WS(' ', r.creators->0->>'given', r.creators->0->>'family'))`,
-		kind: sql`r.kind`,
-		monitoredSourceName: sql`monitored_source.name`,
-		resourcePlatform: sql`r.resource_platform`,
-	});
 }

@@ -57,7 +57,7 @@ export async function claimStalePendingResourceAdmissions(
 	});
 }
 
-type SourceResourceDraft = {
+export type SourceResourceDraft = {
 	sourceId: string;
 	url: string;
 	title: string;
