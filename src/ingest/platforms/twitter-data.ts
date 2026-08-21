@@ -202,6 +202,32 @@ export type TwitterListPage = {
 	nextCursor?: string;
 };
 
+export type TwitterSearchWindow = {
+	sinceTime: number;
+	untilTime: number;
+};
+
+export function twitterSearchWindow(watermark: Date | string, windowEnd: Date, overlapMs: number): TwitterSearchWindow {
+	const watermarkMs = new Date(watermark).getTime();
+	const windowEndMs = windowEnd.getTime();
+	if (!Number.isFinite(watermarkMs)) throw new Error('Twitter source has an invalid monitoring watermark');
+	if (!Number.isFinite(windowEndMs)) throw new Error('Twitter monitor has an invalid window end');
+	if (!Number.isSafeInteger(overlapMs) || overlapMs < 0) throw new Error('Twitter monitor has an invalid watermark overlap');
+	const sinceTime = Math.floor((watermarkMs - overlapMs) / 1000);
+	const untilTime = Math.floor(windowEndMs / 1000);
+	if (sinceTime < 0 || sinceTime >= untilTime) throw new Error('Twitter monitoring window is empty or invalid');
+	return { sinceTime, untilTime };
+}
+
+export function buildTwitterAdvancedSearchQuery(userName: string, window: TwitterSearchWindow): string {
+	const normalized = userName.replace(/^@/, '').trim().toLowerCase();
+	if (!/^[a-z0-9_]{1,15}$/.test(normalized)) throw new Error('Twitter source has an invalid handle');
+	if (!Number.isSafeInteger(window.sinceTime) || !Number.isSafeInteger(window.untilTime) || window.sinceTime >= window.untilTime) {
+		throw new Error('Twitter Advanced Search has an invalid time window');
+	}
+	return `from:${normalized} since_time:${window.sinceTime} until_time:${window.untilTime}`;
+}
+
 function semanticTwitterError(status: string | undefined, message: string | undefined): string | null {
 	return status?.toLowerCase() === 'error' ? message?.trim() || 'unknown provider error' : null;
 }

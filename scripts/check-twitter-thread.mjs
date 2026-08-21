@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import {
+	buildTwitterAdvancedSearchQuery,
 	buildTwitterAuthorThread,
 	combineTwitterThreadMarkdown,
 	isTwitterReply,
+	parseTwitterAdvancedSearchPage,
 	parseTwitterArticleResponse,
 	parseTwitterThreadContextPage,
 	parseTwitterTweetsResponse,
 	renderTwitterArticleMarkdown,
+	twitterSearchWindow,
 	twitterSelfReplyRootId,
 } from '../src/ingest/platforms/twitter-data.ts';
 
@@ -92,9 +95,20 @@ assert.equal(
 	'Article body\n\nContinuation one\n\nContinuation two',
 );
 
+const searchWindow = twitterSearchWindow('2026-08-21T12:00:00.000Z', new Date('2026-08-21T18:00:00.000Z'), 60 * 60 * 1000);
+assert.deepEqual(searchWindow, { sinceTime: 1_787_310_000, untilTime: 1_787_335_200 });
+assert.equal(buildTwitterAdvancedSearchQuery('@OpenAI', searchWindow), 'from:openai since_time:1787310000 until_time:1787335200');
+assert.throws(() => twitterSearchWindow('2026-08-21T19:00:00.000Z', new Date('2026-08-21T18:00:00.000Z'), 0), /empty or invalid/);
+assert.deepEqual(parseTwitterAdvancedSearchPage({ tweets: [root], has_next_page: true, next_cursor: 'next' }), {
+	tweets: [root],
+	hasNextPage: true,
+	nextCursor: 'next',
+});
+
 console.info({
 	event: 'twitter_thread_smoke_passed',
 	articleCases: 3,
+	advancedSearchCases: 4,
 	threadGraphCases: 1,
 	replyPredicateCases: 5,
 	selfReplyRootCases: 4,

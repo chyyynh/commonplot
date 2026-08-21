@@ -39,7 +39,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		if (event.cron === '*/5 * * * *') {
 			this.ctx.waitUntil(runFiveMinuteCycle(this.env));
 		} else if (event.cron === '0 */6 * * *') {
-			this.ctx.waitUntil(handleTwitterCron(this.env));
+			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
 		}
 	}
 

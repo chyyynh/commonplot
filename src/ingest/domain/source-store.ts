@@ -1,6 +1,6 @@
 import { type CoreDb, withCoreDb } from '@db/client';
 import { sources } from '@db/schema';
-import { and, eq, inArray, sql } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
 
 export type MonitoredSource = {
 	id: string;
@@ -42,15 +42,19 @@ export async function loadMonitoredSources(env: CoreEnv, monitor: 'feed' | 'twit
 	);
 }
 
-export async function markSourcesScraped(env: CoreEnv, sourceIds: string[], scrapedAt: Date = new Date()): Promise<void> {
-	if (!sourceIds.length) return;
-	await withCoreDb(env, async (db) => {
+export async function markSourcesScraped(env: CoreEnv, sourceIds: string[], scrapedAt: Date = new Date()): Promise<number> {
+	if (!sourceIds.length) return 0;
+	if (!Number.isFinite(scrapedAt.getTime())) throw new Error('Source watermark is invalid');
+	return withCoreDb(env, async (db) => {
 		// Success also settles the #237 lifecycle: pending/failed rows become
-		// active and the scrape_state failure counters reset.
-		await db
+		// active and the scrape_state failure counters reset. The predicate keeps
+		// overlapping cron invocations from regressing a newer watermark.
+		const updated = await db
 			.update(sources)
-			.set({ scrapedAt, updatedAt: scrapedAt, status: 'active', scrapeState: null })
-			.where(inArray(sources.id, sourceIds));
+			.set({ scrapedAt, updatedAt: new Date(), status: 'active', scrapeState: null })
+			.where(and(inArray(sources.id, sourceIds), or(isNull(sources.scrapedAt), lte(sources.scrapedAt, scrapedAt))))
+			.returning({ id: sources.id });
+		return updated.length;
 	});
 }
 

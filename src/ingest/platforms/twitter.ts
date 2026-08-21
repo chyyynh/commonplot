@@ -4,15 +4,27 @@ import type { SourceResourceDraft } from '@ingest/domain/resource-admission-stor
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
 import { admitDiscoveredSourceResources } from '@ingest/workflow';
 import { buildTweetTitle } from './twitter-acquisition';
-import { isTwitterReply, parseTwitterAdvancedSearchPage, type Tweet, twitterSelfReplyRootId } from './twitter-data';
+import {
+	buildTwitterAdvancedSearchQuery,
+	isTwitterReply,
+	parseTwitterAdvancedSearchPage,
+	type Tweet,
+	type TwitterSearchWindow,
+	twitterSearchWindow,
+	twitterSelfReplyRootId,
+} from './twitter-data';
 
 // Twitter Monitor
 
 const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
 
-/** Max usernames per query batch to stay within query length limits */
-const TWITTER_BATCH_SIZE = 20;
+const TWITTER_SOURCE_CONCURRENCY = 5;
 const TWITTER_WATERMARK_OVERLAP_MS = 60 * 60 * 1000;
+
+function monitoredAuthorUserName(tweet: Tweet): string | null {
+	const userName = tweet.retweetedBy?.authorUserName || tweet.author?.userName;
+	return userName?.trim().toLowerCase() || null;
+}
 
 function normalizeRetweet(tweet: Tweet): Tweet | null {
 	if (tweet.retweeted_tweet) {
@@ -44,58 +56,48 @@ function normalizeRetweet(tweet: Tweet): Tweet | null {
 	return tweet;
 }
 
-/** Oldest effective watermark in one API batch, minus a one-hour overlap. */
-function calculateMonitoringSinceTime(users: Array<{ scrapedAt?: Date | string | null; createdAt: Date | string }>): number {
-	let oldest = Number.POSITIVE_INFINITY;
-	for (const user of users) {
-		const watermark = user.scrapedAt === null || user.scrapedAt === undefined ? user.createdAt : user.scrapedAt;
-		const timestamp = new Date(watermark).getTime();
-		if (!Number.isFinite(timestamp)) throw new Error('Twitter source has an invalid monitoring watermark');
-		oldest = Math.min(oldest, timestamp);
-	}
-	if (!Number.isFinite(oldest)) throw new Error('Cannot calculate a Twitter watermark for an empty batch');
-	return Math.floor((oldest - TWITTER_WATERMARK_OVERLAP_MS) / 1000);
-}
-
-type TwitterBatchFetch = {
+type TwitterSourceFetch = {
 	tweets: Tweet[];
-	failedUserNames: Set<string>;
-	hasUnattributedFailure: boolean;
+	providerTweets: number;
+	pages: number;
+	errors: unknown[];
 };
 
-function normalizeFetchedTweets(tweets: Tweet[], monitoredUserNames: ReadonlySet<string>): TwitterBatchFetch {
+function normalizeFetchedTweets(tweets: Tweet[], monitoredUserName: string): Pick<TwitterSourceFetch, 'errors' | 'tweets'> {
 	const normalizedTweets: Tweet[] = [];
-	const failedUserNames = new Set<string>();
-	let hasUnattributedFailure = false;
+	const errors: unknown[] = [];
 	for (const tweet of tweets) {
 		try {
 			const normalized = normalizeRetweet(tweet);
-			if (normalized) normalizedTweets.push(normalized);
+			if (!normalized) continue;
+			const attributedUserName = monitoredAuthorUserName(normalized);
+			if (attributedUserName !== monitoredUserName) {
+				throw new Error(
+					`Tweet ${normalized.id ?? normalized.url} was attributed to @${attributedUserName ?? 'unknown'}, expected @${monitoredUserName}`,
+				);
+			}
+			normalizedTweets.push(normalized);
 		} catch (error) {
-			const userName = tweet.author?.userName.trim().toLowerCase();
-			if (userName && monitoredUserNames.has(userName)) failedUserNames.add(userName);
-			else hasUnattributedFailure = true;
+			errors.push(error);
 			console.error({
 				tag: 'TWITTER',
 				msg: 'Tweet normalization failed',
 				tweetId: tweet.id,
-				userName: userName || undefined,
+				userName: monitoredUserName,
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
 	}
-	return { tweets: normalizedTweets, failedUserNames, hasUnattributedFailure };
+	return { tweets: normalizedTweets, errors };
 }
 
-/** Fetch all tweets matching `(from:u1 OR from:u2 …) since_time:<unix>`, paginating through cursors. */
-async function fetchTweetsForBatch(apiKey: string, userNames: string[], sinceTime: number): Promise<TwitterBatchFetch> {
-	const fromClause = userNames.map((u) => `from:${u}`).join(' OR ');
-	const query = `(${fromClause}) since_time:${sinceTime}`;
-	const monitoredUserNames = new Set(userNames);
-
+/** Fetch one source's stable bounded snapshot through every provider cursor. */
+async function fetchTweetsForSource(apiKey: string, userName: string, window: TwitterSearchWindow): Promise<TwitterSourceFetch> {
+	const query = buildTwitterAdvancedSearchQuery(userName, window);
 	const tweets: Tweet[] = [];
-	const failedUserNames = new Set<string>();
-	let hasUnattributedFailure = false;
+	const errors: unknown[] = [];
+	let providerTweets = 0;
+	let pages = 0;
 	let cursor = '';
 	const seenCursors = new Set<string>();
 
@@ -103,20 +105,17 @@ async function fetchTweetsForBatch(apiKey: string, userNames: string[], sinceTim
 		const params = new URLSearchParams({ query, queryType: 'Latest' });
 		if (cursor) params.set('cursor', cursor);
 
-		const response = await fetchWithTimeout(
-			`${TWITTER_ADVANCED_SEARCH_API}?${params}`,
-			{ headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' } },
-			20_000,
-		);
+		const response = await fetchWithTimeout(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, { headers: { 'x-api-key': apiKey } }, 20_000);
 		if (!response.ok) {
 			await response.body?.cancel();
 			throw new Error(`Twitter Advanced Search failed with HTTP ${response.status}`);
 		}
 		const apiRes = parseTwitterAdvancedSearchPage(JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)));
-		const normalizedPage = normalizeFetchedTweets(apiRes.tweets, monitoredUserNames);
+		pages++;
+		providerTweets += apiRes.tweets.length;
+		const normalizedPage = normalizeFetchedTweets(apiRes.tweets, userName);
 		tweets.push(...normalizedPage.tweets);
-		for (const userName of normalizedPage.failedUserNames) failedUserNames.add(userName);
-		hasUnattributedFailure ||= normalizedPage.hasUnattributedFailure;
+		errors.push(...normalizedPage.errors);
 
 		if (!apiRes.hasNextPage) break;
 		const nextCursor = apiRes.nextCursor?.trim();
@@ -129,18 +128,18 @@ async function fetchTweetsForBatch(apiKey: string, userNames: string[], sinceTim
 		await scheduler.wait(1000);
 	}
 
-	return { tweets, failedUserNames, hasUnattributedFailure };
+	return { tweets, providerTweets, pages, errors };
 }
 
-function monitoredAuthorUserName(tweet: Tweet): string | null {
-	const userName = tweet.retweetedBy?.authorUserName || tweet.author?.userName;
-	return userName?.trim().toLowerCase() || null;
-}
+const TWITTER_ADMISSION_STATUSES = ['created', 'existing', 'refreshed', 'retried'] as const;
+type TwitterAdmissionStatus = (typeof TWITTER_ADMISSION_STATUSES)[number];
+
+type TwitterAdmissionCounts = Record<TwitterAdmissionStatus, number>;
 
 type TweetSaveResult = {
-	processed: number;
-	failedUserNames: Set<string>;
-	hasUnattributedFailure: boolean;
+	admittedDrafts: number;
+	counts: TwitterAdmissionCounts;
+	errors: unknown[];
 };
 
 type TwitterResourceDraft = SourceResourceDraft & {
@@ -184,11 +183,10 @@ function twitterSelfReplyRootDraft(tweet: Tweet, source: MonitoredSource): Twitt
 	};
 }
 
-function twitterResourceDraft(tweet: Tweet, sourcesByUserName: ReadonlyMap<string, MonitoredSource>): TwitterResourceDraft | null {
+function twitterResourceDraft(tweet: Tweet, source: MonitoredSource): TwitterResourceDraft | null {
 	const userName = monitoredAuthorUserName(tweet);
 	if (!userName) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no monitored author identity`);
-	const source = sourcesByUserName.get(userName);
-	if (!source) throw new Error(`Tweet ${tweet.id ?? tweet.url} is not attributed to a monitored source`);
+	if (userName !== source.handle) throw new Error(`Tweet ${tweet.id ?? tweet.url} is not attributed to @${source.handle}`);
 	if (isTwitterReply(tweet)) return twitterSelfReplyRootDraft(tweet, source);
 
 	const url = normalizeUrl(tweet.url);
@@ -209,203 +207,232 @@ function twitterResourceDraft(tweet: Tweet, sourcesByUserName: ReadonlyMap<strin
 	};
 }
 
-function twitterResourceDrafts(
-	tweets: Tweet[],
-	sourcesByUserName: ReadonlyMap<string, MonitoredSource>,
-): { drafts: Map<string, TwitterResourceDraft>; failedUserNames: Set<string>; hasUnattributedFailure: boolean } {
-	const failedUserNames = new Set<string>();
-	let hasUnattributedFailure = false;
+function twitterResourceDrafts(tweets: Tweet[], source: MonitoredSource): { drafts: Map<string, TwitterResourceDraft>; errors: unknown[] } {
+	const errors: unknown[] = [];
 	const drafts = new Map<string, TwitterResourceDraft>();
 	for (const tweet of tweets) {
 		try {
-			const draft = twitterResourceDraft(tweet, sourcesByUserName);
+			const draft = twitterResourceDraft(tweet, source);
 			if (!draft) continue;
 			const existing = drafts.get(draft.url);
 			drafts.set(draft.url, existing ? latestTwitterDraft(existing, draft) : draft);
 		} catch (error) {
-			const userName = monitoredAuthorUserName(tweet);
-			if (userName && sourcesByUserName.has(userName)) failedUserNames.add(userName);
-			else hasUnattributedFailure = true;
+			errors.push(error);
 			console.error({
 				tag: 'TWITTER',
 				msg: 'Tweet save failed',
+				userName: source.handle,
 				url: tweet.url,
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
 	}
-	return { drafts, failedUserNames, hasUnattributedFailure };
+	return { drafts, errors };
 }
 
-async function saveTweets(
-	env: CoreEnv,
-	tweets: Tweet[],
-	sourcesByUserName: ReadonlyMap<string, MonitoredSource>,
-): Promise<TweetSaveResult> {
-	let processed = 0;
-	const prepared = twitterResourceDrafts(tweets, sourcesByUserName);
-	const { drafts, failedUserNames, hasUnattributedFailure } = prepared;
+function emptyTwitterAdmissionCounts(): TwitterAdmissionCounts {
+	return { created: 0, existing: 0, refreshed: 0, retried: 0 };
+}
+
+async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource): Promise<TweetSaveResult> {
+	const counts = emptyTwitterAdmissionCounts();
+	const prepared = twitterResourceDrafts(tweets, source);
+	const { drafts, errors } = prepared;
 	const pending = [...drafts.values()];
-	if (!pending.length) return { processed, failedUserNames, hasUnattributedFailure };
+	if (!pending.length) return { admittedDrafts: 0, counts, errors };
 	const outcomes = await admitDiscoveredSourceResources(env, pending).catch((error) => {
 		console.error({
 			tag: 'TWITTER',
-			msg: 'Twitter resource batch lookup failed',
+			msg: 'Twitter resource lookup failed',
+			userName: source.handle,
 			error: error instanceof Error ? error.message : String(error),
 		});
-		for (const draft of pending) {
-			failedUserNames.add(draft.source.handle);
-		}
+		errors.push(error);
 		return null;
 	});
-	if (!outcomes) return { processed, failedUserNames, hasUnattributedFailure };
+	if (!outcomes) return { admittedDrafts: pending.length, counts, errors };
 
 	for (const [index, outcome] of outcomes.entries()) {
 		const draft = pending[index]!;
 		if (outcome.status === 'fulfilled') {
-			processed++;
+			counts[outcome.value]++;
 			console.info({
 				tag: 'TWITTER',
-				msg:
-					outcome.value === 'created'
-						? 'Saved discovered tweet'
-						: outcome.value === 'refreshed'
-							? 'Refreshing evolved Twitter thread'
-							: 'Resource already exists (dedup)',
-				author: draft.tweet.author?.userName,
+				event: 'twitter_resource_admitted',
+				admission: outcome.value,
+				userName: source.handle,
+				url: draft.url,
 				refreshRevision: draft.refreshRevision,
 			});
 			continue;
 		}
-		failedUserNames.add(draft.source.handle);
+		errors.push(outcome.reason);
 		console.error({
 			tag: 'TWITTER',
 			msg: 'Tweet save failed',
+			userName: source.handle,
 			url: draft.url,
 			error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
 		});
 	}
-	return { processed, failedUserNames, hasUnattributedFailure };
+	return { admittedDrafts: pending.length, counts, errors };
 }
 
-type TwitterBatchOutcome = {
-	processed: number;
+type TwitterSourceOutcome = {
+	admittedDrafts: number;
+	complete: boolean;
+	counts: TwitterAdmissionCounts;
+	errors: unknown[];
+	normalizedTweets: number;
+	pages: number;
+	providerTweets: number;
+	sourceId: string;
+};
+
+function twitterSourceFailure(userName: string, errors: unknown[]): Error {
+	const first = errors[0];
+	const message = first instanceof Error ? first.message : String(first);
+	return new Error(`${errors.length} Twitter monitor operation(s) failed for @${userName}: ${message}`);
+}
+
+async function processTwitterSource(env: CoreEnv, source: MonitoredSource, windowEnd: Date): Promise<TwitterSourceOutcome> {
+	let window: TwitterSearchWindow | null = null;
+	try {
+		window = twitterSearchWindow(source.scrapedAt ?? source.createdAt, windowEnd, TWITTER_WATERMARK_OVERLAP_MS);
+		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, window);
+		const saved = await saveTweets(env, fetched.tweets, source);
+		const errors = [...fetched.errors, ...saved.errors];
+		if (errors.length) await recordSourceFailure(env, source.id, twitterSourceFailure(source.handle, errors));
+		const outcome: TwitterSourceOutcome = {
+			admittedDrafts: saved.admittedDrafts,
+			complete: errors.length === 0,
+			counts: saved.counts,
+			errors,
+			normalizedTweets: fetched.tweets.length,
+			pages: fetched.pages,
+			providerTweets: fetched.providerTweets,
+			sourceId: source.id,
+		};
+		console.info({
+			tag: 'TWITTER',
+			event: 'twitter_source_processed',
+			userName: source.handle,
+			since_time: window.sinceTime,
+			until_time: window.untilTime,
+			pages: outcome.pages,
+			provider_tweets: outcome.providerTweets,
+			normalized_tweets: outcome.normalizedTweets,
+			admitted_drafts: outcome.admittedDrafts,
+			...outcome.counts,
+			errors: errors.length,
+		});
+		return outcome;
+	} catch (error) {
+		await recordSourceFailure(env, source.id, error);
+		console.error({
+			tag: 'TWITTER',
+			event: 'twitter_source_failed',
+			userName: source.handle,
+			...(window ? { since_time: window.sinceTime, until_time: window.untilTime } : {}),
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return {
+			admittedDrafts: 0,
+			complete: false,
+			counts: emptyTwitterAdmissionCounts(),
+			errors: [error],
+			normalizedTweets: 0,
+			pages: 0,
+			providerTweets: 0,
+			sourceId: source.id,
+		};
+	}
+}
+
+type TwitterMonitorOutcome = {
+	admittedDrafts: number;
 	advancedSources: number;
-	incomplete: boolean;
+	counts: TwitterAdmissionCounts;
+	incompleteSources: number;
+	normalizedTweets: number;
+	pages: number;
+	providerTweets: number;
+	supersededSources: number;
 	systemFailures: unknown[];
 };
 
-async function settleTwitterBatch(
-	env: CoreEnv,
-	batch: MonitoredSource[],
-	fetched: TwitterBatchFetch,
-	saved: TweetSaveResult,
-	runStartedAt: Date,
-): Promise<TwitterBatchOutcome> {
-	if (fetched.hasUnattributedFailure || saved.hasUnattributedFailure) {
-		return { processed: saved.processed, advancedSources: 0, incomplete: true, systemFailures: [] };
+async function processTwitterSources(env: CoreEnv, sources: MonitoredSource[], windowEnd: Date): Promise<TwitterMonitorOutcome> {
+	const outcomes: TwitterSourceOutcome[] = [];
+	for (let offset = 0; offset < sources.length; offset += TWITTER_SOURCE_CONCURRENCY) {
+		const group = sources.slice(offset, offset + TWITTER_SOURCE_CONCURRENCY);
+		outcomes.push(...(await Promise.all(group.map((source) => processTwitterSource(env, source, windowEnd)))));
 	}
 
-	const failedUserNames = new Set([...fetched.failedUserNames, ...saved.failedUserNames]);
-	const completedSourceIds: string[] = [];
-	for (const source of batch) {
-		if (failedUserNames.has(source.handle)) {
-			// Per-user failures are attributable (unlike batch-level fetch errors),
-			// so they feed the same pending-validation lifecycle as RSS/YouTube.
-			await recordSourceFailure(env, source.id, new Error(`Twitter fetch/persist failed for @${source.handle}`));
-		} else {
-			completedSourceIds.push(source.id);
-		}
-	}
-	const incomplete = failedUserNames.size > 0;
-	if (!completedSourceIds.length) {
-		return { processed: saved.processed, advancedSources: 0, incomplete, systemFailures: [] };
-	}
-
-	try {
-		await markSourcesScraped(env, completedSourceIds, runStartedAt);
-		return {
-			processed: saved.processed,
-			advancedSources: completedSourceIds.length,
-			incomplete,
-			systemFailures: [],
-		};
-	} catch (error) {
-		console.error({
-			tag: 'TWITTER',
-			msg: 'Twitter source watermark update failed',
-			userNames: batch.map((source) => source.handle),
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return { processed: saved.processed, advancedSources: 0, incomplete: true, systemFailures: [error] };
-	}
-}
-
-async function processTwitterBatches(
-	env: CoreEnv,
-	sources: MonitoredSource[],
-	runStartedAt: Date,
-): Promise<{ processed: number; advancedSources: number; incompleteBatches: number; systemFailures: unknown[] }> {
-	let processed = 0;
+	const completedSourceIds = outcomes.filter((outcome) => outcome.complete).map((outcome) => outcome.sourceId);
+	const systemFailures = outcomes.flatMap((outcome) => outcome.errors);
 	let advancedSources = 0;
-	let incompleteBatches = 0;
-	const systemFailures: unknown[] = [];
-	for (let offset = 0; offset < sources.length; offset += TWITTER_BATCH_SIZE) {
-		const batch = sources.slice(offset, offset + TWITTER_BATCH_SIZE);
-		const userNames = batch.map((source) => source.handle);
-		let fetched: TwitterBatchFetch;
+	let watermarkFailures = 0;
+	if (completedSourceIds.length) {
 		try {
-			const sinceTime = calculateMonitoringSinceTime(batch);
-			fetched = await fetchTweetsForBatch(env.KAITO_API_KEY, userNames, sinceTime);
+			advancedSources = await markSourcesScraped(env, completedSourceIds, windowEnd);
 		} catch (error) {
-			incompleteBatches++;
+			watermarkFailures = completedSourceIds.length;
 			systemFailures.push(error);
 			console.error({
 				tag: 'TWITTER',
-				msg: 'Twitter batch fetch failed',
-				userNames,
+				event: 'twitter_watermark_update_failed',
+				sources: completedSourceIds.length,
 				error: error instanceof Error ? error.message : String(error),
 			});
-			continue;
 		}
-
-		const sourcesByUserName = new Map(batch.map((source) => [source.handle, source]));
-		const saved = await saveTweets(env, fetched.tweets, sourcesByUserName);
-		const outcome = await settleTwitterBatch(env, batch, fetched, saved, runStartedAt);
-		processed += outcome.processed;
-		advancedSources += outcome.advancedSources;
-		if (outcome.incomplete) incompleteBatches++;
-		systemFailures.push(...outcome.systemFailures);
 	}
-	return { processed, advancedSources, incompleteBatches, systemFailures };
+
+	const counts = emptyTwitterAdmissionCounts();
+	for (const outcome of outcomes) {
+		for (const status of TWITTER_ADMISSION_STATUSES) counts[status] += outcome.counts[status];
+	}
+	return {
+		admittedDrafts: outcomes.reduce((total, outcome) => total + outcome.admittedDrafts, 0),
+		advancedSources,
+		counts,
+		incompleteSources: outcomes.filter((outcome) => !outcome.complete).length + watermarkFailures,
+		normalizedTweets: outcomes.reduce((total, outcome) => total + outcome.normalizedTweets, 0),
+		pages: outcomes.reduce((total, outcome) => total + outcome.pages, 0),
+		providerTweets: outcomes.reduce((total, outcome) => total + outcome.providerTweets, 0),
+		supersededSources: completedSourceIds.length - advancedSources - watermarkFailures,
+		systemFailures,
+	};
 }
 
-export async function handleTwitterCron(env: CoreEnv): Promise<void> {
+export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date()): Promise<void> {
 	if (!env.KAITO_API_KEY) throw new Error('KAITO_API_KEY is not configured');
-	console.info({ tag: 'TWITTER', msg: 'start' });
-	const runStartedAt = new Date();
-	const users = await loadMonitoredSources(env, 'twitter');
-	if (!users.length) {
+	if (!Number.isFinite(windowEnd.getTime())) throw new Error('Twitter monitor window end is invalid');
+	console.info({ tag: 'TWITTER', msg: 'start', window_end: windowEnd.toISOString() });
+	const sources = await loadMonitoredSources(env, 'twitter');
+	if (!sources.length) {
 		console.info({ tag: 'TWITTER', msg: 'No twitter sources configured' });
 		return;
 	}
 
-	const batches = Math.ceil(users.length / TWITTER_BATCH_SIZE);
-
-	console.info({ tag: 'TWITTER', msg: 'Fetching via Advanced Search', users: users.length, batches });
-
-	const { processed, advancedSources, incompleteBatches, systemFailures } = await processTwitterBatches(env, users, runStartedAt);
+	const groups = Math.ceil(sources.length / TWITTER_SOURCE_CONCURRENCY);
+	console.info({ tag: 'TWITTER', msg: 'Fetching via Advanced Search', sources: sources.length, groups });
+	const outcome = await processTwitterSources(env, sources, windowEnd);
 
 	console.info({
 		tag: 'TWITTER',
 		msg: 'end',
-		processed,
-		users: users.length,
-		advancedSources,
-		incompleteBatches,
-		batches,
+		sources: sources.length,
+		groups,
+		provider_tweets: outcome.providerTweets,
+		normalized_tweets: outcome.normalizedTweets,
+		pages: outcome.pages,
+		admitted_drafts: outcome.admittedDrafts,
+		...outcome.counts,
+		advanced_sources: outcome.advancedSources,
+		superseded_sources: outcome.supersededSources,
+		incomplete_sources: outcome.incompleteSources,
 	});
-	if (systemFailures.length) {
-		throw new AggregateError(systemFailures, `${systemFailures.length} Twitter monitor batches failed`);
+	if (outcome.systemFailures.length) {
+		throw new AggregateError(outcome.systemFailures, `${outcome.systemFailures.length} Twitter monitor operations failed`);
 	}
 }
