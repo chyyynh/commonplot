@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {
+	assertExpectedTwitterThreadPost,
 	buildTwitterAuthorThread,
 	buildTwitterMonitorSearchQueries,
 	buildTwitterThreadSearchQuery,
@@ -12,6 +13,7 @@ import {
 	parseTwitterTweetsResponse,
 	renderTwitterArticleMarkdown,
 	shouldRetryTwitterProviderStatus,
+	shouldSearchTwitterThread,
 	twitterAuthorThreadCandidates,
 	twitterProviderRetryDelayMs,
 	twitterSearchWindow,
@@ -51,6 +53,11 @@ assert.equal(isTwitterReply(tweet('7', 'Alice', '1')), true);
 assert.equal(isTwitterReply(tweet('8', 'Alice', null, { inReplyToUsername: 'Bob' })), true);
 assert.equal(isTwitterReply(tweet('9', 'Alice', null, { conversationId: '1' })), true);
 assert.equal(isTwitterReply(tweet('10', 'Alice', null, { conversationId: '10' })), false);
+assert.equal(shouldSearchTwitterThread(tweet('15', 'Alice', null, { replyCount: 0 })), false);
+assert.equal(shouldSearchTwitterThread(tweet('16', 'Alice', null, { replyCount: 1 })), true);
+assert.equal(shouldSearchTwitterThread(tweet('17', 'Alice', null, { replyCount: 0 }), '2'), true);
+assertExpectedTwitterThreadPost([root, selfReply], '2', '1');
+assert.throws(() => assertExpectedTwitterThreadPost([root], '2', '1'), /does not yet include expected reply 2/);
 
 assert.equal(twitterSelfReplyRootId(tweet('11', 'Alice', '1', { inReplyToUsername: 'alice' })), '1');
 assert.equal(twitterSelfReplyRootId(tweet('12', 'Alice', '1', { inReplyToUsername: 'Bob' })), null);
@@ -156,7 +163,7 @@ console.info({
 	event: 'twitter_thread_smoke_passed',
 	articleCases: 3,
 	advancedSearchCases: 5,
-	threadGraphCases: 2,
+	threadGraphCases: 7,
 	threadPaginationCases: 5,
 	providerRetryCases: 10,
 	replyPredicateCases: 5,

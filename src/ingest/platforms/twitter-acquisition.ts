@@ -4,6 +4,7 @@ import { literalCreator, type PostKindMetadata, type ResourceCreator, type Resou
 import type { AcquiredMaterial } from '@core-shared/types';
 import { extractTweetId } from '@core-shared/url';
 import {
+	assertExpectedTwitterThreadPost,
 	buildTwitterAuthorThread,
 	buildTwitterThreadSearchQuery,
 	combineTwitterThreadMarkdown,
@@ -11,6 +12,7 @@ import {
 	parseTwitterArticleResponse,
 	parseTwitterTweetsResponse,
 	renderTwitterArticleMarkdown,
+	shouldSearchTwitterThread,
 	type Tweet,
 	twitterAuthorThreadCandidates,
 } from './twitter-data';
@@ -382,7 +384,7 @@ function mergeResolvedTwitterThread(resolved: ResolvedTweetContent, thread: Twee
 	};
 }
 
-export async function scrapeTweet(tweetId: string, apiKey: string): Promise<AcquiredMaterial<'twitter'>> {
+export async function scrapeTweet(tweetId: string, apiKey: string, expectedReplyId?: string): Promise<AcquiredMaterial<'twitter'>> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
 	const response = await fetchTwitterProvider(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, apiKey, {
 		operation: 'tweets-by-id',
@@ -398,8 +400,10 @@ export async function scrapeTweet(tweetId: string, apiKey: string): Promise<Acqu
 	const tweets = parseTwitterTweetsResponse(JSON.parse(await readTextWithLimit(response)));
 	const tweet = tweets[0];
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
-	const context = await fetchTwitterAuthorReplies(tweet, tweetId, apiKey);
+	const searchThread = shouldSearchTwitterThread(tweet, expectedReplyId);
+	const context = searchThread ? await fetchTwitterAuthorReplies(tweet, tweetId, apiKey) : { candidates: [], pages: 0, providerPosts: 0 };
 	const thread = buildTwitterAuthorThread(tweet, context.candidates);
+	assertExpectedTwitterThreadPost(thread, expectedReplyId, tweetId);
 	const resolved = await resolveTweetContent(tweet, apiKey);
 	console.info({
 		tag: 'TWITTER',
@@ -407,6 +411,7 @@ export async function scrapeTweet(tweetId: string, apiKey: string): Promise<Acqu
 		tweet_id: tweetId,
 		search_pages: context.pages,
 		search_posts: context.providerPosts,
+		search_skipped: !searchThread,
 		thread_candidates: context.candidates.length,
 		thread_posts: thread.length,
 		content_kind: resolved.kind,
