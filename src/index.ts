@@ -12,7 +12,7 @@ import {
 import { ResourceTranslationV2Workflow } from '@ingest/resource-translation-workflow';
 import { ResourceProcessingV2Workflow } from '@ingest/workflow';
 import { SearchIndexGeneration5RebuildWorkflow } from './ai-search';
-import { assertResourceProcessable, isResourceEnrichmentComplete } from './ingest/domain/resource-store';
+import { assertResourceProcessable, isStoredBlobEnriched } from './ingest/domain/resource-store';
 import { type PublicResourceSearchInput, searchPublicResourceIds } from './public-search';
 
 export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexGeneration5RebuildWorkflow };
@@ -48,9 +48,9 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	// Service-binding RPC for engine capabilities. Product-domain writes live on
 	// the app Worker's DomainRpc binding.
 
-	/** Enqueue canonical resources for the enrichment workflow after app-side persistence. */
+	/** Enqueue an app-owned blob after its R2 object and private ownership row exist. */
 	async enqueueResourceProcessing(resourceId: string) {
-		if (await isResourceEnrichmentComplete(this.env, resourceId)) return undefined;
+		if (await isStoredBlobEnriched(this.env, resourceId)) return undefined;
 		return enqueueProcessing(this.env, resourceId);
 	}
 

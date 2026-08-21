@@ -19,8 +19,8 @@ import {
 } from '@core-shared/resource-types';
 import type { ResourceForProcessing } from '@core-shared/types';
 import { type CoreDb, withCoreDb } from '@db/client';
-import { resourceDisplaySourceSql, resourceTranslationIdentityPredicate } from '@db/resource-identity-sql';
-import { resourceIdentifiers, resources, resourceTranslations, sources, youtubeTranscripts } from '@db/schema';
+import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
+import { resources, sources } from '@db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { cleanString, dateValue, requiredString } from './resource-values';
 
@@ -88,54 +88,41 @@ export async function loadSourceAvatarUrl(env: CoreEnv, sourceId: string): Promi
 	});
 }
 
-export async function isResourceEnrichmentComplete(env: CoreEnv, resourceId: string): Promise<boolean> {
+export async function isStoredBlobEnriched(env: CoreEnv, resourceId: string): Promise<boolean> {
 	return withCoreDb(env, async (db) => {
 		const row = (
-			await db
-				.select({
-					kind: resources.kind,
-					resourcePlatform: resources.resourcePlatform,
-					complete: sql<boolean>`${resources.enrichmentStatus} = 'enriched'
-								AND (
-									${resources.resourcePlatform} IS DISTINCT FROM 'youtube'
-									OR EXISTS (
-										SELECT 1
-										FROM ${youtubeTranscripts}
-										JOIN ${resourceIdentifiers} identifier
-										  ON identifier.resource_id = ${resources.id}
-										 AND identifier.scheme = 'youtube'
-										 AND identifier.value = ${youtubeTranscripts.videoId}
-									)
-								)
-								AND EXISTS (
-									SELECT 1
-									FROM ${resourceTranslations} original
-									WHERE original.resource_id = ${resources.id}
-									  AND original.lang = ${resources.originalLang}
-									  AND NULLIF(BTRIM(original.title), '') IS NOT NULL
-									  AND (
-										${resources.scope} <> 'corpus'
-										OR NOT (${resourceTranslationIdentityPredicate()})
-										OR ${resources.url} IS NULL
-										OR (
-											NULLIF(BTRIM(original.content), '') IS NOT NULL
-										)
-									  )
-								)`,
-				})
-				.from(resources)
-				.where(eq(resources.id, resourceId))
-				.limit(1)
-		)[0];
+			await db.execute<{
+				enrichment_status: string;
+				is_owned: boolean;
+				kind: string;
+				resource_platform: string | null;
+				scope: string;
+				storage_key: string | null;
+			}>(sql`
+				SELECT
+					resource.enrichment_status,
+					resource.kind,
+					resource.resource_platform,
+					resource.scope,
+					resource.storage_key,
+					EXISTS (
+						SELECT 1 FROM user_files owned
+						WHERE owned.resource_id = resource.id
+					) AS is_owned
+				FROM resources resource
+				WHERE resource.id = ${resourceId}::uuid
+				LIMIT 1
+			`)
+		).rows[0];
 		if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
-		const identity = storedResourceIdentity({
-			kind: row.kind,
-			resource_platform: row.resourcePlatform,
-		});
+		const identity = storedResourceIdentity(row);
 		if (!isContentResourceKind(identity.kind)) {
 			throw new Error(`Resource kind is not processable by core: ${identity.kind}`);
 		}
-		return row.complete;
+		if (row.scope !== 'private' || !row.storage_key || !row.is_owned) {
+			throw new Error(`Resource ${resourceId} is not an app-owned stored blob`);
+		}
+		return row.enrichment_status === 'enriched';
 	});
 }
 

@@ -13,7 +13,6 @@ import { eq, sql } from 'drizzle-orm';
 import type { ResourceClassificationResult } from './domain/resource-classification';
 import { resourceSourceRevision } from './domain/resource-revision';
 import type { HandledResourceResult } from './kind-handler';
-import { privatePaperAttachment } from './platforms/paper';
 import type { ResolvedSubjectInput } from './resource-resolver';
 
 type PersistProcessedInput = {
@@ -26,6 +25,10 @@ type PersistProcessedInput = {
 type PersistProcessedResourceInput = PersistProcessedInput & {
 	resourceId: string;
 	expectedSourceRevision: string | null;
+};
+
+type PersistProcessedPrivatePaperInput = PersistProcessedResourceInput & {
+	canonicalUrl: string;
 };
 
 type PersistProcessedDraftInput = PersistProcessedInput & {
@@ -88,11 +91,9 @@ export async function persistProcessedResource(
 
 export async function persistProcessedPrivatePaperDraft(
 	env: CoreEnv,
-	input: PersistProcessedResourceInput,
+	input: PersistProcessedPrivatePaperInput,
 	hostedImages: readonly HostedResourceImage[],
 ): Promise<PersistResolvedResourceGraphResult> {
-	const attachment = privatePaperAttachment(input.handled.resource);
-	if (!attachment) throw new Error(`Resource ${input.resourceId} is not an uploaded paper`);
 	const mutation: PersistResolvedResourceDraftInput = {
 		...(await resolvedResourceMutation(input, hostedImages)),
 		admission: {
@@ -100,8 +101,8 @@ export async function persistProcessedPrivatePaperDraft(
 			fileResourceId: input.resourceId,
 			expectedFileRevision: input.expectedSourceRevision,
 		},
-		url: attachment.canonicalUrl,
-		normalizedUrl: attachment.canonicalUrl,
+		url: input.canonicalUrl,
+		normalizedUrl: input.canonicalUrl,
 		storageKey: null,
 	};
 	return env.DOMAIN.persistResolvedResourceDraft(mutation);
@@ -176,7 +177,6 @@ async function resolvedResourceMutation(
 
 export function processedResourceImageSources(input: Pick<PersistProcessedInput, 'handled' | 'previewImageUrl'>): string[] {
 	const resource = input.handled.resource;
-	if (input.handled.kind === 'paper' && privatePaperAttachment(resource)) return [];
 	return resourceImageSourceUrls({
 		creators: resource.creators,
 		kindMetadata: resource.kind_metadata,

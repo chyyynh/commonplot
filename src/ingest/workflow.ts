@@ -504,7 +504,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			};
 			let imageSources: string[];
 			try {
-				imageSources = processedResourceImageSources(persistenceInput);
+				imageSources = privatePaper ? [] : processedResourceImageSources(persistenceInput);
 			} catch (error) {
 				throw new ResourceProcessingRejectedError(
 					`Resource processing ${processingId} has an invalid canonical image source: ${error instanceof Error ? error.message : String(error)}`,
@@ -525,6 +525,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 								this.env,
 								{
 									...persistenceInput,
+									canonicalUrl: privatePaper.canonicalUrl,
 									resourceId: target.resourceId,
 									expectedSourceRevision: persistedSourceRevision ?? null,
 								},
