@@ -1,4 +1,3 @@
-import type { WorkflowStep } from 'cloudflare:workers';
 import { sha256Hex } from '@core-shared/hash';
 import { literalCreator, type ResourceCreator, type ResourceKindMetadata } from '@core-shared/resource-metadata';
 import type { ResourcePlatform } from '@core-shared/resource-types';
@@ -9,7 +8,6 @@ import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
 import { canonicalForumFields, type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
 import { scrapeLessWrong } from './platforms/lesswrong';
 import { canonicalPostFields, scrapeTweet } from './platforms/twitter-acquisition';
-import { stageTweetLinkUnfurl } from './platforms/twitter-unfurl';
 import { canonicalVideoFields, scrapeYouTube } from './platforms/youtube-acquisition';
 import { type AcquiredWebContent, acquireWebResource, PDF_MIME } from './web-acquisition';
 
@@ -98,16 +96,6 @@ const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('
  * one.
  */
 export const ACQUISITION_STEP = { retries: { limit: 0, delay: '10 seconds' }, timeout: '120 seconds' } as const;
-
-/** Optional provider enrichments remain inside acquisition, never Workflow orchestration. */
-export async function stageAcquisitionEnhancements(
-	step: WorkflowStep,
-	acquired: AcquiredContent,
-	resourceId: string,
-): Promise<AcquiredContent> {
-	if (acquired.provider !== 'twitter') return acquired;
-	return stageTweetLinkUnfurl(step, acquired, resourceId);
-}
 
 function acquiredPublishedDate(value: string | null): string | null {
 	if (!value?.trim()) return null;

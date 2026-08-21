@@ -361,7 +361,7 @@ function buildExternalLinkTweet(tweet: Tweet, externalUrl: string, media: Twitte
 			author: author.userName,
 			language: tweet.lang ?? null,
 			publishedDate: tweet.createdAt,
-			siteName: new URL(externalUrl).hostname.replace(/^www\./, ''),
+			siteName: 'Twitter',
 			description: null,
 		},
 		acquisition: buildTweetAcquisition(tweet, {
@@ -538,7 +538,6 @@ function postMetadata(metadata: AcquisitionEnvelope<'twitter'>): PostKindMetadat
 			},
 		];
 	});
-	const externalUrl = data.externalUrl?.trim();
 	const quoted = data.quotedTweet;
 	const quoteHandle = quoted?.authorUserName?.replace(/^@/, '').trim();
 	const quoteCreator = quoted
@@ -550,15 +549,6 @@ function postMetadata(metadata: AcquisitionEnvelope<'twitter'>): PostKindMetadat
 		: undefined;
 	return {
 		attachments,
-		...(externalUrl
-			? {
-					externalLink: {
-						url: externalUrl,
-						...(data.externalTitle?.trim() ? { title: data.externalTitle.trim() } : {}),
-						...(data.externalOgImage?.trim() ? { imageUrl: data.externalOgImage.trim() } : {}),
-					},
-				}
-			: {}),
 		...(quoted?.text.trim() && quoteCreator ? { quote: { creator: quoteCreator, text: quoted.text.trim() } } : {}),
 	};
 }

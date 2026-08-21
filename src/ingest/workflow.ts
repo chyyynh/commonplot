@@ -30,7 +30,6 @@ import {
 	applyAcquiredMaterial,
 	readAcquiredContentArtifact,
 	scrapeSavedUrlArtifact,
-	stageAcquisitionEnhancements,
 } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
 import { loadEligibleResourceTranslationRevision } from './domain/resource-translation-store';
@@ -228,7 +227,7 @@ async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, shell:
 			);
 		}
 	}
-	return stageAcquisitionEnhancements(step, acquired, resource.id);
+	return acquired;
 }
 
 function assertPdfExtractionProcessable(input: {

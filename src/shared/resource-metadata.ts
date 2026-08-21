@@ -42,12 +42,6 @@ const ResourceMediaAttachmentSchema = z.object({
 	height: z.number().int().positive().optional(),
 });
 
-const ResourceLinkAttachmentSchema = z.object({
-	url: optionalHttpUrl,
-	title: z.string().trim().min(1).optional(),
-	imageUrl: optionalHttpUrl.optional(),
-});
-
 export type ResourceMediaAttachment = Readonly<z.infer<typeof ResourceMediaAttachmentSchema>>;
 
 const BlogKindMetadataSchema = z.object({
@@ -67,7 +61,6 @@ const PostQuoteSchema = z.object({
 
 const PostKindMetadataSchema = z.object({
 	attachments: z.array(ResourceMediaAttachmentSchema).max(16),
-	externalLink: ResourceLinkAttachmentSchema.optional(),
 	quote: PostQuoteSchema.optional(),
 	threadPostCount: z.number().int().positive().optional(),
 });

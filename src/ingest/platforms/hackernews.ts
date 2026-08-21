@@ -178,21 +178,11 @@ const HN_DISCUSSION_HEADING = '## Hacker News community perspectives';
 const HN_DISCUSSION_SYSTEM =
 	'You are a professional tech news editor. Synthesize Hacker News comments into concise community perspectives. Use only the provided material. Output Markdown directly.';
 
-function buildDiscussionPrompt(
-	title: string,
-	articleContent: string,
-	hnText: string | null,
-	commentInput: string,
-	commentCount: number,
-): string {
+function buildDiscussionPrompt(title: string, hnText: string | null, commentInput: string, commentCount: number): string {
 	const hnPostText = hnText ? htmlToText(hnText).slice(0, 1200) : '';
-	const hnPostSection = hnPostText ? `\nHN post text:\n${hnPostText}\n` : '';
+	const hnPostSection = hnPostText ? `HN post text:\n${hnPostText}\n\n` : '';
 	return `Title: ${title}
-Linked article or document:
-${articleContent.slice(0, 8000)}
-${hnPostSection}
-
-HN comments (${commentCount} total):
+${hnPostSection}HN comments (${commentCount} total):
 ${commentInput}
 
 Write a 220-360 word community digest in English using 3-5 short paragraphs. Each paragraph should synthesize one distinct perspective found in the comments. Prioritize the strongest recurring viewpoints, meaningful disagreements, useful context, and genuine areas of agreement. Include supporting, skeptical, and supplementary perspectives only when the comments contain them.
@@ -200,10 +190,10 @@ Write a 220-360 word community digest in English using 3-5 short paragraphs. Eac
 Rules:
 - Write in English
 - Do not add a heading, bullets, numbering, usernames, or emoji
-- Focus on how the community interpreted or challenged the material instead of restating it
+- Focus on the arguments, context, and disagreements present in the discussion
 - Synthesize and paraphrase; do not quote comments verbatim
 - Do not invent consensus or force opposing sides when the discussion does not support them
-- Keep claims from commenters clearly separate from facts established by the linked material
+- Present commenter claims as community perspectives, not established facts
 - Maintain a neutral, objective tone
 - Output only the paragraphs, without a code block`;
 }
@@ -212,7 +202,6 @@ async function generateHnDiscussionDigest(
 	env: CoreEnv,
 	resourceId: string,
 	title: string,
-	articleContent: string,
 	hnText: string | null,
 	comments: HnCollectedComment[],
 ): Promise<string | null> {
@@ -237,7 +226,7 @@ async function generateHnDiscussionDigest(
 			},
 			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
 		}),
-		prompt: buildDiscussionPrompt(title, articleContent, hnText, commentInput, comments.length),
+		prompt: buildDiscussionPrompt(title, hnText, commentInput, comments.length),
 		system: HN_DISCUSSION_SYSTEM,
 		temperature: 0.3,
 		maxRetries: 0,
@@ -264,28 +253,20 @@ export async function buildHackerNewsAnnotation(
 		item = await fetchHnItem(itemId);
 	}
 
-	if (!resource.content) throw new Error(`Hacker News resource ${resource.id} has no content to annotate`);
-	const articleContent = withoutPreviousDiscussion(resource.content);
-	if (!articleContent) throw new Error(`Hacker News resource ${resource.id} has no content to annotate`);
 	const comments = item.children?.length ? collectAllComments(item.children) : [];
-	const digest = await generateHnDiscussionDigest(env, resource.id, resource.title, articleContent, item.text ?? null, comments);
-	const discussionUrl = `https://news.ycombinator.com/item?id=${item.id}`;
+	const digest = await generateHnDiscussionDigest(env, resource.id, resource.title, item.text ?? null, comments);
 	// Count nodes, not text-bearing comments, so this matches Forum kind metadata.
 	const commentCount = countHnComments(item.children);
 	const stats = [item.points !== undefined ? `${item.points} points` : null, commentCount > 0 ? `${commentCount} comments` : null]
 		.filter(Boolean)
 		.join(' | ');
-	const links = [item.url ? `[Linked article](${item.url})` : null, `[View the full discussion](${discussionUrl})`]
-		.filter(Boolean)
-		.join(' | ');
-
-	return [HN_DISCUSSION_HEADING, stats ? `*${stats}*` : null, links, digest].filter(Boolean).join('\n\n');
+	return [HN_DISCUSSION_HEADING, stats ? `*${stats}*` : null, digest].filter(Boolean).join('\n\n');
 }
 
 export function applyHackerNewsAnnotation(content: string, annotation: string): string {
-	const articleContent = withoutPreviousDiscussion(content);
-	if (!articleContent) throw new Error('Hacker News resource has no content to annotate');
-	return [articleContent, '---', annotation].join('\n\n');
+	const carrierContent = withoutPreviousDiscussion(content);
+	if (!carrierContent) throw new Error('Hacker News resource has no content to annotate');
+	return [carrierContent, '---', annotation].join('\n\n');
 }
 
 export function canonicalForumFields(acquisition: AcquisitionEnvelope<'hackernews'>): {

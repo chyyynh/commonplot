@@ -138,8 +138,6 @@ interface TwitterMetadata extends TwitterAuthorFields {
 	media?: TwitterMedia[];
 	quotedTweet?: QuotedTweetData;
 	externalUrl?: string;
-	externalOgImage?: string | null;
-	externalTitle?: string | null;
 }
 
 interface YouTubeMetadata {

@@ -15,9 +15,7 @@ export function resourcePostMetadata(resource: ResourceImageFields): PostKindMet
 function resourcePreviewImageCandidates(resource: ResourceImageFields): string[] {
 	const metadata = resourcePostMetadata(resource);
 	const attachments = metadata?.attachments.map((item) => item.url) ?? [];
-	return [attachments[0], metadata?.externalLink?.imageUrl, resource.ogImageUrl, ...attachments.slice(1)].filter(
-		(url): url is string => typeof url === 'string',
-	);
+	return [attachments[0], resource.ogImageUrl, ...attachments.slice(1)].filter((url): url is string => typeof url === 'string');
 }
 
 export function resourceImageCandidates(resource: ResourceImageFields): string[] {

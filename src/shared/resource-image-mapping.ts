@@ -74,17 +74,9 @@ function withHostedPostMetadata(metadata: PostKindMetadata, images: ReadonlyMap<
 		const url = mappedImageUrl(attachment.url, images);
 		return url ? [{ ...attachment, url }] : [];
 	});
-	const externalLink = metadata.externalLink
-		? (() => {
-				const { imageUrl: sourceImageUrl, ...rest } = metadata.externalLink;
-				const imageUrl = mappedImageUrl(sourceImageUrl, images);
-				return imageUrl ? { ...rest, imageUrl } : rest;
-			})()
-		: undefined;
 	return {
 		...metadata,
 		attachments,
-		...(externalLink ? { externalLink } : {}),
 		...(metadata.quote
 			? {
 					quote: {
