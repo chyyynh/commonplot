@@ -157,15 +157,17 @@ async function stageSavedUrlAcquisition(
 	const locator = exactPlatformLocator(resource.resource_identifiers);
 	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : resource.url;
 	if (!sourceUrl) throw new Error(`Resource processing ${resource.processing_id} has no source URL`);
-	const stepConfig = operation === 'refresh' ? RESOURCE_REFRESH_ACQUISITION_STEP_CONFIG : ACQUISITION_STEP;
+	const expectsProviderRevision = !!expectedProviderRevision;
+	const stepConfig = operation === 'refresh' || expectsProviderRevision ? RESOURCE_REFRESH_ACQUISITION_STEP_CONFIG : ACQUISITION_STEP;
 	const acquisition = await readSavedUrlAcquisitionArtifact(
 		await step.do('acquire-content-kind-platform-v1', stepConfig, (ctx) => {
-			if (operation === 'refresh') {
+			if (operation === 'refresh' || expectsProviderRevision) {
 				console.info({
 					tag: 'RESOURCE_ACQUISITION',
 					event: 'refresh_acquisition_attempt',
 					resource_id: resource.processing_id,
 					resource_platform: resource.resource_platform,
+					expects_provider_revision: expectsProviderRevision,
 					attempt: ctx.attempt,
 				});
 			}
