@@ -1,64 +1,15 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { normalizeUrl, parseTwitterUsername } from '@core-shared/url';
 import { withCoreDb } from '@db/client';
-import { attachSourceToResources, getExistingResourcesByUrl } from '@ingest/domain/resource-admission-store';
+import { attachSourcesToResources, type ExistingResourceRecord, getExistingResourcesByUrl } from '@ingest/domain/resource-admission-store';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
 import { admitPendingSourceResource, enqueueProcessing } from '@ingest/workflow';
 import { buildTweetTitle, type Tweet } from './twitter-acquisition';
-
-async function enqueueTwitterResource(
-	env: CoreEnv,
-	data: {
-		sourceId: string;
-		url: string;
-		title: string;
-		publishedDate: Date;
-		originalLang?: string;
-		hashTags?: string[];
-	},
-): Promise<void> {
-	await admitPendingSourceResource(env, {
-		sourceId: data.sourceId,
-		url: data.url,
-		title: data.title,
-		publishedDate: data.publishedDate,
-		summary: null,
-		kind: 'post',
-		resourcePlatform: 'twitter',
-		originalLang: data.originalLang,
-		keywords: data.hashTags,
-	});
-}
 
 function requiredTweetDate(value: string, tweetId: string): Date {
 	const date = new Date(value);
 	if (Number.isNaN(date.getTime())) throw new Error(`Tweet ${tweetId} has invalid publishedDate`);
 	return date;
-}
-
-async function saveDiscoveredTweet(tweet: Tweet, env: CoreEnv, monitoredSource: MonitoredSource): Promise<void> {
-	const url = normalizeUrl(tweet.url);
-	const [existing] = await withCoreDb(env, (db) => getExistingResourcesByUrl(db, [url]));
-	if (existing) {
-		await withCoreDb(env, (db) => attachSourceToResources(db, [existing.id], monitoredSource.id));
-		if (existing.shouldRetryEnrichment) await enqueueProcessing(env, existing.id);
-		console.info({
-			tag: 'TWITTER',
-			msg: 'Resource already exists (dedup)',
-			author: tweet.author?.userName,
-		});
-		return;
-	}
-
-	await enqueueTwitterResource(env, {
-		sourceId: monitoredSource.id,
-		url,
-		title: buildTweetTitle(tweet),
-		publishedDate: requiredTweetDate(tweet.createdAt, tweet.id ?? url),
-		originalLang: tweet.lang,
-		hashTags: tweet.hashTags,
-	});
-	console.info({ tag: 'TWITTER', msg: 'Saved discovered tweet', author: tweet.author?.userName });
 }
 
 // Twitter Monitor
@@ -67,6 +18,7 @@ const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/adv
 
 /** Max usernames per query batch to stay within query length limits */
 const TWITTER_BATCH_SIZE = 20;
+const TWITTER_SAVE_CONCURRENCY = 5;
 const TWITTER_WATERMARK_OVERLAP_MS = 60 * 60 * 1000;
 
 function normalizeRetweet(tweet: Tweet): Tweet | null {
@@ -236,6 +188,14 @@ type TweetSaveResult = {
 	hasUnattributedFailure: boolean;
 };
 
+type TwitterResourceDraft = {
+	tweet: Tweet;
+	source: MonitoredSource;
+	url: string;
+	title: string;
+	publishedDate: Date;
+};
+
 function requiredMonitoredTwitterSource(tweet: Tweet, identities: MonitoredTwitterIdentity[]): MonitoredSource {
 	const userName = monitoredAuthorUserName(tweet);
 	if (!userName) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no monitored author identity`);
@@ -247,19 +207,29 @@ function requiredMonitoredTwitterSource(tweet: Tweet, identities: MonitoredTwitt
 	return identity.sources[0]!;
 }
 
-async function saveTweets(env: CoreEnv, tweets: Tweet[], identities: MonitoredTwitterIdentity[]): Promise<TweetSaveResult> {
-	let processed = 0;
+function twitterResourceDrafts(
+	tweets: Tweet[],
+	identities: MonitoredTwitterIdentity[],
+): { drafts: Map<string, TwitterResourceDraft>; failedUserNames: Set<string>; hasUnattributedFailure: boolean } {
 	const failedUserNames = new Set<string>();
 	let hasUnattributedFailure = false;
+	const drafts = new Map<string, TwitterResourceDraft>();
 	for (const tweet of tweets) {
 		// Acquisition of a root loads its complete same-author thread context.
 		// Replies are not independent Resources and must not become orphan rows
 		// merely because the root fell outside this monitor window.
 		if (tweet.isReply) continue;
 		try {
-			const monitoredSource = requiredMonitoredTwitterSource(tweet, identities);
-			await saveDiscoveredTweet(tweet, env, monitoredSource);
-			processed++;
+			const url = normalizeUrl(tweet.url);
+			if (!drafts.has(url)) {
+				drafts.set(url, {
+					tweet,
+					source: requiredMonitoredTwitterSource(tweet, identities),
+					url,
+					title: buildTweetTitle(tweet),
+					publishedDate: requiredTweetDate(tweet.createdAt, tweet.id ?? url),
+				});
+			}
 		} catch (error) {
 			const userName = monitoredAuthorUserName(tweet);
 			if (userName) failedUserNames.add(userName);
@@ -269,6 +239,91 @@ async function saveTweets(env: CoreEnv, tweets: Tweet[], identities: MonitoredTw
 				msg: 'Tweet save failed',
 				url: tweet.url,
 				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	return { drafts, failedUserNames, hasUnattributedFailure };
+}
+
+async function persistTwitterResourceDraft(
+	env: CoreEnv,
+	draft: TwitterResourceDraft,
+	existing: ExistingResourceRecord | undefined,
+): Promise<void> {
+	if (existing) {
+		if (existing.shouldRetryEnrichment) await enqueueProcessing(env, existing.id);
+		console.info({ tag: 'TWITTER', msg: 'Resource already exists (dedup)', author: draft.tweet.author?.userName });
+		return;
+	}
+	await admitPendingSourceResource(env, {
+		sourceId: draft.source.id,
+		url: draft.url,
+		title: draft.title,
+		publishedDate: draft.publishedDate,
+		summary: null,
+		kind: 'post',
+		resourcePlatform: 'twitter',
+		originalLang: draft.tweet.lang,
+		keywords: draft.tweet.hashTags,
+	});
+	console.info({ tag: 'TWITTER', msg: 'Saved discovered tweet', author: draft.tweet.author?.userName });
+}
+
+async function saveTweets(env: CoreEnv, tweets: Tweet[], identities: MonitoredTwitterIdentity[]): Promise<TweetSaveResult> {
+	let processed = 0;
+	const prepared = twitterResourceDrafts(tweets, identities);
+	const { drafts, failedUserNames } = prepared;
+	let { hasUnattributedFailure } = prepared;
+	const pending = [...drafts.values()];
+	if (!pending.length) return { processed, failedUserNames, hasUnattributedFailure };
+	let existingByUrl: Map<string, ExistingResourceRecord>;
+	try {
+		const existing = await withCoreDb(env, async (db) => {
+			const rows = await getExistingResourcesByUrl(
+				db,
+				pending.map(({ url }) => url),
+			);
+			await attachSourcesToResources(
+				db,
+				rows.flatMap((resource) => {
+					const draft = drafts.get(normalizeUrl(resource.url));
+					return resource.needsSourceAttach && draft ? [{ resourceId: resource.id, sourceId: draft.source.id }] : [];
+				}),
+			);
+			return rows;
+		});
+		existingByUrl = new Map(existing.map((resource) => [normalizeUrl(resource.url), resource]));
+	} catch (error) {
+		console.error({
+			tag: 'TWITTER',
+			msg: 'Twitter resource batch lookup failed',
+			error: error instanceof Error ? error.message : String(error),
+		});
+		for (const draft of pending) {
+			const userName = monitoredAuthorUserName(draft.tweet);
+			if (userName) failedUserNames.add(userName);
+			else hasUnattributedFailure = true;
+		}
+		return { processed, failedUserNames, hasUnattributedFailure };
+	}
+
+	for (let offset = 0; offset < pending.length; offset += TWITTER_SAVE_CONCURRENCY) {
+		const batch = pending.slice(offset, offset + TWITTER_SAVE_CONCURRENCY);
+		const results = await Promise.allSettled(batch.map((draft) => persistTwitterResourceDraft(env, draft, existingByUrl.get(draft.url))));
+		for (const [index, result] of results.entries()) {
+			if (result.status === 'fulfilled') {
+				processed++;
+				continue;
+			}
+			const draft = batch[index];
+			const userName = draft ? monitoredAuthorUserName(draft.tweet) : null;
+			if (userName) failedUserNames.add(userName);
+			else hasUnattributedFailure = true;
+			console.error({
+				tag: 'TWITTER',
+				msg: 'Tweet save failed',
+				url: draft?.url,
+				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
 			});
 		}
 	}

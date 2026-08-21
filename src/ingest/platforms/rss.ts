@@ -1,7 +1,7 @@
 import { resourceIdentityForDetectedPlatform } from '@core-shared/resource-types';
 import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
 import { withCoreDb } from '@db/client';
-import { attachSourceToResources, type ExistingResourceRecord, getExistingResourcesByUrl } from '@ingest/domain/resource-admission-store';
+import { attachSourcesToResources, type ExistingResourceRecord, getExistingResourcesByUrl } from '@ingest/domain/resource-admission-store';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
 import { admitPendingSourceResource, enqueueProcessing } from '@ingest/workflow';
 import { canonicalFeedItemUrl, type FeedItem, feedPublishedDate, feedSummary, loadFeedEntries } from './rss-feed';
@@ -48,7 +48,12 @@ function dedupedFeedItems(items: FeedItem[], feedName: string): Array<{ item: Fe
 async function reattachFeedProvenance(env: CoreEnv, feed: MonitoredSource, existing: ExistingResourceRecord[]): Promise<void> {
 	const unowned = existing.filter((resource) => resource.needsSourceAttach).map((resource) => resource.id);
 	if (!unowned.length) return;
-	await withCoreDb(env, (db) => attachSourceToResources(db, unowned, feed.id));
+	await withCoreDb(env, (db) =>
+		attachSourcesToResources(
+			db,
+			unowned.map((resourceId) => ({ resourceId, sourceId: feed.id })),
+		),
+	);
 }
 
 /** Runs `work` over `items` in bounded batches, isolating and logging each failure. */

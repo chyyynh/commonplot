@@ -7,7 +7,7 @@ import {
 	parseResourceIdentity,
 } from '@core-shared/resource-types';
 import { normalizeUrl } from '@core-shared/url';
-import { type CoreDb, textArraySql, uuidArraySql, withCoreDb } from '@db/client';
+import { type CoreDb, textArraySql, withCoreDb } from '@db/client';
 import { contentResourceIdentitySql } from '@db/resource-identity-sql';
 import { type SQL, sql } from 'drizzle-orm';
 import { resourceSourceSnapshotHash } from './resource-revision';
@@ -270,14 +270,15 @@ export async function getExistingResourcesByUrl(db: CoreDb, urls: string[]): Pro
 	return result.rows;
 }
 
-/** Claims unowned rows for a source. Callers pass ids they just read, so the
- *  only guard that can still exclude anything is the unowned check itself. */
-export async function attachSourceToResources(db: CoreDb, resourceIds: string[], sourceId: string): Promise<void> {
-	if (!resourceIds.length) return;
+/** Claims rows that were still unowned when the caller loaded them. */
+export async function attachSourcesToResources(db: CoreDb, attachments: Array<{ resourceId: string; sourceId: string }>): Promise<void> {
+	if (!attachments.length) return;
+	const values = attachments.map(({ resourceId, sourceId }) => sql`(${resourceId}::uuid, ${sourceId}::uuid)`);
 	await db.execute(sql`
-		UPDATE resources
-		SET source_id = ${sourceId}::uuid
-		WHERE id = ANY(${uuidArraySql(resourceIds)})
-		  AND source_id IS NULL
+		UPDATE resources AS resource
+		SET source_id = attachment.source_id
+		FROM (VALUES ${sql.join(values, sql`, `)}) AS attachment(resource_id, source_id)
+		WHERE resource.id = attachment.resource_id
+		  AND resource.source_id IS NULL
 	`);
 }
