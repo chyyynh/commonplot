@@ -1,9 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import {
-	isResourceTranslationRevision,
-	loadEligibleResourceTranslationInput,
-	persistMachineZhHantTranslation,
-} from '@ingest/domain/resource-translation-store';
+import { isResourceTranslationRevision, loadEligibleResourceTranslationInput } from '@ingest/domain/resource-translation-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import {
 	CONTENT_TRANSLATION_MAX_LENGTH,
@@ -82,7 +78,12 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			const persisted = await step.do(
 				'persist-zh-hant-title-summary',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() => persistMachineZhHantTranslation(this.env, resourceId, sourceRevision, translatedMetadata),
+				() =>
+					this.env.DOMAIN.persistMachineZhHantTranslation({
+						resourceId,
+						sourceRevision,
+						patch: translatedMetadata,
+					}),
 			);
 			if (!persisted) return { success: true, resource_id: resourceId, skipped: true, superseded: true };
 		}
@@ -101,7 +102,12 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 					timeout: '30 seconds',
 				},
-				() => persistMachineZhHantTranslation(this.env, resourceId, sourceRevision, { content: translated }),
+				() =>
+					this.env.DOMAIN.persistMachineZhHantTranslation({
+						resourceId,
+						sourceRevision,
+						patch: { content: translated },
+					}),
 			);
 			if (!persisted) return { success: true, resource_id: resourceId, skipped: true, superseded: true };
 		}
