@@ -276,8 +276,11 @@ async function acquireExistingResource(
 	return { acquiredContent, resource: applyAcquiredMaterial(storedResource, acquiredContent) };
 }
 
-async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, input: ResourcePreparationInput): Promise<PreparedResource> {
-	const acquired = input.kind === 'draft' ? await acquireDraftResource(env, step, input) : await acquireExistingResource(env, step, input);
+async function prepareResourceForProcessing(
+	env: CoreEnv,
+	step: WorkflowStep,
+	acquired: InitialResourceAcquisition,
+): Promise<PreparedResource> {
 	let { acquiredContent, resource } = acquired;
 	const pdfTextArtifact =
 		resource.storage_key && resource.file_type === PDF_MIME && acquiredContent?.fileType !== PDF_MIME
@@ -370,7 +373,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
 		let expectedSourceRevision: string | null = null;
 		try {
-			let preparationInput: ResourcePreparationInput;
+			let acquired: InitialResourceAcquisition;
 			if (target.kind !== 'draft') {
 				const stored = await step.do(
 					'fetch-stored-resource-input-kind-platform-v1',
@@ -390,11 +393,23 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						: undefined,
 				);
 				expectedSourceRevision = stored.resource.source_revision;
-				preparationInput = { ...target, stored };
+				acquired = await acquireExistingResource(this.env, step, { ...target, stored });
 			} else {
-				preparationInput = { ...target, processingId };
+				acquired = await acquireDraftResource(this.env, step, { ...target, processingId });
 			}
-			const prepared = await prepareResourceForProcessing(this.env, step, preparationInput);
+			if (
+				target.kind === 'reacquire' &&
+				target.expectedProviderRevision &&
+				acquired.acquiredContent?.sourceSnapshotHash === expectedSourceRevision
+			) {
+				console.info({
+					tag: 'WORKFLOW',
+					msg: 'Provider refresh content is unchanged',
+					resource_id: target.resourceId,
+				});
+				return { status: 'unchanged', resourceId: target.resourceId, changed: false } as const;
+			}
+			const prepared = await prepareResourceForProcessing(this.env, step, acquired);
 			const { previewImageUrl, resource, subject, youtube } = prepared;
 			const logContext = { processing_id: processingId, target_kind: target.kind };
 
@@ -461,25 +476,16 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const persistedResourceId = persistence.resourceId;
 			if (subject && !persistence.subjectAttached) {
 				const parentRevision = await resourceSourceRevision(resource);
-				await step
-					.do(
-						'enqueue-resolved-subject-child-v1',
-						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						() =>
-							enqueueSubjectDraft(this.env, {
-								parentResourceId: persistedResourceId,
-								parentRevision,
-								url: subject.url,
-							}),
-					)
-					.catch((error) =>
-						console.error({
-							tag: 'WORKFLOW',
-							msg: 'Resource persisted but subject child enqueue failed',
-							resource_id: persistedResourceId,
-							error: error instanceof Error ? error.message : String(error),
+				await step.do(
+					'enqueue-resolved-subject-child-v1',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					() =>
+						enqueueSubjectDraft(this.env, {
+							parentResourceId: persistedResourceId,
+							parentRevision,
+							url: subject.url,
 						}),
-					);
+				);
 			}
 			const translationSourceRevision = await step.do(
 				'load-resource-translation-revision-v1',
