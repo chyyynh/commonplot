@@ -38,6 +38,7 @@ const acquisitionEnvelopeShape = {
 	representation: resourceRepresentationSchema.optional(),
 };
 const acquiredContentShape = {
+	canonicalUrl: z.url().optional(),
 	fileType: nullableStringSchema,
 	title: z.string().trim().min(1),
 	markdown: z.string(),
@@ -127,6 +128,7 @@ export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?
 	if (!acquired) return resource;
 	const canonical = canonicalFieldsFromAcquisition(acquired);
 	const ownedStorageKey = acquired.provider === null ? acquired.ownedStorageKey : undefined;
+	const canonicalUrl = acquired.canonicalUrl?.trim();
 	return {
 		...resource,
 		title: acquired.title.trim(),
@@ -138,6 +140,8 @@ export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?
 		source_revision: acquired.acquisition.sourceSnapshotHash ?? resource.source_revision ?? null,
 		file_type: acquired.fileType,
 		storage_key: ownedStorageKey ?? resource.storage_key,
+		url: canonicalUrl ?? resource.url,
+		normalized_url: canonicalUrl ?? resource.normalized_url,
 		published_date: resource.published_date ?? acquiredPublishedDate(acquired.metadata.publishedDate),
 	};
 }
@@ -151,6 +155,7 @@ function validateAcquisitionUrl(url: string): string {
 function sourceSnapshotHash(acquired: AcquiredContent, markdown: string): Promise<string> {
 	const input = JSON.stringify({
 		provider: acquired.provider,
+		canonicalUrl: acquired.canonicalUrl,
 		fileType: acquired.fileType,
 		title: acquired.title,
 		markdown,
@@ -185,24 +190,34 @@ async function scrapeSavedUrl(
 	sourceAvatarUrl: string | null,
 	resourceId: string,
 ): Promise<AcquiredContent> {
-	const validatedUrl = validateAcquisitionUrl(url);
-	const detected = detectResourceUrl(validatedUrl);
-	if (detected) {
-		switch (detected.resourcePlatform) {
-			case 'youtube':
-				return sanitizeAcquiredContent(await scrapeYouTube(detected.platformId, env.YOUTUBE_API_KEY, monitoredOnly, sourceAvatarUrl));
-			case 'twitter':
-				return sanitizeAcquiredContent(await scrapeTweet(detected.platformId, env.KAITO_API_KEY));
-			case 'hackernews':
-				return sanitizeAcquiredContent(await scrapeHackerNews(detected.platformId));
-			case 'lesswrong':
-				return sanitizeAcquiredContent(await scrapeLessWrong(detected.platformId));
-			default:
-				detected.resourcePlatform satisfies never;
+	let acquisitionUrl = validateAcquisitionUrl(url);
+	for (;;) {
+		const detected = detectResourceUrl(acquisitionUrl);
+		if (detected) {
+			switch (detected.resourcePlatform) {
+				case 'youtube':
+					return sanitizeAcquiredContent({
+						...(await scrapeYouTube(detected.platformId, env.YOUTUBE_API_KEY, monitoredOnly, sourceAvatarUrl)),
+						canonicalUrl: acquisitionUrl,
+					});
+				case 'twitter':
+					return sanitizeAcquiredContent({ ...(await scrapeTweet(detected.platformId, env.KAITO_API_KEY)), canonicalUrl: acquisitionUrl });
+				case 'hackernews':
+					return sanitizeAcquiredContent({ ...(await scrapeHackerNews(detected.platformId)), canonicalUrl: acquisitionUrl });
+				case 'lesswrong':
+					return sanitizeAcquiredContent({ ...(await scrapeLessWrong(detected.platformId)), canonicalUrl: acquisitionUrl });
+				default:
+					detected.resourcePlatform satisfies never;
+			}
 		}
-	}
 
-	return sanitizeAcquiredContent(await acquireWebResource(validatedUrl, env, resourceId));
+		const web = await acquireWebResource(acquisitionUrl, env, resourceId);
+		if ('redirectUrl' in web) {
+			acquisitionUrl = validateAcquisitionUrl(web.redirectUrl);
+			continue;
+		}
+		return sanitizeAcquiredContent(web);
+	}
 }
 
 export async function scrapeSavedUrlArtifact(

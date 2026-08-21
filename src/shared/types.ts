@@ -80,6 +80,8 @@ export interface YoutubeTranscript {
 type AcquiredMaterialBase<T extends ResourcePlatform> = {
 	/** Acquisition adapter identity. This is not the Resource product identity. */
 	provider: T;
+	/** Validated final URL after redirects, when acquisition resolved one. */
+	canonicalUrl?: string;
 	fileType: string | null;
 	title: string;
 	/** Platform APIs return markdown or plain text for resource drafts. */

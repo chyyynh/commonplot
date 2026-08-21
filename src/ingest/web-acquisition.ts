@@ -1,6 +1,7 @@
 import { fetchWithTimeout, readBytesWithLimit, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import type { AcquiredMaterial, PdfExtractionMetadata } from '@core-shared/types';
+import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { extractFromHtml } from '@extractus/article-extractor';
 import { type PdfTextArtifact, parsePdfBytes } from './platforms/pdf';
 
@@ -53,6 +54,8 @@ export type AcquiredWebContent = AcquiredMaterial<null> & {
 	extraction?: PdfExtractionMetadata;
 	ownedStorageKey?: string;
 };
+
+type PlatformRedirect = { redirectUrl: string };
 
 function urlHost(url: string): string {
 	return new URL(url).hostname.replace(/^www\./, '');
@@ -196,7 +199,7 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, resou
 	};
 }
 
-export async function acquireWebResource(url: string, env: CoreEnv, resourceId?: string): Promise<AcquiredWebContent> {
+export async function acquireWebResource(url: string, env: CoreEnv, resourceId?: string): Promise<AcquiredWebContent | PlatformRedirect> {
 	const response = await fetchWithTimeout(
 		url,
 		{
@@ -212,15 +215,20 @@ export async function acquireWebResource(url: string, env: CoreEnv, resourceId?:
 		await response.body?.cancel();
 		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 	}
-	const finalUrl = response.url.trim();
-	if (!finalUrl) {
+	const parsedFinalUrl = parseExternalHttpUrl(response.url);
+	if (!parsedFinalUrl) {
 		await response.body?.cancel();
-		throw new Error(`Fetch response has no final URL: ${url}`);
+		throw new Error('Fetch response has no valid final URL');
+	}
+	const finalUrl = normalizeUrl(parsedFinalUrl.toString());
+	if (detectResourceUrl(finalUrl)) {
+		await response.body?.cancel();
+		return { redirectUrl: finalUrl };
 	}
 
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
 	if (contentType.includes(PDF_MIME) || new URL(finalUrl).pathname.toLowerCase().endsWith('.pdf')) {
-		return acquireFetchedPdfResponse(env, resourceId, response, finalUrl);
+		return { ...(await acquireFetchedPdfResponse(env, resourceId, response, finalUrl)), canonicalUrl: finalUrl };
 	}
 	if (
 		contentType &&
@@ -234,5 +242,5 @@ export async function acquireWebResource(url: string, env: CoreEnv, resourceId?:
 	}
 
 	const html = await readTextWithLimit(response, GENERIC_HTML_MAX_BYTES);
-	return acquireHtmlArticle(env, html, finalUrl, resourceId);
+	return { ...(await acquireHtmlArticle(env, html, finalUrl, resourceId)), canonicalUrl: finalUrl };
 }
