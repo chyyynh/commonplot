@@ -49,15 +49,17 @@ Each resource goes through an automated workflow with independent retries:
 ```
 Content arrives (source monitor / saved URL / uploaded blob / resync)
   │
-  ├─ 1. Load Resource ──────── Canonical resources row; acquire URL content or extract uploaded PDF text
-  ├─ 2. AI Analysis ────────── AI Gateway text/JSON calls → bilingual title, summary, tags, keywords, entities
-  ├─ 3. Save to DB ─────────── Stream remote images to Cloudflare Images; persist canonical resource fields + translations
-  ├─    Store Entities ─────── Replace the resource-local resources.entities JSON
-  ├─ 4. YouTube Highlights ─── (YouTube only) Transcript → AI highlight segments
-  └─ 5. Sync AI Search ─────── Upload the enriched corpus document to Cloudflare AI Search
+  ├─ 1. Acquire ─────────────── Fetch a URL draft, or load/extract an app-owned blob
+  ├─ 2. Resolve ─────────────── Finalize kind/platform identity, paper metadata, and subject intent
+  ├─ 3. AI Analysis ─────────── AI Gateway calls → bilingual title, summary, tags, keywords, entities
+  ├─ 4. Host Images ─────────── Stream canonical remote images to Cloudflare Images
+  ├─ 5. Finalize DB ─────────── Create/merge a URL draft only now; update an existing stored blob
+  └─ 6. Follow-ups ──────────── Attach/enqueue subjects, translation, and AI Search synchronization
 ```
 
-Roughly 30 seconds per resource. Each step retries independently with exponential backoff.
+URL, source, and derived-subject attempts carry immutable Workflow drafts and create no
+Resource row until step 5 succeeds. App-owned uploads are the record-first exception because
+their ownership, quota, and blob locator already exist. Each durable step retries independently.
 
 ## AI Pipeline
 
@@ -136,7 +138,7 @@ Or run locally with `pnpm dev` (uses `wrangler dev --test-scheduled`, so you can
 
 ## API surface
 
-Core exposes no product HTTP API; its default fetch handler only returns 404. App/chat integrations use Cloudflare service-binding RPC with persisted resource IDs, while cron monitors run through scheduled triggers. URL acquisition is an internal stage of the canonical resource workflow.
+Core exposes no product HTTP API; its default fetch handler only returns 404. App URL imports call a Cloudflare service-binding RPC with a Workflow instance ID, URL, and admission intent; monitors and derived subjects enqueue the same draft target internally. Uploaded blobs and explicit resyncs use persisted resource IDs. URL acquisition is an internal stage of the canonical resource Workflow.
 
 ## Hosted MCP
 
