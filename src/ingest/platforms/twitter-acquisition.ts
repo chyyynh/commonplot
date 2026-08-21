@@ -371,7 +371,7 @@ function buildExternalLinkTweet(tweet: Tweet, externalUrl: string, media: Twitte
 	};
 }
 
-export async function resolveTweetContent(tweet: Tweet, apiKey: string) {
+async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 	const media = extractTweetMedia(tweet);
 	const mediaPreviewImageUrl = media[0]?.url ?? null;
 	const expandedUrls = extractExpandedUrls(tweet);

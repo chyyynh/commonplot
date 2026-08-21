@@ -1,10 +1,10 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { normalizeUrl, parseTwitterUsername } from '@core-shared/url';
 import { withCoreDb } from '@db/client';
-import { attachSourceToResources, getExistingResourcesByUrl, reopenResourceForReprocessing } from '@ingest/domain/resource-admission-store';
+import { attachSourceToResources, getExistingResourcesByUrl } from '@ingest/domain/resource-admission-store';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
-import { admitPendingSourceResource, enqueueProcessing } from '@ingest/workflow';
-import { buildThreadResourceParts, buildTweetTitle, resolveTweetContent, type Tweet } from './twitter-acquisition';
+import { admitPendingSourceResource, enqueueProcessing, enqueueResourceResync } from '@ingest/workflow';
+import { buildTweetTitle, type Tweet } from './twitter-acquisition';
 
 async function enqueueTwitterResource(
 	env: CoreEnv,
@@ -14,7 +14,6 @@ async function enqueueTwitterResource(
 		title: string;
 		publishedDate: Date;
 		originalLang?: string;
-		content: string | null;
 		hashTags?: string[];
 	},
 ): Promise<void> {
@@ -27,105 +26,44 @@ async function enqueueTwitterResource(
 		kind: 'post',
 		resourcePlatform: 'twitter',
 		originalLang: data.originalLang,
-		content: data.content,
+		content: null,
 		keywords: data.hashTags,
 	});
 }
 
-const MIN_TWEET_LENGTH = 150;
-
-function requiredTweetText(value: string | null | undefined, field: string, tweetId: string): string {
-	const text = value?.trim();
-	if (!text) throw new Error(`Tweet ${tweetId} is missing ${field}`);
-	return text;
-}
-
-function requiredTweetDate(value: string | null, tweetId: string): Date {
-	if (!value) throw new Error(`Tweet ${tweetId} is missing publishedDate`);
+function requiredTweetDate(value: string, tweetId: string): Date {
 	const date = new Date(value);
 	if (Number.isNaN(date.getTime())) throw new Error(`Tweet ${tweetId} has invalid publishedDate`);
 	return date;
 }
 
-async function reuseExistingTweet(env: CoreEnv, url: string, sourceId: string): Promise<boolean> {
+async function saveDiscoveredTweetGroup(tweets: Tweet[], env: CoreEnv, monitoredSource: MonitoredSource): Promise<boolean> {
+	const first = tweets[0];
+	if (!first) return false;
+	const url = normalizeUrl(first.url);
 	const [existing] = await withCoreDb(env, (db) => getExistingResourcesByUrl(db, [url]));
-	if (!existing) return false;
-	await withCoreDb(env, (db) => attachSourceToResources(db, [existing.id], sourceId));
-	if (existing.shouldRetryEnrichment) await enqueueProcessing(env, existing.id);
-	console.info({ tag: 'TWITTER', msg: 'Resource already exists (dedup)', url });
-	return true;
-}
-
-async function saveTweet(tweet: Tweet, env: CoreEnv, monitoredSource: MonitoredSource): Promise<boolean> {
-	let knownUrl: string | null = null;
-	try {
-		knownUrl = tweet.url ? normalizeUrl(tweet.url) : null;
-	} catch {
-		// Let content resolution surface a useful error for malformed API data.
-	}
-	if (knownUrl && (await reuseExistingTweet(env, knownUrl, monitoredSource.id))) return true;
-
-	const resolved = await resolveTweetContent(tweet, env.KAITO_API_KEY);
-
-	if (resolved.kind === 'tweet' && !tweet.retweetedBy && resolved.eventText.length < MIN_TWEET_LENGTH) {
-		console.info({ tag: 'TWITTER', msg: 'Filtered tweet', author: tweet.author?.userName, reason: 'too short standalone tweet' });
-		return false;
-	}
-
-	const resourceUrl = normalizeUrl(resolved.canonicalUrl);
-	if (resourceUrl !== knownUrl && (await reuseExistingTweet(env, resourceUrl, monitoredSource.id))) return true;
-
-	const { scraped } = resolved;
-	const tweetId = tweet.id ?? resourceUrl;
-	const title = requiredTweetText(scraped.title, 'title', tweetId);
-	await enqueueTwitterResource(env, {
-		sourceId: monitoredSource.id,
-		url: resourceUrl,
-		title,
-		publishedDate: requiredTweetDate(scraped.metadata.publishedDate, tweetId),
-		originalLang: scraped.metadata.language ?? undefined,
-		content: scraped.markdown,
-		hashTags: tweet.hashTags,
-	});
-	console.info({ tag: 'TWITTER', msg: 'Saved tweet content', kind: resolved.kind, title: title.slice(0, 50) });
-	return true;
-}
-
-async function saveThread(tweets: Tweet[], env: CoreEnv, monitoredSource: MonitoredSource): Promise<boolean> {
-	const { first, combinedText } = buildThreadResourceParts(tweets);
-	const firstUrl = normalizeUrl(first.url);
-	const tweetCount = tweets.length;
-
-	const [existing] = await withCoreDb(env, (db) => getExistingResourcesByUrl(db, [firstUrl]));
-
 	if (existing) {
-		const existingId = existing.id;
-		await withCoreDb(env, (db) => attachSourceToResources(db, [existingId], monitoredSource.id));
-		const sourceRevision = await reopenResourceForReprocessing(env, existingId, {
-			content: combinedText,
-		});
-		if (sourceRevision || existing.shouldRetryEnrichment) {
-			await enqueueProcessing(env, existingId, sourceRevision ?? undefined);
-		}
+		await withCoreDb(env, (db) => attachSourceToResources(db, [existing.id], monitoredSource.id));
+		if (existing.shouldRetryEnrichment) await enqueueProcessing(env, existing.id);
+		else if (tweets.length > 1) await enqueueResourceResync(env, existing.id);
 		console.info({
 			tag: 'TWITTER',
-			msg: sourceRevision ? 'Updated thread' : 'Thread unchanged',
+			msg: tweets.length > 1 ? 'Existing thread queued for canonical reacquisition' : 'Resource already exists (dedup)',
 			author: first.author?.userName,
-			tweets: tweetCount,
+			tweets: tweets.length,
 		});
 		return true;
 	}
 
 	await enqueueTwitterResource(env, {
 		sourceId: monitoredSource.id,
-		url: firstUrl,
+		url,
 		title: buildTweetTitle(first),
-		publishedDate: new Date(first.createdAt),
+		publishedDate: requiredTweetDate(first.createdAt, first.id ?? url),
 		originalLang: first.lang,
-		content: combinedText,
 		hashTags: first.hashTags,
 	});
-	console.info({ tag: 'TWITTER', msg: 'Saved thread', author: first.author?.userName, tweets: tweetCount });
+	console.info({ tag: 'TWITTER', msg: 'Saved discovered tweet', author: first.author?.userName, tweets: tweets.length });
 	return true;
 }
 
@@ -346,7 +284,7 @@ async function saveTweetGroups(env: CoreEnv, tweets: Tweet[], identities: Monito
 		if (!first) continue;
 		try {
 			const monitoredSource = requiredMonitoredTwitterSource(first, identities);
-			const saved = group.length >= 2 ? await saveThread(group, env, monitoredSource) : await saveTweet(first, env, monitoredSource);
+			const saved = await saveDiscoveredTweetGroup(group, env, monitoredSource);
 			if (saved) processed++;
 		} catch (error) {
 			const userName = monitoredAuthorUserName(first);

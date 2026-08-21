@@ -5,13 +5,11 @@ import {
 	isContentResourceIdentity,
 	isResourceSourceSnapshotHash,
 	parseResourceIdentity,
-	type ResourceTranslationSource,
 } from '@core-shared/resource-types';
 import { normalizeUrl } from '@core-shared/url';
-import { type CoreDb, textArraySql, uuidArraySql, withCoreDb, withCoreTx } from '@db/client';
+import { type CoreDb, textArraySql, uuidArraySql, withCoreDb } from '@db/client';
 import { contentResourceIdentitySql } from '@db/resource-identity-sql';
-import { resources, resourceTranslations } from '@db/schema';
-import { and, eq, not, type SQL, sql } from 'drizzle-orm';
+import { type SQL, sql } from 'drizzle-orm';
 import { resourceSourceSnapshotHash } from './resource-revision';
 import { upsertResourceTranslation } from './resource-translation-store';
 import { cleanString, dateValue, requiredString, stringArrayValue } from './resource-values';
@@ -299,93 +297,4 @@ export async function attachSourceToResources(db: CoreDb, resourceIds: string[],
 		WHERE id = ANY(${uuidArraySql(resourceIds)})
 		  AND source_id IS NULL
 	`);
-}
-
-export async function reopenResourceForReprocessing(env: CoreEnv, resourceId: string, update: { content: string }): Promise<string | null> {
-	if (!update.content.trim()) {
-		throw new Error(`Cannot reopen resource ${resourceId} with empty content`);
-	}
-	return withCoreTx(env, async (db) => {
-		const resourceResult = await db.execute<{
-			file_type: string | null;
-			kind: string;
-			original_lang: string;
-			published_date: Date | string | null;
-			resource_platform: string | null;
-			url: string | null;
-		}>(sql`
-			SELECT file_type, kind, original_lang, published_date, resource_platform, url
-			FROM resources
-			WHERE id = ${resourceId}::uuid
-			FOR UPDATE
-		`);
-		const resource = resourceResult.rows[0];
-		if (!resource) throw new Error(`Failed to reopen resource ${resourceId}: not found`);
-
-		const translationResult = await db.execute<{
-			content: string | null;
-			summary: string | null;
-			source: ResourceTranslationSource;
-			title: string | null;
-		}>(sql`
-			SELECT content, summary, source, title
-			FROM resource_translations
-			WHERE resource_id = ${resourceId}::uuid
-			  AND lang = ${resource.original_lang}
-			FOR UPDATE
-		`);
-		const original = translationResult.rows[0];
-		if (!original) throw new Error(`Failed to reopen resource ${resourceId}: original translation not found`);
-
-		const preserveOwnedTranslation = original.source === 'human';
-		const effectiveContent = preserveOwnedTranslation ? original.content : update.content;
-		const sourceSummaryChanged = !preserveOwnedTranslation && original.summary !== null;
-		const sourceContentChanged = original.content !== effectiveContent;
-		if (!sourceSummaryChanged && !sourceContentChanged) return null;
-
-		const sourceSnapshotHash = await resourceSourceSnapshotHash({
-			content: effectiveContent,
-			fileType: resource.file_type,
-			kind: resource.kind,
-			originalLang: resource.original_lang,
-			publishedDate: resource.published_date === null ? null : dateValue(resource.published_date, 'published_date').toISOString(),
-			resourcePlatform: resource.resource_platform,
-			summary: preserveOwnedTranslation ? original.summary : null,
-			title: requiredString(original.title, 'original translation title'),
-			translationSource: original.source,
-			url: resource.url,
-		});
-		await db
-			.update(resources)
-			.set({
-				sourceRevision: sourceSnapshotHash,
-				enrichmentStatus: 'pending',
-				updatedAt: sql`NOW()`,
-			})
-			.where(eq(resources.id, resourceId));
-		if (
-			!(await upsertResourceTranslation(db, {
-				resourceId,
-				lang: resource.original_lang,
-				summary: null,
-				content: update.content,
-				keywords: [],
-				source: 'original',
-			}))
-		) {
-			throw new Error(`Failed to reopen original translation for resource ${resourceId}`);
-		}
-		if (sourceContentChanged) {
-			await db
-				.delete(resourceTranslations)
-				.where(
-					and(
-						eq(resourceTranslations.resourceId, resourceId),
-						not(eq(resourceTranslations.lang, resource.original_lang)),
-						not(eq(resourceTranslations.source, 'human')),
-					),
-				);
-		}
-		return sourceSnapshotHash;
-	});
 }
