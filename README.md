@@ -252,20 +252,22 @@ REST API. Provider failures preserve an existing compact academic snapshot.
 ## Adding an Ingest Adapter
 
 Ingest adapters live in `ingest/platforms/*.ts` with the
-discovery/scrape/process pieces they actually need. App-owned saved URLs create
-`resources` plus `resource_saves`; uploads create `resources` plus `user_files`.
-The workflow receives a `resourceId`. Core reads canonical rows through
-`ingest/domain/resource-store.ts`; processed graph writes cross the app-owned
-`DOMAIN.persistResolvedResourceGraph` transaction boundary. Core-owned admission,
-translation, and YouTube stores remain local specializations.
+discovery/scrape/process pieces they actually need. New saved URLs and monitored
+items enter the Workflow as immutable drafts; only successful processing creates
+or merges a canonical `resources` row and applies its save, container, source or
+subject admission in the same app-Domain transaction. App-owned uploads remain
+the explicit record-first exception and create `resources` plus `user_files`
+before Core reads the stored blob. Draft writes cross
+`DOMAIN.persistResolvedResourceDraft`; stored blob/resync writes cross the
+revision-guarded `DOMAIN.persistResolvedResourceGraph` boundary.
 
 Keep the axes separate: acquisition (generic web or a specialized adapter) is
 not canonical `ResourcePlatform` (`youtube`, `twitter`, `hackernews`, `lesswrong`, or null),
 `ResourceKind` (`blog`, `forum`, `post`, `video`, `paper`, `image`, `file`), blob
 representation (MIME/filename/size/pages), or lifecycle origin (`source`,
-`saved_url`, `upload`, `generated`). PDF extraction and external paper
-enrichment are workflow stages keyed from row content/metadata, not additional
-identity values.
+`saved_url`, `upload`, `generated`). External URL PDF extraction happens from
+the acquired response without an R2 write; uploaded PDF extraction reads the
+app-owned blob. Neither representation is an additional identity value.
 
 Source monitor routing comes directly from `Source.platform`: RSS, LessWrong,
 and YouTube handles are feeds, while Twitter uses its provider monitor. Feed

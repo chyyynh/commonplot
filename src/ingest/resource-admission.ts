@@ -215,12 +215,6 @@ async function admitDiscoveredSourceResource(
 		]);
 		return created ? 'created' : 'existing';
 	}
-	if (resource.enrichmentStatus !== 'enriched') {
-		if (draft.refreshRevision) {
-			return (await enqueueResourceRefresh(env, resource.id, draft.refreshRevision)) ? 'refreshed' : 'existing';
-		}
-		return 'existing';
-	}
 	if (!draft.refreshRevision) return 'existing';
 	return (await enqueueResourceRefresh(env, resource.id, draft.refreshRevision)) ? 'refreshed' : 'existing';
 }

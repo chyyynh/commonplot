@@ -49,7 +49,7 @@ export async function claimStalePendingBlobAdmissions(
 export async function claimExistingDiscoveredResources(
 	db: CoreDb,
 	drafts: Array<{ sourceId: string; url: string }>,
-): Promise<Array<{ enrichmentStatus: string; id: string; url: string }>> {
+): Promise<Array<{ id: string; url: string }>> {
 	const discovered = new Map<string, string>();
 	for (const draft of drafts) {
 		const url = normalizeUrl(draft.url);
@@ -58,7 +58,7 @@ export async function claimExistingDiscoveredResources(
 	if (!discovered.size) return [];
 
 	const values = [...discovered].map(([url, sourceId]) => sql`(${url}, ${sourceId}::uuid)`);
-	const result = await db.execute<{ enrichmentStatus: string; id: string; url: string }>(sql`
+	const result = await db.execute<{ id: string; url: string }>(sql`
 		WITH discovered(normalized_url, source_id) AS (
 			VALUES ${sql.join(values, sql`, `)}
 		), attached AS (
@@ -76,15 +76,14 @@ export async function claimExistingDiscoveredResources(
 		)
 		SELECT
 			resource.id::text AS id,
-			resource.normalized_url AS url,
-			resource.enrichment_status AS "enrichmentStatus"
+			resource.normalized_url AS url
 		FROM resources AS resource
 		JOIN discovered ON discovered.normalized_url = resource.normalized_url
-		LEFT JOIN attached ON attached.id = resource.id
-		WHERE ${contentResourceIdentitySql({
-			kind: sql`resource.kind`,
-			resourcePlatform: sql`resource.resource_platform`,
-		})}
+		WHERE resource.enrichment_status = 'enriched'
+		  AND ${contentResourceIdentitySql({
+				kind: sql`resource.kind`,
+				resourcePlatform: sql`resource.resource_platform`,
+			})}
 	`);
 	return result.rows;
 }
