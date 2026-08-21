@@ -46,8 +46,7 @@ import {
 	persistProcessedPrivatePaperDraft,
 	persistProcessedResource,
 	processedResourceImageSources,
-	type ResourceProcessingFailureOutcome,
-	settleResourceProcessingFailure,
+	settleStoredBlobProcessingFailure,
 } from './resource-persistence';
 import {
 	exactPlatformLocator,
@@ -59,12 +58,8 @@ import {
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 import { PDF_MIME, pdfExtractionMetadata } from './web-acquisition';
 
-class ResourceProcessingOutcomeError extends Error {
-	constructor(
-		readonly outcome: Exclude<ResourceProcessingFailureOutcome, 'retry'>,
-		message: string,
-		name: string,
-	) {
+class ResourceProcessingRejectedError extends Error {
+	constructor(message: string, name: string) {
 		super(message);
 		this.name = name;
 	}
@@ -89,7 +84,6 @@ async function stageResourceImages(
 	step: WorkflowStep,
 	resourceId: string,
 	sourceUrls: readonly string[],
-	isMonitoredOnly: boolean,
 ): Promise<HostedResourceImage[]> {
 	const images: HostedResourceImage[] = [];
 	for (let offset = 0; offset < sourceUrls.length; offset += 3) {
@@ -119,8 +113,7 @@ async function stageResourceImages(
 		}
 		const failed = results.filter((result) => result.status === 'rejected').length;
 		if (failed) {
-			throw new ResourceProcessingOutcomeError(
-				isMonitoredOnly ? 'drop' : 'failed',
+			throw new ResourceProcessingRejectedError(
 				`Resource ${resourceId} failed to host ${failed} canonical image${failed === 1 ? '' : 's'}`,
 				'ResourceImageRehostingError',
 			);
@@ -182,15 +175,14 @@ async function stageSavedUrlAcquisition(
 		}),
 	);
 	if (acquisition.status === 'rejected') {
-		throw new ResourceProcessingOutcomeError('drop', acquisition.message, 'ResourceAcquisitionRejectedError');
+		throw new ResourceProcessingRejectedError(acquisition.message, 'ResourceAcquisitionRejectedError');
 	}
 	const acquired = acquisition.content;
 	if (shell.isMonitoredOnly && acquired.provider === 'youtube') {
 		const durationSeconds = acquired.durationSeconds;
 		if (durationSeconds === null || durationSeconds <= MIN_MONITORED_VIDEO_DURATION_SECONDS) {
 			const reason = durationSeconds === null ? 'is a live stream or unstarted premiere' : `runs ${durationSeconds}s`;
-			throw new ResourceProcessingOutcomeError(
-				'drop',
+			throw new ResourceProcessingRejectedError(
 				`YouTube processing ${resource.processing_id} ${reason}; monitored videos must exceed ${MIN_MONITORED_VIDEO_DURATION_SECONDS}s`,
 				'MonitoredVideoRejectedError',
 			);
@@ -201,33 +193,23 @@ async function stageSavedUrlAcquisition(
 
 function assertPdfExtractionProcessable(input: {
 	acquiredExtraction: PdfExtractionMetadata | undefined;
-	isMonitoredOnly: boolean;
 	pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
 	resourceId: string;
 }): void {
 	const extraction = input.pdfTextArtifact ? pdfExtractionMetadata(input.pdfTextArtifact) : input.acquiredExtraction;
 	if (extraction?.status === 'needs_ocr') {
-		throw new ResourceProcessingOutcomeError(
-			input.isMonitoredOnly ? 'drop' : 'failed',
-			`PDF resource ${input.resourceId} requires OCR`,
-			'PdfOcrRequiredError',
-		);
+		throw new ResourceProcessingRejectedError(`PDF resource ${input.resourceId} requires OCR`, 'PdfOcrRequiredError');
 	}
 }
 
 function assertResourceContentProcessable(input: {
 	acquiredContent: AcquiredContent | undefined;
 	hasPersistedContent: boolean;
-	isMonitoredOnly: boolean;
 	pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
 	resourceId: string;
 }): void {
 	if (input.hasPersistedContent || input.pdfTextArtifact?.text?.trim() || input.acquiredContent?.markdown?.trim()) return;
-	throw new ResourceProcessingOutcomeError(
-		input.isMonitoredOnly ? 'drop' : 'failed',
-		`Resource ${input.resourceId} has no extractable content`,
-		'ResourceContentMissingError',
-	);
+	throw new ResourceProcessingRejectedError(`Resource ${input.resourceId} has no extractable content`, 'ResourceContentMissingError');
 }
 
 type PreparedResource = {
@@ -247,8 +229,7 @@ async function prepareResourceForProcessing(
 ): Promise<PreparedResource> {
 	const { resource: initialResource } = initialShell;
 	if (operation !== 'ingest' && !initialResource.url) {
-		throw new ResourceProcessingOutcomeError(
-			'failed',
+		throw new ResourceProcessingRejectedError(
 			`Resource processing ${initialResource.processing_id} has no source URL`,
 			'ResourceReacquisitionUnsupportedError',
 		);
@@ -303,7 +284,7 @@ async function prepareResourceForProcessing(
 	const finalPaperEnrichment = resolution.kind === 'paper' ? paperEnrichment : null;
 	const identity = parseResourceIdentity(resolution.kind, resolution.resourcePlatform);
 	if (!identity || !isContentResourceIdentity(identity)) {
-		throw new ResourceProcessingOutcomeError('failed', 'Resolver produced an invalid content Resource identity', 'ResourceIdentityError');
+		throw new ResourceProcessingRejectedError('Resolver produced an invalid content Resource identity', 'ResourceIdentityError');
 	}
 	const identifiers = resolvedResourceIdentifiers(resolution);
 	const locator = exactPlatformLocator(identifiers);
@@ -323,45 +304,29 @@ async function prepareResourceForProcessing(
 	};
 }
 
-async function settleFailedResourceProcessing(
+async function settleFailedStoredBlobProcessing(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		error: unknown;
 		persistedSourceRevision: string | null | undefined;
 		resourceId: string;
 	},
-): Promise<boolean> {
-	if (input.persistedSourceRevision === undefined) return false;
-	const outcome: ResourceProcessingFailureOutcome = input.error instanceof ResourceProcessingOutcomeError ? input.error.outcome : 'retry';
-	const settlement = await step
+): Promise<void> {
+	if (input.persistedSourceRevision === undefined) return;
+	await step
 		.do(
-			'settle-resource-processing-for-source-revision-v1',
+			'settle-stored-blob-processing-failure-v1',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			() => settleResourceProcessingFailure(env, input.resourceId, input.persistedSourceRevision ?? null, outcome),
+			() => settleStoredBlobProcessingFailure(env, input.resourceId, input.persistedSourceRevision ?? null),
 		)
 		.catch((cleanupError) => {
 			console.error({
 				tag: 'WORKFLOW',
-				msg: 'Failed to settle resource processing',
+				msg: 'Failed to settle stored blob processing',
 				resource_id: input.resourceId,
 				error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
 			});
-			return undefined;
 		});
-	if (outcome !== 'drop' || settlement !== 'dropped') return false;
-	await step
-		.do('delete-dropped-ai-search-item-v1', AI_SEARCH_SYNC_STEP_CONFIG, () => syncCorpusItem(env, input.resourceId))
-		.catch((cleanupError) =>
-			console.error({
-				tag: 'WORKFLOW',
-				msg: 'Failed to delete dropped AI Search item',
-				resource_id: input.resourceId,
-				error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-			}),
-		);
-	console.info({ tag: 'WORKFLOW', msg: 'Dropped source-only resource', resource_id: input.resourceId });
-	return true;
 }
 
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingWorkflowPayload> {
@@ -406,14 +371,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					: null);
 			assertPdfExtractionProcessable({
 				acquiredExtraction: acquiredContent?.provider === null ? acquiredContent.extraction : undefined,
-				isMonitoredOnly: initialShell.isMonitoredOnly,
 				pdfTextArtifact,
 				resourceId: processingId,
 			});
 			assertResourceContentProcessable({
 				acquiredContent,
 				hasPersistedContent: hasContent,
-				isMonitoredOnly: initialShell.isMonitoredOnly,
 				pdfTextArtifact,
 				resourceId: processingId,
 			});
@@ -459,13 +422,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			try {
 				imageSources = processedResourceImageSources(persistenceInput);
 			} catch (error) {
-				throw new ResourceProcessingOutcomeError(
-					initialShell.isMonitoredOnly ? 'drop' : 'failed',
+				throw new ResourceProcessingRejectedError(
 					`Resource processing ${processingId} has an invalid canonical image source: ${error instanceof Error ? error.message : String(error)}`,
 					'ResourceImageSourceError',
 				);
 			}
-			const hostedImages = await stageResourceImages(this.env, step, processingId, imageSources, initialShell.isMonitoredOnly);
+			const hostedImages = await stageResourceImages(this.env, step, processingId, imageSources);
 			const privatePaper = target.kind === 'stored' ? privatePaperAttachment(handled.resource) : null;
 			const persistence = await step.do(
 				privatePaper
@@ -547,7 +509,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			return { status: 'persisted', resourceId: persistedResourceId, ...(operation !== 'ingest' ? { changed: true } : {}) } as const;
 		} catch (error) {
 			if (target.kind === 'draft') {
-				if (error instanceof ResourceProcessingOutcomeError) {
+				if (error instanceof ResourceProcessingRejectedError) {
 					console.info({
 						tag: 'WORKFLOW',
 						msg: 'Rejected resource draft',
@@ -559,15 +521,10 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				throw error;
 			}
 			if (operation !== 'ingest') throw error;
-			if (
-				await settleFailedResourceProcessing(this.env, step, {
-					error,
-					persistedSourceRevision,
-					resourceId: target.resourceId,
-				})
-			) {
-				return { status: 'rejected', resourceId: target.resourceId } as const;
-			}
+			await settleFailedStoredBlobProcessing(this.env, step, {
+				persistedSourceRevision,
+				resourceId: target.resourceId,
+			});
 			throw error;
 		}
 	}

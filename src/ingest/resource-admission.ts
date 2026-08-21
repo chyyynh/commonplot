@@ -12,7 +12,7 @@ import {
 } from '@core-shared/resource-types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { withCoreDb } from '@db/client';
-import { claimExistingDiscoveredResources, claimStalePendingResourceAdmissions } from '@ingest/domain/resource-admission-store';
+import { claimExistingDiscoveredResources, claimStalePendingBlobAdmissions } from '@ingest/domain/resource-admission-store';
 import { resourceSourceSnapshotHash } from '@ingest/domain/resource-revision';
 import { cleanString, dateValue, requiredString, stringArrayValue } from '@ingest/domain/resource-values';
 import { z } from 'zod';
@@ -144,15 +144,15 @@ export type AppResourceDraftInput = Readonly<{
 	admission: Extract<ResourceDraftAdmission, { kind: 'profileSave' | 'container' }>;
 }>;
 
-export type SourceResourceAdmissionOutcome = 'created' | 'existing' | 'refreshed' | 'retried';
+export type SourceResourceAdmissionOutcome = 'created' | 'existing' | 'refreshed';
 
 type ExistingDiscoveredResource = Awaited<ReturnType<typeof claimExistingDiscoveredResources>>[number];
 
-const PENDING_RESOURCE_GRACE_MS = 10 * 60 * 1000;
+const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v7';
 const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v1';
-const PENDING_RESOURCE_RECONCILE_LIMIT = 50;
-const PENDING_RESOURCE_RECONCILE_CONCURRENCY = 10;
+const PENDING_BLOB_RECONCILE_LIMIT = 50;
+const PENDING_BLOB_RECONCILE_CONCURRENCY = 10;
 const DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY = 5;
 
 export async function enqueueProcessing(env: CoreEnv, resourceId: string, sourceRevision?: string): Promise<string> {
@@ -293,16 +293,16 @@ async function admitDiscoveredSourceResource(
 	if (!resource) {
 		const target = await sourceDraftTarget(draft);
 		const identity = await sha256Hex(JSON.stringify(target));
-		await enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `${SOURCE_DRAFT_WORKFLOW_REVISION}-${identity}`, { target });
-		return 'created';
+		const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
+			{ id: `${SOURCE_DRAFT_WORKFLOW_REVISION}-${identity}`, params: { target } },
+		]);
+		return created ? 'created' : 'existing';
 	}
 	if (resource.enrichmentStatus !== 'enriched') {
 		if (draft.refreshRevision) {
 			return (await enqueueResourceRefresh(env, resource.id, draft.refreshRevision)) ? 'refreshed' : 'existing';
 		}
-		if (!resource.shouldRetryEnrichment) return 'existing';
-		await enqueueProcessing(env, resource.id);
-		return 'retried';
+		return 'existing';
 	}
 	if (!draft.refreshRevision) return 'existing';
 	return (await enqueueResourceRefresh(env, resource.id, draft.refreshRevision)) ? 'refreshed' : 'existing';
@@ -344,19 +344,15 @@ async function enqueueResourceRefresh(env: CoreEnv, resourceId: string, refreshR
 	return false;
 }
 
-/** Re-admits historical stored pending rows and app-owned blob rows. */
-export async function reconcilePendingResourceProcessing(env: CoreEnv): Promise<void> {
-	const admissions = await claimStalePendingResourceAdmissions(
-		env,
-		new Date(Date.now() - PENDING_RESOURCE_GRACE_MS),
-		PENDING_RESOURCE_RECONCILE_LIMIT,
-	);
+/** Repairs only interrupted DB-to-Workflow handoffs for record-first app-owned blobs. */
+export async function reconcilePendingBlobProcessing(env: CoreEnv): Promise<void> {
+	const admissions = await claimStalePendingBlobAdmissions(env, new Date(Date.now() - PENDING_BLOB_GRACE_MS), PENDING_BLOB_RECONCILE_LIMIT);
 	if (!admissions.length) return;
 
 	let reconciled = 0;
 	let failed = 0;
-	for (let offset = 0; offset < admissions.length; offset += PENDING_RESOURCE_RECONCILE_CONCURRENCY) {
-		const batch = admissions.slice(offset, offset + PENDING_RESOURCE_RECONCILE_CONCURRENCY);
+	for (let offset = 0; offset < admissions.length; offset += PENDING_BLOB_RECONCILE_CONCURRENCY) {
+		const batch = admissions.slice(offset, offset + PENDING_BLOB_RECONCILE_CONCURRENCY);
 		const results = await Promise.allSettled(
 			batch.map(({ resourceId, sourceRevision }) => enqueueProcessing(env, resourceId, sourceRevision ?? undefined)),
 		);
@@ -368,7 +364,7 @@ export async function reconcilePendingResourceProcessing(env: CoreEnv): Promise<
 			failed++;
 			console.error({
 				tag: 'RESOURCE_WORKFLOW',
-				event: 'pending_resource_reconciliation_failed',
+				event: 'pending_blob_reconciliation_failed',
 				resource_id: batch[index]?.resourceId,
 				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
 			});
@@ -376,7 +372,7 @@ export async function reconcilePendingResourceProcessing(env: CoreEnv): Promise<
 	}
 	console.info({
 		tag: 'RESOURCE_WORKFLOW',
-		event: 'pending_resource_reconciliation_completed',
+		event: 'pending_blob_reconciliation_completed',
 		attempted: admissions.length,
 		reconciled,
 		failed,

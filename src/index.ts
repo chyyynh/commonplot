@@ -7,7 +7,7 @@ import {
 	enqueueAppResourceDraft,
 	enqueueProcessing,
 	enqueueResourceResync,
-	reconcilePendingResourceProcessing,
+	reconcilePendingBlobProcessing,
 } from '@ingest/resource-admission';
 import { ResourceTranslationV2Workflow } from '@ingest/resource-translation-workflow';
 import { ResourceProcessingV2Workflow } from '@ingest/workflow';
@@ -18,7 +18,7 @@ import { type PublicResourceSearchInput, searchPublicResourceIds } from './publi
 export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexGeneration5RebuildWorkflow };
 
 async function runFiveMinuteCycle(env: CoreEnv): Promise<void> {
-	const results = await Promise.allSettled([handleRSSCron(env), reconcilePendingResourceProcessing(env)]);
+	const results = await Promise.allSettled([handleRSSCron(env), reconcilePendingBlobProcessing(env)]);
 	const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
 	if (failures.length) {
 		throw new AggregateError(

@@ -4,11 +4,8 @@ import { type CoreDb, withCoreDb } from '@db/client';
 import { contentResourceIdentitySql } from '@db/resource-identity-sql';
 import { sql } from 'drizzle-orm';
 
-/** Failed enrichments to retry before a URL is treated as permanently dead. */
-export const MAX_ENRICHMENT_ATTEMPTS = 5;
-
-/** Re-admits historical pending rows and record-first app-owned blob rows. */
-export async function claimStalePendingResourceAdmissions(
+/** Re-admits only record-first app-owned blobs whose DB-to-Workflow handoff was interrupted. */
+export async function claimStalePendingBlobAdmissions(
 	env: CoreEnv,
 	olderThan: Date,
 	limit: number,
@@ -19,6 +16,13 @@ export async function claimStalePendingResourceAdmissions(
 				SELECT id
 				FROM resources
 				WHERE enrichment_status = 'pending'
+				  AND scope = 'private'
+				  AND storage_key IS NOT NULL
+				  AND EXISTS (
+				    SELECT 1
+				    FROM user_files
+				    WHERE user_files.resource_id = resources.id
+				  )
 				  AND updated_at < ${olderThan}
 				  AND ${contentResourceIdentitySql({
 						kind: sql`kind`,
@@ -49,7 +53,7 @@ export async function claimStalePendingResourceAdmissions(
 export async function claimExistingDiscoveredResources(
 	db: CoreDb,
 	drafts: Array<{ sourceId: string; url: string } & ContentResourceIdentity>,
-): Promise<Array<{ enrichmentStatus: string; id: string; url: string; shouldRetryEnrichment: boolean }>> {
+): Promise<Array<{ enrichmentStatus: string; id: string; url: string }>> {
 	const discovered = new Map<string, string>();
 	for (const draft of drafts) {
 		const url = normalizeUrl(draft.url);
@@ -58,7 +62,7 @@ export async function claimExistingDiscoveredResources(
 	if (!discovered.size) return [];
 
 	const values = [...discovered].map(([url, sourceId]) => sql`(${url}, ${sourceId}::uuid)`);
-	const result = await db.execute<{ enrichmentStatus: string; id: string; url: string; shouldRetryEnrichment: boolean }>(sql`
+	const result = await db.execute<{ enrichmentStatus: string; id: string; url: string }>(sql`
 		WITH discovered(normalized_url, source_id) AS (
 			VALUES ${sql.join(values, sql`, `)}
 		), attached AS (
@@ -67,6 +71,7 @@ export async function claimExistingDiscoveredResources(
 			FROM discovered
 			WHERE resource.normalized_url = discovered.normalized_url
 			  AND resource.source_id IS NULL
+			  AND resource.enrichment_status = 'enriched'
 			  AND ${contentResourceIdentitySql({
 					kind: sql`resource.kind`,
 					resourcePlatform: sql`resource.resource_platform`,
@@ -76,19 +81,7 @@ export async function claimExistingDiscoveredResources(
 		SELECT
 			resource.id::text AS id,
 			resource.normalized_url AS url,
-			resource.enrichment_status AS "enrichmentStatus",
-			(
-				resource.enrichment_status = 'pending'
-				OR (
-					resource.enrichment_status = 'failed'
-					AND resource.enrichment_attempts < ${MAX_ENRICHMENT_ATTEMPTS}
-					-- 30m, 1h, 2h, 4h, then give up: a feed re-lists the same item for
-					-- days, and a flat 30-minute window re-ran a dead URL every cycle.
-					AND resource.updated_at < NOW() - (
-						INTERVAL '30 minutes' * POWER(2, GREATEST(resource.enrichment_attempts, 1) - 1)
-					)
-				)
-			) AS "shouldRetryEnrichment"
+			resource.enrichment_status AS "enrichmentStatus"
 		FROM resources AS resource
 		JOIN discovered ON discovered.normalized_url = resource.normalized_url
 		LEFT JOIN attached ON attached.id = resource.id

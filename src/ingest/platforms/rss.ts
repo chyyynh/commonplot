@@ -44,7 +44,6 @@ async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
 	const outcomes = await admitDiscoveredSourceResources(env, drafts);
 	let created = 0;
 	let existing = 0;
-	let retried = 0;
 	for (const [index, outcome] of outcomes.entries()) {
 		if (outcome.status === 'rejected') {
 			console.error({
@@ -56,7 +55,6 @@ async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
 			continue;
 		}
 		if (outcome.value === 'created') created++;
-		else if (outcome.value === 'retried') retried++;
 		else existing++;
 	}
 	console.info({
@@ -65,7 +63,6 @@ async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
 		feed: feed.name,
 		created,
 		existing,
-		retried,
 		totalCount: itemCount,
 	});
 	await markSourcesScraped(env, [feed.id]);

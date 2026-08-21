@@ -10,7 +10,6 @@ import { withCoreDb } from '@db/client';
 import { resources } from '@db/schema';
 import { toStoredResourceEntities } from '@entities/normalize';
 import { eq, sql } from 'drizzle-orm';
-import { MAX_ENRICHMENT_ATTEMPTS } from './domain/resource-admission-store';
 import type { ResourceClassificationResult } from './domain/resource-classification';
 import { resourceSourceRevision } from './domain/resource-revision';
 import type { HandledResourceResult } from './kind-handler';
@@ -31,45 +30,27 @@ type PersistProcessedDraftInput = PersistProcessedInput & {
 	admission: ResourceDraftAdmission;
 };
 
-export type ResourceProcessingFailureOutcome = 'retry' | 'drop' | 'failed';
-
-export async function settleResourceProcessingFailure(
+export async function settleStoredBlobProcessingFailure(
 	env: CoreEnv,
 	resourceId: string,
 	expectedSourceRevision: string | null,
-	outcome: ResourceProcessingFailureOutcome,
-): Promise<'dropped' | 'failed' | 'superseded'> {
+): Promise<'failed' | 'superseded'> {
 	return withCoreDb(env, async (db) => {
-		if (outcome === 'drop') {
-			const dropped = await db.execute(sql`
-				DELETE FROM resources AS resource
-				WHERE resource.id = ${resourceId}::uuid
-				  AND resource.enrichment_status <> 'enriched'
-				  AND resource.source_revision IS NOT DISTINCT FROM ${expectedSourceRevision}
-				  AND resource.scope = 'corpus'
-				  AND resource.source_id IS NOT NULL
-				  AND resource.storage_key IS NULL
-				  AND NOT EXISTS (SELECT 1 FROM resource_saves save WHERE save.resource_id = resource.id)
-				  AND NOT EXISTS (SELECT 1 FROM collection_resources edge WHERE edge.resource_id = resource.id)
-				  AND NOT EXISTS (SELECT 1 FROM workspace_resources edge WHERE edge.resource_id = resource.id)
-				  AND NOT EXISTS (
-					  SELECT 1 FROM user_files file
-					  WHERE file.resource_id = resource.id OR file.canonical_resource_id = resource.id
-				  )
-				RETURNING resource.id
-			`);
-			if (dropped.rows.length) return 'dropped';
-		}
-		const attempts = outcome === 'retry' ? sql`enrichment_attempts + 1` : sql`${MAX_ENRICHMENT_ATTEMPTS}`;
 		const failed = await db.execute(sql`
-			UPDATE resources
+			UPDATE resources AS resource
 			SET enrichment_status = 'failed',
-			    enrichment_attempts = ${attempts},
 			    updated_at = NOW()
-			WHERE id = ${resourceId}::uuid
-			  AND enrichment_status <> 'enriched'
-			  AND source_revision IS NOT DISTINCT FROM ${expectedSourceRevision}
-			RETURNING id
+			WHERE resource.id = ${resourceId}::uuid
+			  AND resource.enrichment_status <> 'enriched'
+			  AND resource.source_revision IS NOT DISTINCT FROM ${expectedSourceRevision}
+			  AND resource.scope = 'private'
+			  AND resource.storage_key IS NOT NULL
+			  AND EXISTS (
+			    SELECT 1
+			    FROM user_files
+			    WHERE user_files.resource_id = resource.id
+			  )
+			RETURNING resource.id
 		`);
 		if (failed.rows.length) return 'failed';
 		const existing = await db
@@ -81,7 +62,6 @@ export async function settleResourceProcessingFailure(
 			tag: 'RESOURCE_PERSIST',
 			event: 'resource_processing_settlement_skipped',
 			resource_id: resourceId,
-			outcome,
 			expected_source_revision: expectedSourceRevision,
 			current_source_revision: existing[0]?.sourceRevision ?? null,
 			current_status: existing[0]?.enrichmentStatus ?? 'deleted',
