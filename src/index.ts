@@ -1,5 +1,4 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import type { KnowledgeResolveResourcesInput, KnowledgeResourceReadInput } from '@app-domain/knowledge-contracts';
 import { type ResolveMonitoredSourceInput, resolveMonitoredSource } from '@ingest/monitored-source';
 import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';
@@ -13,7 +12,6 @@ import {
 import { SearchIndexGeneration5RebuildWorkflow } from './ai-search';
 import type { RelatedResourceSearchInput, ResourceSearchInput } from './corpus';
 import { relatedCorpusResourceIds, searchCorpusResourceRanks, searchCorpusResources } from './corpus';
-import { readCorpusResource, resolveCorpusResources } from './corpus-retrieval';
 import { assertResourceProcessable, isResourceEnrichmentComplete } from './ingest/domain/resource-store';
 
 export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexGeneration5RebuildWorkflow };
@@ -80,16 +78,6 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	async getWorkflowStatus(instanceId: string) {
 		const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.get(instanceId);
 		return instance.status();
-	}
-
-	/** Bounded, revision-pinned product resource chunk. */
-	readCorpusResource(input: KnowledgeResourceReadInput) {
-		return readCorpusResource(this.env, input);
-	}
-
-	/** Authoritative resource references and titles for product context. */
-	resolveCorpusResources(input: KnowledgeResolveResourcesInput) {
-		return resolveCorpusResources(this.env, input);
 	}
 
 	/** Resolve an explicitly requested feed/account/channel monitor into a source row candidate (#237). */
