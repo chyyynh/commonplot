@@ -5,18 +5,20 @@ import {
 	type WorkflowStep,
 	type WorkflowStepConfig,
 } from 'cloudflare:workers';
+import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource-identifiers';
 import type { HostedResourceImage } from '@core-shared/resource-image-mapping';
-import { isContentResourceIdentity, parseResourceIdentity, toResourceIdentityColumns } from '@core-shared/resource-types';
+import {
+	canonicalizeOptionalResourceLang,
+	canonicalizeResourceLang,
+	isContentResourceIdentity,
+	parseResourceIdentity,
+	resourceIdentityForDetectedPlatform,
+	toResourceIdentityColumns,
+} from '@core-shared/resource-types';
 import type { PaperMetadata, PdfExtractionMetadata, ResourceForProcessing } from '@core-shared/types';
 import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
-import {
-	loadDraftShellForProcessing,
-	loadOriginalResourceContentArtifact,
-	loadResourceShellForProcessing,
-	type ResourceProcessingShell,
-	readOriginalResourceContentArtifact,
-} from '@ingest/domain/resource-store';
+import { loadSourceAvatarUrl, loadStoredResourceForProcessing, type StoredResourceProcessingInput } from '@ingest/domain/resource-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
 import {
@@ -37,8 +39,9 @@ import { MIN_MONITORED_VIDEO_DURATION_SECONDS } from './platforms/youtube-acquis
 import {
 	enqueueSubjectDraft,
 	parseResourceProcessingWorkflowPayload,
-	type ResourceProcessingOperation,
+	type ResourceDraftTarget,
 	type ResourceProcessingWorkflowPayload,
+	type StoredResourceTarget,
 } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import {
@@ -131,45 +134,37 @@ async function stageResourceImages(
 	return images;
 }
 
-function shouldAcquireContent(shell: ResourceProcessingShell, force = false): boolean {
-	const { resource } = shell;
-	if (force) return !resource.storage_key && !!resource.url;
-	const needsYouTubeAcquisition = resource.resource_platform === 'youtube' && !shell.hasYoutubeTranscript;
-	const needsPlatformAcquisition = !!detectResourceUrl(resource.url) && (resource.kind_metadata === null || resource.creators.length === 0);
-	return (!shell.hasPersistedContent || needsYouTubeAcquisition || needsPlatformAcquisition) && !resource.storage_key && !!resource.url;
-}
-
 async function stageSavedUrlAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	shell: ResourceProcessingShell,
-	operation: ResourceProcessingOperation,
+	input: {
+		isMonitoredOnly: boolean;
+		processingId: string;
+		sourceAvatarUrl: string | null;
+		sourceUrl: string;
+	},
 	expectedProviderRevision?: string,
 ): Promise<AcquiredContent> {
-	const { resource } = shell;
-	const locator = exactPlatformLocator(resource.resource_identifiers);
-	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : resource.url;
-	if (!sourceUrl) throw new Error(`Resource processing ${resource.processing_id} has no source URL`);
 	const expectsProviderRevision = !!expectedProviderRevision;
-	const stepConfig = operation === 'refresh' || expectsProviderRevision ? RESOURCE_REFRESH_ACQUISITION_STEP_CONFIG : ACQUISITION_STEP;
+	const stepConfig = expectsProviderRevision ? RESOURCE_REFRESH_ACQUISITION_STEP_CONFIG : ACQUISITION_STEP;
 	const acquisition = await readSavedUrlAcquisitionArtifact(
 		await step.do('acquire-content-kind-platform-v1', stepConfig, (ctx) => {
-			if (operation === 'refresh' || expectsProviderRevision) {
+			if (expectsProviderRevision) {
 				console.info({
 					tag: 'RESOURCE_ACQUISITION',
 					event: 'refresh_acquisition_attempt',
-					resource_id: resource.processing_id,
-					resource_platform: resource.resource_platform,
+					resource_id: input.processingId,
+					resource_platform: detectResourceUrl(input.sourceUrl)?.resourcePlatform ?? null,
 					expects_provider_revision: expectsProviderRevision,
 					attempt: ctx.attempt,
 				});
 			}
 			return scrapeSavedUrlArtifact(
-				sourceUrl,
+				input.sourceUrl,
 				env,
-				shell.isMonitoredOnly,
-				shell.sourceAvatarUrl,
-				resource.processing_id,
+				input.isMonitoredOnly,
+				input.sourceAvatarUrl,
+				input.processingId,
 				expectedProviderRevision,
 			);
 		}),
@@ -178,12 +173,12 @@ async function stageSavedUrlAcquisition(
 		throw new ResourceProcessingRejectedError(acquisition.message, 'ResourceAcquisitionRejectedError');
 	}
 	const acquired = acquisition.content;
-	if (shell.isMonitoredOnly && acquired.provider === 'youtube') {
+	if (input.isMonitoredOnly && acquired.provider === 'youtube') {
 		const durationSeconds = acquired.durationSeconds;
 		if (durationSeconds === null || durationSeconds <= MIN_MONITORED_VIDEO_DURATION_SECONDS) {
 			const reason = durationSeconds === null ? 'is a live stream or unstarted premiere' : `runs ${durationSeconds}s`;
 			throw new ResourceProcessingRejectedError(
-				`YouTube processing ${resource.processing_id} ${reason}; monitored videos must exceed ${MIN_MONITORED_VIDEO_DURATION_SECONDS}s`,
+				`YouTube processing ${input.processingId} ${reason}; monitored videos must exceed ${MIN_MONITORED_VIDEO_DURATION_SECONDS}s`,
 				'MonitoredVideoRejectedError',
 			);
 		}
@@ -204,11 +199,10 @@ function assertPdfExtractionProcessable(input: {
 
 function assertResourceContentProcessable(input: {
 	acquiredContent: AcquiredContent | undefined;
-	hasPersistedContent: boolean;
 	pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
 	resourceId: string;
 }): void {
-	if (input.hasPersistedContent || input.pdfTextArtifact?.text?.trim() || input.acquiredContent?.markdown?.trim()) return;
+	if (input.pdfTextArtifact?.text?.trim() || input.acquiredContent?.markdown?.trim()) return;
 	throw new ResourceProcessingRejectedError(`Resource ${input.resourceId} has no extractable content`, 'ResourceContentMissingError');
 }
 
@@ -220,28 +214,132 @@ type PreparedResource = {
 	resource: ResourceForProcessing;
 };
 
-async function prepareResourceForProcessing(
-	env: CoreEnv,
-	step: WorkflowStep,
-	initialShell: ResourceProcessingShell,
-	operation: ResourceProcessingOperation,
-	expectedProviderRevision?: string,
-): Promise<PreparedResource> {
-	const { resource: initialResource } = initialShell;
-	if (operation !== 'ingest' && !initialResource.url) {
-		throw new ResourceProcessingRejectedError(
-			`Resource processing ${initialResource.processing_id} has no source URL`,
-			'ResourceReacquisitionUnsupportedError',
+type ResourcePreparationInput =
+	| {
+			kind: 'draft';
+			processingId: string;
+			sourceAvatarUrl: string | null;
+			target: ResourceDraftTarget;
+	  }
+	| {
+			kind: 'stored';
+			stored: StoredResourceProcessingInput;
+			target: StoredResourceTarget;
+	  };
+
+async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, input: ResourcePreparationInput): Promise<PreparedResource> {
+	let initialResource: ResourceForProcessing;
+	let preliminary: Awaited<ReturnType<typeof stagePreliminaryAcquisition>>;
+	let acquiredContent: AcquiredContent | undefined;
+	if (input.kind === 'draft') {
+		const exactPaper = resolveExactPaperInput(input.target.url);
+		const detected = exactPaper ? null : detectResourceUrl(input.target.url);
+		const identity = exactPaper
+			? ({ kind: 'paper', resourcePlatform: null } as const)
+			: detected
+				? resourceIdentityForDetectedPlatform(detected.resourcePlatform)
+				: ({ kind: 'blog', resourcePlatform: null } as const);
+		const resourceIdentifiers = normalizeResourceIdentifiers(
+			exactPaper
+				? paperIdentifiersFromIdentity(exactPaper.identity)
+				: detected
+					? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]
+					: [],
 		);
+		const sourceId = input.target.admission.kind === 'source' ? input.target.admission.sourceId : null;
+		const draftCandidate = {
+			processing_id: input.processingId,
+			published_date: input.target.publishedDate,
+			resource_identifiers: resourceIdentifiers,
+			resource_platform: identity.resourcePlatform,
+			scope: 'corpus' as const,
+			source: new URL(input.target.url).hostname.replace(/^www\./, ''),
+			source_id: sourceId,
+			storage_key: null,
+			summary: input.target.summary,
+			title: input.target.title,
+			url: input.target.url,
+		};
+		// Exact DOI/arXiv/OpenAlex drafts can go straight to OpenAlex Content.
+		// The landing page is acquired only when OpenAlex has no cached content.
+		preliminary = await stagePreliminaryAcquisition(env, step, draftCandidate, () =>
+			stageSavedUrlAcquisition(
+				env,
+				step,
+				{
+					isMonitoredOnly: input.target.admission.kind === 'source',
+					processingId: input.processingId,
+					sourceAvatarUrl: input.sourceAvatarUrl,
+					sourceUrl: input.target.url,
+				},
+				input.target.expectedProviderRevision,
+			),
+		);
+		acquiredContent = preliminary.acquiredContent;
+		if (!acquiredContent) {
+			throw new ResourceProcessingRejectedError(
+				`Resource draft ${input.processingId} produced no acquired content`,
+				'ResourceContentMissingError',
+			);
+		}
+		const canonicalUrl = acquiredContent.canonicalUrl?.trim() || input.target.url;
+		let publishedDate = input.target.publishedDate;
+		if (publishedDate === null && acquiredContent.publishedDate?.trim()) {
+			const parsed = new Date(acquiredContent.publishedDate);
+			if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
+		}
+		initialResource = {
+			...toResourceIdentityColumns(identity),
+			processing_id: input.processingId,
+			source_id: sourceId,
+			scope: 'corpus',
+			original_lang: canonicalizeOptionalResourceLang(acquiredContent.originalLang) ?? canonicalizeResourceLang(input.target.originalLang),
+			title: acquiredContent.title.trim(),
+			summary: acquiredContent.summary ?? input.target.summary,
+			content: acquiredContent.markdown,
+			url: canonicalUrl,
+			source: acquiredContent.source,
+			published_date: publishedDate,
+			tags: [],
+			keywords: input.target.keywords,
+			creators: acquiredContent.creators,
+			kind_metadata: acquiredContent.kindMetadata,
+			source_revision: acquiredContent.sourceSnapshotHash ?? null,
+			resource_identifiers: resourceIdentifiers,
+			storage_key: null,
+			file_type: acquiredContent.fileType,
+			normalized_url: canonicalUrl,
+		};
+	} else {
+		initialResource = input.stored.resource;
+		if (input.target.operation === 'reacquire') {
+			const locator = exactPlatformLocator(initialResource.resource_identifiers);
+			const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : initialResource.url;
+			if (!sourceUrl) {
+				throw new ResourceProcessingRejectedError(
+					`Resource processing ${initialResource.processing_id} has no source URL`,
+					'ResourceReacquisitionUnsupportedError',
+				);
+			}
+			preliminary = await stagePreliminaryAcquisition(env, step, initialResource, () =>
+				stageSavedUrlAcquisition(
+					env,
+					step,
+					{
+						isMonitoredOnly: input.stored.isMonitoredOnly,
+						processingId: initialResource.processing_id,
+						sourceAvatarUrl: input.stored.sourceAvatarUrl,
+						sourceUrl,
+					},
+					input.target.expectedProviderRevision,
+				),
+			);
+			acquiredContent = preliminary.acquiredContent;
+		} else {
+			preliminary = { acquiredContent: undefined, explicitResolution: null };
+		}
 	}
-	// Exact DOI/arXiv/OpenAlex URLs can go straight to OpenAlex Content. The
-	// original landing page is only acquired when OpenAlex has no cached PDF.
-	const preliminary = await stagePreliminaryAcquisition(env, step, initialResource, async () => {
-		if (!shouldAcquireContent(initialShell, operation !== 'ingest')) return undefined;
-		return stageSavedUrlAcquisition(env, step, initialShell, operation, expectedProviderRevision);
-	});
-	let { acquiredContent } = preliminary;
-	const acquiredResource = applyAcquiredMaterial(initialResource, acquiredContent);
+	const acquiredResource = input.kind === 'draft' ? initialResource : applyAcquiredMaterial(initialResource, acquiredContent);
 	const rootCanBePaper = !acquiredResource.url || !detectResourceUrl(acquiredResource.url);
 	const identityPdfTextArtifact =
 		acquiredResource.storage_key && acquiredResource.file_type === PDF_MIME && acquiredContent?.fileType !== PDF_MIME
@@ -332,25 +430,30 @@ async function settleFailedStoredBlobProcessing(
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingWorkflowPayload> {
 	async run(event: WorkflowEvent<ResourceProcessingWorkflowPayload>, step: WorkflowStep) {
 		const { target } = parseResourceProcessingWorkflowPayload(event.payload);
-		const operation: ResourceProcessingOperation = target.kind === 'stored' ? target.operation : 'ingest';
-		const expectedProviderRevision = target.kind === 'stored' ? target.expectedProviderRevision : target.seed.expectedProviderRevision;
 		const processingId = target.kind === 'stored' ? target.resourceId : event.instanceId;
 		let persistedSourceRevision: string | null | undefined;
 		try {
-			const initialShell = await step.do(
-				target.kind === 'stored' ? 'fetch-resource-shell-kind-platform-v1' : 'build-resource-draft-shell-v1',
-				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() =>
-					target.kind === 'stored'
-						? loadResourceShellForProcessing(this.env, target.resourceId)
-						: loadDraftShellForProcessing(this.env, event.instanceId, target),
-			);
-			const { resource: initialResource } = initialShell;
-			persistedSourceRevision = target.kind === 'stored' ? initialResource.source_revision : undefined;
-			if (target.kind === 'stored' && target.sourceRevision !== undefined && initialResource.source_revision !== target.sourceRevision) {
-				return { status: 'superseded', resourceId: target.resourceId } as const;
+			let preparationInput: ResourcePreparationInput;
+			if (target.kind === 'stored') {
+				const stored = await step.do(
+					'fetch-stored-resource-input-kind-platform-v1',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					() => loadStoredResourceForProcessing(this.env, target.resourceId),
+				);
+				persistedSourceRevision = stored.resource.source_revision;
+				preparationInput = { kind: 'stored', stored, target };
+			} else {
+				const sourceId = target.admission.kind === 'source' ? target.admission.sourceId : null;
+				const sourceAvatarUrl = sourceId
+					? await step.do(
+							'load-draft-source-avatar-v1',
+							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+							() => loadSourceAvatarUrl(this.env, sourceId),
+						)
+					: null;
+				preparationInput = { kind: 'draft', processingId, sourceAvatarUrl, target };
 			}
-			const prepared = await prepareResourceForProcessing(this.env, step, initialShell, operation, expectedProviderRevision);
+			const prepared = await prepareResourceForProcessing(this.env, step, preparationInput);
 			const { acquiredContent, identityPdfTextArtifact, paperEnrichment, resolution, resource } = prepared;
 			const logContext = { processing_id: processingId, target_kind: target.kind };
 
@@ -361,14 +464,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				resourcePlatform: resource.resource_platform,
 				...logContext,
 			});
-			const hasContent = initialShell.hasPersistedContent;
-			const pdfTextArtifact =
-				identityPdfTextArtifact ??
-				(!hasContent && !acquiredContent && resource.storage_key && resource.file_type === PDF_MIME
-					? await stagePdfTextExtraction(this.env, step, {
-							sourceStorageKey: resource.storage_key,
-						})
-					: null);
+			const pdfTextArtifact = identityPdfTextArtifact;
 			assertPdfExtractionProcessable({
 				acquiredExtraction: acquiredContent?.provider === null ? acquiredContent.extraction : undefined,
 				pdfTextArtifact,
@@ -376,27 +472,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			});
 			assertResourceContentProcessable({
 				acquiredContent,
-				hasPersistedContent: hasContent,
 				pdfTextArtifact,
 				resourceId: processingId,
 			});
 
-			// Read only the original content when the shell is otherwise sufficient. The stream keeps large content outside Workflow's persisted-value
-			// size limit; acquired or extracted content always wins.
-			const persistedContent =
-				acquiredContent || pdfTextArtifact
-					? null
-					: await readOriginalResourceContentArtifact(
-							await step.do(
-								'load-original-resource-content-kind-platform-v1',
-								{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-								() => loadOriginalResourceContentArtifact(this.env, target.kind === 'stored' ? target.resourceId : processingId),
-							),
-							target.kind === 'stored' ? target.resourceId : processingId,
-						);
-			const resourceWithContent = persistedContent === null ? resource : { ...resource, content: persistedContent };
 			const extractedPdfText = pdfTextArtifact?.text?.trim();
-			const processableResource = extractedPdfText ? { ...resourceWithContent, content: extractedPdfText } : resourceWithContent;
+			const processableResource = extractedPdfText ? { ...resource, content: extractedPdfText } : resource;
 
 			const previewImageUrl = acquiredContent?.previewImageUrl?.trim() || null;
 			const handled = await handleResolvedResource({
@@ -413,7 +494,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
 				() => classifyResource(handled.resource, this.env, handled.classificationExclusions),
 			);
-			const privatePaper = target.kind === 'stored' ? privatePaperAttachment(handled.resource) : null;
+			const privatePaper = target.kind === 'stored' && target.operation === 'blob' ? privatePaperAttachment(handled.resource) : null;
 			const subject = privatePaper ? null : resolvedSubjectInput(handled);
 			const persistenceInput = {
 				handled,
@@ -445,7 +526,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 								{
 									...persistenceInput,
 									resourceId: target.resourceId,
-									expectedSourceRevision: initialResource.source_revision,
+									expectedSourceRevision: persistedSourceRevision ?? null,
 								},
 								hostedImages,
 							)
@@ -455,7 +536,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 									{
 										...persistenceInput,
 										resourceId: target.resourceId,
-										expectedSourceRevision: initialResource.source_revision,
+										expectedSourceRevision: persistedSourceRevision ?? null,
 									},
 									hostedImages,
 								)
@@ -473,9 +554,10 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 						() =>
 							enqueueSubjectDraft(this.env, {
-								...subject,
 								parentResourceId: persistedResourceId,
 								parentRevision,
+								title: subject.title,
+								url: subject.url,
 							}),
 					)
 					.catch((error) =>
@@ -507,7 +589,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			}
 
 			console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
-			return { status: 'persisted', resourceId: persistedResourceId, ...(operation !== 'ingest' ? { changed: true } : {}) } as const;
+			return {
+				status: 'persisted',
+				resourceId: persistedResourceId,
+				...(target.kind === 'stored' && target.operation === 'reacquire' ? { changed: true } : {}),
+			} as const;
 		} catch (error) {
 			if (target.kind === 'draft') {
 				if (error instanceof ResourceProcessingRejectedError) {
@@ -521,7 +607,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				}
 				throw error;
 			}
-			if (operation !== 'ingest') throw error;
+			if (target.operation !== 'blob') throw error;
 			await settleFailedStoredBlobProcessing(this.env, step, {
 				persistedSourceRevision,
 				resourceId: target.resourceId,

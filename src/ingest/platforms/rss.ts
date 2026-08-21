@@ -1,5 +1,3 @@
-import { resourceIdentityForDetectedPlatform } from '@core-shared/resource-types';
-import { detectResourceUrl } from '@core-shared/url';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
 import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/resource-admission';
 import { loadFeed } from './rss-feed';
@@ -20,16 +18,12 @@ async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
 	for (const item of entries) {
 		try {
 			if (!item.title) throw new Error(`RSS item from ${feed.name} has no title: ${item.url}`);
-			const detected = detectResourceUrl(item.url);
 			drafts.push({
 				sourceId: feed.id,
 				url: item.url,
 				title: item.title,
 				publishedDate: item.publishedDate,
 				summary: item.summary,
-				...(detected
-					? resourceIdentityForDetectedPlatform(detected.resourcePlatform)
-					: ({ kind: 'blog', resourcePlatform: null } as const)),
 				originalLang: item.originalLang,
 			});
 		} catch (error) {

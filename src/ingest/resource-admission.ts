@@ -1,40 +1,12 @@
 import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
-import { isResourceIdentifierScheme, normalizeResourceIdentifiers, type ResourceIdentifier } from '@core-shared/resource-identifiers';
-import {
-	type ContentResourceIdentity,
-	canonicalizeOptionalResourceLang,
-	DEFAULT_RESOURCE_LANG,
-	isContentResourceIdentity,
-	isResourceSourceSnapshotHash,
-	parseResourceIdentity,
-	resourceIdentityForDetectedPlatform,
-} from '@core-shared/resource-types';
-import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
+import { canonicalizeOptionalResourceLang, DEFAULT_RESOURCE_LANG } from '@core-shared/resource-types';
+import { normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { withCoreDb } from '@db/client';
 import { claimExistingDiscoveredResources, claimStalePendingBlobAdmissions } from '@ingest/domain/resource-admission-store';
-import { resourceSourceSnapshotHash } from '@ingest/domain/resource-revision';
 import { cleanString, dateValue, requiredString, stringArrayValue } from '@ingest/domain/resource-values';
 import { z } from 'zod';
 import { enqueueOrRestartWorkflow } from '../workflow-control';
-
-export type ResourceProcessingOperation = 'ingest' | 'refresh' | 'resync';
-
-const ContentResourceIdentitySchema = z.union([
-	z.object({ kind: z.literal('blog'), resourcePlatform: z.union([z.null(), z.literal('lesswrong')]) }).strict(),
-	z.object({ kind: z.literal('forum'), resourcePlatform: z.literal('hackernews') }).strict(),
-	z.object({ kind: z.literal('post'), resourcePlatform: z.literal('twitter') }).strict(),
-	z.object({ kind: z.literal('video'), resourcePlatform: z.literal('youtube') }).strict(),
-	z.object({ kind: z.literal('paper'), resourcePlatform: z.null() }).strict(),
-]);
-
-const ResourceIdentifierSchema = z
-	.object({
-		preferred: z.boolean(),
-		scheme: z.custom<ResourceIdentifier['scheme']>(isResourceIdentifierScheme),
-		value: z.string().trim().min(1).max(500),
-	})
-	.strict();
 
 const ProviderRevisionSchema = z
 	.string()
@@ -79,10 +51,10 @@ const DraftAdmissionSchema = z.discriminatedUnion('kind', [
 		.strict(),
 ]);
 
-const DraftSeedSchema = z
+const ResourceDraftTargetSchema = z
 	.object({
-		identity: ContentResourceIdentitySchema,
-		identifiers: z.array(ResourceIdentifierSchema).max(20),
+		kind: z.literal('draft'),
+		admission: DraftAdmissionSchema,
 		url: z.url().max(2_048),
 		title: z.string().trim().min(1).max(5_000),
 		summary: z.string().max(20_000).nullable(),
@@ -90,11 +62,6 @@ const DraftSeedSchema = z
 		publishedDate: z.iso.datetime().nullable(),
 		keywords: z.array(z.string().max(500)).max(100),
 		expectedProviderRevision: ProviderRevisionSchema.optional(),
-		sourceRevision: z
-			.string()
-			.length(64)
-			.regex(/^[0-9a-f]+$/)
-			.nullable(),
 	})
 	.strict();
 
@@ -105,22 +72,18 @@ const ResourceProcessingWorkflowPayloadSchema = z
 				.object({
 					kind: z.literal('stored'),
 					resourceId: z.string().uuid(),
-					operation: z.enum(['ingest', 'refresh', 'resync']),
+					operation: z.enum(['blob', 'reacquire']),
 					expectedProviderRevision: ProviderRevisionSchema.optional(),
-					sourceRevision: z
-						.string()
-						.length(64)
-						.regex(/^[0-9a-f]+$/)
-						.optional(),
 				})
 				.strict(),
-			z.object({ kind: z.literal('draft'), seed: DraftSeedSchema, admission: DraftAdmissionSchema }).strict(),
+			ResourceDraftTargetSchema,
 		]),
 	})
 	.strict();
 
 export type ResourceProcessingWorkflowPayload = z.infer<typeof ResourceProcessingWorkflowPayloadSchema>;
 export type ResourceDraftTarget = Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'draft' }>;
+export type StoredResourceTarget = Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'stored' }>;
 
 export function parseResourceProcessingWorkflowPayload(value: unknown): ResourceProcessingWorkflowPayload {
 	return ResourceProcessingWorkflowPayloadSchema.parse(value);
@@ -136,7 +99,7 @@ export type SourceResourceDraft = {
 	keywords?: string[];
 	/** Provider event revision that should refresh an already-enriched Resource once. */
 	refreshRevision?: string;
-} & ContentResourceIdentity;
+};
 
 export type AppResourceDraftInput = Readonly<{
 	instanceId: string;
@@ -149,20 +112,18 @@ export type SourceResourceAdmissionOutcome = 'created' | 'existing' | 'refreshed
 type ExistingDiscoveredResource = Awaited<ReturnType<typeof claimExistingDiscoveredResources>>[number];
 
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
-const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v7';
-const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v1';
+const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v8';
+const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v2';
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
 const PENDING_BLOB_RECONCILE_CONCURRENCY = 10;
 const DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY = 5;
 
-export async function enqueueProcessing(env: CoreEnv, resourceId: string, sourceRevision?: string): Promise<string> {
-	if (sourceRevision && !isResourceSourceSnapshotHash(sourceRevision)) throw new Error('Invalid resource source revision');
-	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, storedWorkflowId(resourceId, sourceRevision), {
+export async function enqueueProcessing(env: CoreEnv, resourceId: string): Promise<string> {
+	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, storedWorkflowId(resourceId), {
 		target: {
 			kind: 'stored',
 			resourceId,
-			operation: 'ingest',
-			...(sourceRevision ? { sourceRevision } : {}),
+			operation: 'blob',
 		},
 	});
 }
@@ -174,36 +135,21 @@ export async function enqueueAppResourceDraft(env: CoreEnv, input: AppResourceDr
 	const parsed = parseExternalHttpUrl(input.url);
 	if (!parsed) throw new Error('Only http(s) URLs without credentials are allowed');
 	const url = normalizeUrl(parsed.toString());
-	const detected = detectResourceUrl(url);
-	const identity = detected
-		? resourceIdentityForDetectedPlatform(detected.resourcePlatform)
-		: ({ kind: 'blog', resourcePlatform: null } as const);
 	const target: ResourceDraftTarget = {
 		kind: 'draft',
 		admission: input.admission,
-		seed: {
-			identity,
-			identifiers: detected
-				? normalizeResourceIdentifiers([{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }])
-				: [],
-			url,
-			title: new URL(url).hostname.replace(/^www\./, ''),
-			summary: null,
-			originalLang: DEFAULT_RESOURCE_LANG,
-			publishedDate: null,
-			keywords: [],
-			sourceRevision: null,
-		},
+		url,
+		title: new URL(url).hostname.replace(/^www\./, ''),
+		summary: null,
+		originalLang: DEFAULT_RESOURCE_LANG,
+		publishedDate: null,
+		keywords: [],
 	};
 	const payload = parseResourceProcessingWorkflowPayload({ target });
 	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, input.instanceId, payload);
 }
 
-async function sourceDraftTarget(base: SourceResourceDraft): Promise<ResourceDraftTarget> {
-	const explicitIdentity = parseResourceIdentity(base.kind, base.resourcePlatform);
-	if (!explicitIdentity || !isContentResourceIdentity(explicitIdentity)) {
-		throw new Error(`Invalid source resource identity: ${String(base.kind)} / ${String(base.resourcePlatform)}`);
-	}
+function sourceDraftTarget(base: SourceResourceDraft): ResourceDraftTarget {
 	const originalLang = canonicalizeOptionalResourceLang(base.originalLang) ?? DEFAULT_RESOURCE_LANG;
 	const publishedDate = base.publishedDate === null ? null : dateValue(base.publishedDate, 'published_date').toISOString();
 	const parsedUrl = parseExternalHttpUrl(requiredString(base.url, 'url'));
@@ -212,48 +158,24 @@ async function sourceDraftTarget(base: SourceResourceDraft): Promise<ResourceDra
 	const title = requiredString(base.title, 'title');
 	const summary = cleanString(base.summary);
 	const keywords = stringArrayValue(base.keywords ?? [], 'keywords');
-	const sourceRevision = await resourceSourceSnapshotHash({
-		content: null,
-		fileType: null,
-		kind: explicitIdentity.kind,
-		originalLang,
-		publishedDate,
-		resourcePlatform: explicitIdentity.resourcePlatform,
-		summary,
-		title,
-		translationSource: 'original',
-		url,
-	});
 	return parseResourceProcessingWorkflowPayload({
 		target: {
 			kind: 'draft',
 			admission: { kind: 'source', sourceId: requiredString(base.sourceId, 'source_id') },
-			seed: {
-				identity: explicitIdentity,
-				identifiers: detectedResourceIdentifiers(url),
-				url,
-				title,
-				summary,
-				originalLang,
-				publishedDate,
-				keywords,
-				...(base.refreshRevision?.trim() ? { expectedProviderRevision: base.refreshRevision.trim() } : {}),
-				sourceRevision,
-			},
+			url,
+			title,
+			summary,
+			originalLang,
+			publishedDate,
+			keywords,
+			...(base.refreshRevision?.trim() ? { expectedProviderRevision: base.refreshRevision.trim() } : {}),
 		},
 	}).target as ResourceDraftTarget;
-}
-
-function detectedResourceIdentifiers(url: string): ResourceIdentifier[] {
-	const detected = detectResourceUrl(url);
-	return detected ? normalizeResourceIdentifiers([{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]) : [];
 }
 
 export async function enqueueSubjectDraft(
 	env: CoreEnv,
 	input: {
-		identity: ContentResourceIdentity;
-		identifiers: readonly ResourceIdentifier[];
 		parentResourceId: string;
 		parentRevision: string | null;
 		title: string;
@@ -268,21 +190,16 @@ export async function enqueueSubjectDraft(
 				parentResourceId: input.parentResourceId,
 				expectedParentRevision: input.parentRevision,
 			},
-			seed: {
-				identity: input.identity,
-				identifiers: normalizeResourceIdentifiers(input.identifiers),
-				url: normalizeUrl(input.url),
-				title: input.title,
-				summary: null,
-				originalLang: DEFAULT_RESOURCE_LANG,
-				publishedDate: null,
-				keywords: [],
-				sourceRevision: null,
-			},
+			url: normalizeUrl(input.url),
+			title: input.title,
+			summary: null,
+			originalLang: DEFAULT_RESOURCE_LANG,
+			publishedDate: null,
+			keywords: [],
 		},
 	}).target as ResourceDraftTarget;
 	const identity = await sha256Hex(JSON.stringify(target));
-	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `subject-draft-v1-${identity}`, { target });
+	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `subject-draft-v2-${identity}`, { target });
 }
 
 async function admitDiscoveredSourceResource(
@@ -291,7 +208,7 @@ async function admitDiscoveredSourceResource(
 	resource: ExistingDiscoveredResource | undefined,
 ): Promise<SourceResourceAdmissionOutcome> {
 	if (!resource) {
-		const target = await sourceDraftTarget(draft);
+		const target = sourceDraftTarget(draft);
 		const identity = await sha256Hex(JSON.stringify(target));
 		const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
 			{ id: `${SOURCE_DRAFT_WORKFLOW_REVISION}-${identity}`, params: { target } },
@@ -329,9 +246,9 @@ export async function admitDiscoveredSourceResources(
 
 async function enqueueResourceRefresh(env: CoreEnv, resourceId: string, refreshRevision: string): Promise<boolean> {
 	const revision = ProviderRevisionSchema.parse(refreshRevision);
-	const id = ['resource-refresh-v3', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
+	const id = ['resource-refresh-v4', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
 	const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
-		{ id, params: { target: { kind: 'stored', resourceId, operation: 'refresh', expectedProviderRevision: revision } } },
+		{ id, params: { target: { kind: 'stored', resourceId, operation: 'reacquire', expectedProviderRevision: revision } } },
 	]);
 	if (created) return true;
 	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.get(id);
@@ -353,9 +270,7 @@ export async function reconcilePendingBlobProcessing(env: CoreEnv): Promise<void
 	let failed = 0;
 	for (let offset = 0; offset < admissions.length; offset += PENDING_BLOB_RECONCILE_CONCURRENCY) {
 		const batch = admissions.slice(offset, offset + PENDING_BLOB_RECONCILE_CONCURRENCY);
-		const results = await Promise.allSettled(
-			batch.map(({ resourceId, sourceRevision }) => enqueueProcessing(env, resourceId, sourceRevision ?? undefined)),
-		);
+		const results = await Promise.allSettled(batch.map(({ resourceId }) => enqueueProcessing(env, resourceId)));
 		for (const [index, result] of results.entries()) {
 			if (result.status === 'fulfilled') {
 				reconciled++;
@@ -382,7 +297,7 @@ export async function reconcilePendingBlobProcessing(env: CoreEnv): Promise<void
 export async function enqueueResourceResync(env: CoreEnv, resourceId: string): Promise<string> {
 	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
 		id: `resource-resync-v2-${workflowIdPart(resourceId)}-${crypto.randomUUID()}`,
-		params: { target: { kind: 'stored', resourceId, operation: 'resync' } },
+		params: { target: { kind: 'stored', resourceId, operation: 'reacquire' } },
 	});
 	return instance.id;
 }
@@ -391,8 +306,6 @@ function workflowIdPart(value: string): string {
 	return value.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80);
 }
 
-function storedWorkflowId(resourceId: string, sourceRevision?: string): string {
-	return sourceRevision
-		? [STORED_RESOURCE_WORKFLOW_REVISION, workflowIdPart(resourceId), sourceRevision.slice(0, 32)].join('-')
-		: [STORED_RESOURCE_WORKFLOW_REVISION, workflowIdPart(resourceId)].join('-');
+function storedWorkflowId(resourceId: string): string {
+	return [STORED_RESOURCE_WORKFLOW_REVISION, workflowIdPart(resourceId)].join('-');
 }

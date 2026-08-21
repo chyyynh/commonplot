@@ -14,6 +14,21 @@ import {
 import { acquireOpenAlexGrobidText, acquireOpenAlexPdf } from './openalex';
 import { isExplicitPaperUrl, type PaperEnrichmentResolution, stagePaperEnrichment } from './paper';
 
+type PaperContentCandidate = Pick<
+	ResourceForProcessing,
+	| 'processing_id'
+	| 'published_date'
+	| 'resource_identifiers'
+	| 'resource_platform'
+	| 'scope'
+	| 'source'
+	| 'source_id'
+	| 'storage_key'
+	| 'summary'
+	| 'title'
+	| 'url'
+>;
+
 async function acquireOpenAlexPdfArtifact(
 	input: {
 		contentPdfUrl: string;
@@ -80,7 +95,7 @@ async function acquireOpenAlexGrobidArtifact(
 async function stageOpenAlexContentAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	resource: ResourceForProcessing,
+	resource: PaperContentCandidate,
 	resolution: PaperEnrichmentResolution,
 	phase: 'preliminary' | 'selected',
 ): Promise<AcquiredContent | null> {
@@ -169,7 +184,7 @@ type PreliminaryAcquisition = Readonly<{
 export async function stagePreliminaryAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	resource: ResourceForProcessing,
+	resource: PaperContentCandidate,
 	acquireFallback: () => Promise<AcquiredContent | undefined>,
 ): Promise<PreliminaryAcquisition> {
 	const explicitResolution =

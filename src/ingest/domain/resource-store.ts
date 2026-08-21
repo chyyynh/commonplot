@@ -21,14 +21,11 @@ import type { ResourceForProcessing } from '@core-shared/types';
 import { type CoreDb, withCoreDb } from '@db/client';
 import { resourceDisplaySourceSql, resourceTranslationIdentityPredicate } from '@db/resource-identity-sql';
 import { resourceIdentifiers, resources, resourceTranslations, sources, youtubeTranscripts } from '@db/schema';
-import { and, eq, sql } from 'drizzle-orm';
-import type { ResourceDraftTarget } from '../resource-admission';
+import { eq, sql } from 'drizzle-orm';
 import { cleanString, dateValue, requiredString } from './resource-values';
 
-export type ResourceProcessingShell = {
+export type StoredResourceProcessingInput = {
 	resource: ResourceForProcessing;
-	hasPersistedContent: boolean;
-	hasYoutubeTranscript: boolean;
 	isMonitoredOnly: boolean;
 	sourceAvatarUrl: string | null;
 };
@@ -40,7 +37,6 @@ type ResourceStoreRow = {
 	resource_platform: string | null;
 	title: string | null;
 	summary: string | null;
-	content: string | null;
 	original_lang: string;
 	url: string | null;
 	source: string | null;
@@ -53,8 +49,6 @@ type ResourceStoreRow = {
 	kind_metadata: unknown;
 	source_revision: string | null;
 	resource_identifiers: unknown;
-	has_content: boolean;
-	has_youtube_transcript: boolean | null;
 	is_monitored_only: boolean;
 	storage_key: string | null;
 	file_type: string | null;
@@ -77,90 +71,21 @@ function storedResourceSourceRevision(value: unknown, resourceId: string): strin
 	return value;
 }
 
-export async function loadOriginalResourceContentArtifact(env: CoreEnv, resourceId: string): Promise<ReadableStream<Uint8Array>> {
-	const content = await withCoreDb(env, async (db) => {
-		const row = (
-			await db
-				.select({ content: resourceTranslations.content })
-				.from(resources)
-				.innerJoin(
-					resourceTranslations,
-					and(eq(resourceTranslations.resourceId, resources.id), eq(resourceTranslations.lang, resources.originalLang)),
-				)
-				.where(eq(resources.id, resourceId))
-				.limit(1)
-		)[0];
-		if (!row || row.content === null || row.content.length === 0) {
-			throw new Error(`Resource ${resourceId} has no persisted original content`);
-		}
-		return row.content;
-	});
-	return new Blob([content], { type: 'text/plain; charset=utf-8' }).stream();
-}
-
-export async function readOriginalResourceContentArtifact(
-	artifact: ReadableStream<Uint8Array>,
-	expectedResourceId: string,
-): Promise<string> {
-	const content = await new Response(artifact).text();
-	if (content.length === 0) throw new Error(`Resource ${expectedResourceId} has no persisted original content`);
-	return content;
-}
-
-export async function loadResourceShellForProcessing(env: CoreEnv, resourceId: string): Promise<ResourceProcessingShell> {
+export async function loadStoredResourceForProcessing(env: CoreEnv, resourceId: string): Promise<StoredResourceProcessingInput> {
 	const row = await withCoreDb(env, (db) => loadStoredResourceRow(db, resourceId));
 	return {
 		resource: resourceStoreRowToProcessing(row),
-		hasPersistedContent: row.has_content,
-		hasYoutubeTranscript: row.has_youtube_transcript === true,
 		isMonitoredOnly: row.is_monitored_only,
 		sourceAvatarUrl: cleanString(row.source_avatar_url),
 	};
 }
 
-export async function loadDraftShellForProcessing(
-	env: CoreEnv,
-	processingId: string,
-	target: ResourceDraftTarget,
-): Promise<ResourceProcessingShell> {
-	const sourceId = target.admission.kind === 'source' ? target.admission.sourceId : null;
-	const sourceContext = sourceId
-		? await withCoreDb(env, async (db) => {
-				const row = (
-					await db.select({ name: sources.name, avatarUrl: sources.avatarUrl }).from(sources).where(eq(sources.id, sourceId)).limit(1)
-				)[0];
-				if (!row) throw new Error(`Source ${sourceId} no longer exists`);
-				return row;
-			})
-		: null;
-	return {
-		resource: {
-			processing_id: processingId,
-			source_id: sourceId,
-			scope: 'corpus',
-			...toResourceIdentityColumns(target.seed.identity),
-			original_lang: canonicalizeResourceLang(target.seed.originalLang),
-			title: target.seed.title,
-			summary: target.seed.summary,
-			content: null,
-			url: target.seed.url,
-			source: sourceContext?.name ?? new URL(target.seed.url).hostname.replace(/^www\./, ''),
-			published_date: target.seed.publishedDate,
-			tags: [],
-			keywords: target.seed.keywords,
-			creators: [],
-			kind_metadata: null,
-			source_revision: target.seed.sourceRevision,
-			resource_identifiers: normalizeResourceIdentifiers(target.seed.identifiers),
-			storage_key: null,
-			file_type: null,
-			normalized_url: target.seed.url,
-		},
-		hasPersistedContent: false,
-		hasYoutubeTranscript: false,
-		isMonitoredOnly: target.admission.kind === 'source',
-		sourceAvatarUrl: cleanString(sourceContext?.avatarUrl),
-	};
+export async function loadSourceAvatarUrl(env: CoreEnv, sourceId: string): Promise<string | null> {
+	return withCoreDb(env, async (db) => {
+		const row = (await db.select({ avatarUrl: sources.avatarUrl }).from(sources).where(eq(sources.id, sourceId)).limit(1))[0];
+		if (!row) throw new Error(`Source ${sourceId} no longer exists`);
+		return cleanString(row.avatarUrl);
+	});
 }
 
 export async function isResourceEnrichmentComplete(env: CoreEnv, resourceId: string): Promise<boolean> {
@@ -246,8 +171,6 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<Re
 			rl.resource_platform AS resource_platform,
 			rl.title AS title,
 			rl.summary AS summary,
-			NULL::text AS content,
-			rl.content IS NOT NULL AND length(rl.content) > 0 AS has_content,
 			rl.scope = 'corpus'
 				AND rl.source_id IS NOT NULL
 				AND rl.storage_key IS NULL
@@ -259,17 +182,6 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<Re
 					WHERE file.resource_id = rl.id OR file.canonical_resource_id = rl.id
 				)
 				AS is_monitored_only,
-			CASE
-				WHEN rl.resource_platform = 'youtube' THEN EXISTS (
-					SELECT 1
-					FROM ${youtubeTranscripts}
-					JOIN resource_identifiers identifier
-					  ON identifier.resource_id = rl.id
-					 AND identifier.scheme = 'youtube'
-					 AND identifier.value = ${youtubeTranscripts.videoId}
-				)
-				ELSE NULL
-			END AS has_youtube_transcript,
 			rl.original_lang AS original_lang,
 			(
 				SELECT jsonb_agg(
@@ -322,7 +234,7 @@ function resourceStoreRowToProcessing(row: ResourceStoreRow): ResourceForProcess
 		original_lang: canonicalizeResourceLang(row.original_lang),
 		title: requiredString(row.title, 'title'),
 		summary: row.summary,
-		content: row.content,
+		content: null,
 		url: row.url,
 		source: cleanString(row.source),
 		published_date: row.published_date === null ? null : dateValue(row.published_date, 'published_date').toISOString(),

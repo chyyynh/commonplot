@@ -1,4 +1,3 @@
-import type { ContentResourceIdentity } from '@core-shared/resource-types';
 import { normalizeUrl } from '@core-shared/url';
 import { type CoreDb, withCoreDb } from '@db/client';
 import { contentResourceIdentitySql } from '@db/resource-identity-sql';
@@ -9,9 +8,9 @@ export async function claimStalePendingBlobAdmissions(
 	env: CoreEnv,
 	olderThan: Date,
 	limit: number,
-): Promise<Array<{ resourceId: string; sourceRevision: string | null }>> {
+): Promise<Array<{ resourceId: string }>> {
 	return withCoreDb(env, async (db) => {
-		const claimed = await db.execute<{ resource_id: string; source_revision: string | null }>(sql`
+		const claimed = await db.execute<{ resource_id: string }>(sql`
 			WITH candidates AS (
 				SELECT id
 				FROM resources
@@ -36,12 +35,9 @@ export async function claimStalePendingBlobAdmissions(
 			SET updated_at = NOW()
 			FROM candidates
 			WHERE resource.id = candidates.id
-			RETURNING resource.id::text AS resource_id, resource.source_revision
+			RETURNING resource.id::text AS resource_id
 		`);
-		return claimed.rows.map(({ resource_id, source_revision }) => ({
-			resourceId: resource_id,
-			sourceRevision: source_revision,
-		}));
+		return claimed.rows.map(({ resource_id }) => ({ resourceId: resource_id }));
 	});
 }
 
@@ -52,7 +48,7 @@ export async function claimStalePendingBlobAdmissions(
  */
 export async function claimExistingDiscoveredResources(
 	db: CoreDb,
-	drafts: Array<{ sourceId: string; url: string } & ContentResourceIdentity>,
+	drafts: Array<{ sourceId: string; url: string }>,
 ): Promise<Array<{ enrichmentStatus: string; id: string; url: string }>> {
 	const discovered = new Map<string, string>();
 	for (const draft of drafts) {
