@@ -3,7 +3,7 @@ import { normalizeUrl, parseTwitterUsername } from '@core-shared/url';
 import { withCoreDb } from '@db/client';
 import { attachSourceToResources, getExistingResourcesByUrl } from '@ingest/domain/resource-admission-store';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
-import { admitPendingSourceResource, enqueueProcessing, enqueueResourceResync } from '@ingest/workflow';
+import { admitPendingSourceResource, enqueueProcessing } from '@ingest/workflow';
 import { buildTweetTitle, type Tweet } from './twitter-acquisition';
 
 async function enqueueTwitterResource(
@@ -37,34 +37,29 @@ function requiredTweetDate(value: string, tweetId: string): Date {
 	return date;
 }
 
-async function saveDiscoveredTweetGroup(tweets: Tweet[], env: CoreEnv, monitoredSource: MonitoredSource): Promise<boolean> {
-	const first = tweets[0];
-	if (!first) return false;
-	const url = normalizeUrl(first.url);
+async function saveDiscoveredTweet(tweet: Tweet, env: CoreEnv, monitoredSource: MonitoredSource): Promise<void> {
+	const url = normalizeUrl(tweet.url);
 	const [existing] = await withCoreDb(env, (db) => getExistingResourcesByUrl(db, [url]));
 	if (existing) {
 		await withCoreDb(env, (db) => attachSourceToResources(db, [existing.id], monitoredSource.id));
 		if (existing.shouldRetryEnrichment) await enqueueProcessing(env, existing.id);
-		else if (tweets.length > 1) await enqueueResourceResync(env, existing.id);
 		console.info({
 			tag: 'TWITTER',
-			msg: tweets.length > 1 ? 'Existing thread queued for canonical reacquisition' : 'Resource already exists (dedup)',
-			author: first.author?.userName,
-			tweets: tweets.length,
+			msg: 'Resource already exists (dedup)',
+			author: tweet.author?.userName,
 		});
-		return true;
+		return;
 	}
 
 	await enqueueTwitterResource(env, {
 		sourceId: monitoredSource.id,
 		url,
-		title: buildTweetTitle(first),
-		publishedDate: requiredTweetDate(first.createdAt, first.id ?? url),
-		originalLang: first.lang,
-		hashTags: first.hashTags,
+		title: buildTweetTitle(tweet),
+		publishedDate: requiredTweetDate(tweet.createdAt, tweet.id ?? url),
+		originalLang: tweet.lang,
+		hashTags: tweet.hashTags,
 	});
-	console.info({ tag: 'TWITTER', msg: 'Saved discovered tweet', author: first.author?.userName, tweets: tweets.length });
-	return true;
+	console.info({ tag: 'TWITTER', msg: 'Saved discovered tweet', author: tweet.author?.userName });
 }
 
 // Twitter Monitor
@@ -199,28 +194,6 @@ async function fetchTweetsForBatch(apiKey: string, userNames: string[], sinceTim
 	return { tweets, failedUserNames, hasUnattributedFailure };
 }
 
-/**
- * Group tweets by conversation so threads can be saved as a single merged resource.
- * Root tweets + self-replies in the same conversation merge; orphan self-replies
- * (reply targets we didn't fetch) get saved as standalone tweets.
- */
-function groupTweetsIntoThreads(tweets: Tweet[]): Tweet[][] {
-	const rootTweets = tweets.filter((t) => !t.isReply);
-	const selfReplies = tweets.filter((t) => t.isReply && t.inReplyToUsername === t.author?.userName);
-
-	const rootConversationIds = new Set(rootTweets.map((t) => t.conversationId || t.id));
-	const threadReplies = selfReplies.filter((t) => t.conversationId && rootConversationIds.has(t.conversationId));
-	const orphanReplies = selfReplies.filter((t) => !t.conversationId || !rootConversationIds.has(t.conversationId));
-
-	const groups = new Map<string, Tweet[]>();
-	for (const tweet of [...rootTweets, ...threadReplies]) {
-		const key = tweet.conversationId || tweet.id || tweet.url;
-		if (!groups.has(key)) groups.set(key, []);
-		groups.get(key)!.push(tweet);
-	}
-	return [...groups.values(), ...orphanReplies.map((tweet) => [tweet])];
-}
-
 type MonitoredTwitterUser = MonitoredSource & { twitterUserName: string };
 
 type MonitoredTwitterIdentity = {
@@ -275,26 +248,27 @@ function requiredMonitoredTwitterSource(tweet: Tweet, identities: MonitoredTwitt
 	return identity.sources[0]!;
 }
 
-async function saveTweetGroups(env: CoreEnv, tweets: Tweet[], identities: MonitoredTwitterIdentity[]): Promise<TweetSaveResult> {
+async function saveTweets(env: CoreEnv, tweets: Tweet[], identities: MonitoredTwitterIdentity[]): Promise<TweetSaveResult> {
 	let processed = 0;
 	const failedUserNames = new Set<string>();
 	let hasUnattributedFailure = false;
-	for (const group of groupTweetsIntoThreads(tweets)) {
-		const first = group[0];
-		if (!first) continue;
+	for (const tweet of tweets) {
+		// Acquisition of a root loads its complete same-author thread context.
+		// Replies are not independent Resources and must not become orphan rows
+		// merely because the root fell outside this monitor window.
+		if (tweet.isReply) continue;
 		try {
-			const monitoredSource = requiredMonitoredTwitterSource(first, identities);
-			const saved = await saveDiscoveredTweetGroup(group, env, monitoredSource);
-			if (saved) processed++;
+			const monitoredSource = requiredMonitoredTwitterSource(tweet, identities);
+			await saveDiscoveredTweet(tweet, env, monitoredSource);
+			processed++;
 		} catch (error) {
-			const userName = monitoredAuthorUserName(first);
+			const userName = monitoredAuthorUserName(tweet);
 			if (userName) failedUserNames.add(userName);
 			else hasUnattributedFailure = true;
 			console.error({
 				tag: 'TWITTER',
-				msg: 'Tweet group save failed',
-				url: first.url,
-				groupSize: group.length,
+				msg: 'Tweet save failed',
+				url: tweet.url,
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
@@ -389,7 +363,7 @@ async function processTwitterBatches(
 			continue;
 		}
 
-		const saved = await saveTweetGroups(env, fetched.tweets, batch);
+		const saved = await saveTweets(env, fetched.tweets, batch);
 		const outcome = await settleTwitterBatch(env, batch, fetched, saved, runStartedAt, userNames);
 		processed += outcome.processed;
 		advancedSources += outcome.advancedSources;
