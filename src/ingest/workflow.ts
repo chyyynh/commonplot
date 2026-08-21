@@ -151,6 +151,7 @@ async function stageSavedUrlAcquisition(
 	step: WorkflowStep,
 	shell: ResourceProcessingShell,
 	operation: ResourceProcessingOperation,
+	expectedProviderRevision?: string,
 ): Promise<AcquiredContent> {
 	const { resource } = shell;
 	const locator = exactPlatformLocator(resource.resource_identifiers);
@@ -168,7 +169,14 @@ async function stageSavedUrlAcquisition(
 					attempt: ctx.attempt,
 				});
 			}
-			return scrapeSavedUrlArtifact(sourceUrl, env, shell.isMonitoredOnly, shell.sourceAvatarUrl, resource.processing_id);
+			return scrapeSavedUrlArtifact(
+				sourceUrl,
+				env,
+				shell.isMonitoredOnly,
+				shell.sourceAvatarUrl,
+				resource.processing_id,
+				expectedProviderRevision,
+			);
 		}),
 	);
 	if (acquisition.status === 'rejected') {
@@ -233,6 +241,7 @@ async function prepareResourceForProcessing(
 	step: WorkflowStep,
 	initialShell: ResourceProcessingShell,
 	operation: ResourceProcessingOperation,
+	expectedProviderRevision?: string,
 ): Promise<PreparedResource> {
 	const { resource: initialResource } = initialShell;
 	if (operation !== 'ingest' && !initialResource.url) {
@@ -246,7 +255,7 @@ async function prepareResourceForProcessing(
 	// original landing page is only acquired when OpenAlex has no cached PDF.
 	const preliminary = await stagePreliminaryAcquisition(env, step, initialResource, async () => {
 		if (!shouldAcquireContent(initialShell, operation !== 'ingest')) return undefined;
-		return stageSavedUrlAcquisition(env, step, initialShell, operation);
+		return stageSavedUrlAcquisition(env, step, initialShell, operation, expectedProviderRevision);
 	});
 	let { acquiredContent } = preliminary;
 	const acquiredResource = applyAcquiredMaterial(initialResource, acquiredContent);
@@ -357,6 +366,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 	async run(event: WorkflowEvent<ResourceProcessingWorkflowPayload>, step: WorkflowStep) {
 		const { target } = parseResourceProcessingWorkflowPayload(event.payload);
 		const operation: ResourceProcessingOperation = target.kind === 'stored' ? target.operation : 'ingest';
+		const expectedProviderRevision = target.kind === 'stored' ? target.expectedProviderRevision : target.seed.expectedProviderRevision;
 		const processingId = target.kind === 'stored' ? target.resourceId : event.instanceId;
 		let persistedSourceRevision: string | null | undefined;
 		try {
@@ -373,7 +383,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			if (target.kind === 'stored' && target.sourceRevision !== undefined && initialResource.source_revision !== target.sourceRevision) {
 				return { status: 'superseded', resourceId: target.resourceId } as const;
 			}
-			const prepared = await prepareResourceForProcessing(this.env, step, initialShell, operation);
+			const prepared = await prepareResourceForProcessing(this.env, step, initialShell, operation, expectedProviderRevision);
 			const { acquiredContent, identityPdfTextArtifact, paperEnrichment, resolution, resource } = prepared;
 			const logContext = { processing_id: processingId, target_kind: target.kind };
 

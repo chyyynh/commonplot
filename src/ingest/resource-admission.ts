@@ -1,10 +1,6 @@
 import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
-import {
-	isResourceIdentifierScheme,
-	normalizeResourceIdentifiers,
-	type ResourceIdentifier,
-} from '@core-shared/resource-identifiers';
+import { isResourceIdentifierScheme, normalizeResourceIdentifiers, type ResourceIdentifier } from '@core-shared/resource-identifiers';
 import {
 	type ContentResourceIdentity,
 	canonicalizeOptionalResourceLang,
@@ -39,6 +35,13 @@ const ResourceIdentifierSchema = z
 		value: z.string().trim().min(1).max(500),
 	})
 	.strict();
+
+const ProviderRevisionSchema = z
+	.string()
+	.trim()
+	.min(1)
+	.max(80)
+	.regex(/^[a-zA-Z0-9_-]+$/);
 
 const DraftAdmissionSchema = z.discriminatedUnion('kind', [
 	z
@@ -86,6 +89,7 @@ const DraftSeedSchema = z
 		originalLang: z.string().trim().min(1).max(35),
 		publishedDate: z.iso.datetime().nullable(),
 		keywords: z.array(z.string().max(500)).max(100),
+		expectedProviderRevision: ProviderRevisionSchema.optional(),
 		sourceRevision: z
 			.string()
 			.length(64)
@@ -102,6 +106,7 @@ const ResourceProcessingWorkflowPayloadSchema = z
 					kind: z.literal('stored'),
 					resourceId: z.string().uuid(),
 					operation: z.enum(['ingest', 'refresh', 'resync']),
+					expectedProviderRevision: ProviderRevisionSchema.optional(),
 					sourceRevision: z
 						.string()
 						.length(64)
@@ -232,6 +237,7 @@ async function sourceDraftTarget(base: SourceResourceDraft): Promise<ResourceDra
 				originalLang,
 				publishedDate,
 				keywords,
+				...(base.refreshRevision?.trim() ? { expectedProviderRevision: base.refreshRevision.trim() } : {}),
 				sourceRevision,
 			},
 		},
@@ -291,6 +297,9 @@ async function admitDiscoveredSourceResource(
 		return 'created';
 	}
 	if (resource.enrichmentStatus !== 'enriched') {
+		if (draft.refreshRevision) {
+			return (await enqueueResourceRefresh(env, resource.id, draft.refreshRevision)) ? 'refreshed' : 'existing';
+		}
 		if (!resource.shouldRetryEnrichment) return 'existing';
 		await enqueueProcessing(env, resource.id);
 		return 'retried';
@@ -319,11 +328,10 @@ export async function admitDiscoveredSourceResources(
 }
 
 async function enqueueResourceRefresh(env: CoreEnv, resourceId: string, refreshRevision: string): Promise<boolean> {
-	const revision = refreshRevision.trim();
-	if (!/^[a-zA-Z0-9_-]{1,80}$/.test(revision)) throw new Error('Invalid resource refresh revision');
-	const id = ['resource-refresh-v2', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
+	const revision = ProviderRevisionSchema.parse(refreshRevision);
+	const id = ['resource-refresh-v3', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
 	const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
-		{ id, params: { target: { kind: 'stored', resourceId, operation: 'refresh' } } },
+		{ id, params: { target: { kind: 'stored', resourceId, operation: 'refresh', expectedProviderRevision: revision } } },
 	]);
 	if (created) return true;
 	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.get(id);
