@@ -133,11 +133,15 @@ assert.deepEqual(parseTwitterAdvancedSearchPage({ tweets: [root], has_next_page:
 	hasNextPage: true,
 	nextCursor: 'next',
 });
+assert.throws(
+	() => parseTwitterAdvancedSearchPage({ tweets: [], has_next_page: false, status: 'error', message: 'search failed' }),
+	/search failed/,
+);
 
 console.info({
 	event: 'twitter_thread_smoke_passed',
 	articleCases: 3,
-	advancedSearchCases: 4,
+	advancedSearchCases: 5,
 	threadGraphCases: 2,
 	threadPaginationCases: 5,
 	providerRetryCases: 10,

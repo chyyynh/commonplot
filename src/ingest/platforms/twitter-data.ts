@@ -184,6 +184,9 @@ const TwitterListPageSchema = z.looseObject({
 	tweets: z.array(TweetSchema),
 	has_next_page: z.boolean(),
 	next_cursor: z.string().optional(),
+	status: z.string().optional(),
+	message: z.string().optional(),
+	msg: z.string().optional(),
 });
 
 const TwitterThreadContextPageSchema = z.looseObject({
@@ -354,6 +357,8 @@ export function combineTwitterThreadMarkdown(rootMarkdown: string, continuationM
 
 export function parseTwitterAdvancedSearchPage(value: unknown): TwitterListPage {
 	const response = TwitterListPageSchema.parse(value);
+	const error = semanticTwitterError(response.status, response.message ?? response.msg);
+	if (error) throw new Error(`Twitter Advanced Search failed: ${error}`);
 	return {
 		tweets: response.tweets,
 		hasNextPage: response.has_next_page,
