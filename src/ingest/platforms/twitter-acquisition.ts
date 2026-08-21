@@ -3,7 +3,15 @@ import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
 import { extractTweetId } from '@core-shared/url';
-import { buildTwitterAuthorThread, parseTwitterThreadContextPage, parseTwitterTweetsResponse, type Tweet } from './twitter-data';
+import {
+	buildTwitterAuthorThread,
+	combineTwitterThreadMarkdown,
+	parseTwitterArticleResponse,
+	parseTwitterThreadContextPage,
+	parseTwitterTweetsResponse,
+	renderTwitterArticleMarkdown,
+	type Tweet,
+} from './twitter-data';
 
 interface TwitterMedia {
 	url: string;
@@ -34,6 +42,8 @@ interface TwitterMetadata extends TwitterAuthorFields {
 }
 
 type AuthoredTweet = Tweet & { author: NonNullable<Tweet['author']> };
+type TwitterAcquiredMaterial = Omit<AcquiredMaterial<'twitter'>, 'kindMetadata'> & { kindMetadata: PostKindMetadata };
+type TwitterResourceFields = Pick<TwitterAcquiredMaterial, 'creators' | 'kindMetadata' | 'subjectUrl'>;
 
 function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {
 	if (!tweet.author?.userName.trim() || !tweet.author.name.trim()) {
@@ -170,29 +180,13 @@ export function buildTweetTitle(tweet: Tweet, maxLength = 100): string {
 	return `@${author.userName}: ${text.substring(0, maxLength)}${suffix}`;
 }
 
-function buildThreadResourceParts(tweets: Tweet[]): {
-	first: AuthoredTweet;
-	combinedText: string;
-	fields: Pick<AcquiredMaterial<'twitter'>, 'creators' | 'kindMetadata' | 'subjectUrl'>;
-} {
-	const sorted = [...tweets].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-	const firstTweet = sorted[0];
+function buildThreadResourceFields(tweets: Tweet[]): TwitterResourceFields {
+	const firstTweet = tweets[0];
 	if (!firstTweet) throw new Error('Cannot build twitter thread resource from empty tweets');
 	const first: AuthoredTweet = { ...firstTweet, author: requiredTweetAuthor(firstTweet) };
-
-	const texts = sorted.flatMap((tweet) => {
-		const text = expandTweetUrls(tweet.text, tweet);
-		return text ? [text] : [];
-	});
-
-	const media = sorted.flatMap(extractTweetMedia);
-	const quotedTweet = sorted.map(extractQuotedTweet).find(Boolean);
-	const fields = buildTweetFields(first, { media, quotedTweet, threadPostCount: sorted.length });
-	return {
-		first,
-		combinedText: texts.join('\n\n'),
-		fields,
-	};
+	const media = tweets.flatMap(extractTweetMedia);
+	const quotedTweet = tweets.map(extractQuotedTweet).find(Boolean);
+	return buildTweetFields(first, { media, quotedTweet, threadPostCount: tweets.length });
 }
 
 function buildTweetFields(
@@ -203,7 +197,7 @@ function buildTweetFields(
 		quotedTweet?: QuotedTweetData;
 		threadPostCount?: number;
 	} = {},
-): Pick<AcquiredMaterial<'twitter'>, 'creators' | 'kindMetadata' | 'subjectUrl'> {
+): TwitterResourceFields {
 	const media = options.media ?? extractTweetMedia(tweet);
 	const metadata: TwitterMetadata = {
 		...extractTweetAuthor(tweet),
@@ -219,9 +213,9 @@ function buildTweetFields(
 }
 
 function buildTwitterLongformFields(
-	author: NonNullable<TwitterLongform['author']>,
+	author: NonNullable<Tweet['author']>,
 	coverImageUrl?: string,
-): Pick<AcquiredMaterial<'twitter'>, 'creators' | 'kindMetadata'> {
+): Pick<TwitterAcquiredMaterial, 'creators' | 'kindMetadata'> {
 	const metadata: TwitterMetadata = {
 		authorName: author.name,
 		authorUserName: author.userName,
@@ -232,20 +226,9 @@ function buildTwitterLongformFields(
 	return { creators: twitterCreator(metadata), kindMetadata: postMetadata(metadata) };
 }
 
-interface TwitterLongform {
-	title?: string;
-	cover_media_img_url?: string;
-	contents?: Array<{ text?: string }>;
-	author?: {
-		userName: string;
-		name: string;
-		isBlueVerified?: boolean;
-		profilePicture?: string;
-	};
-	createdAt?: string;
-}
-
-async function scrapeTwitterLongform(tweetId: string, apiKey: string, language?: string): Promise<AcquiredMaterial<'twitter'>> {
+async function scrapeTwitterLongform(tweet: Tweet, apiKey: string): Promise<TwitterAcquiredMaterial> {
+	const tweetId = tweet.id?.trim();
+	if (!tweetId) throw new Error(`Could not resolve tweet id for Twitter article ${tweet.url}`);
 	console.info({ tag: 'TWITTER', msg: 'Fetching longform for tweet', tweetId });
 
 	const response = await fetchWithTimeout(`https://api.twitterapi.io/twitter/article?tweet_id=${tweetId}`, {
@@ -255,28 +238,22 @@ async function scrapeTwitterLongform(tweetId: string, apiKey: string, language?:
 		await response.body?.cancel();
 		throw new Error(`Twitter longform request failed with HTTP ${response.status}`);
 	}
-	const data = JSON.parse(await readTextWithLimit(response)) as { article?: TwitterLongform; status?: string };
-	if (data.status !== 'success' || !data.article) throw new Error(`Twitter longform response was invalid for ${tweetId}`);
-
-	const longform = data.article;
-	if (!Array.isArray(longform.contents) || longform.contents.length === 0) {
-		throw new Error(`Twitter longform ${tweetId} requires contents`);
-	}
-	const contentText = longform.contents
-		.map((content, index) => {
-			const text = content.text?.trim();
-			if (!text) throw new Error(`Twitter longform ${tweetId} has invalid content ${index}`);
-			return text;
-		})
-		.join('\n\n');
-	if (!longform.title?.trim() || !contentText) throw new Error(`Twitter longform ${tweetId} requires both title and content`);
-	const title = longform.title.trim();
-	const author = longform.author;
-	if (!author?.name.trim() || !author.userName.trim()) throw new Error(`Twitter longform ${tweetId} requires a complete author`);
-	const publishedDate = longform.createdAt?.trim();
-	if (!publishedDate || Number.isNaN(new Date(publishedDate).getTime())) {
-		throw new Error(`Twitter longform ${tweetId} requires a valid published date`);
-	}
+	const longform = parseTwitterArticleResponse(JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)), tweetId);
+	const title = longform.title?.trim();
+	const contentText = expandKnownTweetUrls(renderTwitterArticleMarkdown(longform), tweet);
+	if (!title || !contentText) throw new Error(`Twitter longform ${tweetId} requires both title and renderable content`);
+	const tweetAuthor = requiredTweetAuthor(tweet);
+	const author = {
+		...tweetAuthor,
+		...(longform.author?.name?.trim() ? { name: longform.author.name.trim() } : {}),
+		...(longform.author?.userName?.trim() ? { userName: longform.author.userName.trim() } : {}),
+		...(longform.author?.profilePicture ? { profilePicture: longform.author.profilePicture } : {}),
+		...(longform.author?.isBlueVerified === null || longform.author?.isBlueVerified === undefined
+			? {}
+			: { isBlueVerified: longform.author.isBlueVerified }),
+	};
+	const publishedDate = longform.createdAt?.trim() || tweet.createdAt;
+	if (Number.isNaN(new Date(publishedDate).getTime())) throw new Error(`Twitter longform ${tweetId} requires a valid published date`);
 
 	console.info({ tag: 'TWITTER', msg: 'Longform fetched', title });
 
@@ -286,14 +263,14 @@ async function scrapeTwitterLongform(tweetId: string, apiKey: string, language?:
 		title,
 		markdown: contentText,
 		source: 'Twitter',
-		originalLang: language ?? null,
+		originalLang: tweet.lang ?? null,
 		publishedDate,
 		summary: null,
-		...buildTwitterLongformFields(author, longform.cover_media_img_url),
+		...buildTwitterLongformFields(author, longform.cover_media_img_url ?? undefined),
 	};
 }
 
-function buildExternalLinkTweet(tweet: Tweet, externalUrl: string, media: TwitterMedia[]): AcquiredMaterial<'twitter'> {
+function buildExternalLinkTweet(tweet: Tweet, externalUrl: string, media: TwitterMedia[]): TwitterAcquiredMaterial {
 	const author = requiredTweetAuthor(tweet);
 	const tweetText = tweet.text.trim();
 	if (!tweetText) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no text`);
@@ -315,34 +292,28 @@ function buildExternalLinkTweet(tweet: Tweet, externalUrl: string, media: Twitte
 	};
 }
 
-async function resolveTweetContent(tweet: Tweet, apiKey: string) {
+type ResolvedTweetContent = {
+	kind: 'longform' | 'share' | 'tweet';
+	scraped: TwitterAcquiredMaterial;
+};
+
+async function resolveTweetContent(tweet: Tweet, apiKey: string): Promise<ResolvedTweetContent> {
 	const media = extractTweetMedia(tweet);
 	const expandedUrls = tweetUrlEntities(tweet).flatMap((url) => {
 		const expandedUrl = url.expanded_url?.trim();
 		return expandedUrl ? [expandedUrl] : [];
 	});
-	const tweetText = stripTweetUrls(tweet.text);
-
 	const longformUrl = [tweet.url, ...expandedUrls].find((url): url is string => !!url && /(?:twitter\.com|x\.com)\/i\/article\//.test(url));
 	const linkedContentUrl = expandedUrls.find((url) => !/t\.co/.test(url) && !isNonResourceLinkUrl(url));
 
 	if (longformUrl) {
 		console.info({ tag: 'TWITTER', msg: 'Detected Twitter longform', longformUrl });
-		const tweetId = tweet.id?.trim();
-		if (!tweetId) throw new Error(`Could not resolve tweet id for longform URL ${longformUrl}`);
-		const longformContent = await scrapeTwitterLongform(tweetId, apiKey, tweet.lang);
-		const scraped = { ...longformContent, markdown: expandKnownTweetUrls(longformContent.markdown, tweet) };
-		return {
-			kind: 'longform' as const,
-			scraped,
-			canonicalUrl: tweet.url,
-			eventText: scraped.markdown,
-		};
+		return { kind: 'longform', scraped: await scrapeTwitterLongform(tweet, apiKey) };
 	}
 
 	if (linkedContentUrl) {
 		const scraped = buildExternalLinkTweet(tweet, linkedContentUrl, media);
-		return { kind: 'share' as const, scraped, canonicalUrl: tweet.url, eventText: tweetText };
+		return { kind: 'share', scraped };
 	}
 
 	const author = requiredTweetAuthor(tweet);
@@ -351,7 +322,7 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 	console.info({ tag: 'TWITTER', msg: 'Tweet fetched', userName: author.userName });
 
 	return {
-		kind: 'tweet' as const,
+		kind: 'tweet',
 		scraped: {
 			provider: 'twitter' as const,
 			fileType: null,
@@ -363,8 +334,45 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 			summary: null,
 			...buildTweetFields(tweet),
 		},
-		canonicalUrl: tweet.url,
-		eventText: tweetText,
+	};
+}
+
+function mergePostMetadata(base: PostKindMetadata, thread: PostKindMetadata, tweetId: string): PostKindMetadata {
+	const attachments: ResourceMediaAttachment[] = [];
+	const seen = new Set<string>();
+	for (const attachment of [...base.attachments, ...thread.attachments]) {
+		const key = `${attachment.kind}\0${attachment.url}\0${attachment.videoUrl ?? ''}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		attachments.push(attachment);
+	}
+	if (attachments.length > 16) {
+		console.warn({
+			tag: 'TWITTER',
+			event: 'thread_attachments_truncated',
+			tweet_id: tweetId,
+			attachment_count: attachments.length,
+			retained: 16,
+		});
+	}
+	return {
+		attachments: attachments.slice(0, 16),
+		...((base.quote ?? thread.quote) ? { quote: base.quote ?? thread.quote } : {}),
+		...(thread.threadPostCount === undefined ? {} : { threadPostCount: thread.threadPostCount }),
+	};
+}
+
+function mergeResolvedTwitterThread(resolved: ResolvedTweetContent, thread: Tweet[], tweetId: string): TwitterAcquiredMaterial {
+	if (thread.length < 2) return resolved.scraped;
+	const continuation = thread.slice(1).flatMap((tweet) => {
+		const text = expandTweetUrls(tweet.text, tweet);
+		return text ? [text] : [];
+	});
+	const fields = buildThreadResourceFields(thread);
+	return {
+		...resolved.scraped,
+		markdown: combineTwitterThreadMarkdown(resolved.scraped.markdown, continuation),
+		kindMetadata: mergePostMetadata(resolved.scraped.kindMetadata, fields.kindMetadata, tweetId),
 	};
 }
 
@@ -383,32 +391,18 @@ export async function scrapeTweet(tweetId: string, apiKey: string): Promise<Acqu
 	const tweets = parseTwitterTweetsResponse(JSON.parse(await readTextWithLimit(response)));
 	const tweet = tweets[0];
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
-	const resolved = await resolveTweetContent(tweet, apiKey);
-	if (resolved.kind !== 'tweet') return resolved.scraped;
-
 	const contextTweets = await fetchTwitterThreadContext(tweetId, apiKey);
 	const thread = buildTwitterAuthorThread(tweet, contextTweets);
+	const resolved = await resolveTweetContent(tweet, apiKey);
 	console.info({
 		tag: 'TWITTER',
 		event: 'thread_context_resolved',
 		tweet_id: tweetId,
 		context_posts: contextTweets.length,
 		thread_posts: thread.length,
+		content_kind: resolved.kind,
 	});
-	if (thread.length < 2) return resolved.scraped;
-
-	const parts = buildThreadResourceParts(thread);
-	return {
-		provider: 'twitter',
-		fileType: null,
-		title: buildTweetTitle(parts.first, 80),
-		markdown: parts.combinedText,
-		source: 'Twitter',
-		originalLang: parts.first.lang ?? null,
-		publishedDate: parts.first.createdAt,
-		summary: null,
-		...parts.fields,
-	};
+	return mergeResolvedTwitterThread(resolved, thread, tweetId);
 }
 
 async function fetchTwitterThreadContext(tweetId: string, apiKey: string): Promise<Tweet[]> {

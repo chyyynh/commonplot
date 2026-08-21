@@ -126,7 +126,59 @@ const TwitterTweetsResponseSchema = z.looseObject({
 	tweets: z.array(TweetSchema),
 	status: z.string().optional(),
 	msg: z.string().optional(),
+	message: z.string().optional(),
 });
+
+const TwitterArticleInlineStyleSchema = z.looseObject({
+	offset: z.number().int().nonnegative(),
+	length: z.number().int().nonnegative(),
+	style: z.string(),
+});
+
+const TwitterArticleContentSchema = z.looseObject({
+	type: z.enum([
+		'unstyled',
+		'header-one',
+		'header-two',
+		'header-three',
+		'unordered-list-item',
+		'ordered-list-item',
+		'image',
+		'gif',
+		'markdown',
+		'divider',
+	]),
+	text: z.string().nullish(),
+	url: z.url().nullish(),
+	previewUrl: z.url().nullish(),
+	width: z.number().int().positive().nullish(),
+	height: z.number().int().positive().nullish(),
+	inlineStyleRanges: z.array(TwitterArticleInlineStyleSchema).nullish(),
+});
+
+const TwitterArticleSchema = z.looseObject({
+	title: z.string().nullish(),
+	cover_media_img_url: z.url().nullish(),
+	contents: z.array(TwitterArticleContentSchema).nullish(),
+	author: z
+		.looseObject({
+			userName: z.string().nullish(),
+			name: z.string().nullish(),
+			isBlueVerified: z.boolean().nullish(),
+			profilePicture: z.url().nullish(),
+		})
+		.nullish(),
+	createdAt: z.string().nullish(),
+});
+
+const TwitterArticleResponseSchema = z.looseObject({
+	article: TwitterArticleSchema.nullish(),
+	status: z.enum(['success', 'failed']),
+	message: z.string().optional(),
+});
+
+export type TwitterArticle = z.infer<typeof TwitterArticleSchema>;
+type TwitterArticleContent = NonNullable<TwitterArticle['contents']>[number];
 
 const TwitterListPageSchema = z.looseObject({
 	tweets: z.array(TweetSchema),
@@ -156,9 +208,105 @@ function semanticTwitterError(status: string | undefined, message: string | unde
 
 export function parseTwitterTweetsResponse(value: unknown): Tweet[] {
 	const response = TwitterTweetsResponseSchema.parse(value);
-	const error = semanticTwitterError(response.status, response.msg);
+	const error = semanticTwitterError(response.status, response.message ?? response.msg);
 	if (error) throw new Error(`Twitter tweets request failed: ${error}`);
 	return response.tweets;
+}
+
+export function parseTwitterArticleResponse(value: unknown, tweetId: string): TwitterArticle {
+	const response = TwitterArticleResponseSchema.parse(value);
+	if (response.status !== 'success') {
+		throw new Error(`Twitter article ${tweetId} failed: ${response.message?.trim() || 'unknown provider error'}`);
+	}
+	if (!response.article) throw new Error(`Twitter article ${tweetId} omitted article content`);
+	return response.article;
+}
+
+function articleStyleMarker(style: string): string | null {
+	switch (style.trim().toLowerCase()) {
+		case 'bold':
+			return '**';
+		case 'italic':
+			return '_';
+		case 'strikethrough':
+			return '~~';
+		case 'code':
+		case 'monospace':
+			return '`';
+		default:
+			return null;
+	}
+}
+
+function styledArticleText(block: TwitterArticleContent): string {
+	const text = block.text;
+	if (!text?.trim()) return '';
+	type Marker = { end: number; marker: string; start: number };
+	const openings = new Map<number, Marker[]>();
+	const closings = new Map<number, Marker[]>();
+	for (const range of block.inlineStyleRanges ?? []) {
+		const marker = articleStyleMarker(range.style);
+		const start = range.offset;
+		const end = start + range.length;
+		if (!marker || range.length === 0 || end > text.length) continue;
+		const item = { end, marker, start };
+		openings.set(start, [...(openings.get(start) ?? []), item]);
+		closings.set(end, [...(closings.get(end) ?? []), item]);
+	}
+
+	let markdown = '';
+	for (let index = 0; index <= text.length; index++) {
+		for (const item of (closings.get(index) ?? []).sort((left, right) => right.start - left.start)) markdown += item.marker;
+		for (const item of (openings.get(index) ?? []).sort((left, right) => right.end - left.end)) markdown += item.marker;
+		if (index < text.length) markdown += text[index];
+	}
+	return markdown.trim();
+}
+
+function renderTwitterArticleBlock(block: TwitterArticleContent): string {
+	const text = styledArticleText(block);
+	switch (block.type) {
+		case 'header-one':
+			return text ? `# ${text}` : '';
+		case 'header-two':
+			return text ? `## ${text}` : '';
+		case 'header-three':
+			return text ? `### ${text}` : '';
+		case 'unordered-list-item':
+			return text ? `- ${text}` : '';
+		case 'ordered-list-item':
+			return text ? `1. ${text}` : '';
+		case 'image':
+			return block.url ? `![](${block.url})` : '';
+		case 'gif':
+			return [block.previewUrl ? `![GIF](${block.previewUrl})` : '', block.url ? `[GIF](${block.url})` : ''].filter(Boolean).join('\n\n');
+		case 'divider':
+			return '---';
+		case 'markdown':
+		case 'unstyled':
+			return text;
+	}
+}
+
+function articleBlockIsListItem(block: TwitterArticleContent): boolean {
+	return block.type === 'unordered-list-item' || block.type === 'ordered-list-item';
+}
+
+export function renderTwitterArticleMarkdown(article: TwitterArticle): string {
+	let markdown = '';
+	let previous: TwitterArticleContent | undefined;
+	for (const block of article.contents ?? []) {
+		const rendered = renderTwitterArticleBlock(block);
+		if (!rendered) continue;
+		const sameList = previous?.type === block.type && articleBlockIsListItem(block);
+		markdown += `${markdown ? (sameList ? '\n' : '\n\n') : ''}${rendered}`;
+		previous = block;
+	}
+	return markdown;
+}
+
+export function combineTwitterThreadMarkdown(rootMarkdown: string, continuationMarkdown: string[]): string {
+	return [rootMarkdown.trim(), ...continuationMarkdown.map((part) => part.trim())].filter(Boolean).join('\n\n');
 }
 
 export function parseTwitterAdvancedSearchPage(value: unknown): TwitterListPage {

@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import {
 	buildTwitterAuthorThread,
+	combineTwitterThreadMarkdown,
 	isTwitterReply,
+	parseTwitterArticleResponse,
 	parseTwitterThreadContextPage,
+	parseTwitterTweetsResponse,
+	renderTwitterArticleMarkdown,
 	twitterSelfReplyRootId,
 } from '../src/ingest/platforms/twitter-data.ts';
 
@@ -55,11 +59,44 @@ assert.throws(
 	() => parseTwitterThreadContextPage({ status: 'error', message: 'provider failed', replies: [], has_next_page: false }, '1'),
 	/provider failed/,
 );
+assert.throws(() => parseTwitterTweetsResponse({ tweets: [], status: 'error', message: 'tweet failed' }), /tweet failed/);
+
+const article = parseTwitterArticleResponse(
+	{
+		status: 'success',
+		article: {
+			title: 'Article title',
+			contents: [
+				{ type: 'header-one', text: 'Heading' },
+				{ type: 'unstyled', text: 'Bold text', inlineStyleRanges: [{ offset: 0, length: 4, style: 'Bold' }] },
+				{ type: 'unordered-list-item', text: 'One' },
+				{ type: 'unordered-list-item', text: 'Two' },
+				{ type: 'ordered-list-item', text: 'First' },
+				{ type: 'ordered-list-item', text: 'Second' },
+				{ type: 'image', url: 'https://example.com/image.jpg' },
+				{ type: 'gif', previewUrl: 'https://example.com/preview.jpg', url: 'https://example.com/animation.mp4' },
+				{ type: 'divider' },
+				{ type: 'markdown', text: '**raw**' },
+			],
+		},
+	},
+	'1',
+);
+assert.equal(
+	renderTwitterArticleMarkdown(article),
+	'# Heading\n\n**Bold** text\n\n- One\n- Two\n\n1. First\n1. Second\n\n![](https://example.com/image.jpg)\n\n![GIF](https://example.com/preview.jpg)\n\n[GIF](https://example.com/animation.mp4)\n\n---\n\n**raw**',
+);
+assert.throws(() => parseTwitterArticleResponse({ status: 'failed', message: 'article failed' }, '1'), /article failed/);
+assert.equal(
+	combineTwitterThreadMarkdown('Article body', ['Continuation one', '', 'Continuation two']),
+	'Article body\n\nContinuation one\n\nContinuation two',
+);
 
 console.info({
 	event: 'twitter_thread_smoke_passed',
+	articleCases: 3,
 	threadGraphCases: 1,
 	replyPredicateCases: 5,
 	selfReplyRootCases: 4,
-	responseShapeCases: 3,
+	responseShapeCases: 4,
 });
