@@ -32,7 +32,6 @@ export function aiSearchResourcePlatformMetadata(resourcePlatform: ResourcePlatf
 const CANONICAL_CUSTOM_METADATA = [
 	{ field_name: 'effective_at', data_type: 'datetime' },
 	{ field_name: 'source_id', data_type: 'text' },
-	{ field_name: 'category', data_type: 'text' },
 	{ field_name: 'kind', data_type: 'text' },
 	{ field_name: 'resource_platform', data_type: 'text' },
 ] as const satisfies NonNullable<AiSearchConfig['custom_metadata']>;
@@ -60,7 +59,6 @@ type CorpusDocument = {
 	original_lang: string;
 	effective_at: Date | string | null;
 	tags: string[] | null;
-	category: string | null;
 	source: string | null;
 	translations: CorpusTranslationRow[];
 };
@@ -130,7 +128,6 @@ async function loadCorpusDocuments(db: CoreDb, resourceIds: readonly string[]): 
 			       r.original_lang,
 			       COALESCE(r.published_date, r.scraped_date, r.created_at) AS effective_at,
 			       r.tags,
-			       r.category,
 			       ${resourceDisplaySourceSql({
 								creatorName: sql`COALESCE(r.creators->0->>'literal', CONCAT_WS(' ', r.creators->0->>'given', r.creators->0->>'family'))`,
 								kind: sql`r.kind`,
@@ -171,7 +168,6 @@ function corpusItemMetadata(document: CorpusDocument): Record<string, unknown> {
 	return {
 		...(effectiveAt ? { effective_at: effectiveAt } : {}),
 		...(document.source_id ? { source_id: document.source_id } : {}),
-		...(document.category ? { category: document.category } : {}),
 		kind: identity.kind,
 		resource_platform: aiSearchResourcePlatformMetadata(identity.resourcePlatform),
 	};

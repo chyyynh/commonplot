@@ -15,8 +15,8 @@ surface.
 | Current runner | `search-index-rebuild-generation-5-native-v2` |
 | Observability | Native Workflow instance status/output and AI Search item status |
 
-The instance owns five custom metadata fields: `effective_at`, `source_id`,
-`category`, `kind`, and `resource_platform`. A null platform is stored as
+The instance owns four custom metadata fields: `effective_at`, `source_id`,
+`kind`, and `resource_platform`. A null platform is stored as
 `none`. Searchable identities are:
 
 - `blog / none`

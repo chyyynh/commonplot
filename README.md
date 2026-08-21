@@ -196,8 +196,8 @@ Secrets (via `wrangler secret put`):
 
 ### Canonical AI Search v6
 
-`AI_SEARCH` serves `newsence-corpus-v6`. Its five custom metadata fields are
-`effective_at`, `source_id`, `category`, `kind`, and `resource_platform`; null
+`AI_SEARCH` serves `newsence-corpus-v6`. Its four custom metadata fields are
+`effective_at`, `source_id`, `kind`, and `resource_platform`; null
 platforms use the reserved `none` sentinel. PostgreSQL remains canonical;
 AI Search stores only keyed search documents and eventually consistent status.
 
