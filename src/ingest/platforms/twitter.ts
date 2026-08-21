@@ -6,12 +6,15 @@ import { buildTweetTitle } from './twitter-acquisition';
 import {
 	buildTwitterMonitorSearchQueries,
 	isTwitterReply,
+	nextTwitterSearchWindow,
 	parseTwitterAdvancedSearchPage,
 	type Tweet,
 	type TwitterMonitorSearch,
 	type TwitterSearchWindow,
+	twitterSearchNeedsOlderWindow,
 	twitterSearchWindow,
 	twitterSelfReplyRootId,
+	withTwitterSearchWindow,
 } from './twitter-data';
 import { fetchTwitterProvider } from './twitter-provider';
 
@@ -21,6 +24,7 @@ const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/adv
 
 const TWITTER_SOURCE_CONCURRENCY = 5;
 const TWITTER_WATERMARK_OVERLAP_MS = 60 * 60 * 1000;
+const TWITTER_SEARCH_MAX_REQUESTS = 256;
 
 function monitoredAuthorUserName(tweet: Tweet): string | null {
 	const userName = tweet.retweetedBy?.authorUserName || tweet.author?.userName;
@@ -93,22 +97,23 @@ function normalizeFetchedTweets(tweets: Tweet[], monitoredUserName: string): Pic
 	return { tweets: normalizedTweets, errors };
 }
 
-/** Fetch one filtered search stream through every provider cursor. */
+/** Fetch one filtered search stream through complete, cursor-free time slices. */
 async function fetchTweetsForSearch(
 	apiKey: string,
 	userName: string,
 	search: TwitterMonitorSearch,
+	window: TwitterSearchWindow,
 ): Promise<Omit<TwitterSourceFetch, 'searches'>> {
-	const tweets: Tweet[] = [];
-	const errors: unknown[] = [];
+	const terminalTweets = new Map<string, Tweet>();
 	let providerTweets = 0;
 	let pages = 0;
-	let cursor = '';
-	const seenCursors = new Set<string>();
+	let currentWindow = window;
 
 	while (true) {
-		const params = new URLSearchParams({ query: search.query, queryType: 'Latest' });
-		if (cursor) params.set('cursor', cursor);
+		if (pages >= TWITTER_SEARCH_MAX_REQUESTS) {
+			throw new Error(`Twitter Advanced Search exceeded ${TWITTER_SEARCH_MAX_REQUESTS} time-slice requests`);
+		}
+		const params = new URLSearchParams({ query: withTwitterSearchWindow(search.query, currentWindow), queryType: 'Latest' });
 
 		const response = await fetchTwitterProvider(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, apiKey, {
 			operation: 'advanced-search',
@@ -123,20 +128,12 @@ async function fetchTweetsForSearch(
 		const apiRes = parseTwitterAdvancedSearchPage(JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)));
 		pages++;
 		providerTweets += apiRes.tweets.length;
-		const normalizedPage = normalizeFetchedTweets(apiRes.tweets, userName);
-		tweets.push(...normalizedPage.tweets);
-		errors.push(...normalizedPage.errors);
-
-		if (!apiRes.hasNextPage) break;
-		const nextCursor = apiRes.nextCursor?.trim();
-		if (!nextCursor) throw new Error('Twitter Advanced Search response omitted the next cursor');
-		cursor = nextCursor;
-		if (seenCursors.has(cursor)) {
-			throw new Error(`Twitter Advanced Search returned a repeated cursor: ${cursor.slice(0, 32)}`);
-		}
-		seenCursors.add(cursor);
-		await scheduler.wait(1000);
+		for (const tweet of apiRes.tweets) terminalTweets.set(tweet.id?.trim() || tweet.url, tweet);
+		if (!twitterSearchNeedsOlderWindow(apiRes)) break;
+		currentWindow = nextTwitterSearchWindow(currentWindow, apiRes.tweets, `Twitter monitor search for @${userName}`);
+		await scheduler.wait(250);
 	}
+	const normalized = normalizeFetchedTweets([...terminalTweets.values()], userName);
 
 	console.info({
 		tag: 'TWITTER',
@@ -145,16 +142,16 @@ async function fetchTweetsForSearch(
 		search_kind: search.kind,
 		pages,
 		provider_tweets: providerTweets,
-		normalized_tweets: tweets.length,
-		errors: errors.length,
+		normalized_tweets: normalized.tweets.length,
+		errors: normalized.errors.length,
 	});
-	return { tweets, providerTweets, pages, errors };
+	return { tweets: normalized.tweets, providerTweets, pages, errors: normalized.errors };
 }
 
 /** Fetch only authored posts and authored self-replies; discard duplicate results across the two streams. */
 async function fetchTweetsForSource(apiKey: string, userName: string, window: TwitterSearchWindow): Promise<TwitterSourceFetch> {
-	const searches = buildTwitterMonitorSearchQueries(userName, window);
-	const results = await Promise.all(searches.map((search) => fetchTweetsForSearch(apiKey, userName, search)));
+	const searches = buildTwitterMonitorSearchQueries(userName);
+	const results = await Promise.all(searches.map((search) => fetchTweetsForSearch(apiKey, userName, search, window)));
 	const tweets = new Map<string, Tweet>();
 	for (const result of results) {
 		for (const tweet of result.tweets) tweets.set(tweet.id?.trim() || tweet.url, tweet);

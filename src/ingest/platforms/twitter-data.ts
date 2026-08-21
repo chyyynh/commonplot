@@ -126,36 +126,25 @@ const TwitterArticleInlineStyleSchema = z.object({
 });
 
 const TwitterArticleContentSchema = z.object({
-	type: z.enum([
-		'unstyled',
-		'header-one',
-		'header-two',
-		'header-three',
-		'unordered-list-item',
-		'ordered-list-item',
-		'image',
-		'gif',
-		'markdown',
-		'divider',
-	]),
+	type: z.string(),
 	text: z.string().nullish(),
-	url: z.url().nullish(),
-	previewUrl: z.url().nullish(),
-	width: z.number().int().positive().nullish(),
-	height: z.number().int().positive().nullish(),
+	url: z.string().nullish(),
+	previewUrl: z.string().nullish(),
+	width: z.number().int().nonnegative().nullish(),
+	height: z.number().int().nonnegative().nullish(),
 	inlineStyleRanges: z.array(TwitterArticleInlineStyleSchema).nullish(),
 });
 
 const TwitterArticleSchema = z.object({
 	title: z.string().nullish(),
-	cover_media_img_url: z.url().nullish(),
+	cover_media_img_url: z.string().nullish(),
 	contents: z.array(TwitterArticleContentSchema).nullish(),
 	author: z
 		.object({
 			userName: z.string().nullish(),
 			name: z.string().nullish(),
 			isBlueVerified: z.boolean().nullish(),
-			profilePicture: z.url().nullish(),
+			profilePicture: z.string().nullish(),
 		})
 		.nullish(),
 	createdAt: z.string().nullish(),
@@ -207,6 +196,8 @@ export type TwitterMonitorSearch = {
 	query: string;
 };
 
+const TWITTER_ADVANCED_SEARCH_PAGE_LIMIT = 20;
+
 export function shouldRetryTwitterProviderStatus(status: number): boolean {
 	return status === 408 || status === 429 || status >= 500;
 }
@@ -234,16 +225,28 @@ export function twitterSearchWindow(watermark: Date | string, windowEnd: Date, o
 	return { sinceTime, untilTime };
 }
 
-export function buildTwitterMonitorSearchQueries(userName: string, window: TwitterSearchWindow): TwitterMonitorSearch[] {
-	const normalized = userName.replace(/^@/, '').trim().toLowerCase();
-	if (!/^[a-z0-9_]{1,15}$/.test(normalized)) throw new Error('Twitter source has an invalid handle');
-	if (!Number.isSafeInteger(window.sinceTime) || !Number.isSafeInteger(window.untilTime) || window.sinceTime >= window.untilTime) {
+function assertTwitterSearchWindow(window: TwitterSearchWindow): void {
+	if (
+		!Number.isSafeInteger(window.sinceTime) ||
+		!Number.isSafeInteger(window.untilTime) ||
+		window.sinceTime < 0 ||
+		window.sinceTime >= window.untilTime
+	) {
 		throw new Error('Twitter Advanced Search has an invalid time window');
 	}
-	const timeWindow = `since_time:${window.sinceTime} until_time:${window.untilTime}`;
+}
+
+export function withTwitterSearchWindow(query: string, window: TwitterSearchWindow): string {
+	assertTwitterSearchWindow(window);
+	return `${query} since_time:${window.sinceTime} until_time:${window.untilTime}`;
+}
+
+export function buildTwitterMonitorSearchQueries(userName: string): TwitterMonitorSearch[] {
+	const normalized = userName.replace(/^@/, '').trim().toLowerCase();
+	if (!/^[a-z0-9_]{1,15}$/.test(normalized)) throw new Error('Twitter source has an invalid handle');
 	return [
-		{ kind: 'posts', query: `from:${normalized} -filter:replies ${timeWindow}` },
-		{ kind: 'self-replies', query: `from:${normalized} to:${normalized} filter:replies ${timeWindow}` },
+		{ kind: 'posts', query: `from:${normalized} -filter:replies` },
+		{ kind: 'self-replies', query: `from:${normalized} to:${normalized} filter:replies` },
 	];
 }
 
@@ -253,6 +256,43 @@ export function buildTwitterThreadSearchQuery(root: Tweet, tweetId: string): str
 	const author = normalizedTwitterUserName(root.author?.userName);
 	if (!author || !/^[a-z0-9_]{1,15}$/.test(author)) throw new Error(`Twitter thread ${tweetId} has an invalid author handle`);
 	return `conversation_id:${conversationId} from:${author} filter:replies`;
+}
+
+export function twitterThreadSearchWindow(root: Tweet, tweetId: string, windowEnd = new Date()): TwitterSearchWindow {
+	const rootTime = new Date(root.createdAt).getTime();
+	const windowEndTime = windowEnd.getTime();
+	if (!Number.isFinite(rootTime)) throw new Error(`Twitter thread ${tweetId} has an invalid creation time`);
+	if (!Number.isFinite(windowEndTime)) throw new Error(`Twitter thread ${tweetId} has an invalid search window end`);
+	const window = {
+		sinceTime: Math.max(0, Math.floor(rootTime / 1000) - 1),
+		untilTime: Math.floor(windowEndTime / 1000) + 1,
+	};
+	assertTwitterSearchWindow(window);
+	return window;
+}
+
+/**
+ * Advanced Search currently documents cursor pagination as unreliable. Move
+ * the exclusive upper bound behind the oldest returned second instead, keeping
+ * that second overlapped so posts sharing its timestamp cannot be skipped.
+ */
+export function nextTwitterSearchWindow(window: TwitterSearchWindow, tweets: readonly Tweet[], context: string): TwitterSearchWindow {
+	assertTwitterSearchWindow(window);
+	if (!tweets.length) throw new Error(`${context} returned an empty result before completion`);
+	const timestamps = tweets.map((tweet) => {
+		const timestamp = new Date(tweet.createdAt).getTime();
+		if (!Number.isFinite(timestamp)) throw new Error(`${context} returned a tweet with an invalid creation time`);
+		return Math.floor(timestamp / 1000);
+	});
+	const nextUntilTime = Math.min(...timestamps) + 1;
+	if (!Number.isSafeInteger(nextUntilTime) || nextUntilTime <= window.sinceTime || nextUntilTime >= window.untilTime) {
+		throw new Error(`${context} could not advance its Twitter Advanced Search time window`);
+	}
+	return { sinceTime: window.sinceTime, untilTime: nextUntilTime };
+}
+
+export function twitterSearchNeedsOlderWindow(page: TwitterListPage): boolean {
+	return page.hasNextPage || page.tweets.length >= TWITTER_ADVANCED_SEARCH_PAGE_LIMIT;
 }
 
 function semanticTwitterError(status: string | undefined, message: string | undefined): string | null {
@@ -338,6 +378,8 @@ function renderTwitterArticleBlock(block: TwitterArticleContent): string {
 		case 'markdown':
 		case 'unstyled':
 			return text;
+		default:
+			return text || (block.url ? `[${block.type}](${block.url})` : '');
 	}
 }
 

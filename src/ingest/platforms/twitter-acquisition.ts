@@ -8,6 +8,7 @@ import {
 	buildTwitterAuthorThread,
 	buildTwitterThreadSearchQuery,
 	combineTwitterThreadMarkdown,
+	nextTwitterSearchWindow,
 	parseTwitterAdvancedSearchPage,
 	parseTwitterArticleResponse,
 	parseTwitterTweetsResponse,
@@ -15,10 +16,14 @@ import {
 	shouldSearchTwitterThread,
 	type Tweet,
 	twitterAuthorThreadCandidates,
+	twitterSearchNeedsOlderWindow,
+	twitterThreadSearchWindow,
+	withTwitterSearchWindow,
 } from './twitter-data';
 import { fetchTwitterProvider } from './twitter-provider';
 
 const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
+const TWITTER_SEARCH_MAX_REQUESTS = 256;
 
 interface TwitterMedia {
 	url: string;
@@ -428,14 +433,15 @@ type TwitterThreadSearchResult = {
 async function fetchTwitterAuthorReplies(root: Tweet, tweetId: string, apiKey: string): Promise<TwitterThreadSearchResult> {
 	const candidates = new Map<string, Tweet>();
 	const candidateUrls = new Set<string>();
-	const seenCursors = new Set<string>();
 	const query = buildTwitterThreadSearchQuery(root, tweetId);
-	let cursor = '';
+	let currentWindow = twitterThreadSearchWindow(root, tweetId);
 	let pages = 0;
 	let providerPosts = 0;
 	while (true) {
-		const params = new URLSearchParams({ query, queryType: 'Latest' });
-		if (cursor) params.set('cursor', cursor);
+		if (pages >= TWITTER_SEARCH_MAX_REQUESTS) {
+			throw new Error(`Twitter thread search ${tweetId} exceeded ${TWITTER_SEARCH_MAX_REQUESTS} time-slice requests`);
+		}
+		const params = new URLSearchParams({ query: withTwitterSearchWindow(query, currentWindow), queryType: 'Latest' });
 		const response = await fetchTwitterProvider(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, apiKey, {
 			operation: 'advanced-search',
 			resourceId: tweetId,
@@ -455,16 +461,11 @@ async function fetchTwitterAuthorReplies(root: Tweet, tweetId: string, apiKey: s
 			candidates.set(candidateId, candidate);
 			candidateUrls.add(candidate.url);
 		}
-
-		if (!data.hasNextPage) return { candidates: [...candidates.values()], pages, providerPosts };
-		if (!data.tweets.length) throw new Error(`Twitter thread search ${tweetId} returned an empty page before completion`);
-		const nextCursor = data.nextCursor?.trim();
-		if (!nextCursor) throw new Error(`Twitter thread search ${tweetId} omitted the next cursor`);
-		if (seenCursors.has(nextCursor)) throw new Error(`Twitter thread search ${tweetId} returned a repeated cursor`);
-		cursor = nextCursor;
-		seenCursors.add(cursor);
+		if (!twitterSearchNeedsOlderWindow(data)) break;
+		currentWindow = nextTwitterSearchWindow(currentWindow, data.tweets, `Twitter thread search ${tweetId}`);
 		await scheduler.wait(250);
 	}
+	return { candidates: [...candidates.values()], pages, providerPosts };
 }
 
 function twitterCreator(data: TwitterMetadata): ResourceCreator[] {

@@ -7,6 +7,7 @@ import {
 	combineTwitterThreadMarkdown,
 	decideTwitterThreadContextNextPage,
 	isTwitterReply,
+	nextTwitterSearchWindow,
 	parseTwitterAdvancedSearchPage,
 	parseTwitterArticleResponse,
 	parseTwitterThreadContextPage,
@@ -16,8 +17,11 @@ import {
 	shouldSearchTwitterThread,
 	twitterAuthorThreadCandidates,
 	twitterProviderRetryDelayMs,
+	twitterSearchNeedsOlderWindow,
 	twitterSearchWindow,
 	twitterSelfReplyRootId,
+	twitterThreadSearchWindow,
+	withTwitterSearchWindow,
 } from '../src/ingest/platforms/twitter-data.ts';
 
 function tweet(id, author, inReplyToId, overrides = {}) {
@@ -123,6 +127,7 @@ const article = parseTwitterArticleResponse(
 				{ type: 'gif', previewUrl: 'https://example.com/preview.jpg', url: 'https://example.com/animation.mp4' },
 				{ type: 'divider' },
 				{ type: 'markdown', text: '**raw**' },
+				{ type: 'blockquote', text: 'Quoted' },
 			],
 		},
 	},
@@ -130,7 +135,7 @@ const article = parseTwitterArticleResponse(
 );
 assert.equal(
 	renderTwitterArticleMarkdown(article),
-	'# Heading\n\n**Bold** text\n\n- One\n- Two\n\n1. First\n1. Second\n\n![](https://example.com/image.jpg)\n\n![GIF](https://example.com/preview.jpg)\n\n[GIF](https://example.com/animation.mp4)\n\n---\n\n**raw**',
+	'# Heading\n\n**Bold** text\n\n- One\n- Two\n\n1. First\n1. Second\n\n![](https://example.com/image.jpg)\n\n![GIF](https://example.com/preview.jpg)\n\n[GIF](https://example.com/animation.mp4)\n\n---\n\n**raw**\n\nQuoted',
 );
 assert.throws(() => parseTwitterArticleResponse({ status: 'failed', message: 'article failed' }, '1'), /article failed/);
 assert.equal(
@@ -140,16 +145,41 @@ assert.equal(
 
 const searchWindow = twitterSearchWindow('2026-08-21T12:00:00.000Z', new Date('2026-08-21T18:00:00.000Z'), 60 * 60 * 1000);
 assert.deepEqual(searchWindow, { sinceTime: 1_787_310_000, untilTime: 1_787_335_200 });
-assert.deepEqual(buildTwitterMonitorSearchQueries('@OpenAI', searchWindow), [
-	{ kind: 'posts', query: 'from:openai -filter:replies since_time:1787310000 until_time:1787335200' },
-	{ kind: 'self-replies', query: 'from:openai to:openai filter:replies since_time:1787310000 until_time:1787335200' },
+assert.deepEqual(buildTwitterMonitorSearchQueries('@OpenAI'), [
+	{ kind: 'posts', query: 'from:openai -filter:replies' },
+	{ kind: 'self-replies', query: 'from:openai to:openai filter:replies' },
 ]);
+assert.equal(
+	withTwitterSearchWindow('from:openai -filter:replies', searchWindow),
+	'from:openai -filter:replies since_time:1787310000 until_time:1787335200',
+);
 assert.equal(buildTwitterThreadSearchQuery(root, '1'), 'conversation_id:1 from:alice filter:replies');
 assert.equal(
 	buildTwitterThreadSearchQuery(tweet('2', 'Alice', '1', { conversationId: undefined }), '2'),
 	'conversation_id:2 from:alice filter:replies',
 );
 assert.throws(() => twitterSearchWindow('2026-08-21T19:00:00.000Z', new Date('2026-08-21T18:00:00.000Z'), 0), /empty or invalid/);
+assert.deepEqual(twitterThreadSearchWindow(root, '1', new Date('2026-08-22T00:00:00.000Z')), {
+	sinceTime: Math.floor(Date.parse(root.createdAt) / 1000) - 1,
+	untilTime: Math.floor(Date.parse('2026-08-22T00:00:00.000Z') / 1000) + 1,
+});
+assert.deepEqual(
+	nextTwitterSearchWindow({ sinceTime: 100, untilTime: 200 }, [{ ...root, createdAt: '1970-01-01T00:02:30.000Z' }], 'Twitter test search'),
+	{ sinceTime: 100, untilTime: 151 },
+);
+assert.throws(() => nextTwitterSearchWindow({ sinceTime: 100, untilTime: 200 }, [], 'Twitter test search'), /empty result/);
+assert.throws(
+	() =>
+		nextTwitterSearchWindow(
+			{ sinceTime: 100, untilTime: 151 },
+			[{ ...root, createdAt: '1970-01-01T00:02:30.000Z' }],
+			'Twitter test search',
+		),
+	/could not advance/,
+);
+assert.equal(twitterSearchNeedsOlderWindow({ tweets: Array.from({ length: 20 }, () => root), hasNextPage: false }), true);
+assert.equal(twitterSearchNeedsOlderWindow({ tweets: [root], hasNextPage: true }), true);
+assert.equal(twitterSearchNeedsOlderWindow({ tweets: [root], hasNextPage: false }), false);
 assert.deepEqual(parseTwitterAdvancedSearchPage({ tweets: [root], has_next_page: true, next_cursor: 'next' }), {
 	tweets: [root],
 	hasNextPage: true,
@@ -163,7 +193,7 @@ assert.throws(
 console.info({
 	event: 'twitter_thread_smoke_passed',
 	articleCases: 3,
-	advancedSearchCases: 5,
+	advancedSearchCases: 13,
 	threadGraphCases: 7,
 	threadPaginationCases: 5,
 	providerRetryCases: 10,
