@@ -27,14 +27,15 @@ import {
 	scrapeSavedUrlArtifact,
 } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
+import { resourceSourceRevision } from './domain/resource-revision';
 import { loadEligibleResourceTranslationRevision } from './domain/resource-translation-store';
 import { handleResolvedResource } from './kind-handler';
-import { stagePaperEnrichment } from './platforms/paper';
+import { privatePaperAttachment, stagePaperEnrichment } from './platforms/paper';
 import { stagePreferredOpenAlexContent, stagePreliminaryAcquisition } from './platforms/paper-content';
 import { stagePdfTextExtraction } from './platforms/pdf';
 import { MIN_MONITORED_VIDEO_DURATION_SECONDS } from './platforms/youtube-acquisition';
 import {
-	enqueueProcessing,
+	enqueueSubjectDraft,
 	parseResourceProcessingWorkflowPayload,
 	type ResourceProcessingOperation,
 	type ResourceProcessingWorkflowPayload,
@@ -42,6 +43,7 @@ import {
 import { rehostResourceImage } from './resource-image-rehosting';
 import {
 	persistProcessedDraft,
+	persistProcessedPrivatePaperDraft,
 	persistProcessedResource,
 	processedResourceImageSources,
 	type ResourceProcessingFailureOutcome,
@@ -52,6 +54,7 @@ import {
 	type ResolvedContentResourceInput,
 	resolveContentResource,
 	resolvedResourceIdentifiers,
+	resolvedSubjectInput,
 } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 import { PDF_MIME, pdfExtractionMetadata } from './web-acquisition';
@@ -451,12 +454,17 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				);
 			}
 			const hostedImages = await stageResourceImages(this.env, step, processingId, imageSources, initialShell.isMonitoredOnly);
+			const privatePaper = target.kind === 'stored' ? privatePaperAttachment(handled.resource) : null;
 			const persistence = await step.do(
-				target.kind === 'stored' ? 'persist-stored-resource-graph-v4' : 'persist-final-resource-draft-v1',
+				privatePaper
+					? 'persist-final-private-paper-draft-v1'
+					: target.kind === 'stored'
+						? 'persist-stored-resource-graph-v5'
+						: 'persist-final-resource-draft-v1',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 				() =>
-					target.kind === 'stored'
-						? persistProcessedResource(
+					privatePaper && target.kind === 'stored'
+						? persistProcessedPrivatePaperDraft(
 								this.env,
 								{
 									...persistenceInput,
@@ -465,41 +473,41 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 								},
 								hostedImages,
 							)
-						: persistProcessedDraft(this.env, { ...persistenceInput, admission: target.admission }, hostedImages),
+						: target.kind === 'stored'
+							? persistProcessedResource(
+									this.env,
+									{
+										...persistenceInput,
+										resourceId: target.resourceId,
+										expectedSourceRevision: initialResource.source_revision,
+									},
+									hostedImages,
+								)
+							: persistProcessedDraft(this.env, { ...persistenceInput, admission: target.admission }, hostedImages),
 			);
 			if (!persistence.persisted) {
 				return { status: 'superseded', resourceId: persistence.resourceId } as const;
 			}
 			const persistedResourceId = persistence.resourceId;
-			if (persistence.resourceNeedsProcessing) {
+			const subject = privatePaper ? null : resolvedSubjectInput(handled);
+			if (subject) {
+				const parentRevision = await resourceSourceRevision(handled.resource);
 				await step
 					.do(
-						'enqueue-private-paper-canonical-v1',
+						'enqueue-resolved-subject-child-v1',
 						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						() => enqueueProcessing(this.env, persistedResourceId),
+						() =>
+							enqueueSubjectDraft(this.env, {
+								...subject,
+								parentResourceId: persistedResourceId,
+								parentRevision,
+							}),
 					)
 					.catch((error) =>
 						console.error({
 							tag: 'WORKFLOW',
-							msg: 'Canonical paper committed but enqueue failed; pending reconciler will retry',
+							msg: 'Resource persisted but subject child enqueue failed',
 							resource_id: persistedResourceId,
-							error: error instanceof Error ? error.message : String(error),
-						}),
-					);
-				return { status: 'persisted', resourceId: persistedResourceId, attachedCanonicalResourceId: persistedResourceId } as const;
-			}
-			if (target.kind === 'stored' && persistence.subjectNeedsProcessing && persistence.subjectResourceId) {
-				await step
-					.do(
-						'enqueue-resolved-subject-v1',
-						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						() => enqueueProcessing(this.env, persistence.subjectResourceId!),
-					)
-					.catch((error) =>
-						console.error({
-							tag: 'WORKFLOW',
-							msg: 'Subject committed but enqueue failed; pending reconciler will retry',
-							resource_id: persistence.subjectResourceId,
 							error: error instanceof Error ? error.message : String(error),
 						}),
 					);

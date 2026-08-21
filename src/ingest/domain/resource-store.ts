@@ -18,7 +18,6 @@ import {
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
 import type { ResourceForProcessing } from '@core-shared/types';
-import { detectResourceUrl } from '@core-shared/url';
 import { type CoreDb, withCoreDb } from '@db/client';
 import { resourceDisplaySourceSql, resourceTranslationIdentityPredicate } from '@db/resource-identity-sql';
 import { resourceIdentifiers, resources, resourceTranslations, sources, youtubeTranscripts } from '@db/schema';
@@ -134,7 +133,6 @@ export async function loadDraftShellForProcessing(
 				return row;
 			})
 		: null;
-	const detected = detectResourceUrl(target.seed.url);
 	return {
 		resource: {
 			processing_id: processingId,
@@ -153,9 +151,7 @@ export async function loadDraftShellForProcessing(
 			creators: [],
 			kind_metadata: null,
 			source_revision: target.seed.sourceRevision,
-			resource_identifiers: detected
-				? normalizeResourceIdentifiers([{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }])
-				: [],
+			resource_identifiers: normalizeResourceIdentifiers(target.seed.identifiers),
 			storage_key: null,
 			file_type: null,
 			normalized_url: target.seed.url,

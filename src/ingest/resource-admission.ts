@@ -1,6 +1,11 @@
 import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
 import {
+	isResourceIdentifierScheme,
+	normalizeResourceIdentifiers,
+	type ResourceIdentifier,
+} from '@core-shared/resource-identifiers';
+import {
 	type ContentResourceIdentity,
 	canonicalizeOptionalResourceLang,
 	DEFAULT_RESOURCE_LANG,
@@ -27,6 +32,14 @@ const ContentResourceIdentitySchema = z.union([
 	z.object({ kind: z.literal('paper'), resourcePlatform: z.null() }).strict(),
 ]);
 
+const ResourceIdentifierSchema = z
+	.object({
+		preferred: z.boolean(),
+		scheme: z.custom<ResourceIdentifier['scheme']>(isResourceIdentifierScheme),
+		value: z.string().trim().min(1).max(500),
+	})
+	.strict();
+
 const DraftAdmissionSchema = z.discriminatedUnion('kind', [
 	z
 		.object({ kind: z.literal('profileSave'), userId: z.string().trim().min(1).max(255), visibility: z.enum(['public', 'private']) })
@@ -50,11 +63,23 @@ const DraftAdmissionSchema = z.discriminatedUnion('kind', [
 				.nullable(),
 		})
 		.strict(),
+	z
+		.object({
+			kind: z.literal('userFilePaper'),
+			fileResourceId: z.string().uuid(),
+			expectedFileRevision: z
+				.string()
+				.length(64)
+				.regex(/^[0-9a-f]+$/)
+				.nullable(),
+		})
+		.strict(),
 ]);
 
 const DraftSeedSchema = z
 	.object({
 		identity: ContentResourceIdentitySchema,
+		identifiers: z.array(ResourceIdentifierSchema).max(20),
 		url: z.url().max(2_048),
 		title: z.string().trim().min(1).max(5_000),
 		summary: z.string().max(20_000).nullable(),
@@ -109,6 +134,7 @@ export type SourceResourceDraft = {
 } & ContentResourceIdentity;
 
 export type AppResourceDraftInput = Readonly<{
+	instanceId: string;
 	url: string;
 	admission: Extract<ResourceDraftAdmission, { kind: 'profileSave' | 'container' }>;
 }>;
@@ -137,6 +163,9 @@ export async function enqueueProcessing(env: CoreEnv, resourceId: string, source
 }
 
 export async function enqueueAppResourceDraft(env: CoreEnv, input: AppResourceDraftInput): Promise<string> {
+	if (!/^app-draft-v1-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.instanceId)) {
+		throw new Error('Invalid app draft Workflow ID');
+	}
 	const parsed = parseExternalHttpUrl(input.url);
 	if (!parsed) throw new Error('Only http(s) URLs without credentials are allowed');
 	const url = normalizeUrl(parsed.toString());
@@ -149,6 +178,9 @@ export async function enqueueAppResourceDraft(env: CoreEnv, input: AppResourceDr
 		admission: input.admission,
 		seed: {
 			identity,
+			identifiers: detected
+				? normalizeResourceIdentifiers([{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }])
+				: [],
 			url,
 			title: new URL(url).hostname.replace(/^www\./, ''),
 			summary: null,
@@ -159,8 +191,7 @@ export async function enqueueAppResourceDraft(env: CoreEnv, input: AppResourceDr
 		},
 	};
 	const payload = parseResourceProcessingWorkflowPayload({ target });
-	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.create({ id: `app-draft-v1-${crypto.randomUUID()}`, params: payload });
-	return instance.id;
+	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, input.instanceId, payload);
 }
 
 async function sourceDraftTarget(base: SourceResourceDraft): Promise<ResourceDraftTarget> {
@@ -192,9 +223,60 @@ async function sourceDraftTarget(base: SourceResourceDraft): Promise<ResourceDra
 		target: {
 			kind: 'draft',
 			admission: { kind: 'source', sourceId: requiredString(base.sourceId, 'source_id') },
-			seed: { identity: explicitIdentity, url, title, summary, originalLang, publishedDate, keywords, sourceRevision },
+			seed: {
+				identity: explicitIdentity,
+				identifiers: detectedResourceIdentifiers(url),
+				url,
+				title,
+				summary,
+				originalLang,
+				publishedDate,
+				keywords,
+				sourceRevision,
+			},
 		},
 	}).target as ResourceDraftTarget;
+}
+
+function detectedResourceIdentifiers(url: string): ResourceIdentifier[] {
+	const detected = detectResourceUrl(url);
+	return detected ? normalizeResourceIdentifiers([{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]) : [];
+}
+
+export async function enqueueSubjectDraft(
+	env: CoreEnv,
+	input: {
+		identity: ContentResourceIdentity;
+		identifiers: readonly ResourceIdentifier[];
+		parentResourceId: string;
+		parentRevision: string | null;
+		title: string;
+		url: string;
+	},
+): Promise<string> {
+	const target = parseResourceProcessingWorkflowPayload({
+		target: {
+			kind: 'draft',
+			admission: {
+				kind: 'subject',
+				parentResourceId: input.parentResourceId,
+				expectedParentRevision: input.parentRevision,
+			},
+			seed: {
+				identity: input.identity,
+				identifiers: normalizeResourceIdentifiers(input.identifiers),
+				url: normalizeUrl(input.url),
+				title: input.title,
+				summary: null,
+				originalLang: DEFAULT_RESOURCE_LANG,
+				publishedDate: null,
+				keywords: [],
+				sourceRevision: null,
+			},
+		},
+	}).target as ResourceDraftTarget;
+	const identity = await sha256Hex(JSON.stringify(target));
+	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `subject-draft-v1-${identity}`, { target });
 }
 
 async function admitDiscoveredSourceResource(

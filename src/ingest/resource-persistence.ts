@@ -15,7 +15,6 @@ import type { ResourceClassificationResult } from './domain/resource-classificat
 import { resourceSourceRevision } from './domain/resource-revision';
 import type { HandledResourceResult } from './kind-handler';
 import { privatePaperAttachment } from './platforms/paper';
-import { resolvedSubjectInput } from './resource-resolver';
 
 type PersistProcessedInput = {
 	handled: HandledResourceResult;
@@ -101,10 +100,29 @@ export async function persistProcessedResource(
 		...mutation,
 		resourceId: input.resourceId,
 		expectedSourceRevision: input.expectedSourceRevision,
-		privatePaperAttachment: privatePaperAttachment(input.handled.resource),
-		subject: resolvedSubjectInput(input.handled),
 	};
 	return env.DOMAIN.persistResolvedResourceGraph(storedMutation);
+}
+
+export async function persistProcessedPrivatePaperDraft(
+	env: CoreEnv,
+	input: PersistProcessedResourceInput,
+	hostedImages: readonly HostedResourceImage[],
+): Promise<PersistResolvedResourceGraphResult> {
+	const attachment = privatePaperAttachment(input.handled.resource);
+	if (!attachment) throw new Error(`Resource ${input.resourceId} is not an uploaded paper`);
+	const mutation: PersistResolvedResourceDraftInput = {
+		...(await resolvedResourceMutation(input, hostedImages)),
+		admission: {
+			kind: 'userFilePaper',
+			fileResourceId: input.resourceId,
+			expectedFileRevision: input.expectedSourceRevision,
+		},
+		url: attachment.canonicalUrl,
+		normalizedUrl: attachment.canonicalUrl,
+		storageKey: null,
+	};
+	return env.DOMAIN.persistResolvedResourceDraft(mutation);
 }
 
 export async function persistProcessedDraft(
@@ -130,10 +148,7 @@ async function resolvedResourceMutation(
 	const content = resource.content;
 	if (!content?.trim()) throw new Error(`Refusing to persist resource processing ${resource.processing_id} without content`);
 	const ogImageUrl = input.previewImageUrl?.trim() || null;
-	const paperAttachment = input.handled.kind === 'paper' ? privatePaperAttachment(resource) : null;
-	const media = paperAttachment
-		? { creators: [], kindMetadata: null, ogImageUrl: null }
-		: hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kind_metadata, ogImageUrl }, hostedImages);
+	const media = hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kind_metadata, ogImageUrl }, hostedImages);
 	return {
 		identity,
 		identifiers: resource.resource_identifiers,
