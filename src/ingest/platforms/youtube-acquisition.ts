@@ -7,7 +7,7 @@ import { z } from 'zod';
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
 const YOUTUBE_API_MAX_BYTES = 1024 * 1024;
-export const MIN_MONITORED_VIDEO_DURATION_SECONDS = 180;
+const MIN_MONITORED_VIDEO_DURATION_SECONDS = 180;
 const YouTubeThumbnailSchema = z.object({ url: z.string().min(1) });
 const YouTubeThumbnailsSchema = z.object({
 	default: YouTubeThumbnailSchema.optional(),
@@ -211,15 +211,21 @@ export async function scrapeYouTube(
 	const stats = video.statistics;
 
 	const durationSeconds = isoDurationSeconds(video.contentDetails.duration);
-	const skipOptionalAcquisition = monitoredOnly && (durationSeconds === null || durationSeconds <= MIN_MONITORED_VIDEO_DURATION_SECONDS);
+	if (monitoredOnly && (durationSeconds === null || durationSeconds <= MIN_MONITORED_VIDEO_DURATION_SECONDS)) {
+		const reason = durationSeconds === null ? 'is a live stream or unstarted premiere' : `runs ${durationSeconds}s`;
+		throw new NonRetryableError(
+			`YouTube video ${videoId} ${reason}; monitored videos must exceed ${MIN_MONITORED_VIDEO_DURATION_SECONDS}s`,
+		);
+	}
 
 	const thumbnailUrl = bestThumbnailUrl(snippet.thumbnails);
 	const chapters = parseChaptersFromDescription(snippet.description);
 
-	if (!skipOptionalAcquisition) console.info({ tag: 'YOUTUBE', msg: 'Fetching transcript', videoId });
-	const [channelAvatar, transcript] = skipOptionalAcquisition
-		? [null, []]
-		: await Promise.all([sourceAvatarUrl ?? fetchYouTubeChannelAvatar(snippet.channelId, youtubeApiKey), fetchTranscript(videoId)]);
+	console.info({ tag: 'YOUTUBE', msg: 'Fetching transcript', videoId });
+	const [channelAvatar, transcript] = await Promise.all([
+		sourceAvatarUrl ?? fetchYouTubeChannelAvatar(snippet.channelId, youtubeApiKey),
+		fetchTranscript(videoId),
+	]);
 	const transcriptMarkdown = transcript
 		.map((segment) => segment.text.trim())
 		.filter(Boolean)
@@ -249,7 +255,6 @@ export async function scrapeYouTube(
 			...(stats.commentCount ? { commentCount: Number.parseInt(stats.commentCount, 10) } : {}),
 		},
 		previewImageUrl: thumbnailUrl,
-		durationSeconds,
 		youtubeTranscript: {
 			videoId: video.id,
 			segments: transcript,

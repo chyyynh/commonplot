@@ -34,7 +34,6 @@ import { handleResolvedResource } from './kind-handler';
 import { privatePaperAttachment, stagePaperEnrichment } from './platforms/paper';
 import { stageOpenAlexContentAcquisition } from './platforms/paper-content';
 import { stagePdfTextExtraction } from './platforms/pdf';
-import { MIN_MONITORED_VIDEO_DURATION_SECONDS } from './platforms/youtube-acquisition';
 import {
 	type ExistingResourceTarget,
 	enqueueSubjectDraft,
@@ -168,18 +167,7 @@ async function stageSavedUrlAcquisition(
 	if (acquisition.status === 'rejected') {
 		throw new ResourceProcessingRejectedError(acquisition.message, 'ResourceAcquisitionRejectedError');
 	}
-	const acquired = acquisition.content;
-	if (input.isMonitoredOnly && acquired.provider === 'youtube') {
-		const durationSeconds = acquired.durationSeconds;
-		if (durationSeconds === null || durationSeconds <= MIN_MONITORED_VIDEO_DURATION_SECONDS) {
-			const reason = durationSeconds === null ? 'is a live stream or unstarted premiere' : `runs ${durationSeconds}s`;
-			throw new ResourceProcessingRejectedError(
-				`YouTube processing ${input.processingId} ${reason}; monitored videos must exceed ${MIN_MONITORED_VIDEO_DURATION_SECONDS}s`,
-				'MonitoredVideoRejectedError',
-			);
-		}
-	}
-	return acquired;
+	return acquisition.content;
 }
 
 function assertPdfExtractionProcessable(input: {

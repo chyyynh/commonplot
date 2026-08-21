@@ -69,7 +69,6 @@ const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('
 	acquiredMaterialSchema('lesswrong', 'blog', {}),
 	acquiredMaterialSchema('twitter', 'post', { subjectUrl: z.string().optional() }),
 	acquiredMaterialSchema('youtube', 'video', {
-		durationSeconds: z.number().nonnegative().nullable(),
 		youtubeTranscript: youtubeTranscriptSchema,
 	}),
 ]);
@@ -118,12 +117,7 @@ function validateAcquisitionUrl(url: string): string {
 }
 
 function acquiredSourceSnapshotHash(acquired: AcquiredContent, markdown: string): Promise<string> {
-	const providerFacts =
-		acquired.provider === 'twitter'
-			? { subjectUrl: acquired.subjectUrl }
-			: acquired.provider === 'youtube'
-				? { durationSeconds: acquired.durationSeconds }
-				: null;
+	const providerFacts = acquired.provider === 'twitter' ? { subjectUrl: acquired.subjectUrl } : null;
 	const input = JSON.stringify({
 		provider: acquired.provider,
 		canonicalUrl: acquired.canonicalUrl,

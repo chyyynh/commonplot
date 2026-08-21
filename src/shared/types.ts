@@ -102,7 +102,7 @@ type AcquiredMaterialBase<T extends ResourcePlatform> = {
 type AcquiredMaterialSpecialization<T extends ResourcePlatform> = T extends 'twitter'
 	? { subjectUrl?: string }
 	: T extends 'youtube'
-		? { durationSeconds: number | null; youtubeTranscript: YoutubeTranscript }
+		? { youtubeTranscript: YoutubeTranscript }
 		: unknown;
 
 export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = T extends unknown
