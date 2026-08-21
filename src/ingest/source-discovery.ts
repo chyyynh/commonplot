@@ -35,7 +35,6 @@ const DISCOVERY_HEADERS = {
 type HtmlHead = {
 	title: string | null;
 	feedHref: string | null;
-	meta: ReadonlyMap<string, string>;
 };
 
 function decodedAttribute(element: Element, name: string): string | null {
@@ -51,8 +50,7 @@ function isAlternateFeedLink(element: Element): boolean {
 }
 
 /** Parse already-bounded HTML with the Workers-native streaming parser. */
-export async function parseHtmlHead(html: string, baseUrl?: URL): Promise<HtmlHead> {
-	const meta = new Map<string, string>();
+async function parseHtmlHead(html: string, baseUrl?: URL): Promise<HtmlHead> {
 	let feedHref: string | null = null;
 	let title: string | null = null;
 	let titleChunks: string[] | null = null;
@@ -69,15 +67,6 @@ export async function parseHtmlHead(html: string, baseUrl?: URL): Promise<HtmlHe
 				} catch {
 					// Skip malformed hrefs; a later link tag may still resolve.
 				}
-			},
-		})
-		.on('meta', {
-			element(element) {
-				const key = decodedAttribute(element, 'property') ?? decodedAttribute(element, 'name');
-				const content = decodedAttribute(element, 'content');
-				if (!key || !content) return;
-				const normalizedKey = key.toLowerCase();
-				if (!meta.has(normalizedKey)) meta.set(normalizedKey, content);
 			},
 		})
 		.on('title', {
@@ -100,44 +89,7 @@ export async function parseHtmlHead(html: string, baseUrl?: URL): Promise<HtmlHe
 	// input is already byte-bounded by the caller, so buffering the discarded
 	// output cannot turn an unbounded response into isolate memory pressure.
 	await rewriter.transform(new Response(html, { headers: { 'Content-Type': 'text/html; charset=utf-8' } })).arrayBuffer();
-	return { title, feedHref, meta };
-}
-
-export function firstHtmlMetaValue(head: HtmlHead, keys: readonly string[]): string | null {
-	for (const key of keys) {
-		const value = head.meta.get(key);
-		if (value) return value;
-	}
-	return null;
-}
-
-/**
- * Read through the closing head tag or byte cap, then cancel the origin body.
- * The cap intentionally truncates instead of throwing because head metadata is
- * useful even when a page inlines a very large script before it.
- */
-export async function readHtmlHead(response: Response, maxBytes: number): Promise<string> {
-	if (!response.body) return '';
-	const reader = response.body.getReader();
-	const decoder = new TextDecoder();
-	let html = '';
-	let totalBytes = 0;
-
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) return html + decoder.decode();
-
-			totalBytes += value.byteLength;
-			html += decoder.decode(value, { stream: true });
-			if (totalBytes >= maxBytes || /<\/head\s*>/i.test(html)) {
-				await reader.cancel();
-				return html;
-			}
-		}
-	} finally {
-		reader.releaseLock();
-	}
+	return { title, feedHref };
 }
 
 // Canonical handle form keeps UNIQUE(platform, handle) deduping equivalent inputs.
@@ -274,7 +226,7 @@ async function fetchYouTubeChannel(env: CoreEnv, query: string): Promise<YouTube
 		await response.body?.cancel();
 		throw new Error(`YouTube channel lookup failed with HTTP ${status}`);
 	}
-	const data = (await response.json()) as {
+	const data = JSON.parse(await readTextWithLimit(response, 64 * 1024)) as {
 		items?: { id?: string; snippet?: { title?: string; thumbnails?: { default?: { url?: string } } } }[];
 	};
 	const item = data.items?.[0];

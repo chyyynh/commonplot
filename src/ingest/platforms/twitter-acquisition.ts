@@ -209,7 +209,7 @@ export function buildTweetTitle(tweet: Tweet, maxLength = 100): string {
 	return `@${author.userName}: ${text.substring(0, maxLength)}${suffix}`;
 }
 
-export function buildThreadResourceParts(tweets: Tweet[]): {
+function buildThreadResourceParts(tweets: Tweet[]): {
 	first: AuthoredTweet;
 	combinedText: string;
 	acquisition: AcquisitionEnvelope<'twitter'>;

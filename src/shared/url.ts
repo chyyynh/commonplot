@@ -110,7 +110,7 @@ export function extractHackerNewsId(url: string): string | null {
 	return parsed.searchParams.get('id')?.match(/^\d+$/)?.[0] ?? null;
 }
 
-export function extractLessWrongPostId(url: string): string | null {
+function extractLessWrongPostId(url: string): string | null {
 	const parsed = URL.parse(url);
 	if (!parsed || !hostMatches(parsed.hostname.toLowerCase(), LESSWRONG_HOST)) return null;
 	return parsed.pathname.match(/^\/posts\/([A-Za-z0-9_-]{8,64})(?:\/|$)/)?.[1] ?? null;
