@@ -413,10 +413,13 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
 				() => classifyResource(handled.resource, this.env, handled.classificationExclusions),
 			);
+			const privatePaper = target.kind === 'stored' ? privatePaperAttachment(handled.resource) : null;
+			const subject = privatePaper ? null : resolvedSubjectInput(handled);
 			const persistenceInput = {
 				handled,
 				classification,
 				previewImageUrl,
+				subject,
 			};
 			let imageSources: string[];
 			try {
@@ -428,7 +431,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				);
 			}
 			const hostedImages = await stageResourceImages(this.env, step, processingId, imageSources);
-			const privatePaper = target.kind === 'stored' ? privatePaperAttachment(handled.resource) : null;
 			const persistence = await step.do(
 				privatePaper
 					? 'persist-final-private-paper-draft-v1'
@@ -463,8 +465,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				return { status: 'superseded', resourceId: persistence.resourceId } as const;
 			}
 			const persistedResourceId = persistence.resourceId;
-			const subject = privatePaper ? null : resolvedSubjectInput(handled);
-			if (subject) {
+			if (subject && !persistence.subjectAttached) {
 				const parentRevision = await resourceSourceRevision(handled.resource);
 				await step
 					.do(

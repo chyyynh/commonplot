@@ -14,11 +14,13 @@ import type { ResourceClassificationResult } from './domain/resource-classificat
 import { resourceSourceRevision } from './domain/resource-revision';
 import type { HandledResourceResult } from './kind-handler';
 import { privatePaperAttachment } from './platforms/paper';
+import type { ResolvedSubjectInput } from './resource-resolver';
 
 type PersistProcessedInput = {
 	handled: HandledResourceResult;
 	classification: ResourceClassificationResult;
 	previewImageUrl: string | null;
+	subject: ResolvedSubjectInput | null;
 };
 
 type PersistProcessedResourceInput = PersistProcessedInput & {
@@ -157,6 +159,12 @@ async function resolvedResourceMutation(
 		tags: input.classification.tags ?? resource.tags,
 		category: input.classification.category,
 		entities: toStoredResourceEntities(input.classification.entities, resource.resource_platform, resource.source, resource.creators),
+		subjectReference: input.subject
+			? {
+					identifiers: input.subject.identifiers,
+					normalizedUrl: input.subject.normalizedUrl,
+				}
+			: null,
 		url: resource.url,
 		normalizedUrl: resource.normalized_url ?? resource.url,
 		storageKey: resource.storage_key ?? null,

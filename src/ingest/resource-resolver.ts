@@ -135,7 +135,7 @@ export function resolvedResourceIdentifiers(resolution: ResolvedContentResourceI
 	return normalizeResourceIdentifiers(resolved);
 }
 
-type ResolvedSubjectInput = Readonly<{
+export type ResolvedSubjectInput = Readonly<{
 	identity: ContentResourceIdentity;
 	identifiers: ResourceIdentifier[];
 	normalizedUrl: string;
