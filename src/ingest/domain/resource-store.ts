@@ -88,44 +88,6 @@ export async function loadSourceAvatarUrl(env: CoreEnv, sourceId: string): Promi
 	});
 }
 
-export async function isStoredBlobEnriched(env: CoreEnv, resourceId: string): Promise<boolean> {
-	return withCoreDb(env, async (db) => {
-		const row = (
-			await db.execute<{
-				enrichment_status: string;
-				is_owned: boolean;
-				kind: string;
-				resource_platform: string | null;
-				scope: string;
-				storage_key: string | null;
-			}>(sql`
-				SELECT
-					resource.enrichment_status,
-					resource.kind,
-					resource.resource_platform,
-					resource.scope,
-					resource.storage_key,
-					EXISTS (
-						SELECT 1 FROM user_files owned
-						WHERE owned.resource_id = resource.id
-					) AS is_owned
-				FROM resources resource
-				WHERE resource.id = ${resourceId}::uuid
-				LIMIT 1
-			`)
-		).rows[0];
-		if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
-		const identity = storedResourceIdentity(row);
-		if (!isContentResourceKind(identity.kind)) {
-			throw new Error(`Resource kind is not processable by core: ${identity.kind}`);
-		}
-		if (row.scope !== 'private' || !row.storage_key || !row.is_owned) {
-			throw new Error(`Resource ${resourceId} is not an app-owned stored blob`);
-		}
-		return row.enrichment_status === 'enriched';
-	});
-}
-
 export async function assertResourceProcessable(env: CoreEnv, resourceId: string): Promise<void> {
 	await withCoreDb(env, async (db) => {
 		const row = (
