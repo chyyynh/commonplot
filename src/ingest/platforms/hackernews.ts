@@ -1,3 +1,4 @@
+import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { type ForumKindMetadata, literalCreator } from '@core-shared/resource-metadata';
@@ -230,18 +231,7 @@ function withoutPreviousDiscussion(content: string): string {
 	return content.split(`\n\n---\n\n${HN_DISCUSSION_HEADING}`, 1)[0].trim();
 }
 
-export async function buildHackerNewsAnnotation(
-	resource: ResourceForProcessing,
-	env: CoreEnv,
-	acquiredItem?: HackerNewsItem,
-): Promise<string> {
-	const itemId = resource.resource_identifiers.find((identifier) => identifier.scheme === 'hackernews')?.value;
-	let item = acquiredItem;
-	if (!item) {
-		if (!itemId) throw new Error(`Hacker News processing ${resource.processing_id} has no item id`);
-		item = await fetchHnItem(itemId);
-	}
-
+async function buildHackerNewsAnnotation(resource: ResourceForProcessing, env: CoreEnv, item: HackerNewsItem): Promise<string> {
 	const comments = item.children?.length ? collectAllComments(item.children) : [];
 	const digest = await generateHnDiscussionDigest(env, resource.processing_id, resource.title, item.text ?? null, comments);
 	// Count nodes, not text-bearing comments, so this matches Forum kind metadata.
@@ -252,8 +242,32 @@ export async function buildHackerNewsAnnotation(
 	return [HN_DISCUSSION_HEADING, stats ? `*${stats}*` : null, digest].filter(Boolean).join('\n\n');
 }
 
-export function applyHackerNewsAnnotation(content: string, annotation: string): string {
+function applyHackerNewsAnnotation(content: string, annotation: string): string {
 	const carrierContent = withoutPreviousDiscussion(content);
 	if (!carrierContent) throw new Error('Hacker News resource has no content to annotate');
 	return [carrierContent, '---', annotation].join('\n\n');
+}
+
+export async function stageHackerNewsAnnotation(
+	env: CoreEnv,
+	step: WorkflowStep,
+	resource: ResourceForProcessing,
+	acquiredItem: HackerNewsItem,
+): Promise<ResourceForProcessing> {
+	const annotation = await step
+		.do(
+			'build-hacker-news-annotation-v1',
+			{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
+			() => buildHackerNewsAnnotation(resource, env, acquiredItem),
+		)
+		.catch((error) => {
+			console.error({
+				tag: 'HN',
+				msg: 'Optional Hacker News discussion annotation failed after retries',
+				processing_id: resource.processing_id,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return null;
+		});
+	return annotation && resource.content ? { ...resource, content: applyHackerNewsAnnotation(resource.content, annotation) } : resource;
 }

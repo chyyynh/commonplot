@@ -68,11 +68,7 @@ function resourceClassificationPrompt(resource: ResourceForProcessing): string {
 ${content.substring(0, CLASSIFICATION_CONTENT_MAX_LENGTH)}`;
 }
 
-export async function classifyResource(
-	resource: ResourceForProcessing,
-	env: CoreEnv,
-	extraTags: string[] = [],
-): Promise<ResourceClassificationResult> {
+export async function classifyResource(resource: ResourceForProcessing, env: CoreEnv): Promise<ResourceClassificationResult> {
 	console.info({ tag: 'AI', msg: 'Analyzing', title: resource.title.substring(0, 80) });
 
 	const { finishReason, output: classification } = await generateText({
@@ -99,10 +95,12 @@ export async function classifyResource(
 	if (finishReason === 'length') throw new Error('Resource classification hit its output token cap');
 	const tags = classification.tags.slice(0, 5);
 	const keywords = classification.keywords.slice(0, 8);
+	const platformTag =
+		resource.resource_platform === 'hackernews' ? 'HackerNews' : resource.resource_platform === 'twitter' ? 'Twitter' : null;
 	return {
 		category: classification.category,
 		entities: classification.entities.slice(0, 10),
-		...(!resource.tags.length ? { tags: [...new Set([...tags, classification.category, ...extraTags])] } : {}),
+		...(!resource.tags.length ? { tags: [...new Set([...tags, classification.category, ...(platformTag ? [platformTag] : [])])] } : {}),
 		...(!resource.keywords.length && keywords.length ? { keywords } : {}),
 	};
 }

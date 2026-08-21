@@ -1,8 +1,7 @@
+import type { WorkflowStep } from 'cloudflare:workers';
+import type { YouTubeSpecializationMutation } from '@app-domain/resource-graph-contracts';
 import type { ResourceForProcessing, TranscriptSegment, YouTubeHighlights, YoutubeTranscript } from '@core-shared/types';
-import { withCoreDb } from '@db/client';
-import { youtubeTranscripts } from '@db/schema';
 import { generateText, Output } from 'ai';
-import { eq } from 'drizzle-orm';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 
@@ -17,11 +16,6 @@ const YouTubeHighlightSchema = z.object({
 	startTime: z.number().nonnegative(),
 	endTime: z.number().nonnegative(),
 });
-
-export interface YouTubeHighlightsUpdate {
-	videoId: string;
-	value: YouTubeHighlights;
-}
 
 const HIGHLIGHTS_SYSTEM_PROMPT = `你是專業的影片內容分析師。分析 YouTube 影片逐字稿，找出 5-8 個最重要的主題段落。
 
@@ -39,33 +33,40 @@ const YouTubeHighlightsSchema = z.object({
 });
 const YOUTUBE_HIGHLIGHTS_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 
-export async function prepareYouTubeHighlights(
+export async function stageYouTubeEnrichment(
 	env: CoreEnv,
+	step: WorkflowStep,
 	resource: ResourceForProcessing,
-	videoId: string,
-	transcript?: YoutubeTranscript | null,
-): Promise<YouTubeHighlightsUpdate | null> {
-	if (resource.resource_platform !== 'youtube') return null;
-	if (transcript) {
-		return transcript.segments.length
-			? prepareYouTubeHighlightsFromTranscript(env, resource.processing_id, videoId, transcript.segments)
-			: null;
-	}
-
-	const row = await withCoreDb(
-		env,
-		async (db) =>
-			(
-				await db
-					.select({ transcript: youtubeTranscripts.transcript, aiHighlights: youtubeTranscripts.aiHighlights })
-					.from(youtubeTranscripts)
-					.where(eq(youtubeTranscripts.videoId, videoId))
-					.limit(1)
-			)[0],
-	);
-	if (!row || row.aiHighlights || !Array.isArray(row.transcript) || row.transcript.length === 0) return null;
-
-	return prepareYouTubeHighlightsFromTranscript(env, resource.processing_id, videoId, row.transcript);
+	transcript: YoutubeTranscript,
+): Promise<YouTubeSpecializationMutation> {
+	const videoId = resource.resource_identifiers.find((identifier) => identifier.scheme === 'youtube')?.value;
+	if (!videoId) throw new Error(`YouTube processing ${resource.processing_id} has no exact video identifier`);
+	const highlights = transcript.segments.length
+		? await step
+				.do(
+					'prepare-youtube-highlights-v2',
+					{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
+					() => prepareYouTubeHighlightsFromTranscript(env, resource.processing_id, videoId, transcript.segments),
+				)
+				.catch((error) => {
+					console.error({
+						tag: 'YOUTUBE',
+						msg: 'Optional YouTube highlights failed after retries',
+						processing_id: resource.processing_id,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					return null;
+				})
+		: null;
+	return {
+		transcript: {
+			segments: transcript.segments,
+			language: transcript.language,
+			chapters: transcript.chapters,
+			chaptersFromDescription: transcript.chaptersFromDescription,
+		},
+		highlights,
+	};
 }
 
 async function prepareYouTubeHighlightsFromTranscript(
@@ -73,7 +74,7 @@ async function prepareYouTubeHighlightsFromTranscript(
 	resourceId: string,
 	videoId: string,
 	transcript: TranscriptSegment[],
-): Promise<YouTubeHighlightsUpdate | null> {
+): Promise<YouTubeHighlights> {
 	console.info({ tag: 'AI', msg: 'Generating YouTube highlights', videoId });
 
 	const transcriptText = transcript.map((s) => `[${Math.floor(s.startTime)}s] ${s.text}`).join('\n');
@@ -110,12 +111,9 @@ async function prepareYouTubeHighlightsFromTranscript(
 	console.info({ tag: 'AI', msg: 'YouTube highlights generated', videoId, count: highlights.highlights.length });
 	const generatedAt = new Date().toISOString();
 	return {
-		videoId,
-		value: {
-			version: '1.0',
-			model: YOUTUBE_HIGHLIGHTS_MODEL,
-			highlights: highlights.highlights,
-			generatedAt,
-		},
+		version: '1.0',
+		model: YOUTUBE_HIGHLIGHTS_MODEL,
+		highlights: highlights.highlights,
+		generatedAt,
 	};
 }

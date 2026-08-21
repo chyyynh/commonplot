@@ -5,6 +5,7 @@ import {
 	type WorkflowStep,
 	type WorkflowStepConfig,
 } from 'cloudflare:workers';
+import type { YouTubeSpecializationMutation } from '@app-domain/resource-graph-contracts';
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource-identifiers';
 import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
@@ -15,7 +16,7 @@ import {
 	resourceIdentityForDetectedPlatform,
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
-import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
+import type { ResourceForProcessing } from '@core-shared/types';
 import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
 import { loadSourceAvatarUrl, loadStoredResourceForProcessing, type StoredResourceProcessingInput } from '@ingest/domain/resource-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
@@ -30,10 +31,11 @@ import {
 import { classifyResource } from './domain/resource-classification';
 import { resourceSourceRevision } from './domain/resource-revision';
 import { loadEligibleResourceTranslationRevision } from './domain/resource-translation-store';
-import { handleResolvedResource } from './kind-handler';
-import { privatePaperAttachment, stagePaperEnrichment } from './platforms/paper';
+import { stageHackerNewsAnnotation } from './platforms/hackernews';
+import { applyPaperEnrichment, privatePaperAttachment, stagePaperEnrichment } from './platforms/paper';
 import { stageOpenAlexContentAcquisition } from './platforms/paper-content';
 import { stagePdfTextExtraction } from './platforms/pdf';
+import { stageYouTubeEnrichment } from './platforms/youtube';
 import {
 	type ExistingResourceTarget,
 	enqueueSubjectDraft,
@@ -159,10 +161,10 @@ async function stageSavedUrlAcquisition(
 }
 
 type PreparedResource = {
-	acquiredContent: AcquiredContent | undefined;
-	paperEnrichment: PaperMetadata | null;
+	previewImageUrl: string | null;
 	resource: ResourceForProcessing;
 	subject: ResolvedSubjectInput | null;
+	youtube: YouTubeSpecializationMutation | null;
 };
 
 type ResourcePreparationInput =
@@ -335,11 +337,18 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 	if (!extractedPdfText && !acquiredContent?.markdown?.trim()) {
 		throw new ResourceProcessingRejectedError(`Processing ${resource.processing_id} has no extractable content`);
 	}
+	if (extractedPdfText) resource = { ...resource, content: extractedPdfText };
+	if (resource.kind === 'paper') resource = applyPaperEnrichment(resource, paperEnrichment);
+	if (acquiredContent?.provider === 'hackernews') {
+		resource = await stageHackerNewsAnnotation(env, step, resource, acquiredContent.hackerNewsItem);
+	}
+	const youtube =
+		acquiredContent?.provider === 'youtube' ? await stageYouTubeEnrichment(env, step, resource, acquiredContent.youtubeTranscript) : null;
 	return {
-		acquiredContent,
-		paperEnrichment: resource.kind === 'paper' ? paperEnrichment : null,
-		resource: extractedPdfText ? { ...resource, content: extractedPdfText } : resource,
+		previewImageUrl: acquiredContent?.previewImageUrl?.trim() || null,
+		resource,
 		subject: resolvedSubjectInput(subjectUrl),
+		youtube,
 	};
 }
 
@@ -408,7 +417,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				preparationInput = { ...target, processingId, sourceAvatarUrl };
 			}
 			const prepared = await prepareResourceForProcessing(this.env, step, preparationInput);
-			const { acquiredContent, paperEnrichment, resource } = prepared;
+			const { previewImageUrl, resource, subject, youtube } = prepared;
 			const logContext = { processing_id: processingId, target_kind: target.kind };
 
 			console.info({
@@ -418,27 +427,18 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				resourcePlatform: resource.resource_platform,
 				...logContext,
 			});
-			const previewImageUrl = acquiredContent?.previewImageUrl?.trim() || null;
-			const handled = await handleResolvedResource({
-				acquiredContent,
-				env: this.env,
-				paperEnrichment,
-				resource,
-				step,
-			});
-
 			const classification = await step.do(
 				'classify-resource',
 				{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
-				() => classifyResource(handled.resource, this.env, handled.classificationExclusions),
+				() => classifyResource(resource, this.env),
 			);
-			const privatePaper = target.kind === 'storedBlob' ? privatePaperAttachment(handled.resource) : null;
-			const subject = prepared.subject;
+			const privatePaper = target.kind === 'storedBlob' ? privatePaperAttachment(resource) : null;
 			const persistenceInput = {
-				handled,
 				classification,
 				previewImageUrl,
+				resource,
 				subject,
+				youtube,
 			};
 			const persistenceTarget =
 				target.kind === 'draft'
@@ -454,8 +454,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			let imageSources: string[];
 			try {
 				imageSources = resourceImageSourceUrls({
-					creators: handled.resource.creators,
-					kindMetadata: handled.resource.kind_metadata,
+					creators: resource.creators,
+					kindMetadata: resource.kind_metadata,
 					ogImageUrl: previewImageUrl,
 				});
 			} catch (error) {
@@ -472,7 +472,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			if (!persistence.persisted) {
 				if (target.kind === 'reacquire' && target.expectedProviderRevision) {
 					await reconcileSupersededProviderRefresh(this.env, step, {
-						acquiredResource: handled.resource,
+						acquiredResource: resource,
 						expectedProviderRevision: target.expectedProviderRevision,
 						resourceId: persistence.resourceId,
 						supersededSourceRevision: expectedSourceRevision,
@@ -482,7 +482,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			}
 			const persistedResourceId = persistence.resourceId;
 			if (subject && !persistence.subjectAttached) {
-				const parentRevision = await resourceSourceRevision(handled.resource);
+				const parentRevision = await resourceSourceRevision(resource);
 				await step
 					.do(
 						'enqueue-resolved-subject-child-v1',

@@ -3,27 +3,29 @@ import type {
 	PersistResolvedResourceGraphInput,
 	PersistResolvedResourceGraphResult,
 	ResourceDraftAdmission,
+	YouTubeSpecializationMutation,
 } from '@app-domain/resource-graph-contracts';
 import { type HostedResourceImage, hostedResourceImageFields } from '@core-shared/resource-image-mapping';
 import { parseResourceIdentity } from '@core-shared/resource-types';
+import type { ResourceForProcessing } from '@core-shared/types';
 import { withCoreDb } from '@db/client';
 import { resources } from '@db/schema';
 import { toStoredResourceEntities } from '@entities/normalize';
 import { eq, sql } from 'drizzle-orm';
 import type { ResourceClassificationResult } from './domain/resource-classification';
 import { resourceSourceRevision } from './domain/resource-revision';
-import type { HandledResourceResult } from './kind-handler';
 import type { ResolvedSubjectInput } from './resource-resolver';
 
 type PersistProcessedInput = {
-	handled: HandledResourceResult;
 	classification: ResourceClassificationResult;
 	previewImageUrl: string | null;
+	resource: ResourceForProcessing;
 	subject: ResolvedSubjectInput | null;
 	target:
 		| { kind: 'draft'; admission: ResourceDraftAdmission }
 		| { kind: 'existing'; resourceId: string; expectedSourceRevision: string | null }
 		| { kind: 'privatePaper'; canonicalUrl: string; fileResourceId: string; expectedFileRevision: string | null };
+	youtube: YouTubeSpecializationMutation | null;
 };
 
 export async function markStoredBlobProcessingFailed(
@@ -110,7 +112,7 @@ async function resolvedResourceMutation(
 	input: PersistProcessedInput,
 	hostedImages: readonly HostedResourceImage[],
 ): Promise<Omit<PersistResolvedResourceGraphInput, 'resourceId' | 'expectedSourceRevision'>> {
-	const resource = input.handled.resource;
+	const resource = input.resource;
 	const identity = parseResourceIdentity(resource.kind, resource.resource_platform);
 	if (!identity) throw new Error(`Resource processing ${resource.processing_id} resolved to an invalid identity`);
 	const sourceRevision = await resourceSourceRevision(resource);
@@ -124,20 +126,7 @@ async function resolvedResourceMutation(
 		creators: media.creators,
 		kindMetadata: media.kindMetadata,
 		sourceRevision,
-		youtube:
-			resource.kind === 'video' && input.handled.youtube
-				? {
-						transcript: input.handled.youtube.transcript
-							? {
-									segments: input.handled.youtube.transcript.segments,
-									language: input.handled.youtube.transcript.language,
-									chapters: input.handled.youtube.transcript.chapters,
-									chaptersFromDescription: input.handled.youtube.transcript.chaptersFromDescription,
-								}
-							: null,
-						highlights: input.handled.youtube.highlights?.value ?? null,
-					}
-				: null,
+		youtube: resource.kind === 'video' ? input.youtube : null,
 		originalLang: resource.original_lang,
 		title: resource.title,
 		summary: resource.summary,

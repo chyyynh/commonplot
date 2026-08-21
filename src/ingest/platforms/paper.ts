@@ -9,6 +9,7 @@ import {
 	resolveExactPaperInput,
 } from '@core-shared/paper-identity';
 import { isPaperIdentifier } from '@core-shared/resource-identifiers';
+import { literalCreator, type PaperKindMetadata } from '@core-shared/resource-metadata';
 import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
 import { resolveBibliographicIdentifiers } from './bibliographic-resolver';
 import { resolveOpenAlexPaper } from './openalex';
@@ -29,8 +30,36 @@ export type PaperEnrichmentResolution = {
 	metadata: PaperMetadata | null;
 };
 
-export function isExplicitPaperUrl(url: string | null | undefined): boolean {
+function isExplicitPaperUrl(url: string | null | undefined): boolean {
 	return resolveExactPaperInput(url) !== null;
+}
+
+/** OpenAlex fields become canonical once academic enrichment resolves the work. */
+export function applyPaperEnrichment(resource: ResourceForProcessing, metadata: PaperMetadata | null): ResourceForProcessing {
+	if (!metadata) return resource;
+
+	let publishedDate = resource.published_date;
+	if (!publishedDate && metadata.publicationDate) {
+		const candidate = new Date(`${metadata.publicationDate}T00:00:00.000Z`);
+		if (!Number.isNaN(candidate.getTime())) publishedDate = candidate.toISOString();
+	}
+	const abstract = metadata.abstract?.trim();
+	const kindMetadata: PaperKindMetadata = {
+		...(metadata.venue?.trim() ? { venue: metadata.venue.trim() } : {}),
+		...(metadata.year === undefined ? {} : { year: metadata.year }),
+		...(metadata.citedByCount === undefined ? {} : { citedByCount: metadata.citedByCount }),
+		...(metadata.referenceCount === undefined ? {} : { referenceCount: metadata.referenceCount }),
+		...(metadata.pdfUrl?.trim() ? { pdfUrl: metadata.pdfUrl.trim() } : {}),
+		...(metadata.references ? { references: metadata.references } : {}),
+		...(metadata.citations ? { citations: metadata.citations } : {}),
+	};
+	return {
+		...resource,
+		...(abstract ? { summary: abstract } : {}),
+		published_date: publishedDate,
+		creators: metadata.authors.flatMap((author) => literalCreator('author', author)),
+		kind_metadata: kindMetadata,
+	};
 }
 
 function localPaperEvidence(candidate: PaperEnrichmentCandidate): boolean {
