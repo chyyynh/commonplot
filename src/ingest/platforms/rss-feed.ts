@@ -1,5 +1,4 @@
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
-import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import { extractHackerNewsId, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { parseFeed } from 'feedsmith';
 import { decode } from 'html-entities';
@@ -14,15 +13,6 @@ type ParsedAtomEntry = NonNullable<Extract<ParsedFeed, { format: 'atom' }>['feed
 type ParsedRdfItem = NonNullable<Extract<ParsedFeed, { format: 'rdf' }>['feed']['items']>[number];
 type ParsedJsonItem = NonNullable<Extract<ParsedFeed, { format: 'json' }>['feed']['items']>[number];
 
-interface FeedMedia {
-	thumbnails?: Array<{ url?: string }>;
-	contents?: Array<{ url?: string; type?: string; medium?: string }>;
-	groups?: Array<{
-		thumbnails?: Array<{ url?: string }>;
-		contents?: Array<{ url?: string; type?: string; medium?: string }>;
-	}>;
-}
-
 export interface FeedItem {
 	id: string;
 	link?: string;
@@ -30,7 +20,6 @@ export interface FeedItem {
 	summary?: string;
 	published?: string;
 	language?: string;
-	previewImageUrl?: string;
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -47,38 +36,12 @@ function alternateAtomLink(entry: ParsedAtomEntry): string | undefined {
 	return optionalString(links.find((link) => !link.rel || link.rel === 'alternate')?.href) ?? optionalString(links[0]?.href);
 }
 
-function firstMediaImage(media: FeedMedia | undefined): string | undefined {
-	const groups = media?.groups ?? [];
-	const thumbnails = [...(media?.thumbnails ?? []), ...groups.flatMap((group) => group.thumbnails ?? [])];
-	const thumbnail = thumbnails.map((item) => optionalString(item.url)).find(Boolean);
-	if (thumbnail) return thumbnail;
-
-	const contents = [...(media?.contents ?? []), ...groups.flatMap((group) => group.contents ?? [])];
-	return contents
-		.filter((item) => item.medium === 'image' || item.type?.toLowerCase().startsWith('image/'))
-		.map((item) => optionalString(item.url))
-		.find(Boolean);
-}
-
-function firstHtmlImage(value: string | undefined): string | undefined {
-	if (!value) return undefined;
-	const match = value.match(/<img\b[^>]*\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s>]+))/i);
-	return optionalString(match?.[1] ?? match?.[2] ?? match?.[3]);
-}
-
-function resolvedHttpUrl(value: string | undefined, baseUrl: string | undefined): string | undefined {
-	return normalizedResourceImageUrl(value, baseUrl) ?? undefined;
-}
-
 function rssFeedItem(item: ParsedRssItem, language: string | undefined): FeedItem {
 	const itemLink = optionalString(item.link);
 	const guid = optionalString(item.guid?.value);
 	const permalinkGuid = item.guid?.isPermaLink !== false && guid?.match(/^https?:\/\//i) ? guid : undefined;
 	const link = permalinkGuid ?? itemLink;
 	const summary = optionalString(item.description);
-	const encodedContent = optionalString(item.content?.encoded);
-	const content = encodedContent ?? summary;
-	const previewImage = firstMediaImage(item.media) ?? firstHtmlImage(content);
 	return {
 		id: guid ?? link ?? '',
 		link,
@@ -86,14 +49,11 @@ function rssFeedItem(item: ParsedRssItem, language: string | undefined): FeedIte
 		summary,
 		published: optionalString(item.pubDate) ?? optionalString(item.dc?.dates?.[0]),
 		language,
-		previewImageUrl: resolvedHttpUrl(previewImage, link),
 	};
 }
 
 function atomFeedItem(entry: ParsedAtomEntry): FeedItem {
 	const link = alternateAtomLink(entry);
-	const content = optionalString(entry.content);
-	const previewImage = firstMediaImage(entry.media) ?? firstHtmlImage(content);
 	return {
 		id: optionalString(entry.id) ?? link ?? '',
 		link,
@@ -101,16 +61,12 @@ function atomFeedItem(entry: ParsedAtomEntry): FeedItem {
 		summary: optionalString(entry.summary),
 		published: optionalString(entry.published) ?? optionalString(entry.updated),
 		language: optionalString(entry.dc?.languages?.[0]),
-		previewImageUrl: resolvedHttpUrl(previewImage, link),
 	};
 }
 
 function rdfFeedItem(item: ParsedRdfItem, language: string | undefined): FeedItem {
 	const link = optionalString(item.link);
 	const summary = optionalString(item.description);
-	const encodedContent = optionalString(item.content?.encoded);
-	const content = encodedContent ?? summary;
-	const previewImage = firstMediaImage(item.media) ?? firstHtmlImage(content);
 	return {
 		id: optionalString(item.rdf?.about) ?? link ?? '',
 		link,
@@ -118,7 +74,6 @@ function rdfFeedItem(item: ParsedRdfItem, language: string | undefined): FeedIte
 		summary,
 		published: optionalString(item.dc?.dates?.[0]),
 		language,
-		previewImageUrl: resolvedHttpUrl(previewImage, link),
 	};
 }
 
@@ -131,7 +86,6 @@ function jsonFeedItem(item: ParsedJsonItem, feedLanguage: string | undefined): F
 		summary: optionalString(item.summary),
 		published: optionalString(item.date_published) ?? optionalString(item.date_modified),
 		language: optionalString(item.language) ?? feedLanguage,
-		previewImageUrl: resolvedHttpUrl(optionalString(item.image) ?? optionalString(item.banner_image), link),
 	};
 }
 

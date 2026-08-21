@@ -213,7 +213,7 @@ async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, shell:
 	if (!sourceUrl) throw new Error(`Resource ${resource.id} has no source URL`);
 	const acquired = await readAcquiredContentArtifact(
 		await step.do('acquire-content-kind-platform-v1', ACQUISITION_STEP, () =>
-			scrapeSavedUrlArtifact(sourceUrl, env, shell.isMonitoredOnly, resource.id),
+			scrapeSavedUrlArtifact(sourceUrl, env, shell.isMonitoredOnly, shell.sourceAvatarUrl, resource.id),
 		),
 	);
 	if (shell.isMonitoredOnly && acquired.provider === 'youtube') {

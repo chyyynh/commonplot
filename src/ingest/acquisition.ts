@@ -178,13 +178,19 @@ export async function sanitizeAcquiredContent(acquired: AcquiredContent): Promis
 	}
 }
 
-async function scrapeSavedUrl(url: string, env: CoreEnv, monitoredOnly: boolean, resourceId: string): Promise<AcquiredContent> {
+async function scrapeSavedUrl(
+	url: string,
+	env: CoreEnv,
+	monitoredOnly: boolean,
+	sourceAvatarUrl: string | null,
+	resourceId: string,
+): Promise<AcquiredContent> {
 	const validatedUrl = validateAcquisitionUrl(url);
 	const detected = detectResourceUrl(validatedUrl);
 	if (detected) {
 		switch (detected.resourcePlatform) {
 			case 'youtube':
-				return sanitizeAcquiredContent(await scrapeYouTube(detected.platformId, env.YOUTUBE_API_KEY, monitoredOnly));
+				return sanitizeAcquiredContent(await scrapeYouTube(detected.platformId, env.YOUTUBE_API_KEY, monitoredOnly, sourceAvatarUrl));
 			case 'twitter':
 				return sanitizeAcquiredContent(await scrapeTweet(detected.platformId, env.KAITO_API_KEY));
 			case 'hackernews':
@@ -203,9 +209,10 @@ export async function scrapeSavedUrlArtifact(
 	url: string,
 	env: CoreEnv,
 	monitoredOnly: boolean,
+	sourceAvatarUrl: string | null,
 	resourceId: string,
 ): Promise<ReadableStream<Uint8Array>> {
-	const acquired = await scrapeSavedUrl(url, env, monitoredOnly, resourceId);
+	const acquired = await scrapeSavedUrl(url, env, monitoredOnly, sourceAvatarUrl, resourceId);
 	return acquiredContentArtifact(acquired);
 }
 

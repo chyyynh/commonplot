@@ -30,6 +30,7 @@ export type ResourceProcessingShell = {
 	hasPersistedContent: boolean;
 	hasYoutubeTranscript: boolean;
 	isMonitoredOnly: boolean;
+	sourceAvatarUrl: string | null;
 };
 
 type ResourceStoreRow = {
@@ -43,6 +44,7 @@ type ResourceStoreRow = {
 	original_lang: string;
 	url: string | null;
 	source: string | null;
+	source_avatar_url: string | null;
 	scope: string | null;
 	published_date: Date | string | null;
 	tags: string[];
@@ -116,6 +118,7 @@ export async function loadResourceShellForProcessing(env: CoreEnv, resourceId: s
 		hasPersistedContent: row.has_content,
 		hasYoutubeTranscript: row.has_youtube_transcript === true,
 		isMonitoredOnly: row.is_monitored_only,
+		sourceAvatarUrl: cleanString(row.source_avatar_url),
 	};
 }
 
@@ -246,6 +249,7 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<Re
 				monitoredSourceName: sql`monitored_source.name`,
 				resourcePlatform: sql`rl.resource_platform`,
 			})} AS source,
+			CASE WHEN monitored_source.platform = 'youtube' THEN monitored_source.avatar_url END AS source_avatar_url,
 			rl.scope AS scope,
 			rl.published_date AS published_date,
 			rl.tags AS tags,

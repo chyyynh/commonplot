@@ -192,7 +192,12 @@ async function fetchTranscript(videoId: string): Promise<TranscriptSegment[]> {
 	return segments;
 }
 
-export async function scrapeYouTube(videoId: string, youtubeApiKey: string, monitoredOnly: boolean): Promise<AcquiredMaterial<'youtube'>> {
+export async function scrapeYouTube(
+	videoId: string,
+	youtubeApiKey: string,
+	monitoredOnly: boolean,
+	sourceAvatarUrl: string | null,
+): Promise<AcquiredMaterial<'youtube'>> {
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching video', videoId });
 
 	const videoData = await fetchYouTubeVideoData(videoId, youtubeApiKey);
@@ -213,7 +218,7 @@ export async function scrapeYouTube(videoId: string, youtubeApiKey: string, moni
 	if (!skipOptionalAcquisition) console.info({ tag: 'YOUTUBE', msg: 'Fetching transcript', videoId });
 	const [channelAvatar, transcript] = skipOptionalAcquisition
 		? [null, []]
-		: await Promise.all([fetchYouTubeChannelAvatar(snippet.channelId, youtubeApiKey), fetchTranscript(videoId)]);
+		: await Promise.all([sourceAvatarUrl ?? fetchYouTubeChannelAvatar(snippet.channelId, youtubeApiKey), fetchTranscript(videoId)]);
 	const transcriptMarkdown = transcript
 		.map((segment) => segment.text.trim())
 		.filter(Boolean)
