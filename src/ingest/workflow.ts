@@ -1,15 +1,11 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
 import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource-identifiers';
 import type { HostedResourceImage } from '@core-shared/resource-image-mapping';
-import {
-	isContentResourceIdentity,
-	isResourceSourceSnapshotHash,
-	parseResourceIdentity,
-	toResourceIdentityColumns,
-} from '@core-shared/resource-types';
+import { isContentResourceIdentity, parseResourceIdentity, toResourceIdentityColumns } from '@core-shared/resource-types';
 import type { PaperMetadata, PdfExtractionMetadata, ResourceForProcessing } from '@core-shared/types';
 import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
 import {
+	loadDraftShellForProcessing,
 	loadOriginalResourceContentArtifact,
 	loadResourceShellForProcessing,
 	type ResourceProcessingShell,
@@ -31,9 +27,15 @@ import { stagePaperEnrichment } from './platforms/paper';
 import { stagePreferredOpenAlexContent, stagePreliminaryAcquisition } from './platforms/paper-content';
 import { stagePdfTextExtraction } from './platforms/pdf';
 import { MIN_MONITORED_VIDEO_DURATION_SECONDS } from './platforms/youtube-acquisition';
-import { enqueueProcessing, type ResourceProcessingOperation, type ResourceProcessingWorkflowPayload } from './resource-admission';
+import {
+	enqueueProcessing,
+	parseResourceProcessingWorkflowPayload,
+	type ResourceProcessingOperation,
+	type ResourceProcessingWorkflowPayload,
+} from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import {
+	persistProcessedDraft,
 	persistProcessedResource,
 	processedResourceImageSources,
 	type ResourceProcessingFailureOutcome,
@@ -320,25 +322,27 @@ async function settleFailedResourceProcessing(
 
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingWorkflowPayload> {
 	async run(event: WorkflowEvent<ResourceProcessingWorkflowPayload>, step: WorkflowStep) {
-		const { resourceId, operation, sourceRevision } = event.payload;
-		if (sourceRevision !== undefined && !isResourceSourceSnapshotHash(sourceRevision)) {
-			throw new ResourceProcessingOutcomeError('failed', 'Invalid resource source revision', 'ResourceSourceRevisionError');
-		}
+		const { target } = parseResourceProcessingWorkflowPayload(event.payload);
+		const operation: ResourceProcessingOperation = target.kind === 'stored' ? target.operation : 'ingest';
+		const processingId = target.kind === 'stored' ? target.resourceId : event.instanceId;
 		let persistedSourceRevision: string | null | undefined;
 		try {
 			const initialShell = await step.do(
-				'fetch-resource-shell-kind-platform-v1',
+				target.kind === 'stored' ? 'fetch-resource-shell-kind-platform-v1' : 'build-resource-draft-shell-v1',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				async () => loadResourceShellForProcessing(this.env, resourceId),
+				() =>
+					target.kind === 'stored'
+						? loadResourceShellForProcessing(this.env, target.resourceId)
+						: loadDraftShellForProcessing(this.env, event.instanceId, target),
 			);
 			const { resource: initialResource } = initialShell;
-			persistedSourceRevision = initialResource.source_revision;
-			if (sourceRevision !== undefined && initialResource.source_revision !== sourceRevision) {
-				return { success: true, resource_id: resourceId, operation, superseded: true };
+			persistedSourceRevision = target.kind === 'stored' ? initialResource.source_revision : undefined;
+			if (target.kind === 'stored' && target.sourceRevision !== undefined && initialResource.source_revision !== target.sourceRevision) {
+				return { status: 'superseded', resourceId: target.resourceId } as const;
 			}
 			const prepared = await prepareResourceForProcessing(this.env, step, initialShell, operation);
 			const { acquiredContent, identityPdfTextArtifact, paperEnrichment, resolution, resource } = prepared;
-			const logContext = { resource_id: resourceId, table: 'resources' };
+			const logContext = { processing_id: processingId, target_kind: target.kind };
 
 			console.info({
 				tag: 'WORKFLOW',
@@ -359,14 +363,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				acquiredExtraction: acquiredContent?.provider === null ? acquiredContent.extraction : undefined,
 				isMonitoredOnly: initialShell.isMonitoredOnly,
 				pdfTextArtifact,
-				resourceId,
+				resourceId: processingId,
 			});
 			assertResourceContentProcessable({
 				acquiredContent,
 				hasPersistedContent: hasContent,
 				isMonitoredOnly: initialShell.isMonitoredOnly,
 				pdfTextArtifact,
-				resourceId,
+				resourceId: processingId,
 			});
 
 			// Read only the original content when the shell is otherwise sufficient. The stream keeps large content outside Workflow's persisted-value
@@ -378,9 +382,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							await step.do(
 								'load-original-resource-content-kind-platform-v1',
 								{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-								() => loadOriginalResourceContentArtifact(this.env, resourceId),
+								() => loadOriginalResourceContentArtifact(this.env, target.kind === 'stored' ? target.resourceId : processingId),
 							),
-							resourceId,
+							target.kind === 'stored' ? target.resourceId : processingId,
 						);
 			const resourceWithContent = persistedContent === null ? resource : { ...resource, content: persistedContent };
 			const extractedPdfText = pdfTextArtifact?.text?.trim();
@@ -402,8 +406,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				() => classifyResource(handled.resource, this.env, handled.classificationExclusions),
 			);
 			const persistenceInput = {
-				resourceId,
-				expectedSourceRevision: initialResource.source_revision,
 				handled,
 				classification,
 				previewImageUrl,
@@ -414,18 +416,29 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			} catch (error) {
 				throw new ResourceProcessingOutcomeError(
 					initialShell.isMonitoredOnly ? 'drop' : 'failed',
-					`Resource ${resourceId} has an invalid canonical image source: ${error instanceof Error ? error.message : String(error)}`,
+					`Resource processing ${processingId} has an invalid canonical image source: ${error instanceof Error ? error.message : String(error)}`,
 					'ResourceImageSourceError',
 				);
 			}
-			const hostedImages = await stageResourceImages(this.env, step, resourceId, imageSources, initialShell.isMonitoredOnly);
+			const hostedImages = await stageResourceImages(this.env, step, processingId, imageSources, initialShell.isMonitoredOnly);
 			const persistence = await step.do(
-				'update-db-kind-platform-v3',
+				target.kind === 'stored' ? 'persist-stored-resource-graph-v4' : 'persist-final-resource-draft-v1',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() => persistProcessedResource(this.env, persistenceInput, hostedImages),
+				() =>
+					target.kind === 'stored'
+						? persistProcessedResource(
+								this.env,
+								{
+									...persistenceInput,
+									resourceId: target.resourceId,
+									expectedSourceRevision: initialResource.source_revision,
+								},
+								hostedImages,
+							)
+						: persistProcessedDraft(this.env, { ...persistenceInput, admission: target.admission }, hostedImages),
 			);
 			if (!persistence.persisted) {
-				return { success: true, resource_id: persistence.resourceId, operation, superseded: true };
+				return { status: 'superseded', resourceId: persistence.resourceId } as const;
 			}
 			const persistedResourceId = persistence.resourceId;
 			if (persistence.resourceNeedsProcessing) {
@@ -443,14 +456,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							error: error instanceof Error ? error.message : String(error),
 						}),
 					);
-				return {
-					success: true,
-					resource_id: persistedResourceId,
-					operation,
-					attachedCanonicalResourceId: persistedResourceId,
-				};
+				return { status: 'persisted', resourceId: persistedResourceId, attachedCanonicalResourceId: persistedResourceId } as const;
 			}
-			if (persistence.subjectNeedsProcessing && persistence.subjectResourceId) {
+			if (target.kind === 'stored' && persistence.subjectNeedsProcessing && persistence.subjectResourceId) {
 				await step
 					.do(
 						'enqueue-resolved-subject-v1',
@@ -485,22 +493,30 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				});
 			}
 
-			console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, table: 'resources' });
-			return {
-				success: true,
-				resource_id: persistedResourceId,
-				...(operation !== 'ingest' ? { operation, changed: true } : {}),
-			};
+			console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
+			return { status: 'persisted', resourceId: persistedResourceId, ...(operation === 'resync' ? { changed: true } : {}) } as const;
 		} catch (error) {
+			if (target.kind === 'draft') {
+				if (error instanceof ResourceProcessingOutcomeError) {
+					console.info({
+						tag: 'WORKFLOW',
+						msg: 'Rejected resource draft',
+						processing_id: processingId,
+						reason: error.message,
+					});
+					return { status: 'rejected', reason: error.message } as const;
+				}
+				throw error;
+			}
 			if (operation === 'resync') throw error;
 			if (
 				await settleFailedResourceProcessing(this.env, step, {
 					error,
 					persistedSourceRevision,
-					resourceId,
+					resourceId: target.resourceId,
 				})
 			) {
-				return { success: true, resource_id: resourceId, operation, dropped: true };
+				return { status: 'rejected', resourceId: target.resourceId } as const;
 			}
 			throw error;
 		}

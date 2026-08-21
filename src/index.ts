@@ -2,7 +2,13 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { type ResolveMonitoredSourceInput, resolveMonitoredSource } from '@ingest/monitored-source';
 import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';
-import { enqueueProcessing, enqueueResourceResync, reconcilePendingResourceProcessing } from '@ingest/resource-admission';
+import {
+	type AppResourceDraftInput,
+	enqueueAppResourceDraft,
+	enqueueProcessing,
+	enqueueResourceResync,
+	reconcilePendingResourceProcessing,
+} from '@ingest/resource-admission';
 import { ResourceTranslationV2Workflow } from '@ingest/resource-translation-workflow';
 import { ResourceProcessingV2Workflow } from '@ingest/workflow';
 import { SearchIndexGeneration5RebuildWorkflow } from './ai-search';
@@ -46,6 +52,11 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	async enqueueResourceProcessing(resourceId: string) {
 		if (await isResourceEnrichmentComplete(this.env, resourceId)) return undefined;
 		return enqueueProcessing(this.env, resourceId);
+	}
+
+	/** Process an external URL before its canonical Resource and user relation become visible. */
+	enqueueResourceDraft(input: AppResourceDraftInput) {
+		return enqueueAppResourceDraft(this.env, input);
 	}
 
 	/** Reacquire a URL-backed resource through the enrichment workflow. */

@@ -341,7 +341,7 @@ export async function acquireOpenAlexPdf(input: {
 		await response.body?.cancel();
 		throw new Error(`OpenAlex content PDF request failed with HTTP ${status}`);
 	}
-	return acquireFetchedPdfResponse(input.env, input.resourceId, response, contentUrl.toString());
+	return acquireFetchedPdfResponse(response, contentUrl.toString());
 }
 
 export async function acquireOpenAlexGrobidText(input: {

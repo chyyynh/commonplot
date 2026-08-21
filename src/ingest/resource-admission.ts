@@ -1,31 +1,125 @@
-import { isResourceSourceSnapshotHash } from '@core-shared/resource-types';
-import { normalizeUrl } from '@core-shared/url';
-import { withCoreDb, withCoreTx } from '@db/client';
+import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
+import { sha256Hex } from '@core-shared/hash';
 import {
-	claimExistingDiscoveredResources,
-	claimStalePendingResourceAdmissions,
-	type SourceResourceDraft,
-	upsertPendingSourceResource,
-} from '@ingest/domain/resource-admission-store';
+	type ContentResourceIdentity,
+	canonicalizeOptionalResourceLang,
+	DEFAULT_RESOURCE_LANG,
+	isContentResourceIdentity,
+	isResourceSourceSnapshotHash,
+	parseResourceIdentity,
+	resourceIdentityForDetectedPlatform,
+} from '@core-shared/resource-types';
+import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
+import { withCoreDb } from '@db/client';
+import { claimExistingDiscoveredResources, claimStalePendingResourceAdmissions } from '@ingest/domain/resource-admission-store';
+import { resourceSourceSnapshotHash } from '@ingest/domain/resource-revision';
+import { cleanString, dateValue, requiredString, stringArrayValue } from '@ingest/domain/resource-values';
+import { z } from 'zod';
 import { enqueueOrRestartWorkflow } from '../workflow-control';
 
 export type ResourceProcessingOperation = 'ingest' | 'resync';
-export type ResourceProcessingWorkflowPayload = {
-	resourceId: string;
-	operation: ResourceProcessingOperation;
-	sourceRevision?: string;
-};
+
+const ContentResourceIdentitySchema = z.union([
+	z.object({ kind: z.literal('blog'), resourcePlatform: z.union([z.null(), z.literal('lesswrong')]) }).strict(),
+	z.object({ kind: z.literal('forum'), resourcePlatform: z.literal('hackernews') }).strict(),
+	z.object({ kind: z.literal('post'), resourcePlatform: z.literal('twitter') }).strict(),
+	z.object({ kind: z.literal('video'), resourcePlatform: z.literal('youtube') }).strict(),
+	z.object({ kind: z.literal('paper'), resourcePlatform: z.null() }).strict(),
+]);
+
+const DraftAdmissionSchema = z.discriminatedUnion('kind', [
+	z
+		.object({ kind: z.literal('profileSave'), userId: z.string().trim().min(1).max(255), visibility: z.enum(['public', 'private']) })
+		.strict(),
+	z
+		.object({
+			kind: z.literal('container'),
+			userId: z.string().trim().min(1).max(255),
+			container: z.object({ kind: z.enum(['collection', 'workspace']), id: z.string().uuid() }).strict(),
+		})
+		.strict(),
+	z.object({ kind: z.literal('source'), sourceId: z.string().uuid() }).strict(),
+	z
+		.object({
+			kind: z.literal('subject'),
+			parentResourceId: z.string().uuid(),
+			expectedParentRevision: z
+				.string()
+				.length(64)
+				.regex(/^[0-9a-f]+$/)
+				.nullable(),
+		})
+		.strict(),
+]);
+
+const DraftSeedSchema = z
+	.object({
+		identity: ContentResourceIdentitySchema,
+		url: z.url().max(2_048),
+		title: z.string().trim().min(1).max(5_000),
+		summary: z.string().max(20_000).nullable(),
+		originalLang: z.string().trim().min(1).max(35),
+		publishedDate: z.iso.datetime().nullable(),
+		keywords: z.array(z.string().max(500)).max(100),
+		sourceRevision: z
+			.string()
+			.length(64)
+			.regex(/^[0-9a-f]+$/)
+			.nullable(),
+	})
+	.strict();
+
+const ResourceProcessingWorkflowPayloadSchema = z
+	.object({
+		target: z.discriminatedUnion('kind', [
+			z
+				.object({
+					kind: z.literal('stored'),
+					resourceId: z.string().uuid(),
+					operation: z.enum(['ingest', 'resync']),
+					sourceRevision: z
+						.string()
+						.length(64)
+						.regex(/^[0-9a-f]+$/)
+						.optional(),
+				})
+				.strict(),
+			z.object({ kind: z.literal('draft'), seed: DraftSeedSchema, admission: DraftAdmissionSchema }).strict(),
+		]),
+	})
+	.strict();
+
+export type ResourceProcessingWorkflowPayload = z.infer<typeof ResourceProcessingWorkflowPayloadSchema>;
+export type ResourceDraftTarget = Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'draft' }>;
+
+export function parseResourceProcessingWorkflowPayload(value: unknown): ResourceProcessingWorkflowPayload {
+	return ResourceProcessingWorkflowPayloadSchema.parse(value);
+}
+
+export type SourceResourceDraft = {
+	sourceId: string;
+	url: string;
+	title: string;
+	publishedDate: Date | null;
+	summary: string | null;
+	originalLang?: string;
+	keywords?: string[];
+	/** Provider event revision that should refresh an already-enriched Resource once. */
+	refreshRevision?: string;
+} & ContentResourceIdentity;
+
+export type AppResourceDraftInput = Readonly<{
+	url: string;
+	admission: Extract<ResourceDraftAdmission, { kind: 'profileSave' | 'container' }>;
+}>;
 
 export type SourceResourceAdmissionOutcome = 'created' | 'existing' | 'refreshed' | 'retried';
 
 type ExistingDiscoveredResource = Awaited<ReturnType<typeof claimExistingDiscoveredResources>>[number];
 
 const PENDING_RESOURCE_GRACE_MS = 10 * 60 * 1000;
-// Completed instance IDs restart on their pinned Workflow version. Bump this
-// namespace when a new graph must not reuse an older instance.
-const RESOURCE_PROCESSING_WORKFLOW_REVISION = 'resource-v6';
-// Stale pending resources are readmitted through the same canonical resolver
-// as fresh ingest; pace reconciliation well below the Workflow creation limit.
+const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v7';
+const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v1';
 const PENDING_RESOURCE_RECONCILE_LIMIT = 50;
 const PENDING_RESOURCE_RECONCILE_CONCURRENCY = 10;
 const DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY = 5;
@@ -33,10 +127,74 @@ const DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY = 5;
 export async function enqueueProcessing(env: CoreEnv, resourceId: string, sourceRevision?: string): Promise<string> {
 	if (sourceRevision && !isResourceSourceSnapshotHash(sourceRevision)) throw new Error('Invalid resource source revision');
 	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, storedWorkflowId(resourceId, sourceRevision), {
-		resourceId,
-		operation: 'ingest',
-		...(sourceRevision ? { sourceRevision } : {}),
+		target: {
+			kind: 'stored',
+			resourceId,
+			operation: 'ingest',
+			...(sourceRevision ? { sourceRevision } : {}),
+		},
 	});
+}
+
+export async function enqueueAppResourceDraft(env: CoreEnv, input: AppResourceDraftInput): Promise<string> {
+	const parsed = parseExternalHttpUrl(input.url);
+	if (!parsed) throw new Error('Only http(s) URLs without credentials are allowed');
+	const url = normalizeUrl(parsed.toString());
+	const detected = detectResourceUrl(url);
+	const identity = detected
+		? resourceIdentityForDetectedPlatform(detected.resourcePlatform)
+		: ({ kind: 'blog', resourcePlatform: null } as const);
+	const target: ResourceDraftTarget = {
+		kind: 'draft',
+		admission: input.admission,
+		seed: {
+			identity,
+			url,
+			title: new URL(url).hostname.replace(/^www\./, ''),
+			summary: null,
+			originalLang: DEFAULT_RESOURCE_LANG,
+			publishedDate: null,
+			keywords: [],
+			sourceRevision: null,
+		},
+	};
+	const payload = parseResourceProcessingWorkflowPayload({ target });
+	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.create({ id: `app-draft-v1-${crypto.randomUUID()}`, params: payload });
+	return instance.id;
+}
+
+async function sourceDraftTarget(base: SourceResourceDraft): Promise<ResourceDraftTarget> {
+	const explicitIdentity = parseResourceIdentity(base.kind, base.resourcePlatform);
+	if (!explicitIdentity || !isContentResourceIdentity(explicitIdentity)) {
+		throw new Error(`Invalid source resource identity: ${String(base.kind)} / ${String(base.resourcePlatform)}`);
+	}
+	const originalLang = canonicalizeOptionalResourceLang(base.originalLang) ?? DEFAULT_RESOURCE_LANG;
+	const publishedDate = base.publishedDate === null ? null : dateValue(base.publishedDate, 'published_date').toISOString();
+	const parsedUrl = parseExternalHttpUrl(requiredString(base.url, 'url'));
+	if (!parsedUrl) throw new Error('Source resource URL must be external http(s)');
+	const url = normalizeUrl(parsedUrl.toString());
+	const title = requiredString(base.title, 'title');
+	const summary = cleanString(base.summary);
+	const keywords = stringArrayValue(base.keywords ?? [], 'keywords');
+	const sourceRevision = await resourceSourceSnapshotHash({
+		content: null,
+		fileType: null,
+		kind: explicitIdentity.kind,
+		originalLang,
+		publishedDate,
+		resourcePlatform: explicitIdentity.resourcePlatform,
+		summary,
+		title,
+		translationSource: 'original',
+		url,
+	});
+	return parseResourceProcessingWorkflowPayload({
+		target: {
+			kind: 'draft',
+			admission: { kind: 'source', sourceId: requiredString(base.sourceId, 'source_id') },
+			seed: { identity: explicitIdentity, url, title, summary, originalLang, publishedDate, keywords, sourceRevision },
+		},
+	}).target as ResourceDraftTarget;
 }
 
 async function admitDiscoveredSourceResource(
@@ -45,8 +203,9 @@ async function admitDiscoveredSourceResource(
 	resource: ExistingDiscoveredResource | undefined,
 ): Promise<SourceResourceAdmissionOutcome> {
 	if (!resource) {
-		const pending = await withCoreTx(env, (db) => upsertPendingSourceResource(db, draft));
-		if (pending.needsProcessing) await enqueueProcessing(env, pending.resourceId, pending.sourceRevision ?? undefined);
+		const target = await sourceDraftTarget(draft);
+		const identity = await sha256Hex(JSON.stringify(target));
+		await enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `${SOURCE_DRAFT_WORKFLOW_REVISION}-${identity}`, { target });
 		return 'created';
 	}
 	if (resource.enrichmentStatus !== 'enriched') {
@@ -81,7 +240,9 @@ async function enqueueResourceRefresh(env: CoreEnv, resourceId: string, refreshR
 	const revision = refreshRevision.trim();
 	if (!/^[a-zA-Z0-9_-]{1,80}$/.test(revision)) throw new Error('Invalid resource refresh revision');
 	const id = ['resource-refresh-v1', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
-	const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { resourceId, operation: 'resync' } }]);
+	const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
+		{ id, params: { target: { kind: 'stored', resourceId, operation: 'resync' } } },
+	]);
 	if (created) return true;
 	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.get(id);
 	const { status } = await instance.status();
@@ -93,7 +254,7 @@ async function enqueueResourceRefresh(env: CoreEnv, resourceId: string, refreshR
 	return false;
 }
 
-/** Re-admits app-owned pending rows whose initial DB -> Workflow handoff was interrupted. */
+/** Re-admits historical stored pending rows and app-owned blob rows. */
 export async function reconcilePendingResourceProcessing(env: CoreEnv): Promise<void> {
 	const admissions = await claimStalePendingResourceAdmissions(
 		env,
@@ -133,12 +294,9 @@ export async function reconcilePendingResourceProcessing(env: CoreEnv): Promise<
 }
 
 export async function enqueueResourceResync(env: CoreEnv, resourceId: string): Promise<string> {
-	// A resync is a distinct run, not a retry of the original ingest. A unique
-	// instance ID also keeps clients from observing a cached terminal status
-	// from an earlier resync of the same resource.
 	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
 		id: `resource-resync-v2-${workflowIdPart(resourceId)}-${crypto.randomUUID()}`,
-		params: { resourceId, operation: 'resync' },
+		params: { target: { kind: 'stored', resourceId, operation: 'resync' } },
 	});
 	return instance.id;
 }
@@ -149,6 +307,6 @@ function workflowIdPart(value: string): string {
 
 function storedWorkflowId(resourceId: string, sourceRevision?: string): string {
 	return sourceRevision
-		? [RESOURCE_PROCESSING_WORKFLOW_REVISION, workflowIdPart(resourceId), sourceRevision.slice(0, 32)].join('-')
-		: [RESOURCE_PROCESSING_WORKFLOW_REVISION, workflowIdPart(resourceId)].join('-');
+		? [STORED_RESOURCE_WORKFLOW_REVISION, workflowIdPart(resourceId), sourceRevision.slice(0, 32)].join('-')
+		: [STORED_RESOURCE_WORKFLOW_REVISION, workflowIdPart(resourceId)].join('-');
 }

@@ -79,26 +79,15 @@ const SavedUrlAcquisitionResultSchema: z.ZodType<SavedUrlAcquisitionResult> = z.
 	z.object({ status: z.literal('rejected'), message: z.string().trim().min(1).max(500) }),
 ]);
 
-/**
- * Acquisition gets one attempt, not three.
- *
- * A hosted-runtime check recorded three attempts for a deterministic rejection
- * and stripped the NonRetryableError subclass at the durable step boundary.
- * Providers therefore use that class only as an in-process marker: this step
- * callback catches it and returns a serializable rejected result before the
- * Workflow runtime sees it. Error identity never crosses the step boundary.
- *
- * Setting it to 0 also removes a duplicated layer: a failed acquisition is
- * already retried by the monitors, on a 30m/1h/2h/4h backoff that gives up after
- * MAX_ENRICHMENT_ATTEMPTS. Ten-second retries only ever helped a blip shorter
- * than the outer schedule, and cost every doomed URL three fetches instead of
- * one.
- */
-export const ACQUISITION_STEP = { retries: { limit: 0, delay: '10 seconds' }, timeout: '120 seconds' } as const;
+// Provider rejections are converted to a serializable result inside the step,
+// so only transient transport/provider failures reach Workflow retries.
+export const ACQUISITION_STEP = {
+	retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' },
+	timeout: '120 seconds',
+} as const;
 
 export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?: AcquiredContent): ResourceForProcessing {
 	if (!acquired) return resource;
-	const ownedStorageKey = acquired.provider === null ? acquired.ownedStorageKey : undefined;
 	const canonicalUrl = acquired.canonicalUrl?.trim();
 	let publishedDate = resource.published_date;
 	if (publishedDate === null && acquired.publishedDate?.trim()) {
@@ -116,7 +105,7 @@ export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?
 		kind_metadata: acquired.kindMetadata,
 		source_revision: acquired.sourceSnapshotHash ?? resource.source_revision ?? null,
 		file_type: acquired.fileType,
-		storage_key: ownedStorageKey ?? resource.storage_key,
+		storage_key: resource.storage_key,
 		url: canonicalUrl ?? resource.url,
 		normalized_url: canonicalUrl ?? resource.normalized_url,
 		published_date: publishedDate,

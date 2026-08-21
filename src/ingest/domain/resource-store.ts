@@ -18,10 +18,12 @@ import {
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
 import type { ResourceForProcessing } from '@core-shared/types';
+import { detectResourceUrl } from '@core-shared/url';
 import { type CoreDb, withCoreDb } from '@db/client';
 import { resourceDisplaySourceSql, resourceTranslationIdentityPredicate } from '@db/resource-identity-sql';
-import { resourceIdentifiers, resources, resourceTranslations, youtubeTranscripts } from '@db/schema';
+import { resourceIdentifiers, resources, resourceTranslations, sources, youtubeTranscripts } from '@db/schema';
 import { and, eq, sql } from 'drizzle-orm';
+import type { ResourceDraftTarget } from '../resource-admission';
 import { cleanString, dateValue, requiredString } from './resource-values';
 
 export type ResourceProcessingShell = {
@@ -114,6 +116,54 @@ export async function loadResourceShellForProcessing(env: CoreEnv, resourceId: s
 		hasYoutubeTranscript: row.has_youtube_transcript === true,
 		isMonitoredOnly: row.is_monitored_only,
 		sourceAvatarUrl: cleanString(row.source_avatar_url),
+	};
+}
+
+export async function loadDraftShellForProcessing(
+	env: CoreEnv,
+	processingId: string,
+	target: ResourceDraftTarget,
+): Promise<ResourceProcessingShell> {
+	const sourceId = target.admission.kind === 'source' ? target.admission.sourceId : null;
+	const sourceContext = sourceId
+		? await withCoreDb(env, async (db) => {
+				const row = (
+					await db.select({ name: sources.name, avatarUrl: sources.avatarUrl }).from(sources).where(eq(sources.id, sourceId)).limit(1)
+				)[0];
+				if (!row) throw new Error(`Source ${sourceId} no longer exists`);
+				return row;
+			})
+		: null;
+	const detected = detectResourceUrl(target.seed.url);
+	return {
+		resource: {
+			processing_id: processingId,
+			source_id: sourceId,
+			scope: 'corpus',
+			...toResourceIdentityColumns(target.seed.identity),
+			original_lang: canonicalizeResourceLang(target.seed.originalLang),
+			title: target.seed.title,
+			summary: target.seed.summary,
+			content: null,
+			url: target.seed.url,
+			source: sourceContext?.name ?? new URL(target.seed.url).hostname.replace(/^www\./, ''),
+			published_date: target.seed.publishedDate,
+			tags: [],
+			keywords: target.seed.keywords,
+			creators: [],
+			kind_metadata: null,
+			source_revision: target.seed.sourceRevision,
+			resource_identifiers: detected
+				? normalizeResourceIdentifiers([{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }])
+				: [],
+			storage_key: null,
+			file_type: null,
+			normalized_url: target.seed.url,
+		},
+		hasPersistedContent: false,
+		hasYoutubeTranscript: false,
+		isMonitoredOnly: target.admission.kind === 'source',
+		sourceAvatarUrl: cleanString(sourceContext?.avatarUrl),
 	};
 }
 

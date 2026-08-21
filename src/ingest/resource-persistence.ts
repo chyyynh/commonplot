@@ -1,4 +1,9 @@
-import type { PersistResolvedResourceGraphInput, PersistResolvedResourceGraphResult } from '@app-domain/resource-graph-contracts';
+import type {
+	PersistResolvedResourceDraftInput,
+	PersistResolvedResourceGraphInput,
+	PersistResolvedResourceGraphResult,
+	ResourceDraftAdmission,
+} from '@app-domain/resource-graph-contracts';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
 import { parseResourceIdentity } from '@core-shared/resource-types';
 import { withCoreDb } from '@db/client';
@@ -12,12 +17,19 @@ import type { HandledResourceResult } from './kind-handler';
 import { privatePaperAttachment } from './platforms/paper';
 import { resolvedSubjectInput } from './resource-resolver';
 
-type PersistProcessedResourceInput = {
-	resourceId: string;
-	expectedSourceRevision: string | null;
+type PersistProcessedInput = {
 	handled: HandledResourceResult;
 	classification: ResourceClassificationResult;
 	previewImageUrl: string | null;
+};
+
+type PersistProcessedResourceInput = PersistProcessedInput & {
+	resourceId: string;
+	expectedSourceRevision: string | null;
+};
+
+type PersistProcessedDraftInput = PersistProcessedInput & {
+	admission: ResourceDraftAdmission;
 };
 
 export type ResourceProcessingFailureOutcome = 'retry' | 'drop' | 'failed';
@@ -84,27 +96,50 @@ export async function persistProcessedResource(
 	input: PersistProcessedResourceInput,
 	hostedImages: readonly HostedResourceImage[],
 ): Promise<PersistResolvedResourceGraphResult> {
+	const mutation = await resolvedResourceMutation(input, hostedImages);
+	const storedMutation: PersistResolvedResourceGraphInput = {
+		...mutation,
+		resourceId: input.resourceId,
+		expectedSourceRevision: input.expectedSourceRevision,
+		privatePaperAttachment: privatePaperAttachment(input.handled.resource),
+		subject: resolvedSubjectInput(input.handled),
+	};
+	return env.DOMAIN.persistResolvedResourceGraph(storedMutation);
+}
+
+export async function persistProcessedDraft(
+	env: CoreEnv,
+	input: PersistProcessedDraftInput,
+	hostedImages: readonly HostedResourceImage[],
+): Promise<PersistResolvedResourceGraphResult> {
+	const mutation: PersistResolvedResourceDraftInput = {
+		...(await resolvedResourceMutation(input, hostedImages)),
+		admission: input.admission,
+	};
+	return env.DOMAIN.persistResolvedResourceDraft(mutation);
+}
+
+async function resolvedResourceMutation(
+	input: PersistProcessedInput,
+	hostedImages: readonly HostedResourceImage[],
+): Promise<Omit<PersistResolvedResourceDraftInput, 'admission'>> {
 	const resource = input.handled.resource;
 	const identity = parseResourceIdentity(input.handled.kind, input.handled.resourcePlatform);
-	if (!identity) throw new Error(`Resource ${input.resourceId} resolved to an invalid identity`);
+	if (!identity) throw new Error(`Resource processing ${resource.processing_id} resolved to an invalid identity`);
 	const sourceRevision = await resourceSourceRevision(resource);
 	const content = resource.content;
-	if (!content?.trim()) throw new Error(`Refusing to persist enriched resource ${input.resourceId} without content`);
+	if (!content?.trim()) throw new Error(`Refusing to persist resource processing ${resource.processing_id} without content`);
 	const ogImageUrl = input.previewImageUrl?.trim() || null;
 	const paperAttachment = input.handled.kind === 'paper' ? privatePaperAttachment(resource) : null;
 	const media = paperAttachment
 		? { creators: [], kindMetadata: null, ogImageUrl: null }
 		: hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kind_metadata, ogImageUrl }, hostedImages);
-	const mutation: PersistResolvedResourceGraphInput = {
-		resourceId: input.resourceId,
-		expectedSourceRevision: input.expectedSourceRevision,
+	return {
 		identity,
 		identifiers: resource.resource_identifiers,
 		creators: media.creators,
 		kindMetadata: media.kindMetadata,
 		sourceRevision,
-		subject: resolvedSubjectInput(input.handled),
-		privatePaperAttachment: paperAttachment,
 		youtube:
 			input.handled.kind === 'video' && (input.handled.youtubeTranscript || input.handled.youtubeHighlights)
 				? {
@@ -134,10 +169,9 @@ export async function persistProcessedResource(
 		publishedDate: resource.published_date,
 		ogImageUrl: media.ogImageUrl,
 	};
-	return env.DOMAIN.persistResolvedResourceGraph(mutation);
 }
 
-export function processedResourceImageSources(input: Pick<PersistProcessedResourceInput, 'handled' | 'previewImageUrl'>): string[] {
+export function processedResourceImageSources(input: Pick<PersistProcessedInput, 'handled' | 'previewImageUrl'>): string[] {
 	const resource = input.handled.resource;
 	if (input.handled.kind === 'paper' && privatePaperAttachment(resource)) return [];
 	return resourceImageSourceUrls({

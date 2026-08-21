@@ -1,8 +1,7 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { canonicalResourcePlatformUrl, normalizeUrl } from '@core-shared/url';
-import type { SourceResourceDraft } from '@ingest/domain/resource-admission-store';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
-import { admitDiscoveredSourceResources } from '@ingest/resource-admission';
+import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/resource-admission';
 import { buildTweetTitle } from './twitter-acquisition';
 import {
 	buildTwitterAdvancedSearchQuery,
