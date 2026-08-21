@@ -5,16 +5,18 @@ import type { AcquiredMaterial } from '@core-shared/types';
 import { extractTweetId } from '@core-shared/url';
 import {
 	buildTwitterAuthorThread,
+	buildTwitterThreadSearchQuery,
 	combineTwitterThreadMarkdown,
-	decideTwitterThreadContextNextPage,
+	parseTwitterAdvancedSearchPage,
 	parseTwitterArticleResponse,
-	parseTwitterThreadContextPage,
 	parseTwitterTweetsResponse,
 	renderTwitterArticleMarkdown,
 	type Tweet,
 	twitterAuthorThreadCandidates,
 } from './twitter-data';
 import { fetchTwitterProvider } from './twitter-provider';
+
+const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
 
 interface TwitterMedia {
 	url: string;
@@ -396,49 +398,49 @@ export async function scrapeTweet(tweetId: string, apiKey: string): Promise<Acqu
 	const tweets = parseTwitterTweetsResponse(JSON.parse(await readTextWithLimit(response)));
 	const tweet = tweets[0];
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
-	const context = await fetchTwitterThreadContext(tweet, tweetId, apiKey);
+	const context = await fetchTwitterAuthorReplies(tweet, tweetId, apiKey);
 	const thread = buildTwitterAuthorThread(tweet, context.candidates);
 	const resolved = await resolveTweetContent(tweet, apiKey);
 	console.info({
 		tag: 'TWITTER',
-		event: 'thread_context_resolved',
+		event: 'thread_search_resolved',
 		tweet_id: tweetId,
-		context_pages: context.pages,
-		context_posts: context.providerPosts,
+		search_pages: context.pages,
+		search_posts: context.providerPosts,
 		thread_candidates: context.candidates.length,
 		thread_posts: thread.length,
-		pagination_terminal: context.terminal,
 		content_kind: resolved.kind,
 	});
 	return mergeResolvedTwitterThread(resolved, thread, tweetId);
 }
 
-type TwitterThreadContextResult = {
+type TwitterThreadSearchResult = {
 	candidates: Tweet[];
 	pages: number;
 	providerPosts: number;
-	terminal: 'complete' | 'empty-page';
 };
 
-async function fetchTwitterThreadContext(root: Tweet, tweetId: string, apiKey: string): Promise<TwitterThreadContextResult> {
+async function fetchTwitterAuthorReplies(root: Tweet, tweetId: string, apiKey: string): Promise<TwitterThreadSearchResult> {
 	const candidates = new Map<string, Tweet>();
 	const candidateUrls = new Set<string>();
 	const seenCursors = new Set<string>();
+	const query = buildTwitterThreadSearchQuery(root, tweetId);
 	let cursor = '';
 	let pages = 0;
 	let providerPosts = 0;
 	while (true) {
-		const params = new URLSearchParams({ tweetId });
+		const params = new URLSearchParams({ query, queryType: 'Latest' });
 		if (cursor) params.set('cursor', cursor);
-		const response = await fetchTwitterProvider(`https://api.twitterapi.io/twitter/tweet/thread_context?${params}`, apiKey, {
-			operation: 'thread-context',
+		const response = await fetchTwitterProvider(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, apiKey, {
+			operation: 'advanced-search',
 			resourceId: tweetId,
+			searchKind: 'thread-author-replies',
 		});
 		if (!response.ok) {
 			await response.body?.cancel();
 			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 		}
-		const data = parseTwitterThreadContextPage(JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)), tweetId);
+		const data = parseTwitterAdvancedSearchPage(JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)));
 		pages++;
 		providerPosts += data.tweets.length;
 		for (const candidate of twitterAuthorThreadCandidates(root, data.tweets)) {
@@ -449,11 +451,12 @@ async function fetchTwitterThreadContext(root: Tweet, tweetId: string, apiKey: s
 			candidateUrls.add(candidate.url);
 		}
 
-		const decision = decideTwitterThreadContextNextPage(data, seenCursors, tweetId);
-		if (decision.kind !== 'next') {
-			return { candidates: [...candidates.values()], pages, providerPosts, terminal: decision.kind };
-		}
-		cursor = decision.cursor;
+		if (!data.hasNextPage) return { candidates: [...candidates.values()], pages, providerPosts };
+		if (!data.tweets.length) throw new Error(`Twitter thread search ${tweetId} returned an empty page before completion`);
+		const nextCursor = data.nextCursor?.trim();
+		if (!nextCursor) throw new Error(`Twitter thread search ${tweetId} omitted the next cursor`);
+		if (seenCursors.has(nextCursor)) throw new Error(`Twitter thread search ${tweetId} returned a repeated cursor`);
+		cursor = nextCursor;
 		seenCursors.add(cursor);
 		await scheduler.wait(250);
 	}

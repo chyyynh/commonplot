@@ -257,6 +257,14 @@ export function buildTwitterMonitorSearchQueries(userName: string, window: Twitt
 	];
 }
 
+export function buildTwitterThreadSearchQuery(root: Tweet, tweetId: string): string {
+	const conversationId = normalizedTweetId(root.conversationId) ?? normalizedTweetId(root.id) ?? normalizedTweetId(tweetId);
+	if (!conversationId || !/^\d+$/.test(conversationId)) throw new Error(`Twitter thread ${tweetId} has an invalid conversation ID`);
+	const author = normalizedTwitterUserName(root.author?.userName);
+	if (!author || !/^[a-z0-9_]{1,15}$/.test(author)) throw new Error(`Twitter thread ${tweetId} has an invalid author handle`);
+	return `conversation_id:${conversationId} from:${author} filter:replies`;
+}
+
 function semanticTwitterError(status: string | undefined, message: string | undefined): string | null {
 	return status?.toLowerCase() === 'error' ? message?.trim() || 'unknown provider error' : null;
 }
