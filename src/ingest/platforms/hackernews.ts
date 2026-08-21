@@ -66,11 +66,6 @@ const HackerNewsItemSchema = z.object({
 
 export type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
 
-function hnItemTypeForMetadata(type: HackerNewsItem['type'] | undefined): ForumKindMetadata['itemType'] {
-	if (type === 'story' || type === 'ask' || type === 'show' || type === 'job') return type;
-	return undefined;
-}
-
 /** Every node in the tree, deleted ones included — the closest analogue to the count HN itself shows. */
 function countHnComments(children: HnComment[] | undefined): number {
 	let total = 0;
@@ -78,14 +73,6 @@ function countHnComments(children: HnComment[] | undefined): number {
 		total += 1 + countHnComments(child.children);
 	}
 	return total;
-}
-
-function buildHnKindMetadata(item: HackerNewsItem): ForumKindMetadata {
-	return {
-		points: item.points,
-		commentCount: countHnComments(item.children),
-		itemType: hnItemTypeForMetadata(item.type),
-	};
 }
 
 async function fetchHnItem(itemId: string): Promise<HackerNewsItem> {
@@ -113,10 +100,9 @@ function htmlToText(str: string): string {
 		.trim();
 }
 
-function buildHnPostMarkdown(item: HackerNewsItem, title: string): string {
+function buildHnPostMarkdown(item: HackerNewsItem, title: string, commentCount: number): string {
 	const parts: string[] = [`# ${title}\n`];
 	const metaParts: string[] = [];
-	const commentCount = countHnComments(item.children);
 	if (item.points !== undefined) metaParts.push(`${item.points} points`);
 	if (item.author) metaParts.push(`by ${item.author}`);
 	if (commentCount > 0) metaParts.push(`${commentCount} comments`);
@@ -139,8 +125,10 @@ export async function scrapeHackerNews(itemId: string): Promise<AcquiredMaterial
 	const title = hackerNewsItemTitle(item, itemId);
 	const hnText = item.text ? htmlToText(item.text) : '';
 	if (item.type === 'comment' && !hnText) throw new Error(`Hacker News comment ${itemId} has no text`);
-	const markdown = buildHnPostMarkdown(item, title);
+	const commentCount = countHnComments(item.children);
+	const markdown = buildHnPostMarkdown(item, title, commentCount);
 	const description = hnText.slice(0, 280) || null;
+	const itemType = item.type === 'story' || item.type === 'ask' || item.type === 'show' || item.type === 'job' ? item.type : undefined;
 	if (!markdown) throw new Error(`Hacker News item ${itemId} has no content`);
 	console.info({
 		tag: 'HN',
@@ -158,7 +146,7 @@ export async function scrapeHackerNews(itemId: string): Promise<AcquiredMaterial
 		publishedDate: item.created_at_i ? new Date(item.created_at_i * 1000).toISOString() : null,
 		summary: description,
 		creators: literalCreator('submitter', item.author),
-		kindMetadata: buildHnKindMetadata(item),
+		kindMetadata: { points: item.points, commentCount, itemType } satisfies ForumKindMetadata,
 		hackerNewsItem: item,
 	};
 }

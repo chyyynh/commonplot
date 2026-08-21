@@ -51,29 +51,21 @@ const RESOURCE_CLASSIFICATION_SYSTEM_PROMPT = `你是專業的新聞分類和實
 
 分類只能是：AI, Tech, Finance, Research, Business, Other。`;
 
-function requiredResourceSource(resource: ResourceForProcessing): string {
+function resourceClassificationPrompt(resource: ResourceForProcessing): string {
 	const source = resource.source?.trim();
 	if (!source) throw new Error(`Resource ${resource.id} has no source`);
-	return source;
-}
-
-function requiredResourceContent(resource: ResourceForProcessing): string {
 	const content = resource.content?.trim();
 	if (!content) throw new Error(`Resource ${resource.id} has no content`);
-	return content;
-}
-
-function resourceClassificationPrompt(resource: ResourceForProcessing): string {
 	const excludedEntities = entityExtractionExclusionNames(resource.resource_platform, resource.source, resource.creators);
 	const excludedLine = excludedEntities.length ? `\n實體排除名單: ${excludedEntities.join(', ')}` : '';
 	const summaryLine = resource.summary?.trim() ? `\n摘要: ${resource.summary.trim()}` : '';
 	return `文章資訊:
 標題: ${resource.title}
-來源: ${requiredResourceSource(resource)}
+來源: ${source}
 資源種類: ${resource.kind}
 資源平台: ${resource.resource_platform ?? 'none'}${excludedLine}${summaryLine}
 內容:
-${requiredResourceContent(resource).substring(0, CLASSIFICATION_CONTENT_MAX_LENGTH)}`;
+${content.substring(0, CLASSIFICATION_CONTENT_MAX_LENGTH)}`;
 }
 
 export async function classifyResource(

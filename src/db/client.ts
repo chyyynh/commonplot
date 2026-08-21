@@ -33,11 +33,16 @@ export async function queryRows<T>(db: CoreDb, statement: SQL): Promise<T[]> {
 }
 
 export async function withCoreDb<T>(env: CoreEnv, operation: CoreDbOperation<T>): Promise<T> {
-	return withCoreDbClient(env, operation);
+	// Keep the edge client scoped to this invocation. Hyperdrive owns the
+	// underlying origin pool and automatically cleans up the edge connection
+	// when the request, Workflow, Queue consumer, or Durable Object ends.
+	const client = new Client({ connectionString: env.HYPERDRIVE.connectionString });
+	await client.connect();
+	return operation(drizzle(client, { schema }), client);
 }
 
 export async function withCoreTx<T>(env: CoreEnv, operation: CoreDbOperation<T>): Promise<T> {
-	return withCoreDbClient(env, async (db, client) => {
+	return withCoreDb(env, async (db, client) => {
 		await client.query('BEGIN');
 		try {
 			const result = await operation(db, client);
@@ -52,13 +57,4 @@ export async function withCoreTx<T>(env: CoreEnv, operation: CoreDbOperation<T>)
 			throw error;
 		}
 	});
-}
-
-async function withCoreDbClient<T>(env: CoreEnv, operation: CoreDbOperation<T>): Promise<T> {
-	// Keep the edge client scoped to this invocation. Hyperdrive owns the
-	// underlying origin pool and automatically cleans up the edge connection
-	// when the request, Workflow, Queue consumer, or Durable Object ends.
-	const client = new Client({ connectionString: env.HYPERDRIVE.connectionString });
-	await client.connect();
-	return operation(drizzle(client, { schema }), client);
 }

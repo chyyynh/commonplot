@@ -7,12 +7,11 @@ export type PlatformResourceIdentifierScheme = (typeof PLATFORM_RESOURCE_IDENTIF
 
 export type ResourceIdentifierScheme = PaperIdentifierScheme | PlatformResourceIdentifierScheme;
 
-function isPlatformResourceIdentifierScheme(value: unknown): value is PlatformResourceIdentifierScheme {
-	return typeof value === 'string' && (PLATFORM_RESOURCE_IDENTIFIER_SCHEMES as readonly string[]).includes(value);
-}
-
 export function isResourceIdentifierScheme(value: unknown): value is ResourceIdentifierScheme {
-	return isPaperIdentifierScheme(value) || isPlatformResourceIdentifierScheme(value);
+	return (
+		isPaperIdentifierScheme(value) ||
+		(typeof value === 'string' && (PLATFORM_RESOURCE_IDENTIFIER_SCHEMES as readonly string[]).includes(value))
+	);
 }
 
 export type ResourceIdentifier = Readonly<{

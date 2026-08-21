@@ -57,15 +57,11 @@ function shouldStoreResourceEntity(entity: NormalizedResourceEntity, excludedCan
 	return !excludedCanonicalNames.has(canonical);
 }
 
-function normalizeEntityType(value: string): EntityType | null {
-	const type = value.trim().toLowerCase();
-	return ENTITY_TYPE_SET.has(type) ? (type as EntityType) : null;
-}
-
 function normalizeResourceEntity(entity: ResourceEntityInput): NormalizedResourceEntity | null {
 	const name = entity.name.trim();
 	const nameCn = entity.name_cn.trim();
-	const type = normalizeEntityType(entity.type);
+	const rawType = entity.type.trim().toLowerCase();
+	const type = ENTITY_TYPE_SET.has(rawType) ? (rawType as EntityType) : null;
 	if (!name || !type) return null;
 	return {
 		name,
@@ -74,12 +70,8 @@ function normalizeResourceEntity(entity: ResourceEntityInput): NormalizedResourc
 	};
 }
 
-function stringValue(value: unknown): string | null {
-	return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
 function sourceNameAliases(source?: string | null): string[] {
-	const value = stringValue(source);
+	const value = typeof source === 'string' && source.trim() ? source.trim() : null;
 	if (!value) return [];
 	const aliases = [value, ...sourceFeedBaseAliases(value)];
 

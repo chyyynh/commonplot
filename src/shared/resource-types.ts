@@ -87,10 +87,6 @@ export const RESOURCE_PLATFORM_DISPLAY_LABELS = {
 	youtube: 'YouTube',
 } as const satisfies Readonly<Record<Exclude<ResourcePlatform, null>, string>>;
 
-function isResourceKind(value: unknown): value is ResourceKind {
-	return typeof value === 'string' && (RESOURCE_KINDS as readonly string[]).includes(value);
-}
-
 export function isContentResourceKind(value: unknown): value is ContentResourceKind {
 	return typeof value === 'string' && (CONTENT_RESOURCE_KINDS as readonly string[]).includes(value);
 }
@@ -99,15 +95,13 @@ export function isResourcePlatform(value: unknown): value is ResourcePlatform {
 	return value === null || (typeof value === 'string' && (RESOURCE_PLATFORMS as readonly string[]).includes(value));
 }
 
-function isResourceIdentity(identity: { kind: unknown; resourcePlatform: unknown }): identity is ResourceIdentity {
-	if (!isResourceKind(identity.kind) || !isResourcePlatform(identity.resourcePlatform)) return false;
-	const validPlatforms: readonly ResourcePlatform[] = VALID_KIND_PLATFORMS[identity.kind];
-	return validPlatforms.includes(identity.resourcePlatform);
-}
-
 export function parseResourceIdentity(kind: unknown, resourcePlatform: unknown): ResourceIdentity | null {
-	const identity = { kind, resourcePlatform };
-	return isResourceIdentity(identity) ? identity : null;
+	if (typeof kind !== 'string' || !(RESOURCE_KINDS as readonly string[]).includes(kind) || !isResourcePlatform(resourcePlatform)) {
+		return null;
+	}
+	const resourceKind = kind as ResourceKind;
+	const validPlatforms: readonly ResourcePlatform[] = VALID_KIND_PLATFORMS[resourceKind];
+	return validPlatforms.includes(resourcePlatform) ? ({ kind: resourceKind, resourcePlatform } as ResourceIdentity) : null;
 }
 
 export function isContentResourceIdentity(identity: ResourceIdentity): identity is ContentResourceIdentity {

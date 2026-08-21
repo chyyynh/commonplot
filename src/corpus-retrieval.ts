@@ -65,20 +65,6 @@ interface ResourceReadRow {
 	viewer_can_read_content: boolean;
 }
 
-function rpcOk<T>(value: T): KnowledgeReaderRpcResult<T> {
-	return { status: 'ok', value };
-}
-
-async function continuationRpc<T>(run: () => Promise<T>): Promise<KnowledgeReaderRpcResult<T>> {
-	try {
-		return rpcOk(await run());
-	} catch (error) {
-		if (error instanceof InvalidKnowledgeContinuationError) return { status: 'invalid-continuation' };
-		if (error instanceof KnowledgeOutputBudgetError) return { status: 'output-budget-exceeded' };
-		throw error;
-	}
-}
-
 function decodeResourceContinuation(continuation: string | undefined, resourceId: string): ResourceContinuation | null {
 	if (!continuation) return null;
 	const value = decodeKnowledgeContinuation(continuation);
@@ -209,14 +195,6 @@ function titleForRow(title: string | null): string {
 	return title?.trim().slice(0, MAX_TITLE_CHARS) || 'Untitled resource';
 }
 
-function resourceEntry(row: ResourceEntryRow): KnowledgeSourceEntry {
-	return {
-		sourceId: row.id,
-		sourceType: 'resource',
-		title: titleForRow(row.title),
-	};
-}
-
 function limitedStrings(values: string[] | null): string[] | undefined {
 	if (!values?.length) return undefined;
 	return values.slice(0, MAX_METADATA_ARRAY_ITEMS).map((value) => value.slice(0, MAX_METADATA_ITEM_CHARS));
@@ -265,27 +243,29 @@ function fitResourceResult(input: {
 	});
 }
 
-async function resolveResourceEntries(db: CoreDb, input: KnowledgeResolveResourcesInput): Promise<KnowledgeSourceEntry[]> {
-	const ids = [...new Set(input.ids)];
-	if (ids.length > MAX_RESOURCE_RESOLVE_IDS || ids.some((id) => !isValidUuid(id))) return [];
-	if (input.access === 'principal' ? !input.userId : input.userId !== null) return [];
-	if (ids.length === 0) return [];
-	const rows = await queryRows<ResourceEntryRow>(
-		db,
-		sql`
-			SELECT r.id::text,
-			       COALESCE(NULLIF(BTRIM(localized.title), ''), NULLIF(BTRIM(r.url), ''), 'Untitled resource') AS title
-			FROM resources r
-			${localizedTranslationSql(input.preferredLocale)}
-			WHERE r.id = ANY(${uuidArraySql(ids)})
-			  AND ${resourceMetadataAccessSql(input)}
-		`,
-	);
-	return rows.map(resourceEntry);
-}
-
 export async function resolveCorpusResources(env: CoreEnv, input: KnowledgeResolveResourcesInput): Promise<KnowledgeSourceEntry[]> {
-	return withCoreDb(env, (db) => resolveResourceEntries(db, input));
+	return withCoreDb(env, async (db) => {
+		const ids = [...new Set(input.ids)];
+		if (ids.length > MAX_RESOURCE_RESOLVE_IDS || ids.some((id) => !isValidUuid(id))) return [];
+		if (input.access === 'principal' ? !input.userId : input.userId !== null) return [];
+		if (ids.length === 0) return [];
+		const rows = await queryRows<ResourceEntryRow>(
+			db,
+			sql`
+				SELECT r.id::text,
+				       COALESCE(NULLIF(BTRIM(localized.title), ''), NULLIF(BTRIM(r.url), ''), 'Untitled resource') AS title
+				FROM resources r
+				${localizedTranslationSql(input.preferredLocale)}
+				WHERE r.id = ANY(${uuidArraySql(ids)})
+				  AND ${resourceMetadataAccessSql(input)}
+			`,
+		);
+		return rows.map((row) => ({
+			sourceId: row.id,
+			sourceType: 'resource' as const,
+			title: titleForRow(row.title),
+		}));
+	});
 }
 
 function resourceReadMetadata(row: ResourceReadRow) {
@@ -413,5 +393,11 @@ export async function readCorpusResource(
 	env: CoreEnv,
 	input: KnowledgeResourceReadInput,
 ): Promise<KnowledgeReaderRpcResult<KnowledgeReadResult | null>> {
-	return continuationRpc(() => withCoreDb(env, (db) => readResource(db, input)));
+	try {
+		return { status: 'ok', value: await withCoreDb(env, (db) => readResource(db, input)) };
+	} catch (error) {
+		if (error instanceof InvalidKnowledgeContinuationError) return { status: 'invalid-continuation' };
+		if (error instanceof KnowledgeOutputBudgetError) return { status: 'output-budget-exceeded' };
+		throw error;
+	}
 }

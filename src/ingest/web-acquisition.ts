@@ -63,22 +63,6 @@ function urlHost(url: string): string {
 	return new URL(url).hostname.replace(/^www\./, '');
 }
 
-function fileNameFromUrl(url: string): string {
-	const encodedName = new URL(url).pathname.split('/').filter(Boolean).at(-1) ?? '';
-	if (!encodedName) return 'document.pdf';
-	try {
-		return decodeURIComponent(encodedName) || 'document.pdf';
-	} catch {
-		return encodedName;
-	}
-}
-
-function titleFromFileName(fileName: string): string {
-	const title = fileName.replace(/\.[a-z0-9]+$/i, '').trim();
-	if (!title) throw new Error(`File name has no title: ${fileName}`);
-	return title;
-}
-
 export function pdfExtractionMetadata(pdf: PdfTextArtifact): PdfExtractionMetadata {
 	return { status: pdf.status, pages: pdf.pages };
 }
@@ -132,9 +116,19 @@ export function markdownFromXml(env: CoreEnv, xml: string, resourceId?: string):
 	);
 }
 
-async function acquirePdfBytes(bytes: Uint8Array, url: string, fileName: string, ownedStorageKey?: string): Promise<AcquiredWebContent> {
+async function acquirePdfBytes(bytes: Uint8Array, url: string, ownedStorageKey?: string): Promise<AcquiredWebContent> {
 	const parsed = await parsePdfBytes(bytes);
-	const title = titleFromFileName(fileName);
+	const encodedName = new URL(url).pathname.split('/').filter(Boolean).at(-1) ?? '';
+	let fileName = encodedName || 'document.pdf';
+	if (encodedName) {
+		try {
+			fileName = decodeURIComponent(encodedName) || 'document.pdf';
+		} catch {
+			fileName = encodedName;
+		}
+	}
+	const title = fileName.replace(/\.[a-z0-9]+$/i, '').trim();
+	if (!title) throw new Error(`File name has no title: ${fileName}`);
 	const source = urlHost(url);
 	return {
 		provider: null,
@@ -169,7 +163,7 @@ export async function acquireFetchedPdfResponse(
 				sourceUrl: finalUrl,
 			})
 		: null;
-	return acquirePdfBytes(bytes, finalUrl, fileNameFromUrl(finalUrl), persisted?.storageKey);
+	return acquirePdfBytes(bytes, finalUrl, persisted?.storageKey);
 }
 
 async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, resourceId?: string): Promise<AcquiredWebContent> {

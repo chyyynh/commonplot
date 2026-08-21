@@ -253,10 +253,16 @@ function normalizeSearchFilters(input: ResourceSearchInput): NormalizedSearchFil
 	const effectiveBefore = optionalSearchDate(filters.effectiveBefore, 'effectiveBefore');
 	if (effectiveAfter && effectiveBefore && effectiveAfter > effectiveBefore)
 		throw new Error('effectiveAfter must not exceed effectiveBefore');
-	const sourceIds = optionalSourceIds(filters.sourceIds);
-	const kinds = optionalResourceKinds(filters.kinds);
-	const resourcePlatforms = optionalResourcePlatforms(filters.resourcePlatforms);
-	const categories = optionalResourceCategories(filters.categories);
+	const sourceIds = filters.sourceIds === undefined ? undefined : [...new Set(filters.sourceIds.map((value) => value.trim()))];
+	if (sourceIds?.some((value) => !isValidUuid(value))) throw new Error('Invalid sourceIds');
+	const kinds = filters.kinds === undefined ? undefined : [...new Set(filters.kinds)];
+	if (kinds?.some((value) => !isContentResourceKind(value))) throw new Error('Invalid resource kinds');
+	const resourcePlatforms = filters.resourcePlatforms === undefined ? undefined : [...new Set(filters.resourcePlatforms)];
+	if (resourcePlatforms?.some((value) => !isResourcePlatform(value))) throw new Error('Invalid resource platforms');
+	const categories = filters.categories === undefined ? undefined : [...new Set(filters.categories)];
+	if (categories?.some((value) => !(RESOURCE_CATEGORIES as readonly string[]).includes(value))) {
+		throw new Error('Invalid resource categories');
+	}
 	return {
 		categories,
 		effectiveAfter,
@@ -266,31 +272,6 @@ function normalizeSearchFilters(input: ResourceSearchInput): NormalizedSearchFil
 		resourcePlatforms,
 		sourceIds,
 	};
-}
-
-function optionalSourceIds(values: string[] | undefined): string[] | undefined {
-	if (values === undefined) return undefined;
-	const unique = [...new Set(values.map((value) => value.trim()))];
-	if (unique.some((value) => !isValidUuid(value))) throw new Error('Invalid sourceIds');
-	return unique;
-}
-
-function optionalResourceKinds(values: ContentResourceKind[] | undefined): ContentResourceKind[] | undefined {
-	if (values === undefined) return undefined;
-	if (values.some((value) => !isContentResourceKind(value))) throw new Error('Invalid resource kinds');
-	return [...new Set(values)];
-}
-
-function optionalResourcePlatforms(values: ResourcePlatform[] | undefined): ResourcePlatform[] | undefined {
-	if (values === undefined) return undefined;
-	if (values.some((value) => !isResourcePlatform(value))) throw new Error('Invalid resource platforms');
-	return [...new Set(values)];
-}
-
-function optionalResourceCategories(values: ResourceCategory[] | undefined): ResourceCategory[] | undefined {
-	if (values === undefined) return undefined;
-	if (values.some((value) => !(RESOURCE_CATEGORIES as readonly string[]).includes(value))) throw new Error('Invalid resource categories');
-	return [...new Set(values)];
 }
 
 function resourceIdentityForRow(resource: { id: string; kind: string; resource_platform: string | null }): ContentResourceIdentity {

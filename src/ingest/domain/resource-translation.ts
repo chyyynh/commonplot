@@ -60,15 +60,11 @@ function isBlank(value: string | null | undefined): boolean {
 	return !value?.trim();
 }
 
-function usesInlineTwitterContentTranslation(resource: ResourceTranslationInput): boolean {
-	const content = resource.content.trim();
-	return resource.resource_platform === 'twitter' && !!content && content.length <= INLINE_TWITTER_CONTENT_TRANSLATION_MAX_LENGTH;
-}
-
 function metadataTranslationTask(resource: ResourceTranslationInput): ZhHantMetadataTranslationTask | null {
 	const translation = resource.zhHantTranslation;
 	if (resource.resource_platform === 'twitter') {
-		if (usesInlineTwitterContentTranslation(resource)) {
+		const content = resource.content.trim();
+		if (content && content.length <= INLINE_TWITTER_CONTENT_TRANSLATION_MAX_LENGTH) {
 			return isBlank(translation?.title) || isBlank(translation?.content) ? 'twitter-title-content' : null;
 		}
 		return isBlank(translation?.title) ? 'twitter-title' : null;
@@ -176,12 +172,6 @@ ${task === 'paper-title-summary' ? '- summary: 將作者原始摘要完整翻譯
 	}
 }
 
-function requiredResourceContent(resource: ResourceTranslationInput): string {
-	const content = resource.content.trim();
-	if (!content) throw new Error(`Resource ${resource.id} has no content`);
-	return content;
-}
-
 export async function generateZhHantMetadataTranslation(
 	resource: ResourceTranslationInput,
 	env: CoreEnv,
@@ -191,7 +181,8 @@ export async function generateZhHantMetadataTranslation(
 	| z.infer<typeof ZhHantTitleTranslationSchema>
 	| z.infer<typeof ZhHantTwitterTranslationSchema>
 > {
-	const content = requiredResourceContent(resource);
+	const content = resource.content.trim();
+	if (!content) throw new Error(`Resource ${resource.id} has no content`);
 	const summaryLine = resource.summary?.trim() ? `\n摘要：${resource.summary.trim()}` : '';
 	const prompt = `原文資訊：
 資源種類：${resource.kind}

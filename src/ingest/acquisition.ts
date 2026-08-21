@@ -96,16 +96,15 @@ const AcquisitionArtifactSchema = z.union([
  */
 export const ACQUISITION_STEP = { retries: { limit: 0, delay: '10 seconds' }, timeout: '120 seconds' } as const;
 
-function acquiredPublishedDate(value: string | null): string | null {
-	if (!value?.trim()) return null;
-	const parsed = new Date(value);
-	return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
-}
-
 export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?: AcquiredContent): ResourceForProcessing {
 	if (!acquired) return resource;
 	const ownedStorageKey = acquired.provider === null ? acquired.ownedStorageKey : undefined;
 	const canonicalUrl = acquired.canonicalUrl?.trim();
+	let publishedDate = resource.published_date;
+	if (publishedDate === null && acquired.publishedDate?.trim()) {
+		const parsed = new Date(acquired.publishedDate);
+		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
+	}
 	return {
 		...resource,
 		title: acquired.title.trim(),
@@ -120,7 +119,7 @@ export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?
 		storage_key: ownedStorageKey ?? resource.storage_key,
 		url: canonicalUrl ?? resource.url,
 		normalized_url: canonicalUrl ?? resource.normalized_url,
-		published_date: resource.published_date ?? acquiredPublishedDate(acquired.publishedDate),
+		published_date: publishedDate,
 	};
 }
 

@@ -8,10 +8,6 @@ const REHOST_TIMEOUT_MS = 8_000;
 const MAX_SOURCE_REDIRECTS = 3;
 const SOURCE_USER_AGENT = 'Newsence-Media-Rehost/1.0 (+https://newsence.app)';
 
-async function resourceImageId(sourceUrl: string): Promise<string> {
-	return `resource-${await sha256Hex(sourceUrl)}`;
-}
-
 function failure(code: string, detail?: string): Error {
 	return new Error(detail ? `${code}: ${detail}` : code);
 }
@@ -20,12 +16,8 @@ async function cancelBody(body: ReadableStream<Uint8Array> | null): Promise<void
 	if (body) await body.cancel().catch(() => undefined);
 }
 
-function isRedirectStatus(status: number): boolean {
-	return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
-}
-
 async function redirectTarget(response: Response, currentUrl: string, redirects: number): Promise<string | null> {
-	if (!isRedirectStatus(response.status)) return null;
+	if (![301, 302, 303, 307, 308].includes(response.status)) return null;
 	const location = response.headers.get('location');
 	await cancelBody(response.body);
 	if (redirects >= MAX_SOURCE_REDIRECTS) throw failure('redirect_limit');
@@ -88,46 +80,35 @@ function deliveryUrl(image: ImageMetadata): string {
 	return hosted;
 }
 
-function hostedImage(image: ImageMetadata, sourceUrl: string): HostedResourceImage {
-	return { deliveryUrl: deliveryUrl(image), sourceUrl };
-}
-
-function imageFilename(sourceUrl: string): string {
-	const filename = new URL(sourceUrl).pathname.split('/').filter(Boolean).at(-1)?.slice(0, 180);
-	return filename || 'resource-image';
-}
-
-async function uploadImage(images: ImagesBinding, imageId: string, sourceUrl: string, response: Response): Promise<ImageMetadata> {
-	try {
-		if (!response.body) throw failure('missing_body');
-		return await images.hosted.upload(response.body, {
-			id: imageId,
-			filename: imageFilename(sourceUrl),
-			metadata: { sourceUrl },
-			requireSignedURLs: false,
-		});
-	} catch (error) {
-		throw failure('images_write_error', error instanceof Error ? error.message : String(error));
-	}
-}
-
 export async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Promise<HostedResourceImage> {
 	if (normalizedResourceImageUrl(sourceUrl) !== sourceUrl) throw new TypeError('Resource image source URL is invalid');
 	const alreadyHosted = hostedResourceImageUrl(sourceUrl);
 	if (alreadyHosted) return { deliveryUrl: alreadyHosted, sourceUrl };
-	const imageId = await resourceImageId(sourceUrl);
+	const imageId = `resource-${await sha256Hex(sourceUrl)}`;
 	let existing: ImageMetadata | null;
 	try {
 		existing = await images.hosted.image(imageId).details();
 	} catch (error) {
 		throw failure('images_read_error', error instanceof Error ? error.message : String(error));
 	}
-	if (existing) return hostedImage(existing, sourceUrl);
+	if (existing) return { deliveryUrl: deliveryUrl(existing), sourceUrl };
 
 	const startedAt = performance.now();
 	let image: ImageMetadata;
 	try {
-		image = await uploadImage(images, imageId, sourceUrl, await fetchImageSource(sourceUrl));
+		const response = await fetchImageSource(sourceUrl);
+		if (!response.body) throw failure('images_write_error', 'missing_body');
+		const filename = new URL(sourceUrl).pathname.split('/').filter(Boolean).at(-1)?.slice(0, 180) || 'resource-image';
+		image = await images.hosted
+			.upload(response.body, {
+				id: imageId,
+				filename,
+				metadata: { sourceUrl },
+				requireSignedURLs: false,
+			})
+			.catch((error) => {
+				throw failure('images_write_error', error instanceof Error ? error.message : String(error));
+			});
 	} catch (error) {
 		const raced = await images.hosted
 			.image(imageId)
@@ -143,5 +124,5 @@ export async function rehostResourceImage(images: ImagesBinding, sourceUrl: stri
 		image_id: image.id,
 		source_host: new URL(sourceUrl).hostname,
 	});
-	return hostedImage(image, sourceUrl);
+	return { deliveryUrl: deliveryUrl(image), sourceUrl };
 }

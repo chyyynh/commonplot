@@ -24,26 +24,14 @@ export function contentResourceIdentitySql(fields: ResourceIdentitySqlFields): S
 	)`;
 }
 
-function translatableResourceIdentitySql(fields: ResourceIdentitySqlFields & { fileType: SQL }): SQL {
+export function resourceTranslationIdentityPredicate(): SQL {
 	return sql`(
-		${fields.kind} = ANY(${textArraySql(TRANSLATABLE_RESOURCE_KINDS)})
+		${resources.kind} = ANY(${textArraySql(TRANSLATABLE_RESOURCE_KINDS)})
 		AND (
-			${fields.fileType} IS DISTINCT FROM 'application/pdf'
-			OR ${fields.resourcePlatform} IS NOT NULL
+			${resources.fileType} IS DISTINCT FROM 'application/pdf'
+			OR ${resources.resourcePlatform} IS NOT NULL
 		)
 	)`;
-}
-
-export function resourceTranslationIdentityPredicate(): SQL {
-	return translatableResourceIdentitySql({
-		fileType: sql`${resources.fileType}`,
-		kind: sql`${resources.kind}`,
-		resourcePlatform: sql`${resources.resourcePlatform}`,
-	});
-}
-
-function resourceKindFilterSql(field: SQL, kinds: ResourceIdentityFilters['kinds']): SQL {
-	return kinds === undefined ? sql`TRUE` : sql`${field} = ANY(${textArraySql(kinds)})`;
 }
 
 function resourcePlatformFilterSql(field: SQL, resourcePlatforms: ResourceIdentityFilters['resourcePlatforms']): SQL {
@@ -61,7 +49,7 @@ function resourcePlatformFilterSql(field: SQL, resourcePlatforms: ResourceIdenti
 export function resourceIdentityFilterSql(fields: ResourceIdentitySqlFields, filters: ResourceIdentityFilters): SQL {
 	if (filters.kinds === undefined && filters.resourcePlatforms === undefined) return sql`TRUE`;
 	return sql`(
-		${resourceKindFilterSql(fields.kind, filters.kinds)}
+		${filters.kinds === undefined ? sql`TRUE` : sql`${fields.kind} = ANY(${textArraySql(filters.kinds)})`}
 		AND ${resourcePlatformFilterSql(fields.resourcePlatform, filters.resourcePlatforms)}
 	)`;
 }

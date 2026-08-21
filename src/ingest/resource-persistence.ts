@@ -79,10 +79,11 @@ export async function settleResourceProcessingFailure(
 	});
 }
 
-async function graphMutation(
+export async function persistProcessedResource(
+	env: CoreEnv,
 	input: PersistProcessedResourceInput,
 	hostedImages: readonly HostedResourceImage[],
-): Promise<PersistResolvedResourceGraphInput> {
+): Promise<PersistResolvedResourceGraphResult> {
 	const resource = input.handled.resource;
 	const identity = parseResourceIdentity(input.handled.kind, input.handled.resourcePlatform);
 	if (!identity) throw new Error(`Resource ${input.resourceId} resolved to an invalid identity`);
@@ -94,7 +95,7 @@ async function graphMutation(
 	const media = paperAttachment
 		? { creators: [], kindMetadata: null, ogImageUrl: null }
 		: hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kind_metadata, ogImageUrl }, hostedImages);
-	return {
+	const mutation: PersistResolvedResourceGraphInput = {
 		resourceId: input.resourceId,
 		expectedSourceRevision: input.expectedSourceRevision,
 		identity,
@@ -133,6 +134,7 @@ async function graphMutation(
 		publishedDate: resource.published_date,
 		ogImageUrl: media.ogImageUrl,
 	};
+	return env.DOMAIN.persistResolvedResourceGraph(mutation);
 }
 
 export function processedResourceImageSources(input: Pick<PersistProcessedResourceInput, 'handled' | 'previewImageUrl'>): string[] {
@@ -143,13 +145,4 @@ export function processedResourceImageSources(input: Pick<PersistProcessedResour
 		kindMetadata: resource.kind_metadata,
 		ogImageUrl: input.previewImageUrl?.trim() || null,
 	});
-}
-
-export async function persistProcessedResource(
-	env: CoreEnv,
-	input: PersistProcessedResourceInput,
-	hostedImages: readonly HostedResourceImage[],
-): Promise<PersistResolvedResourceGraphResult> {
-	const mutation = await graphMutation(input, hostedImages);
-	return env.DOMAIN.persistResolvedResourceGraph(mutation);
 }

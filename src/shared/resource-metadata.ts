@@ -119,25 +119,21 @@ export function parseResourceCreators(value: unknown): ResourceCreator[] {
 	return z.array(ResourceCreatorSchema).parse(value);
 }
 
-function parseResourceKindMetadata<K extends keyof ResourceKindMetadataByKind>(kind: K, value: unknown): ResourceKindMetadataByKind[K] {
+export function parseStoredResourceKindMetadata(kind: ResourceKind, value: unknown): ResourceKindMetadata | null {
 	switch (kind) {
 		case 'blog':
-			return (value === null ? null : BlogKindMetadataSchema.parse(value)) as ResourceKindMetadataByKind[K];
+			return value === null ? null : BlogKindMetadataSchema.parse(value);
 		case 'forum':
-			return ForumKindMetadataSchema.parse(value) as ResourceKindMetadataByKind[K];
+			return ForumKindMetadataSchema.parse(value);
 		case 'post':
-			return PostKindMetadataSchema.parse(value) as ResourceKindMetadataByKind[K];
+			return PostKindMetadataSchema.parse(value);
 		case 'video':
-			return VideoKindMetadataSchema.parse(value) as ResourceKindMetadataByKind[K];
+			return VideoKindMetadataSchema.parse(value);
 		case 'paper':
-			return PaperKindMetadataSchema.parse(value) as ResourceKindMetadataByKind[K];
+			return PaperKindMetadataSchema.parse(value);
+		case 'image':
+		case 'file':
+			if (value !== null) throw new Error(`${kind} resources cannot have kind metadata`);
+			return null;
 	}
-}
-
-export function parseStoredResourceKindMetadata(kind: ResourceKind, value: unknown): ResourceKindMetadata | null {
-	if (kind === 'image' || kind === 'file') {
-		if (value !== null) throw new Error(`${kind} resources cannot have kind metadata`);
-		return null;
-	}
-	return parseResourceKindMetadata(kind, value);
 }

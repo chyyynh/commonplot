@@ -91,11 +91,6 @@ export async function enqueueProcessing(env: CoreEnv, resourceId: string, source
 	});
 }
 
-export async function admitPendingSourceResource(env: CoreEnv, draft: SourceResourceDraft): Promise<void> {
-	const pending = await withCoreTx(env, (db) => upsertPendingSourceResource(db, draft));
-	if (pending.needsProcessing) await enqueueProcessing(env, pending.resourceId, pending.sourceRevision ?? undefined);
-}
-
 export async function admitDiscoveredSourceResources(
 	env: CoreEnv,
 	drafts: SourceResourceDraft[],
@@ -111,7 +106,10 @@ export async function admitDiscoveredSourceResources(
 				batch.map(async (draft) => {
 					const resource = existingByUrl.get(normalizeUrl(draft.url));
 					if (!resource) {
-						await admitPendingSourceResource(env, draft);
+						const pending = await withCoreTx(env, (db) => upsertPendingSourceResource(db, draft));
+						if (pending.needsProcessing) {
+							await enqueueProcessing(env, pending.resourceId, pending.sourceRevision ?? undefined);
+						}
 						return 'created' as const;
 					}
 					if (!resource.shouldRetryEnrichment) return 'existing' as const;
@@ -301,22 +299,6 @@ function assertResourceContentProcessable(input: {
 	);
 }
 
-async function acquireResourceForOperation(
-	env: CoreEnv,
-	step: WorkflowStep,
-	shell: ResourceProcessingShell,
-	operation: WorkflowOperation,
-): Promise<AcquiredContent | undefined> {
-	if (!shouldAcquireContent(shell, operation === 'resync')) return undefined;
-	return stageSavedUrlAcquisition(env, step, shell);
-}
-
-function assertOperationCanProcessResource(resource: ResourceForProcessing, operation: WorkflowOperation): void {
-	if (operation === 'resync' && !resource.url) {
-		throw new ResourceProcessingOutcomeError('failed', `Resource ${resource.id} has no source URL`, 'ResourceResyncUnsupportedError');
-	}
-}
-
 type PreparedResource = {
 	acquiredContent: AcquiredContent | undefined;
 	identityPdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
@@ -325,13 +307,6 @@ type PreparedResource = {
 	resource: ResourceForProcessing;
 };
 
-function acquiredSubjectUrl(acquired: AcquiredContent | undefined): string | null {
-	if (!acquired) return null;
-	if (acquired.provider === 'hackernews') return acquired.hackerNewsItem.url?.trim() || null;
-	if (acquired.provider === 'twitter') return acquired.subjectUrl?.trim() || null;
-	return null;
-}
-
 async function prepareResourceForProcessing(
 	env: CoreEnv,
 	step: WorkflowStep,
@@ -339,11 +314,19 @@ async function prepareResourceForProcessing(
 	operation: WorkflowOperation,
 ): Promise<PreparedResource> {
 	const { resource: initialResource } = initialShell;
+	if (operation === 'resync' && !initialResource.url) {
+		throw new ResourceProcessingOutcomeError(
+			'failed',
+			`Resource ${initialResource.id} has no source URL`,
+			'ResourceResyncUnsupportedError',
+		);
+	}
 	// Exact DOI/arXiv/OpenAlex URLs can go straight to OpenAlex Content. The
 	// original landing page is only acquired when OpenAlex has no cached PDF.
-	const preliminary = await stagePreliminaryAcquisition(env, step, initialResource, () =>
-		acquireResourceForOperation(env, step, initialShell, operation),
-	);
+	const preliminary = await stagePreliminaryAcquisition(env, step, initialResource, async () => {
+		if (!shouldAcquireContent(initialShell, operation === 'resync')) return undefined;
+		return stageSavedUrlAcquisition(env, step, initialShell);
+	});
 	let { acquiredContent } = preliminary;
 	const acquiredResource = applyAcquiredMaterial(initialResource, acquiredContent);
 	const rootCanBePaper = !acquiredResource.url || !detectResourceUrl(acquiredResource.url);
@@ -374,10 +357,16 @@ async function prepareResourceForProcessing(
 	const preferred = await stagePreferredOpenAlexContent(env, step, acquiredResource, acquiredContent, paperResolution, preliminary);
 	acquiredContent = preferred.acquiredContent;
 	const resourceIdentifiers = normalizeResourceIdentifiers([...paperResolution.identifiers, ...preferred.resource.resource_identifiers]);
+	const subjectUrl =
+		acquiredContent?.provider === 'hackernews'
+			? acquiredContent.hackerNewsItem.url?.trim() || null
+			: acquiredContent?.provider === 'twitter'
+				? acquiredContent.subjectUrl?.trim() || null
+				: null;
 	const resolution = resolveContentResource({
 		url: preferred.resource.url,
 		resourceIdentifiers,
-		subjectUrl: acquiredSubjectUrl(acquiredContent),
+		subjectUrl,
 	});
 	const finalPaperEnrichment = resolution.kind === 'paper' ? paperEnrichment : null;
 	const identity = parseResourceIdentity(resolution.kind, resolution.resourcePlatform);
@@ -466,7 +455,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 			if (sourceRevision !== undefined && initialResource.source_revision !== sourceRevision) {
 				return { success: true, resource_id: resourceId, operation, superseded: true };
 			}
-			assertOperationCanProcessResource(initialResource, operation);
 			const prepared = await prepareResourceForProcessing(this.env, step, initialShell, operation);
 			const { acquiredContent, identityPdfTextArtifact, paperEnrichment, resolution, resource } = prepared;
 			const logContext = { resource_id: resourceId, table: 'resources' };

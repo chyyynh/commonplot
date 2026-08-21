@@ -145,24 +145,6 @@ function openAlexContentUrl(input: {
 	return url.toString();
 }
 
-function openAlexContentPdfUrl(work: OpenAlexWork, openAlexId: string | null | undefined): string | null {
-	return openAlexContentUrl({
-		extension: 'pdf',
-		hasContent: work.has_content?.pdf === true,
-		openAlexId,
-		value: work.content_urls?.pdf,
-	});
-}
-
-function openAlexContentGrobidXmlUrl(work: OpenAlexWork, openAlexId: string | null | undefined): string | null {
-	return openAlexContentUrl({
-		extension: 'grobid-xml',
-		hasContent: work.has_content?.grobid_xml === true,
-		openAlexId,
-		value: work.content_urls?.grobid_xml,
-	});
-}
-
 function resolvedWorkIdentifiers(work: OpenAlexWork, inputIdentifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
 	const identity = paperIdentityFromIdentifiers(inputIdentifiers);
 	const arxivId = arxivIdFromWork(work, identity);
@@ -218,8 +200,18 @@ function normalizeOpenAlexWork(
 	const openAlexId = identity?.openAlexId;
 	const referenceCount = work.referenced_works_count ?? undefined;
 	return {
-		contentGrobidXmlUrl: openAlexContentGrobidXmlUrl(work, openAlexId),
-		contentPdfUrl: openAlexContentPdfUrl(work, openAlexId),
+		contentGrobidXmlUrl: openAlexContentUrl({
+			extension: 'grobid-xml',
+			hasContent: work.has_content?.grobid_xml === true,
+			openAlexId,
+			value: work.content_urls?.grobid_xml,
+		}),
+		contentPdfUrl: openAlexContentUrl({
+			extension: 'pdf',
+			hasContent: work.has_content?.pdf === true,
+			openAlexId,
+			value: work.content_urls?.pdf,
+		}),
 		identifiers,
 		metadata: {
 			title: work.title ?? undefined,
