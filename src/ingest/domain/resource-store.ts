@@ -14,7 +14,6 @@ import {
 	parseResourceIdentity,
 	RESOURCE_SCOPES,
 	type ResourceIdentity,
-	type ResourcePlatform,
 	type ResourceScope,
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
@@ -22,7 +21,7 @@ import type { ResourceForProcessing } from '@core-shared/types';
 import { type CoreDb, withCoreDb } from '@db/client';
 import { resourceDisplaySourceSql, resourceTranslationIdentityPredicate } from '@db/resource-identity-sql';
 import { resourceIdentifiers, resources, resourceTranslations, youtubeTranscripts } from '@db/schema';
-import { and, eq, type SQL, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { cleanString, dateValue, requiredString } from './resource-values';
 
 export type ResourceProcessingShell = {
@@ -77,10 +76,6 @@ function storedResourceSourceRevision(value: unknown, resourceId: string): strin
 	return value;
 }
 
-function effectiveResourcePlatformPredicate(platform: Exclude<ResourcePlatform, null>): SQL {
-	return sql`${resources.resourcePlatform} = ${platform}`;
-}
-
 export async function loadOriginalResourceContentArtifact(env: CoreEnv, resourceId: string): Promise<ReadableStream<Uint8Array>> {
 	const content = await withCoreDb(env, async (db) => {
 		const row = (
@@ -131,7 +126,7 @@ export async function isResourceEnrichmentComplete(env: CoreEnv, resourceId: str
 					resourcePlatform: resources.resourcePlatform,
 					complete: sql<boolean>`${resources.enrichmentStatus} = 'enriched'
 								AND (
-									NOT (${effectiveResourcePlatformPredicate('youtube')})
+									${resources.resourcePlatform} IS DISTINCT FROM 'youtube'
 									OR EXISTS (
 										SELECT 1
 										FROM ${youtubeTranscripts}
