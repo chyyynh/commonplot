@@ -20,7 +20,7 @@ import type { PaperMetadata, PdfExtractionMetadata, ResourceForProcessing } from
 import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
 import { loadSourceAvatarUrl, loadStoredResourceForProcessing, type StoredResourceProcessingInput } from '@ingest/domain/resource-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
-import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
+import { DURABLE_WORKFLOW_RETRIES, shouldReconcileSupersededRefresh } from '../workflow-control';
 import {
 	ACQUISITION_STEP,
 	type AcquiredContent,
@@ -38,6 +38,7 @@ import { stagePdfTextExtraction } from './platforms/pdf';
 import { MIN_MONITORED_VIDEO_DURATION_SECONDS } from './platforms/youtube-acquisition';
 import {
 	enqueueSubjectDraft,
+	enqueueSupersededResourceRefresh,
 	parseResourceProcessingWorkflowPayload,
 	type ResourceDraftTarget,
 	type ResourceProcessingWorkflowPayload,
@@ -431,6 +432,32 @@ async function settleFailedStoredBlobProcessing(
 		});
 }
 
+async function reconcileSupersededProviderRefresh(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: {
+		acquiredResource: ResourceForProcessing;
+		expectedProviderRevision: string;
+		resourceId: string;
+		supersededSourceRevision: string | null;
+	},
+): Promise<void> {
+	const acquiredSourceRevision = await resourceSourceRevision(input.acquiredResource);
+	const supersedingResource = await step.do(
+		'load-superseding-provider-refresh-v1',
+		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+		() => loadStoredResourceForProcessing(env, input.resourceId),
+	);
+	if (!shouldReconcileSupersededRefresh(acquiredSourceRevision, supersedingResource.resource.source_revision)) return;
+	await step.do('enqueue-superseded-provider-refresh-v1', RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG, () =>
+		enqueueSupersededResourceRefresh(env, {
+			resourceId: input.resourceId,
+			refreshRevision: input.expectedProviderRevision,
+			supersededSourceRevision: input.supersededSourceRevision,
+		}),
+	);
+}
+
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingWorkflowPayload> {
 	async run(event: WorkflowEvent<ResourceProcessingWorkflowPayload>, step: WorkflowStep) {
 		const { target } = parseResourceProcessingWorkflowPayload(event.payload);
@@ -548,6 +575,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							: persistProcessedDraft(this.env, { ...persistenceInput, admission: target.admission }, hostedImages),
 			);
 			if (!persistence.persisted) {
+				if (target.kind === 'stored' && target.operation === 'reacquire' && target.expectedProviderRevision) {
+					await reconcileSupersededProviderRefresh(this.env, step, {
+						acquiredResource: handled.resource,
+						expectedProviderRevision: target.expectedProviderRevision,
+						resourceId: persistence.resourceId,
+						supersededSourceRevision: persistedSourceRevision ?? null,
+					});
+				}
 				return { status: 'superseded', resourceId: persistence.resourceId } as const;
 			}
 			const persistedResourceId = persistence.resourceId;

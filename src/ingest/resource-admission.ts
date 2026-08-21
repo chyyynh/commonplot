@@ -6,7 +6,7 @@ import { withCoreDb } from '@db/client';
 import { claimExistingDiscoveredResources, claimStalePendingBlobAdmissions } from '@ingest/domain/resource-admission-store';
 import { cleanString, dateValue, requiredString, stringArrayValue } from '@ingest/domain/resource-values';
 import { z } from 'zod';
-import { enqueueOrRestartWorkflow } from '../workflow-control';
+import { enqueueOrRestartWorkflow, workflowOutputWasSuperseded } from '../workflow-control';
 
 const ProviderRevisionSchema = z
 	.string()
@@ -238,21 +238,49 @@ export async function admitDiscoveredSourceResources(
 	return outcomes;
 }
 
-async function enqueueResourceRefresh(env: CoreEnv, resourceId: string, refreshRevision: string): Promise<boolean> {
-	const revision = ProviderRevisionSchema.parse(refreshRevision);
-	const id = ['resource-refresh-v4', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
+async function startResourceRefreshWorkflow(env: CoreEnv, id: string, resourceId: string, revision: string): Promise<boolean> {
 	const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
 		{ id, params: { target: { kind: 'stored', resourceId, operation: 'reacquire', expectedProviderRevision: revision } } },
 	]);
 	if (created) return true;
 	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.get(id);
-	const { status } = await instance.status();
-	if (status === 'errored') {
+	const { output, status } = await instance.status();
+	if (status === 'errored' || (status === 'complete' && workflowOutputWasSuperseded(output))) {
 		await instance.restart();
 		return true;
 	}
 	if (status === 'unknown') throw new Error(`Resource refresh Workflow ${id} has unknown status`);
 	return false;
+}
+
+async function enqueueResourceRefresh(env: CoreEnv, resourceId: string, refreshRevision: string): Promise<boolean> {
+	const revision = ProviderRevisionSchema.parse(refreshRevision);
+	const id = ['resource-refresh-v4', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
+	return startResourceRefreshWorkflow(env, id, resourceId, revision);
+}
+
+export async function enqueueSupersededResourceRefresh(
+	env: CoreEnv,
+	input: {
+		resourceId: string;
+		refreshRevision: string;
+		supersededSourceRevision: string | null;
+	},
+): Promise<string> {
+	const revision = ProviderRevisionSchema.parse(input.refreshRevision);
+	const identity = await sha256Hex(JSON.stringify([input.resourceId, revision, input.supersededSourceRevision]));
+	const id = `resource-refresh-reconcile-v1-${identity}`;
+	const started = await startResourceRefreshWorkflow(env, id, input.resourceId, revision);
+	console.info({
+		tag: 'RESOURCE_WORKFLOW',
+		event: 'superseded_provider_refresh_reconciled',
+		resource_id: input.resourceId,
+		expected_provider_revision: revision,
+		superseded_source_revision: input.supersededSourceRevision,
+		workflow_id: id,
+		started,
+	});
+	return id;
 }
 
 /** Repairs only interrupted DB-to-Workflow handoffs for record-first app-owned blobs. */
