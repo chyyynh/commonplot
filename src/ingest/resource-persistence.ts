@@ -4,7 +4,7 @@ import type {
 	PersistResolvedResourceGraphResult,
 	ResourceDraftAdmission,
 } from '@app-domain/resource-graph-contracts';
-import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
+import { type HostedResourceImage, hostedResourceImageFields } from '@core-shared/resource-image-mapping';
 import { parseResourceIdentity } from '@core-shared/resource-types';
 import { withCoreDb } from '@db/client';
 import { resources } from '@db/schema';
@@ -174,13 +174,4 @@ async function resolvedResourceMutation(
 		publishedDate: resource.published_date,
 		ogImageUrl: media.ogImageUrl,
 	};
-}
-
-export function processedResourceImageSources(input: Pick<PersistProcessedInput, 'handled' | 'previewImageUrl'>): string[] {
-	const resource = input.handled.resource;
-	return resourceImageSourceUrls({
-		creators: resource.creators,
-		kindMetadata: resource.kind_metadata,
-		ogImageUrl: input.previewImageUrl?.trim() || null,
-	});
 }

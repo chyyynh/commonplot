@@ -7,7 +7,7 @@ import {
 } from 'cloudflare:workers';
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource-identifiers';
-import type { HostedResourceImage } from '@core-shared/resource-image-mapping';
+import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
 import {
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
@@ -48,18 +48,12 @@ import {
 	persistProcessedDraft,
 	persistProcessedPrivatePaperDraft,
 	persistProcessedResource,
-	processedResourceImageSources,
 } from './resource-persistence';
 import { exactPlatformLocator, type ResolvedSubjectInput, resolveContentResource, resolvedSubjectInput } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 import { PDF_MIME } from './web-acquisition';
 
-class ResourceProcessingRejectedError extends Error {
-	constructor(message: string, name: string) {
-		super(message);
-		this.name = name;
-	}
-}
+class ResourceProcessingRejectedError extends Error {}
 
 const RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG = {
 	retries: DURABLE_WORKFLOW_RETRIES,
@@ -111,7 +105,6 @@ async function stageResourceImages(
 		if (failed) {
 			throw new ResourceProcessingRejectedError(
 				`Processing ${processingId} failed to host ${failed} canonical image${failed === 1 ? '' : 's'}`,
-				'ResourceImageRehostingError',
 			);
 		}
 	}
@@ -165,7 +158,7 @@ async function stageSavedUrlAcquisition(
 		}),
 	);
 	if (acquisition.status === 'rejected') {
-		throw new ResourceProcessingRejectedError(acquisition.message, 'ResourceAcquisitionRejectedError');
+		throw new ResourceProcessingRejectedError(acquisition.message);
 	}
 	return acquisition.content;
 }
@@ -270,10 +263,7 @@ async function acquireExistingResource(
 	const locator = exactPlatformLocator(storedResource.resource_identifiers);
 	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : storedResource.url;
 	if (!sourceUrl) {
-		throw new ResourceProcessingRejectedError(
-			`Resource processing ${storedResource.processing_id} has no source URL`,
-			'ResourceReacquisitionUnsupportedError',
-		);
+		throw new ResourceProcessingRejectedError(`Resource processing ${storedResource.processing_id} has no source URL`);
 	}
 	const acquiredContent = await stageSavedUrlAcquisition(
 		env,
@@ -344,14 +334,11 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 	});
 	const extractionStatus = pdfTextArtifact?.status ?? (acquiredContent?.provider === null ? acquiredContent.extraction?.status : undefined);
 	if (extractionStatus === 'needs_ocr') {
-		throw new ResourceProcessingRejectedError(`PDF processing ${resource.processing_id} requires OCR`, 'PdfOcrRequiredError');
+		throw new ResourceProcessingRejectedError(`PDF processing ${resource.processing_id} requires OCR`);
 	}
 	const extractedPdfText = pdfTextArtifact?.text?.trim();
 	if (!extractedPdfText && !acquiredContent?.markdown?.trim()) {
-		throw new ResourceProcessingRejectedError(
-			`Processing ${resource.processing_id} has no extractable content`,
-			'ResourceContentMissingError',
-		);
+		throw new ResourceProcessingRejectedError(`Processing ${resource.processing_id} has no extractable content`);
 	}
 	return {
 		acquiredContent,
@@ -460,11 +447,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			};
 			let imageSources: string[];
 			try {
-				imageSources = processedResourceImageSources(persistenceInput);
+				imageSources = resourceImageSourceUrls({
+					creators: handled.resource.creators,
+					kindMetadata: handled.resource.kind_metadata,
+					ogImageUrl: previewImageUrl,
+				});
 			} catch (error) {
 				throw new ResourceProcessingRejectedError(
 					`Resource processing ${processingId} has an invalid canonical image source: ${error instanceof Error ? error.message : String(error)}`,
-					'ResourceImageSourceError',
 				);
 			}
 			const hostedImages = await stageResourceImages(this.env, step, processingId, imageSources);
