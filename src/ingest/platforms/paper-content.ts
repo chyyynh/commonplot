@@ -1,33 +1,24 @@
 // OpenAlex-hosted paper content: cached PDF and GROBID TEI staging for the processing Workflow.
 
 import type { WorkflowStep } from 'cloudflare:workers';
-import { isPaperIdentifier } from '@core-shared/resource-identifiers';
-import type { ResourceForProcessing } from '@core-shared/types';
 import {
 	ACQUISITION_STEP,
 	type AcquiredContent,
 	acquiredContentArtifact,
-	applyAcquiredMaterial,
 	readAcquiredContentArtifact,
 	sanitizeAcquiredContent,
 } from '../acquisition';
 import { acquireOpenAlexGrobidText, acquireOpenAlexPdf } from './openalex';
-import { isExplicitPaperUrl, type PaperEnrichmentResolution, stagePaperEnrichment } from './paper';
+import type { PaperEnrichmentResolution } from './paper';
 
-type PaperContentCandidate = Pick<
-	ResourceForProcessing,
-	| 'processing_id'
-	| 'published_date'
-	| 'resource_identifiers'
-	| 'resource_platform'
-	| 'scope'
-	| 'source'
-	| 'source_id'
-	| 'storage_key'
-	| 'summary'
-	| 'title'
-	| 'url'
->;
+type PaperContentCandidate = {
+	processingId: string;
+	publishedDate: string | null;
+	source: string | null;
+	summary: string | null;
+	title: string;
+	url: string | null;
+};
 
 async function acquireOpenAlexPdfArtifact(
 	input: {
@@ -92,33 +83,29 @@ async function acquireOpenAlexGrobidArtifact(
 	);
 }
 
-async function stageOpenAlexContentAcquisition(
+export async function stageOpenAlexContentAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	resource: PaperContentCandidate,
 	resolution: PaperEnrichmentResolution,
-	phase: 'preliminary' | 'selected',
 ): Promise<AcquiredContent | null> {
 	const { contentGrobidXmlUrl, contentPdfUrl, metadata } = resolution;
-	if ((!contentPdfUrl && !contentGrobidXmlUrl) || resource.scope !== 'corpus' || resource.storage_key) return null;
+	if (!contentPdfUrl && !contentGrobidXmlUrl) return null;
 
 	const sourceName = resource.source?.trim() || (resource.url ? new URL(resource.url).hostname : 'OpenAlex');
 	const description = metadata?.abstract?.trim() || resource.summary;
-	const publishedDate = metadata?.publicationDate?.trim() || resource.published_date;
+	const publishedDate = metadata?.publicationDate?.trim() || resource.publishedDate;
 	const title = metadata?.title?.trim() || resource.title;
-	const pdfStepName = phase === 'preliminary' ? 'acquire-preliminary-openalex-content-pdf-v1' : 'acquire-selected-openalex-content-pdf-v1';
-	const grobidStepName =
-		phase === 'preliminary' ? 'acquire-preliminary-openalex-content-grobid-v1' : 'acquire-selected-openalex-content-grobid-v1';
 
 	if (contentPdfUrl) {
 		const artifact = await step
-			.do(pdfStepName, ACQUISITION_STEP, () =>
+			.do('acquire-openalex-content-pdf-v2', ACQUISITION_STEP, () =>
 				acquireOpenAlexPdfArtifact(
 					{
 						contentPdfUrl,
 						description,
 						publishedDate,
-						processingId: resource.processing_id,
+						processingId: resource.processingId,
 						sourceName,
 						title,
 					},
@@ -129,7 +116,7 @@ async function stageOpenAlexContentAcquisition(
 				console.error({
 					tag: 'OPENALEX_CONTENT',
 					event: 'pdf_acquisition_failed',
-					processing_id: resource.processing_id,
+					processing_id: resource.processingId,
 					error: error instanceof Error ? error.message : String(error),
 				});
 				return null;
@@ -139,7 +126,7 @@ async function stageOpenAlexContentAcquisition(
 			console.info({
 				tag: 'OPENALEX_CONTENT',
 				event: 'pdf_acquired',
-				processing_id: resource.processing_id,
+				processing_id: resource.processingId,
 				chars: acquired.markdown.length,
 				pages: acquired.provider === null ? (acquired.extraction?.pages ?? null) : null,
 			});
@@ -149,9 +136,9 @@ async function stageOpenAlexContentAcquisition(
 
 	if (contentGrobidXmlUrl) {
 		const artifact = await step
-			.do(grobidStepName, ACQUISITION_STEP, () =>
+			.do('acquire-openalex-content-grobid-v2', ACQUISITION_STEP, () =>
 				acquireOpenAlexGrobidArtifact(
-					{ contentGrobidXmlUrl, description, processingId: resource.processing_id, publishedDate, sourceName, title },
+					{ contentGrobidXmlUrl, description, processingId: resource.processingId, publishedDate, sourceName, title },
 					env,
 				),
 			)
@@ -159,7 +146,7 @@ async function stageOpenAlexContentAcquisition(
 				console.error({
 					tag: 'OPENALEX_CONTENT',
 					event: 'grobid_acquisition_failed',
-					processing_id: resource.processing_id,
+					processing_id: resource.processingId,
 					error: error instanceof Error ? error.message : String(error),
 				});
 				return null;
@@ -169,7 +156,7 @@ async function stageOpenAlexContentAcquisition(
 			console.info({
 				tag: 'OPENALEX_CONTENT',
 				event: 'grobid_acquired',
-				processing_id: resource.processing_id,
+				processing_id: resource.processingId,
 				chars: acquired.markdown.length,
 			});
 			return acquired;
@@ -177,55 +164,4 @@ async function stageOpenAlexContentAcquisition(
 	}
 
 	return null;
-}
-
-type PreliminaryAcquisition = Readonly<{
-	acquiredContent: AcquiredContent | undefined;
-	explicitResolution: PaperEnrichmentResolution | null;
-}>;
-
-export async function stagePreliminaryAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	resource: PaperContentCandidate,
-	acquireFallback: () => Promise<AcquiredContent | undefined>,
-): Promise<PreliminaryAcquisition> {
-	const explicitResolution =
-		resource.resource_platform === null && isExplicitPaperUrl(resource.url)
-			? await stagePaperEnrichment(
-					env,
-					step,
-					{ ...resource, identifiers: resource.resource_identifiers.filter(isPaperIdentifier) },
-					{ stepName: 'resolve-explicit-paper-openalex-with-citations-v1' },
-				)
-			: null;
-	const openAlexContent = explicitResolution
-		? await stageOpenAlexContentAcquisition(env, step, resource, explicitResolution, 'preliminary')
-		: null;
-	return {
-		acquiredContent: openAlexContent ?? (await acquireFallback()),
-		explicitResolution,
-	};
-}
-
-export async function stagePreferredOpenAlexContent(
-	env: CoreEnv,
-	step: WorkflowStep,
-	resource: ResourceForProcessing,
-	acquiredContent: AcquiredContent | undefined,
-	paperResolution: PaperEnrichmentResolution,
-	preliminary: Pick<PreliminaryAcquisition, 'explicitResolution'>,
-): Promise<{
-	acquiredContent: AcquiredContent | undefined;
-	resource: ResourceForProcessing;
-}> {
-	// The preliminary phase already attempted OpenAlex content for this exact resolution.
-	if (paperResolution === preliminary.explicitResolution) {
-		return { acquiredContent, resource };
-	}
-	const openAlexContent = await stageOpenAlexContentAcquisition(env, step, resource, paperResolution, 'selected');
-	if (openAlexContent) {
-		return { acquiredContent: openAlexContent, resource: applyAcquiredMaterial(resource, openAlexContent) };
-	}
-	return { acquiredContent, resource };
 }

@@ -31,7 +31,7 @@ import { resourceSourceRevision } from './domain/resource-revision';
 import { loadEligibleResourceTranslationRevision } from './domain/resource-translation-store';
 import { handleResolvedResource } from './kind-handler';
 import { privatePaperAttachment, stagePaperEnrichment } from './platforms/paper';
-import { stagePreferredOpenAlexContent, stagePreliminaryAcquisition } from './platforms/paper-content';
+import { stageOpenAlexContentAcquisition } from './platforms/paper-content';
 import { stagePdfTextExtraction } from './platforms/pdf';
 import { MIN_MONITORED_VIDEO_DURATION_SECONDS } from './platforms/youtube-acquisition';
 import {
@@ -218,69 +218,52 @@ type ResourcePreparationInput =
 			stored: StoredResourceProcessingInput;
 	  });
 
-async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, input: ResourcePreparationInput): Promise<PreparedResource> {
-	let initialResource: ResourceForProcessing;
-	let preliminary: Awaited<ReturnType<typeof stagePreliminaryAcquisition>>;
-	let acquiredContent: AcquiredContent | undefined;
-	if (input.kind === 'draft') {
-		const exactPaper = resolveExactPaperInput(input.url);
-		const detected = exactPaper ? null : detectResourceUrl(input.url);
-		const identity = exactPaper
-			? ({ kind: 'paper', resourcePlatform: null } as const)
+type InitialResourceAcquisition = {
+	acquiredContent: AcquiredContent | undefined;
+	resource: ResourceForProcessing;
+};
+
+async function acquireDraftResource(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: Extract<ResourcePreparationInput, { kind: 'draft' }>,
+): Promise<InitialResourceAcquisition> {
+	const exactPaper = resolveExactPaperInput(input.url);
+	const detected = exactPaper ? null : detectResourceUrl(input.url);
+	const identity = exactPaper
+		? ({ kind: 'paper', resourcePlatform: null } as const)
+		: detected
+			? resourceIdentityForDetectedPlatform(detected.resourcePlatform)
+			: ({ kind: 'blog', resourcePlatform: null } as const);
+	const resourceIdentifiers = normalizeResourceIdentifiers(
+		exactPaper
+			? paperIdentifiersFromIdentity(exactPaper.identity)
 			: detected
-				? resourceIdentityForDetectedPlatform(detected.resourcePlatform)
-				: ({ kind: 'blog', resourcePlatform: null } as const);
-		const resourceIdentifiers = normalizeResourceIdentifiers(
-			exactPaper
-				? paperIdentifiersFromIdentity(exactPaper.identity)
-				: detected
-					? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]
-					: [],
-		);
-		const sourceId = input.admission.kind === 'source' ? input.admission.sourceId : null;
-		const draftCandidate = {
-			processing_id: input.processingId,
-			published_date: input.publishedDate,
-			resource_identifiers: resourceIdentifiers,
-			resource_platform: identity.resourcePlatform,
-			scope: 'corpus' as const,
-			source: new URL(input.url).hostname.replace(/^www\./, ''),
-			source_id: sourceId,
-			storage_key: null,
-			summary: input.summary,
-			title: input.title,
-			url: input.url,
-		};
-		// Exact DOI/arXiv/OpenAlex drafts can go straight to OpenAlex Content.
-		// The landing page is acquired only when OpenAlex has no cached content.
-		preliminary = await stagePreliminaryAcquisition(env, step, draftCandidate, () =>
-			stageSavedUrlAcquisition(
-				env,
-				step,
-				{
-					discoverTwitterThread: input.admission.kind !== 'source',
-					isMonitoredOnly: input.admission.kind === 'source',
-					processingId: input.processingId,
-					sourceAvatarUrl: input.sourceAvatarUrl,
-					sourceUrl: input.url,
-				},
-				input.expectedProviderRevision,
-			),
-		);
-		acquiredContent = preliminary.acquiredContent;
-		if (!acquiredContent) {
-			throw new ResourceProcessingRejectedError(
-				`Resource draft ${input.processingId} produced no acquired content`,
-				'ResourceContentMissingError',
-			);
-		}
-		const canonicalUrl = acquiredContent.canonicalUrl?.trim() || input.url;
-		let publishedDate = input.publishedDate;
-		if (publishedDate === null && acquiredContent.publishedDate?.trim()) {
-			const parsed = new Date(acquiredContent.publishedDate);
-			if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
-		}
-		initialResource = {
+				? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]
+				: [],
+	);
+	const sourceId = input.admission.kind === 'source' ? input.admission.sourceId : null;
+	const acquiredContent = await stageSavedUrlAcquisition(
+		env,
+		step,
+		{
+			discoverTwitterThread: input.admission.kind !== 'source',
+			isMonitoredOnly: input.admission.kind === 'source',
+			processingId: input.processingId,
+			sourceAvatarUrl: input.sourceAvatarUrl,
+			sourceUrl: input.url,
+		},
+		input.expectedProviderRevision,
+	);
+	const canonicalUrl = acquiredContent.canonicalUrl?.trim() || input.url;
+	let publishedDate = input.publishedDate;
+	if (publishedDate === null && acquiredContent.publishedDate?.trim()) {
+		const parsed = new Date(acquiredContent.publishedDate);
+		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
+	}
+	return {
+		acquiredContent,
+		resource: {
 			...toResourceIdentityColumns(identity),
 			processing_id: input.processingId,
 			source_id: sourceId,
@@ -301,74 +284,96 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 			storage_key: null,
 			file_type: acquiredContent.fileType,
 			normalized_url: canonicalUrl,
-		};
-	} else {
-		initialResource = input.stored.resource;
-		if (input.kind === 'reacquire') {
-			const locator = exactPlatformLocator(initialResource.resource_identifiers);
-			const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : initialResource.url;
-			if (!sourceUrl) {
-				throw new ResourceProcessingRejectedError(
-					`Resource processing ${initialResource.processing_id} has no source URL`,
-					'ResourceReacquisitionUnsupportedError',
-				);
-			}
-			preliminary = await stagePreliminaryAcquisition(env, step, initialResource, () =>
-				stageSavedUrlAcquisition(
-					env,
-					step,
-					{
-						discoverTwitterThread: true,
-						isMonitoredOnly: input.stored.isMonitoredOnly,
-						processingId: initialResource.processing_id,
-						sourceAvatarUrl: input.stored.sourceAvatarUrl,
-						sourceUrl,
-					},
-					input.expectedProviderRevision,
-				),
-			);
-			acquiredContent = preliminary.acquiredContent;
-		} else {
-			preliminary = { acquiredContent: undefined, explicitResolution: null };
-		}
+		},
+	};
+}
+
+async function acquireExistingResource(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: Extract<ResourcePreparationInput, { kind: 'storedBlob' | 'reacquire' }>,
+): Promise<InitialResourceAcquisition> {
+	const storedResource = input.stored.resource;
+	if (input.kind === 'storedBlob') {
+		return { acquiredContent: undefined, resource: storedResource };
 	}
-	const acquiredResource = input.kind === 'draft' ? initialResource : applyAcquiredMaterial(initialResource, acquiredContent);
-	const rootCanBePaper = !acquiredResource.url || !detectResourceUrl(acquiredResource.url);
+	const locator = exactPlatformLocator(storedResource.resource_identifiers);
+	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : storedResource.url;
+	if (!sourceUrl) {
+		throw new ResourceProcessingRejectedError(
+			`Resource processing ${storedResource.processing_id} has no source URL`,
+			'ResourceReacquisitionUnsupportedError',
+		);
+	}
+	const acquiredContent = await stageSavedUrlAcquisition(
+		env,
+		step,
+		{
+			discoverTwitterThread: true,
+			isMonitoredOnly: input.stored.isMonitoredOnly,
+			processingId: storedResource.processing_id,
+			sourceAvatarUrl: input.stored.sourceAvatarUrl,
+			sourceUrl,
+		},
+		input.expectedProviderRevision,
+	);
+	return { acquiredContent, resource: applyAcquiredMaterial(storedResource, acquiredContent) };
+}
+
+async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, input: ResourcePreparationInput): Promise<PreparedResource> {
+	const acquired = input.kind === 'draft' ? await acquireDraftResource(env, step, input) : await acquireExistingResource(env, step, input);
+	let { acquiredContent, resource } = acquired;
+	const rootCanBePaper = !resource.url || !detectResourceUrl(resource.url);
 	const identityPdfTextArtifact =
-		acquiredResource.storage_key && acquiredResource.file_type === PDF_MIME && acquiredContent?.fileType !== PDF_MIME
-			? await stagePdfTextExtraction(env, step, { sourceStorageKey: acquiredResource.storage_key })
+		resource.storage_key && resource.file_type === PDF_MIME && acquiredContent?.fileType !== PDF_MIME
+			? await stagePdfTextExtraction(env, step, { sourceStorageKey: resource.storage_key })
 			: null;
 	const identifierText = identityPdfTextArtifact?.text?.trim()
 		? identityPdfTextArtifact.text
-		: acquiredResource.file_type === PDF_MIME
-			? acquiredResource.content
+		: resource.file_type === PDF_MIME
+			? resource.content
 			: null;
-	const paperResolution = preliminary.explicitResolution?.metadata
-		? preliminary.explicitResolution
-		: rootCanBePaper
-			? await stagePaperEnrichment(
-					env,
-					step,
-					{
-						...acquiredResource,
-						identifierText,
-						identifiers: preliminary.explicitResolution?.identifiers ?? initialResource.resource_identifiers.filter(isPaperIdentifier),
-					},
-					{ stepName: 'resolve-paper-openalex-with-citations-v1' },
-				)
-			: { contentGrobidXmlUrl: null, contentPdfUrl: null, identifiers: [], metadata: null };
-	const paperEnrichment = paperResolution.metadata;
-	const preferred = await stagePreferredOpenAlexContent(env, step, acquiredResource, acquiredContent, paperResolution, preliminary);
-	acquiredContent = preferred.acquiredContent;
-	const resourceIdentifiers = normalizeResourceIdentifiers([...paperResolution.identifiers, ...preferred.resource.resource_identifiers]);
+	const paperResolution = rootCanBePaper
+		? await stagePaperEnrichment(
+				env,
+				step,
+				{
+					...resource,
+					identifierText,
+					identifiers: resource.resource_identifiers.filter(isPaperIdentifier),
+				},
+				{ stepName: 'resolve-paper-openalex-with-citations-v2' },
+			)
+		: null;
+	if (paperResolution && resource.scope === 'corpus' && !resource.storage_key) {
+		const openAlexContent = await stageOpenAlexContentAcquisition(
+			env,
+			step,
+			{
+				processingId: resource.processing_id,
+				publishedDate: resource.published_date,
+				source: resource.source,
+				summary: resource.summary,
+				title: resource.title,
+				url: resource.url,
+			},
+			paperResolution,
+		);
+		if (openAlexContent) {
+			acquiredContent = openAlexContent;
+			resource = applyAcquiredMaterial(resource, openAlexContent);
+		}
+	}
+	const paperEnrichment = paperResolution?.metadata ?? null;
+	const resourceIdentifiers = normalizeResourceIdentifiers([...(paperResolution?.identifiers ?? []), ...resource.resource_identifiers]);
 	const subjectUrl =
 		acquiredContent?.provider === 'hackernews'
 			? acquiredContent.hackerNewsItem.url?.trim() || null
 			: acquiredContent?.provider === 'twitter'
 				? acquiredContent.subjectUrl?.trim() || null
 				: null;
-	const resource = resolveContentResource({
-		...preferred.resource,
+	resource = resolveContentResource({
+		...resource,
 		resource_identifiers: resourceIdentifiers,
 	});
 	return {
