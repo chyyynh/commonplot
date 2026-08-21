@@ -153,6 +153,7 @@ async function scrapeSavedUrl(
 	monitoredOnly: boolean,
 	sourceAvatarUrl: string | null,
 	resourceId: string,
+	expectedProviderRevision?: string,
 ): Promise<AcquiredContent> {
 	let acquisitionUrl = validateAcquisitionUrl(url);
 	for (;;) {
@@ -165,7 +166,10 @@ async function scrapeSavedUrl(
 						canonicalUrl: acquisitionUrl,
 					});
 				case 'twitter':
-					return sanitizeAcquiredContent({ ...(await scrapeTweet(detected.platformId, env.KAITO_API_KEY)), canonicalUrl: acquisitionUrl });
+					return sanitizeAcquiredContent({
+						...(await scrapeTweet(detected.platformId, env.KAITO_API_KEY, expectedProviderRevision)),
+						canonicalUrl: acquisitionUrl,
+					});
 				case 'hackernews':
 					return sanitizeAcquiredContent({ ...(await scrapeHackerNews(detected.platformId)), canonicalUrl: acquisitionUrl });
 				case 'lesswrong':
@@ -190,11 +194,12 @@ export async function scrapeSavedUrlArtifact(
 	monitoredOnly: boolean,
 	sourceAvatarUrl: string | null,
 	resourceId: string,
+	expectedProviderRevision?: string,
 ): Promise<ReadableStream<Uint8Array>> {
 	try {
 		const result: SavedUrlAcquisitionResult = {
 			status: 'acquired',
-			content: await scrapeSavedUrl(url, env, monitoredOnly, sourceAvatarUrl, resourceId),
+			content: await scrapeSavedUrl(url, env, monitoredOnly, sourceAvatarUrl, resourceId, expectedProviderRevision),
 		};
 		return new Blob([JSON.stringify(result)], { type: 'application/json' }).stream();
 	} catch (error) {
