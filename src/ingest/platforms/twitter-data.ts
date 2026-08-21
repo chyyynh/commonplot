@@ -36,13 +36,7 @@ const TwitterMediaEntitySchema = z.object({
 });
 
 interface RetweetedByData {
-	tweetId?: string;
-	tweetUrl?: string;
-	retweetedAt?: string;
-	authorName: string;
 	authorUserName: string;
-	authorProfilePicture?: string;
-	authorVerified?: boolean;
 }
 
 // twitterapi.io tweet response shape used inside the Twitter platform only.
@@ -80,13 +74,7 @@ export interface Tweet {
 }
 
 const RetweetedByDataSchema = z.object({
-	tweetId: z.string().optional(),
-	tweetUrl: z.string().optional(),
-	retweetedAt: z.string().optional(),
-	authorName: z.string(),
 	authorUserName: z.string(),
-	authorProfilePicture: z.string().optional(),
-	authorVerified: z.boolean().optional(),
 });
 
 const TweetSchema: z.ZodType<Tweet> = z.lazy(() =>
@@ -130,8 +118,6 @@ const TwitterArticleContentSchema = z.object({
 	text: z.string().nullish(),
 	url: z.string().nullish(),
 	previewUrl: z.string().nullish(),
-	width: z.number().int().nonnegative().nullish(),
-	height: z.number().int().nonnegative().nullish(),
 	inlineStyleRanges: z.array(TwitterArticleInlineStyleSchema).nullish(),
 });
 

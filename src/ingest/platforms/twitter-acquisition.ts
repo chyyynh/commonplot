@@ -50,7 +50,6 @@ interface QuotedTweetData {
 interface TwitterMetadata extends TwitterAuthorFields {
 	media?: TwitterMedia[];
 	quotedTweet?: QuotedTweetData;
-	threadPostCount?: number;
 }
 
 type AuthoredTweet = Tweet & { author: NonNullable<Tweet['author']> };
@@ -198,7 +197,7 @@ function buildThreadResourceFields(tweets: Tweet[]): TwitterResourceFields {
 	const first: AuthoredTweet = { ...firstTweet, author: requiredTweetAuthor(firstTweet) };
 	const media = tweets.flatMap(extractTweetMedia);
 	const quotedTweet = tweets.map(extractQuotedTweet).find(Boolean);
-	return buildTweetFields(first, { media, quotedTweet, threadPostCount: tweets.length });
+	return buildTweetFields(first, { media, quotedTweet });
 }
 
 function buildTweetFields(
@@ -207,7 +206,6 @@ function buildTweetFields(
 		externalUrl?: string;
 		media?: TwitterMedia[];
 		quotedTweet?: QuotedTweetData;
-		threadPostCount?: number;
 	} = {},
 ): TwitterResourceFields {
 	const media = options.media ?? extractTweetMedia(tweet);
@@ -215,7 +213,6 @@ function buildTweetFields(
 		...extractTweetAuthor(tweet),
 		media,
 		quotedTweet: options.quotedTweet ?? extractQuotedTweet(tweet),
-		threadPostCount: options.threadPostCount,
 	};
 	return {
 		creators: twitterCreator(metadata),
@@ -371,7 +368,6 @@ function mergePostMetadata(base: PostKindMetadata, thread: PostKindMetadata, twe
 	return {
 		attachments: attachments.slice(0, 16),
 		...((base.quote ?? thread.quote) ? { quote: base.quote ?? thread.quote } : {}),
-		...(thread.threadPostCount === undefined ? {} : { threadPostCount: thread.threadPostCount }),
 	};
 }
 
@@ -504,6 +500,5 @@ function postMetadata(data: TwitterMetadata): PostKindMetadata {
 	return {
 		attachments,
 		...(quoted?.text.trim() && quoteCreator ? { quote: { creator: quoteCreator, text: quoted.text.trim() } } : {}),
-		...(data.threadPostCount === undefined ? {} : { threadPostCount: data.threadPostCount }),
 	};
 }

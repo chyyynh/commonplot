@@ -62,7 +62,6 @@ const PostQuoteSchema = z.object({
 const PostKindMetadataSchema = z.object({
 	attachments: z.array(ResourceMediaAttachmentSchema).max(16),
 	quote: PostQuoteSchema.optional(),
-	threadPostCount: z.number().int().positive().optional(),
 });
 
 const VideoKindMetadataSchema = z.object({

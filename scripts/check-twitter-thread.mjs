@@ -70,7 +70,7 @@ assert.equal(
 	twitterSelfReplyRootId(
 		tweet('14', 'Alice', '1', {
 			inReplyToUsername: 'Alice',
-			retweetedBy: { authorName: 'Carol', authorUserName: 'Carol' },
+			retweetedBy: { authorUserName: 'Carol' },
 		}),
 	),
 	null,

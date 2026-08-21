@@ -34,19 +34,13 @@ function monitoredAuthorUserName(tweet: Tweet): string | null {
 function normalizeRetweet(tweet: Tweet): Tweet | null {
 	if (tweet.retweeted_tweet) {
 		const retweeter = tweet.author;
-		if (!retweeter?.name.trim() || !retweeter.userName.trim()) {
+		if (!retweeter?.userName.trim()) {
 			throw new Error(`Retweet ${tweet.id ?? tweet.url} has no complete author`);
 		}
 		const normalized = {
 			...tweet.retweeted_tweet,
 			retweetedBy: {
-				tweetId: tweet.id,
-				tweetUrl: tweet.url,
-				retweetedAt: tweet.createdAt,
-				authorName: retweeter.name,
 				authorUserName: retweeter.userName,
-				authorProfilePicture: retweeter.profilePicture,
-				authorVerified: retweeter.isBlueVerified,
 			},
 		};
 		if (!normalized.author?.name.trim() || !normalized.author.userName.trim()) {
@@ -209,8 +203,6 @@ function twitterSelfReplyRootDraft(tweet: Tweet, source: MonitoredSource): Twitt
 		title: `Twitter thread by @${author}`,
 		publishedDate: null,
 		summary: null,
-		kind: 'post',
-		resourcePlatform: 'twitter',
 		originalLang: tweet.lang,
 		keywords: [],
 		refreshRevision,
@@ -234,8 +226,6 @@ function twitterResourceDraft(tweet: Tweet, source: MonitoredSource): TwitterRes
 		title: buildTweetTitle(tweet),
 		publishedDate,
 		summary: null,
-		kind: 'post',
-		resourcePlatform: 'twitter',
 		originalLang: tweet.lang,
 		keywords: tweet.hashTags,
 	};
