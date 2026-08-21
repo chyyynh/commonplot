@@ -1,69 +1,11 @@
 import { resourceIdentityForDetectedPlatform } from '@core-shared/resource-types';
-import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
-import { withCoreDb } from '@db/client';
-import { attachSourcesToResources, type ExistingResourceRecord, getExistingResourcesByUrl } from '@ingest/domain/resource-admission-store';
+import { detectResourceUrl } from '@core-shared/url';
+import type { SourceResourceDraft } from '@ingest/domain/resource-admission-store';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
-import { admitPendingSourceResource, enqueueProcessing } from '@ingest/workflow';
-import { type FeedEntry, loadFeed } from './rss-feed';
+import { admitDiscoveredSourceResources } from '@ingest/workflow';
+import { loadFeed } from './rss-feed';
 
 const FEED_CONCURRENCY = 4;
-const ITEM_CONCURRENCY = 5;
-
-async function enqueueFeedItem(env: CoreEnv, feed: MonitoredSource, item: FeedEntry): Promise<void> {
-	if (!item.title) throw new Error(`RSS item from ${feed.name} has no title: ${item.url}`);
-	const detected = detectResourceUrl(item.url);
-	const identity = detected
-		? resourceIdentityForDetectedPlatform(detected.resourcePlatform)
-		: ({ kind: 'blog', resourcePlatform: null } as const);
-	await admitPendingSourceResource(env, {
-		sourceId: feed.id,
-		url: item.url,
-		title: item.title,
-		publishedDate: item.publishedDate,
-		summary: item.summary,
-		...identity,
-		originalLang: item.originalLang,
-	});
-}
-
-/**
- * Claims rows that already existed before this feed was monitored — a saved URL,
- * or an entry that resolved to a special platform (Hacker News from hnrss,
- * YouTube from a channel feed). Only unowned rows are sent, so after the first cycle
- * this issues no statement at all.
- */
-async function reattachFeedProvenance(env: CoreEnv, feed: MonitoredSource, existing: ExistingResourceRecord[]): Promise<void> {
-	const unowned = existing.filter((resource) => resource.needsSourceAttach).map((resource) => resource.id);
-	if (!unowned.length) return;
-	await withCoreDb(env, (db) =>
-		attachSourcesToResources(
-			db,
-			unowned.map((resourceId) => ({ resourceId, sourceId: feed.id })),
-		),
-	);
-}
-
-/** Runs `work` over `items` in bounded batches, isolating and logging each failure. */
-async function enqueueInBatches<T>(items: T[], describe: (item: T) => string, msg: string, work: (item: T) => Promise<unknown>) {
-	let done = 0;
-	for (let index = 0; index < items.length; index += ITEM_CONCURRENCY) {
-		const batch = items.slice(index, index + ITEM_CONCURRENCY);
-		const results = await Promise.allSettled(batch.map(work));
-		for (const [resultIndex, result] of results.entries()) {
-			if (result.status === 'fulfilled') {
-				done++;
-				continue;
-			}
-			console.error({
-				tag: 'RSS',
-				msg,
-				url: describe(batch[resultIndex] as T),
-				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-			});
-		}
-	}
-	return done;
-}
 
 async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
 	const { entries, itemCount } = await loadFeed(feed.handle);
@@ -75,32 +17,58 @@ async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
 		return;
 	}
 
-	const existing = await withCoreDb(env, (db) =>
-		getExistingResourcesByUrl(
-			db,
-			entries.map(({ url }) => url),
-		),
-	);
-	await reattachFeedProvenance(env, feed, existing);
-
-	const existingSet = new Set(existing.map((resource) => normalizeUrl(resource.url)));
-	const newItems = entries.filter(({ url }) => !existingSet.has(url));
-	const retryable = existing.filter((resource) => resource.shouldRetryEnrichment);
-	const retried = await enqueueInBatches(
-		retryable,
-		(r) => r.url,
-		'Existing resource retry enqueue failed',
-		(r) => enqueueProcessing(env, r.id),
-	);
-	console.info({ tag: 'RSS', msg: 'Feed processed', feed: feed.name, newCount: newItems.length, retried, totalCount: itemCount });
-
-	const queued = await enqueueInBatches(
-		newItems,
-		({ url }) => url,
-		'Item enqueue failed',
-		(item) => enqueueFeedItem(env, feed, item),
-	);
-	console.info({ tag: 'RSS', msg: 'Feed enqueue done', feed: feed.name, queued, total: newItems.length });
+	const drafts: SourceResourceDraft[] = [];
+	for (const item of entries) {
+		try {
+			if (!item.title) throw new Error(`RSS item from ${feed.name} has no title: ${item.url}`);
+			const detected = detectResourceUrl(item.url);
+			drafts.push({
+				sourceId: feed.id,
+				url: item.url,
+				title: item.title,
+				publishedDate: item.publishedDate,
+				summary: item.summary,
+				...(detected
+					? resourceIdentityForDetectedPlatform(detected.resourcePlatform)
+					: ({ kind: 'blog', resourcePlatform: null } as const)),
+				originalLang: item.originalLang,
+			});
+		} catch (error) {
+			console.error({
+				tag: 'RSS',
+				msg: 'Item discovery failed',
+				url: item.url,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+	const outcomes = await admitDiscoveredSourceResources(env, drafts);
+	let created = 0;
+	let existing = 0;
+	let retried = 0;
+	for (const [index, outcome] of outcomes.entries()) {
+		if (outcome.status === 'rejected') {
+			console.error({
+				tag: 'RSS',
+				msg: 'Resource discovery admission failed',
+				url: drafts[index]?.url,
+				error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
+			});
+			continue;
+		}
+		if (outcome.value === 'created') created++;
+		else if (outcome.value === 'retried') retried++;
+		else existing++;
+	}
+	console.info({
+		tag: 'RSS',
+		msg: 'Feed processed',
+		feed: feed.name,
+		created,
+		existing,
+		retried,
+		totalCount: itemCount,
+	});
 	await markSourcesScraped(env, [feed.id]);
 }
 

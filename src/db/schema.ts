@@ -66,7 +66,7 @@ export const resources = pgTable(
 			.default('pending')
 			.notNull(),
 		// Consecutive failed enrichment runs; drives retry backoff and the give-up
-		// point in getExistingResourcesByUrl. Reset to 0 whenever enrichment lands.
+		// point in discovery admission. Reset to 0 whenever enrichment lands.
 		enrichmentAttempts: integer('enrichment_attempts').default(0).notNull(),
 		createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
 		updatedAt: timestamp('updated_at', { mode: 'date' }).defaultNow().notNull(),

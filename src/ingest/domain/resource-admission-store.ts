@@ -7,7 +7,7 @@ import {
 	parseResourceIdentity,
 } from '@core-shared/resource-types';
 import { normalizeUrl } from '@core-shared/url';
-import { type CoreDb, textArraySql, withCoreDb } from '@db/client';
+import { type CoreDb, withCoreDb } from '@db/client';
 import { contentResourceIdentitySql } from '@db/resource-identity-sql';
 import { type SQL, sql } from 'drizzle-orm';
 import { resourceSourceSnapshotHash } from './resource-revision';
@@ -236,49 +236,60 @@ async function syncOriginalResourceTranslation(db: CoreDb, resourceId: string, r
 	}
 }
 
-export type ExistingResourceRecord = {
-	id: string;
-	url: string;
-	shouldRetryEnrichment: boolean;
-	needsSourceAttach: boolean;
-};
+/**
+ * Finds previously discovered Resources and atomically claims missing source
+ * provenance. Provider monitors supply canonical drafts; the store owns the
+ * database handshake and returns only the admission decision they need.
+ */
+export async function claimExistingDiscoveredResources(
+	db: CoreDb,
+	drafts: Array<Pick<SourceResourceDraft, 'sourceId' | 'url'>>,
+): Promise<Array<{ id: string; url: string; shouldRetryEnrichment: boolean }>> {
+	const discovered = new Map<string, string>();
+	for (const draft of drafts) {
+		const url = normalizeUrl(draft.url);
+		if (!discovered.has(url)) discovered.set(url, draft.sourceId);
+	}
+	if (!discovered.size) return [];
 
-export async function getExistingResourcesByUrl(db: CoreDb, urls: string[]): Promise<ExistingResourceRecord[]> {
-	if (urls.length === 0) return [];
-	const result = await db.execute<ExistingResourceRecord>(sql`
+	const values = [...discovered].map(([url, sourceId]) => sql`(${url}, ${sourceId}::uuid)`);
+	const result = await db.execute<{ id: string; url: string; shouldRetryEnrichment: boolean }>(sql`
+		WITH discovered(normalized_url, source_id) AS (
+			VALUES ${sql.join(values, sql`, `)}
+		), attached AS (
+			UPDATE resources AS resource
+			SET source_id = discovered.source_id
+			FROM discovered
+			WHERE resource.normalized_url = discovered.normalized_url
+			  AND resource.source_id IS NULL
+			  AND ${contentResourceIdentitySql({
+					kind: sql`resource.kind`,
+					resourcePlatform: sql`resource.resource_platform`,
+				})}
+			RETURNING resource.id
+		)
 		SELECT
-			r.id::text AS id,
-			r.normalized_url AS url,
+			resource.id::text AS id,
+			resource.normalized_url AS url,
 			(
-				r.enrichment_status = 'pending'
+				resource.enrichment_status = 'pending'
 				OR (
-					r.enrichment_status = 'failed'
-					AND r.enrichment_attempts < ${MAX_ENRICHMENT_ATTEMPTS}
+					resource.enrichment_status = 'failed'
+					AND resource.enrichment_attempts < ${MAX_ENRICHMENT_ATTEMPTS}
 					-- 30m, 1h, 2h, 4h, then give up: a feed re-lists the same item for
 					-- days, and a flat 30-minute window re-ran a dead URL every cycle.
-					AND r.updated_at < NOW() - (INTERVAL '30 minutes' * POWER(2, GREATEST(r.enrichment_attempts, 1) - 1))
+					AND resource.updated_at < NOW() - (
+						INTERVAL '30 minutes' * POWER(2, GREATEST(resource.enrichment_attempts, 1) - 1)
+					)
 				)
-			) AS "shouldRetryEnrichment",
-			(r.source_id IS NULL) AS "needsSourceAttach"
-		FROM resources r
-			WHERE r.normalized_url = ANY(${textArraySql(urls)})
-			  AND ${contentResourceIdentitySql({
-					kind: sql`r.kind`,
-					resourcePlatform: sql`r.resource_platform`,
-				})}
+			) AS "shouldRetryEnrichment"
+		FROM resources AS resource
+		JOIN discovered ON discovered.normalized_url = resource.normalized_url
+		LEFT JOIN attached ON attached.id = resource.id
+		WHERE ${contentResourceIdentitySql({
+			kind: sql`resource.kind`,
+			resourcePlatform: sql`resource.resource_platform`,
+		})}
 	`);
 	return result.rows;
-}
-
-/** Claims rows that were still unowned when the caller loaded them. */
-export async function attachSourcesToResources(db: CoreDb, attachments: Array<{ resourceId: string; sourceId: string }>): Promise<void> {
-	if (!attachments.length) return;
-	const values = attachments.map(({ resourceId, sourceId }) => sql`(${resourceId}::uuid, ${sourceId}::uuid)`);
-	await db.execute(sql`
-		UPDATE resources AS resource
-		SET source_id = attachment.source_id
-		FROM (VALUES ${sql.join(values, sql`, `)}) AS attachment(resource_id, source_id)
-		WHERE resource.id = attachment.resource_id
-		  AND resource.source_id IS NULL
-	`);
 }

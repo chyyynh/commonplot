@@ -1,16 +1,9 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { normalizeUrl } from '@core-shared/url';
-import { withCoreDb } from '@db/client';
-import { attachSourcesToResources, type ExistingResourceRecord, getExistingResourcesByUrl } from '@ingest/domain/resource-admission-store';
+import type { SourceResourceDraft } from '@ingest/domain/resource-admission-store';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
-import { admitPendingSourceResource, enqueueProcessing } from '@ingest/workflow';
+import { admitDiscoveredSourceResources } from '@ingest/workflow';
 import { buildTweetTitle, type Tweet } from './twitter-acquisition';
-
-function requiredTweetDate(value: string, tweetId: string): Date {
-	const date = new Date(value);
-	if (Number.isNaN(date.getTime())) throw new Error(`Tweet ${tweetId} has invalid publishedDate`);
-	return date;
-}
 
 // Twitter Monitor
 
@@ -18,7 +11,6 @@ const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/adv
 
 /** Max usernames per query batch to stay within query length limits */
 const TWITTER_BATCH_SIZE = 20;
-const TWITTER_SAVE_CONCURRENCY = 5;
 const TWITTER_WATERMARK_OVERLAP_MS = 60 * 60 * 1000;
 
 function normalizeRetweet(tweet: Tweet): Tweet | null {
@@ -156,12 +148,9 @@ type TweetSaveResult = {
 	hasUnattributedFailure: boolean;
 };
 
-type TwitterResourceDraft = {
+type TwitterResourceDraft = SourceResourceDraft & {
 	tweet: Tweet;
 	source: MonitoredSource;
-	url: string;
-	title: string;
-	publishedDate: Date;
 };
 
 function twitterResourceDrafts(
@@ -183,12 +172,20 @@ function twitterResourceDrafts(
 			if (!source) throw new Error(`Tweet ${tweet.id ?? tweet.url} is not attributed to a monitored source`);
 			const url = normalizeUrl(tweet.url);
 			if (!drafts.has(url)) {
+				const publishedDate = new Date(tweet.createdAt);
+				if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id ?? url} has invalid publishedDate`);
 				drafts.set(url, {
 					tweet,
 					source,
+					sourceId: source.id,
 					url,
 					title: buildTweetTitle(tweet),
-					publishedDate: requiredTweetDate(tweet.createdAt, tweet.id ?? url),
+					publishedDate,
+					summary: null,
+					kind: 'post',
+					resourcePlatform: 'twitter',
+					originalLang: tweet.lang,
+					keywords: tweet.hashTags,
 				});
 			}
 		} catch (error) {
@@ -206,30 +203,6 @@ function twitterResourceDrafts(
 	return { drafts, failedUserNames, hasUnattributedFailure };
 }
 
-async function persistTwitterResourceDraft(
-	env: CoreEnv,
-	draft: TwitterResourceDraft,
-	existing: ExistingResourceRecord | undefined,
-): Promise<void> {
-	if (existing) {
-		if (existing.shouldRetryEnrichment) await enqueueProcessing(env, existing.id);
-		console.info({ tag: 'TWITTER', msg: 'Resource already exists (dedup)', author: draft.tweet.author?.userName });
-		return;
-	}
-	await admitPendingSourceResource(env, {
-		sourceId: draft.source.id,
-		url: draft.url,
-		title: draft.title,
-		publishedDate: draft.publishedDate,
-		summary: null,
-		kind: 'post',
-		resourcePlatform: 'twitter',
-		originalLang: draft.tweet.lang,
-		keywords: draft.tweet.hashTags,
-	});
-	console.info({ tag: 'TWITTER', msg: 'Saved discovered tweet', author: draft.tweet.author?.userName });
-}
-
 async function saveTweets(
 	env: CoreEnv,
 	tweets: Tweet[],
@@ -240,24 +213,7 @@ async function saveTweets(
 	const { drafts, failedUserNames, hasUnattributedFailure } = prepared;
 	const pending = [...drafts.values()];
 	if (!pending.length) return { processed, failedUserNames, hasUnattributedFailure };
-	let existingByUrl: Map<string, ExistingResourceRecord>;
-	try {
-		const existing = await withCoreDb(env, async (db) => {
-			const rows = await getExistingResourcesByUrl(
-				db,
-				pending.map(({ url }) => url),
-			);
-			await attachSourcesToResources(
-				db,
-				rows.flatMap((resource) => {
-					const draft = drafts.get(normalizeUrl(resource.url));
-					return resource.needsSourceAttach && draft ? [{ resourceId: resource.id, sourceId: draft.source.id }] : [];
-				}),
-			);
-			return rows;
-		});
-		existingByUrl = new Map(existing.map((resource) => [normalizeUrl(resource.url), resource]));
-	} catch (error) {
+	const outcomes = await admitDiscoveredSourceResources(env, pending).catch((error) => {
 		console.error({
 			tag: 'TWITTER',
 			msg: 'Twitter resource batch lookup failed',
@@ -266,26 +222,28 @@ async function saveTweets(
 		for (const draft of pending) {
 			failedUserNames.add(draft.source.handle);
 		}
-		return { processed, failedUserNames, hasUnattributedFailure };
-	}
+		return null;
+	});
+	if (!outcomes) return { processed, failedUserNames, hasUnattributedFailure };
 
-	for (let offset = 0; offset < pending.length; offset += TWITTER_SAVE_CONCURRENCY) {
-		const batch = pending.slice(offset, offset + TWITTER_SAVE_CONCURRENCY);
-		const results = await Promise.allSettled(batch.map((draft) => persistTwitterResourceDraft(env, draft, existingByUrl.get(draft.url))));
-		for (const [index, result] of results.entries()) {
-			if (result.status === 'fulfilled') {
-				processed++;
-				continue;
-			}
-			const draft = batch[index]!;
-			failedUserNames.add(draft.source.handle);
-			console.error({
+	for (const [index, outcome] of outcomes.entries()) {
+		const draft = pending[index]!;
+		if (outcome.status === 'fulfilled') {
+			processed++;
+			console.info({
 				tag: 'TWITTER',
-				msg: 'Tweet save failed',
-				url: draft.url,
-				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+				msg: outcome.value === 'created' ? 'Saved discovered tweet' : 'Resource already exists (dedup)',
+				author: draft.tweet.author?.userName,
 			});
+			continue;
 		}
+		failedUserNames.add(draft.source.handle);
+		console.error({
+			tag: 'TWITTER',
+			msg: 'Tweet save failed',
+			url: draft.url,
+			error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
+		});
 	}
 	return { processed, failedUserNames, hasUnattributedFailure };
 }

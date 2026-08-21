@@ -9,9 +9,10 @@ import {
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
 import type { PaperMetadata, PdfExtractionMetadata, ResourceForProcessing } from '@core-shared/types';
-import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
-import { withCoreTx } from '@db/client';
+import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '@core-shared/url';
+import { withCoreDb, withCoreTx } from '@db/client';
 import {
+	claimExistingDiscoveredResources,
 	claimStalePendingResourceAdmissions,
 	type SourceResourceDraft,
 	upsertPendingSourceResource,
@@ -75,6 +76,7 @@ const RESOURCE_PROCESSING_WORKFLOW_REVISION = 'resource-v6';
 // as fresh ingest; pace reconciliation well below the Workflow creation limit.
 const PENDING_RESOURCE_RECONCILE_LIMIT = 50;
 const PENDING_RESOURCE_RECONCILE_CONCURRENCY = 10;
+const DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY = 5;
 const RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG = {
 	retries: DURABLE_WORKFLOW_RETRIES,
 	timeout: '30 seconds',
@@ -92,6 +94,34 @@ export async function enqueueProcessing(env: CoreEnv, resourceId: string, source
 export async function admitPendingSourceResource(env: CoreEnv, draft: SourceResourceDraft): Promise<void> {
 	const pending = await withCoreTx(env, (db) => upsertPendingSourceResource(db, draft));
 	if (pending.needsProcessing) await enqueueProcessing(env, pending.resourceId, pending.sourceRevision ?? undefined);
+}
+
+export async function admitDiscoveredSourceResources(
+	env: CoreEnv,
+	drafts: SourceResourceDraft[],
+): Promise<Array<PromiseSettledResult<'created' | 'existing' | 'retried'>>> {
+	if (!drafts.length) return [];
+	const existing = await withCoreDb(env, (db) => claimExistingDiscoveredResources(db, drafts));
+	const existingByUrl = new Map(existing.map((resource) => [normalizeUrl(resource.url), resource]));
+	const outcomes: Array<PromiseSettledResult<'created' | 'existing' | 'retried'>> = [];
+	for (let offset = 0; offset < drafts.length; offset += DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY) {
+		const batch = drafts.slice(offset, offset + DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY);
+		outcomes.push(
+			...(await Promise.allSettled(
+				batch.map(async (draft) => {
+					const resource = existingByUrl.get(normalizeUrl(draft.url));
+					if (!resource) {
+						await admitPendingSourceResource(env, draft);
+						return 'created' as const;
+					}
+					if (!resource.shouldRetryEnrichment) return 'existing' as const;
+					await enqueueProcessing(env, resource.id);
+					return 'retried' as const;
+				}),
+			)),
+		);
+	}
+	return outcomes;
 }
 
 /** Re-admits app-owned pending rows whose initial DB -> Workflow handoff was interrupted. */
