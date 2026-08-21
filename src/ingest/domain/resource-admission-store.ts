@@ -7,6 +7,7 @@ import {
 	parseResourceIdentity,
 	type ResourceTranslationSource,
 } from '@core-shared/resource-types';
+import { normalizeUrl } from '@core-shared/url';
 import { type CoreDb, textArraySql, uuidArraySql, withCoreDb, withCoreTx } from '@db/client';
 import { contentResourceIdentitySql } from '@db/resource-identity-sql';
 import { resources, resourceTranslations } from '@db/schema';
@@ -92,6 +93,7 @@ async function pendingSourceResourceRecord(base: SourceResourceDraft): Promise<P
 	}
 	const originalLang = canonicalizeOptionalResourceLang(base.originalLang) ?? DEFAULT_RESOURCE_LANG;
 	const publishedDate = base.publishedDate === null ? null : dateValue(base.publishedDate, 'published_date');
+	const url = normalizeUrl(requiredString(base.url, 'url'));
 	const sourceRevision = await resourceSourceSnapshotHash({
 		content: base.content,
 		fileType: null,
@@ -102,14 +104,14 @@ async function pendingSourceResourceRecord(base: SourceResourceDraft): Promise<P
 		summary: base.summary,
 		title: base.title,
 		translationSource: 'original',
-		url: base.url,
+		url,
 	});
 	return {
 		...explicitIdentity,
 		id: crypto.randomUUID(),
 		sourceId: cleanString(base.sourceId),
-		url: cleanString(base.url),
-		normalizedUrl: cleanString(base.url),
+		url,
+		normalizedUrl: url,
 		originalLang,
 		title: cleanString(base.title),
 		summary: cleanString(base.summary),

@@ -63,19 +63,6 @@ export function exactPlatformLocator(identifiers: readonly ResourceIdentifier[])
 	return locator ? { resourcePlatform: locator[0], platformId: locator[1] } : null;
 }
 
-export function canonicalPlatformUrl(locator: ExactPlatformLocator): string {
-	switch (locator.resourcePlatform) {
-		case 'hackernews':
-			return `https://news.ycombinator.com/item?id=${locator.platformId}`;
-		case 'lesswrong':
-			return `https://lesswrong.com/posts/${locator.platformId}`;
-		case 'twitter':
-			return `https://x.com/i/status/${locator.platformId}`;
-		case 'youtube':
-			return `https://www.youtube.com/watch?v=${locator.platformId}`;
-	}
-}
-
 function resolvedPlatformInput(
 	platform: Exclude<ResourcePlatform, null>,
 	locator: ExactPlatformLocator,

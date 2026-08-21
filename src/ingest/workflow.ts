@@ -9,7 +9,7 @@ import {
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
 import type { PaperMetadata, PdfExtractionMetadata, ResourceForProcessing } from '@core-shared/types';
-import { detectResourceUrl } from '@core-shared/url';
+import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
 import { withCoreTx } from '@db/client';
 import {
 	claimStalePendingResourceAdmissions,
@@ -41,7 +41,6 @@ import { stagePdfTextExtraction } from './platforms/pdf';
 import { rehostResourceImage } from './resource-image-rehosting';
 import { markResourceEnrichmentFailed, persistProcessedResource, processedResourceImageSources } from './resource-persistence';
 import {
-	canonicalPlatformUrl,
 	exactPlatformLocator,
 	type ResolvedContentResourceInput,
 	resolveContentResource,
@@ -194,7 +193,7 @@ function shouldAcquireContent(shell: ResourceProcessingShell, force = false): bo
 
 async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, resource: ResourceForProcessing): Promise<AcquiredContent> {
 	const locator = exactPlatformLocator(resource.resource_identifiers);
-	const sourceUrl = locator ? canonicalPlatformUrl(locator) : resource.url;
+	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : resource.url;
 	if (!sourceUrl) throw new Error(`Resource ${resource.id} has no source URL`);
 	// A monitored source's feed decided to list this; anything else is a person's
 	// explicit save, which feed policies must not veto.
@@ -315,7 +314,7 @@ async function prepareResourceForProcessing(
 	}
 	const identifiers = resolvedResourceIdentifiers(resolution, resourceIdentifiers);
 	const locator = exactPlatformLocator(identifiers);
-	const resolvedUrl = locator ? canonicalPlatformUrl(locator) : preferred.resource.url;
+	const resolvedUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : preferred.resource.url;
 	return {
 		acquiredContent,
 		identityPdfTextArtifact,
@@ -474,6 +473,13 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 				);
 			}
 			await step.do('sync-ai-search', AI_SEARCH_SYNC_STEP_CONFIG, () => syncCorpusItem(this.env, persistedResourceId));
+			if (persistence.retiredResourceIds.length) {
+				await step.do('delete-merged-ai-search-items-v1', AI_SEARCH_SYNC_STEP_CONFIG, async () => {
+					for (const retiredResourceId of persistence.retiredResourceIds) {
+						await syncCorpusItem(this.env, retiredResourceId);
+					}
+				});
+			}
 
 			console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, table: 'resources' });
 			return {

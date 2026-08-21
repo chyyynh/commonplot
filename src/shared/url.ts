@@ -63,16 +63,25 @@ export function normalizeUrl(url: string): string {
 	if (!parsed) return url;
 
 	parsed.hostname = canonicalHost(parsed.hostname);
-	if (isYouTubeHost(parsed.hostname)) {
-		const videoId = extractYouTubeId(parsed.toString());
-		if (videoId) return `https://youtube.com/watch?v=${videoId}`;
-	}
-	const lessWrongPostId = extractLessWrongPostId(parsed.toString());
-	if (lessWrongPostId) return `https://lesswrong.com/posts/${lessWrongPostId}`;
+	const detected = detectResourceUrl(parsed.toString());
+	if (detected) return canonicalResourcePlatformUrl(detected.resourcePlatform, detected.platformId);
 
 	for (const param of TRACKING_PARAMS) parsed.searchParams.delete(param);
 	parsed.searchParams.sort();
 	return parsed.toString();
+}
+
+export function canonicalResourcePlatformUrl(resourcePlatform: Exclude<ResourcePlatform, null>, platformId: string): string {
+	switch (resourcePlatform) {
+		case 'hackernews':
+			return `https://news.ycombinator.com/item?id=${platformId}`;
+		case 'lesswrong':
+			return `https://lesswrong.com/posts/${platformId}`;
+		case 'twitter':
+			return `https://x.com/i/status/${platformId}`;
+		case 'youtube':
+			return `https://youtube.com/watch?v=${platformId}`;
+	}
 }
 
 function extractYouTubeId(url: string): string | null {

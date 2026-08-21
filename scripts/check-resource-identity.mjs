@@ -6,7 +6,7 @@ import {
 	resourceIdentityForDetectedPlatform,
 	VALID_KIND_PLATFORMS,
 } from '../src/shared/resource-types.ts';
-import { detectResourceUrl, parseTwitterUsername } from '../src/shared/url.ts';
+import { detectResourceUrl, normalizeUrl, parseTwitterUsername } from '../src/shared/url.ts';
 
 const canonicalIdentities = Object.entries(VALID_KIND_PLATFORMS).flatMap(([kind, resourcePlatforms]) =>
 	resourcePlatforms.map((resourcePlatform) => ({ kind, resourcePlatform })),
@@ -37,6 +37,14 @@ assert.deepEqual(detectResourceUrl('https://www.lesswrong.com/posts/A2kJKqnHhh5H
 	platformId: 'A2kJKqnHhh5Hq4p2S',
 });
 assert.equal(detectResourceUrl('https://example.com/article'), null);
+
+const canonicalPlatformUrlCases = [
+	['https://twitter.com/openai/status/1234567890?s=20', 'https://x.com/i/status/1234567890'],
+	['https://news.ycombinator.com/item?id=12345678&utm_source=feed', 'https://news.ycombinator.com/item?id=12345678'],
+	['https://youtu.be/dQw4w9WgXcQ?t=43', 'https://youtube.com/watch?v=dQw4w9WgXcQ'],
+	['https://www.lesswrong.com/posts/A2kJKqnHhh5Hq4p2S/example-slug', 'https://lesswrong.com/posts/A2kJKqnHhh5Hq4p2S'],
+];
+for (const [input, expected] of canonicalPlatformUrlCases) assert.equal(normalizeUrl(input), expected);
 
 const twitterUsernameCases = [
 	['openai', 'openai'],
@@ -81,4 +89,5 @@ console.info({
 	sourceRevisionCases: 4,
 	twitterUsernameCases: twitterUsernameCases.length,
 	urlCases: 5,
+	canonicalPlatformUrlCases: canonicalPlatformUrlCases.length,
 });
