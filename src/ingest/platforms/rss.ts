@@ -24,7 +24,6 @@ async function enqueueFeedItem(env: CoreEnv, feed: MonitoredSource, item: FeedIt
 		summary: feedSummary(item.summary),
 		...identity,
 		originalLang: item.language,
-		content: null,
 	});
 }
 

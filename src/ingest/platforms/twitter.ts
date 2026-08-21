@@ -26,7 +26,6 @@ async function enqueueTwitterResource(
 		kind: 'post',
 		resourcePlatform: 'twitter',
 		originalLang: data.originalLang,
-		content: null,
 		keywords: data.hashTags,
 	});
 }

@@ -60,27 +60,22 @@ export type SourceResourceDraft = {
 	sourceId: string;
 	url: string;
 	title: string;
-	publishedDate: Date | string | null;
+	publishedDate: Date | null;
 	summary: string | null;
 	originalLang?: string;
-	content: string | null;
 	keywords?: string[];
-	tags?: string[];
 } & ContentResourceIdentity;
 
 type PendingSourceResourceRecord = {
 	id: string;
-	sourceId: string | null;
-	url: string | null;
-	normalizedUrl: string | null;
+	sourceId: string;
+	url: string;
 	originalLang: string;
-	title: string | null;
+	title: string;
 	summary: string | null;
-	content: string | null;
 	publishedDate: Date | null;
 	scrapedDate: Date;
 	keywords: string[];
-	tags: string[];
 	sourceRevision: string;
 } & ContentResourceIdentity;
 
@@ -92,32 +87,31 @@ async function pendingSourceResourceRecord(base: SourceResourceDraft): Promise<P
 	const originalLang = canonicalizeOptionalResourceLang(base.originalLang) ?? DEFAULT_RESOURCE_LANG;
 	const publishedDate = base.publishedDate === null ? null : dateValue(base.publishedDate, 'published_date');
 	const url = normalizeUrl(requiredString(base.url, 'url'));
+	const title = requiredString(base.title, 'title');
+	const summary = cleanString(base.summary);
 	const sourceRevision = await resourceSourceSnapshotHash({
-		content: base.content,
+		content: null,
 		fileType: null,
 		kind: explicitIdentity.kind,
 		originalLang,
 		publishedDate: publishedDate?.toISOString() ?? null,
 		resourcePlatform: explicitIdentity.resourcePlatform,
-		summary: base.summary,
-		title: base.title,
+		summary,
+		title,
 		translationSource: 'original',
 		url,
 	});
 	return {
 		...explicitIdentity,
 		id: crypto.randomUUID(),
-		sourceId: cleanString(base.sourceId),
+		sourceId: requiredString(base.sourceId, 'source_id'),
 		url,
-		normalizedUrl: url,
 		originalLang,
-		title: cleanString(base.title),
-		summary: cleanString(base.summary),
-		content: cleanString(base.content),
+		title,
+		summary,
 		publishedDate,
 		scrapedDate: new Date(),
 		keywords: stringArrayValue(base.keywords ?? [], 'keywords'),
-		tags: stringArrayValue(base.tags ?? [], 'tags'),
 		sourceRevision,
 	};
 }
@@ -131,7 +125,7 @@ type PendingSourceResource = {
 export async function upsertPendingSourceResource(db: CoreDb, base: SourceResourceDraft): Promise<PendingSourceResource> {
 	const record = await pendingSourceResourceRecord(base);
 	const result = await db.execute<{ enrichment_status: string; id: string; source_revision: string | null }>(
-		resourceUpsertStatement(record),
+		resourceInsertStatement(record),
 	);
 	const row = result.rows[0];
 	const resourceId = row?.id;
@@ -144,19 +138,7 @@ export async function upsertPendingSourceResource(db: CoreDb, base: SourceResour
 	};
 }
 
-function resourceUpsertStatement(record: PendingSourceResourceRecord): SQL {
-	if (record.normalizedUrl) {
-		return resourceInsertStatement(
-			record,
-			sql`ON CONFLICT (normalized_url) WHERE normalized_url IS NOT NULL DO UPDATE SET ${resourceConflictSetSql()}
-				WHERE resources.scope <> 'private' OR excluded.scope = 'private'`,
-		);
-	}
-	return resourceInsertStatement(record, sql`ON CONFLICT (id) DO UPDATE SET ${resourceConflictSetSql()}`);
-}
-
-function resourceInsertStatement(record: PendingSourceResourceRecord, conflictSql: SQL): SQL {
-	const tags = textArraySql(record.tags);
+function resourceInsertStatement(record: PendingSourceResourceRecord): SQL {
 	return sql`
 		INSERT INTO resources (
 			id, source_id, kind, resource_platform, scope, url, normalized_url, storage_key, file_type,
@@ -171,13 +153,13 @@ function resourceInsertStatement(record: PendingSourceResourceRecord, conflictSq
 			${record.resourcePlatform},
 			'corpus',
 			${record.url},
-			${record.normalizedUrl},
+			${record.url},
 			NULL,
 			NULL,
 			${record.originalLang},
 			${record.publishedDate},
 			${record.scrapedDate},
-			${tags},
+			'{}'::text[],
 			NULL,
 			NULL,
 			'[]'::jsonb,
@@ -187,7 +169,8 @@ function resourceInsertStatement(record: PendingSourceResourceRecord, conflictSq
 			now(),
 			now()
 		)
-		${conflictSql}
+		ON CONFLICT (normalized_url) WHERE normalized_url IS NOT NULL DO UPDATE SET ${resourceConflictSetSql()}
+			WHERE resources.scope <> 'private' OR excluded.scope = 'private'
 		RETURNING
 			id::text AS id,
 			enrichment_status,
@@ -244,7 +227,7 @@ async function syncOriginalResourceTranslation(db: CoreDb, resourceId: string, r
 			lang: record.originalLang,
 			title: record.title,
 			summary: record.summary,
-			content: record.content,
+			content: null,
 			keywords: record.keywords,
 			source: 'original',
 		}))
