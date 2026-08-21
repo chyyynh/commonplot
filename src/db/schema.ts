@@ -13,7 +13,6 @@ import {
 	bigint,
 	boolean,
 	index,
-	integer,
 	jsonb,
 	pgTable,
 	primaryKey,
@@ -52,9 +51,6 @@ export const resources = pgTable(
 		enrichmentStatus: text('enrichment_status', { enum: ['pending', 'enriched', 'failed'] })
 			.default('pending')
 			.notNull(),
-		// Legacy migration evidence for record-first URL rows. New URL drafts do
-		// not use DB attempts/backoff; remove after unresolved history is retired.
-		enrichmentAttempts: integer('enrichment_attempts').default(0).notNull(),
 		createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
 		updatedAt: timestamp('updated_at', { mode: 'date' }).defaultNow().notNull(),
 	},
