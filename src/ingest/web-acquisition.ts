@@ -1,6 +1,7 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readBytesWithLimit, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
+import { literalCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial, PdfExtractionMetadata } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { extractFromHtml } from '@extractus/article-extractor';
@@ -134,22 +135,18 @@ export function markdownFromXml(env: CoreEnv, xml: string, resourceId?: string):
 async function acquirePdfBytes(bytes: Uint8Array, url: string, fileName: string, ownedStorageKey?: string): Promise<AcquiredWebContent> {
 	const parsed = await parsePdfBytes(bytes);
 	const title = titleFromFileName(fileName);
+	const source = urlHost(url);
 	return {
 		provider: null,
 		fileType: PDF_MIME,
 		title,
 		markdown: parsed.text,
-		metadata: {
-			author: null,
-			language: null,
-			publishedDate: null,
-			siteName: urlHost(url),
-			description: parsed.text.slice(0, 500) || null,
-		},
-		acquisition: {
-			data: null,
-			representation: { fileName, fileSize: bytes.byteLength },
-		},
+		source,
+		originalLang: null,
+		publishedDate: null,
+		summary: parsed.text.slice(0, 500) || null,
+		creators: [],
+		kindMetadata: { siteName: source },
 		extraction: pdfExtractionMetadata(parsed),
 		...(ownedStorageKey ? { ownedStorageKey } : {}),
 	};
@@ -188,14 +185,12 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, resou
 		fileType: null,
 		title: article.title,
 		markdown: content,
-		metadata: {
-			author: article.author,
-			language: article.language,
-			publishedDate: article.publishedDate,
-			siteName: article.siteName,
-			description: article.description,
-		},
-		acquisition: { data: null },
+		source: article.siteName,
+		originalLang: article.language,
+		publishedDate: article.publishedDate,
+		summary: article.description,
+		creators: literalCreator('author', article.author),
+		kindMetadata: { siteName: article.siteName },
 		previewImageUrl: article.previewImageUrl,
 	};
 }

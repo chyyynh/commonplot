@@ -88,81 +88,25 @@ type AcquiredMaterialBase<T extends ResourcePlatform> = {
 	markdown: string;
 	/** Canonical preview image selected by the acquisition source. */
 	previewImageUrl?: string | null;
-	metadata: {
-		author: string | null;
-		language: string | null;
-		publishedDate: string | null;
-		siteName: string;
-		description: string | null;
-	};
-	acquisition: AcquisitionEnvelope<T>;
+	source: string;
+	originalLang: string | null;
+	publishedDate: string | null;
+	summary: string | null;
+	creators: ResourceCreator[];
+	kindMetadata: ResourceKindMetadata;
+	/** Hash of normalized source fields used to identify the acquired revision. */
+	sourceSnapshotHash?: string;
 };
 
-type AcquiredMaterialSpecialization<T extends ResourcePlatform> = T extends 'youtube' ? { youtubeTranscript: YoutubeTranscript } : unknown;
+type AcquiredMaterialSpecialization<T extends ResourcePlatform> = T extends 'twitter'
+	? { subjectUrl?: string }
+	: T extends 'youtube'
+		? { durationSeconds: number | null; youtubeTranscript: YoutubeTranscript }
+		: unknown;
 
 export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = T extends unknown
 	? AcquiredMaterialBase<T> & AcquiredMaterialSpecialization<T>
 	: never;
-
-export interface TwitterMedia {
-	url: string;
-	type: 'photo' | 'video' | 'animated_gif';
-	videoUrl?: string;
-	width?: number;
-	height?: number;
-}
-
-export interface TwitterAuthorFields {
-	authorName: string;
-	authorUserName: string;
-	authorProfilePicture?: string;
-	authorVerified?: boolean;
-}
-
-export interface QuotedTweetData {
-	authorName: string;
-	authorUserName: string;
-	authorProfilePicture?: string;
-	text: string;
-}
-
-export interface RetweetedByData {
-	tweetId?: string;
-	tweetUrl?: string;
-	retweetedAt?: string;
-	authorName: string;
-	authorUserName: string;
-	authorProfilePicture?: string;
-	authorVerified?: boolean;
-}
-
-interface TwitterMetadata extends TwitterAuthorFields {
-	media?: TwitterMedia[];
-	quotedTweet?: QuotedTweetData;
-	externalUrl?: string;
-}
-
-interface YouTubeMetadata {
-	channelName: string;
-	channelId?: string;
-	channelAvatar?: string;
-	durationSeconds: number | null;
-	viewCount?: number;
-	likeCount?: number;
-	commentCount?: number;
-}
-
-export interface HackerNewsMetadata {
-	author?: string;
-	points?: number;
-	commentCount?: number;
-	itemType?: 'story' | 'ask' | 'show' | 'job';
-}
-
-interface ResourceRepresentationMetadata {
-	fileName: string;
-	fileSize: number;
-}
 
 export interface PaperMetadata {
 	title?: string;
@@ -178,23 +122,7 @@ export interface PaperMetadata {
 	citations?: PaperRelationSnapshot;
 }
 
-interface AcquisitionDataByProvider {
-	twitter: TwitterMetadata;
-	youtube: YouTubeMetadata;
-	hackernews: HackerNewsMetadata;
-}
-
 export interface PdfExtractionMetadata {
 	status: 'ok' | 'needs_ocr';
 	pages: number;
 }
-
-type AcquisitionData<T extends ResourcePlatform> = T extends keyof AcquisitionDataByProvider ? AcquisitionDataByProvider[T] : null;
-
-export type AcquisitionEnvelope<T extends ResourcePlatform = ResourcePlatform> = {
-	data: AcquisitionData<T>;
-	/** Hash of normalized source fields used to skip unchanged resync runs. */
-	sourceSnapshotHash?: string;
-	/** Primary file representation facts; MIME and blob identity stay scalar. */
-	representation?: ResourceRepresentationMetadata;
-};

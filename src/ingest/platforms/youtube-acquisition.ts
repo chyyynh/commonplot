@@ -1,7 +1,7 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import { literalCreator, type ResourceCreator, type VideoKindMetadata } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, AcquisitionEnvelope, TranscriptSegment, YouTubeChapter } from '@core-shared/types';
+import { literalCreator } from '@core-shared/resource-metadata';
+import type { AcquiredMaterial, TranscriptSegment, YouTubeChapter } from '@core-shared/types';
 import { z } from 'zod';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
@@ -225,6 +225,10 @@ export async function scrapeYouTube(
 		.filter(Boolean)
 		.join('\n');
 	const content = transcriptMarkdown || snippet.description.trim();
+	const creators = literalCreator('channel', snippet.channelTitle, {
+		...(channelAvatar?.trim() ? { avatarUrl: channelAvatar.trim() } : {}),
+		...(snippet.channelId.trim() ? { profileUrl: `https://www.youtube.com/channel/${encodeURIComponent(snippet.channelId.trim())}` } : {}),
+	});
 
 	console.info({ tag: 'YOUTUBE', msg: 'Video fetched', title: snippet.title });
 
@@ -233,55 +237,25 @@ export async function scrapeYouTube(
 		fileType: null,
 		title: snippet.title,
 		markdown: content,
-		metadata: {
-			author: snippet.channelTitle,
-			language: snippet.defaultAudioLanguage ?? null,
-			publishedDate: snippet.publishedAt,
-			// The channel is normalized into common creators and remains the display
-			// fallback when a row has no source relation — a literal
-			// 'YouTube' collapses every channel into one byline. Saved YouTube URLs
-			// have always landed that way; the cron only avoided it by pre-filling the
-			// row so acquisition never ran.
-			siteName: snippet.channelTitle.trim() || 'YouTube',
-			description: snippet.description.substring(0, 500) || null,
+		source: snippet.channelTitle.trim() || 'YouTube',
+		originalLang: snippet.defaultAudioLanguage ?? null,
+		publishedDate: snippet.publishedAt,
+		summary: snippet.description.substring(0, 500) || null,
+		creators,
+		kindMetadata: {
+			...(durationSeconds === null ? {} : { durationSeconds }),
+			...(stats.viewCount ? { viewCount: Number.parseInt(stats.viewCount, 10) } : {}),
+			...(stats.likeCount ? { likeCount: Number.parseInt(stats.likeCount, 10) } : {}),
+			...(stats.commentCount ? { commentCount: Number.parseInt(stats.commentCount, 10) } : {}),
 		},
 		previewImageUrl: thumbnailUrl,
-		acquisition: {
-			data: {
-				channelName: snippet.channelTitle,
-				channelId: snippet.channelId,
-				durationSeconds,
-				...(channelAvatar ? { channelAvatar } : {}),
-				viewCount: stats.viewCount ? Number.parseInt(stats.viewCount, 10) : undefined,
-				likeCount: stats.likeCount ? Number.parseInt(stats.likeCount, 10) : undefined,
-				commentCount: stats.commentCount ? Number.parseInt(stats.commentCount, 10) : undefined,
-			},
-		},
+		durationSeconds,
 		youtubeTranscript: {
 			videoId: video.id,
 			segments: transcript,
 			language: snippet.defaultAudioLanguage ?? null,
 			chapters,
 			chaptersFromDescription: chapters.length > 0,
-		},
-	};
-}
-
-export function canonicalVideoFields(acquisition: AcquisitionEnvelope<'youtube'>): {
-	creators: ResourceCreator[];
-	kindMetadata: VideoKindMetadata;
-} {
-	const data = acquisition.data;
-	return {
-		creators: literalCreator('channel', data.channelName, {
-			...(data.channelAvatar?.trim() ? { avatarUrl: data.channelAvatar.trim() } : {}),
-			...(data.channelId?.trim() ? { profileUrl: `https://www.youtube.com/channel/${encodeURIComponent(data.channelId.trim())}` } : {}),
-		}),
-		kindMetadata: {
-			...(data.durationSeconds === null ? {} : { durationSeconds: data.durationSeconds }),
-			...(data.viewCount === undefined ? {} : { viewCount: data.viewCount }),
-			...(data.likeCount === undefined ? {} : { likeCount: data.likeCount }),
-			...(data.commentCount === undefined ? {} : { commentCount: data.commentCount }),
 		},
 	};
 }

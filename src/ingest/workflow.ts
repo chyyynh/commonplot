@@ -227,7 +227,7 @@ async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, shell:
 		),
 	);
 	if (shell.isMonitoredOnly && acquired.provider === 'youtube') {
-		const durationSeconds = acquired.acquisition.data.durationSeconds;
+		const durationSeconds = acquired.durationSeconds;
 		if (durationSeconds === null || durationSeconds <= MIN_MONITORED_VIDEO_DURATION_SECONDS) {
 			const reason = durationSeconds === null ? 'is a live stream or unstarted premiere' : `runs ${durationSeconds}s`;
 			throw new ResourceProcessingOutcomeError(
@@ -298,9 +298,7 @@ type PreparedResource = {
 function acquiredSubjectUrl(acquired: AcquiredContent | undefined): string | null {
 	if (!acquired) return null;
 	if (acquired.provider === 'hackernews') return acquired.hackerNewsItem.url?.trim() || null;
-	if (acquired.provider === 'twitter') {
-		return acquired.acquisition.data.externalUrl?.trim() || null;
-	}
+	if (acquired.provider === 'twitter') return acquired.subjectUrl?.trim() || null;
 	return null;
 }
 

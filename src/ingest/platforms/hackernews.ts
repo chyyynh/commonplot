@@ -1,7 +1,7 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import { type ForumKindMetadata, literalCreator, type ResourceCreator } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, AcquisitionEnvelope, HackerNewsMetadata, ResourceForProcessing } from '@core-shared/types';
+import { type ForumKindMetadata, literalCreator } from '@core-shared/resource-metadata';
+import type { AcquiredMaterial, ResourceForProcessing } from '@core-shared/types';
 import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
@@ -66,7 +66,7 @@ const HackerNewsItemSchema = z.object({
 
 export type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
 
-function hnItemTypeForMetadata(type: HackerNewsItem['type'] | undefined): HackerNewsMetadata['itemType'] {
+function hnItemTypeForMetadata(type: HackerNewsItem['type'] | undefined): ForumKindMetadata['itemType'] {
 	if (type === 'story' || type === 'ask' || type === 'show' || type === 'job') return type;
 	return undefined;
 }
@@ -80,9 +80,8 @@ function countHnComments(children: HnComment[] | undefined): number {
 	return total;
 }
 
-function buildHnMetadata(item: HackerNewsItem): HackerNewsMetadata {
+function buildHnKindMetadata(item: HackerNewsItem): ForumKindMetadata {
 	return {
-		author: item.author,
 		points: item.points,
 		commentCount: countHnComments(item.children),
 		itemType: hnItemTypeForMetadata(item.type),
@@ -154,16 +153,12 @@ export async function scrapeHackerNews(itemId: string): Promise<AcquiredMaterial
 		fileType: null,
 		title,
 		markdown,
-		metadata: {
-			author: item.author ?? null,
-			language: null,
-			publishedDate: item.created_at_i ? new Date(item.created_at_i * 1000).toISOString() : null,
-			siteName: 'Hacker News',
-			description,
-		},
-		acquisition: {
-			data: buildHnMetadata(item),
-		},
+		source: 'Hacker News',
+		originalLang: null,
+		publishedDate: item.created_at_i ? new Date(item.created_at_i * 1000).toISOString() : null,
+		summary: description,
+		creators: literalCreator('submitter', item.author),
+		kindMetadata: buildHnKindMetadata(item),
 		hackerNewsItem: item,
 	};
 }
@@ -273,19 +268,4 @@ export function applyHackerNewsAnnotation(content: string, annotation: string): 
 	const carrierContent = withoutPreviousDiscussion(content);
 	if (!carrierContent) throw new Error('Hacker News resource has no content to annotate');
 	return [carrierContent, '---', annotation].join('\n\n');
-}
-
-export function canonicalForumFields(acquisition: AcquisitionEnvelope<'hackernews'>): {
-	creators: ResourceCreator[];
-	kindMetadata: ForumKindMetadata;
-} {
-	const data = acquisition.data;
-	return {
-		creators: literalCreator('submitter', data.author),
-		kindMetadata: {
-			...(data.itemType ? { itemType: data.itemType } : {}),
-			...(data.points === undefined ? {} : { points: data.points }),
-			...(data.commentCount === undefined ? {} : { commentCount: data.commentCount }),
-		},
-	};
 }

@@ -37,12 +37,10 @@ async function acquireOpenAlexPdfArtifact(
 		await sanitizeAcquiredContent({
 			...acquired,
 			title: input.title,
-			metadata: {
-				...acquired.metadata,
-				description: input.description,
-				publishedDate: input.publishedDate,
-				siteName: sourceName,
-			},
+			source: sourceName,
+			publishedDate: input.publishedDate,
+			summary: input.description,
+			kindMetadata: { siteName: sourceName },
 		}),
 	);
 }
@@ -69,14 +67,12 @@ async function acquireOpenAlexGrobidArtifact(
 			fileType: null,
 			title: input.title,
 			markdown,
-			metadata: {
-				author: null,
-				description: input.description,
-				language: null,
-				publishedDate: input.publishedDate,
-				siteName: sourceName,
-			},
-			acquisition: { data: null },
+			source: sourceName,
+			originalLang: null,
+			publishedDate: input.publishedDate,
+			summary: input.description,
+			creators: [],
+			kindMetadata: { siteName: sourceName },
 		}),
 	);
 }

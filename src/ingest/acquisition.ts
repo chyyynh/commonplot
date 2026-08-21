@@ -1,16 +1,16 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 import { sha256Hex } from '@core-shared/hash';
-import { literalCreator, type ResourceCreator, type ResourceKindMetadata } from '@core-shared/resource-metadata';
-import type { ResourcePlatform } from '@core-shared/resource-types';
+import { parseResourceCreators, parseStoredResourceKindMetadata } from '@core-shared/resource-metadata';
+import { type ContentResourceKind, canonicalizeOptionalResourceLang, type ResourcePlatform } from '@core-shared/resource-types';
 import type { AcquiredMaterial, ResourceForProcessing } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { z } from 'zod';
 import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
-import { canonicalForumFields, type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
+import { type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
 import { scrapeLessWrong } from './platforms/lesswrong';
-import { canonicalPostFields, scrapeTweet } from './platforms/twitter-acquisition';
-import { canonicalVideoFields, scrapeYouTube } from './platforms/youtube-acquisition';
-import { type AcquiredWebContent, acquireWebResource, PDF_MIME } from './web-acquisition';
+import { scrapeTweet } from './platforms/twitter-acquisition';
+import { scrapeYouTube } from './platforms/youtube-acquisition';
+import { type AcquiredWebContent, acquireWebResource } from './web-acquisition';
 
 export type AcquiredContent =
 	| AcquiredWebContent
@@ -20,31 +20,21 @@ export type AcquiredContent =
 	| AcquiredMaterial<'youtube'>;
 
 const nullableStringSchema = z.string().nullable();
-const acquiredMetadataSchema = z.object({
-	author: nullableStringSchema,
-	language: nullableStringSchema,
-	publishedDate: nullableStringSchema,
-	siteName: z.string().trim().min(1),
-	description: nullableStringSchema,
-});
-const resourceRepresentationSchema = z.object({
-	fileName: z.string(),
-	fileSize: z.number().nonnegative(),
-});
-const acquisitionEnvelopeShape = {
-	sourceSnapshotHash: z
-		.string()
-		.regex(/^[0-9a-f]{64}$/)
-		.optional(),
-	representation: resourceRepresentationSchema.optional(),
-};
 const acquiredContentShape = {
 	canonicalUrl: z.url().optional(),
 	fileType: nullableStringSchema,
 	title: z.string().trim().min(1),
 	markdown: z.string(),
 	previewImageUrl: nullableStringSchema.optional(),
-	metadata: acquiredMetadataSchema,
+	source: z.string().trim().min(1),
+	originalLang: nullableStringSchema,
+	publishedDate: nullableStringSchema,
+	summary: nullableStringSchema,
+	creators: z.unknown().transform((value) => parseResourceCreators(value)),
+	sourceSnapshotHash: z
+		.string()
+		.regex(/^[0-9a-f]{64}$/)
+		.optional(),
 };
 const youtubeTranscriptSchema = z.object({
 	videoId: z.string().min(1),
@@ -54,30 +44,31 @@ const youtubeTranscriptSchema = z.object({
 	chaptersFromDescription: z.boolean(),
 });
 
-function acquiredMaterialSchema<const T extends ResourcePlatform, Data extends z.ZodType, Extra extends z.ZodRawShape>(
+function acquiredMaterialSchema<const T extends ResourcePlatform, Extra extends z.ZodRawShape>(
 	provider: T,
-	data: Data,
+	kind: ContentResourceKind,
 	extra: Extra,
 ) {
 	return z.looseObject({
 		provider: z.literal(provider),
 		...acquiredContentShape,
-		acquisition: z.looseObject({ ...acquisitionEnvelopeShape, data }),
+		kindMetadata: z.unknown().transform((value) => parseStoredResourceKindMetadata(kind, value)),
 		...extra,
 	});
 }
 
 const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('provider', [
-	acquiredMaterialSchema(null, z.null(), {
+	acquiredMaterialSchema(null, 'blog', {
 		extraction: z.object({ status: z.enum(['ok', 'needs_ocr']), pages: z.number() }).optional(),
 		ownedStorageKey: z.string().min(1).optional(),
 	}),
-	acquiredMaterialSchema('hackernews', z.looseObject({}), {
+	acquiredMaterialSchema('hackernews', 'forum', {
 		hackerNewsItem: z.looseObject({ id: z.number().int().positive() }),
 	}),
-	acquiredMaterialSchema('lesswrong', z.null(), {}),
-	acquiredMaterialSchema('twitter', z.looseObject({ authorName: z.string(), authorUserName: z.string() }), {}),
-	acquiredMaterialSchema('youtube', z.looseObject({ channelName: z.string(), durationSeconds: z.number().nonnegative().nullable() }), {
+	acquiredMaterialSchema('lesswrong', 'blog', {}),
+	acquiredMaterialSchema('twitter', 'post', { subjectUrl: z.string().optional() }),
+	acquiredMaterialSchema('youtube', 'video', {
+		durationSeconds: z.number().nonnegative().nullable(),
 		youtubeTranscript: youtubeTranscriptSchema,
 	}),
 ]);
@@ -111,45 +102,25 @@ function acquiredPublishedDate(value: string | null): string | null {
 	return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
-function canonicalFieldsFromAcquisition(acquired: AcquiredMaterial): {
-	creators: ResourceCreator[];
-	kindMetadata: ResourceKindMetadata;
-} {
-	switch (acquired.provider) {
-		case null:
-		case 'lesswrong':
-			return {
-				creators: literalCreator('author', acquired.metadata.author),
-				kindMetadata: acquired.metadata.siteName.trim() ? { siteName: acquired.metadata.siteName.trim() } : null,
-			};
-		case 'hackernews':
-			return canonicalForumFields(acquired.acquisition);
-		case 'twitter':
-			return canonicalPostFields(acquired.acquisition);
-		case 'youtube':
-			return canonicalVideoFields(acquired.acquisition);
-	}
-}
-
 export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?: AcquiredContent): ResourceForProcessing {
 	if (!acquired) return resource;
-	const canonical = canonicalFieldsFromAcquisition(acquired);
 	const ownedStorageKey = acquired.provider === null ? acquired.ownedStorageKey : undefined;
 	const canonicalUrl = acquired.canonicalUrl?.trim();
 	return {
 		...resource,
 		title: acquired.title.trim(),
-		summary: acquired.metadata.description ?? resource.summary,
+		summary: acquired.summary ?? resource.summary,
 		content: acquired.markdown,
-		source: acquired.metadata.siteName,
-		creators: canonical.creators,
-		kind_metadata: canonical.kindMetadata,
-		source_revision: acquired.acquisition.sourceSnapshotHash ?? resource.source_revision ?? null,
+		source: acquired.source,
+		original_lang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? resource.original_lang,
+		creators: acquired.creators,
+		kind_metadata: acquired.kindMetadata,
+		source_revision: acquired.sourceSnapshotHash ?? resource.source_revision ?? null,
 		file_type: acquired.fileType,
 		storage_key: ownedStorageKey ?? resource.storage_key,
 		url: canonicalUrl ?? resource.url,
 		normalized_url: canonicalUrl ?? resource.normalized_url,
-		published_date: resource.published_date ?? acquiredPublishedDate(acquired.metadata.publishedDate),
+		published_date: resource.published_date ?? acquiredPublishedDate(acquired.publishedDate),
 	};
 }
 
@@ -159,35 +130,33 @@ function validateAcquisitionUrl(url: string): string {
 	return normalizeUrl(parsed.toString());
 }
 
-function sourceSnapshotHash(acquired: AcquiredContent, markdown: string): Promise<string> {
+function acquiredSourceSnapshotHash(acquired: AcquiredContent, markdown: string): Promise<string> {
+	const providerFacts =
+		acquired.provider === 'twitter'
+			? { subjectUrl: acquired.subjectUrl }
+			: acquired.provider === 'youtube'
+				? { durationSeconds: acquired.durationSeconds }
+				: null;
 	const input = JSON.stringify({
 		provider: acquired.provider,
 		canonicalUrl: acquired.canonicalUrl,
 		fileType: acquired.fileType,
 		title: acquired.title,
 		markdown,
-		metadata: acquired.metadata,
-		platformData: acquired.acquisition.data,
-		representation: acquired.acquisition.representation,
+		source: acquired.source,
+		originalLang: acquired.originalLang,
+		publishedDate: acquired.publishedDate,
+		summary: acquired.summary,
+		creators: acquired.creators,
+		kindMetadata: acquired.kindMetadata,
+		providerFacts,
 	});
 	return sha256Hex(input);
 }
 
 export async function sanitizeAcquiredContent(acquired: AcquiredContent): Promise<AcquiredContent> {
 	const markdown = sanitizeExtractedMarkdown(acquired.markdown);
-	const sourceSnapshotHashValue = await sourceSnapshotHash(acquired, markdown);
-	switch (acquired.provider) {
-		case null:
-			return { ...acquired, markdown, acquisition: { ...acquired.acquisition, sourceSnapshotHash: sourceSnapshotHashValue } };
-		case 'hackernews':
-			return { ...acquired, markdown, acquisition: { ...acquired.acquisition, sourceSnapshotHash: sourceSnapshotHashValue } };
-		case 'lesswrong':
-			return { ...acquired, markdown, acquisition: { ...acquired.acquisition, sourceSnapshotHash: sourceSnapshotHashValue } };
-		case 'twitter':
-			return { ...acquired, markdown, acquisition: { ...acquired.acquisition, sourceSnapshotHash: sourceSnapshotHashValue } };
-		case 'youtube':
-			return { ...acquired, markdown, acquisition: { ...acquired.acquisition, sourceSnapshotHash: sourceSnapshotHashValue } };
-	}
+	return { ...acquired, markdown, sourceSnapshotHash: await acquiredSourceSnapshotHash(acquired, markdown) };
 }
 
 async function scrapeSavedUrl(
@@ -251,8 +220,5 @@ export function acquiredContentArtifact(acquired: AcquiredContent): ReadableStre
 export async function readAcquiredContentArtifact(artifact: ReadableStream<Uint8Array>): Promise<AcquiredContent> {
 	const acquired = AcquisitionArtifactSchema.parse(await new Response(artifact).json());
 	if ('status' in acquired) throw new NonRetryableError(acquired.message);
-	if (acquired.fileType === PDF_MIME && !acquired.acquisition.representation) {
-		throw new Error('PDF acquisition artifact has no representation metadata; rerun canonical acquisition');
-	}
 	return acquired;
 }

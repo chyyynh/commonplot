@@ -1,15 +1,41 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource-metadata';
-import type {
-	AcquiredMaterial,
-	AcquisitionEnvelope,
-	QuotedTweetData,
-	RetweetedByData,
-	TwitterAuthorFields,
-	TwitterMedia,
-} from '@core-shared/types';
+import type { AcquiredMaterial } from '@core-shared/types';
 import { extractTweetId } from '@core-shared/url';
+
+interface TwitterMedia {
+	url: string;
+	type: 'photo' | 'video' | 'animated_gif';
+	videoUrl?: string;
+	width?: number;
+	height?: number;
+}
+
+interface TwitterAuthorFields {
+	authorName: string;
+	authorUserName: string;
+	authorProfilePicture?: string;
+	authorVerified?: boolean;
+}
+
+interface QuotedTweetData {
+	authorName: string;
+	authorUserName: string;
+	authorProfilePicture?: string;
+	text: string;
+}
+
+interface RetweetedByData extends TwitterAuthorFields {
+	tweetId?: string;
+	tweetUrl?: string;
+	retweetedAt?: string;
+}
+
+interface TwitterMetadata extends TwitterAuthorFields {
+	media?: TwitterMedia[];
+	quotedTweet?: QuotedTweetData;
+}
 
 // twitterapi.io tweet response shape used inside the Twitter platform only.
 export interface Tweet {
@@ -212,7 +238,7 @@ export function buildTweetTitle(tweet: Tweet, maxLength = 100): string {
 function buildThreadResourceParts(tweets: Tweet[]): {
 	first: AuthoredTweet;
 	combinedText: string;
-	acquisition: AcquisitionEnvelope<'twitter'>;
+	fields: Pick<AcquiredMaterial<'twitter'>, 'creators' | 'kindMetadata' | 'subjectUrl'>;
 } {
 	const sorted = [...tweets].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 	const firstTweet = sorted[0];
@@ -231,55 +257,47 @@ function buildThreadResourceParts(tweets: Tweet[]): {
 
 	const media = sorted.flatMap(extractTweetMedia);
 	const quotedTweet = sorted.map(extractQuotedTweet).find(Boolean);
-	const acquisition = buildTweetAcquisition(first, { media, quotedTweet });
+	const fields = buildTweetFields(first, { media, quotedTweet });
 	return {
 		first,
 		combinedText: uniqueTexts.join('\n\n'),
-		acquisition,
+		fields,
 	};
 }
 
-function buildTweetAcquisition(
+function buildTweetFields(
 	tweet: Tweet,
 	options: {
 		externalUrl?: string;
 		media?: TwitterMedia[];
 		quotedTweet?: QuotedTweetData;
 	} = {},
-): AcquisitionEnvelope<'twitter'> {
+): Pick<AcquiredMaterial<'twitter'>, 'creators' | 'kindMetadata' | 'subjectUrl'> {
 	const media = options.media ?? extractTweetMedia(tweet);
-	const base = {
+	const metadata: TwitterMetadata = {
 		...extractTweetAuthor(tweet),
 		media,
+		quotedTweet: options.quotedTweet ?? extractQuotedTweet(tweet),
 	};
-
-	if (options.externalUrl) {
-		return {
-			data: {
-				...base,
-				externalUrl: options.externalUrl,
-			},
-		};
-	}
-
 	return {
-		data: { ...base, quotedTweet: options.quotedTweet ?? extractQuotedTweet(tweet) },
+		creators: twitterCreator(metadata),
+		kindMetadata: postMetadata(metadata),
+		...(options.externalUrl ? { subjectUrl: options.externalUrl } : {}),
 	};
 }
 
-function buildTwitterLongformAcquisition(
+function buildTwitterLongformFields(
 	author: NonNullable<TwitterLongform['author']>,
 	coverImageUrl?: string,
-): AcquisitionEnvelope<'twitter'> {
-	return {
-		data: {
-			authorName: author.name,
-			authorUserName: author.userName,
-			authorProfilePicture: author.profilePicture,
-			authorVerified: author.isBlueVerified,
-			media: coverImageUrl ? [{ url: coverImageUrl, type: 'photo' }] : [],
-		},
+): Pick<AcquiredMaterial<'twitter'>, 'creators' | 'kindMetadata'> {
+	const metadata: TwitterMetadata = {
+		authorName: author.name,
+		authorUserName: author.userName,
+		authorProfilePicture: author.profilePicture,
+		authorVerified: author.isBlueVerified,
+		media: coverImageUrl ? [{ url: coverImageUrl, type: 'photo' }] : [],
 	};
+	return { creators: twitterCreator(metadata), kindMetadata: postMetadata(metadata) };
 }
 
 interface TwitterLongform {
@@ -335,14 +353,11 @@ async function scrapeTwitterLongform(tweetId: string, apiKey: string, language?:
 		fileType: null,
 		title,
 		markdown: contentText,
-		metadata: {
-			author: author.userName,
-			language: language ?? null,
-			publishedDate,
-			siteName: 'Twitter',
-			description: null,
-		},
-		acquisition: buildTwitterLongformAcquisition(author, longform.cover_media_img_url),
+		source: 'Twitter',
+		originalLang: language ?? null,
+		publishedDate,
+		summary: null,
+		...buildTwitterLongformFields(author, longform.cover_media_img_url),
 	};
 }
 
@@ -357,14 +372,11 @@ function buildExternalLinkTweet(tweet: Tweet, externalUrl: string, media: Twitte
 		fileType: null,
 		title,
 		markdown: stripTrailingExternalUrl(expandedText, externalUrl),
-		metadata: {
-			author: author.userName,
-			language: tweet.lang ?? null,
-			publishedDate: tweet.createdAt,
-			siteName: 'Twitter',
-			description: null,
-		},
-		acquisition: buildTweetAcquisition(tweet, {
+		source: 'Twitter',
+		originalLang: tweet.lang ?? null,
+		publishedDate: tweet.createdAt,
+		summary: null,
+		...buildTweetFields(tweet, {
 			media,
 			externalUrl,
 		}),
@@ -410,14 +422,11 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 			fileType: null,
 			title,
 			markdown: expandTweetUrls(tweet.text, tweet),
-			metadata: {
-				author: author.userName,
-				language: tweet.lang ?? null,
-				publishedDate: tweet.createdAt,
-				siteName: 'Twitter',
-				description: null,
-			},
-			acquisition: buildTweetAcquisition(tweet),
+			source: 'Twitter',
+			originalLang: tweet.lang ?? null,
+			publishedDate: tweet.createdAt,
+			summary: null,
+			...buildTweetFields(tweet),
 		},
 		canonicalUrl: tweet.url,
 		eventText: tweetText,
@@ -464,14 +473,11 @@ export async function scrapeTweet(tweetId: string, apiKey: string): Promise<Acqu
 		fileType: null,
 		title: buildTweetTitle(parts.first, 80),
 		markdown: parts.combinedText,
-		metadata: {
-			author: parts.first.author.userName,
-			language: parts.first.lang ?? null,
-			publishedDate: parts.first.createdAt,
-			siteName: 'Twitter',
-			description: null,
-		},
-		acquisition: parts.acquisition,
+		source: 'Twitter',
+		originalLang: parts.first.lang ?? null,
+		publishedDate: parts.first.createdAt,
+		summary: null,
+		...parts.fields,
 	};
 }
 
@@ -509,8 +515,7 @@ async function fetchTwitterThreadContext(tweetId: string, apiKey: string): Promi
 	return tweets;
 }
 
-function twitterCreator(metadata: AcquisitionEnvelope<'twitter'>): ResourceCreator[] {
-	const data = metadata.data;
+function twitterCreator(data: TwitterMetadata): ResourceCreator[] {
 	const handle = data.authorUserName?.replace(/^@/, '').trim();
 	const profileUrl = handle ? `https://x.com/${encodeURIComponent(handle)}` : undefined;
 	return literalCreator('author', data.authorName || handle, {
@@ -521,8 +526,7 @@ function twitterCreator(metadata: AcquisitionEnvelope<'twitter'>): ResourceCreat
 	});
 }
 
-function postMetadata(metadata: AcquisitionEnvelope<'twitter'>): PostKindMetadata {
-	const data = metadata.data;
+function postMetadata(data: TwitterMetadata): PostKindMetadata {
 	const attachments: ResourceMediaAttachment[] = (data.media ?? []).flatMap((media) => {
 		if (!media.url?.trim()) return [];
 		return [
@@ -548,11 +552,4 @@ function postMetadata(metadata: AcquisitionEnvelope<'twitter'>): PostKindMetadat
 		attachments,
 		...(quoted?.text.trim() && quoteCreator ? { quote: { creator: quoteCreator, text: quoted.text.trim() } } : {}),
 	};
-}
-
-export function canonicalPostFields(acquisition: AcquisitionEnvelope<'twitter'>): {
-	creators: ResourceCreator[];
-	kindMetadata: PostKindMetadata;
-} {
-	return { creators: twitterCreator(acquisition), kindMetadata: postMetadata(acquisition) };
 }

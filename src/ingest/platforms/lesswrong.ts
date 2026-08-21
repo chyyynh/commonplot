@@ -1,6 +1,7 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
+import { literalCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
@@ -71,13 +72,11 @@ export async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<
 			post.socialPreviewImageUrl?.trim() || post.socialPreviewImageAutoUrl?.trim(),
 			LESSWRONG_GRAPHQL_URL,
 		),
-		metadata: {
-			author,
-			language: null,
-			publishedDate: post.postedAt?.trim() || null,
-			siteName: 'LessWrong',
-			description: null,
-		},
-		acquisition: { data: null },
+		source: 'LessWrong',
+		originalLang: null,
+		publishedDate: post.postedAt?.trim() || null,
+		summary: null,
+		creators: literalCreator('author', author),
+		kindMetadata: { siteName: 'LessWrong' },
 	};
 }
