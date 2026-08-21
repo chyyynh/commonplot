@@ -6,11 +6,13 @@ import { extractTweetId } from '@core-shared/url';
 import {
 	buildTwitterAuthorThread,
 	combineTwitterThreadMarkdown,
+	decideTwitterThreadContextNextPage,
 	parseTwitterArticleResponse,
 	parseTwitterThreadContextPage,
 	parseTwitterTweetsResponse,
 	renderTwitterArticleMarkdown,
 	type Tweet,
+	twitterAuthorThreadCandidates,
 } from './twitter-data';
 
 interface TwitterMedia {
@@ -391,25 +393,38 @@ export async function scrapeTweet(tweetId: string, apiKey: string): Promise<Acqu
 	const tweets = parseTwitterTweetsResponse(JSON.parse(await readTextWithLimit(response)));
 	const tweet = tweets[0];
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
-	const contextTweets = await fetchTwitterThreadContext(tweetId, apiKey);
-	const thread = buildTwitterAuthorThread(tweet, contextTweets);
+	const context = await fetchTwitterThreadContext(tweet, tweetId, apiKey);
+	const thread = buildTwitterAuthorThread(tweet, context.candidates);
 	const resolved = await resolveTweetContent(tweet, apiKey);
 	console.info({
 		tag: 'TWITTER',
 		event: 'thread_context_resolved',
 		tweet_id: tweetId,
-		context_posts: contextTweets.length,
+		context_pages: context.pages,
+		context_posts: context.providerPosts,
+		thread_candidates: context.candidates.length,
 		thread_posts: thread.length,
+		pagination_terminal: context.terminal,
 		content_kind: resolved.kind,
 	});
 	return mergeResolvedTwitterThread(resolved, thread, tweetId);
 }
 
-async function fetchTwitterThreadContext(tweetId: string, apiKey: string): Promise<Tweet[]> {
-	const tweets: Tweet[] = [];
+type TwitterThreadContextResult = {
+	candidates: Tweet[];
+	pages: number;
+	providerPosts: number;
+	terminal: 'complete' | 'empty-page';
+};
+
+async function fetchTwitterThreadContext(root: Tweet, tweetId: string, apiKey: string): Promise<TwitterThreadContextResult> {
+	const candidates = new Map<string, Tweet>();
+	const candidateUrls = new Set<string>();
 	const seenCursors = new Set<string>();
 	let cursor = '';
-	for (let page = 0; page < 5; page++) {
+	let pages = 0;
+	let providerPosts = 0;
+	while (true) {
 		const params = new URLSearchParams({ tweetId });
 		if (cursor) params.set('cursor', cursor);
 		const response = await fetchWithTimeout(`https://api.twitterapi.io/twitter/tweet/thread_context?${params}`, {
@@ -420,18 +435,24 @@ async function fetchTwitterThreadContext(tweetId: string, apiKey: string): Promi
 			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 		}
 		const data = parseTwitterThreadContextPage(JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)), tweetId);
-		tweets.push(...data.tweets);
-		if (!data.hasNextPage) break;
-		if (!data.tweets.length) break;
-		if (page === 4) throw new Error(`Twitter thread context ${tweetId} exceeded 5 pages`);
-		const nextCursor = data.nextCursor?.trim();
-		if (!nextCursor) throw new Error(`Twitter thread context ${tweetId} omitted the next cursor`);
-		cursor = nextCursor;
-		if (seenCursors.has(cursor)) throw new Error(`Twitter thread context ${tweetId} returned a repeated cursor`);
+		pages++;
+		providerPosts += data.tweets.length;
+		for (const candidate of twitterAuthorThreadCandidates(root, data.tweets)) {
+			const candidateId = candidate.id?.trim();
+			if (!candidateId) continue;
+			if (candidates.has(candidateId) || candidateUrls.has(candidate.url)) continue;
+			candidates.set(candidateId, candidate);
+			candidateUrls.add(candidate.url);
+		}
+
+		const decision = decideTwitterThreadContextNextPage(data, seenCursors, tweetId);
+		if (decision.kind !== 'next') {
+			return { candidates: [...candidates.values()], pages, providerPosts, terminal: decision.kind };
+		}
+		cursor = decision.cursor;
 		seenCursors.add(cursor);
 		await scheduler.wait(250);
 	}
-	return tweets;
 }
 
 function twitterCreator(data: TwitterMetadata): ResourceCreator[] {

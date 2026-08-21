@@ -202,6 +202,8 @@ export type TwitterListPage = {
 	nextCursor?: string;
 };
 
+export type TwitterThreadContextPageDecision = { kind: 'complete' | 'empty-page' } | { kind: 'next'; cursor: string };
+
 export type TwitterSearchWindow = {
 	sinceTime: number;
 	untilTime: number;
@@ -357,6 +359,25 @@ export function parseTwitterThreadContextPage(value: unknown, tweetId: string): 
 	};
 }
 
+/**
+ * Thread Context can report another page immediately before returning an empty
+ * page. Treat that documented provider edge case as completion; every other
+ * `hasNextPage` response must supply a fresh cursor so partial threads fail
+ * loudly instead of being persisted.
+ */
+export function decideTwitterThreadContextNextPage(
+	page: TwitterListPage,
+	seenCursors: ReadonlySet<string>,
+	tweetId: string,
+): TwitterThreadContextPageDecision {
+	if (!page.hasNextPage) return { kind: 'complete' };
+	if (!page.tweets.length) return { kind: 'empty-page' };
+	const cursor = page.nextCursor?.trim();
+	if (!cursor) throw new Error(`Twitter thread context ${tweetId} omitted the next cursor`);
+	if (seenCursors.has(cursor)) throw new Error(`Twitter thread context ${tweetId} returned a repeated cursor`);
+	return { kind: 'next', cursor };
+}
+
 function normalizedTweetId(value: string | null | undefined): string | null {
 	return value?.trim() || null;
 }
@@ -390,23 +411,40 @@ function tweetTimestamp(tweet: Tweet): number {
 	return Number.isFinite(timestamp) ? timestamp : Number.POSITIVE_INFINITY;
 }
 
-/** Build only the root's same-author reply graph; author replies to outside comments are excluded. */
-export function buildTwitterAuthorThread(root: Tweet, contextTweets: Tweet[]): Tweet[] {
+/**
+ * Retain only tweets that could belong to the root author's reply graph. This
+ * is safe before all pages arrive: a child may precede its parent, so graph
+ * connectivity is deliberately resolved only after pagination completes.
+ */
+export function twitterAuthorThreadCandidates(root: Tweet, contextTweets: Tweet[]): Tweet[] {
 	const rootId = normalizedTweetId(root.id);
 	const rootAuthor = normalizedTwitterUserName(root.author?.userName);
-	if (!rootId || !rootAuthor) return [root];
+	if (!rootId || !rootAuthor) return [];
 
 	const rootConversationId = normalizedTweetId(root.conversationId) ?? rootId;
-	const remaining = new Map<string, Tweet>();
+	const candidates = new Map<string, Tweet>();
 	const seenUrls = new Set([root.url]);
 	for (const candidate of contextTweets) {
 		const candidateId = normalizedTweetId(candidate.id);
-		if (!candidateId || candidateId === rootId || remaining.has(candidateId) || seenUrls.has(candidate.url)) continue;
+		if (!candidateId || candidateId === rootId || candidates.has(candidateId) || seenUrls.has(candidate.url)) continue;
 		if (normalizedTwitterUserName(candidate.author?.userName) !== rootAuthor) continue;
 		const candidateConversationId = normalizedTweetId(candidate.conversationId);
 		if (candidateConversationId && candidateConversationId !== rootConversationId) continue;
-		remaining.set(candidateId, candidate);
+		candidates.set(candidateId, candidate);
 		seenUrls.add(candidate.url);
+	}
+	return [...candidates.values()];
+}
+
+/** Build only the root's same-author reply graph; author replies to outside comments are excluded. */
+export function buildTwitterAuthorThread(root: Tweet, contextTweets: Tweet[]): Tweet[] {
+	const rootId = normalizedTweetId(root.id);
+	if (!rootId || !normalizedTwitterUserName(root.author?.userName)) return [root];
+
+	const remaining = new Map<string, Tweet>();
+	for (const candidate of twitterAuthorThreadCandidates(root, contextTweets)) {
+		const candidateId = normalizedTweetId(candidate.id);
+		if (candidateId) remaining.set(candidateId, candidate);
 	}
 
 	const ordered = [root];

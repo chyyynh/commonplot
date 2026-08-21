@@ -3,12 +3,14 @@ import {
 	buildTwitterAdvancedSearchQuery,
 	buildTwitterAuthorThread,
 	combineTwitterThreadMarkdown,
+	decideTwitterThreadContextNextPage,
 	isTwitterReply,
 	parseTwitterAdvancedSearchPage,
 	parseTwitterArticleResponse,
 	parseTwitterThreadContextPage,
 	parseTwitterTweetsResponse,
 	renderTwitterArticleMarkdown,
+	twitterAuthorThreadCandidates,
 	twitterSearchWindow,
 	twitterSelfReplyRootId,
 } from '../src/ingest/platforms/twitter-data.ts';
@@ -36,6 +38,10 @@ assert.deepEqual(
 	buildTwitterAuthorThread(root, [authorReplyToComment, continuedThread, outsideComment, selfReply, selfReply]).map((item) => item.id),
 	['1', '2', '5'],
 );
+assert.deepEqual(
+	twitterAuthorThreadCandidates(root, [authorReplyToComment, continuedThread, outsideComment, selfReply, selfReply]).map((item) => item.id),
+	['4', '5', '2'],
+);
 
 assert.equal(isTwitterReply(tweet('6', 'Alice', null, { isReply: true })), true);
 assert.equal(isTwitterReply(tweet('7', 'Alice', '1')), true);
@@ -61,6 +67,17 @@ assert.deepEqual(parseTwitterThreadContextPage({ replies: [selfReply], has_next_
 assert.throws(
 	() => parseTwitterThreadContextPage({ status: 'error', message: 'provider failed', replies: [], has_next_page: false }, '1'),
 	/provider failed/,
+);
+assert.deepEqual(decideTwitterThreadContextNextPage({ tweets: [], hasNextPage: true }, new Set(), '1'), { kind: 'empty-page' });
+assert.deepEqual(decideTwitterThreadContextNextPage({ tweets: [selfReply], hasNextPage: false }, new Set(), '1'), { kind: 'complete' });
+assert.deepEqual(decideTwitterThreadContextNextPage({ tweets: [selfReply], hasNextPage: true, nextCursor: ' next ' }, new Set(), '1'), {
+	kind: 'next',
+	cursor: 'next',
+});
+assert.throws(() => decideTwitterThreadContextNextPage({ tweets: [selfReply], hasNextPage: true }, new Set(), '1'), /next cursor/);
+assert.throws(
+	() => decideTwitterThreadContextNextPage({ tweets: [selfReply], hasNextPage: true, nextCursor: 'repeat' }, new Set(['repeat']), '1'),
+	/repeated cursor/,
 );
 assert.throws(() => parseTwitterTweetsResponse({ tweets: [], status: 'error', message: 'tweet failed' }), /tweet failed/);
 
@@ -109,7 +126,8 @@ console.info({
 	event: 'twitter_thread_smoke_passed',
 	articleCases: 3,
 	advancedSearchCases: 4,
-	threadGraphCases: 1,
+	threadGraphCases: 2,
+	threadPaginationCases: 5,
 	replyPredicateCases: 5,
 	selfReplyRootCases: 4,
 	responseShapeCases: 4,
