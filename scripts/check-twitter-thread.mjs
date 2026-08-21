@@ -10,7 +10,9 @@ import {
 	parseTwitterThreadContextPage,
 	parseTwitterTweetsResponse,
 	renderTwitterArticleMarkdown,
+	shouldRetryTwitterProviderStatus,
 	twitterAuthorThreadCandidates,
+	twitterProviderRetryDelayMs,
 	twitterSearchWindow,
 	twitterSelfReplyRootId,
 } from '../src/ingest/platforms/twitter-data.ts';
@@ -79,6 +81,16 @@ assert.throws(
 	() => decideTwitterThreadContextNextPage({ tweets: [selfReply], hasNextPage: true, nextCursor: 'repeat' }, new Set(['repeat']), '1'),
 	/repeated cursor/,
 );
+assert.equal(shouldRetryTwitterProviderStatus(408), true);
+assert.equal(shouldRetryTwitterProviderStatus(429), true);
+assert.equal(shouldRetryTwitterProviderStatus(503), true);
+assert.equal(shouldRetryTwitterProviderStatus(402), false);
+assert.equal(twitterProviderRetryDelayMs(null, 1), 1000);
+assert.equal(twitterProviderRetryDelayMs(null, 3), 4000);
+assert.equal(twitterProviderRetryDelayMs('2', 1), 2000);
+assert.equal(twitterProviderRetryDelayMs('120', 1), 30_000);
+assert.equal(twitterProviderRetryDelayMs('Wed, 21 Oct 2026 07:28:10 GMT', 1, Date.parse('Wed, 21 Oct 2026 07:28:00 GMT')), 10_000);
+assert.throws(() => twitterProviderRetryDelayMs(null, 0), /positive integer/);
 assert.throws(() => parseTwitterTweetsResponse({ tweets: [], status: 'error', message: 'tweet failed' }), /tweet failed/);
 
 const article = parseTwitterArticleResponse(
@@ -128,6 +140,7 @@ console.info({
 	advancedSearchCases: 4,
 	threadGraphCases: 2,
 	threadPaginationCases: 5,
+	providerRetryCases: 10,
 	replyPredicateCases: 5,
 	selfReplyRootCases: 4,
 	responseShapeCases: 4,

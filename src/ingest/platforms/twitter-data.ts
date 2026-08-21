@@ -209,6 +209,21 @@ export type TwitterSearchWindow = {
 	untilTime: number;
 };
 
+export function shouldRetryTwitterProviderStatus(status: number): boolean {
+	return status === 408 || status === 429 || status >= 500;
+}
+
+export function twitterProviderRetryDelayMs(retryAfter: string | null, attempt: number, nowMs = Date.now()): number {
+	if (!Number.isSafeInteger(attempt) || attempt < 1) throw new Error('Twitter provider retry attempt must be a positive integer');
+	const value = retryAfter?.trim();
+	if (value && /^\d+$/.test(value)) return Math.min(Number(value) * 1000, 30_000);
+	if (value) {
+		const dateMs = Date.parse(value);
+		if (Number.isFinite(dateMs) && dateMs > nowMs) return Math.min(dateMs - nowMs, 30_000);
+	}
+	return Math.min(1000 * 2 ** (attempt - 1), 8_000);
+}
+
 export function twitterSearchWindow(watermark: Date | string, windowEnd: Date, overlapMs: number): TwitterSearchWindow {
 	const watermarkMs = new Date(watermark).getTime();
 	const windowEndMs = windowEnd.getTime();

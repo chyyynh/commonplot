@@ -1,5 +1,5 @@
 import { NonRetryableError } from 'cloudflare:workflows';
-import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
+import { readTextWithLimit } from '@core-shared/http';
 import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
 import { extractTweetId } from '@core-shared/url';
@@ -14,6 +14,7 @@ import {
 	type Tweet,
 	twitterAuthorThreadCandidates,
 } from './twitter-data';
+import { fetchTwitterProvider } from './twitter-provider';
 
 interface TwitterMedia {
 	url: string;
@@ -233,8 +234,9 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string): Promise<Twit
 	if (!tweetId) throw new Error(`Could not resolve tweet id for Twitter article ${tweet.url}`);
 	console.info({ tag: 'TWITTER', msg: 'Fetching longform for tweet', tweetId });
 
-	const response = await fetchWithTimeout(`https://api.twitterapi.io/twitter/article?tweet_id=${tweetId}`, {
-		headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
+	const response = await fetchTwitterProvider(`https://api.twitterapi.io/twitter/article?tweet_id=${tweetId}`, apiKey, {
+		operation: 'article',
+		resourceId: tweetId,
 	});
 	if (!response.ok) {
 		await response.body?.cancel();
@@ -380,8 +382,9 @@ function mergeResolvedTwitterThread(resolved: ResolvedTweetContent, thread: Twee
 
 export async function scrapeTweet(tweetId: string, apiKey: string): Promise<AcquiredMaterial<'twitter'>> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
-	const response = await fetchWithTimeout(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, {
-		headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
+	const response = await fetchTwitterProvider(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, apiKey, {
+		operation: 'tweets-by-id',
+		resourceId: tweetId,
 	});
 	if (!response.ok) {
 		await response.body?.cancel();
@@ -427,8 +430,9 @@ async function fetchTwitterThreadContext(root: Tweet, tweetId: string, apiKey: s
 	while (true) {
 		const params = new URLSearchParams({ tweetId });
 		if (cursor) params.set('cursor', cursor);
-		const response = await fetchWithTimeout(`https://api.twitterapi.io/twitter/tweet/thread_context?${params}`, {
-			headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
+		const response = await fetchTwitterProvider(`https://api.twitterapi.io/twitter/tweet/thread_context?${params}`, apiKey, {
+			operation: 'thread-context',
+			resourceId: tweetId,
 		});
 		if (!response.ok) {
 			await response.body?.cancel();
