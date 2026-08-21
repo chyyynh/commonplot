@@ -1,4 +1,10 @@
-import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
+import {
+	type WorkflowDelayFunction,
+	WorkflowEntrypoint,
+	type WorkflowEvent,
+	type WorkflowStep,
+	type WorkflowStepConfig,
+} from 'cloudflare:workers';
 import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource-identifiers';
 import type { HostedResourceImage } from '@core-shared/resource-image-mapping';
 import { isContentResourceIdentity, parseResourceIdentity, toResourceIdentityColumns } from '@core-shared/resource-types';
@@ -65,6 +71,15 @@ const RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG = {
 	retries: DURABLE_WORKFLOW_RETRIES,
 	timeout: '30 seconds',
 } as const satisfies WorkflowStepConfig;
+// Source watermarks can advance after refresh admission, so the acquisition
+// instance itself must survive a provider outage. Keep attempts bounded because
+// twitterapi.io requests (especially Article requests) are paid operations.
+const resourceRefreshRetryDelay: WorkflowDelayFunction = ({ ctx }) =>
+	ctx.attempt <= 3 ? '10 seconds' : ctx.attempt <= 15 ? '1 minute' : '30 minutes';
+const RESOURCE_REFRESH_ACQUISITION_STEP_CONFIG = {
+	retries: { limit: 50, delay: resourceRefreshRetryDelay },
+	timeout: '120 seconds',
+} as const satisfies WorkflowStepConfig;
 
 async function stageResourceImages(
 	env: CoreEnv,
@@ -128,15 +143,30 @@ function shouldAcquireContent(shell: ResourceProcessingShell, force = false): bo
 	return (!shell.hasPersistedContent || needsYouTubeAcquisition || needsPlatformAcquisition) && !resource.storage_key && !!resource.url;
 }
 
-async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, shell: ResourceProcessingShell): Promise<AcquiredContent> {
+async function stageSavedUrlAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	shell: ResourceProcessingShell,
+	operation: ResourceProcessingOperation,
+): Promise<AcquiredContent> {
 	const { resource } = shell;
 	const locator = exactPlatformLocator(resource.resource_identifiers);
 	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : resource.url;
 	if (!sourceUrl) throw new Error(`Resource processing ${resource.processing_id} has no source URL`);
+	const stepConfig = operation === 'refresh' ? RESOURCE_REFRESH_ACQUISITION_STEP_CONFIG : ACQUISITION_STEP;
 	const acquisition = await readSavedUrlAcquisitionArtifact(
-		await step.do('acquire-content-kind-platform-v1', ACQUISITION_STEP, () =>
-			scrapeSavedUrlArtifact(sourceUrl, env, shell.isMonitoredOnly, shell.sourceAvatarUrl, resource.processing_id),
-		),
+		await step.do('acquire-content-kind-platform-v1', stepConfig, (ctx) => {
+			if (operation === 'refresh') {
+				console.info({
+					tag: 'RESOURCE_ACQUISITION',
+					event: 'refresh_acquisition_attempt',
+					resource_id: resource.processing_id,
+					resource_platform: resource.resource_platform,
+					attempt: ctx.attempt,
+				});
+			}
+			return scrapeSavedUrlArtifact(sourceUrl, env, shell.isMonitoredOnly, shell.sourceAvatarUrl, resource.processing_id);
+		}),
 	);
 	if (acquisition.status === 'rejected') {
 		throw new ResourceProcessingOutcomeError('drop', acquisition.message, 'ResourceAcquisitionRejectedError');
@@ -202,18 +232,18 @@ async function prepareResourceForProcessing(
 	operation: ResourceProcessingOperation,
 ): Promise<PreparedResource> {
 	const { resource: initialResource } = initialShell;
-	if (operation === 'resync' && !initialResource.url) {
+	if (operation !== 'ingest' && !initialResource.url) {
 		throw new ResourceProcessingOutcomeError(
 			'failed',
 			`Resource processing ${initialResource.processing_id} has no source URL`,
-			'ResourceResyncUnsupportedError',
+			'ResourceReacquisitionUnsupportedError',
 		);
 	}
 	// Exact DOI/arXiv/OpenAlex URLs can go straight to OpenAlex Content. The
 	// original landing page is only acquired when OpenAlex has no cached PDF.
 	const preliminary = await stagePreliminaryAcquisition(env, step, initialResource, async () => {
-		if (!shouldAcquireContent(initialShell, operation === 'resync')) return undefined;
-		return stageSavedUrlAcquisition(env, step, initialShell);
+		if (!shouldAcquireContent(initialShell, operation !== 'ingest')) return undefined;
+		return stageSavedUrlAcquisition(env, step, initialShell, operation);
 	});
 	let { acquiredContent } = preliminary;
 	const acquiredResource = applyAcquiredMaterial(initialResource, acquiredContent);
@@ -494,7 +524,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			}
 
 			console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
-			return { status: 'persisted', resourceId: persistedResourceId, ...(operation === 'resync' ? { changed: true } : {}) } as const;
+			return { status: 'persisted', resourceId: persistedResourceId, ...(operation !== 'ingest' ? { changed: true } : {}) } as const;
 		} catch (error) {
 			if (target.kind === 'draft') {
 				if (error instanceof ResourceProcessingOutcomeError) {
@@ -508,7 +538,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				}
 				throw error;
 			}
-			if (operation === 'resync') throw error;
+			if (operation !== 'ingest') throw error;
 			if (
 				await settleFailedResourceProcessing(this.env, step, {
 					error,

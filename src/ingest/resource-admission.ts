@@ -17,7 +17,7 @@ import { cleanString, dateValue, requiredString, stringArrayValue } from '@inges
 import { z } from 'zod';
 import { enqueueOrRestartWorkflow } from '../workflow-control';
 
-export type ResourceProcessingOperation = 'ingest' | 'resync';
+export type ResourceProcessingOperation = 'ingest' | 'refresh' | 'resync';
 
 const ContentResourceIdentitySchema = z.union([
 	z.object({ kind: z.literal('blog'), resourcePlatform: z.union([z.null(), z.literal('lesswrong')]) }).strict(),
@@ -76,7 +76,7 @@ const ResourceProcessingWorkflowPayloadSchema = z
 				.object({
 					kind: z.literal('stored'),
 					resourceId: z.string().uuid(),
-					operation: z.enum(['ingest', 'resync']),
+					operation: z.enum(['ingest', 'refresh', 'resync']),
 					sourceRevision: z
 						.string()
 						.length(64)
@@ -239,9 +239,9 @@ export async function admitDiscoveredSourceResources(
 async function enqueueResourceRefresh(env: CoreEnv, resourceId: string, refreshRevision: string): Promise<boolean> {
 	const revision = refreshRevision.trim();
 	if (!/^[a-zA-Z0-9_-]{1,80}$/.test(revision)) throw new Error('Invalid resource refresh revision');
-	const id = ['resource-refresh-v1', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
+	const id = ['resource-refresh-v2', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
 	const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
-		{ id, params: { target: { kind: 'stored', resourceId, operation: 'resync' } } },
+		{ id, params: { target: { kind: 'stored', resourceId, operation: 'refresh' } } },
 	]);
 	if (created) return true;
 	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.get(id);
