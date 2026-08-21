@@ -4,10 +4,9 @@ import { aiSearchResourcePlatformMetadata, resourceIdFromAiSearchItemKey } from 
 
 export type PublicResourceSearchInput = {
 	query: string;
-	limit?: number;
 	mode?: 'hybrid' | 'vector';
 	filters?: {
-		effectiveAfter?: string;
+		effectiveAfter?: Date;
 		kinds?: ContentResourceKind[];
 		resourcePlatforms?: ResourcePlatform[];
 		sourceIds?: string[];
@@ -24,15 +23,12 @@ type NormalizedSearchFilters = {
 
 const RESULT_LIMIT_MAX = 50;
 
-function clampLimit(value: number | undefined): number {
-	if (typeof value !== 'number' || !Number.isFinite(value)) return RESULT_LIMIT_MAX;
-	return Math.min(Math.max(Math.trunc(value), 1), RESULT_LIMIT_MAX);
-}
-
 function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSearchFilters {
 	const filters = input.filters ?? {};
-	const effectiveAfter = filters.effectiveAfter ? new Date(filters.effectiveAfter) : null;
-	if (effectiveAfter && Number.isNaN(effectiveAfter.getTime())) throw new Error('Invalid effectiveAfter');
+	const effectiveAfter = filters.effectiveAfter ?? null;
+	if (effectiveAfter && (!(effectiveAfter instanceof Date) || Number.isNaN(effectiveAfter.getTime()))) {
+		throw new Error('Invalid effectiveAfter');
+	}
 	const sourceIds = filters.sourceIds === undefined ? undefined : [...new Set(filters.sourceIds.map((value) => value.trim()))];
 	if (sourceIds?.some((value) => !isValidUuid(value))) throw new Error('Invalid sourceIds');
 	const kinds = filters.kinds === undefined ? undefined : [...new Set(filters.kinds)];
@@ -92,5 +88,5 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 		seen.add(id);
 		ids.push(id);
 	}
-	return ids.slice(0, clampLimit(input.limit));
+	return ids;
 }
