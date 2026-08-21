@@ -6,13 +6,7 @@ import { z } from 'zod';
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
 const YOUTUBE_API_MAX_BYTES = 1024 * 1024;
-// Shorts and clips this brief carry no transcript worth reading, so a monitored
-// channel does not contribute them. The channel Atom feed exposes no duration and
-// links Shorts as /watch?v= like everything else, so this is the first point in
-// the pipeline that can tell them apart at all — hence a policy check this deep,
-// gated on whether the URL came from a feed or from a person.
-const MIN_VIDEO_DURATION_SECONDS = 180;
-
+export const MIN_MONITORED_VIDEO_DURATION_SECONDS = 180;
 const YouTubeThumbnailSchema = z.object({ url: z.string().min(1) });
 const YouTubeThumbnailsSchema = z.object({
 	default: YouTubeThumbnailSchema.optional(),
@@ -198,7 +192,7 @@ async function fetchTranscript(videoId: string): Promise<TranscriptSegment[]> {
 	return segments;
 }
 
-export async function scrapeYouTube(videoId: string, youtubeApiKey: string, monitored: boolean): Promise<AcquiredMaterial<'youtube'>> {
+export async function scrapeYouTube(videoId: string, youtubeApiKey: string, monitoredOnly: boolean): Promise<AcquiredMaterial<'youtube'>> {
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching video', videoId });
 
 	const videoData = await fetchYouTubeVideoData(videoId, youtubeApiKey);
@@ -210,22 +204,16 @@ export async function scrapeYouTube(videoId: string, youtubeApiKey: string, moni
 	const snippet = video.snippet;
 	const stats = video.statistics;
 
-	// Checked before the transcript and avatar calls, so a video we do not want
-	// costs one request instead of three.
 	const durationSeconds = isoDurationSeconds(video.contentDetails.duration);
-	if (monitored && (durationSeconds === null || durationSeconds <= MIN_VIDEO_DURATION_SECONDS)) {
-		const reason = durationSeconds === null ? 'is a live stream or unstarted premiere' : `runs ${durationSeconds}s`;
-		throw new Error(`YouTube video ${videoId} ${reason}; wanted over ${MIN_VIDEO_DURATION_SECONDS}s`);
-	}
+	const skipOptionalAcquisition = monitoredOnly && (durationSeconds === null || durationSeconds <= MIN_MONITORED_VIDEO_DURATION_SECONDS);
 
 	const thumbnailUrl = bestThumbnailUrl(snippet.thumbnails);
 	const chapters = parseChaptersFromDescription(snippet.description);
 
-	console.info({ tag: 'YOUTUBE', msg: 'Fetching transcript', videoId });
-	const [channelAvatar, transcript] = await Promise.all([
-		fetchYouTubeChannelAvatar(snippet.channelId, youtubeApiKey),
-		fetchTranscript(videoId),
-	]);
+	if (!skipOptionalAcquisition) console.info({ tag: 'YOUTUBE', msg: 'Fetching transcript', videoId });
+	const [channelAvatar, transcript] = skipOptionalAcquisition
+		? [null, []]
+		: await Promise.all([fetchYouTubeChannelAvatar(snippet.channelId, youtubeApiKey), fetchTranscript(videoId)]);
 	const transcriptMarkdown = transcript
 		.map((segment) => segment.text.trim())
 		.filter(Boolean)
@@ -256,8 +244,8 @@ export async function scrapeYouTube(videoId: string, youtubeApiKey: string, moni
 			data: {
 				channelName: snippet.channelTitle,
 				channelId: snippet.channelId,
+				durationSeconds,
 				...(channelAvatar ? { channelAvatar } : {}),
-				...(durationSeconds && durationSeconds > 0 ? { durationSeconds } : {}),
 				viewCount: stats.viewCount ? Number.parseInt(stats.viewCount, 10) : undefined,
 				likeCount: stats.likeCount ? Number.parseInt(stats.likeCount, 10) : undefined,
 				commentCount: stats.commentCount ? Number.parseInt(stats.commentCount, 10) : undefined,
@@ -284,7 +272,7 @@ export function canonicalVideoFields(acquisition: AcquisitionEnvelope<'youtube'>
 			...(data.channelId?.trim() ? { profileUrl: `https://www.youtube.com/channel/${encodeURIComponent(data.channelId.trim())}` } : {}),
 		}),
 		kindMetadata: {
-			...(data.durationSeconds === undefined ? {} : { durationSeconds: data.durationSeconds }),
+			...(data.durationSeconds === null ? {} : { durationSeconds: data.durationSeconds }),
 			...(data.viewCount === undefined ? {} : { viewCount: data.viewCount }),
 			...(data.likeCount === undefined ? {} : { likeCount: data.likeCount }),
 			...(data.commentCount === undefined ? {} : { commentCount: data.commentCount }),

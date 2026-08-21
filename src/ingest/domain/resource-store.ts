@@ -29,6 +29,7 @@ export type ResourceProcessingShell = {
 	resource: ResourceForProcessing;
 	hasPersistedContent: boolean;
 	hasYoutubeTranscript: boolean;
+	isMonitoredOnly: boolean;
 };
 
 type ResourceStoreRow = {
@@ -52,6 +53,7 @@ type ResourceStoreRow = {
 	resource_identifiers: unknown;
 	has_content: boolean;
 	has_youtube_transcript: boolean | null;
+	is_monitored_only: boolean;
 	storage_key: string | null;
 	file_type: string | null;
 	normalized_url: string | null;
@@ -113,6 +115,7 @@ export async function loadResourceShellForProcessing(env: CoreEnv, resourceId: s
 		resource: resourceStoreRowToProcessing(row),
 		hasPersistedContent: row.has_content,
 		hasYoutubeTranscript: row.has_youtube_transcript === true,
+		isMonitoredOnly: row.is_monitored_only,
 	};
 }
 
@@ -201,6 +204,17 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<Re
 			rl.summary AS summary,
 			NULL::text AS content,
 			rl.content IS NOT NULL AND length(rl.content) > 0 AS has_content,
+			rl.scope = 'corpus'
+				AND rl.source_id IS NOT NULL
+				AND rl.storage_key IS NULL
+				AND NOT EXISTS (SELECT 1 FROM resource_saves save WHERE save.resource_id = rl.id)
+				AND NOT EXISTS (SELECT 1 FROM collection_resources edge WHERE edge.resource_id = rl.id)
+				AND NOT EXISTS (SELECT 1 FROM workspace_resources edge WHERE edge.resource_id = rl.id)
+				AND NOT EXISTS (
+					SELECT 1 FROM user_files file
+					WHERE file.resource_id = rl.id OR file.canonical_resource_id = rl.id
+				)
+				AS is_monitored_only,
 			CASE
 				WHEN rl.resource_platform = 'youtube' THEN EXISTS (
 					SELECT 1

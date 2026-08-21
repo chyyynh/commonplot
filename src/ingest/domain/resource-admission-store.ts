@@ -15,7 +15,7 @@ import { upsertResourceTranslation } from './resource-translation-store';
 import { cleanString, dateValue, requiredString, stringArrayValue } from './resource-values';
 
 /** Failed enrichments to retry before a URL is treated as permanently dead. */
-const MAX_ENRICHMENT_ATTEMPTS = 5;
+export const MAX_ENRICHMENT_ATTEMPTS = 5;
 
 /**
  * Every Resource row is committed before Workflow admission. A transient

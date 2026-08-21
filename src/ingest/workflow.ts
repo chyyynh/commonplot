@@ -38,8 +38,14 @@ import { handleResolvedResource } from './kind-handler';
 import { stagePaperEnrichment } from './platforms/paper';
 import { stagePreferredOpenAlexContent, stagePreliminaryAcquisition } from './platforms/paper-content';
 import { stagePdfTextExtraction } from './platforms/pdf';
+import { MIN_MONITORED_VIDEO_DURATION_SECONDS } from './platforms/youtube-acquisition';
 import { rehostResourceImage } from './resource-image-rehosting';
-import { markResourceEnrichmentFailed, persistProcessedResource, processedResourceImageSources } from './resource-persistence';
+import {
+	persistProcessedResource,
+	processedResourceImageSources,
+	type ResourceProcessingFailureOutcome,
+	settleResourceProcessingFailure,
+} from './resource-persistence';
 import {
 	exactPlatformLocator,
 	type ResolvedContentResourceInput,
@@ -51,6 +57,16 @@ import { PDF_MIME, pdfExtractionMetadata } from './web-acquisition';
 
 type WorkflowOperation = 'ingest' | 'resync';
 type WorkflowPayload = { resourceId: string; operation: WorkflowOperation; sourceRevision?: string };
+
+class ResourceProcessingOutcomeError extends NonRetryableError {
+	constructor(
+		readonly outcome: Exclude<ResourceProcessingFailureOutcome, 'retry'>,
+		message: string,
+		name: string,
+	) {
+		super(message, name);
+	}
+}
 
 const PENDING_RESOURCE_GRACE_MS = 10 * 60 * 1000;
 // Completed instance IDs restart on their pinned Workflow version. Bump this
@@ -191,40 +207,59 @@ function shouldAcquireContent(shell: ResourceProcessingShell, force = false): bo
 	return (!shell.hasPersistedContent || needsYouTubeAcquisition || needsPlatformAcquisition) && !resource.storage_key && !!resource.url;
 }
 
-async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, resource: ResourceForProcessing): Promise<AcquiredContent> {
+async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, shell: ResourceProcessingShell): Promise<AcquiredContent> {
+	const { resource } = shell;
 	const locator = exactPlatformLocator(resource.resource_identifiers);
 	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : resource.url;
 	if (!sourceUrl) throw new Error(`Resource ${resource.id} has no source URL`);
-	// A monitored source's feed decided to list this; anything else is a person's
-	// explicit save, which feed policies must not veto.
-	const monitored = !!resource.source_id;
 	const acquired = await readAcquiredContentArtifact(
 		await step.do('acquire-content-kind-platform-v1', ACQUISITION_STEP, () =>
-			scrapeSavedUrlArtifact(sourceUrl, env, monitored, resource.id),
+			scrapeSavedUrlArtifact(sourceUrl, env, shell.isMonitoredOnly, resource.id),
 		),
 	);
+	if (shell.isMonitoredOnly && acquired.provider === 'youtube') {
+		const durationSeconds = acquired.acquisition.data.durationSeconds;
+		if (durationSeconds === null || durationSeconds <= MIN_MONITORED_VIDEO_DURATION_SECONDS) {
+			const reason = durationSeconds === null ? 'is a live stream or unstarted premiere' : `runs ${durationSeconds}s`;
+			throw new ResourceProcessingOutcomeError(
+				'drop',
+				`YouTube video ${resource.id} ${reason}; monitored videos must exceed ${MIN_MONITORED_VIDEO_DURATION_SECONDS}s`,
+				'MonitoredVideoRejectedError',
+			);
+		}
+	}
 	return stageAcquisitionEnhancements(step, acquired, resource.id);
 }
 
 function assertPdfExtractionProcessable(input: {
 	acquiredExtraction: PdfExtractionMetadata | undefined;
+	isMonitoredOnly: boolean;
 	pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
 	resourceId: string;
 }): void {
 	const extraction = input.pdfTextArtifact ? pdfExtractionMetadata(input.pdfTextArtifact) : input.acquiredExtraction;
 	if (extraction?.status === 'needs_ocr') {
-		throw new NonRetryableError(`PDF resource ${input.resourceId} requires OCR`, 'PdfOcrRequiredError');
+		throw new ResourceProcessingOutcomeError(
+			input.isMonitoredOnly ? 'drop' : 'failed',
+			`PDF resource ${input.resourceId} requires OCR`,
+			'PdfOcrRequiredError',
+		);
 	}
 }
 
 function assertResourceContentProcessable(input: {
 	acquiredContent: AcquiredContent | undefined;
 	hasPersistedContent: boolean;
+	isMonitoredOnly: boolean;
 	pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
 	resourceId: string;
 }): void {
 	if (input.hasPersistedContent || input.pdfTextArtifact?.text?.trim() || input.acquiredContent?.markdown?.trim()) return;
-	throw new NonRetryableError(`Resource ${input.resourceId} has no extractable content`, 'ResourceContentMissingError');
+	throw new ResourceProcessingOutcomeError(
+		input.isMonitoredOnly ? 'drop' : 'failed',
+		`Resource ${input.resourceId} has no extractable content`,
+		'ResourceContentMissingError',
+	);
 }
 
 async function acquireResourceForOperation(
@@ -234,12 +269,12 @@ async function acquireResourceForOperation(
 	operation: WorkflowOperation,
 ): Promise<AcquiredContent | undefined> {
 	if (!shouldAcquireContent(shell, operation === 'resync')) return undefined;
-	return stageSavedUrlAcquisition(env, step, shell.resource);
+	return stageSavedUrlAcquisition(env, step, shell);
 }
 
 function assertOperationCanProcessResource(resource: ResourceForProcessing, operation: WorkflowOperation): void {
 	if (operation === 'resync' && !resource.url) {
-		throw new NonRetryableError(`Resource ${resource.id} has no source URL`, 'ResourceResyncUnsupportedError');
+		throw new ResourceProcessingOutcomeError('failed', `Resource ${resource.id} has no source URL`, 'ResourceResyncUnsupportedError');
 	}
 }
 
@@ -310,7 +345,7 @@ async function prepareResourceForProcessing(
 	const finalPaperEnrichment = resolution.kind === 'paper' ? paperEnrichment : null;
 	const identity = parseResourceIdentity(resolution.kind, resolution.resourcePlatform);
 	if (!identity || !isContentResourceIdentity(identity)) {
-		throw new NonRetryableError('Resolver produced an invalid content Resource identity', 'ResourceIdentityError');
+		throw new ResourceProcessingOutcomeError('failed', 'Resolver produced an invalid content Resource identity', 'ResourceIdentityError');
 	}
 	const identifiers = resolvedResourceIdentifiers(resolution, resourceIdentifiers);
 	const locator = exactPlatformLocator(identifiers);
@@ -330,11 +365,52 @@ async function prepareResourceForProcessing(
 	};
 }
 
+async function settleFailedResourceProcessing(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: {
+		error: unknown;
+		persistedSourceRevision: string | null | undefined;
+		resourceId: string;
+	},
+): Promise<boolean> {
+	if (input.persistedSourceRevision === undefined) return false;
+	const outcome: ResourceProcessingFailureOutcome = input.error instanceof ResourceProcessingOutcomeError ? input.error.outcome : 'retry';
+	const settlement = await step
+		.do(
+			'settle-resource-processing-for-source-revision-v1',
+			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+			() => settleResourceProcessingFailure(env, input.resourceId, input.persistedSourceRevision ?? null, outcome),
+		)
+		.catch((cleanupError) => {
+			console.error({
+				tag: 'WORKFLOW',
+				msg: 'Failed to settle resource processing',
+				resource_id: input.resourceId,
+				error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+			});
+			return undefined;
+		});
+	if (outcome !== 'drop' || settlement !== 'dropped') return false;
+	await step
+		.do('delete-dropped-ai-search-item-v1', AI_SEARCH_SYNC_STEP_CONFIG, () => syncCorpusItem(env, input.resourceId))
+		.catch((cleanupError) =>
+			console.error({
+				tag: 'WORKFLOW',
+				msg: 'Failed to delete dropped AI Search item',
+				resource_id: input.resourceId,
+				error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
+			}),
+		);
+	console.info({ tag: 'WORKFLOW', msg: 'Dropped source-only resource', resource_id: input.resourceId });
+	return true;
+}
+
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, WorkflowPayload> {
 	async run(event: WorkflowEvent<WorkflowPayload>, step: WorkflowStep) {
 		const { resourceId, operation, sourceRevision } = event.payload;
 		if (sourceRevision !== undefined && !isResourceSourceSnapshotHash(sourceRevision)) {
-			throw new NonRetryableError('Invalid resource source revision', 'ResourceSourceRevisionError');
+			throw new ResourceProcessingOutcomeError('failed', 'Invalid resource source revision', 'ResourceSourceRevisionError');
 		}
 		let persistedSourceRevision: string | null | undefined;
 		try {
@@ -370,10 +446,17 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 					: null);
 			assertPdfExtractionProcessable({
 				acquiredExtraction: acquiredContent?.provider === null ? acquiredContent.extraction : undefined,
+				isMonitoredOnly: initialShell.isMonitoredOnly,
 				pdfTextArtifact,
 				resourceId,
 			});
-			assertResourceContentProcessable({ acquiredContent, hasPersistedContent: hasContent, pdfTextArtifact, resourceId });
+			assertResourceContentProcessable({
+				acquiredContent,
+				hasPersistedContent: hasContent,
+				isMonitoredOnly: initialShell.isMonitoredOnly,
+				pdfTextArtifact,
+				resourceId,
+			});
 
 			// Read only the original content when the shell is otherwise sufficient. The stream keeps large content outside Workflow's persisted-value
 			// size limit; acquired or extracted content always wins.
@@ -489,26 +572,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 			};
 		} catch (error) {
 			if (operation === 'resync') throw error;
-			// Cleanup must not throw: whatever it raises would replace `error`
-			// as the instance's top-level failure. Do not delete the search
-			// document here. Successful persistence is the only path that writes
-			// it, and a concurrent newer workflow may have refreshed it after
-			// this workflow failed.
-			const logCleanupFailure = (msg: string) => (cleanupError: unknown) =>
-				console.error({
-					tag: 'WORKFLOW',
-					msg,
-					resource_id: resourceId,
-					error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-				});
-			if (persistedSourceRevision !== undefined) {
-				await step
-					.do(
-						'mark-resource-failed-for-source-revision-v1',
-						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						() => markResourceEnrichmentFailed(this.env, resourceId, persistedSourceRevision ?? null),
-					)
-					.catch(logCleanupFailure('Failed to mark resource as failed'));
+			if (
+				await settleFailedResourceProcessing(this.env, step, {
+					error,
+					persistedSourceRevision,
+					resourceId,
+				})
+			) {
+				return { success: true, resource_id: resourceId, operation, dropped: true };
 			}
 			throw error;
 		}

@@ -77,7 +77,7 @@ const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('
 	}),
 	acquiredMaterialSchema('lesswrong', z.null(), {}),
 	acquiredMaterialSchema('twitter', z.looseObject({ authorName: z.string(), authorUserName: z.string() }), {}),
-	acquiredMaterialSchema('youtube', z.looseObject({ channelName: z.string() }), {
+	acquiredMaterialSchema('youtube', z.looseObject({ channelName: z.string(), durationSeconds: z.number().nonnegative().nullable() }), {
 		youtubeTranscript: youtubeTranscriptSchema,
 	}),
 ]);
@@ -190,13 +190,13 @@ export async function sanitizeAcquiredContent(acquired: AcquiredContent): Promis
 	}
 }
 
-async function scrapeSavedUrl(url: string, env: CoreEnv, monitored: boolean, resourceId: string): Promise<AcquiredContent> {
+async function scrapeSavedUrl(url: string, env: CoreEnv, monitoredOnly: boolean, resourceId: string): Promise<AcquiredContent> {
 	const validatedUrl = validateAcquisitionUrl(url);
 	const detected = detectResourceUrl(validatedUrl);
 	if (detected) {
 		switch (detected.resourcePlatform) {
 			case 'youtube':
-				return sanitizeAcquiredContent(await scrapeYouTube(detected.platformId, env.YOUTUBE_API_KEY, monitored));
+				return sanitizeAcquiredContent(await scrapeYouTube(detected.platformId, env.YOUTUBE_API_KEY, monitoredOnly));
 			case 'twitter':
 				return sanitizeAcquiredContent(await scrapeTweet(detected.platformId, env.KAITO_API_KEY));
 			case 'hackernews':
@@ -214,10 +214,10 @@ async function scrapeSavedUrl(url: string, env: CoreEnv, monitored: boolean, res
 export async function scrapeSavedUrlArtifact(
 	url: string,
 	env: CoreEnv,
-	monitored: boolean,
+	monitoredOnly: boolean,
 	resourceId: string,
 ): Promise<ReadableStream<Uint8Array>> {
-	const acquired = await scrapeSavedUrl(url, env, monitored, resourceId);
+	const acquired = await scrapeSavedUrl(url, env, monitoredOnly, resourceId);
 	return acquiredContentArtifact(acquired);
 }
 

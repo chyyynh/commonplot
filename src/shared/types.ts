@@ -146,7 +146,7 @@ interface YouTubeMetadata {
 	channelName: string;
 	channelId?: string;
 	channelAvatar?: string;
-	durationSeconds?: number;
+	durationSeconds: number | null;
 	viewCount?: number;
 	likeCount?: number;
 	commentCount?: number;
