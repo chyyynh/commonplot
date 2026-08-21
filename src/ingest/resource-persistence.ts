@@ -1,7 +1,7 @@
 import type { PersistResolvedResourceGraphInput, PersistResolvedResourceGraphResult } from '@app-domain/resource-graph-contracts';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
 import { parseResourceIdentity } from '@core-shared/resource-types';
-import { type CoreDb, withCoreDb, withCoreTx } from '@db/client';
+import { withCoreDb } from '@db/client';
 import { resources } from '@db/schema';
 import { toStoredResourceEntities } from '@entities/normalize';
 import { eq, sql } from 'drizzle-orm';
@@ -10,7 +10,6 @@ import type { ResourceClassificationResult } from './domain/resource-classificat
 import { resourceSourceRevision } from './domain/resource-revision';
 import type { HandledResourceResult } from './kind-handler';
 import { privatePaperAttachment } from './platforms/paper';
-import { persistYouTubeWorkflowData } from './platforms/youtube';
 import { resolvedSubjectInput } from './resource-resolver';
 
 type PersistProcessedResourceInput = {
@@ -102,6 +101,20 @@ async function graphMutation(
 		sourceRevision,
 		subject: resolvedSubjectInput(input.handled),
 		privatePaperAttachment: input.handled.kind === 'paper' ? privatePaperAttachment(resource) : null,
+		youtube:
+			input.handled.kind === 'video' && (input.handled.youtubeTranscript || input.handled.youtubeHighlights)
+				? {
+						transcript: input.handled.youtubeTranscript
+							? {
+									segments: input.handled.youtubeTranscript.segments,
+									language: input.handled.youtubeTranscript.language,
+									chapters: input.handled.youtubeTranscript.chapters,
+									chaptersFromDescription: input.handled.youtubeTranscript.chaptersFromDescription,
+								}
+							: null,
+						highlights: input.handled.youtubeHighlights?.value ?? null,
+					}
+				: null,
 		originalLang: resource.original_lang,
 		title: resource.title,
 		summary: resource.summary,
@@ -129,23 +142,11 @@ export function processedResourceImageSources(input: Pick<PersistProcessedResour
 	});
 }
 
-async function persistVideoSpecialization(env: CoreEnv, handled: Extract<HandledResourceResult, { kind: 'video' }>): Promise<void> {
-	if (!handled.youtubeTranscript && !handled.youtubeHighlights) return;
-	await withCoreTx(env, (db: CoreDb) =>
-		persistYouTubeWorkflowData(db, {
-			transcript: handled.youtubeTranscript,
-			highlights: handled.youtubeHighlights,
-		}),
-	);
-}
-
 export async function persistProcessedResource(
 	env: CoreEnv,
 	input: PersistProcessedResourceInput,
 	hostedImages: readonly HostedResourceImage[],
 ): Promise<PersistResolvedResourceGraphResult> {
 	const mutation = await graphMutation(input, hostedImages);
-	const result = await env.DOMAIN.persistResolvedResourceGraph(mutation);
-	if (result.persisted && input.handled.kind === 'video') await persistVideoSpecialization(env, input.handled);
-	return result;
+	return env.DOMAIN.persistResolvedResourceGraph(mutation);
 }

@@ -1,8 +1,8 @@
 import type { ResourceForProcessing, TranscriptSegment, YouTubeHighlights, YoutubeTranscript } from '@core-shared/types';
-import { type CoreDb, withCoreDb } from '@db/client';
+import { withCoreDb } from '@db/client';
 import { youtubeTranscripts } from '@db/schema';
 import { generateText, Output } from 'ai';
-import { eq, sql } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 
@@ -38,40 +38,6 @@ const YouTubeHighlightsSchema = z.object({
 	highlights: z.array(YouTubeHighlightSchema).min(1),
 });
 const YOUTUBE_HIGHLIGHTS_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
-
-export async function persistYouTubeWorkflowData(
-	db: CoreDb,
-	input: { transcript?: YoutubeTranscript | null; highlights?: YouTubeHighlightsUpdate | null },
-): Promise<void> {
-	if (input.transcript) {
-		await db
-			.insert(youtubeTranscripts)
-			.values({
-				videoId: input.transcript.videoId,
-				transcript: input.transcript.segments,
-				language: input.transcript.language,
-				chapters: input.transcript.chapters,
-				chaptersFromDescription: input.transcript.chaptersFromDescription,
-				fetchedAt: new Date(),
-			})
-			.onConflictDoUpdate({
-				target: youtubeTranscripts.videoId,
-				set: {
-					transcript: sql`excluded.transcript`,
-					language: sql`excluded.language`,
-					chapters: sql`excluded.chapters`,
-					chaptersFromDescription: sql`excluded.chapters_from_description`,
-					fetchedAt: sql`excluded.fetched_at`,
-				},
-			});
-	}
-	if (input.highlights) {
-		await db
-			.update(youtubeTranscripts)
-			.set({ aiHighlights: input.highlights.value, highlightsGeneratedAt: new Date(input.highlights.value.generatedAt) })
-			.where(eq(youtubeTranscripts.videoId, input.highlights.videoId));
-	}
-}
 
 export async function prepareYouTubeHighlights(
 	env: CoreEnv,
