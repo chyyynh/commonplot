@@ -1,4 +1,4 @@
-import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
+import { readTextWithLimit } from '@core-shared/http';
 import { canonicalResourcePlatformUrl, normalizeUrl } from '@core-shared/url';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
 import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/resource-admission';
@@ -12,6 +12,7 @@ import {
 	twitterSearchWindow,
 	twitterSelfReplyRootId,
 } from './twitter-data';
+import { fetchTwitterProvider } from './twitter-provider';
 
 // Twitter Monitor
 
@@ -104,7 +105,11 @@ async function fetchTweetsForSource(apiKey: string, userName: string, window: Tw
 		const params = new URLSearchParams({ query, queryType: 'Latest' });
 		if (cursor) params.set('cursor', cursor);
 
-		const response = await fetchWithTimeout(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, { headers: { 'x-api-key': apiKey } }, 20_000);
+		const response = await fetchTwitterProvider(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, apiKey, {
+			operation: 'advanced-search',
+			sourceHandle: userName,
+			timeoutMs: 20_000,
+		});
 		if (!response.ok) {
 			await response.body?.cancel();
 			throw new Error(`Twitter Advanced Search failed with HTTP ${response.status}`);

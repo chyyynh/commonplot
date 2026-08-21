@@ -6,6 +6,7 @@ const TWITTER_PROVIDER_MAX_ATTEMPTS = 3;
 type TwitterProviderRequestContext = {
 	operation: 'advanced-search' | 'article' | 'thread-context' | 'tweets-by-id';
 	resourceId?: string;
+	sourceHandle?: string;
 	timeoutMs?: number;
 };
 
@@ -21,6 +22,7 @@ async function waitForTwitterProviderRetry(input: {
 		event: 'provider_request_retry',
 		operation: input.context.operation,
 		...(input.context.resourceId ? { resource_id: input.context.resourceId } : {}),
+		...(input.context.sourceHandle ? { source_handle: input.context.sourceHandle } : {}),
 		attempt: input.attempt,
 		next_attempt: input.attempt + 1,
 		delay_ms: delayMs,
