@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
-import { buildTwitterAuthorThread, isTwitterReply, parseTwitterThreadContextPage } from '../src/ingest/platforms/twitter-data.ts';
+import {
+	buildTwitterAuthorThread,
+	isTwitterReply,
+	parseTwitterThreadContextPage,
+	twitterSelfReplyRootId,
+} from '../src/ingest/platforms/twitter-data.ts';
 
 function tweet(id, author, inReplyToId, overrides = {}) {
 	return {
@@ -31,6 +36,19 @@ assert.equal(isTwitterReply(tweet('8', 'Alice', null, { inReplyToUsername: 'Bob'
 assert.equal(isTwitterReply(tweet('9', 'Alice', null, { conversationId: '1' })), true);
 assert.equal(isTwitterReply(tweet('10', 'Alice', null, { conversationId: '10' })), false);
 
+assert.equal(twitterSelfReplyRootId(tweet('11', 'Alice', '1', { inReplyToUsername: 'alice' })), '1');
+assert.equal(twitterSelfReplyRootId(tweet('12', 'Alice', '1', { inReplyToUsername: 'Bob' })), null);
+assert.equal(twitterSelfReplyRootId(tweet('13', 'Alice', '1', { inReplyToUsername: null })), null);
+assert.equal(
+	twitterSelfReplyRootId(
+		tweet('14', 'Alice', '1', {
+			inReplyToUsername: 'Alice',
+			retweetedBy: { authorName: 'Carol', authorUserName: 'Carol' },
+		}),
+	),
+	null,
+);
+
 assert.deepEqual(parseTwitterThreadContextPage({ tweets: [root], has_next_page: false }, '1').tweets, [root]);
 assert.deepEqual(parseTwitterThreadContextPage({ replies: [selfReply], has_next_page: false }, '1').tweets, [selfReply]);
 assert.throws(
@@ -42,5 +60,6 @@ console.info({
 	event: 'twitter_thread_smoke_passed',
 	threadGraphCases: 1,
 	replyPredicateCases: 5,
+	selfReplyRootCases: 4,
 	responseShapeCases: 3,
 });

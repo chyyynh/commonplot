@@ -199,6 +199,18 @@ export function isTwitterReply(tweet: Tweet): boolean {
 	return tweetId !== null && conversationId !== null && tweetId !== conversationId;
 }
 
+/** Return the canonical root ID only when this is an authored self-reply, never a retweeted reply or comment reply. */
+export function twitterSelfReplyRootId(tweet: Tweet): string | null {
+	if (tweet.retweetedBy || !isTwitterReply(tweet)) return null;
+	const author = normalizedTwitterUserName(tweet.author?.userName);
+	const parentAuthor = normalizedTwitterUserName(tweet.inReplyToUsername);
+	if (!author || author !== parentAuthor) return null;
+	const tweetId = normalizedTweetId(tweet.id);
+	const conversationId = normalizedTweetId(tweet.conversationId);
+	if (!tweetId || !conversationId || tweetId === conversationId || !/^\d+$/.test(conversationId)) return null;
+	return conversationId;
+}
+
 function tweetTimestamp(tweet: Tweet): number {
 	const timestamp = new Date(tweet.createdAt).getTime();
 	return Number.isFinite(timestamp) ? timestamp : Number.POSITIVE_INFINITY;

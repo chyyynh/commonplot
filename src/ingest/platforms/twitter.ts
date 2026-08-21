@@ -1,10 +1,10 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import { normalizeUrl } from '@core-shared/url';
+import { canonicalResourcePlatformUrl, normalizeUrl } from '@core-shared/url';
 import type { SourceResourceDraft } from '@ingest/domain/resource-admission-store';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
 import { admitDiscoveredSourceResources } from '@ingest/workflow';
 import { buildTweetTitle } from './twitter-acquisition';
-import { isTwitterReply, parseTwitterAdvancedSearchPage, type Tweet } from './twitter-data';
+import { isTwitterReply, parseTwitterAdvancedSearchPage, type Tweet, twitterSelfReplyRootId } from './twitter-data';
 
 // Twitter Monitor
 
@@ -148,6 +148,67 @@ type TwitterResourceDraft = SourceResourceDraft & {
 	source: MonitoredSource;
 };
 
+function latestTwitterDraft(left: TwitterResourceDraft, right: TwitterResourceDraft): TwitterResourceDraft {
+	const leftIsReply = isTwitterReply(left.tweet);
+	const rightIsReply = isTwitterReply(right.tweet);
+	const canonical = leftIsReply && !rightIsReply ? right : left;
+	const refresh = [left, right]
+		.filter((draft) => draft.refreshRevision)
+		.sort((a, b) => twitterDraftTimestamp(b) - twitterDraftTimestamp(a))[0];
+	return refresh?.refreshRevision ? { ...canonical, refreshRevision: refresh.refreshRevision } : canonical;
+}
+
+function twitterDraftTimestamp(draft: TwitterResourceDraft): number {
+	const timestamp = new Date(draft.tweet.createdAt).getTime();
+	return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function twitterSelfReplyRootDraft(tweet: Tweet, source: MonitoredSource): TwitterResourceDraft | null {
+	const rootId = twitterSelfReplyRootId(tweet);
+	const refreshRevision = tweet.id?.trim();
+	const author = tweet.author?.userName.trim();
+	if (!rootId || !refreshRevision || !author) return null;
+	return {
+		tweet,
+		source,
+		sourceId: source.id,
+		url: canonicalResourcePlatformUrl('twitter', rootId),
+		title: `Twitter thread by @${author}`,
+		publishedDate: null,
+		summary: null,
+		kind: 'post',
+		resourcePlatform: 'twitter',
+		originalLang: tweet.lang,
+		keywords: [],
+		refreshRevision,
+	};
+}
+
+function twitterResourceDraft(tweet: Tweet, sourcesByUserName: ReadonlyMap<string, MonitoredSource>): TwitterResourceDraft | null {
+	const userName = monitoredAuthorUserName(tweet);
+	if (!userName) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no monitored author identity`);
+	const source = sourcesByUserName.get(userName);
+	if (!source) throw new Error(`Tweet ${tweet.id ?? tweet.url} is not attributed to a monitored source`);
+	if (isTwitterReply(tweet)) return twitterSelfReplyRootDraft(tweet, source);
+
+	const url = normalizeUrl(tweet.url);
+	const publishedDate = new Date(tweet.createdAt);
+	if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id ?? url} has invalid publishedDate`);
+	return {
+		tweet,
+		source,
+		sourceId: source.id,
+		url,
+		title: buildTweetTitle(tweet),
+		publishedDate,
+		summary: null,
+		kind: 'post',
+		resourcePlatform: 'twitter',
+		originalLang: tweet.lang,
+		keywords: tweet.hashTags,
+	};
+}
+
 function twitterResourceDrafts(
 	tweets: Tweet[],
 	sourcesByUserName: ReadonlyMap<string, MonitoredSource>,
@@ -156,33 +217,11 @@ function twitterResourceDrafts(
 	let hasUnattributedFailure = false;
 	const drafts = new Map<string, TwitterResourceDraft>();
 	for (const tweet of tweets) {
-		// Acquisition of a root loads its complete same-author thread context.
-		// Replies are not independent Resources and must not become orphan rows
-		// merely because the root fell outside this monitor window.
-		if (isTwitterReply(tweet)) continue;
 		try {
-			const userName = monitoredAuthorUserName(tweet);
-			if (!userName) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no monitored author identity`);
-			const source = sourcesByUserName.get(userName);
-			if (!source) throw new Error(`Tweet ${tweet.id ?? tweet.url} is not attributed to a monitored source`);
-			const url = normalizeUrl(tweet.url);
-			if (!drafts.has(url)) {
-				const publishedDate = new Date(tweet.createdAt);
-				if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id ?? url} has invalid publishedDate`);
-				drafts.set(url, {
-					tweet,
-					source,
-					sourceId: source.id,
-					url,
-					title: buildTweetTitle(tweet),
-					publishedDate,
-					summary: null,
-					kind: 'post',
-					resourcePlatform: 'twitter',
-					originalLang: tweet.lang,
-					keywords: tweet.hashTags,
-				});
-			}
+			const draft = twitterResourceDraft(tweet, sourcesByUserName);
+			if (!draft) continue;
+			const existing = drafts.get(draft.url);
+			drafts.set(draft.url, existing ? latestTwitterDraft(existing, draft) : draft);
 		} catch (error) {
 			const userName = monitoredAuthorUserName(tweet);
 			if (userName && sourcesByUserName.has(userName)) failedUserNames.add(userName);
@@ -227,8 +266,14 @@ async function saveTweets(
 			processed++;
 			console.info({
 				tag: 'TWITTER',
-				msg: outcome.value === 'created' ? 'Saved discovered tweet' : 'Resource already exists (dedup)',
+				msg:
+					outcome.value === 'created'
+						? 'Saved discovered tweet'
+						: outcome.value === 'refreshed'
+							? 'Refreshing evolved Twitter thread'
+							: 'Resource already exists (dedup)',
 				author: draft.tweet.author?.userName,
+				refreshRevision: draft.refreshRevision,
 			});
 			continue;
 		}

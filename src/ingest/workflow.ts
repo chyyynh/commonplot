@@ -94,11 +94,11 @@ export async function enqueueProcessing(env: CoreEnv, resourceId: string, source
 export async function admitDiscoveredSourceResources(
 	env: CoreEnv,
 	drafts: SourceResourceDraft[],
-): Promise<Array<PromiseSettledResult<'created' | 'existing' | 'retried'>>> {
+): Promise<Array<PromiseSettledResult<'created' | 'existing' | 'refreshed' | 'retried'>>> {
 	if (!drafts.length) return [];
 	const existing = await withCoreDb(env, (db) => claimExistingDiscoveredResources(db, drafts));
 	const existingByUrl = new Map(existing.map((resource) => [normalizeUrl(resource.url), resource]));
-	const outcomes: Array<PromiseSettledResult<'created' | 'existing' | 'retried'>> = [];
+	const outcomes: Array<PromiseSettledResult<'created' | 'existing' | 'refreshed' | 'retried'>> = [];
 	for (let offset = 0; offset < drafts.length; offset += DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY) {
 		const batch = drafts.slice(offset, offset + DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY);
 		outcomes.push(
@@ -112,14 +112,34 @@ export async function admitDiscoveredSourceResources(
 						}
 						return 'created' as const;
 					}
-					if (!resource.shouldRetryEnrichment) return 'existing' as const;
-					await enqueueProcessing(env, resource.id);
-					return 'retried' as const;
+					if (resource.enrichmentStatus !== 'enriched') {
+						if (!resource.shouldRetryEnrichment) return 'existing' as const;
+						await enqueueProcessing(env, resource.id);
+						return 'retried' as const;
+					}
+					if (!draft.refreshRevision) return 'existing' as const;
+					return (await enqueueResourceRefresh(env, resource.id, draft.refreshRevision)) ? ('refreshed' as const) : ('existing' as const);
 				}),
 			)),
 		);
 	}
 	return outcomes;
+}
+
+async function enqueueResourceRefresh(env: CoreEnv, resourceId: string, refreshRevision: string): Promise<boolean> {
+	const revision = refreshRevision.trim();
+	if (!/^[a-zA-Z0-9_-]{1,80}$/.test(revision)) throw new Error('Invalid resource refresh revision');
+	const id = ['resource-refresh-v1', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
+	const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { resourceId, operation: 'resync' } }]);
+	if (created) return true;
+	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.get(id);
+	const { status } = await instance.status();
+	if (status === 'errored') {
+		await instance.restart();
+		return true;
+	}
+	if (status === 'unknown') throw new Error(`Resource refresh Workflow ${id} has unknown status`);
+	return false;
 }
 
 /** Re-admits app-owned pending rows whose initial DB -> Workflow handoff was interrupted. */

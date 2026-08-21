@@ -64,6 +64,8 @@ export type SourceResourceDraft = {
 	summary: string | null;
 	originalLang?: string;
 	keywords?: string[];
+	/** Provider event revision that should refresh an already-enriched Resource once. */
+	refreshRevision?: string;
 } & ContentResourceIdentity;
 
 type PendingSourceResourceRecord = {
@@ -244,7 +246,7 @@ async function syncOriginalResourceTranslation(db: CoreDb, resourceId: string, r
 export async function claimExistingDiscoveredResources(
 	db: CoreDb,
 	drafts: Array<Pick<SourceResourceDraft, 'sourceId' | 'url'>>,
-): Promise<Array<{ id: string; url: string; shouldRetryEnrichment: boolean }>> {
+): Promise<Array<{ enrichmentStatus: string; id: string; url: string; shouldRetryEnrichment: boolean }>> {
 	const discovered = new Map<string, string>();
 	for (const draft of drafts) {
 		const url = normalizeUrl(draft.url);
@@ -253,7 +255,7 @@ export async function claimExistingDiscoveredResources(
 	if (!discovered.size) return [];
 
 	const values = [...discovered].map(([url, sourceId]) => sql`(${url}, ${sourceId}::uuid)`);
-	const result = await db.execute<{ id: string; url: string; shouldRetryEnrichment: boolean }>(sql`
+	const result = await db.execute<{ enrichmentStatus: string; id: string; url: string; shouldRetryEnrichment: boolean }>(sql`
 		WITH discovered(normalized_url, source_id) AS (
 			VALUES ${sql.join(values, sql`, `)}
 		), attached AS (
@@ -271,6 +273,7 @@ export async function claimExistingDiscoveredResources(
 		SELECT
 			resource.id::text AS id,
 			resource.normalized_url AS url,
+			resource.enrichment_status AS "enrichmentStatus",
 			(
 				resource.enrichment_status = 'pending'
 				OR (
