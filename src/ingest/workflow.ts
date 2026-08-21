@@ -420,11 +420,24 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				resourcePlatform: resource.resource_platform,
 				...logContext,
 			});
-			const classification = await step.do(
-				'classify-resource',
-				{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
-				() => classifyResource(resource, this.env),
-			);
+			let imageSources: string[];
+			try {
+				imageSources = resourceImageSourceUrls({
+					creators: resource.creators,
+					kindMetadata: resource.kind_metadata,
+					ogImageUrl: previewImageUrl,
+				});
+			} catch (error) {
+				throw new ResourceProcessingRejectedError(
+					`Resource processing ${processingId} has an invalid canonical image source: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			const [classification, hostedImages] = await Promise.all([
+				step.do('classify-resource', { retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' }, () =>
+					classifyResource(resource, this.env),
+				),
+				stageResourceImages(this.env, step, processingId, imageSources),
+			]);
 			const privatePaper = target.kind === 'storedBlob' ? privatePaperAttachment(resource) : null;
 			const persistenceInput = {
 				classification,
@@ -444,19 +457,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 								expectedFileRevision: expectedSourceRevision,
 							} as const)
 						: ({ kind: 'existing', resourceId: target.resourceId, expectedSourceRevision } as const);
-			let imageSources: string[];
-			try {
-				imageSources = resourceImageSourceUrls({
-					creators: resource.creators,
-					kindMetadata: resource.kind_metadata,
-					ogImageUrl: previewImageUrl,
-				});
-			} catch (error) {
-				throw new ResourceProcessingRejectedError(
-					`Resource processing ${processingId} has an invalid canonical image source: ${error instanceof Error ? error.message : String(error)}`,
-				);
-			}
-			const hostedImages = await stageResourceImages(this.env, step, processingId, imageSources);
 			const persistence = await step.do(
 				'persist-resolved-resource-v1',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
