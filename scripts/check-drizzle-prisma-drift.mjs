@@ -251,23 +251,24 @@ if (!sourcePlatforms) {
 	if (!/platform:\s*text\('platform',\s*\{\s*enum:\s*SOURCE_PLATFORMS\s*\}\)/.test(drizzleSource)) {
 		errors.push('Drizzle sources.platform must use the canonical SOURCE_PLATFORMS domain');
 	}
-	if (!/acquisitionMode:\s*text\('content_mode'\)\.notNull\(\)/.test(drizzleSource)) {
-		errors.push('Drizzle sources.acquisitionMode must retain the content_mode compatibility column');
+	if (/\bcontent_mode\b|\bpoll_interval_minutes\b/.test(prismaSource) || /\bcontent_mode\b|\bpoll_interval_minutes\b/.test(drizzleSource)) {
+		errors.push('Prisma and Drizzle Source models must not restore retired routing/cadence columns');
 	}
 	const platformConstraint = manualIndexesSource.match(/ADD CONSTRAINT sources_platform_check\s+CHECK \(platform IN \(([^)]+)\)\);/);
 	const constrainedPlatforms = platformConstraint ? [...platformConstraint[1].matchAll(/'([^']+)'/g)].map((match) => match[1]) : null;
 	if (!constrainedPlatforms || !sameMembers(constrainedPlatforms, sourcePlatforms)) {
 		errors.push('sources_platform_check differs from canonical SOURCE_PLATFORMS');
 	}
-	const acquisitionConstraint = manualIndexesSource.match(
-		/ADD CONSTRAINT sources_acquisition_mode_check\s+CHECK \(([\s\S]*?)\n {2}\);/,
+	const twitterHandleConstraint = manualIndexesSource.match(
+		/ADD CONSTRAINT sources_twitter_handle_check\s+CHECK \(([\s\S]*?)\n {2}\);/,
 	)?.[1];
-	const normalizedAcquisitionConstraint = acquisitionConstraint?.replace(/\s+/g, ' ').trim();
+	const normalizedTwitterHandleConstraint = twitterHandleConstraint?.replace(/\s+/g, ' ').trim();
 	if (
-		!normalizedAcquisitionConstraint?.includes("platform IN ('rss', 'lesswrong', 'youtube') AND content_mode = 'web'") ||
-		!normalizedAcquisitionConstraint.includes("platform = 'twitter' AND content_mode = 'platform'")
+		!normalizedTwitterHandleConstraint?.includes("platform <> 'twitter'") ||
+		!normalizedTwitterHandleConstraint.includes('handle = lower(handle)') ||
+		!normalizedTwitterHandleConstraint.includes("handle ~ '^[a-z0-9_]{1,15}$'")
 	) {
-		errors.push('sources_acquisition_mode_check must derive its compatibility value from platform');
+		errors.push('sources_twitter_handle_check must enforce canonical Twitter handles');
 	}
 }
 

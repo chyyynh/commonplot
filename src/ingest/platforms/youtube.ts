@@ -7,8 +7,8 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 
 // Enrichment only. Channel discovery is the feed monitor's job: a channel handle
-// is its Atom feed URL, so channels stay platform='youtube' with content_mode
-// 'web' and are polled by handleRSSCron, and scrapeSavedUrl routes the resulting
+// is its Atom feed URL, so channels stay platform='youtube' and are polled by
+// handleRSSCron, while scrapeSavedUrl routes the resulting
 // watch?v= links back to YouTube.
 
 const YouTubeHighlightSchema = z.object({

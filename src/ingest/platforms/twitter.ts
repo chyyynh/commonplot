@@ -431,7 +431,7 @@ export async function handleTwitterCron(env: CoreEnv): Promise<void> {
 	if (!env.KAITO_API_KEY) throw new Error('KAITO_API_KEY is not configured');
 	console.info({ tag: 'TWITTER', msg: 'start' });
 	const runStartedAt = new Date();
-	const users = await loadMonitoredSources(env, 'platform');
+	const users = await loadMonitoredSources(env, 'twitter');
 	if (!users.length) {
 		console.info({ tag: 'TWITTER', msg: 'No twitter sources configured' });
 		return;

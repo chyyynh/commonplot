@@ -11,14 +11,11 @@ export type MonitoredSource = {
 };
 
 /**
- * Enabled sources due to be polled. Twitter has its provider monitor; RSS,
- * LessWrong, and YouTube handles are feeds and share the feed monitor.
- *
- * A null pollIntervalMinutes means every firing, so sources that never set one
- * behave exactly as before; setting it lets one monitor carry feeds whose
- * publishers update at very different rates.
+ * Enabled sources due to be polled. Platform is the routing policy: Twitter
+ * has its provider monitor, while RSS, LessWrong, and YouTube share the feed
+ * monitor. YouTube's slower cadence is intrinsic provider policy, not row data.
  */
-export async function loadMonitoredSources(env: CoreEnv, monitor: 'feed' | 'platform'): Promise<MonitoredSource[]> {
+export async function loadMonitoredSources(env: CoreEnv, monitor: 'feed' | 'twitter'): Promise<MonitoredSource[]> {
 	return withCoreDb(env, async (db: CoreDb) =>
 		db
 			.select({
@@ -32,12 +29,14 @@ export async function loadMonitoredSources(env: CoreEnv, monitor: 'feed' | 'plat
 			.where(
 				and(
 					eq(sources.monitoringEnabled, true),
-					monitor === 'platform' ? eq(sources.platform, 'twitter') : inArray(sources.platform, ['rss', 'lesswrong', 'youtube']),
-					sql`(
-						${sources.pollIntervalMinutes} IS NULL
-						OR ${sources.scrapedAt} IS NULL
-						OR ${sources.scrapedAt} < NOW() - (INTERVAL '1 minute' * ${sources.pollIntervalMinutes})
-					)`,
+					monitor === 'twitter' ? eq(sources.platform, 'twitter') : inArray(sources.platform, ['rss', 'lesswrong', 'youtube']),
+					monitor === 'twitter'
+						? undefined
+						: sql`(
+							${sources.platform} <> 'youtube'
+							OR ${sources.scrapedAt} IS NULL
+							OR ${sources.scrapedAt} < NOW() - INTERVAL '30 minutes'
+						)`,
 				),
 			),
 	);

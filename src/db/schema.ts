@@ -174,9 +174,6 @@ export const sources = pgTable(
 		avatarUrl: text('avatar_url'),
 		category: text('category'),
 		displayGroup: text('display_group'),
-		// Compatibility column until the app-owned schema drops content_mode.
-		// Runtime routing is derived exclusively from platform.
-		acquisitionMode: text('content_mode').notNull(),
 		monitoringEnabled: boolean('enabled').default(true).notNull(),
 		curated: boolean('curated').default(false).notNull(),
 		createdBy: text('created_by'),
@@ -184,10 +181,6 @@ export const sources = pgTable(
 			.default('active')
 			.notNull(),
 		scrapedAt: timestamp('scraped_at', { mode: 'date' }),
-		// Minimum minutes between polls. Null means every cron firing, which is what
-		// every source did before YouTube's channel feeds joined the RSS monitor and
-		// needed their own, slower cadence.
-		pollIntervalMinutes: integer('poll_interval_minutes'),
 		scrapeState: jsonb('scrape_state').$type<unknown>(),
 		createdAt: timestamp('created_at', { mode: 'date' }).defaultNow().notNull(),
 		updatedAt: timestamp('updated_at', { mode: 'date' }).defaultNow().notNull(),

@@ -37,8 +37,8 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	override scheduled(event: ScheduledController): void {
 		console.info({ tag: 'CORE', msg: 'Scheduled', cron: event.cron });
 
-		// YouTube channels ride the RSS monitor: their handles are Atom feed URLs,
-		// so they are ordinary rss sources with a 30-minute poll interval.
+		// YouTube channels ride the feed monitor through their Atom URLs; Core
+		// derives their slower polling cadence from platform.
 		if (event.cron === '*/5 * * * *') {
 			this.ctx.waitUntil(runFiveMinuteCycle(this.env));
 		} else if (event.cron === '0 */6 * * *') {
