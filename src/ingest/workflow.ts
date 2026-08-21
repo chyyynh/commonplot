@@ -11,6 +11,7 @@ import type { HostedResourceImage } from '@core-shared/resource-image-mapping';
 import {
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
+	DEFAULT_RESOURCE_LANG,
 	resourceIdentityForDetectedPlatform,
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
@@ -256,8 +257,8 @@ async function acquireDraftResource(
 		input.expectedProviderRevision,
 	);
 	const canonicalUrl = acquiredContent.canonicalUrl?.trim() || input.url;
-	let publishedDate = input.publishedDate;
-	if (publishedDate === null && acquiredContent.publishedDate?.trim()) {
+	let publishedDate = input.sourceHints?.publishedDate ?? null;
+	if (acquiredContent.publishedDate?.trim()) {
 		const parsed = new Date(acquiredContent.publishedDate);
 		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
 	}
@@ -268,15 +269,17 @@ async function acquireDraftResource(
 			processing_id: input.processingId,
 			source_id: sourceId,
 			scope: 'corpus',
-			original_lang: canonicalizeOptionalResourceLang(acquiredContent.originalLang) ?? canonicalizeResourceLang(input.originalLang),
+			original_lang:
+				canonicalizeOptionalResourceLang(acquiredContent.originalLang) ??
+				canonicalizeResourceLang(input.sourceHints?.originalLang ?? DEFAULT_RESOURCE_LANG),
 			title: acquiredContent.title.trim(),
-			summary: acquiredContent.summary ?? input.summary,
+			summary: acquiredContent.summary ?? input.sourceHints?.summary ?? null,
 			content: acquiredContent.markdown,
 			url: canonicalUrl,
 			source: acquiredContent.source,
 			published_date: publishedDate,
 			tags: [],
-			keywords: input.keywords,
+			keywords: input.sourceHints?.keywords ?? [],
 			creators: acquiredContent.creators,
 			kind_metadata: acquiredContent.kindMetadata,
 			source_revision: acquiredContent.sourceSnapshotHash ?? null,
@@ -573,7 +576,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							enqueueSubjectDraft(this.env, {
 								parentResourceId: persistedResourceId,
 								parentRevision,
-								title: subject.title,
 								url: subject.url,
 							}),
 					)

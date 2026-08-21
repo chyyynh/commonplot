@@ -14,27 +14,13 @@ async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
 		return;
 	}
 
-	const drafts: SourceResourceDraft[] = [];
-	for (const item of entries) {
-		try {
-			if (!item.title) throw new Error(`RSS item from ${feed.name} has no title: ${item.url}`);
-			drafts.push({
-				sourceId: feed.id,
-				url: item.url,
-				title: item.title,
-				publishedDate: item.publishedDate,
-				summary: item.summary,
-				originalLang: item.originalLang,
-			});
-		} catch (error) {
-			console.error({
-				tag: 'RSS',
-				msg: 'Item discovery failed',
-				url: item.url,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-	}
+	const drafts: SourceResourceDraft[] = entries.map((item) => ({
+		sourceId: feed.id,
+		url: item.url,
+		publishedDate: item.publishedDate,
+		summary: item.summary,
+		originalLang: item.originalLang,
+	}));
 	const outcomes = await admitDiscoveredSourceResources(env, drafts);
 	let created = 0;
 	let existing = 0;

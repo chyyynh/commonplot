@@ -2,7 +2,6 @@ import { readTextWithLimit } from '@core-shared/http';
 import { canonicalResourcePlatformUrl, normalizeUrl } from '@core-shared/url';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
 import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/resource-admission';
-import { buildTweetTitle } from './twitter-acquisition';
 import {
 	buildTwitterMonitorSearchQueries,
 	isTwitterReply,
@@ -193,14 +192,12 @@ function twitterDraftTimestamp(draft: TwitterResourceDraft): number {
 function twitterSelfReplyRootDraft(tweet: Tweet, source: MonitoredSource): TwitterResourceDraft | null {
 	const rootId = twitterSelfReplyRootId(tweet);
 	const refreshRevision = tweet.id?.trim();
-	const author = tweet.author?.userName.trim();
-	if (!rootId || !refreshRevision || !author) return null;
+	if (!rootId || !refreshRevision) return null;
 	return {
 		tweet,
 		source,
 		sourceId: source.id,
 		url: canonicalResourcePlatformUrl('twitter', rootId),
-		title: `Twitter thread by @${author}`,
 		publishedDate: null,
 		summary: null,
 		originalLang: tweet.lang,
@@ -223,7 +220,6 @@ function twitterResourceDraft(tweet: Tweet, source: MonitoredSource): TwitterRes
 		source,
 		sourceId: source.id,
 		url,
-		title: buildTweetTitle(tweet),
 		publishedDate,
 		summary: null,
 		originalLang: tweet.lang,

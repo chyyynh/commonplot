@@ -144,7 +144,6 @@ assert.deepEqual(
 	{
 		identifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
 		normalizedUrl: 'https://doi.org/10.1000/example',
-		title: '10.1000/example',
 		url: 'https://doi.org/10.1000/example',
 	},
 	'paper subjects resolve independently from their carrier',
@@ -155,7 +154,6 @@ assert.deepEqual(
 	{
 		identifiers: [],
 		normalizedUrl: 'https://example.com/article',
-		title: 'example.com',
 		url: 'https://example.com/article',
 	},
 	'generic subjects retain their normalized URL identity',

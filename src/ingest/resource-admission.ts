@@ -1,6 +1,6 @@
 import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
-import { canonicalizeOptionalResourceLang, DEFAULT_RESOURCE_LANG } from '@core-shared/resource-types';
+import { canonicalizeOptionalResourceLang } from '@core-shared/resource-types';
 import { normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { withCoreDb } from '@db/client';
 import { claimExistingDiscoveredResources, claimStalePendingBlobAdmissions } from '@ingest/domain/resource-admission-store';
@@ -56,11 +56,15 @@ const ResourceDraftTargetSchema = z
 		kind: z.literal('draft'),
 		admission: DraftAdmissionSchema,
 		url: z.url().max(2_048),
-		title: z.string().trim().min(1).max(5_000),
-		summary: z.string().max(20_000).nullable(),
-		originalLang: z.string().trim().min(1).max(35),
-		publishedDate: z.iso.datetime().nullable(),
-		keywords: z.array(z.string().max(500)).max(100),
+		sourceHints: z
+			.object({
+				summary: z.string().max(20_000).optional(),
+				originalLang: z.string().trim().min(1).max(35).optional(),
+				publishedDate: z.iso.datetime().optional(),
+				keywords: z.array(z.string().max(500)).max(100).optional(),
+			})
+			.strict()
+			.optional(),
 		expectedProviderRevision: ProviderRevisionSchema.optional(),
 	})
 	.strict();
@@ -97,7 +101,6 @@ export function parseResourceProcessingWorkflowPayload(value: unknown): Resource
 export type SourceResourceDraft = {
 	sourceId: string;
 	url: string;
-	title: string;
 	publishedDate: Date | null;
 	summary: string | null;
 	originalLang?: string;
@@ -118,7 +121,7 @@ type ExistingDiscoveredResource = Awaited<ReturnType<typeof claimExistingDiscove
 
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v9';
-const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v2';
+const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v3';
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
 const PENDING_BLOB_RECONCILE_CONCURRENCY = 10;
 const DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY = 5;
@@ -143,23 +146,17 @@ export async function enqueueAppResourceDraft(env: CoreEnv, input: AppResourceDr
 		kind: 'draft',
 		admission: input.admission,
 		url,
-		title: new URL(url).hostname.replace(/^www\./, ''),
-		summary: null,
-		originalLang: DEFAULT_RESOURCE_LANG,
-		publishedDate: null,
-		keywords: [],
 	};
 	const payload = parseResourceProcessingWorkflowPayload({ target });
 	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, input.instanceId, payload);
 }
 
 function sourceDraftTarget(base: SourceResourceDraft): ResourceDraftTarget {
-	const originalLang = canonicalizeOptionalResourceLang(base.originalLang) ?? DEFAULT_RESOURCE_LANG;
+	const originalLang = canonicalizeOptionalResourceLang(base.originalLang);
 	const publishedDate = base.publishedDate === null ? null : dateValue(base.publishedDate, 'published_date').toISOString();
 	const parsedUrl = parseExternalHttpUrl(requiredString(base.url, 'url'));
 	if (!parsedUrl) throw new Error('Source resource URL must be external http(s)');
 	const url = normalizeUrl(parsedUrl.toString());
-	const title = requiredString(base.title, 'title');
 	const summary = cleanString(base.summary);
 	const keywords = stringArrayValue(base.keywords ?? [], 'keywords');
 	return parseResourceProcessingWorkflowPayload({
@@ -167,11 +164,12 @@ function sourceDraftTarget(base: SourceResourceDraft): ResourceDraftTarget {
 			kind: 'draft',
 			admission: { kind: 'source', sourceId: requiredString(base.sourceId, 'source_id') },
 			url,
-			title,
-			summary,
-			originalLang,
-			publishedDate,
-			keywords,
+			sourceHints: {
+				...(summary ? { summary } : {}),
+				...(originalLang ? { originalLang } : {}),
+				...(publishedDate ? { publishedDate } : {}),
+				...(keywords.length ? { keywords } : {}),
+			},
 			...(base.refreshRevision?.trim() ? { expectedProviderRevision: base.refreshRevision.trim() } : {}),
 		},
 	}).target as ResourceDraftTarget;
@@ -182,7 +180,6 @@ export async function enqueueSubjectDraft(
 	input: {
 		parentResourceId: string;
 		parentRevision: string | null;
-		title: string;
 		url: string;
 	},
 ): Promise<string> {
@@ -195,15 +192,10 @@ export async function enqueueSubjectDraft(
 				expectedParentRevision: input.parentRevision,
 			},
 			url: normalizeUrl(input.url),
-			title: input.title,
-			summary: null,
-			originalLang: DEFAULT_RESOURCE_LANG,
-			publishedDate: null,
-			keywords: [],
 		},
 	}).target as ResourceDraftTarget;
 	const identity = await sha256Hex(JSON.stringify(target));
-	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `subject-draft-v2-${identity}`, { target });
+	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `subject-draft-v3-${identity}`, { target });
 }
 
 async function admitDiscoveredSourceResource(

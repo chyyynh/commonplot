@@ -56,7 +56,6 @@ export function resolveContentResource(resource: ResourceForProcessing): Resourc
 export type ResolvedSubjectInput = Readonly<{
 	identifiers: ResourceIdentifier[];
 	normalizedUrl: string;
-	title: string;
 	url: string;
 }>;
 
@@ -68,7 +67,6 @@ export function resolvedSubjectInput(subjectUrl: string | null | undefined): Res
 		return {
 			identifiers: paperIdentifiersFromIdentity(paper.identity),
 			normalizedUrl: paper.canonicalUrl,
-			title: paper.identity.arxivId ?? paper.identity.doi ?? paper.identity.openAlexId ?? 'Paper',
 			url: paper.canonicalUrl,
 		};
 	}
@@ -78,7 +76,6 @@ export function resolvedSubjectInput(subjectUrl: string | null | undefined): Res
 			? normalizeResourceIdentifiers([{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }])
 			: [],
 		normalizedUrl: url,
-		title: new URL(url).hostname,
 		url,
 	};
 }
