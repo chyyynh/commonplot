@@ -15,7 +15,7 @@ import {
 	resourceIdentityForDetectedPlatform,
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
-import type { PaperMetadata, PdfExtractionMetadata, ResourceForProcessing } from '@core-shared/types';
+import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
 import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
 import { loadSourceAvatarUrl, loadStoredResourceForProcessing, type StoredResourceProcessingInput } from '@ingest/domain/resource-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
@@ -52,7 +52,7 @@ import {
 } from './resource-persistence';
 import { exactPlatformLocator, type ResolvedSubjectInput, resolveContentResource, resolvedSubjectInput } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
-import { PDF_MIME, pdfExtractionMetadata } from './web-acquisition';
+import { PDF_MIME } from './web-acquisition';
 
 class ResourceProcessingRejectedError extends Error {
 	constructor(message: string, name: string) {
@@ -170,29 +170,8 @@ async function stageSavedUrlAcquisition(
 	return acquisition.content;
 }
 
-function assertPdfExtractionProcessable(input: {
-	acquiredExtraction: PdfExtractionMetadata | undefined;
-	pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
-	processingId: string;
-}): void {
-	const extraction = input.pdfTextArtifact ? pdfExtractionMetadata(input.pdfTextArtifact) : input.acquiredExtraction;
-	if (extraction?.status === 'needs_ocr') {
-		throw new ResourceProcessingRejectedError(`PDF processing ${input.processingId} requires OCR`, 'PdfOcrRequiredError');
-	}
-}
-
-function assertResourceContentProcessable(input: {
-	acquiredContent: AcquiredContent | undefined;
-	pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
-	processingId: string;
-}): void {
-	if (input.pdfTextArtifact?.text?.trim() || input.acquiredContent?.markdown?.trim()) return;
-	throw new ResourceProcessingRejectedError(`Processing ${input.processingId} has no extractable content`, 'ResourceContentMissingError');
-}
-
 type PreparedResource = {
 	acquiredContent: AcquiredContent | undefined;
-	identityPdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
 	paperEnrichment: PaperMetadata | null;
 	resource: ResourceForProcessing;
 	subject: ResolvedSubjectInput | null;
@@ -315,15 +294,11 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 	const acquired = input.kind === 'draft' ? await acquireDraftResource(env, step, input) : await acquireExistingResource(env, step, input);
 	let { acquiredContent, resource } = acquired;
 	const rootCanBePaper = !resource.url || !detectResourceUrl(resource.url);
-	const identityPdfTextArtifact =
+	const pdfTextArtifact =
 		resource.storage_key && resource.file_type === PDF_MIME && acquiredContent?.fileType !== PDF_MIME
 			? await stagePdfTextExtraction(env, step, { sourceStorageKey: resource.storage_key })
 			: null;
-	const identifierText = identityPdfTextArtifact?.text?.trim()
-		? identityPdfTextArtifact.text
-		: resource.file_type === PDF_MIME
-			? resource.content
-			: null;
+	const identifierText = pdfTextArtifact?.text?.trim() || (resource.file_type === PDF_MIME ? resource.content : null);
 	const paperResolution = rootCanBePaper
 		? await stagePaperEnrichment(
 				env,
@@ -367,11 +342,21 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 		...resource,
 		resource_identifiers: resourceIdentifiers,
 	});
+	const extractionStatus = pdfTextArtifact?.status ?? (acquiredContent?.provider === null ? acquiredContent.extraction?.status : undefined);
+	if (extractionStatus === 'needs_ocr') {
+		throw new ResourceProcessingRejectedError(`PDF processing ${resource.processing_id} requires OCR`, 'PdfOcrRequiredError');
+	}
+	const extractedPdfText = pdfTextArtifact?.text?.trim();
+	if (!extractedPdfText && !acquiredContent?.markdown?.trim()) {
+		throw new ResourceProcessingRejectedError(
+			`Processing ${resource.processing_id} has no extractable content`,
+			'ResourceContentMissingError',
+		);
+	}
 	return {
 		acquiredContent,
-		identityPdfTextArtifact,
 		paperEnrichment: resource.kind === 'paper' ? paperEnrichment : null,
-		resource,
+		resource: extractedPdfText ? { ...resource, content: extractedPdfText } : resource,
 		subject: resolvedSubjectInput(subjectUrl),
 	};
 }
@@ -441,7 +426,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				preparationInput = { ...target, processingId, sourceAvatarUrl };
 			}
 			const prepared = await prepareResourceForProcessing(this.env, step, preparationInput);
-			const { acquiredContent, identityPdfTextArtifact, paperEnrichment, resource } = prepared;
+			const { acquiredContent, paperEnrichment, resource } = prepared;
 			const logContext = { processing_id: processingId, target_kind: target.kind };
 
 			console.info({
@@ -451,27 +436,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				resourcePlatform: resource.resource_platform,
 				...logContext,
 			});
-			const pdfTextArtifact = identityPdfTextArtifact;
-			assertPdfExtractionProcessable({
-				acquiredExtraction: acquiredContent?.provider === null ? acquiredContent.extraction : undefined,
-				pdfTextArtifact,
-				processingId,
-			});
-			assertResourceContentProcessable({
-				acquiredContent,
-				pdfTextArtifact,
-				processingId,
-			});
-
-			const extractedPdfText = pdfTextArtifact?.text?.trim();
-			const processableResource = extractedPdfText ? { ...resource, content: extractedPdfText } : resource;
-
 			const previewImageUrl = acquiredContent?.previewImageUrl?.trim() || null;
 			const handled = await handleResolvedResource({
 				acquiredContent,
 				env: this.env,
 				paperEnrichment,
-				resource: processableResource,
+				resource,
 				step,
 			});
 
@@ -481,7 +451,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				() => classifyResource(handled.resource, this.env, handled.classificationExclusions),
 			);
 			const privatePaper = target.kind === 'storedBlob' ? privatePaperAttachment(handled.resource) : null;
-			const subject = privatePaper ? null : prepared.subject;
+			const subject = prepared.subject;
 			const persistenceInput = {
 				handled,
 				classification,
@@ -490,7 +460,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			};
 			let imageSources: string[];
 			try {
-				imageSources = privatePaper ? [] : processedResourceImageSources(persistenceInput);
+				imageSources = processedResourceImageSources(persistenceInput);
 			} catch (error) {
 				throw new ResourceProcessingRejectedError(
 					`Resource processing ${processingId} has an invalid canonical image source: ${error instanceof Error ? error.message : String(error)}`,

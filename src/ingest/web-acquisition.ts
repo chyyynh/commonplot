@@ -62,7 +62,7 @@ function urlHost(url: string): string {
 	return new URL(url).hostname.replace(/^www\./, '');
 }
 
-export function pdfExtractionMetadata(pdf: PdfTextArtifact): PdfExtractionMetadata {
+function pdfExtractionMetadata(pdf: PdfTextArtifact): PdfExtractionMetadata {
 	return { status: pdf.status, pages: pdf.pages };
 }
 
