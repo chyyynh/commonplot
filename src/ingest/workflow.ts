@@ -8,14 +8,7 @@ import {
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
 import type { PaperMetadata, PdfExtractionMetadata, ResourceForProcessing } from '@core-shared/types';
-import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '@core-shared/url';
-import { withCoreDb, withCoreTx } from '@db/client';
-import {
-	claimExistingDiscoveredResources,
-	claimStalePendingResourceAdmissions,
-	type SourceResourceDraft,
-	upsertPendingSourceResource,
-} from '@ingest/domain/resource-admission-store';
+import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
 import {
 	loadOriginalResourceContentArtifact,
 	loadResourceShellForProcessing,
@@ -23,7 +16,7 @@ import {
 	readOriginalResourceContentArtifact,
 } from '@ingest/domain/resource-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
-import { DURABLE_WORKFLOW_RETRIES, enqueueOrRestartWorkflow } from '../workflow-control';
+import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
 import {
 	ACQUISITION_STEP,
 	type AcquiredContent,
@@ -38,6 +31,7 @@ import { stagePaperEnrichment } from './platforms/paper';
 import { stagePreferredOpenAlexContent, stagePreliminaryAcquisition } from './platforms/paper-content';
 import { stagePdfTextExtraction } from './platforms/pdf';
 import { MIN_MONITORED_VIDEO_DURATION_SECONDS } from './platforms/youtube-acquisition';
+import { enqueueProcessing, type ResourceProcessingOperation, type ResourceProcessingWorkflowPayload } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import {
 	persistProcessedResource,
@@ -54,9 +48,6 @@ import {
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 import { PDF_MIME, pdfExtractionMetadata } from './web-acquisition';
 
-type WorkflowOperation = 'ingest' | 'resync';
-type WorkflowPayload = { resourceId: string; operation: WorkflowOperation; sourceRevision?: string };
-
 class ResourceProcessingOutcomeError extends Error {
 	constructor(
 		readonly outcome: Exclude<ResourceProcessingFailureOutcome, 'retry'>,
@@ -68,139 +59,10 @@ class ResourceProcessingOutcomeError extends Error {
 	}
 }
 
-const PENDING_RESOURCE_GRACE_MS = 10 * 60 * 1000;
-// Completed instance IDs restart on their pinned Workflow version. Bump this
-// namespace when a new graph must not reuse an older instance.
-const RESOURCE_PROCESSING_WORKFLOW_REVISION = 'resource-v6';
-// Stale pending resources are readmitted through the same canonical resolver
-// as fresh ingest; pace reconciliation well below the Workflow creation limit.
-const PENDING_RESOURCE_RECONCILE_LIMIT = 50;
-const PENDING_RESOURCE_RECONCILE_CONCURRENCY = 10;
-const DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY = 5;
 const RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG = {
 	retries: DURABLE_WORKFLOW_RETRIES,
 	timeout: '30 seconds',
 } as const satisfies WorkflowStepConfig;
-
-export async function enqueueProcessing(env: CoreEnv, resourceId: string, sourceRevision?: string): Promise<string> {
-	if (sourceRevision && !isResourceSourceSnapshotHash(sourceRevision)) throw new Error('Invalid resource source revision');
-	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, storedWorkflowId(resourceId, sourceRevision), {
-		resourceId,
-		operation: 'ingest',
-		...(sourceRevision ? { sourceRevision } : {}),
-	});
-}
-
-export async function admitDiscoveredSourceResources(
-	env: CoreEnv,
-	drafts: SourceResourceDraft[],
-): Promise<Array<PromiseSettledResult<'created' | 'existing' | 'refreshed' | 'retried'>>> {
-	if (!drafts.length) return [];
-	const existing = await withCoreDb(env, (db) => claimExistingDiscoveredResources(db, drafts));
-	const existingByUrl = new Map(existing.map((resource) => [normalizeUrl(resource.url), resource]));
-	const outcomes: Array<PromiseSettledResult<'created' | 'existing' | 'refreshed' | 'retried'>> = [];
-	for (let offset = 0; offset < drafts.length; offset += DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY) {
-		const batch = drafts.slice(offset, offset + DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY);
-		outcomes.push(
-			...(await Promise.allSettled(
-				batch.map(async (draft) => {
-					const resource = existingByUrl.get(normalizeUrl(draft.url));
-					if (!resource) {
-						const pending = await withCoreTx(env, (db) => upsertPendingSourceResource(db, draft));
-						if (pending.needsProcessing) {
-							await enqueueProcessing(env, pending.resourceId, pending.sourceRevision ?? undefined);
-						}
-						return 'created' as const;
-					}
-					if (resource.enrichmentStatus !== 'enriched') {
-						if (!resource.shouldRetryEnrichment) return 'existing' as const;
-						await enqueueProcessing(env, resource.id);
-						return 'retried' as const;
-					}
-					if (!draft.refreshRevision) return 'existing' as const;
-					return (await enqueueResourceRefresh(env, resource.id, draft.refreshRevision)) ? ('refreshed' as const) : ('existing' as const);
-				}),
-			)),
-		);
-	}
-	return outcomes;
-}
-
-async function enqueueResourceRefresh(env: CoreEnv, resourceId: string, refreshRevision: string): Promise<boolean> {
-	const revision = refreshRevision.trim();
-	if (!/^[a-zA-Z0-9_-]{1,80}$/.test(revision)) throw new Error('Invalid resource refresh revision');
-	const id = ['resource-refresh-v1', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
-	const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { resourceId, operation: 'resync' } }]);
-	if (created) return true;
-	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.get(id);
-	const { status } = await instance.status();
-	if (status === 'errored') {
-		await instance.restart();
-		return true;
-	}
-	if (status === 'unknown') throw new Error(`Resource refresh Workflow ${id} has unknown status`);
-	return false;
-}
-
-/** Re-admits app-owned pending rows whose initial DB -> Workflow handoff was interrupted. */
-export async function reconcilePendingResourceProcessing(env: CoreEnv): Promise<void> {
-	const admissions = await claimStalePendingResourceAdmissions(
-		env,
-		new Date(Date.now() - PENDING_RESOURCE_GRACE_MS),
-		PENDING_RESOURCE_RECONCILE_LIMIT,
-	);
-	if (!admissions.length) return;
-
-	let reconciled = 0;
-	let failed = 0;
-	for (let offset = 0; offset < admissions.length; offset += PENDING_RESOURCE_RECONCILE_CONCURRENCY) {
-		const batch = admissions.slice(offset, offset + PENDING_RESOURCE_RECONCILE_CONCURRENCY);
-		const results = await Promise.allSettled(
-			batch.map(({ resourceId, sourceRevision }) => enqueueProcessing(env, resourceId, sourceRevision ?? undefined)),
-		);
-		for (const [index, result] of results.entries()) {
-			if (result.status === 'fulfilled') {
-				reconciled++;
-				continue;
-			}
-			failed++;
-			console.error({
-				tag: 'RESOURCE_WORKFLOW',
-				event: 'pending_resource_reconciliation_failed',
-				resource_id: batch[index]?.resourceId,
-				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-			});
-		}
-	}
-	console.info({
-		tag: 'RESOURCE_WORKFLOW',
-		event: 'pending_resource_reconciliation_completed',
-		attempted: admissions.length,
-		reconciled,
-		failed,
-	});
-}
-
-export async function enqueueResourceResync(env: CoreEnv, resourceId: string): Promise<string> {
-	// A resync is a distinct run, not a retry of the original ingest. A unique
-	// instance ID also keeps clients from observing a cached terminal status
-	// from an earlier resync of the same resource.
-	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
-		id: `resource-resync-v2-${workflowIdPart(resourceId)}-${crypto.randomUUID()}`,
-		params: { resourceId, operation: 'resync' },
-	});
-	return instance.id;
-}
-
-function workflowIdPart(value: string): string {
-	return value.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80);
-}
-
-function storedWorkflowId(resourceId: string, sourceRevision?: string): string {
-	return sourceRevision
-		? [RESOURCE_PROCESSING_WORKFLOW_REVISION, workflowIdPart(resourceId), sourceRevision.slice(0, 32)].join('-')
-		: [RESOURCE_PROCESSING_WORKFLOW_REVISION, workflowIdPart(resourceId)].join('-');
-}
 
 async function stageResourceImages(
 	env: CoreEnv,
@@ -335,7 +197,7 @@ async function prepareResourceForProcessing(
 	env: CoreEnv,
 	step: WorkflowStep,
 	initialShell: ResourceProcessingShell,
-	operation: WorkflowOperation,
+	operation: ResourceProcessingOperation,
 ): Promise<PreparedResource> {
 	const { resource: initialResource } = initialShell;
 	if (operation === 'resync' && !initialResource.url) {
@@ -456,8 +318,8 @@ async function settleFailedResourceProcessing(
 	return true;
 }
 
-export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, WorkflowPayload> {
-	async run(event: WorkflowEvent<WorkflowPayload>, step: WorkflowStep) {
+export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingWorkflowPayload> {
+	async run(event: WorkflowEvent<ResourceProcessingWorkflowPayload>, step: WorkflowStep) {
 		const { resourceId, operation, sourceRevision } = event.payload;
 		if (sourceRevision !== undefined && !isResourceSourceSnapshotHash(sourceRevision)) {
 			throw new ResourceProcessingOutcomeError('failed', 'Invalid resource source revision', 'ResourceSourceRevisionError');

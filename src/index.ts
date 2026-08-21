@@ -2,13 +2,9 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { type ResolveMonitoredSourceInput, resolveMonitoredSource } from '@ingest/monitored-source';
 import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';
+import { enqueueProcessing, enqueueResourceResync, reconcilePendingResourceProcessing } from '@ingest/resource-admission';
 import { ResourceTranslationV2Workflow } from '@ingest/resource-translation-workflow';
-import {
-	enqueueProcessing,
-	enqueueResourceResync,
-	ResourceProcessingV2Workflow,
-	reconcilePendingResourceProcessing,
-} from '@ingest/workflow';
+import { ResourceProcessingV2Workflow } from '@ingest/workflow';
 import { SearchIndexGeneration5RebuildWorkflow } from './ai-search';
 import { assertResourceProcessable, isResourceEnrichmentComplete } from './ingest/domain/resource-store';
 import { type PublicResourceSearchInput, searchPublicResourceIds } from './public-search';
