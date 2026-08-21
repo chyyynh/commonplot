@@ -449,9 +449,9 @@ export function isTwitterReply(tweet: Tweet): boolean {
 	return tweetId !== null && conversationId !== null && tweetId !== conversationId;
 }
 
-export function shouldSearchTwitterThread(tweet: Tweet, expectedReplyId?: string): boolean {
+export function shouldSearchTwitterThread(tweet: Tweet, expectedReplyId?: string, discoverUnsignaledThread = true): boolean {
 	if (expectedReplyId?.trim()) return true;
-	return tweet.replyCount !== 0;
+	return discoverUnsignaledThread && tweet.replyCount !== 0;
 }
 
 export function assertExpectedTwitterThreadPost(thread: Tweet[], expectedReplyId: string | undefined, tweetId: string): void {
@@ -461,6 +461,10 @@ export function assertExpectedTwitterThreadPost(thread: Tweet[], expectedReplyId
 	if (!thread.some((tweet) => normalizedTweetId(tweet.id) === expected)) {
 		throw new Error(`Twitter thread ${tweetId} does not yet include expected reply ${expected}`);
 	}
+}
+
+export function qualifiesTwitterAuthorThread(thread: readonly Tweet[]): boolean {
+	return thread.length > 3;
 }
 
 /** Return the canonical root ID only when this is an authored self-reply, never a retweeted reply or comment reply. */

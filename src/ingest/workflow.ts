@@ -138,6 +138,7 @@ async function stageSavedUrlAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
+		discoverTwitterThread: boolean;
 		isMonitoredOnly: boolean;
 		processingId: string;
 		sourceAvatarUrl: string | null;
@@ -166,6 +167,7 @@ async function stageSavedUrlAcquisition(
 				input.sourceAvatarUrl,
 				input.processingId,
 				expectedProviderRevision,
+				input.discoverTwitterThread,
 			);
 		}),
 	);
@@ -267,6 +269,7 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 				env,
 				step,
 				{
+					discoverTwitterThread: input.target.admission.kind !== 'source',
 					isMonitoredOnly: input.target.admission.kind === 'source',
 					processingId: input.processingId,
 					sourceAvatarUrl: input.sourceAvatarUrl,
@@ -326,6 +329,7 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 					env,
 					step,
 					{
+						discoverTwitterThread: true,
 						isMonitoredOnly: input.stored.isMonitoredOnly,
 						processingId: initialResource.processing_id,
 						sourceAvatarUrl: input.stored.sourceAvatarUrl,

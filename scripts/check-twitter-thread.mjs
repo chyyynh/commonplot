@@ -12,6 +12,7 @@ import {
 	parseTwitterArticleResponse,
 	parseTwitterThreadContextPage,
 	parseTwitterTweetsResponse,
+	qualifiesTwitterAuthorThread,
 	renderTwitterArticleMarkdown,
 	shouldRetryTwitterProviderStatus,
 	shouldSearchTwitterThread,
@@ -42,15 +43,20 @@ const selfReply = tweet('2', 'alice', '1');
 const outsideComment = tweet('3', 'Bob', '1');
 const authorReplyToComment = tweet('4', 'ALICE', '3');
 const continuedThread = tweet('5', 'Alice', '2');
+const fourthThreadPost = tweet('6', 'Alice', '5');
 
 assert.deepEqual(
-	buildTwitterAuthorThread(root, [authorReplyToComment, continuedThread, outsideComment, selfReply, selfReply]).map((item) => item.id),
-	['1', '2', '5'],
+	buildTwitterAuthorThread(root, [authorReplyToComment, fourthThreadPost, continuedThread, outsideComment, selfReply, selfReply]).map(
+		(item) => item.id,
+	),
+	['1', '2', '5', '6'],
 );
 assert.deepEqual(
 	twitterAuthorThreadCandidates(root, [authorReplyToComment, continuedThread, outsideComment, selfReply, selfReply]).map((item) => item.id),
 	['4', '5', '2'],
 );
+assert.equal(qualifiesTwitterAuthorThread([root, selfReply, continuedThread]), false);
+assert.equal(qualifiesTwitterAuthorThread([root, selfReply, continuedThread, fourthThreadPost]), true);
 
 assert.equal(isTwitterReply(tweet('6', 'Alice', null, { isReply: true })), true);
 assert.equal(isTwitterReply(tweet('7', 'Alice', '1')), true);
@@ -60,6 +66,8 @@ assert.equal(isTwitterReply(tweet('10', 'Alice', null, { conversationId: '10' })
 assert.equal(shouldSearchTwitterThread(tweet('15', 'Alice', null, { replyCount: 0 })), false);
 assert.equal(shouldSearchTwitterThread(tweet('16', 'Alice', null, { replyCount: 1 })), true);
 assert.equal(shouldSearchTwitterThread(tweet('17', 'Alice', null, { replyCount: 0 }), '2'), true);
+assert.equal(shouldSearchTwitterThread(tweet('18', 'Alice', null, { replyCount: 1 }), undefined, false), false);
+assert.equal(shouldSearchTwitterThread(tweet('19', 'Alice', null, { replyCount: 0 }), '2', false), true);
 assertExpectedTwitterThreadPost([root, selfReply], '2', '1');
 assert.throws(() => assertExpectedTwitterThreadPost([root], '2', '1'), /does not yet include expected reply 2/);
 
@@ -194,7 +202,7 @@ console.info({
 	event: 'twitter_thread_smoke_passed',
 	articleCases: 3,
 	advancedSearchCases: 13,
-	threadGraphCases: 7,
+	threadGraphCases: 11,
 	threadPaginationCases: 5,
 	providerRetryCases: 10,
 	replyPredicateCases: 5,

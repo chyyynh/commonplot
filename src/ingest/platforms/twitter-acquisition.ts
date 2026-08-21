@@ -12,6 +12,7 @@ import {
 	parseTwitterAdvancedSearchPage,
 	parseTwitterArticleResponse,
 	parseTwitterTweetsResponse,
+	qualifiesTwitterAuthorThread,
 	renderTwitterArticleMarkdown,
 	shouldSearchTwitterThread,
 	type Tweet,
@@ -372,7 +373,7 @@ function mergePostMetadata(base: PostKindMetadata, thread: PostKindMetadata, twe
 }
 
 function mergeResolvedTwitterThread(resolved: ResolvedTweetContent, thread: Tweet[], tweetId: string): TwitterAcquiredMaterial {
-	if (thread.length < 2) return resolved.scraped;
+	if (!qualifiesTwitterAuthorThread(thread)) return resolved.scraped;
 	const continuation = thread.slice(1).flatMap((tweet) => {
 		const text = expandTweetUrls(tweet.text, tweet);
 		return text ? [text] : [];
@@ -385,7 +386,11 @@ function mergeResolvedTwitterThread(resolved: ResolvedTweetContent, thread: Twee
 	};
 }
 
-export async function scrapeTweet(tweetId: string, apiKey: string, expectedReplyId?: string): Promise<AcquiredMaterial<'twitter'>> {
+export async function scrapeTweet(
+	tweetId: string,
+	apiKey: string,
+	options: { discoverUnsignaledThread?: boolean; expectedReplyId?: string } = {},
+): Promise<AcquiredMaterial<'twitter'>> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
 	const response = await fetchTwitterProvider(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, apiKey, {
 		operation: 'tweets-by-id',
@@ -401,10 +406,10 @@ export async function scrapeTweet(tweetId: string, apiKey: string, expectedReply
 	const tweets = parseTwitterTweetsResponse(JSON.parse(await readTextWithLimit(response)));
 	const tweet = tweets[0];
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
-	const searchThread = shouldSearchTwitterThread(tweet, expectedReplyId);
+	const searchThread = shouldSearchTwitterThread(tweet, options.expectedReplyId, options.discoverUnsignaledThread);
 	const context = searchThread ? await fetchTwitterAuthorReplies(tweet, tweetId, apiKey) : { candidates: [], pages: 0, providerPosts: 0 };
 	const thread = buildTwitterAuthorThread(tweet, context.candidates);
-	assertExpectedTwitterThreadPost(thread, expectedReplyId, tweetId);
+	assertExpectedTwitterThreadPost(thread, options.expectedReplyId, tweetId);
 	const resolved = await resolveTweetContent(tweet, apiKey);
 	console.info({
 		tag: 'TWITTER',
