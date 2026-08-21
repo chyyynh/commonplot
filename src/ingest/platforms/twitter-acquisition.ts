@@ -3,6 +3,7 @@ import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
 import { extractTweetId } from '@core-shared/url';
+import { buildTwitterAuthorThread, parseTwitterThreadContextPage, parseTwitterTweetsResponse, type Tweet } from './twitter-data';
 
 interface TwitterMedia {
 	url: string;
@@ -26,54 +27,10 @@ interface QuotedTweetData {
 	text: string;
 }
 
-interface RetweetedByData extends TwitterAuthorFields {
-	tweetId?: string;
-	tweetUrl?: string;
-	retweetedAt?: string;
-}
-
 interface TwitterMetadata extends TwitterAuthorFields {
 	media?: TwitterMedia[];
 	quotedTweet?: QuotedTweetData;
-}
-
-// twitterapi.io tweet response shape used inside the Twitter platform only.
-export interface Tweet {
-	id?: string;
-	url: string;
-	createdAt: string;
-	viewCount?: number;
-	author?: {
-		id?: string;
-		userName: string;
-		name: string;
-		profilePicture?: string;
-		isBlueVerified?: boolean;
-	};
-	text: string;
-	likeCount?: number;
-	retweetCount?: number;
-	replyCount?: number;
-	quoteCount?: number;
-	extendedEntities?: {
-		media?: Array<{
-			media_url_https: string;
-			type: string;
-			sizes?: { large?: { w: number; h: number } };
-			video_info?: { variants?: Array<{ bitrate?: number; content_type?: string; url: string }> };
-		}>;
-	};
-	hashTags?: string[];
-	urls?: Array<{ expanded_url?: string; url?: string }>;
-	entities?: { urls?: Array<{ expanded_url?: string; url?: string }> };
-	lang?: string;
-	conversationId?: string;
-	isReply?: boolean;
-	inReplyToId?: string | null;
-	inReplyToUsername?: string | null;
-	quoted_tweet?: Tweet | null;
-	retweeted_tweet?: Tweet | null;
-	retweetedBy?: RetweetedByData;
+	threadPostCount?: number;
 }
 
 type AuthoredTweet = Tweet & { author: NonNullable<Tweet['author']> };
@@ -223,22 +180,17 @@ function buildThreadResourceParts(tweets: Tweet[]): {
 	if (!firstTweet) throw new Error('Cannot build twitter thread resource from empty tweets');
 	const first: AuthoredTweet = { ...firstTweet, author: requiredTweetAuthor(firstTweet) };
 
-	const seen = new Set<string>();
-	const uniqueTexts: string[] = [];
-	for (const tweet of sorted) {
+	const texts = sorted.flatMap((tweet) => {
 		const text = expandTweetUrls(tweet.text, tweet);
-		if (text && !seen.has(text)) {
-			seen.add(text);
-			uniqueTexts.push(text);
-		}
-	}
+		return text ? [text] : [];
+	});
 
 	const media = sorted.flatMap(extractTweetMedia);
 	const quotedTweet = sorted.map(extractQuotedTweet).find(Boolean);
-	const fields = buildTweetFields(first, { media, quotedTweet });
+	const fields = buildTweetFields(first, { media, quotedTweet, threadPostCount: sorted.length });
 	return {
 		first,
-		combinedText: uniqueTexts.join('\n\n'),
+		combinedText: texts.join('\n\n'),
 		fields,
 	};
 }
@@ -249,6 +201,7 @@ function buildTweetFields(
 		externalUrl?: string;
 		media?: TwitterMedia[];
 		quotedTweet?: QuotedTweetData;
+		threadPostCount?: number;
 	} = {},
 ): Pick<AcquiredMaterial<'twitter'>, 'creators' | 'kindMetadata' | 'subjectUrl'> {
 	const media = options.media ?? extractTweetMedia(tweet);
@@ -256,6 +209,7 @@ function buildTweetFields(
 		...extractTweetAuthor(tweet),
 		media,
 		quotedTweet: options.quotedTweet ?? extractQuotedTweet(tweet),
+		threadPostCount: options.threadPostCount,
 	};
 	return {
 		creators: twitterCreator(metadata),
@@ -426,25 +380,20 @@ export async function scrapeTweet(tweetId: string, apiKey: string): Promise<Acqu
 		}
 		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 	}
-	const data = JSON.parse(await readTextWithLimit(response)) as { tweets?: Tweet[]; status: string; msg?: string };
-	if (!Array.isArray(data.tweets)) throw new Error(`Twitter API response omitted tweets (status=${data.status})`);
-	const tweet = data.tweets[0];
+	const tweets = parseTwitterTweetsResponse(JSON.parse(await readTextWithLimit(response)));
+	const tweet = tweets[0];
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
 	const resolved = await resolveTweetContent(tweet, apiKey);
 	if (resolved.kind !== 'tweet') return resolved.scraped;
 
 	const contextTweets = await fetchTwitterThreadContext(tweetId, apiKey);
-	const conversationId = tweet.conversationId || tweet.id;
-	const authorUserName = tweet.author?.userName;
-	const seen = new Set<string>();
-	const thread = [tweet, ...contextTweets].filter((candidate) => {
-		const key = candidate.id || candidate.url;
-		if (!key || seen.has(key)) return false;
-		seen.add(key);
-		if (candidate.id === tweet.id) return true;
-		return (
-			!!conversationId && candidate.conversationId === conversationId && !!authorUserName && candidate.author?.userName === authorUserName
-		);
+	const thread = buildTwitterAuthorThread(tweet, contextTweets);
+	console.info({
+		tag: 'TWITTER',
+		event: 'thread_context_resolved',
+		tweet_id: tweetId,
+		context_posts: contextTweets.length,
+		thread_posts: thread.length,
 	});
 	if (thread.length < 2) return resolved.scraped;
 
@@ -476,17 +425,12 @@ async function fetchTwitterThreadContext(tweetId: string, apiKey: string): Promi
 			await response.body?.cancel();
 			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 		}
-		const data = JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)) as {
-			tweets?: Tweet[];
-			has_next_page?: boolean;
-			next_cursor?: string;
-		};
-		if (!Array.isArray(data.tweets)) throw new Error(`Twitter thread context ${tweetId} omitted tweets`);
+		const data = parseTwitterThreadContextPage(JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)), tweetId);
 		tweets.push(...data.tweets);
-		if (typeof data.has_next_page !== 'boolean') throw new Error(`Twitter thread context ${tweetId} omitted has_next_page`);
-		if (!data.has_next_page) break;
+		if (!data.hasNextPage) break;
+		if (!data.tweets.length) break;
 		if (page === 4) throw new Error(`Twitter thread context ${tweetId} exceeded 5 pages`);
-		const nextCursor = data.next_cursor?.trim();
+		const nextCursor = data.nextCursor?.trim();
 		if (!nextCursor) throw new Error(`Twitter thread context ${tweetId} omitted the next cursor`);
 		cursor = nextCursor;
 		if (seenCursors.has(cursor)) throw new Error(`Twitter thread context ${tweetId} returned a repeated cursor`);
@@ -532,5 +476,6 @@ function postMetadata(data: TwitterMetadata): PostKindMetadata {
 	return {
 		attachments,
 		...(quoted?.text.trim() && quoteCreator ? { quote: { creator: quoteCreator, text: quoted.text.trim() } } : {}),
+		...(data.threadPostCount === undefined ? {} : { threadPostCount: data.threadPostCount }),
 	};
 }

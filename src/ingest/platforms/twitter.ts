@@ -3,7 +3,8 @@ import { normalizeUrl } from '@core-shared/url';
 import type { SourceResourceDraft } from '@ingest/domain/resource-admission-store';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
 import { admitDiscoveredSourceResources } from '@ingest/workflow';
-import { buildTweetTitle, type Tweet } from './twitter-acquisition';
+import { buildTweetTitle } from './twitter-acquisition';
+import { isTwitterReply, parseTwitterAdvancedSearchPage, type Tweet } from './twitter-data';
 
 // Twitter Monitor
 
@@ -111,20 +112,14 @@ async function fetchTweetsForBatch(apiKey: string, userNames: string[], sinceTim
 			await response.body?.cancel();
 			throw new Error(`Twitter Advanced Search failed with HTTP ${response.status}`);
 		}
-		const apiRes = JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)) as {
-			tweets?: Tweet[];
-			has_next_page?: boolean;
-			next_cursor?: string;
-		};
-		if (!Array.isArray(apiRes.tweets)) throw new Error('Twitter Advanced Search response omitted tweets');
+		const apiRes = parseTwitterAdvancedSearchPage(JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)));
 		const normalizedPage = normalizeFetchedTweets(apiRes.tweets, monitoredUserNames);
 		tweets.push(...normalizedPage.tweets);
 		for (const userName of normalizedPage.failedUserNames) failedUserNames.add(userName);
 		hasUnattributedFailure ||= normalizedPage.hasUnattributedFailure;
 
-		if (typeof apiRes.has_next_page !== 'boolean') throw new Error('Twitter Advanced Search response omitted has_next_page');
-		if (!apiRes.has_next_page) break;
-		const nextCursor = apiRes.next_cursor?.trim();
+		if (!apiRes.hasNextPage) break;
+		const nextCursor = apiRes.nextCursor?.trim();
 		if (!nextCursor) throw new Error('Twitter Advanced Search response omitted the next cursor');
 		cursor = nextCursor;
 		if (seenCursors.has(cursor)) {
@@ -164,7 +159,7 @@ function twitterResourceDrafts(
 		// Acquisition of a root loads its complete same-author thread context.
 		// Replies are not independent Resources and must not become orphan rows
 		// merely because the root fell outside this monitor window.
-		if (tweet.isReply) continue;
+		if (isTwitterReply(tweet)) continue;
 		try {
 			const userName = monitoredAuthorUserName(tweet);
 			if (!userName) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no monitored author identity`);
