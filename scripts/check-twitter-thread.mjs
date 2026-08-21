@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {
-	buildTwitterAdvancedSearchQuery,
 	buildTwitterAuthorThread,
+	buildTwitterMonitorSearchQueries,
 	combineTwitterThreadMarkdown,
 	decideTwitterThreadContextNextPage,
 	isTwitterReply,
@@ -126,7 +126,10 @@ assert.equal(
 
 const searchWindow = twitterSearchWindow('2026-08-21T12:00:00.000Z', new Date('2026-08-21T18:00:00.000Z'), 60 * 60 * 1000);
 assert.deepEqual(searchWindow, { sinceTime: 1_787_310_000, untilTime: 1_787_335_200 });
-assert.equal(buildTwitterAdvancedSearchQuery('@OpenAI', searchWindow), 'from:openai since_time:1787310000 until_time:1787335200');
+assert.deepEqual(buildTwitterMonitorSearchQueries('@OpenAI', searchWindow), [
+	{ kind: 'posts', query: 'from:openai -filter:replies since_time:1787310000 until_time:1787335200' },
+	{ kind: 'self-replies', query: 'from:openai to:openai filter:replies since_time:1787310000 until_time:1787335200' },
+]);
 assert.throws(() => twitterSearchWindow('2026-08-21T19:00:00.000Z', new Date('2026-08-21T18:00:00.000Z'), 0), /empty or invalid/);
 assert.deepEqual(parseTwitterAdvancedSearchPage({ tweets: [root], has_next_page: true, next_cursor: 'next' }), {
 	tweets: [root],

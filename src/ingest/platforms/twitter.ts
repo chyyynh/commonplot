@@ -4,10 +4,11 @@ import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordS
 import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/resource-admission';
 import { buildTweetTitle } from './twitter-acquisition';
 import {
-	buildTwitterAdvancedSearchQuery,
+	buildTwitterMonitorSearchQueries,
 	isTwitterReply,
 	parseTwitterAdvancedSearchPage,
 	type Tweet,
+	type TwitterMonitorSearch,
 	type TwitterSearchWindow,
 	twitterSearchWindow,
 	twitterSelfReplyRootId,
@@ -60,6 +61,7 @@ type TwitterSourceFetch = {
 	tweets: Tweet[];
 	providerTweets: number;
 	pages: number;
+	searches: number;
 	errors: unknown[];
 };
 
@@ -91,9 +93,12 @@ function normalizeFetchedTweets(tweets: Tweet[], monitoredUserName: string): Pic
 	return { tweets: normalizedTweets, errors };
 }
 
-/** Fetch one source's stable bounded snapshot through every provider cursor. */
-async function fetchTweetsForSource(apiKey: string, userName: string, window: TwitterSearchWindow): Promise<TwitterSourceFetch> {
-	const query = buildTwitterAdvancedSearchQuery(userName, window);
+/** Fetch one filtered search stream through every provider cursor. */
+async function fetchTweetsForSearch(
+	apiKey: string,
+	userName: string,
+	search: TwitterMonitorSearch,
+): Promise<Omit<TwitterSourceFetch, 'searches'>> {
 	const tweets: Tweet[] = [];
 	const errors: unknown[] = [];
 	let providerTweets = 0;
@@ -102,11 +107,12 @@ async function fetchTweetsForSource(apiKey: string, userName: string, window: Tw
 	const seenCursors = new Set<string>();
 
 	while (true) {
-		const params = new URLSearchParams({ query, queryType: 'Latest' });
+		const params = new URLSearchParams({ query: search.query, queryType: 'Latest' });
 		if (cursor) params.set('cursor', cursor);
 
 		const response = await fetchTwitterProvider(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, apiKey, {
 			operation: 'advanced-search',
+			searchKind: search.kind,
 			sourceHandle: userName,
 			timeoutMs: 20_000,
 		});
@@ -133,6 +139,23 @@ async function fetchTweetsForSource(apiKey: string, userName: string, window: Tw
 	}
 
 	return { tweets, providerTweets, pages, errors };
+}
+
+/** Fetch only authored posts and authored self-replies; discard duplicate results across the two streams. */
+async function fetchTweetsForSource(apiKey: string, userName: string, window: TwitterSearchWindow): Promise<TwitterSourceFetch> {
+	const searches = buildTwitterMonitorSearchQueries(userName, window);
+	const results = await Promise.all(searches.map((search) => fetchTweetsForSearch(apiKey, userName, search)));
+	const tweets = new Map<string, Tweet>();
+	for (const result of results) {
+		for (const tweet of result.tweets) tweets.set(tweet.id?.trim() || tweet.url, tweet);
+	}
+	return {
+		tweets: [...tweets.values()],
+		providerTweets: results.reduce((total, result) => total + result.providerTweets, 0),
+		pages: results.reduce((total, result) => total + result.pages, 0),
+		searches: searches.length,
+		errors: results.flatMap((result) => result.errors),
+	};
 }
 
 const TWITTER_ADMISSION_STATUSES = ['created', 'existing', 'refreshed', 'retried'] as const;
@@ -290,6 +313,7 @@ type TwitterSourceOutcome = {
 	normalizedTweets: number;
 	pages: number;
 	providerTweets: number;
+	searches: number;
 	sourceId: string;
 };
 
@@ -315,6 +339,7 @@ async function processTwitterSource(env: CoreEnv, source: MonitoredSource, windo
 			normalizedTweets: fetched.tweets.length,
 			pages: fetched.pages,
 			providerTweets: fetched.providerTweets,
+			searches: fetched.searches,
 			sourceId: source.id,
 		};
 		console.info({
@@ -324,6 +349,7 @@ async function processTwitterSource(env: CoreEnv, source: MonitoredSource, windo
 			since_time: window.sinceTime,
 			until_time: window.untilTime,
 			pages: outcome.pages,
+			searches: outcome.searches,
 			provider_tweets: outcome.providerTweets,
 			normalized_tweets: outcome.normalizedTweets,
 			admitted_drafts: outcome.admittedDrafts,
@@ -348,6 +374,7 @@ async function processTwitterSource(env: CoreEnv, source: MonitoredSource, windo
 			normalizedTweets: 0,
 			pages: 0,
 			providerTweets: 0,
+			searches: 0,
 			sourceId: source.id,
 		};
 	}
@@ -361,6 +388,7 @@ type TwitterMonitorOutcome = {
 	normalizedTweets: number;
 	pages: number;
 	providerTweets: number;
+	searches: number;
 	supersededSources: number;
 	systemFailures: unknown[];
 };
@@ -403,6 +431,7 @@ async function processTwitterSources(env: CoreEnv, sources: MonitoredSource[], w
 		normalizedTweets: outcomes.reduce((total, outcome) => total + outcome.normalizedTweets, 0),
 		pages: outcomes.reduce((total, outcome) => total + outcome.pages, 0),
 		providerTweets: outcomes.reduce((total, outcome) => total + outcome.providerTweets, 0),
+		searches: outcomes.reduce((total, outcome) => total + outcome.searches, 0),
 		supersededSources: completedSourceIds.length - advancedSources - watermarkFailures,
 		systemFailures,
 	};
@@ -430,6 +459,7 @@ export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date
 		provider_tweets: outcome.providerTweets,
 		normalized_tweets: outcome.normalizedTweets,
 		pages: outcome.pages,
+		searches: outcome.searches,
 		admitted_drafts: outcome.admittedDrafts,
 		...outcome.counts,
 		advanced_sources: outcome.advancedSources,

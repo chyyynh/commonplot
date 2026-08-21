@@ -212,6 +212,11 @@ export type TwitterSearchWindow = {
 	untilTime: number;
 };
 
+export type TwitterMonitorSearch = {
+	kind: 'posts' | 'self-replies';
+	query: string;
+};
+
 export function shouldRetryTwitterProviderStatus(status: number): boolean {
 	return status === 408 || status === 429 || status >= 500;
 }
@@ -239,13 +244,17 @@ export function twitterSearchWindow(watermark: Date | string, windowEnd: Date, o
 	return { sinceTime, untilTime };
 }
 
-export function buildTwitterAdvancedSearchQuery(userName: string, window: TwitterSearchWindow): string {
+export function buildTwitterMonitorSearchQueries(userName: string, window: TwitterSearchWindow): TwitterMonitorSearch[] {
 	const normalized = userName.replace(/^@/, '').trim().toLowerCase();
 	if (!/^[a-z0-9_]{1,15}$/.test(normalized)) throw new Error('Twitter source has an invalid handle');
 	if (!Number.isSafeInteger(window.sinceTime) || !Number.isSafeInteger(window.untilTime) || window.sinceTime >= window.untilTime) {
 		throw new Error('Twitter Advanced Search has an invalid time window');
 	}
-	return `from:${normalized} since_time:${window.sinceTime} until_time:${window.untilTime}`;
+	const timeWindow = `since_time:${window.sinceTime} until_time:${window.untilTime}`;
+	return [
+		{ kind: 'posts', query: `from:${normalized} -filter:replies ${timeWindow}` },
+		{ kind: 'self-replies', query: `from:${normalized} to:${normalized} filter:replies ${timeWindow}` },
+	];
 }
 
 function semanticTwitterError(status: string | undefined, message: string | undefined): string | null {
