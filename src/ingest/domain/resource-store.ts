@@ -9,6 +9,7 @@ import {
 } from '@core-shared/resource-metadata';
 import {
 	canonicalizeResourceLang,
+	isContentResourceIdentity,
 	isContentResourceKind,
 	isResourceSourceSnapshotHash,
 	parseResourceIdentity,
@@ -175,6 +176,9 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<Re
 
 function resourceStoreRowToProcessing(row: ResourceStoreRow): ResourceForProcessing {
 	const identity = storedResourceIdentity(row);
+	if (!isContentResourceIdentity(identity)) {
+		throw new Error(`Stored resource ${row.id} is not processable by core: ${identity.kind}`);
+	}
 	const resourceIdentifiers = resourceIdentifiersValue(row.resource_identifiers);
 	return {
 		...toResourceIdentityColumns(identity),

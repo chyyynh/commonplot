@@ -125,7 +125,7 @@ async function resolvedResourceMutation(
 	hostedImages: readonly HostedResourceImage[],
 ): Promise<Omit<PersistResolvedResourceDraftInput, 'admission'>> {
 	const resource = input.handled.resource;
-	const identity = parseResourceIdentity(input.handled.kind, input.handled.resourcePlatform);
+	const identity = parseResourceIdentity(resource.kind, resource.resource_platform);
 	if (!identity) throw new Error(`Resource processing ${resource.processing_id} resolved to an invalid identity`);
 	const sourceRevision = await resourceSourceRevision(resource);
 	const content = resource.content;
@@ -139,17 +139,17 @@ async function resolvedResourceMutation(
 		kindMetadata: media.kindMetadata,
 		sourceRevision,
 		youtube:
-			input.handled.kind === 'video' && (input.handled.youtubeTranscript || input.handled.youtubeHighlights)
+			resource.kind === 'video' && input.handled.youtube
 				? {
-						transcript: input.handled.youtubeTranscript
+						transcript: input.handled.youtube.transcript
 							? {
-									segments: input.handled.youtubeTranscript.segments,
-									language: input.handled.youtubeTranscript.language,
-									chapters: input.handled.youtubeTranscript.chapters,
-									chaptersFromDescription: input.handled.youtubeTranscript.chaptersFromDescription,
+									segments: input.handled.youtube.transcript.segments,
+									language: input.handled.youtube.transcript.language,
+									chapters: input.handled.youtube.transcript.chapters,
+									chaptersFromDescription: input.handled.youtube.transcript.chaptersFromDescription,
 								}
 							: null,
-						highlights: input.handled.youtubeHighlights?.value ?? null,
+						highlights: input.handled.youtube.highlights?.value ?? null,
 					}
 				: null,
 		originalLang: resource.original_lang,

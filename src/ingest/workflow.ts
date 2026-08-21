@@ -11,8 +11,6 @@ import type { HostedResourceImage } from '@core-shared/resource-image-mapping';
 import {
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
-	isContentResourceIdentity,
-	parseResourceIdentity,
 	resourceIdentityForDetectedPlatform,
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
@@ -52,13 +50,7 @@ import {
 	processedResourceImageSources,
 	settleStoredBlobProcessingFailure,
 } from './resource-persistence';
-import {
-	exactPlatformLocator,
-	type ResolvedContentResourceInput,
-	resolveContentResource,
-	resolvedResourceIdentifiers,
-	resolvedSubjectInput,
-} from './resource-resolver';
+import { exactPlatformLocator, type ResolvedSubjectInput, resolveContentResource, resolvedSubjectInput } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 import { PDF_MIME, pdfExtractionMetadata } from './web-acquisition';
 
@@ -213,8 +205,8 @@ type PreparedResource = {
 	acquiredContent: AcquiredContent | undefined;
 	identityPdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
 	paperEnrichment: PaperMetadata | null;
-	resolution: ResolvedContentResourceInput;
 	resource: ResourceForProcessing;
+	subject: ResolvedSubjectInput | null;
 };
 
 type ResourcePreparationInput =
@@ -375,31 +367,16 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 			: acquiredContent?.provider === 'twitter'
 				? acquiredContent.subjectUrl?.trim() || null
 				: null;
-	const resolution = resolveContentResource({
-		url: preferred.resource.url,
-		resourceIdentifiers,
-		subjectUrl,
+	const resource = resolveContentResource({
+		...preferred.resource,
+		resource_identifiers: resourceIdentifiers,
 	});
-	const finalPaperEnrichment = resolution.kind === 'paper' ? paperEnrichment : null;
-	const identity = parseResourceIdentity(resolution.kind, resolution.resourcePlatform);
-	if (!identity || !isContentResourceIdentity(identity)) {
-		throw new ResourceProcessingRejectedError('Resolver produced an invalid content Resource identity', 'ResourceIdentityError');
-	}
-	const identifiers = resolvedResourceIdentifiers(resolution);
-	const locator = exactPlatformLocator(identifiers);
-	const resolvedUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : preferred.resource.url;
 	return {
 		acquiredContent,
 		identityPdfTextArtifact,
-		paperEnrichment: finalPaperEnrichment,
-		resolution,
-		resource: {
-			...preferred.resource,
-			...toResourceIdentityColumns(identity),
-			url: resolvedUrl,
-			normalized_url: resolvedUrl ?? preferred.resource.normalized_url ?? null,
-			resource_identifiers: identifiers,
-		},
+		paperEnrichment: resource.kind === 'paper' ? paperEnrichment : null,
+		resource,
+		subject: resolvedSubjectInput(subjectUrl),
 	};
 }
 
@@ -481,7 +458,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				preparationInput = { ...target, processingId, sourceAvatarUrl };
 			}
 			const prepared = await prepareResourceForProcessing(this.env, step, preparationInput);
-			const { acquiredContent, identityPdfTextArtifact, paperEnrichment, resolution, resource } = prepared;
+			const { acquiredContent, identityPdfTextArtifact, paperEnrichment, resource } = prepared;
 			const logContext = { processing_id: processingId, target_kind: target.kind };
 
 			console.info({
@@ -511,7 +488,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				acquiredContent,
 				env: this.env,
 				paperEnrichment,
-				resolution,
 				resource: processableResource,
 				step,
 			});
@@ -522,7 +498,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				() => classifyResource(handled.resource, this.env, handled.classificationExclusions),
 			);
 			const privatePaper = target.kind === 'storedBlob' ? privatePaperAttachment(handled.resource) : null;
-			const subject = privatePaper ? null : resolvedSubjectInput(handled);
+			const subject = privatePaper ? null : prepared.subject;
 			const persistenceInput = {
 				handled,
 				classification,

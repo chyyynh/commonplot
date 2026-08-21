@@ -1,4 +1,4 @@
-import type { ResourceIdentityColumns, ResourcePlatform, ResourceScope } from '@core-shared/resource-types';
+import type { ContentResourceKind, ResourceIdentityColumns, ResourcePlatform, ResourceScope } from '@core-shared/resource-types';
 import type { ResourceIdentifier } from './resource-identifiers';
 import type { PaperRelationSnapshot, ResourceCreator, ResourceKindMetadata } from './resource-metadata';
 
@@ -25,7 +25,7 @@ type ResourceForProcessingBase = {
 	normalized_url: string | null;
 };
 
-export type ResourceForProcessing = ResourceForProcessingBase & ResourceIdentityColumns;
+export type ResourceForProcessing = ResourceForProcessingBase & Extract<ResourceIdentityColumns, { kind: ContentResourceKind }>;
 
 export const ENTITY_TYPES = ['person', 'organization', 'product', 'technology', 'event', 'location'] as const;
 export type EntityType = (typeof ENTITY_TYPES)[number];

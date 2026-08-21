@@ -1,47 +1,13 @@
-import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '../shared/paper-identity.ts';
+import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '../shared/paper-identity.ts';
 import {
 	isPaperIdentifier,
 	normalizeResourceIdentifiers,
 	type PlatformResourceIdentifierScheme,
 	type ResourceIdentifier,
 } from '../shared/resource-identifiers.ts';
-import { type ContentResourceIdentity, type ResourcePlatform, resourceIdentityForDetectedPlatform } from '../shared/resource-types.ts';
-import { detectResourceUrl, normalizeUrl } from '../shared/url.ts';
-
-type ResolvedBase<K extends ContentResourceIdentity['kind']> = Readonly<{
-	kind: K;
-}>;
-
-export type ResolvedContentResourceInput =
-	| (ResolvedBase<'blog'> & Readonly<{ resourcePlatform: null } | { resourcePlatform: 'lesswrong'; locator: { postId: string } }>)
-	| (ResolvedBase<'forum'> &
-			Readonly<{
-				resourcePlatform: 'hackernews';
-				locator: { itemId: string };
-				subjectUrl: string | null;
-			}>)
-	| (ResolvedBase<'post'> &
-			Readonly<{
-				resourcePlatform: 'twitter';
-				locator: { tweetId: string };
-				subjectUrl: string | null;
-			}>)
-	| (ResolvedBase<'video'> &
-			Readonly<{
-				resourcePlatform: 'youtube';
-				locator: { videoId: string };
-			}>)
-	| (ResolvedBase<'paper'> &
-			Readonly<{
-				resourcePlatform: null;
-				identifiers: PaperIdentifier[];
-			}>);
-
-type ResolveContentResourceInput = Readonly<{
-	url: string | null;
-	resourceIdentifiers: ResourceIdentifier[];
-	subjectUrl?: string | null;
-}>;
+import { type ContentResourceIdentity, resourceIdentityForDetectedPlatform, toResourceIdentityColumns } from '../shared/resource-types.ts';
+import type { ResourceForProcessing } from '../shared/types.ts';
+import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../shared/url.ts';
 
 type ExactPlatformLocator = Readonly<{
 	resourcePlatform: PlatformResourceIdentifierScheme;
@@ -62,95 +28,44 @@ export function exactPlatformLocator(identifiers: readonly ResourceIdentifier[])
 	return locator ? { resourcePlatform: locator[0], platformId: locator[1] } : null;
 }
 
-function resolvedPlatformInput(
-	platform: Exclude<ResourcePlatform, null>,
-	locator: ExactPlatformLocator,
-	input: ResolveContentResourceInput,
-): ResolvedContentResourceInput {
-	if (locator.resourcePlatform !== platform) {
-		throw new Error(`${platform} resource is missing an exact URL locator`);
-	}
-	switch (platform) {
-		case 'lesswrong':
-			return {
-				kind: 'blog',
-				resourcePlatform: platform,
-				locator: { postId: locator.platformId },
-			};
-		case 'hackernews':
-			return {
-				kind: 'forum',
-				resourcePlatform: platform,
-				locator: { itemId: locator.platformId },
-				subjectUrl: input.subjectUrl?.trim() || null,
-			};
-		case 'twitter':
-			return {
-				kind: 'post',
-				resourcePlatform: platform,
-				locator: { tweetId: locator.platformId },
-				subjectUrl: input.subjectUrl?.trim() || null,
-			};
-		case 'youtube':
-			return {
-				kind: 'video',
-				resourcePlatform: platform,
-				locator: { videoId: locator.platformId },
-			};
-	}
-}
-
-export function resolveContentResource(input: ResolveContentResourceInput): ResolvedContentResourceInput {
-	const detected = input.url ? detectResourceUrl(input.url) : null;
-	const paperIdentifiers = input.resourceIdentifiers.filter(isPaperIdentifier);
-	if (detected) return resolvedPlatformInput(detected.resourcePlatform, detected, input);
-
-	if (paperIdentifiers.some((identifier) => identifier.scheme === 'openalex')) {
-		return {
-			kind: 'paper',
-			resourcePlatform: null,
-			identifiers: paperIdentifiers,
-		};
-	}
-
+export function resolveContentResource(resource: ResourceForProcessing): ResourceForProcessing {
+	const detected = resource.url ? detectResourceUrl(resource.url) : null;
+	const paperIdentifiers = resource.resource_identifiers.filter(isPaperIdentifier);
+	const identity: ContentResourceIdentity = detected
+		? resourceIdentityForDetectedPlatform(detected.resourcePlatform)
+		: paperIdentifiers.some((identifier) => identifier.scheme === 'openalex')
+			? { kind: 'paper', resourcePlatform: null }
+			: { kind: 'blog', resourcePlatform: null };
+	const identifiers = normalizeResourceIdentifiers(
+		detected
+			? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]
+			: identity.kind === 'paper'
+				? paperIdentifiers
+				: [],
+	);
+	const url = detected ? canonicalResourcePlatformUrl(detected.resourcePlatform, detected.platformId) : resource.url;
 	return {
-		kind: 'blog',
-		resourcePlatform: null,
+		...resource,
+		...toResourceIdentityColumns(identity),
+		resource_identifiers: identifiers,
+		url,
+		normalized_url: url ?? resource.normalized_url ?? null,
 	};
 }
 
-export function resolvedResourceIdentifiers(resolution: ResolvedContentResourceInput): ResourceIdentifier[] {
-	const resolved: ResourceIdentifier[] =
-		resolution.kind === 'paper'
-			? resolution.identifiers
-			: resolution.kind === 'blog' && resolution.resourcePlatform === 'lesswrong'
-				? [{ preferred: true, scheme: 'lesswrong', value: resolution.locator.postId }]
-				: resolution.kind === 'forum'
-					? [{ preferred: true, scheme: 'hackernews', value: resolution.locator.itemId }]
-					: resolution.kind === 'post'
-						? [{ preferred: true, scheme: 'twitter', value: resolution.locator.tweetId }]
-						: resolution.kind === 'video'
-							? [{ preferred: true, scheme: 'youtube', value: resolution.locator.videoId }]
-							: [];
-	return normalizeResourceIdentifiers(resolved);
-}
-
 export type ResolvedSubjectInput = Readonly<{
-	identity: ContentResourceIdentity;
 	identifiers: ResourceIdentifier[];
 	normalizedUrl: string;
 	title: string;
 	url: string;
 }>;
 
-export function resolvedSubjectInput(resolution: ResolvedContentResourceInput): ResolvedSubjectInput | null {
-	const subjectUrl = resolution.kind === 'forum' || resolution.kind === 'post' ? resolution.subjectUrl : null;
+export function resolvedSubjectInput(subjectUrl: string | null | undefined): ResolvedSubjectInput | null {
 	if (!subjectUrl) return null;
 	const url = normalizeUrl(subjectUrl);
 	const paper = resolveExactPaperInput(url);
 	if (paper) {
 		return {
-			identity: { kind: 'paper', resourcePlatform: null },
 			identifiers: paperIdentifiersFromIdentity(paper.identity),
 			normalizedUrl: paper.canonicalUrl,
 			title: paper.identity.arxivId ?? paper.identity.doi ?? paper.identity.openAlexId ?? 'Paper',
@@ -158,19 +73,10 @@ export function resolvedSubjectInput(resolution: ResolvedContentResourceInput): 
 		};
 	}
 	const detected = detectResourceUrl(url);
-	if (detected) {
-		const identity = resourceIdentityForDetectedPlatform(detected.resourcePlatform);
-		return {
-			identity,
-			identifiers: normalizeResourceIdentifiers([{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]),
-			normalizedUrl: url,
-			title: new URL(url).hostname,
-			url,
-		};
-	}
 	return {
-		identity: { kind: 'blog', resourcePlatform: null },
-		identifiers: [],
+		identifiers: detected
+			? normalizeResourceIdentifiers([{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }])
+			: [],
 		normalizedUrl: url,
 		title: new URL(url).hostname,
 		url,

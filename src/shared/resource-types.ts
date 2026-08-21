@@ -39,23 +39,13 @@ export type ResourceIdentityColumns = {
 
 export type ContentResourceIdentity = Extract<ResourceIdentity, { kind: ContentResourceKind }>;
 
-export function toResourceIdentityColumns(identity: ResourceIdentity): ResourceIdentityColumns {
-	switch (identity.kind) {
-		case 'blog':
-			return { kind: identity.kind, resource_platform: identity.resourcePlatform };
-		case 'forum':
-			return { kind: identity.kind, resource_platform: identity.resourcePlatform };
-		case 'post':
-			return { kind: identity.kind, resource_platform: identity.resourcePlatform };
-		case 'video':
-			return { kind: identity.kind, resource_platform: identity.resourcePlatform };
-		case 'paper':
-			return { kind: identity.kind, resource_platform: identity.resourcePlatform };
-		case 'image':
-			return { kind: identity.kind, resource_platform: identity.resourcePlatform };
-		case 'file':
-			return { kind: identity.kind, resource_platform: identity.resourcePlatform };
-	}
+export function toResourceIdentityColumns<const Identity extends ResourceIdentity>(
+	identity: Identity,
+): Extract<ResourceIdentityColumns, { kind: Identity['kind'] }> {
+	return { kind: identity.kind, resource_platform: identity.resourcePlatform } as Extract<
+		ResourceIdentityColumns,
+		{ kind: Identity['kind'] }
+	>;
 }
 
 export type ResourceIdentityFilters = Readonly<{

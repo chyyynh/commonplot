@@ -4,30 +4,21 @@ import type { PaperMetadata, ResourceForProcessing, YoutubeTranscript } from '@c
 import type { AcquiredContent } from './acquisition';
 import { applyHackerNewsAnnotation, buildHackerNewsAnnotation } from './platforms/hackernews';
 import { prepareYouTubeHighlights, type YouTubeHighlightsUpdate } from './platforms/youtube';
-import type { ResolvedContentResourceInput } from './resource-resolver';
+import { exactPlatformLocator } from './resource-resolver';
 
-type HandledBase<K extends ResolvedContentResourceInput['kind']> = Extract<ResolvedContentResourceInput, { kind: K }> &
-	Readonly<{
-		resource: ResourceForProcessing;
-		classificationExclusions?: string[];
-	}>;
-
-export type HandledResourceResult =
-	| HandledBase<'blog'>
-	| HandledBase<'forum'>
-	| HandledBase<'post'>
-	| (HandledBase<'video'> &
-			Readonly<{
-				youtubeTranscript?: YoutubeTranscript;
-				youtubeHighlights: YouTubeHighlightsUpdate | null;
-			}>)
-	| HandledBase<'paper'>;
+export type HandledResourceResult = Readonly<{
+	resource: ResourceForProcessing;
+	classificationExclusions: string[];
+	youtube: Readonly<{
+		transcript: YoutubeTranscript | null;
+		highlights: YouTubeHighlightsUpdate | null;
+	}> | null;
+}>;
 
 type HandleContext = Readonly<{
 	acquiredContent: AcquiredContent | undefined;
 	env: CoreEnv;
 	paperEnrichment: PaperMetadata | null;
-	resolution: ResolvedContentResourceInput;
 	resource: ResourceForProcessing;
 	step: WorkflowStep;
 }>;
@@ -60,10 +51,7 @@ function finalizedPaperResource(resource: ResourceForProcessing, metadata: Paper
 	};
 }
 
-async function handleForum(
-	context: HandleContext,
-	resolution: Extract<ResolvedContentResourceInput, { kind: 'forum' }>,
-): Promise<HandledResourceResult> {
+async function handleForum(context: HandleContext): Promise<HandledResourceResult> {
 	const hackerNewsItem = context.acquiredContent?.provider === 'hackernews' ? context.acquiredContent.hackerNewsItem : undefined;
 	const annotation = await context.step
 		.do(
@@ -81,23 +69,24 @@ async function handleForum(
 			return null;
 		});
 	return {
-		...resolution,
 		resource:
 			annotation && context.resource.content
 				? { ...context.resource, content: applyHackerNewsAnnotation(context.resource.content, annotation) }
 				: context.resource,
 		classificationExclusions: ['HackerNews'],
+		youtube: null,
 	};
 }
 
-async function handleVideo(
-	context: HandleContext,
-	resolution: Extract<ResolvedContentResourceInput, { kind: 'video' }>,
-): Promise<HandledResourceResult> {
-	const youtubeTranscript = context.acquiredContent?.provider === 'youtube' ? context.acquiredContent.youtubeTranscript : undefined;
+async function handleVideo(context: HandleContext): Promise<HandledResourceResult> {
+	const locator = exactPlatformLocator(context.resource.resource_identifiers);
+	if (locator?.resourcePlatform !== 'youtube') {
+		throw new Error(`YouTube processing ${context.resource.processing_id} has no exact video identifier`);
+	}
+	const youtubeTranscript = context.acquiredContent?.provider === 'youtube' ? context.acquiredContent.youtubeTranscript : null;
 	const youtubeHighlights = await context.step
 		.do('prepare-youtube-highlights', { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' }, () =>
-			prepareYouTubeHighlights(context.env, context.resource, resolution.locator.videoId, youtubeTranscript),
+			prepareYouTubeHighlights(context.env, context.resource, locator.platformId, youtubeTranscript ?? undefined),
 		)
 		.catch((error) => {
 			console.error({
@@ -109,31 +98,31 @@ async function handleVideo(
 			return null;
 		});
 	return {
-		...resolution,
 		resource: context.resource,
-		youtubeTranscript,
-		youtubeHighlights,
+		classificationExclusions: [],
+		youtube: youtubeTranscript || youtubeHighlights ? { transcript: youtubeTranscript, highlights: youtubeHighlights } : null,
 	};
 }
 
 export async function handleResolvedResource(context: HandleContext): Promise<HandledResourceResult> {
-	switch (context.resolution.kind) {
+	switch (context.resource.kind) {
 		case 'blog':
-			return { ...context.resolution, resource: context.resource };
+			return { resource: context.resource, classificationExclusions: [], youtube: null };
 		case 'forum':
-			return handleForum(context, context.resolution);
+			return handleForum(context);
 		case 'post':
 			return {
-				...context.resolution,
 				resource: context.resource,
 				classificationExclusions: ['Twitter'],
+				youtube: null,
 			};
 		case 'video':
-			return handleVideo(context, context.resolution);
+			return handleVideo(context);
 		case 'paper':
 			return {
-				...context.resolution,
 				resource: finalizedPaperResource(context.resource, context.paperEnrichment),
+				classificationExclusions: [],
+				youtube: null,
 			};
 	}
 }
