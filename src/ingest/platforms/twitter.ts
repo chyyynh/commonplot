@@ -138,6 +138,16 @@ async function fetchTweetsForSearch(
 		await scheduler.wait(1000);
 	}
 
+	console.info({
+		tag: 'TWITTER',
+		event: 'twitter_search_stream_completed',
+		userName,
+		search_kind: search.kind,
+		pages,
+		provider_tweets: providerTweets,
+		normalized_tweets: tweets.length,
+		errors: errors.length,
+	});
 	return { tweets, providerTweets, pages, errors };
 }
 
@@ -158,7 +168,7 @@ async function fetchTweetsForSource(apiKey: string, userName: string, window: Tw
 	};
 }
 
-const TWITTER_ADMISSION_STATUSES = ['created', 'existing', 'refreshed', 'retried'] as const;
+const TWITTER_ADMISSION_STATUSES = ['created', 'existing', 'refreshed'] as const;
 type TwitterAdmissionStatus = (typeof TWITTER_ADMISSION_STATUSES)[number];
 
 type TwitterAdmissionCounts = Record<TwitterAdmissionStatus, number>;
@@ -258,7 +268,7 @@ function twitterResourceDrafts(tweets: Tweet[], source: MonitoredSource): { draf
 }
 
 function emptyTwitterAdmissionCounts(): TwitterAdmissionCounts {
-	return { created: 0, existing: 0, refreshed: 0, retried: 0 };
+	return { created: 0, existing: 0, refreshed: 0 };
 }
 
 async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource): Promise<TweetSaveResult> {
