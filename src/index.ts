@@ -1,9 +1,9 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { KnowledgeResolveResourcesInput, KnowledgeResourceReadInput } from '@app-domain/knowledge-contracts';
+import { type ResolveMonitoredSourceInput, resolveMonitoredSource } from '@ingest/monitored-source';
 import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';
 import { ResourceTranslationV2Workflow } from '@ingest/resource-translation-workflow';
-import { type ResolveSourceCandidateInput, resolveSourceCandidate } from '@ingest/source-discovery';
 import {
 	enqueueProcessing,
 	enqueueResourceResync,
@@ -92,8 +92,8 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		return resolveCorpusResources(this.env, input);
 	}
 
-	/** Resolve user input (site/feed/channel URL or handle) into a monitorable source candidate (#237). */
-	resolveSourceCandidate(input: ResolveSourceCandidateInput) {
-		return resolveSourceCandidate(this.env, input);
+	/** Resolve an explicitly requested feed/account/channel monitor into a source row candidate (#237). */
+	resolveMonitoredSource(input: ResolveMonitoredSourceInput) {
+		return resolveMonitoredSource(this.env, input);
 	}
 }
