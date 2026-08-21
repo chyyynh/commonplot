@@ -3,7 +3,8 @@ import type { ResourceIdentifier } from './resource-identifiers';
 import type { PaperRelationSnapshot, ResourceCreator, ResourceKindMetadata } from './resource-metadata';
 
 type ResourceForProcessingBase = {
-	id: string;
+	/** Workflow/log correlation identity; not necessarily a persisted Resource ID. */
+	processing_id: string;
 	source_id: string | null;
 	scope: ResourceScope;
 	original_lang: string;

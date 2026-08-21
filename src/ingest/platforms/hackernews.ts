@@ -238,12 +238,12 @@ export async function buildHackerNewsAnnotation(
 	const itemId = resource.resource_identifiers.find((identifier) => identifier.scheme === 'hackernews')?.value;
 	let item = acquiredItem;
 	if (!item) {
-		if (!itemId) throw new Error(`Hacker News resource ${resource.id} has no item id`);
+		if (!itemId) throw new Error(`Hacker News processing ${resource.processing_id} has no item id`);
 		item = await fetchHnItem(itemId);
 	}
 
 	const comments = item.children?.length ? collectAllComments(item.children) : [];
-	const digest = await generateHnDiscussionDigest(env, resource.id, resource.title, item.text ?? null, comments);
+	const digest = await generateHnDiscussionDigest(env, resource.processing_id, resource.title, item.text ?? null, comments);
 	// Count nodes, not text-bearing comments, so this matches Forum kind metadata.
 	const commentCount = countHnComments(item.children);
 	const stats = [item.points !== undefined ? `${item.points} points` : null, commentCount > 0 ? `${commentCount} comments` : null]

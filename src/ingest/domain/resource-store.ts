@@ -271,7 +271,7 @@ function resourceStoreRowToProcessing(row: ResourceStoreRow): ResourceForProcess
 	const resourceIdentifiers = resourceIdentifiersValue(row.resource_identifiers);
 	return {
 		...toResourceIdentityColumns(identity),
-		id: row.id,
+		processing_id: row.id,
 		source_id: row.source_id,
 		original_lang: canonicalizeResourceLang(row.original_lang),
 		title: requiredString(row.title, 'title'),

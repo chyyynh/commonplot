@@ -75,7 +75,7 @@ async function handleForum(
 			console.error({
 				tag: 'HN',
 				msg: 'Optional Hacker News discussion annotation failed after retries',
-				resource_id: context.resource.id,
+				processing_id: context.resource.processing_id,
 				error: error instanceof Error ? error.message : String(error),
 			});
 			return null;
@@ -103,7 +103,7 @@ async function handleVideo(
 			console.error({
 				tag: 'YOUTUBE',
 				msg: 'Optional YouTube highlights failed after retries',
-				resource_id: context.resource.id,
+				processing_id: context.resource.processing_id,
 				error: error instanceof Error ? error.message : String(error),
 			});
 			return null;

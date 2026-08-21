@@ -98,13 +98,23 @@ async function stageOpenAlexContentAcquisition(
 	if (contentPdfUrl) {
 		const artifact = await step
 			.do(pdfStepName, ACQUISITION_STEP, () =>
-				acquireOpenAlexPdfArtifact({ contentPdfUrl, description, publishedDate, resourceId: resource.id, sourceName, title }, env),
+				acquireOpenAlexPdfArtifact(
+					{
+						contentPdfUrl,
+						description,
+						publishedDate,
+						resourceId: resource.processing_id,
+						sourceName,
+						title,
+					},
+					env,
+				),
 			)
 			.catch((error) => {
 				console.error({
 					tag: 'OPENALEX_CONTENT',
 					event: 'pdf_acquisition_failed',
-					resource_id: resource.id,
+					processing_id: resource.processing_id,
 					error: error instanceof Error ? error.message : String(error),
 				});
 				return null;
@@ -114,7 +124,7 @@ async function stageOpenAlexContentAcquisition(
 			console.info({
 				tag: 'OPENALEX_CONTENT',
 				event: 'pdf_acquired',
-				resource_id: resource.id,
+				processing_id: resource.processing_id,
 				chars: acquired.markdown.length,
 				pages: acquired.provider === null ? (acquired.extraction?.pages ?? null) : null,
 			});
@@ -131,7 +141,7 @@ async function stageOpenAlexContentAcquisition(
 				console.error({
 					tag: 'OPENALEX_CONTENT',
 					event: 'grobid_acquisition_failed',
-					resource_id: resource.id,
+					processing_id: resource.processing_id,
 					error: error instanceof Error ? error.message : String(error),
 				});
 				return null;
@@ -141,7 +151,7 @@ async function stageOpenAlexContentAcquisition(
 			console.info({
 				tag: 'OPENALEX_CONTENT',
 				event: 'grobid_acquired',
-				resource_id: resource.id,
+				processing_id: resource.processing_id,
 				chars: acquired.markdown.length,
 			});
 			return acquired;

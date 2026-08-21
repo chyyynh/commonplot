@@ -16,7 +16,7 @@ import { resolveOpenAlexPaper } from './openalex';
 const DEFAULT_RATE_LIMIT_DELAY_SECONDS = 15;
 const MAX_RATE_LIMIT_DELAY_SECONDS = 5 * 60;
 const IDENTIFIER_SCAN_CHARS = 3_000;
-type PaperEnrichmentCandidate = Pick<ResourceForProcessing, 'id' | 'url' | 'scope' | 'source_id' | 'resource_platform'> & {
+type PaperEnrichmentCandidate = Pick<ResourceForProcessing, 'processing_id' | 'url' | 'scope' | 'source_id' | 'resource_platform'> & {
 	identifierText?: string | null;
 	identifiers?: readonly PaperIdentifier[];
 	translateUrl?: boolean;
@@ -97,7 +97,7 @@ export async function stagePaperEnrichment(
 					tag: 'PAPER_PROVIDER',
 					event: 'academic_enrichment',
 					provider: 'openalex',
-					resource_id: candidate.id,
+					processing_id: candidate.processing_id,
 					identity_schemes: [...new Set(bibliographic.map(({ scheme }) => scheme))],
 					outcome: paper ? 'resolved' : 'not_found',
 					latency_ms: Date.now() - startedAt,
@@ -115,7 +115,7 @@ export async function stagePaperEnrichment(
 		console.warn({
 			tag: 'PAPER_PROVIDER',
 			event: 'academic_enrichment',
-			resource_id: candidate.id,
+			processing_id: candidate.processing_id,
 			outcome: 'failed',
 			latency_ms: Date.now() - attemptStartedAt,
 			error: error instanceof Error ? error.message : String(error),
@@ -132,6 +132,6 @@ export async function stagePaperEnrichment(
 export function privatePaperAttachment(resource: ResourceForProcessing): { canonicalUrl: string } | null {
 	if (resource.scope !== 'private' || !resource.storage_key) return null;
 	const identity = paperIdentityFromIdentifiers(resource.resource_identifiers.filter(isPaperIdentifier));
-	if (!identity) throw new Error(`Private paper ${resource.id} has no canonical identity`);
+	if (!identity) throw new Error(`Private paper processing ${resource.processing_id} has no canonical identity`);
 	return { canonicalUrl: canonicalPaperUrl(identity) };
 }

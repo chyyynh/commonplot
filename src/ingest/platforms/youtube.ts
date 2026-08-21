@@ -47,7 +47,9 @@ export async function prepareYouTubeHighlights(
 ): Promise<YouTubeHighlightsUpdate | null> {
 	if (resource.resource_platform !== 'youtube') return null;
 	if (transcript) {
-		return transcript.segments.length ? prepareYouTubeHighlightsFromTranscript(env, resource.id, videoId, transcript.segments) : null;
+		return transcript.segments.length
+			? prepareYouTubeHighlightsFromTranscript(env, resource.processing_id, videoId, transcript.segments)
+			: null;
 	}
 
 	const row = await withCoreDb(
@@ -63,7 +65,7 @@ export async function prepareYouTubeHighlights(
 	);
 	if (!row || row.aiHighlights || !Array.isArray(row.transcript) || row.transcript.length === 0) return null;
 
-	return prepareYouTubeHighlightsFromTranscript(env, resource.id, videoId, row.transcript);
+	return prepareYouTubeHighlightsFromTranscript(env, resource.processing_id, videoId, row.transcript);
 }
 
 async function prepareYouTubeHighlightsFromTranscript(

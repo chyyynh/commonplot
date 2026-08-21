@@ -53,9 +53,9 @@ const RESOURCE_CLASSIFICATION_SYSTEM_PROMPT = `你是專業的新聞分類和實
 
 function resourceClassificationPrompt(resource: ResourceForProcessing): string {
 	const source = resource.source?.trim();
-	if (!source) throw new Error(`Resource ${resource.id} has no source`);
+	if (!source) throw new Error(`Resource processing ${resource.processing_id} has no source`);
 	const content = resource.content?.trim();
-	if (!content) throw new Error(`Resource ${resource.id} has no content`);
+	if (!content) throw new Error(`Resource processing ${resource.processing_id} has no content`);
 	const excludedEntities = entityExtractionExclusionNames(resource.resource_platform, resource.source, resource.creators);
 	const excludedLine = excludedEntities.length ? `\n實體排除名單: ${excludedEntities.join(', ')}` : '';
 	const summaryLine = resource.summary?.trim() ? `\n摘要: ${resource.summary.trim()}` : '';
@@ -84,7 +84,7 @@ export async function classifyResource(
 				metadata: {
 					feature: 'resource-classification',
 					environment: env.AI_GATEWAY_ENVIRONMENT,
-					resource_id: resource.id,
+					processing_id: resource.processing_id,
 				},
 			},
 			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },

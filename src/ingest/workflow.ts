@@ -268,10 +268,10 @@ async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, shell:
 	const { resource } = shell;
 	const locator = exactPlatformLocator(resource.resource_identifiers);
 	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : resource.url;
-	if (!sourceUrl) throw new Error(`Resource ${resource.id} has no source URL`);
+	if (!sourceUrl) throw new Error(`Resource processing ${resource.processing_id} has no source URL`);
 	const acquisition = await readSavedUrlAcquisitionArtifact(
 		await step.do('acquire-content-kind-platform-v1', ACQUISITION_STEP, () =>
-			scrapeSavedUrlArtifact(sourceUrl, env, shell.isMonitoredOnly, shell.sourceAvatarUrl, resource.id),
+			scrapeSavedUrlArtifact(sourceUrl, env, shell.isMonitoredOnly, shell.sourceAvatarUrl, resource.processing_id),
 		),
 	);
 	if (acquisition.status === 'rejected') {
@@ -284,7 +284,7 @@ async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, shell:
 			const reason = durationSeconds === null ? 'is a live stream or unstarted premiere' : `runs ${durationSeconds}s`;
 			throw new ResourceProcessingOutcomeError(
 				'drop',
-				`YouTube video ${resource.id} ${reason}; monitored videos must exceed ${MIN_MONITORED_VIDEO_DURATION_SECONDS}s`,
+				`YouTube processing ${resource.processing_id} ${reason}; monitored videos must exceed ${MIN_MONITORED_VIDEO_DURATION_SECONDS}s`,
 				'MonitoredVideoRejectedError',
 			);
 		}
@@ -341,7 +341,7 @@ async function prepareResourceForProcessing(
 	if (operation === 'resync' && !initialResource.url) {
 		throw new ResourceProcessingOutcomeError(
 			'failed',
-			`Resource ${initialResource.id} has no source URL`,
+			`Resource processing ${initialResource.processing_id} has no source URL`,
 			'ResourceResyncUnsupportedError',
 		);
 	}
