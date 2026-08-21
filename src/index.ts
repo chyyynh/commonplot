@@ -10,8 +10,7 @@ import {
 	reconcilePendingResourceProcessing,
 } from '@ingest/workflow';
 import { SearchIndexGeneration5RebuildWorkflow } from './ai-search';
-import type { RelatedResourceSearchInput, ResourceSearchInput } from './corpus';
-import { relatedCorpusResourceIds, searchCorpusResourceRanks, searchCorpusResources } from './corpus';
+import { type PublicResourceSearchInput, searchPublicResourceIds } from './corpus';
 import { assertResourceProcessable, isResourceEnrichmentComplete } from './ingest/domain/resource-store';
 
 export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexGeneration5RebuildWorkflow };
@@ -59,19 +58,9 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		return enqueueResourceResync(this.env, resourceId);
 	}
 
-	/** Hybrid AI Search retrieval for the canonical corpus search tool. */
-	searchResources(input: ResourceSearchInput) {
-		return searchCorpusResources(this.env, input);
-	}
-
-	/** Hybrid rank search for app-side feed/context lookup. */
-	searchResourceRanks(input: ResourceSearchInput) {
-		return searchCorpusResourceRanks(this.env, input);
-	}
-
-	/** Related resource ids for app-side recommendations. */
-	relatedResourceIds(input: RelatedResourceSearchInput) {
-		return relatedCorpusResourceIds(this.env, input);
+	/** AI Search candidates; the app Worker authoritatively filters and hydrates them. */
+	searchPublicResourceIds(input: PublicResourceSearchInput) {
+		return searchPublicResourceIds(this.env, input);
 	}
 
 	/** Read workflow status for app-side polling. */
