@@ -18,7 +18,7 @@ import {
 } from '@core-shared/resource-types';
 import type { ResourceForProcessing } from '@core-shared/types';
 import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
-import { loadSourceAvatarUrl, loadStoredResourceForProcessing, type StoredResourceProcessingInput } from '@ingest/domain/resource-store';
+import { loadStoredResourceForProcessing, type StoredResourceProcessingInput } from '@ingest/domain/resource-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES, shouldReconcileSupersededRefresh } from '../workflow-control';
 import {
@@ -170,7 +170,6 @@ type PreparedResource = {
 type ResourcePreparationInput =
 	| (ResourceDraftTarget & {
 			processingId: string;
-			sourceAvatarUrl: string | null;
 	  })
 	| (ExistingResourceTarget & {
 			stored: StoredResourceProcessingInput;
@@ -208,7 +207,7 @@ async function acquireDraftResource(
 			discoverTwitterThread: input.admission.kind !== 'source',
 			isMonitoredOnly: input.admission.kind === 'source',
 			processingId: input.processingId,
-			sourceAvatarUrl: input.sourceAvatarUrl,
+			sourceAvatarUrl: input.sourceHints?.sourceAvatarUrl ?? null,
 			sourceUrl: input.url,
 		},
 		input.expectedProviderRevision,
@@ -393,15 +392,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				expectedSourceRevision = stored.resource.source_revision;
 				preparationInput = { ...target, stored };
 			} else {
-				const sourceId = target.admission.kind === 'source' ? target.admission.sourceId : null;
-				const sourceAvatarUrl = sourceId
-					? await step.do(
-							'load-draft-source-avatar-v1',
-							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							() => loadSourceAvatarUrl(this.env, sourceId),
-						)
-					: null;
-				preparationInput = { ...target, processingId, sourceAvatarUrl };
+				preparationInput = { ...target, processingId };
 			}
 			const prepared = await prepareResourceForProcessing(this.env, step, preparationInput);
 			const { previewImageUrl, resource, subject, youtube } = prepared;

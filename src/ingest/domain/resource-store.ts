@@ -21,7 +21,7 @@ import {
 import type { ResourceForProcessing } from '@core-shared/types';
 import { type CoreDb, withCoreDb } from '@db/client';
 import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
-import { resources, sources } from '@db/schema';
+import { resources } from '@db/schema';
 import { eq, sql } from 'drizzle-orm';
 import { cleanString, dateValue, requiredString } from './resource-values';
 
@@ -79,14 +79,6 @@ export async function loadStoredResourceForProcessing(env: CoreEnv, resourceId: 
 		isMonitoredOnly: row.is_monitored_only,
 		sourceAvatarUrl: cleanString(row.source_avatar_url),
 	};
-}
-
-export async function loadSourceAvatarUrl(env: CoreEnv, sourceId: string): Promise<string | null> {
-	return withCoreDb(env, async (db) => {
-		const row = (await db.select({ avatarUrl: sources.avatarUrl }).from(sources).where(eq(sources.id, sourceId)).limit(1))[0];
-		if (!row) throw new Error(`Source ${sourceId} no longer exists`);
-		return cleanString(row.avatarUrl);
-	});
 }
 
 export async function assertResourceProcessable(env: CoreEnv, resourceId: string): Promise<void> {

@@ -20,6 +20,7 @@ async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
 		publishedDate: item.publishedDate,
 		summary: item.summary,
 		originalLang: item.originalLang,
+		sourceAvatarUrl: feed.avatarUrl,
 	}));
 	const outcomes = await admitDiscoveredSourceResources(env, drafts);
 	let created = 0;

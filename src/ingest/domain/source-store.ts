@@ -6,6 +6,7 @@ export type MonitoredSource = {
 	id: string;
 	name: string;
 	handle: string;
+	avatarUrl: string | null;
 	scrapedAt: Date | null;
 	createdAt: Date;
 };
@@ -22,6 +23,7 @@ export async function loadMonitoredSources(env: CoreEnv, monitor: 'feed' | 'twit
 				id: sources.id,
 				name: sources.name,
 				handle: sources.handle,
+				avatarUrl: sources.avatarUrl,
 				scrapedAt: sources.scrapedAt,
 				createdAt: sources.createdAt,
 			})

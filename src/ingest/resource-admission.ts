@@ -1,7 +1,7 @@
 import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
 import { canonicalizeOptionalResourceLang } from '@core-shared/resource-types';
-import { normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
+import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
 import { withCoreDb } from '@db/client';
 import { claimExistingDiscoveredResources, claimStalePendingBlobAdmissions } from '@ingest/domain/resource-admission-store';
 import { cleanString, dateValue, requiredString, stringArrayValue } from '@ingest/domain/resource-values';
@@ -62,6 +62,7 @@ const ResourceDraftTargetSchema = z
 				originalLang: z.string().trim().min(1).max(35).optional(),
 				publishedDate: z.iso.datetime().optional(),
 				keywords: z.array(z.string().max(500)).max(100).optional(),
+				sourceAvatarUrl: z.url().max(2_048).optional(),
 			})
 			.strict()
 			.optional(),
@@ -105,6 +106,7 @@ export type SourceResourceDraft = {
 	summary: string | null;
 	originalLang?: string;
 	keywords?: string[];
+	sourceAvatarUrl?: string | null;
 	/** Provider event revision that should refresh an already-enriched Resource once. */
 	refreshRevision?: string;
 };
@@ -159,6 +161,7 @@ function sourceDraftTarget(base: SourceResourceDraft): ResourceDraftTarget {
 	const url = normalizeUrl(parsedUrl.toString());
 	const summary = cleanString(base.summary);
 	const keywords = stringArrayValue(base.keywords ?? [], 'keywords');
+	const sourceAvatarUrl = validatedExternalMediaUrl(base.sourceAvatarUrl);
 	return parseResourceProcessingWorkflowPayload({
 		target: {
 			kind: 'draft',
@@ -169,6 +172,7 @@ function sourceDraftTarget(base: SourceResourceDraft): ResourceDraftTarget {
 				...(originalLang ? { originalLang } : {}),
 				...(publishedDate ? { publishedDate } : {}),
 				...(keywords.length ? { keywords } : {}),
+				...(sourceAvatarUrl ? { sourceAvatarUrl } : {}),
 			},
 			...(base.refreshRevision?.trim() ? { expectedProviderRevision: base.refreshRevision.trim() } : {}),
 		},
