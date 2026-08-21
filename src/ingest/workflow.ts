@@ -37,12 +37,12 @@ import { stagePreferredOpenAlexContent, stagePreliminaryAcquisition } from './pl
 import { stagePdfTextExtraction } from './platforms/pdf';
 import { MIN_MONITORED_VIDEO_DURATION_SECONDS } from './platforms/youtube-acquisition';
 import {
+	type ExistingResourceTarget,
 	enqueueSubjectDraft,
 	enqueueSupersededResourceRefresh,
 	parseResourceProcessingWorkflowPayload,
 	type ResourceDraftTarget,
 	type ResourceProcessingWorkflowPayload,
-	type StoredResourceTarget,
 } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import {
@@ -218,25 +218,21 @@ type PreparedResource = {
 };
 
 type ResourcePreparationInput =
-	| {
-			kind: 'draft';
+	| (ResourceDraftTarget & {
 			processingId: string;
 			sourceAvatarUrl: string | null;
-			target: ResourceDraftTarget;
-	  }
-	| {
-			kind: 'stored';
+	  })
+	| (ExistingResourceTarget & {
 			stored: StoredResourceProcessingInput;
-			target: StoredResourceTarget;
-	  };
+	  });
 
 async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, input: ResourcePreparationInput): Promise<PreparedResource> {
 	let initialResource: ResourceForProcessing;
 	let preliminary: Awaited<ReturnType<typeof stagePreliminaryAcquisition>>;
 	let acquiredContent: AcquiredContent | undefined;
 	if (input.kind === 'draft') {
-		const exactPaper = resolveExactPaperInput(input.target.url);
-		const detected = exactPaper ? null : detectResourceUrl(input.target.url);
+		const exactPaper = resolveExactPaperInput(input.url);
+		const detected = exactPaper ? null : detectResourceUrl(input.url);
 		const identity = exactPaper
 			? ({ kind: 'paper', resourcePlatform: null } as const)
 			: detected
@@ -249,19 +245,19 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 					? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]
 					: [],
 		);
-		const sourceId = input.target.admission.kind === 'source' ? input.target.admission.sourceId : null;
+		const sourceId = input.admission.kind === 'source' ? input.admission.sourceId : null;
 		const draftCandidate = {
 			processing_id: input.processingId,
-			published_date: input.target.publishedDate,
+			published_date: input.publishedDate,
 			resource_identifiers: resourceIdentifiers,
 			resource_platform: identity.resourcePlatform,
 			scope: 'corpus' as const,
-			source: new URL(input.target.url).hostname.replace(/^www\./, ''),
+			source: new URL(input.url).hostname.replace(/^www\./, ''),
 			source_id: sourceId,
 			storage_key: null,
-			summary: input.target.summary,
-			title: input.target.title,
-			url: input.target.url,
+			summary: input.summary,
+			title: input.title,
+			url: input.url,
 		};
 		// Exact DOI/arXiv/OpenAlex drafts can go straight to OpenAlex Content.
 		// The landing page is acquired only when OpenAlex has no cached content.
@@ -270,13 +266,13 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 				env,
 				step,
 				{
-					discoverTwitterThread: input.target.admission.kind !== 'source',
-					isMonitoredOnly: input.target.admission.kind === 'source',
+					discoverTwitterThread: input.admission.kind !== 'source',
+					isMonitoredOnly: input.admission.kind === 'source',
 					processingId: input.processingId,
 					sourceAvatarUrl: input.sourceAvatarUrl,
-					sourceUrl: input.target.url,
+					sourceUrl: input.url,
 				},
-				input.target.expectedProviderRevision,
+				input.expectedProviderRevision,
 			),
 		);
 		acquiredContent = preliminary.acquiredContent;
@@ -286,8 +282,8 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 				'ResourceContentMissingError',
 			);
 		}
-		const canonicalUrl = acquiredContent.canonicalUrl?.trim() || input.target.url;
-		let publishedDate = input.target.publishedDate;
+		const canonicalUrl = acquiredContent.canonicalUrl?.trim() || input.url;
+		let publishedDate = input.publishedDate;
 		if (publishedDate === null && acquiredContent.publishedDate?.trim()) {
 			const parsed = new Date(acquiredContent.publishedDate);
 			if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
@@ -297,15 +293,15 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 			processing_id: input.processingId,
 			source_id: sourceId,
 			scope: 'corpus',
-			original_lang: canonicalizeOptionalResourceLang(acquiredContent.originalLang) ?? canonicalizeResourceLang(input.target.originalLang),
+			original_lang: canonicalizeOptionalResourceLang(acquiredContent.originalLang) ?? canonicalizeResourceLang(input.originalLang),
 			title: acquiredContent.title.trim(),
-			summary: acquiredContent.summary ?? input.target.summary,
+			summary: acquiredContent.summary ?? input.summary,
 			content: acquiredContent.markdown,
 			url: canonicalUrl,
 			source: acquiredContent.source,
 			published_date: publishedDate,
 			tags: [],
-			keywords: input.target.keywords,
+			keywords: input.keywords,
 			creators: acquiredContent.creators,
 			kind_metadata: acquiredContent.kindMetadata,
 			source_revision: acquiredContent.sourceSnapshotHash ?? null,
@@ -316,7 +312,7 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 		};
 	} else {
 		initialResource = input.stored.resource;
-		if (input.target.operation === 'reacquire') {
+		if (input.kind === 'reacquire') {
 			const locator = exactPlatformLocator(initialResource.resource_identifiers);
 			const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : initialResource.url;
 			if (!sourceUrl) {
@@ -336,7 +332,7 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 						sourceAvatarUrl: input.stored.sourceAvatarUrl,
 						sourceUrl,
 					},
-					input.target.expectedProviderRevision,
+					input.expectedProviderRevision,
 				),
 			);
 			acquiredContent = preliminary.acquiredContent;
@@ -461,18 +457,18 @@ async function reconcileSupersededProviderRefresh(
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingWorkflowPayload> {
 	async run(event: WorkflowEvent<ResourceProcessingWorkflowPayload>, step: WorkflowStep) {
 		const { target } = parseResourceProcessingWorkflowPayload(event.payload);
-		const processingId = target.kind === 'stored' ? target.resourceId : event.instanceId;
+		const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
 		let persistedSourceRevision: string | null | undefined;
 		try {
 			let preparationInput: ResourcePreparationInput;
-			if (target.kind === 'stored') {
+			if (target.kind !== 'draft') {
 				const stored = await step.do(
 					'fetch-stored-resource-input-kind-platform-v1',
 					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 					() => loadStoredResourceForProcessing(this.env, target.resourceId),
 				);
 				persistedSourceRevision = stored.resource.source_revision;
-				preparationInput = { kind: 'stored', stored, target };
+				preparationInput = { ...target, stored };
 			} else {
 				const sourceId = target.admission.kind === 'source' ? target.admission.sourceId : null;
 				const sourceAvatarUrl = sourceId
@@ -482,7 +478,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							() => loadSourceAvatarUrl(this.env, sourceId),
 						)
 					: null;
-				preparationInput = { kind: 'draft', processingId, sourceAvatarUrl, target };
+				preparationInput = { ...target, processingId, sourceAvatarUrl };
 			}
 			const prepared = await prepareResourceForProcessing(this.env, step, preparationInput);
 			const { acquiredContent, identityPdfTextArtifact, paperEnrichment, resolution, resource } = prepared;
@@ -525,7 +521,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
 				() => classifyResource(handled.resource, this.env, handled.classificationExclusions),
 			);
-			const privatePaper = target.kind === 'stored' && target.operation === 'blob' ? privatePaperAttachment(handled.resource) : null;
+			const privatePaper = target.kind === 'storedBlob' ? privatePaperAttachment(handled.resource) : null;
 			const subject = privatePaper ? null : resolvedSubjectInput(handled);
 			const persistenceInput = {
 				handled,
@@ -546,12 +542,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const persistence = await step.do(
 				privatePaper
 					? 'persist-final-private-paper-draft-v1'
-					: target.kind === 'stored'
+					: target.kind !== 'draft'
 						? 'persist-stored-resource-graph-v5'
 						: 'persist-final-resource-draft-v1',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 				() =>
-					privatePaper && target.kind === 'stored'
+					privatePaper && target.kind === 'storedBlob'
 						? persistProcessedPrivatePaperDraft(
 								this.env,
 								{
@@ -562,7 +558,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 								},
 								hostedImages,
 							)
-						: target.kind === 'stored'
+						: target.kind !== 'draft'
 							? persistProcessedResource(
 									this.env,
 									{
@@ -575,7 +571,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							: persistProcessedDraft(this.env, { ...persistenceInput, admission: target.admission }, hostedImages),
 			);
 			if (!persistence.persisted) {
-				if (target.kind === 'stored' && target.operation === 'reacquire' && target.expectedProviderRevision) {
+				if (target.kind === 'reacquire' && target.expectedProviderRevision) {
 					await reconcileSupersededProviderRefresh(this.env, step, {
 						acquiredResource: handled.resource,
 						expectedProviderRevision: target.expectedProviderRevision,
@@ -632,7 +628,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			return {
 				status: 'persisted',
 				resourceId: persistedResourceId,
-				...(target.kind === 'stored' && target.operation === 'reacquire' ? { changed: true } : {}),
+				...(target.kind === 'reacquire' ? { changed: true } : {}),
 			} as const;
 		} catch (error) {
 			if (target.kind === 'draft') {
@@ -647,7 +643,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				}
 				throw error;
 			}
-			if (target.operation !== 'blob') throw error;
+			if (target.kind !== 'storedBlob') throw error;
 			await settleFailedStoredBlobProcessing(this.env, step, {
 				persistedSourceRevision,
 				resourceId: target.resourceId,

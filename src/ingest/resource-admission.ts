@@ -70,9 +70,14 @@ const ResourceProcessingWorkflowPayloadSchema = z
 		target: z.discriminatedUnion('kind', [
 			z
 				.object({
-					kind: z.literal('stored'),
+					kind: z.literal('storedBlob'),
 					resourceId: z.string().uuid(),
-					operation: z.enum(['blob', 'reacquire']),
+				})
+				.strict(),
+			z
+				.object({
+					kind: z.literal('reacquire'),
+					resourceId: z.string().uuid(),
 					expectedProviderRevision: ProviderRevisionSchema.optional(),
 				})
 				.strict(),
@@ -83,7 +88,7 @@ const ResourceProcessingWorkflowPayloadSchema = z
 
 export type ResourceProcessingWorkflowPayload = z.infer<typeof ResourceProcessingWorkflowPayloadSchema>;
 export type ResourceDraftTarget = Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'draft' }>;
-export type StoredResourceTarget = Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'stored' }>;
+export type ExistingResourceTarget = Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'storedBlob' | 'reacquire' }>;
 
 export function parseResourceProcessingWorkflowPayload(value: unknown): ResourceProcessingWorkflowPayload {
 	return ResourceProcessingWorkflowPayloadSchema.parse(value);
@@ -112,7 +117,7 @@ export type SourceResourceAdmissionOutcome = 'created' | 'existing' | 'refreshed
 type ExistingDiscoveredResource = Awaited<ReturnType<typeof claimExistingDiscoveredResources>>[number];
 
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
-const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v8';
+const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v9';
 const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v2';
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
 const PENDING_BLOB_RECONCILE_CONCURRENCY = 10;
@@ -121,9 +126,8 @@ const DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY = 5;
 export async function enqueueProcessing(env: CoreEnv, resourceId: string): Promise<string> {
 	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, storedWorkflowId(resourceId), {
 		target: {
-			kind: 'stored',
+			kind: 'storedBlob',
 			resourceId,
-			operation: 'blob',
 		},
 	});
 }
@@ -240,7 +244,7 @@ export async function admitDiscoveredSourceResources(
 
 async function startResourceRefreshWorkflow(env: CoreEnv, id: string, resourceId: string, revision: string): Promise<boolean> {
 	const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
-		{ id, params: { target: { kind: 'stored', resourceId, operation: 'reacquire', expectedProviderRevision: revision } } },
+		{ id, params: { target: { kind: 'reacquire', resourceId, expectedProviderRevision: revision } } },
 	]);
 	if (created) return true;
 	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.get(id);
@@ -255,7 +259,7 @@ async function startResourceRefreshWorkflow(env: CoreEnv, id: string, resourceId
 
 async function enqueueResourceRefresh(env: CoreEnv, resourceId: string, refreshRevision: string): Promise<boolean> {
 	const revision = ProviderRevisionSchema.parse(refreshRevision);
-	const id = ['resource-refresh-v4', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
+	const id = ['resource-refresh-v5', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
 	return startResourceRefreshWorkflow(env, id, resourceId, revision);
 }
 
@@ -269,7 +273,7 @@ export async function enqueueSupersededResourceRefresh(
 ): Promise<string> {
 	const revision = ProviderRevisionSchema.parse(input.refreshRevision);
 	const identity = await sha256Hex(JSON.stringify([input.resourceId, revision, input.supersededSourceRevision]));
-	const id = `resource-refresh-reconcile-v1-${identity}`;
+	const id = `resource-refresh-reconcile-v2-${identity}`;
 	const started = await startResourceRefreshWorkflow(env, id, input.resourceId, revision);
 	console.info({
 		tag: 'RESOURCE_WORKFLOW',
@@ -318,8 +322,8 @@ export async function reconcilePendingBlobProcessing(env: CoreEnv): Promise<void
 
 export async function enqueueResourceResync(env: CoreEnv, resourceId: string): Promise<string> {
 	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
-		id: `resource-resync-v2-${workflowIdPart(resourceId)}-${crypto.randomUUID()}`,
-		params: { target: { kind: 'stored', resourceId, operation: 'reacquire' } },
+		id: `resource-resync-v3-${workflowIdPart(resourceId)}-${crypto.randomUUID()}`,
+		params: { target: { kind: 'reacquire', resourceId } },
 	});
 	return instance.id;
 }
