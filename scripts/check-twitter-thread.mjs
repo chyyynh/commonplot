@@ -101,9 +101,10 @@ assert.equal(twitterProviderRetryDelayMs('Wed, 21 Oct 2026 07:28:10 GMT', 1, Dat
 assert.throws(() => twitterProviderRetryDelayMs(null, 0), /positive integer/);
 assert.throws(() => parseTwitterTweetsResponse({ tweets: [], status: 'error', message: 'tweet failed' }), /tweet failed/);
 const [strippedTweet] = parseTwitterTweetsResponse({
-	tweets: [{ ...root, bookmarkCount: 99, author: { ...root.author, followers: 1_000_000 } }],
+	tweets: [{ ...root, bookmarkCount: 99, viewCount: 100, author: { ...root.author, followers: 1_000_000 } }],
 });
 assert.equal('bookmarkCount' in strippedTweet, false);
+assert.equal('viewCount' in strippedTweet, false);
 assert.equal('followers' in strippedTweet.author, false);
 
 const article = parseTwitterArticleResponse(
@@ -168,5 +169,5 @@ console.info({
 	providerRetryCases: 10,
 	replyPredicateCases: 5,
 	selfReplyRootCases: 4,
-	responseShapeCases: 6,
+	responseShapeCases: 7,
 });

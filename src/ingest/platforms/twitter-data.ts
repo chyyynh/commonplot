@@ -1,7 +1,6 @@
 import { z } from 'zod';
 
 const TwitterAuthorSchema = z.object({
-	id: z.string().optional(),
 	userName: z.string(),
 	name: z.string(),
 	profilePicture: z.string().optional(),
@@ -51,19 +50,14 @@ export interface Tweet {
 	id?: string;
 	url: string;
 	createdAt: string;
-	viewCount?: number;
 	author?: {
-		id?: string;
 		userName: string;
 		name: string;
 		profilePicture?: string;
 		isBlueVerified?: boolean;
 	};
 	text: string;
-	likeCount?: number;
-	retweetCount?: number;
 	replyCount?: number;
-	quoteCount?: number;
 	extendedEntities?: {
 		media?: Array<{
 			media_url_https: string;
@@ -100,13 +94,9 @@ const TweetSchema: z.ZodType<Tweet> = z.lazy(() =>
 		id: z.string().optional(),
 		url: z.string().min(1),
 		createdAt: z.string().min(1),
-		viewCount: z.number().optional(),
 		author: TwitterAuthorSchema.optional(),
 		text: z.string(),
-		likeCount: z.number().optional(),
-		retweetCount: z.number().optional(),
 		replyCount: z.number().optional(),
-		quoteCount: z.number().optional(),
 		extendedEntities: z.object({ media: z.array(TwitterMediaEntitySchema).optional() }).optional(),
 		hashTags: z.array(z.string()).optional(),
 		urls: z.array(TwitterUrlEntitySchema).optional(),
