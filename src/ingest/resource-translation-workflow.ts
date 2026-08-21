@@ -5,7 +5,6 @@ import {
 	persistMachineZhHantTranslation,
 } from '@ingest/domain/resource-translation-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
-import { enqueueOrRestartWorkflow } from '../workflow-control';
 import {
 	CONTENT_TRANSLATION_MAX_LENGTH,
 	generateZhHantMetadataTranslation,
@@ -21,14 +20,18 @@ function workflowId(resourceId: string, sourceRevision: string): string {
 	return `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${sourceRevision}`;
 }
 
-// One stable instance per source revision dedupes repeated enqueue attempts while
-// ensuring a newer original body never shares execution with an older one.
+// One stable instance per source revision dedupes completed translations while
+// allowing a failed attempt to be retried. A changed original gets a new ID.
 export async function enqueueResourceTranslation(env: CoreEnv, resourceId: string, sourceRevision: string): Promise<string> {
 	if (!isResourceTranslationRevision(sourceRevision)) throw new Error('Invalid resource translation source revision');
-	return enqueueOrRestartWorkflow(env.RESOURCE_TRANSLATION_V2_WORKFLOW, workflowId(resourceId, sourceRevision), {
-		resourceId,
-		sourceRevision,
-	});
+	const id = workflowId(resourceId, sourceRevision);
+	const [created] = await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([{ id, params: { resourceId, sourceRevision } }]);
+	if (created) return created.id;
+	const instance = await env.RESOURCE_TRANSLATION_V2_WORKFLOW.get(id);
+	const { status } = await instance.status();
+	if (status === 'errored') await instance.restart();
+	if (status === 'unknown') throw new Error(`Resource translation Workflow ${id} has unknown status`);
+	return id;
 }
 
 export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceTranslationPayload> {

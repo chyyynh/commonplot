@@ -487,24 +487,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						}),
 				);
 			}
-			const translationSourceRevision = await step.do(
-				'load-resource-translation-revision-v1',
-				RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG,
-				() => loadEligibleResourceTranslationRevision(this.env, persistedResourceId),
-			);
-			if (translationSourceRevision) {
-				await step.do('enqueue-resource-translation', RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG, () =>
-					enqueueResourceTranslation(this.env, persistedResourceId, translationSourceRevision),
-				);
-			}
-			await step.do('sync-ai-search', AI_SEARCH_SYNC_STEP_CONFIG, () => syncCorpusItem(this.env, persistedResourceId));
-			if (persistence.retiredResourceIds.length) {
-				await step.do('delete-merged-ai-search-items-v1', AI_SEARCH_SYNC_STEP_CONFIG, async () => {
-					for (const retiredResourceId of persistence.retiredResourceIds) {
-						await syncCorpusItem(this.env, retiredResourceId);
-					}
-				});
-			}
+			await step.do('enqueue-eligible-resource-translation-v1', RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG, async () => {
+				const revision = await loadEligibleResourceTranslationRevision(this.env, persistedResourceId);
+				return revision ? enqueueResourceTranslation(this.env, persistedResourceId, revision) : null;
+			});
+			await step.do('sync-resolved-ai-search-v1', AI_SEARCH_SYNC_STEP_CONFIG, async () => {
+				await syncCorpusItem(this.env, persistedResourceId);
+				for (const retiredResourceId of persistence.retiredResourceIds) await syncCorpusItem(this.env, retiredResourceId);
+			});
 
 			console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
 			return {
