@@ -35,7 +35,7 @@ type PersistProcessedDraftInput = PersistProcessedInput & {
 	admission: ResourceDraftAdmission;
 };
 
-export async function settleStoredBlobProcessingFailure(
+export async function markStoredBlobProcessingFailed(
 	env: CoreEnv,
 	resourceId: string,
 	expectedSourceRevision: string | null,
@@ -65,7 +65,7 @@ export async function settleStoredBlobProcessingFailure(
 			.limit(1);
 		console.info({
 			tag: 'RESOURCE_PERSIST',
-			event: 'resource_processing_settlement_skipped',
+			event: 'stored_blob_failure_mark_skipped',
 			resource_id: resourceId,
 			expected_source_revision: expectedSourceRevision,
 			current_source_revision: existing[0]?.sourceRevision ?? null,

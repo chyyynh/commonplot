@@ -44,11 +44,11 @@ import {
 } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import {
+	markStoredBlobProcessingFailed,
 	persistProcessedDraft,
 	persistProcessedPrivatePaperDraft,
 	persistProcessedResource,
 	processedResourceImageSources,
-	settleStoredBlobProcessingFailure,
 } from './resource-persistence';
 import { exactPlatformLocator, type ResolvedSubjectInput, resolveContentResource, resolvedSubjectInput } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
@@ -376,31 +376,6 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 	};
 }
 
-async function settleFailedStoredBlobProcessing(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: {
-		persistedSourceRevision: string | null | undefined;
-		resourceId: string;
-	},
-): Promise<void> {
-	if (input.persistedSourceRevision === undefined) return;
-	await step
-		.do(
-			'settle-stored-blob-processing-failure-v1',
-			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			() => settleStoredBlobProcessingFailure(env, input.resourceId, input.persistedSourceRevision ?? null),
-		)
-		.catch((cleanupError) => {
-			console.error({
-				tag: 'WORKFLOW',
-				msg: 'Failed to settle stored blob processing',
-				resource_id: input.resourceId,
-				error: cleanupError instanceof Error ? cleanupError.message : String(cleanupError),
-			});
-		});
-}
-
 async function reconcileSupersededProviderRefresh(
 	env: CoreEnv,
 	step: WorkflowStep,
@@ -431,7 +406,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 	async run(event: WorkflowEvent<ResourceProcessingWorkflowPayload>, step: WorkflowStep) {
 		const { target } = parseResourceProcessingWorkflowPayload(event.payload);
 		const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
-		let persistedSourceRevision: string | null | undefined;
+		let expectedSourceRevision: string | null = null;
 		try {
 			let preparationInput: ResourcePreparationInput;
 			if (target.kind !== 'draft') {
@@ -439,8 +414,20 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					'fetch-stored-resource-input-kind-platform-v1',
 					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 					() => loadStoredResourceForProcessing(this.env, target.resourceId),
+					target.kind === 'storedBlob'
+						? {
+								rollback: async ({ output }) => {
+									if (!output) return;
+									await markStoredBlobProcessingFailed(this.env, target.resourceId, output.resource.source_revision);
+								},
+								rollbackConfig: {
+									retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
+									timeout: '30 seconds',
+								},
+							}
+						: undefined,
 				);
-				persistedSourceRevision = stored.resource.source_revision;
+				expectedSourceRevision = stored.resource.source_revision;
 				preparationInput = { ...target, stored };
 			} else {
 				const sourceId = target.admission.kind === 'source' ? target.admission.sourceId : null;
@@ -526,7 +513,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 									...persistenceInput,
 									canonicalUrl: privatePaper.canonicalUrl,
 									resourceId: target.resourceId,
-									expectedSourceRevision: persistedSourceRevision ?? null,
+									expectedSourceRevision,
 								},
 								hostedImages,
 							)
@@ -536,7 +523,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 									{
 										...persistenceInput,
 										resourceId: target.resourceId,
-										expectedSourceRevision: persistedSourceRevision ?? null,
+										expectedSourceRevision,
 									},
 									hostedImages,
 								)
@@ -548,7 +535,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						acquiredResource: handled.resource,
 						expectedProviderRevision: target.expectedProviderRevision,
 						resourceId: persistence.resourceId,
-						supersededSourceRevision: persistedSourceRevision ?? null,
+						supersededSourceRevision: expectedSourceRevision,
 					});
 				}
 				return { status: 'superseded', resourceId: persistence.resourceId } as const;
@@ -602,23 +589,15 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				...(target.kind === 'reacquire' ? { changed: true } : {}),
 			} as const;
 		} catch (error) {
-			if (target.kind === 'draft') {
-				if (error instanceof ResourceProcessingRejectedError) {
-					console.info({
-						tag: 'WORKFLOW',
-						msg: 'Rejected resource draft',
-						processing_id: processingId,
-						reason: error.message,
-					});
-					return { status: 'rejected', reason: error.message } as const;
-				}
-				throw error;
+			if (target.kind === 'draft' && error instanceof ResourceProcessingRejectedError) {
+				console.info({
+					tag: 'WORKFLOW',
+					msg: 'Rejected resource draft',
+					processing_id: processingId,
+					reason: error.message,
+				});
+				return { status: 'rejected', reason: error.message } as const;
 			}
-			if (target.kind !== 'storedBlob') throw error;
-			await settleFailedStoredBlobProcessing(this.env, step, {
-				persistedSourceRevision,
-				resourceId: target.resourceId,
-			});
 			throw error;
 		}
 	}
