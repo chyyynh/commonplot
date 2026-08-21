@@ -4,39 +4,26 @@ import { withCoreDb } from '@db/client';
 import { attachSourcesToResources, type ExistingResourceRecord, getExistingResourcesByUrl } from '@ingest/domain/resource-admission-store';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
 import { admitPendingSourceResource, enqueueProcessing } from '@ingest/workflow';
-import { canonicalFeedItemUrl, type FeedItem, feedPublishedDate, feedSummary, loadFeedEntries } from './rss-feed';
+import { type FeedEntry, loadFeed } from './rss-feed';
 
 const FEED_CONCURRENCY = 4;
 const ITEM_CONCURRENCY = 5;
 
-async function enqueueFeedItem(env: CoreEnv, feed: MonitoredSource, item: FeedItem, url: string): Promise<void> {
-	const title = item.title?.trim();
-	if (!title) throw new Error(`RSS item from ${feed.name} has no title: ${url}`);
-	const detected = detectResourceUrl(url);
+async function enqueueFeedItem(env: CoreEnv, feed: MonitoredSource, item: FeedEntry): Promise<void> {
+	if (!item.title) throw new Error(`RSS item from ${feed.name} has no title: ${item.url}`);
+	const detected = detectResourceUrl(item.url);
 	const identity = detected
 		? resourceIdentityForDetectedPlatform(detected.resourcePlatform)
 		: ({ kind: 'blog', resourcePlatform: null } as const);
 	await admitPendingSourceResource(env, {
 		sourceId: feed.id,
-		url,
-		title,
-		publishedDate: feedPublishedDate(item.published),
-		summary: feedSummary(item.summary),
+		url: item.url,
+		title: item.title,
+		publishedDate: item.publishedDate,
+		summary: item.summary,
 		...identity,
-		originalLang: item.language,
+		originalLang: item.originalLang,
 	});
-}
-
-function dedupedFeedItems(items: FeedItem[], feedName: string): Array<{ item: FeedItem; url: string }> {
-	const byUrl = new Map<string, { item: FeedItem; url: string }>();
-	for (const item of items) {
-		const url = canonicalFeedItemUrl(item);
-		if (url && !byUrl.has(url)) byUrl.set(url, { item, url });
-	}
-	const deduped = [...byUrl.values()];
-	const skipped = items.length - deduped.length;
-	if (skipped) console.warn({ tag: 'RSS', msg: 'Skipped invalid or duplicate feed items', feed: feedName, count: skipped });
-	return deduped;
 }
 
 /**
@@ -79,24 +66,25 @@ async function enqueueInBatches<T>(items: T[], describe: (item: T) => string, ms
 }
 
 async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
-	const items = await loadFeedEntries(feed.handle);
-	if (!items.length) {
-		console.info({ tag: 'RSS', msg: 'Feed has no items', feed: feed.name });
+	const { entries, itemCount } = await loadFeed(feed.handle);
+	const skipped = itemCount - entries.length;
+	if (skipped) console.warn({ tag: 'RSS', msg: 'Skipped invalid or duplicate feed items', feed: feed.name, count: skipped });
+	if (!entries.length) {
+		console.info({ tag: 'RSS', msg: itemCount ? 'Feed has no valid item URLs' : 'Feed has no items', feed: feed.name });
 		await markSourcesScraped(env, [feed.id]);
 		return;
 	}
 
-	const itemUrls = dedupedFeedItems(items, feed.name);
 	const existing = await withCoreDb(env, (db) =>
 		getExistingResourcesByUrl(
 			db,
-			itemUrls.map(({ url }) => url),
+			entries.map(({ url }) => url),
 		),
 	);
 	await reattachFeedProvenance(env, feed, existing);
 
 	const existingSet = new Set(existing.map((resource) => normalizeUrl(resource.url)));
-	const newItems = itemUrls.filter(({ url }) => !existingSet.has(url));
+	const newItems = entries.filter(({ url }) => !existingSet.has(url));
 	const retryable = existing.filter((resource) => resource.shouldRetryEnrichment);
 	const retried = await enqueueInBatches(
 		retryable,
@@ -104,13 +92,13 @@ async function processFeed(env: CoreEnv, feed: MonitoredSource): Promise<void> {
 		'Existing resource retry enqueue failed',
 		(r) => enqueueProcessing(env, r.id),
 	);
-	console.info({ tag: 'RSS', msg: 'Feed processed', feed: feed.name, newCount: newItems.length, retried, totalCount: items.length });
+	console.info({ tag: 'RSS', msg: 'Feed processed', feed: feed.name, newCount: newItems.length, retried, totalCount: itemCount });
 
 	const queued = await enqueueInBatches(
 		newItems,
 		({ url }) => url,
 		'Item enqueue failed',
-		({ item, url }) => enqueueFeedItem(env, feed, item, url),
+		(item) => enqueueFeedItem(env, feed, item),
 	);
 	console.info({ tag: 'RSS', msg: 'Feed enqueue done', feed: feed.name, queued, total: newItems.length });
 	await markSourcesScraped(env, [feed.id]);

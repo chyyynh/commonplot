@@ -1,8 +1,7 @@
-import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
+import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { isSourcePlatform, SOURCE_INPUT_MAX_LENGTH, type SourcePlatform } from '@core-shared/resource-types';
 import { parseExternalHttpUrl, parseTwitterUsername } from '@core-shared/url';
-import { parseFeed } from 'feedsmith';
-import { decode } from 'html-entities';
+import { loadFeed } from './platforms/rss-feed';
 
 // Resolves an explicitly requested monitor (feed / account / channel) into the
 // exact source row the crons can poll. Ordinary web URLs belong to resource
@@ -18,51 +17,12 @@ type ResolvedMonitoredSource = {
 	avatarUrl: string | null;
 };
 
-const MAX_SOURCE_DOCUMENT_BYTES = 1024 * 1024;
 const YOUTUBE_CHANNEL_ID_RE = /^UC[A-Za-z0-9_-]{22}$/;
 const YOUTUBE_HANDLE_RE = /^@?[A-Za-z0-9._-]{3,30}$/;
 
-function textish(value: unknown): string | null {
-	if (typeof value === 'string') {
-		const text = decode(value).trim();
-		return text || null;
-	}
-	if (typeof value === 'object' && value !== null && 'value' in value) {
-		return textish((value as { value: unknown }).value);
-	}
-	return null;
-}
-
 async function resolveFeedSource(input: string): Promise<ResolvedMonitoredSource> {
-	const requestedUrl = parseExternalHttpUrl(input);
-	if (!requestedUrl) throw new Error('Enter a valid feed URL (http/https).');
-	const response = await fetchWithTimeout(requestedUrl.toString(), {
-		headers: {
-			'User-Agent': WEB_FETCH_USER_AGENT,
-			Accept: 'application/rss+xml, application/atom+xml, application/feed+json, application/json, application/xml, text/xml, */*',
-		},
-	});
-	if (!response.ok) {
-		const status = response.status;
-		await response.body?.cancel();
-		throw new Error(`Feed fetch failed with HTTP ${status}.`);
-	}
-	const feedUrl = parseExternalHttpUrl(response.url);
-	if (!feedUrl) {
-		await response.body?.cancel();
-		throw new Error('Feed redirected to an invalid URL.');
-	}
-	let title: string | null;
-	try {
-		const { feed } = parseFeed(await readTextWithLimit(response, MAX_SOURCE_DOCUMENT_BYTES));
-		title = textish((feed as { title?: unknown }).title);
-	} catch {
-		throw new Error('URL did not return a readable feed.');
-	}
+	const { effectiveUrl: feedUrl, title } = await loadFeed(input);
 	const host = feedUrl.hostname.toLowerCase().replace(/^www\./, '');
-	feedUrl.hash = '';
-	feedUrl.hostname = feedUrl.hostname.toLowerCase();
-	if (feedUrl.pathname.length > 1 && feedUrl.pathname.endsWith('/')) feedUrl.pathname = feedUrl.pathname.slice(0, -1);
 	return {
 		platform: host === 'lesswrong.com' ? 'lesswrong' : 'rss',
 		handle: feedUrl.toString(),
