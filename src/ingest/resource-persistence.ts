@@ -20,19 +20,10 @@ type PersistProcessedInput = {
 	classification: ResourceClassificationResult;
 	previewImageUrl: string | null;
 	subject: ResolvedSubjectInput | null;
-};
-
-type PersistProcessedResourceInput = PersistProcessedInput & {
-	resourceId: string;
-	expectedSourceRevision: string | null;
-};
-
-type PersistProcessedPrivatePaperInput = PersistProcessedResourceInput & {
-	canonicalUrl: string;
-};
-
-type PersistProcessedDraftInput = PersistProcessedInput & {
-	admission: ResourceDraftAdmission;
+	target:
+		| { kind: 'draft'; admission: ResourceDraftAdmission }
+		| { kind: 'existing'; resourceId: string; expectedSourceRevision: string | null }
+		| { kind: 'privatePaper'; canonicalUrl: string; fileResourceId: string; expectedFileRevision: string | null };
 };
 
 export async function markStoredBlobProcessingFailed(
@@ -77,48 +68,42 @@ export async function markStoredBlobProcessingFailed(
 
 export async function persistProcessedResource(
 	env: CoreEnv,
-	input: PersistProcessedResourceInput,
+	input: PersistProcessedInput,
 	hostedImages: readonly HostedResourceImage[],
 ): Promise<PersistResolvedResourceGraphResult> {
 	const mutation = await resolvedResourceMutation(input, hostedImages);
-	const storedMutation: PersistResolvedResourceGraphInput = {
-		...mutation,
-		resourceId: input.resourceId,
-		expectedSourceRevision: input.expectedSourceRevision,
-	};
-	return env.DOMAIN.persistResolvedResourceGraph(storedMutation);
-}
-
-export async function persistProcessedPrivatePaperDraft(
-	env: CoreEnv,
-	input: PersistProcessedPrivatePaperInput,
-	hostedImages: readonly HostedResourceImage[],
-): Promise<PersistResolvedResourceGraphResult> {
-	const mutation: PersistResolvedResourceDraftInput = {
-		...(await resolvedResourceMutation(input, hostedImages)),
-		admission: {
-			kind: 'userFilePaper',
-			fileResourceId: input.resourceId,
-			expectedFileRevision: input.expectedSourceRevision,
-		},
-		url: input.canonicalUrl,
-		normalizedUrl: input.canonicalUrl,
-		storageKey: null,
-	};
-	return env.DOMAIN.persistResolvedResourceDraft(mutation);
-}
-
-export async function persistProcessedDraft(
-	env: CoreEnv,
-	input: PersistProcessedDraftInput,
-	hostedImages: readonly HostedResourceImage[],
-): Promise<PersistResolvedResourceGraphResult> {
-	const mutation: PersistResolvedResourceDraftInput = {
-		...(await resolvedResourceMutation(input, hostedImages)),
-		admission: input.admission,
-		storageKey: null,
-	};
-	return env.DOMAIN.persistResolvedResourceDraft(mutation);
+	switch (input.target.kind) {
+		case 'existing': {
+			const storedMutation: PersistResolvedResourceGraphInput = {
+				...mutation,
+				resourceId: input.target.resourceId,
+				expectedSourceRevision: input.target.expectedSourceRevision,
+			};
+			return env.DOMAIN.persistResolvedResourceGraph(storedMutation);
+		}
+		case 'privatePaper': {
+			const draftMutation: PersistResolvedResourceDraftInput = {
+				...mutation,
+				admission: {
+					kind: 'userFilePaper',
+					fileResourceId: input.target.fileResourceId,
+					expectedFileRevision: input.target.expectedFileRevision,
+				},
+				url: input.target.canonicalUrl,
+				normalizedUrl: input.target.canonicalUrl,
+				storageKey: null,
+			};
+			return env.DOMAIN.persistResolvedResourceDraft(draftMutation);
+		}
+		case 'draft': {
+			const draftMutation: PersistResolvedResourceDraftInput = {
+				...mutation,
+				admission: input.target.admission,
+				storageKey: null,
+			};
+			return env.DOMAIN.persistResolvedResourceDraft(draftMutation);
+		}
+	}
 }
 
 async function resolvedResourceMutation(

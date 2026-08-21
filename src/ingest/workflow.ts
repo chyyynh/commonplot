@@ -43,12 +43,7 @@ import {
 	type ResourceProcessingWorkflowPayload,
 } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
-import {
-	markStoredBlobProcessingFailed,
-	persistProcessedDraft,
-	persistProcessedPrivatePaperDraft,
-	persistProcessedResource,
-} from './resource-persistence';
+import { markStoredBlobProcessingFailed, persistProcessedResource } from './resource-persistence';
 import { exactPlatformLocator, type ResolvedSubjectInput, resolveContentResource, resolvedSubjectInput } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 import { PDF_MIME } from './web-acquisition';
@@ -445,6 +440,17 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				previewImageUrl,
 				subject,
 			};
+			const persistenceTarget =
+				target.kind === 'draft'
+					? ({ kind: 'draft', admission: target.admission } as const)
+					: privatePaper
+						? ({
+								kind: 'privatePaper',
+								canonicalUrl: privatePaper.canonicalUrl,
+								fileResourceId: target.resourceId,
+								expectedFileRevision: expectedSourceRevision,
+							} as const)
+						: ({ kind: 'existing', resourceId: target.resourceId, expectedSourceRevision } as const);
 			let imageSources: string[];
 			try {
 				imageSources = resourceImageSourceUrls({
@@ -459,35 +465,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			}
 			const hostedImages = await stageResourceImages(this.env, step, processingId, imageSources);
 			const persistence = await step.do(
-				privatePaper
-					? 'persist-final-private-paper-draft-v1'
-					: target.kind !== 'draft'
-						? 'persist-stored-resource-graph-v5'
-						: 'persist-final-resource-draft-v1',
+				'persist-resolved-resource-v1',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() =>
-					privatePaper && target.kind === 'storedBlob'
-						? persistProcessedPrivatePaperDraft(
-								this.env,
-								{
-									...persistenceInput,
-									canonicalUrl: privatePaper.canonicalUrl,
-									resourceId: target.resourceId,
-									expectedSourceRevision,
-								},
-								hostedImages,
-							)
-						: target.kind !== 'draft'
-							? persistProcessedResource(
-									this.env,
-									{
-										...persistenceInput,
-										resourceId: target.resourceId,
-										expectedSourceRevision,
-									},
-									hostedImages,
-								)
-							: persistProcessedDraft(this.env, { ...persistenceInput, admission: target.admission }, hostedImages),
+				() => persistProcessedResource(this.env, { ...persistenceInput, target: persistenceTarget }, hostedImages),
 			);
 			if (!persistence.persisted) {
 				if (target.kind === 'reacquire' && target.expectedProviderRevision) {
