@@ -1,10 +1,32 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
-import { type ContentResourceIdentity, isContentResourceIdentity, parseResourceIdentity } from '@core-shared/resource-types';
+import {
+	type ContentResourceIdentity,
+	isContentResourceIdentity,
+	parseResourceIdentity,
+	type ResourcePlatform,
+} from '@core-shared/resource-types';
 import { type CoreDb, isValidUuid, queryRows, textArraySql, uuidArraySql, withCoreDb } from '@db/client';
 import { contentResourceIdentitySql, resourceDisplaySourceSql } from '@db/resource-identity-sql';
 import { sql } from 'drizzle-orm';
-import { CORPUS_ITEM_PREFIX, corpusItemKey, corpusResourceIdFromItemKey, corpusResourcePlatformMetadata } from './corpus';
 import { DURABLE_WORKFLOW_RETRIES } from './workflow-control';
+
+const AI_SEARCH_ITEM_PREFIX = 'resources/';
+const AI_SEARCH_ITEM_SUFFIX = '.md';
+const NULL_RESOURCE_PLATFORM_METADATA = 'none';
+
+function aiSearchItemKey(resourceId: string): string {
+	return `${AI_SEARCH_ITEM_PREFIX}${resourceId}${AI_SEARCH_ITEM_SUFFIX}`;
+}
+
+export function resourceIdFromAiSearchItemKey(key: string): string | null {
+	if (!key.startsWith(AI_SEARCH_ITEM_PREFIX) || !key.endsWith(AI_SEARCH_ITEM_SUFFIX)) return null;
+	const resourceId = key.slice(AI_SEARCH_ITEM_PREFIX.length, -AI_SEARCH_ITEM_SUFFIX.length);
+	return isValidUuid(resourceId) ? resourceId : null;
+}
+
+export function aiSearchResourcePlatformMetadata(resourcePlatform: ResourcePlatform): string {
+	return resourcePlatform ?? NULL_RESOURCE_PLATFORM_METADATA;
+}
 
 // Cloudflare AI Search allows at most five custom metadata fields per instance.
 const CANONICAL_CUSTOM_METADATA = [
@@ -151,18 +173,18 @@ function corpusItemMetadata(document: CorpusDocument): Record<string, unknown> {
 		...(document.source_id ? { source_id: document.source_id } : {}),
 		...(document.category ? { category: document.category } : {}),
 		kind: identity.kind,
-		resource_platform: corpusResourcePlatformMetadata(identity.resourcePlatform),
+		resource_platform: aiSearchResourcePlatformMetadata(identity.resourcePlatform),
 	};
 }
 
 async function uploadCorpusDocument(env: CoreEnv, document: CorpusDocument): Promise<void> {
-	await env.AI_SEARCH.items.upload(corpusItemKey(document.id), serializeDocument(document), {
+	await env.AI_SEARCH.items.upload(aiSearchItemKey(document.id), serializeDocument(document), {
 		metadata: corpusItemMetadata(document),
 	});
 }
 
 async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<boolean> {
-	const key = corpusItemKey(resourceId);
+	const key = aiSearchItemKey(resourceId);
 	const listed = await env.AI_SEARCH.items.list({ key, source: 'builtin', per_page: 1 });
 	const item = listed.result.find((candidate) => candidate.key === key && candidate.source_id === 'builtin');
 	if (!item) return false;
@@ -206,7 +228,7 @@ const STEP_RETRIES = { limit: 5, delay: '10 seconds', backoff: 'exponential' } a
 const SHORT_STEP_OPTIONS = { retries: STEP_RETRIES, timeout: '60 seconds' } as const;
 const BATCH_STEP_OPTIONS = { retries: STEP_RETRIES, timeout: '300 seconds' } as const;
 const UTC_TIMESTAMP_FORMAT = 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"';
-const CORPUS_FOLDER_FILTER = JSON.stringify({ folder: CORPUS_ITEM_PREFIX });
+const CORPUS_FOLDER_FILTER = JSON.stringify({ folder: AI_SEARCH_ITEM_PREFIX });
 
 async function loadCorpusCount(env: CoreEnv): Promise<number> {
 	const [row] = await withCoreDb(env, (db) =>
@@ -354,10 +376,10 @@ async function pruneSearchItemPage(env: CoreEnv, page: number): Promise<number> 
 		source: 'builtin',
 	});
 	const ownedItems = listed.result.filter((item) => item.source_id === 'builtin');
-	const resourceIds = ownedItems.map((item) => corpusResourceIdFromItemKey(item.key)).filter((id): id is string => id !== null);
+	const resourceIds = ownedItems.map((item) => resourceIdFromAiSearchItemKey(item.key)).filter((id): id is string => id !== null);
 	const eligibleIds = await loadEligibleCorpusIds(env, resourceIds);
 	const staleItems = ownedItems.filter((item) => {
-		const resourceId = corpusResourceIdFromItemKey(item.key);
+		const resourceId = resourceIdFromAiSearchItemKey(item.key);
 		return resourceId === null || !eligibleIds.has(resourceId);
 	});
 	for (let offset = 0; offset < staleItems.length; offset += REINDEX_AI_SEARCH_CONCURRENCY) {

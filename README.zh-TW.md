@@ -161,7 +161,8 @@ src/
 │       ├── hackernews.ts # HN processor
 │       ├── paper.ts      # OpenAlex enrichment stage
 │       └── pdf.ts        # PDF text extraction stage
-└── corpus.ts              # engine 讀取、搜尋輔助
+├── ai-search.ts           # AI Search projection、同步與 rebuild Workflow
+└── public-search.ts       # public Resource ID 排序檢索
 ```
 
 ## 環境變數與 Bindings
@@ -200,11 +201,12 @@ Source monitor 直接由 `Source.platform` 分流：RSS、LessWrong 與 YouTube
 handle 交給 feed monitor，Twitter 交給 provider monitor；LessWrong 文章由
 GraphQL adapter 擷取 canonical Markdown。
 
-AI Search 沿用 `newsence-corpus-v6`，目前 durable contract 是
-generation `5 / canonical-5-blog-forum-kind`。Rebuild 使用實體 Workflow
-`newsence-search-index-generation-5-rebuild`、class
-`SearchIndexGeneration5RebuildWorkflow`，runner 為
-`search-index-rebuild-canonical-5-blog-forum-kind-canonical-v1`。
+AI Search 沿用 `newsence-corpus-v6`。PostgreSQL 是 canonical source，Core
+只把 keyed search document 同步進 AI Search；rebuild 的 durable 狀態、重試、
+錯誤與 output 直接使用 Cloudflare Workflow。實體 Workflow 是
+`newsence-search-index-generation-5-rebuild`，class 是
+`SearchIndexGeneration5RebuildWorkflow`，目前 runner 為
+`search-index-rebuild-generation-5-native-v2`。
 
 Generation 5 與 canonical `blog`/`forum` database cutover 已完成。一次性
 migration 保留在 git history；目前操作直接從 target schema 開始，依

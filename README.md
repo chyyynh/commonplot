@@ -167,7 +167,8 @@ src/
 │       ├── hackernews.ts # HN processor
 │       ├── paper.ts      # OpenAlex enrichment stage
 │       └── pdf.ts        # PDF text extraction stage
-└── corpus.ts              # engine read/search helpers
+├── ai-search.ts           # AI Search projection, sync, and rebuild Workflow
+└── public-search.ts       # ordered public Resource ID retrieval
 ```
 
 ## Environment Variables & Bindings
@@ -197,15 +198,12 @@ Secrets (via `wrangler secret put`):
 
 `AI_SEARCH` serves `newsence-corpus-v6`. Its five custom metadata fields are
 `effective_at`, `source_id`, `category`, `kind`, and `resource_platform`; null
-platforms use the reserved `none` sentinel. Durable readiness lives in
-`search_index_states` as `public-corpus-v6`, generation
-`5 / canonical-5-blog-forum-kind`.
+platforms use the reserved `none` sentinel. PostgreSQL remains canonical;
+AI Search stores only keyed search documents and eventually consistent status.
 
-The canonical rebuild verifies every searchable identity pair, not only totals:
-`blog / none`, `forum / hackernews`, `post / twitter`,
-`video / youtube`, and `paper / none`. It waits for all
-owned items to leave queued, running, outdated, error, and skipped states, then
-compares AI Search with PostgreSQL before marking the generation ready.
+The searchable identity pairs are `blog / none`, `blog / lesswrong`,
+`forum / hackernews`, `post / twitter`, `video / youtube`, and `paper / none`.
+Private image and file Resources never enter the public index.
 
 Run the static gates, then start and inspect the generation-specific Workflow
 with Wrangler:
@@ -214,23 +212,23 @@ with Wrangler:
 pnpm exec wrangler workflows trigger \
   newsence-search-index-generation-5-rebuild \
   '{}' \
-  --id search-index-rebuild-canonical-5-blog-forum-kind-canonical-v1
+  --id search-index-rebuild-generation-5-native-v2
 
 pnpm exec wrangler workflows instances describe \
   newsence-search-index-generation-5-rebuild \
-  search-index-rebuild-canonical-5-blog-forum-kind-canonical-v1
+  search-index-rebuild-generation-5-native-v2
 ```
 
 Wrangler's native instance description is the operator view of Workflow status,
-steps, retries, and errors. A completed run has already passed the Workflow's
-PostgreSQL/AI Search convergence checks and persisted generation readiness.
+steps, retries, errors, and final output. The rebuild configures AI Search,
+uploads the full corpus and a start-time delta, prunes stale keyed items, then
+waits until native item status and the live PostgreSQL count converge. There is
+no duplicate database readiness row or custom item-repair state machine.
 
-The Workflow performs a fresh five-pair PostgreSQL/AI Search comparison before
-it marks the generation ready. Each deployment creates a versioned Workflow
-graph and each instance remains pinned to its `version_id`. An incompatible graph
-revision therefore needs a new source-controlled runner ID after deployment, not
-a duplicate binding and entrypoint. See `AI_SEARCH_V6_RUNBOOK.md` for the active
-rebuild and verification procedure.
+Each deployment creates a versioned Workflow graph and every instance remains
+pinned to its `version_id`. Use a new source-controlled runner ID after an
+incompatible graph change; do not add another binding or entrypoint. See
+`AI_SEARCH_V6_RUNBOOK.md` for the active procedure.
 
 Generation 5 and the canonical `blog`/`forum` database cutover are complete.
 The one-shot migration lives in git history; current operations start from the

@@ -10,8 +10,8 @@ import {
 	reconcilePendingResourceProcessing,
 } from '@ingest/workflow';
 import { SearchIndexGeneration5RebuildWorkflow } from './ai-search';
-import { type PublicResourceSearchInput, searchPublicResourceIds } from './corpus';
 import { assertResourceProcessable, isResourceEnrichmentComplete } from './ingest/domain/resource-store';
+import { type PublicResourceSearchInput, searchPublicResourceIds } from './public-search';
 
 export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexGeneration5RebuildWorkflow };
 

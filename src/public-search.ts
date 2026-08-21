@@ -1,5 +1,6 @@
 import { type ContentResourceKind, isContentResourceKind, isResourcePlatform, type ResourcePlatform } from '@core-shared/resource-types';
 import { isValidUuid } from '@db/client';
+import { aiSearchResourcePlatformMetadata, resourceIdFromAiSearchItemKey } from './ai-search';
 
 export type PublicResourceSearchInput = {
 	query: string;
@@ -22,23 +23,6 @@ type NormalizedSearchFilters = {
 };
 
 const RESULT_LIMIT_MAX = 50;
-export const CORPUS_ITEM_PREFIX = 'resources/';
-const CORPUS_ITEM_SUFFIX = '.md';
-const NULL_RESOURCE_PLATFORM_METADATA = 'none';
-
-export function corpusItemKey(resourceId: string): string {
-	return `${CORPUS_ITEM_PREFIX}${resourceId}${CORPUS_ITEM_SUFFIX}`;
-}
-
-export function corpusResourceIdFromItemKey(key: string): string | null {
-	if (!key.startsWith(CORPUS_ITEM_PREFIX) || !key.endsWith(CORPUS_ITEM_SUFFIX)) return null;
-	const resourceId = key.slice(CORPUS_ITEM_PREFIX.length, -CORPUS_ITEM_SUFFIX.length);
-	return isValidUuid(resourceId) ? resourceId : null;
-}
-
-export function corpusResourcePlatformMetadata(resourcePlatform: ResourcePlatform): string {
-	return resourcePlatform ?? NULL_RESOURCE_PLATFORM_METADATA;
-}
 
 function clampLimit(value: number | undefined): number {
 	if (typeof value !== 'number' || !Number.isFinite(value)) return RESULT_LIMIT_MAX;
@@ -69,7 +53,7 @@ function aiSearchFilters(filters: NormalizedSearchFilters): VectorizeVectorMetad
 	if (filters.sourceIds?.length) metadata.source_id = { $in: filters.sourceIds };
 	if (filters.kinds?.length) metadata.kind = { $in: filters.kinds };
 	if (filters.resourcePlatforms?.length) {
-		metadata.resource_platform = { $in: filters.resourcePlatforms.map(corpusResourcePlatformMetadata) };
+		metadata.resource_platform = { $in: filters.resourcePlatforms.map(aiSearchResourcePlatformMetadata) };
 	}
 	if (filters.effectiveAfter) metadata.effective_at = { $gte: filters.effectiveAfter.toISOString() };
 	return Object.keys(metadata).length ? metadata : undefined;
@@ -103,7 +87,7 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 	const ids: string[] = [];
 	const seen = new Set<string>();
 	for (const chunk of response.chunks) {
-		const id = corpusResourceIdFromItemKey(chunk.item.key);
+		const id = resourceIdFromAiSearchItemKey(chunk.item.key);
 		if (!id || seen.has(id)) continue;
 		seen.add(id);
 		ids.push(id);
