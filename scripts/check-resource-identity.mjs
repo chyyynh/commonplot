@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { isResourceIdentifierCompatibleWithIdentity } from '../src/shared/resource-identifiers.ts';
 import {
 	isResourceSourceSnapshotHash,
 	parseResourceIdentity,
@@ -66,26 +65,11 @@ assert.equal(isResourceSourceSnapshotHash('A'.repeat(64)), false);
 assert.equal(isResourceSourceSnapshotHash('a'.repeat(63)), false);
 assert.equal(isResourceSourceSnapshotHash(null), false);
 
-const identifierCompatibilityCases = [
-	[{ preferred: true, scheme: 'hackernews', value: '123' }, { kind: 'forum', resourcePlatform: 'hackernews' }, true],
-	[{ preferred: true, scheme: 'hackernews', value: '123' }, { kind: 'paper', resourcePlatform: null }, false],
-	[{ preferred: true, scheme: 'doi', value: '10.1000/example' }, { kind: 'paper', resourcePlatform: null }, true],
-	[{ preferred: true, scheme: 'doi', value: '10.1000/example' }, { kind: 'blog', resourcePlatform: null }, false],
-	[{ preferred: true, scheme: 'twitter', value: '123' }, { kind: 'post', resourcePlatform: 'twitter' }, true],
-	[{ preferred: true, scheme: 'youtube', value: 'abcdefghijk' }, { kind: 'video', resourcePlatform: 'youtube' }, true],
-	[{ preferred: true, scheme: 'lesswrong', value: 'A2kJKqnHhh5Hq4p2S' }, { kind: 'blog', resourcePlatform: 'lesswrong' }, true],
-	[{ preferred: true, scheme: 'lesswrong', value: 'A2kJKqnHhh5Hq4p2S' }, { kind: 'blog', resourcePlatform: null }, false],
-];
-for (const [identifier, identity, expected] of identifierCompatibilityCases) {
-	assert.equal(isResourceIdentifierCompatibleWithIdentity(identifier, identity), expected);
-}
-
 console.info({
 	event: 'resource_identity_smoke_passed',
 	canonicalIdentityCases: canonicalIdentities.length,
 	detectedPlatformIdentityCases: 4,
 	invalidIdentityCases: 5,
-	identifierCompatibilityCases: identifierCompatibilityCases.length,
 	sourceRevisionCases: 4,
 	twitterUsernameCases: twitterUsernameCases.length,
 	urlCases: 5,

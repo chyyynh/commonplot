@@ -51,14 +51,6 @@ const cases = [
 		expected: { kind: 'forum', resourcePlatform: 'hackernews', locator: { itemId: '124' } },
 	},
 	{
-		name: 'stored HN locator repairs a legacy external root URL',
-		input: {
-			resourceIdentifiers: [{ preferred: true, scheme: 'hackernews', value: '127' }],
-			subjectUrl: 'https://example.com/article',
-		},
-		expected: { kind: 'forum', resourcePlatform: 'hackernews', locator: { itemId: '127' } },
-	},
-	{
 		name: 'Twitter share stays post',
 		input: {
 			url: 'https://x.com/example/status/125',
@@ -98,13 +90,14 @@ for (const testCase of cases) {
 const migratedCarrier = resolveContentResource({
 	...base,
 	url: 'https://news.ycombinator.com/item?id=126',
+	resourceIdentifiers: [
+		{ preferred: true, scheme: 'doi', value: '10.1000/example' },
+		{ preferred: true, scheme: 'openalex', value: 'W1' },
+	],
 	subjectUrl: 'https://doi.org/10.1000/example',
 });
 assert.deepEqual(
-	resolvedResourceIdentifiers(migratedCarrier, [
-		{ preferred: true, scheme: 'doi', value: '10.1000/example' },
-		{ preferred: true, scheme: 'openalex', value: 'W1' },
-	]),
+	resolvedResourceIdentifiers(migratedCarrier),
 	[{ preferred: true, scheme: 'hackernews', value: '126' }],
 	'carrier identity drops legacy academic identifiers',
 );

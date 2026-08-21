@@ -8,11 +8,7 @@
 	"main": "src/index.ts",
 	"workers_dev": false,
 	"compatibility_date": "2026-07-22",
-	/**
-	 * Keep request abort signals available to fetch-heavy ingest endpoints and
-	 * propagate them into subrequests.
-	 */
-	"compatibility_flags": ["nodejs_compat", "enable_request_signal", "request_signal_passthrough"],
+	"compatibility_flags": ["nodejs_compat"],
 	/**
 	 * A full AI Search rebuild performs one upload subrequest per corpus item.
 	 * Keep enough headroom for the 500k-file hybrid-search instance limit.

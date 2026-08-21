@@ -1,7 +1,6 @@
 import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '../shared/paper-identity.ts';
 import {
 	isPaperIdentifier,
-	isResourceIdentifierCompatibleWithIdentity,
 	normalizeResourceIdentifiers,
 	type PlatformResourceIdentifierScheme,
 	type ResourceIdentifier,
@@ -103,18 +102,8 @@ function resolvedPlatformInput(
 
 export function resolveContentResource(input: ResolveContentResourceInput): ResolvedContentResourceInput {
 	const detected = input.url ? detectResourceUrl(input.url) : null;
-	const storedLocator = exactPlatformLocator(input.resourceIdentifiers);
 	const paperIdentifiers = input.resourceIdentifiers.filter(isPaperIdentifier);
-	if (
-		detected &&
-		storedLocator &&
-		(detected.resourcePlatform !== storedLocator.resourcePlatform || detected.platformId !== storedLocator.platformId)
-	) {
-		throw new Error('Resource URL conflicts with its exact platform identifier');
-	}
-
-	const locator = detected ?? storedLocator;
-	if (locator) return resolvedPlatformInput(locator.resourcePlatform, locator, input);
+	if (detected) return resolvedPlatformInput(detected.resourcePlatform, detected, input);
 
 	if (paperIdentifiers.some((identifier) => identifier.scheme === 'openalex')) {
 		return {
@@ -130,11 +119,7 @@ export function resolveContentResource(input: ResolveContentResourceInput): Reso
 	};
 }
 
-export function resolvedResourceIdentifiers(
-	resolution: ResolvedContentResourceInput,
-	current: readonly ResourceIdentifier[] = [],
-): ResourceIdentifier[] {
-	const compatibleCurrent = current.filter((identifier) => isResourceIdentifierCompatibleWithIdentity(identifier, resolution));
+export function resolvedResourceIdentifiers(resolution: ResolvedContentResourceInput): ResourceIdentifier[] {
 	const resolved: ResourceIdentifier[] =
 		resolution.kind === 'paper'
 			? resolution.identifiers
@@ -147,7 +132,7 @@ export function resolvedResourceIdentifiers(
 						: resolution.kind === 'video'
 							? [{ preferred: true, scheme: 'youtube', value: resolution.locator.videoId }]
 							: [];
-	return normalizeResourceIdentifiers([...resolved, ...compatibleCurrent.map((identifier) => ({ ...identifier, preferred: false }))]);
+	return normalizeResourceIdentifiers(resolved);
 }
 
 type ResolvedSubjectInput = Readonly<{

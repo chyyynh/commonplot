@@ -106,8 +106,6 @@ export const resourceTranslations = pgTable(
 	],
 );
 
-// Typed relation mirrors (#240). Core reads these only after the app has
-// deployed dual-writes and the production backfill has reconciled.
 export const resourceSaves = pgTable(
 	'resource_saves',
 	{

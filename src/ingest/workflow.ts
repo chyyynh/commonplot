@@ -373,7 +373,7 @@ async function prepareResourceForProcessing(
 	if (!identity || !isContentResourceIdentity(identity)) {
 		throw new ResourceProcessingOutcomeError('failed', 'Resolver produced an invalid content Resource identity', 'ResourceIdentityError');
 	}
-	const identifiers = resolvedResourceIdentifiers(resolution, resourceIdentifiers);
+	const identifiers = resolvedResourceIdentifiers(resolution);
 	const locator = exactPlatformLocator(identifiers);
 	const resolvedUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : preferred.resource.url;
 	return {
