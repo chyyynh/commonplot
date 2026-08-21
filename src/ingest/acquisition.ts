@@ -62,7 +62,6 @@ function acquiredMaterialSchema<const T extends ResourcePlatform, Extra extends 
 const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('provider', [
 	acquiredMaterialSchema(null, 'blog', {
 		extraction: z.object({ status: z.enum(['ok', 'needs_ocr']), pages: z.number() }).optional(),
-		ownedStorageKey: z.string().min(1).optional(),
 	}),
 	acquiredMaterialSchema('hackernews', 'forum', {
 		hackerNewsItem: z.looseObject({ id: z.number().int().positive() }),
@@ -105,7 +104,7 @@ export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?
 		kind_metadata: acquired.kindMetadata,
 		source_revision: acquired.sourceSnapshotHash ?? resource.source_revision ?? null,
 		file_type: acquired.fileType,
-		storage_key: resource.storage_key,
+		storage_key: resource.scope === 'private' ? resource.storage_key : null,
 		url: canonicalUrl ?? resource.url,
 		normalized_url: canonicalUrl ?? resource.normalized_url,
 		published_date: publishedDate,

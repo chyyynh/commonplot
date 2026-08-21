@@ -123,7 +123,6 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<Re
 			rl.summary AS summary,
 			rl.scope = 'corpus'
 				AND rl.source_id IS NOT NULL
-				AND rl.storage_key IS NULL
 				AND NOT EXISTS (SELECT 1 FROM resource_saves save WHERE save.resource_id = rl.id)
 				AND NOT EXISTS (SELECT 1 FROM collection_resources edge WHERE edge.resource_id = rl.id)
 				AND NOT EXISTS (SELECT 1 FROM workspace_resources edge WHERE edge.resource_id = rl.id)

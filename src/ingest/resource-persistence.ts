@@ -116,6 +116,7 @@ export async function persistProcessedDraft(
 	const mutation: PersistResolvedResourceDraftInput = {
 		...(await resolvedResourceMutation(input, hostedImages)),
 		admission: input.admission,
+		storageKey: null,
 	};
 	return env.DOMAIN.persistResolvedResourceDraft(mutation);
 }
@@ -123,7 +124,7 @@ export async function persistProcessedDraft(
 async function resolvedResourceMutation(
 	input: PersistProcessedInput,
 	hostedImages: readonly HostedResourceImage[],
-): Promise<Omit<PersistResolvedResourceDraftInput, 'admission'>> {
+): Promise<Omit<PersistResolvedResourceGraphInput, 'resourceId' | 'expectedSourceRevision'>> {
 	const resource = input.handled.resource;
 	const identity = parseResourceIdentity(resource.kind, resource.resource_platform);
 	if (!identity) throw new Error(`Resource processing ${resource.processing_id} resolved to an invalid identity`);
@@ -168,7 +169,7 @@ async function resolvedResourceMutation(
 			: null,
 		url: resource.url,
 		normalizedUrl: resource.normalized_url ?? resource.url,
-		storageKey: resource.storage_key ?? null,
+		storageKey: resource.scope === 'private' ? (resource.storage_key ?? null) : null,
 		fileType: resource.file_type ?? null,
 		publishedDate: resource.published_date,
 		ogImageUrl: media.ogImageUrl,
