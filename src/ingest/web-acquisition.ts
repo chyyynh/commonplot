@@ -73,7 +73,7 @@ function stripLeadingFrontmatter(markdown: string): string {
 async function markdownFromDocument(
 	env: CoreEnv,
 	document: MarkdownDocument,
-	context: { feature: string; resourceId?: string },
+	context: { feature: string; processingId?: string },
 	conversionOptions?: ConversionOptions,
 ): Promise<string> {
 	const result = await env.AI.toMarkdown(document, {
@@ -84,7 +84,7 @@ async function markdownFromDocument(
 			metadata: {
 				feature: context.feature,
 				environment: env.AI_GATEWAY_ENVIRONMENT,
-				...(context.resourceId ? { resource_id: context.resourceId } : {}),
+				...(context.processingId ? { processing_id: context.processingId } : {}),
 			},
 		},
 		extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
@@ -95,23 +95,23 @@ async function markdownFromDocument(
 	return stripLeadingFrontmatter(result.data);
 }
 
-export function markdownFromHtml(env: CoreEnv, html: string, url: string, resourceId?: string): Promise<string> {
+export function markdownFromHtml(env: CoreEnv, html: string, url: string, processingId?: string): Promise<string> {
 	return markdownFromDocument(
 		env,
 		{
 			name: `${urlHost(url)}.html`,
 			blob: new Blob([html], { type: 'text/html' }),
 		},
-		{ feature: 'html-to-markdown', resourceId },
+		{ feature: 'html-to-markdown', processingId },
 		{ html: { hostname: new URL(url).hostname } },
 	);
 }
 
-export function markdownFromXml(env: CoreEnv, xml: string, resourceId?: string): Promise<string> {
+export function markdownFromXml(env: CoreEnv, xml: string, processingId?: string): Promise<string> {
 	return markdownFromDocument(
 		env,
 		{ name: 'openalex.grobid.xml', blob: new Blob([xml], { type: 'application/xml' }) },
-		{ feature: 'xml-to-markdown', resourceId },
+		{ feature: 'xml-to-markdown', processingId },
 	);
 }
 
@@ -149,11 +149,11 @@ export async function acquireFetchedPdfResponse(response: Response, finalUrl: st
 	return acquirePdfBytes(bytes, finalUrl);
 }
 
-async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, resourceId?: string): Promise<AcquiredWebContent> {
+async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, processingId?: string): Promise<AcquiredWebContent> {
 	const article = await extractHtmlArticle(html, url);
 	if (!article) throw new NonRetryableError('No readable article content found');
 
-	const content = await markdownFromHtml(env, article.html, url, resourceId);
+	const content = await markdownFromHtml(env, article.html, url, processingId);
 	if (content.length < MIN_ARTICLE_CONTENT_CHARS) {
 		throw new NonRetryableError(`Extracted HTML content is too short (${content.length} chars)`);
 	}
@@ -172,7 +172,7 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, resou
 	};
 }
 
-export async function acquireWebResource(url: string, env: CoreEnv, resourceId?: string): Promise<AcquiredWebContent | PlatformRedirect> {
+export async function acquireWebResource(url: string, env: CoreEnv, processingId?: string): Promise<AcquiredWebContent | PlatformRedirect> {
 	const response = await fetchWithTimeout(
 		url,
 		{
@@ -218,5 +218,5 @@ export async function acquireWebResource(url: string, env: CoreEnv, resourceId?:
 	}
 
 	const html = await readTextWithLimit(response, GENERIC_HTML_MAX_BYTES);
-	return { ...(await acquireHtmlArticle(env, html, finalUrl, resourceId)), canonicalUrl: finalUrl };
+	return { ...(await acquireHtmlArticle(env, html, finalUrl, processingId)), canonicalUrl: finalUrl };
 }

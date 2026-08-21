@@ -314,12 +314,7 @@ export async function resolveOpenAlexPaper(input: {
 	return normalizeOpenAlexWork(work, identifiers, relations);
 }
 
-export async function acquireOpenAlexPdf(input: {
-	apiKey?: string;
-	contentPdfUrl: string;
-	env: CoreEnv;
-	resourceId: string;
-}): Promise<AcquiredWebContent> {
+export async function acquireOpenAlexPdf(input: { apiKey?: string; contentPdfUrl: string }): Promise<AcquiredWebContent> {
 	const apiKey = input.apiKey?.trim();
 	if (!apiKey) throw new Error('OpenAlex content download requires an API key');
 	const contentUrl = new URL(input.contentPdfUrl);
@@ -347,7 +342,7 @@ export async function acquireOpenAlexPdf(input: {
 export async function acquireOpenAlexGrobidText(input: {
 	contentGrobidXmlUrl: string;
 	env: CoreEnv;
-	resourceId?: string;
+	processingId?: string;
 }): Promise<string> {
 	const apiKey = input.env.OPENALEX_API_KEY?.trim();
 	if (!apiKey) throw new Error('OpenAlex content download requires an API key');
@@ -375,5 +370,5 @@ export async function acquireOpenAlexGrobidText(input: {
 		await response.body?.cancel();
 		throw new Error(`OpenAlex content GROBID XML request failed with HTTP ${status}`);
 	}
-	return markdownFromXml(input.env, await readTextWithLimit(response, GROBID_RESPONSE_MAX_BYTES), input.resourceId);
+	return markdownFromXml(input.env, await readTextWithLimit(response, GROBID_RESPONSE_MAX_BYTES), input.processingId);
 }

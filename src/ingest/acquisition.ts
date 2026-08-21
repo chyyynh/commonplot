@@ -152,7 +152,7 @@ async function scrapeSavedUrl(
 	env: CoreEnv,
 	monitoredOnly: boolean,
 	sourceAvatarUrl: string | null,
-	resourceId: string,
+	processingId: string,
 	expectedProviderRevision?: string,
 	discoverTwitterThread = true,
 ): Promise<AcquiredContent> {
@@ -183,7 +183,7 @@ async function scrapeSavedUrl(
 			}
 		}
 
-		const web = await acquireWebResource(acquisitionUrl, env, resourceId);
+		const web = await acquireWebResource(acquisitionUrl, env, processingId);
 		if ('redirectUrl' in web) {
 			acquisitionUrl = validateAcquisitionUrl(web.redirectUrl);
 			continue;
@@ -197,14 +197,22 @@ export async function scrapeSavedUrlArtifact(
 	env: CoreEnv,
 	monitoredOnly: boolean,
 	sourceAvatarUrl: string | null,
-	resourceId: string,
+	processingId: string,
 	expectedProviderRevision?: string,
 	discoverTwitterThread = true,
 ): Promise<ReadableStream<Uint8Array>> {
 	try {
 		const result: SavedUrlAcquisitionResult = {
 			status: 'acquired',
-			content: await scrapeSavedUrl(url, env, monitoredOnly, sourceAvatarUrl, resourceId, expectedProviderRevision, discoverTwitterThread),
+			content: await scrapeSavedUrl(
+				url,
+				env,
+				monitoredOnly,
+				sourceAvatarUrl,
+				processingId,
+				expectedProviderRevision,
+				discoverTwitterThread,
+			),
 		};
 		return new Blob([JSON.stringify(result)], { type: 'application/json' }).stream();
 	} catch (error) {

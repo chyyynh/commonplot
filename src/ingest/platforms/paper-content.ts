@@ -34,7 +34,7 @@ async function acquireOpenAlexPdfArtifact(
 		contentPdfUrl: string;
 		description: string | null;
 		publishedDate: string | null;
-		resourceId: string;
+		processingId: string;
 		sourceName: string;
 		title: string;
 	},
@@ -43,11 +43,9 @@ async function acquireOpenAlexPdfArtifact(
 	const acquired = await acquireOpenAlexPdf({
 		apiKey: env.OPENALEX_API_KEY,
 		contentPdfUrl: input.contentPdfUrl,
-		env,
-		resourceId: input.resourceId,
 	});
 	const sourceName = input.sourceName.trim();
-	if (!sourceName) throw new Error(`Resource ${input.resourceId} has no source name for its OpenAlex PDF`);
+	if (!sourceName) throw new Error(`Processing ${input.processingId} has no source name for its OpenAlex PDF`);
 	return acquiredContentArtifact(
 		await sanitizeAcquiredContent({
 			...acquired,
@@ -65,6 +63,7 @@ async function acquireOpenAlexGrobidArtifact(
 		contentGrobidXmlUrl: string;
 		description: string | null;
 		publishedDate: string | null;
+		processingId: string;
 		sourceName: string;
 		title: string;
 	},
@@ -73,6 +72,7 @@ async function acquireOpenAlexGrobidArtifact(
 	const markdown = await acquireOpenAlexGrobidText({
 		contentGrobidXmlUrl: input.contentGrobidXmlUrl,
 		env,
+		processingId: input.processingId,
 	});
 	const sourceName = input.sourceName.trim();
 	if (!sourceName) throw new Error('OpenAlex GROBID acquisition has no source name');
@@ -118,7 +118,7 @@ async function stageOpenAlexContentAcquisition(
 						contentPdfUrl,
 						description,
 						publishedDate,
-						resourceId: resource.processing_id,
+						processingId: resource.processing_id,
 						sourceName,
 						title,
 					},
@@ -150,7 +150,10 @@ async function stageOpenAlexContentAcquisition(
 	if (contentGrobidXmlUrl) {
 		const artifact = await step
 			.do(grobidStepName, ACQUISITION_STEP, () =>
-				acquireOpenAlexGrobidArtifact({ contentGrobidXmlUrl, description, publishedDate, sourceName, title }, env),
+				acquireOpenAlexGrobidArtifact(
+					{ contentGrobidXmlUrl, description, processingId: resource.processing_id, publishedDate, sourceName, title },
+					env,
+				),
 			)
 			.catch((error) => {
 				console.error({

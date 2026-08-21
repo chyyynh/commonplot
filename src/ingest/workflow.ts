@@ -85,7 +85,7 @@ const RESOURCE_REFRESH_ACQUISITION_STEP_CONFIG = {
 async function stageResourceImages(
 	env: CoreEnv,
 	step: WorkflowStep,
-	resourceId: string,
+	processingId: string,
 	sourceUrls: readonly string[],
 ): Promise<HostedResourceImage[]> {
 	const images: HostedResourceImage[] = [];
@@ -109,7 +109,7 @@ async function stageResourceImages(
 			console.error({
 				tag: 'RESOURCE_IMAGE',
 				event: 'eager_rehost_failed',
-				resource_id: resourceId,
+				processing_id: processingId,
 				source_host: new URL(batch[index]!).hostname,
 				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
 			});
@@ -117,7 +117,7 @@ async function stageResourceImages(
 		const failed = results.filter((result) => result.status === 'rejected').length;
 		if (failed) {
 			throw new ResourceProcessingRejectedError(
-				`Resource ${resourceId} failed to host ${failed} canonical image${failed === 1 ? '' : 's'}`,
+				`Processing ${processingId} failed to host ${failed} canonical image${failed === 1 ? '' : 's'}`,
 				'ResourceImageRehostingError',
 			);
 		}
@@ -126,7 +126,7 @@ async function stageResourceImages(
 		console.info({
 			tag: 'RESOURCE_IMAGE',
 			event: 'eager_rehost_completed',
-			resource_id: resourceId,
+			processing_id: processingId,
 			ready: images.length,
 			failed: sourceUrls.length - images.length,
 		});
@@ -191,21 +191,21 @@ async function stageSavedUrlAcquisition(
 function assertPdfExtractionProcessable(input: {
 	acquiredExtraction: PdfExtractionMetadata | undefined;
 	pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
-	resourceId: string;
+	processingId: string;
 }): void {
 	const extraction = input.pdfTextArtifact ? pdfExtractionMetadata(input.pdfTextArtifact) : input.acquiredExtraction;
 	if (extraction?.status === 'needs_ocr') {
-		throw new ResourceProcessingRejectedError(`PDF resource ${input.resourceId} requires OCR`, 'PdfOcrRequiredError');
+		throw new ResourceProcessingRejectedError(`PDF processing ${input.processingId} requires OCR`, 'PdfOcrRequiredError');
 	}
 }
 
 function assertResourceContentProcessable(input: {
 	acquiredContent: AcquiredContent | undefined;
 	pdfTextArtifact: Awaited<ReturnType<typeof stagePdfTextExtraction>> | null;
-	resourceId: string;
+	processingId: string;
 }): void {
 	if (input.pdfTextArtifact?.text?.trim() || input.acquiredContent?.markdown?.trim()) return;
-	throw new ResourceProcessingRejectedError(`Resource ${input.resourceId} has no extractable content`, 'ResourceContentMissingError');
+	throw new ResourceProcessingRejectedError(`Processing ${input.processingId} has no extractable content`, 'ResourceContentMissingError');
 }
 
 type PreparedResource = {
@@ -472,12 +472,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			assertPdfExtractionProcessable({
 				acquiredExtraction: acquiredContent?.provider === null ? acquiredContent.extraction : undefined,
 				pdfTextArtifact,
-				resourceId: processingId,
+				processingId,
 			});
 			assertResourceContentProcessable({
 				acquiredContent,
 				pdfTextArtifact,
-				resourceId: processingId,
+				processingId,
 			});
 
 			const extractedPdfText = pdfTextArtifact?.text?.trim();
