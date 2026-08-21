@@ -1,3 +1,4 @@
+import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readBytesWithLimit, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import type { AcquiredMaterial, PdfExtractionMetadata } from '@core-shared/types';
@@ -34,9 +35,9 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 	});
 	if (!article?.content?.trim()) return null;
 	const title = article.title?.trim();
-	if (!title) throw new Error(`Extracted article has no title: ${url}`);
+	if (!title) throw new NonRetryableError('Extracted article has no title');
 	const siteName = article.source?.trim();
-	if (!siteName) throw new Error(`Extracted article has no source: ${url}`);
+	if (!siteName) throw new NonRetryableError('Extracted article has no source');
 
 	return {
 		html: article.content.trim(),
@@ -176,11 +177,11 @@ export async function acquireFetchedPdfResponse(
 
 async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, resourceId?: string): Promise<AcquiredWebContent> {
 	const article = await extractHtmlArticle(html, url);
-	if (!article) throw new Error(`No readable article content found: ${url}`);
+	if (!article) throw new NonRetryableError('No readable article content found');
 
 	const content = await markdownFromHtml(env, article.html, url, resourceId);
 	if (content.length < MIN_ARTICLE_CONTENT_CHARS) {
-		throw new Error(`Extracted HTML content is too short (${content.length} chars): ${url}`);
+		throw new NonRetryableError(`Extracted HTML content is too short (${content.length} chars)`);
 	}
 	return {
 		provider: null,
@@ -213,6 +214,9 @@ export async function acquireWebResource(url: string, env: CoreEnv, resourceId?:
 	);
 	if (!response.ok) {
 		await response.body?.cancel();
+		if (response.status === 404 || response.status === 410) {
+			throw new NonRetryableError(`Fetched resource returned HTTP ${response.status}`);
+		}
 		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 	}
 	const parsedFinalUrl = parseExternalHttpUrl(response.url);
@@ -238,7 +242,7 @@ export async function acquireWebResource(url: string, env: CoreEnv, resourceId?:
 		!contentType.includes('application/xml')
 	) {
 		await response.body?.cancel();
-		throw new Error(`Unsupported response content type: ${contentType}`);
+		throw new NonRetryableError(`Unsupported response content type: ${contentType}`);
 	}
 
 	const html = await readTextWithLimit(response, GENERIC_HTML_MAX_BYTES);

@@ -1,3 +1,4 @@
+import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { literalCreator, type ResourceCreator, type VideoKindMetadata } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial, AcquisitionEnvelope, TranscriptSegment, YouTubeChapter } from '@core-shared/types';
@@ -203,7 +204,7 @@ export async function scrapeYouTube(
 	const videoData = await fetchYouTubeVideoData(videoId, youtubeApiKey);
 
 	if (videoData.error) throw new Error(`YouTube API: ${videoData.error.message}`);
-	if (!videoData.items?.length) throw new Error(`YouTube video ${videoId} was not found`);
+	if (!videoData.items?.length) throw new NonRetryableError(`YouTube video ${videoId} was not found`);
 
 	const video = videoData.items[0];
 	const snippet = video.snippet;

@@ -1,3 +1,4 @@
+import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource-metadata';
 import type {
@@ -436,12 +437,15 @@ export async function scrapeTweet(tweetId: string, apiKey: string): Promise<Acqu
 	});
 	if (!response.ok) {
 		await response.body?.cancel();
+		if (response.status === 404 || response.status === 410) {
+			throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
+		}
 		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 	}
 	const data = JSON.parse(await readTextWithLimit(response)) as { tweets?: Tweet[]; status: string; msg?: string };
 	if (!Array.isArray(data.tweets)) throw new Error(`Twitter API response omitted tweets (status=${data.status})`);
 	const tweet = data.tweets[0];
-	if (!tweet) throw new Error(`Twitter API: Tweet not found (status=${data.status})`);
+	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
 	const resolved = await resolveTweetContent(tweet, apiKey);
 	if (resolved.kind !== 'tweet') return resolved.scraped;
 

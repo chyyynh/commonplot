@@ -1,3 +1,4 @@
+import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import type { AcquiredMaterial } from '@core-shared/types';
@@ -38,7 +39,7 @@ type LessWrongGraphqlResponse = {
 };
 
 export async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<'lesswrong'>> {
-	if (!LESSWRONG_POST_ID_RE.test(postId)) throw new Error(`Invalid LessWrong post id: ${postId}`);
+	if (!LESSWRONG_POST_ID_RE.test(postId)) throw new NonRetryableError(`Invalid LessWrong post id: ${postId}`);
 	const response = await fetchWithTimeout(LESSWRONG_GRAPHQL_URL, {
 		method: 'POST',
 		headers: {
@@ -55,11 +56,11 @@ export async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<
 	const graphqlError = payload.errors?.map((error) => error.message?.trim()).find(Boolean);
 	if (graphqlError) throw new Error(`LessWrong GraphQL failed: ${graphqlError}`);
 	const post = payload.data?.post?.result;
-	if (!post || post._id !== postId) throw new Error(`LessWrong post was not found: ${postId}`);
+	if (!post || post._id !== postId) throw new NonRetryableError(`LessWrong post was not found: ${postId}`);
 	const title = post.title?.trim();
 	const markdown = post.contents?.markdown?.trim();
-	if (!title) throw new Error(`LessWrong post ${postId} has no title`);
-	if (!markdown) throw new Error(`LessWrong post ${postId} has no Markdown content`);
+	if (!title) throw new NonRetryableError(`LessWrong post ${postId} has no title`);
+	if (!markdown) throw new NonRetryableError(`LessWrong post ${postId} has no Markdown content`);
 	const author = post.user?.displayName?.trim() || post.user?.username?.trim() || null;
 	return {
 		provider: 'lesswrong',

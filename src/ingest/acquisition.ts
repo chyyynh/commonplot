@@ -1,3 +1,4 @@
+import { NonRetryableError } from 'cloudflare:workflows';
 import { sha256Hex } from '@core-shared/hash';
 import { literalCreator, type ResourceCreator, type ResourceKindMetadata } from '@core-shared/resource-metadata';
 import type { ResourcePlatform } from '@core-shared/resource-types';
@@ -80,6 +81,10 @@ const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('
 		youtubeTranscript: youtubeTranscriptSchema,
 	}),
 ]);
+const AcquisitionArtifactSchema = z.union([
+	AcquiredContentSchema,
+	z.object({ status: z.literal('rejected'), message: z.string().trim().min(1).max(500) }),
+]);
 
 /**
  * Acquisition gets one attempt, not three.
@@ -89,6 +94,8 @@ const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('
  * article recorded three attempts whether it was thrown from the step callback
  * or from the scraper, with the class serialised away to plain `Error` each
  * time. The only lever the platform actually honours is retries.limit.
+ * Deterministic rejections therefore cross the step boundary as a small
+ * artifact and are restored to NonRetryableError after the step completes.
  *
  * Setting it to 0 also removes a duplicated layer: a failed acquisition is
  * already retried by the monitors, on a 30m/1h/2h/4h backoff that gives up after
@@ -227,8 +234,13 @@ export async function scrapeSavedUrlArtifact(
 	sourceAvatarUrl: string | null,
 	resourceId: string,
 ): Promise<ReadableStream<Uint8Array>> {
-	const acquired = await scrapeSavedUrl(url, env, monitoredOnly, sourceAvatarUrl, resourceId);
-	return acquiredContentArtifact(acquired);
+	try {
+		return acquiredContentArtifact(await scrapeSavedUrl(url, env, monitoredOnly, sourceAvatarUrl, resourceId));
+	} catch (error) {
+		if (!(error instanceof NonRetryableError)) throw error;
+		const message = error.message.trim().slice(0, 500) || 'Resource acquisition was rejected';
+		return new Blob([JSON.stringify({ status: 'rejected', message })], { type: 'application/json' }).stream();
+	}
 }
 
 export function acquiredContentArtifact(acquired: AcquiredContent): ReadableStream<Uint8Array> {
@@ -237,7 +249,8 @@ export function acquiredContentArtifact(acquired: AcquiredContent): ReadableStre
 }
 
 export async function readAcquiredContentArtifact(artifact: ReadableStream<Uint8Array>): Promise<AcquiredContent> {
-	const acquired = AcquiredContentSchema.parse(await new Response(artifact).json());
+	const acquired = AcquisitionArtifactSchema.parse(await new Response(artifact).json());
+	if ('status' in acquired) throw new NonRetryableError(acquired.message);
 	if (acquired.fileType === PDF_MIME && !acquired.acquisition.representation) {
 		throw new Error('PDF acquisition artifact has no representation metadata; rerun canonical acquisition');
 	}

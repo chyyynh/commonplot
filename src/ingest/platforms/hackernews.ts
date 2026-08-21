@@ -1,3 +1,4 @@
+import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { type ForumKindMetadata, literalCreator, type ResourceCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial, AcquisitionEnvelope, HackerNewsMetadata, ResourceForProcessing } from '@core-shared/types';
@@ -92,9 +93,14 @@ async function fetchHnItem(itemId: string): Promise<HackerNewsItem> {
 	const response = await fetchWithTimeout(`${HN_ALGOLIA_API}/${itemId}`);
 	if (!response.ok) {
 		await response.body?.cancel();
+		if (response.status === 404 || response.status === 410) {
+			throw new NonRetryableError(`Hacker News item ${itemId} was not found`);
+		}
 		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 	}
-	return HackerNewsItemSchema.parse(JSON.parse(await readTextWithLimit(response, HN_ITEM_MAX_BYTES)));
+	const payload: unknown = JSON.parse(await readTextWithLimit(response, HN_ITEM_MAX_BYTES));
+	if (payload === null) throw new NonRetryableError(`Hacker News item ${itemId} was not found`);
+	return HackerNewsItemSchema.parse(payload);
 }
 
 interface HnCollectedComment {

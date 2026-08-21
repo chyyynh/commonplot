@@ -374,7 +374,12 @@ async function settleFailedResourceProcessing(
 	},
 ): Promise<boolean> {
 	if (input.persistedSourceRevision === undefined) return false;
-	const outcome: ResourceProcessingFailureOutcome = input.error instanceof ResourceProcessingOutcomeError ? input.error.outcome : 'retry';
+	const outcome: ResourceProcessingFailureOutcome =
+		input.error instanceof ResourceProcessingOutcomeError
+			? input.error.outcome
+			: input.error instanceof NonRetryableError
+				? 'drop'
+				: 'retry';
 	const settlement = await step
 		.do(
 			'settle-resource-processing-for-source-revision-v1',
