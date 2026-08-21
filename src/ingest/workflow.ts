@@ -1,5 +1,4 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
-import { NonRetryableError } from 'cloudflare:workflows';
 import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource-identifiers';
 import type { HostedResourceImage } from '@core-shared/resource-image-mapping';
 import {
@@ -29,7 +28,7 @@ import {
 	ACQUISITION_STEP,
 	type AcquiredContent,
 	applyAcquiredMaterial,
-	readAcquiredContentArtifact,
+	readSavedUrlAcquisitionArtifact,
 	scrapeSavedUrlArtifact,
 } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
@@ -58,13 +57,14 @@ import { PDF_MIME, pdfExtractionMetadata } from './web-acquisition';
 type WorkflowOperation = 'ingest' | 'resync';
 type WorkflowPayload = { resourceId: string; operation: WorkflowOperation; sourceRevision?: string };
 
-class ResourceProcessingOutcomeError extends NonRetryableError {
+class ResourceProcessingOutcomeError extends Error {
 	constructor(
 		readonly outcome: Exclude<ResourceProcessingFailureOutcome, 'retry'>,
 		message: string,
 		name: string,
 	) {
-		super(message, name);
+		super(message);
+		this.name = name;
 	}
 }
 
@@ -249,11 +249,15 @@ async function stageSavedUrlAcquisition(env: CoreEnv, step: WorkflowStep, shell:
 	const locator = exactPlatformLocator(resource.resource_identifiers);
 	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : resource.url;
 	if (!sourceUrl) throw new Error(`Resource ${resource.id} has no source URL`);
-	const acquired = await readAcquiredContentArtifact(
+	const acquisition = await readSavedUrlAcquisitionArtifact(
 		await step.do('acquire-content-kind-platform-v1', ACQUISITION_STEP, () =>
 			scrapeSavedUrlArtifact(sourceUrl, env, shell.isMonitoredOnly, shell.sourceAvatarUrl, resource.id),
 		),
 	);
+	if (acquisition.status === 'rejected') {
+		throw new ResourceProcessingOutcomeError('drop', acquisition.message, 'ResourceAcquisitionRejectedError');
+	}
+	const acquired = acquisition.content;
 	if (shell.isMonitoredOnly && acquired.provider === 'youtube') {
 		const durationSeconds = acquired.durationSeconds;
 		if (durationSeconds === null || durationSeconds <= MIN_MONITORED_VIDEO_DURATION_SECONDS) {
@@ -401,12 +405,7 @@ async function settleFailedResourceProcessing(
 	},
 ): Promise<boolean> {
 	if (input.persistedSourceRevision === undefined) return false;
-	const outcome: ResourceProcessingFailureOutcome =
-		input.error instanceof ResourceProcessingOutcomeError
-			? input.error.outcome
-			: input.error instanceof NonRetryableError
-				? 'drop'
-				: 'retry';
+	const outcome: ResourceProcessingFailureOutcome = input.error instanceof ResourceProcessingOutcomeError ? input.error.outcome : 'retry';
 	const settlement = await step
 		.do(
 			'settle-resource-processing-for-source-revision-v1',

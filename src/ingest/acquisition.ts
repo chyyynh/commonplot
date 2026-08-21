@@ -19,6 +19,8 @@ export type AcquiredContent =
 	| AcquiredMaterial<'twitter'>
 	| AcquiredMaterial<'youtube'>;
 
+type SavedUrlAcquisitionResult = { status: 'acquired'; content: AcquiredContent } | { status: 'rejected'; message: string };
+
 const nullableStringSchema = z.string().nullable();
 const acquiredContentShape = {
 	canonicalUrl: z.url().optional(),
@@ -72,21 +74,19 @@ const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('
 		youtubeTranscript: youtubeTranscriptSchema,
 	}),
 ]);
-const AcquisitionArtifactSchema = z.union([
-	AcquiredContentSchema,
+const SavedUrlAcquisitionResultSchema: z.ZodType<SavedUrlAcquisitionResult> = z.discriminatedUnion('status', [
+	z.object({ status: z.literal('acquired'), content: AcquiredContentSchema }),
 	z.object({ status: z.literal('rejected'), message: z.string().trim().min(1).max(500) }),
 ]);
 
 /**
  * Acquisition gets one attempt, not three.
  *
- * Measured, because the docs suggest otherwise: NonRetryableError thrown inside
- * a step does *not* skip its retries — three runs against a page with no
- * article recorded three attempts whether it was thrown from the step callback
- * or from the scraper, with the class serialised away to plain `Error` each
- * time. The only lever the platform actually honours is retries.limit.
- * Deterministic rejections therefore cross the step boundary as a small
- * artifact and are restored to NonRetryableError after the step completes.
+ * A hosted-runtime check recorded three attempts for a deterministic rejection
+ * and stripped the NonRetryableError subclass at the durable step boundary.
+ * Providers therefore use that class only as an in-process marker: this step
+ * callback catches it and returns a serializable rejected result before the
+ * Workflow runtime sees it. Error identity never crosses the step boundary.
  *
  * Setting it to 0 also removes a duplicated layer: a failed acquisition is
  * already retried by the monitors, on a 30m/1h/2h/4h backoff that gives up after
@@ -203,7 +203,11 @@ export async function scrapeSavedUrlArtifact(
 	resourceId: string,
 ): Promise<ReadableStream<Uint8Array>> {
 	try {
-		return acquiredContentArtifact(await scrapeSavedUrl(url, env, monitoredOnly, sourceAvatarUrl, resourceId));
+		const result: SavedUrlAcquisitionResult = {
+			status: 'acquired',
+			content: await scrapeSavedUrl(url, env, monitoredOnly, sourceAvatarUrl, resourceId),
+		};
+		return new Blob([JSON.stringify(result)], { type: 'application/json' }).stream();
 	} catch (error) {
 		if (!(error instanceof NonRetryableError)) throw error;
 		const message = error.message.trim().slice(0, 500) || 'Resource acquisition was rejected';
@@ -217,7 +221,9 @@ export function acquiredContentArtifact(acquired: AcquiredContent): ReadableStre
 }
 
 export async function readAcquiredContentArtifact(artifact: ReadableStream<Uint8Array>): Promise<AcquiredContent> {
-	const acquired = AcquisitionArtifactSchema.parse(await new Response(artifact).json());
-	if ('status' in acquired) throw new NonRetryableError(acquired.message);
-	return acquired;
+	return AcquiredContentSchema.parse(await new Response(artifact).json());
+}
+
+export async function readSavedUrlAcquisitionArtifact(artifact: ReadableStream<Uint8Array>): Promise<SavedUrlAcquisitionResult> {
+	return SavedUrlAcquisitionResultSchema.parse(await new Response(artifact).json());
 }
