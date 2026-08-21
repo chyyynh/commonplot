@@ -159,32 +159,42 @@ async function stageResourceImages(
 	step: WorkflowStep,
 	resourceId: string,
 	sourceUrls: readonly string[],
+	isMonitoredOnly: boolean,
 ): Promise<HostedResourceImage[]> {
 	const images: HostedResourceImage[] = [];
 	for (let offset = 0; offset < sourceUrls.length; offset += 3) {
 		const batch = sourceUrls.slice(offset, offset + 3);
-		const results = await Promise.all(
+		const results = await Promise.allSettled(
 			batch.map((sourceUrl, batchIndex) => {
 				const index = offset + batchIndex;
-				return step
-					.do(
-						`rehost-resource-image-${index + 1}-v1`,
-						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-						() => rehostResourceImage(env.IMAGES, sourceUrl),
-					)
-					.catch((error) => {
-						console.error({
-							tag: 'RESOURCE_IMAGE',
-							event: 'eager_rehost_failed',
-							resource_id: resourceId,
-							source_host: new URL(sourceUrl).hostname,
-							error: error instanceof Error ? error.message : String(error),
-						});
-						return null;
-					});
+				return step.do(
+					`rehost-resource-image-${index + 1}-v1`,
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+					() => rehostResourceImage(env.IMAGES, sourceUrl),
+				);
 			}),
 		);
-		for (const result of results) if (result) images.push(result);
+		for (const [index, result] of results.entries()) {
+			if (result.status === 'fulfilled') {
+				images.push(result.value);
+				continue;
+			}
+			console.error({
+				tag: 'RESOURCE_IMAGE',
+				event: 'eager_rehost_failed',
+				resource_id: resourceId,
+				source_host: new URL(batch[index]!).hostname,
+				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+			});
+		}
+		const failed = results.filter((result) => result.status === 'rejected').length;
+		if (failed) {
+			throw new ResourceProcessingOutcomeError(
+				isMonitoredOnly ? 'drop' : 'failed',
+				`Resource ${resourceId} failed to host ${failed} canonical image${failed === 1 ? '' : 's'}`,
+				'ResourceImageRehostingError',
+			);
+		}
 	}
 	if (sourceUrls.length > 0) {
 		console.info({
@@ -501,7 +511,17 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Wo
 				classification,
 				previewImageUrl,
 			};
-			const hostedImages = await stageResourceImages(this.env, step, resourceId, processedResourceImageSources(persistenceInput));
+			let imageSources: string[];
+			try {
+				imageSources = processedResourceImageSources(persistenceInput);
+			} catch (error) {
+				throw new ResourceProcessingOutcomeError(
+					initialShell.isMonitoredOnly ? 'drop' : 'failed',
+					`Resource ${resourceId} has an invalid canonical image source: ${error instanceof Error ? error.message : String(error)}`,
+					'ResourceImageSourceError',
+				);
+			}
+			const hostedImages = await stageResourceImages(this.env, step, resourceId, imageSources, initialShell.isMonitoredOnly);
 			const persistence = await step.do(
 				'update-db-kind-platform-v3',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },

@@ -90,7 +90,10 @@ async function graphMutation(
 	const content = resource.content;
 	if (!content?.trim()) throw new Error(`Refusing to persist enriched resource ${input.resourceId} without content`);
 	const ogImageUrl = input.previewImageUrl?.trim() || null;
-	const media = hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kind_metadata, ogImageUrl }, hostedImages);
+	const paperAttachment = input.handled.kind === 'paper' ? privatePaperAttachment(resource) : null;
+	const media = paperAttachment
+		? { creators: [], kindMetadata: null, ogImageUrl: null }
+		: hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kind_metadata, ogImageUrl }, hostedImages);
 	return {
 		resourceId: input.resourceId,
 		expectedSourceRevision: input.expectedSourceRevision,
@@ -100,7 +103,7 @@ async function graphMutation(
 		kindMetadata: media.kindMetadata,
 		sourceRevision,
 		subject: resolvedSubjectInput(input.handled),
-		privatePaperAttachment: input.handled.kind === 'paper' ? privatePaperAttachment(resource) : null,
+		privatePaperAttachment: paperAttachment,
 		youtube:
 			input.handled.kind === 'video' && (input.handled.youtubeTranscript || input.handled.youtubeHighlights)
 				? {

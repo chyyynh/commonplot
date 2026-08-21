@@ -36,12 +36,14 @@ export function normalizedResourceImageUrl(rawUrl: string | null | undefined, ba
 	return url.toString();
 }
 
-function uniqueImageUrls(candidates: Array<string | null | undefined>): string[] {
-	return [...new Set(candidates.map((url) => normalizedResourceImageUrl(url)).filter((url): url is string => url !== null))];
-}
-
 export function resourceImageSourceUrls(resource: ResourceImageFields): string[] {
-	return uniqueImageUrls(resourceImageCandidates(resource));
+	const normalized: string[] = [];
+	for (const candidate of resourceImageCandidates(resource)) {
+		const url = normalizedResourceImageUrl(candidate);
+		if (!url) throw new TypeError('Resource image source URL is invalid');
+		normalized.push(url);
+	}
+	return [...new Set(normalized)];
 }
 
 function hostedImageMap(images: readonly HostedResourceImage[]): ReadonlyMap<string, string> {
@@ -93,6 +95,10 @@ export function hostedResourceImageFields(
 	images: readonly HostedResourceImage[],
 ): { creators: ResourceCreator[]; kindMetadata: ResourceKindMetadata | null; ogImageUrl: string | null } {
 	const imageMap = hostedImageMap(images);
+	const sourceUrls = resourceImageSourceUrls(resource);
+	if (imageMap.size !== sourceUrls.length || sourceUrls.some((sourceUrl) => !imageMap.has(sourceUrl))) {
+		throw new TypeError('Hosted Resource images do not cover every source');
+	}
 	const postMetadata = resourcePostMetadata(resource);
 	const kindMetadata = postMetadata ? withHostedPostMetadata(postMetadata, imageMap) : (resource.kindMetadata ?? null);
 	return {

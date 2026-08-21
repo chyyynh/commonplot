@@ -342,7 +342,6 @@ async function scrapeTwitterLongform(tweetId: string, apiKey: string, language?:
 			siteName: 'Twitter',
 			description: null,
 		},
-		previewImageUrl: longform.cover_media_img_url ?? null,
 		acquisition: buildTwitterLongformAcquisition(author, longform.cover_media_img_url),
 	};
 }
@@ -374,7 +373,6 @@ function buildExternalLinkTweet(tweet: Tweet, externalUrl: string, media: Twitte
 
 async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 	const media = extractTweetMedia(tweet);
-	const mediaPreviewImageUrl = media[0]?.url ?? null;
 	const expandedUrls = extractExpandedUrls(tweet);
 	const tweetText = stripTweetUrls(tweet.text);
 
@@ -396,10 +394,7 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 	}
 
 	if (linkedContentUrl) {
-		const scraped = {
-			...buildExternalLinkTweet(tweet, linkedContentUrl, media),
-			previewImageUrl: mediaPreviewImageUrl,
-		};
+		const scraped = buildExternalLinkTweet(tweet, linkedContentUrl, media);
 		return { kind: 'share' as const, scraped, canonicalUrl: tweet.url, eventText: tweetText };
 	}
 
@@ -422,7 +417,6 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 				siteName: 'Twitter',
 				description: null,
 			},
-			previewImageUrl: mediaPreviewImageUrl,
 			acquisition: buildTweetAcquisition(tweet),
 		},
 		canonicalUrl: tweet.url,
@@ -477,7 +471,6 @@ export async function scrapeTweet(tweetId: string, apiKey: string): Promise<Acqu
 			siteName: 'Twitter',
 			description: null,
 		},
-		previewImageUrl: parts.acquisition.data.media?.[0]?.url ?? null,
 		acquisition: parts.acquisition,
 	};
 }
