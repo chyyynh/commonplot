@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-const TwitterAuthorSchema = z.looseObject({
+const TwitterAuthorSchema = z.object({
 	id: z.string().optional(),
 	userName: z.string(),
 	name: z.string(),
@@ -8,24 +8,24 @@ const TwitterAuthorSchema = z.looseObject({
 	isBlueVerified: z.boolean().optional(),
 });
 
-const TwitterUrlEntitySchema = z.looseObject({
+const TwitterUrlEntitySchema = z.object({
 	expanded_url: z.string().optional(),
 	url: z.string().optional(),
 });
 
-const TwitterMediaEntitySchema = z.looseObject({
+const TwitterMediaEntitySchema = z.object({
 	media_url_https: z.string(),
 	type: z.string(),
 	sizes: z
-		.looseObject({
-			large: z.looseObject({ w: z.number(), h: z.number() }).optional(),
+		.object({
+			large: z.object({ w: z.number(), h: z.number() }).optional(),
 		})
 		.optional(),
 	video_info: z
-		.looseObject({
+		.object({
 			variants: z
 				.array(
-					z.looseObject({
+					z.object({
 						bitrate: z.number().optional(),
 						content_type: z.string().optional(),
 						url: z.string(),
@@ -85,7 +85,7 @@ export interface Tweet {
 	retweetedBy?: RetweetedByData;
 }
 
-const RetweetedByDataSchema = z.looseObject({
+const RetweetedByDataSchema = z.object({
 	tweetId: z.string().optional(),
 	tweetUrl: z.string().optional(),
 	retweetedAt: z.string().optional(),
@@ -96,7 +96,7 @@ const RetweetedByDataSchema = z.looseObject({
 });
 
 const TweetSchema: z.ZodType<Tweet> = z.lazy(() =>
-	z.looseObject({
+	z.object({
 		id: z.string().optional(),
 		url: z.string().min(1),
 		createdAt: z.string().min(1),
@@ -107,10 +107,10 @@ const TweetSchema: z.ZodType<Tweet> = z.lazy(() =>
 		retweetCount: z.number().optional(),
 		replyCount: z.number().optional(),
 		quoteCount: z.number().optional(),
-		extendedEntities: z.looseObject({ media: z.array(TwitterMediaEntitySchema).optional() }).optional(),
+		extendedEntities: z.object({ media: z.array(TwitterMediaEntitySchema).optional() }).optional(),
 		hashTags: z.array(z.string()).optional(),
 		urls: z.array(TwitterUrlEntitySchema).optional(),
-		entities: z.looseObject({ urls: z.array(TwitterUrlEntitySchema).optional() }).optional(),
+		entities: z.object({ urls: z.array(TwitterUrlEntitySchema).optional() }).optional(),
 		lang: z.string().optional(),
 		conversationId: z.string().optional(),
 		isReply: z.boolean().optional(),
@@ -122,20 +122,20 @@ const TweetSchema: z.ZodType<Tweet> = z.lazy(() =>
 	}),
 );
 
-const TwitterTweetsResponseSchema = z.looseObject({
+const TwitterTweetsResponseSchema = z.object({
 	tweets: z.array(TweetSchema),
 	status: z.string().optional(),
 	msg: z.string().optional(),
 	message: z.string().optional(),
 });
 
-const TwitterArticleInlineStyleSchema = z.looseObject({
+const TwitterArticleInlineStyleSchema = z.object({
 	offset: z.number().int().nonnegative(),
 	length: z.number().int().nonnegative(),
 	style: z.string(),
 });
 
-const TwitterArticleContentSchema = z.looseObject({
+const TwitterArticleContentSchema = z.object({
 	type: z.enum([
 		'unstyled',
 		'header-one',
@@ -156,12 +156,12 @@ const TwitterArticleContentSchema = z.looseObject({
 	inlineStyleRanges: z.array(TwitterArticleInlineStyleSchema).nullish(),
 });
 
-const TwitterArticleSchema = z.looseObject({
+const TwitterArticleSchema = z.object({
 	title: z.string().nullish(),
 	cover_media_img_url: z.url().nullish(),
 	contents: z.array(TwitterArticleContentSchema).nullish(),
 	author: z
-		.looseObject({
+		.object({
 			userName: z.string().nullish(),
 			name: z.string().nullish(),
 			isBlueVerified: z.boolean().nullish(),
@@ -171,7 +171,7 @@ const TwitterArticleSchema = z.looseObject({
 	createdAt: z.string().nullish(),
 });
 
-const TwitterArticleResponseSchema = z.looseObject({
+const TwitterArticleResponseSchema = z.object({
 	article: TwitterArticleSchema.nullish(),
 	status: z.enum(['success', 'failed']),
 	message: z.string().optional(),
@@ -180,7 +180,7 @@ const TwitterArticleResponseSchema = z.looseObject({
 export type TwitterArticle = z.infer<typeof TwitterArticleSchema>;
 type TwitterArticleContent = NonNullable<TwitterArticle['contents']>[number];
 
-const TwitterListPageSchema = z.looseObject({
+const TwitterListPageSchema = z.object({
 	tweets: z.array(TweetSchema),
 	has_next_page: z.boolean(),
 	next_cursor: z.string().optional(),
@@ -189,7 +189,7 @@ const TwitterListPageSchema = z.looseObject({
 	msg: z.string().optional(),
 });
 
-const TwitterThreadContextPageSchema = z.looseObject({
+const TwitterThreadContextPageSchema = z.object({
 	tweets: z.array(TweetSchema).optional(),
 	replies: z.array(TweetSchema).optional(),
 	has_next_page: z.boolean(),
