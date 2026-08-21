@@ -146,6 +146,7 @@ export async function scrapeHackerNews(itemId: string): Promise<AcquiredMaterial
 		originalLang: null,
 		publishedDate: item.created_at_i ? new Date(item.created_at_i * 1000).toISOString() : null,
 		summary: description,
+		...(item.url ? { subjectUrl: item.url } : {}),
 		creators: literalCreator('submitter', item.author),
 		kindMetadata: { points: item.points, commentCount, itemType } satisfies ForumKindMetadata,
 		hackerNewsItem: item,

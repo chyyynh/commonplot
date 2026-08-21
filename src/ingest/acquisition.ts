@@ -28,6 +28,7 @@ const acquiredContentShape = {
 	title: z.string().trim().min(1),
 	markdown: z.string(),
 	previewImageUrl: nullableStringSchema.optional(),
+	subjectUrl: z.string().optional(),
 	source: z.string().trim().min(1),
 	originalLang: nullableStringSchema,
 	publishedDate: nullableStringSchema,
@@ -67,7 +68,7 @@ const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('
 		hackerNewsItem: z.looseObject({ id: z.number().int().positive() }),
 	}),
 	acquiredMaterialSchema('lesswrong', 'blog', {}),
-	acquiredMaterialSchema('twitter', 'post', { subjectUrl: z.string().optional() }),
+	acquiredMaterialSchema('twitter', 'post', {}),
 	acquiredMaterialSchema('youtube', 'video', {
 		youtubeTranscript: youtubeTranscriptSchema,
 	}),
@@ -117,7 +118,7 @@ function validateAcquisitionUrl(url: string): string {
 }
 
 function acquiredSourceSnapshotHash(acquired: AcquiredContent, markdown: string): Promise<string> {
-	const providerFacts = acquired.provider === 'twitter' ? { subjectUrl: acquired.subjectUrl } : null;
+	const providerFacts = acquired.subjectUrl ? { subjectUrl: acquired.subjectUrl } : null;
 	const input = JSON.stringify({
 		provider: acquired.provider,
 		canonicalUrl: acquired.canonicalUrl,

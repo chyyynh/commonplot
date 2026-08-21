@@ -89,6 +89,8 @@ type AcquiredMaterialBase<T extends ResourcePlatform> = {
 	markdown: string;
 	/** Canonical preview image selected by the acquisition source. */
 	previewImageUrl?: string | null;
+	/** Canonical subject URL when this Resource is a platform carrier. */
+	subjectUrl?: string;
 	source: string;
 	originalLang: string | null;
 	publishedDate: string | null;
@@ -99,11 +101,7 @@ type AcquiredMaterialBase<T extends ResourcePlatform> = {
 	sourceSnapshotHash?: string;
 };
 
-type AcquiredMaterialSpecialization<T extends ResourcePlatform> = T extends 'twitter'
-	? { subjectUrl?: string }
-	: T extends 'youtube'
-		? { youtubeTranscript: YoutubeTranscript }
-		: unknown;
+type AcquiredMaterialSpecialization<T extends ResourcePlatform> = T extends 'youtube' ? { youtubeTranscript: YoutubeTranscript } : unknown;
 
 export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = T extends unknown
 	? AcquiredMaterialBase<T> & AcquiredMaterialSpecialization<T>

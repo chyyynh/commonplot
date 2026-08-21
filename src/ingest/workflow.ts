@@ -280,24 +280,16 @@ async function acquireExistingResource(
 async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, input: ResourcePreparationInput): Promise<PreparedResource> {
 	const acquired = input.kind === 'draft' ? await acquireDraftResource(env, step, input) : await acquireExistingResource(env, step, input);
 	let { acquiredContent, resource } = acquired;
-	const rootCanBePaper = !resource.url || !detectResourceUrl(resource.url);
 	const pdfTextArtifact =
 		resource.storage_key && resource.file_type === PDF_MIME && acquiredContent?.fileType !== PDF_MIME
 			? await stagePdfTextExtraction(env, step, { sourceStorageKey: resource.storage_key })
 			: null;
 	const identifierText = pdfTextArtifact?.text?.trim() || (resource.file_type === PDF_MIME ? resource.content : null);
-	const paperResolution = rootCanBePaper
-		? await stagePaperEnrichment(
-				env,
-				step,
-				{
-					...resource,
-					identifierText,
-					identifiers: resource.resource_identifiers.filter(isPaperIdentifier),
-				},
-				{ stepName: 'resolve-paper-openalex-with-citations-v2' },
-			)
-		: null;
+	const paperResolution = await stagePaperEnrichment(env, step, {
+		...resource,
+		identifierText,
+		identifiers: resource.resource_identifiers.filter(isPaperIdentifier),
+	});
 	if (paperResolution && resource.scope === 'corpus' && !resource.storage_key) {
 		const openAlexContent = await stageOpenAlexContentAcquisition(
 			env,
@@ -319,12 +311,7 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, in
 	}
 	const paperEnrichment = paperResolution?.metadata ?? null;
 	const resourceIdentifiers = normalizeResourceIdentifiers([...(paperResolution?.identifiers ?? []), ...resource.resource_identifiers]);
-	const subjectUrl =
-		acquiredContent?.provider === 'hackernews'
-			? acquiredContent.hackerNewsItem.url?.trim() || null
-			: acquiredContent?.provider === 'twitter'
-				? acquiredContent.subjectUrl?.trim() || null
-				: null;
+	const subjectUrl = acquiredContent?.subjectUrl?.trim() || null;
 	resource = resolveContentResource({
 		...resource,
 		resource_identifiers: resourceIdentifiers,

@@ -63,6 +63,7 @@ export function applyPaperEnrichment(resource: ResourceForProcessing, metadata: 
 }
 
 function localPaperEvidence(candidate: PaperEnrichmentCandidate): boolean {
+	if (candidate.resource_platform !== null) return false;
 	return (
 		isExplicitPaperUrl(candidate.url) ||
 		!!paperIdentityFromText(candidate.identifierText?.slice(0, IDENTIFIER_SCAN_CHARS)) ||
@@ -93,7 +94,6 @@ export async function stagePaperEnrichment(
 	env: CoreEnv,
 	step: WorkflowStep,
 	candidate: PaperEnrichmentCandidate,
-	options: { stepName?: string } = {},
 ): Promise<PaperEnrichmentResolution> {
 	const hasLocalPaperEvidence = localPaperEvidence(candidate);
 	const translateSavedUrl = !hasLocalPaperEvidence && shouldTranslateSavedUrl(candidate);
@@ -104,7 +104,7 @@ export async function stagePaperEnrichment(
 
 	try {
 		const resolution = await step.do(
-			options.stepName ?? 'enrich-paper-metadata',
+			'resolve-paper-openalex-with-citations-v2',
 			{ retries: { limit: 5, delay: paperEnrichmentRetryDelay }, timeout: '30 seconds' },
 			async () => {
 				const startedAt = Date.now();
