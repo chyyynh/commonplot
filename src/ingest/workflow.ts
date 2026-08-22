@@ -481,28 +481,30 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				return { status: 'superseded', resourceId: persistence.resourceId } as const;
 			}
 			const persistedResourceId = persistence.resourceId;
+			const translationRevision = persistence.translationRevision;
+			const followUps: Promise<unknown>[] = [
+				step.do('enqueue-resource-translation-v2', RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG, async () =>
+					translationRevision ? enqueueResourceTranslation(this.env, persistedResourceId, translationRevision) : null,
+				),
+				step.do('sync-resolved-ai-search-v1', AI_SEARCH_SYNC_STEP_CONFIG, () =>
+					Promise.all([persistedResourceId, ...persistence.retiredResourceIds].map((resourceId) => syncCorpusItem(this.env, resourceId))),
+				),
+			];
 			if (subject && !persistence.subjectAttached) {
-				const parentRevision = await resourceSourceRevision(resource);
-				await step.do(
-					'enqueue-resolved-subject-child-v1',
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() =>
-						enqueueSubjectDraft(this.env, {
-							parentResourceId: persistedResourceId,
-							parentRevision,
-							url: subject.url,
-						}),
+				followUps.push(
+					step.do(
+						'enqueue-resolved-subject-child-v1',
+						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+						async () =>
+							enqueueSubjectDraft(this.env, {
+								parentResourceId: persistedResourceId,
+								parentRevision: await resourceSourceRevision(resource),
+								url: subject.url,
+							}),
+					),
 				);
 			}
-			await step.do('enqueue-resource-translation-v2', RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG, async () => {
-				return persistence.translationRevision
-					? enqueueResourceTranslation(this.env, persistedResourceId, persistence.translationRevision)
-					: null;
-			});
-			await step.do('sync-resolved-ai-search-v1', AI_SEARCH_SYNC_STEP_CONFIG, async () => {
-				await syncCorpusItem(this.env, persistedResourceId);
-				for (const retiredResourceId of persistence.retiredResourceIds) await syncCorpusItem(this.env, retiredResourceId);
-			});
+			await Promise.all(followUps);
 
 			console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
 			return {
