@@ -9,11 +9,10 @@ import {
 	ZH_HANT_RESOURCE_LANG,
 } from '@core-shared/resource-types';
 import { withCoreDb } from '@db/client';
-import { resourceTranslationIdentityPredicate } from '@db/resource-identity-sql';
 import { resources, resourceTranslations } from '@db/schema';
-import { type SQL, sql } from 'drizzle-orm';
-import { CONTENT_TRANSLATION_MAX_LENGTH, type ResourceTranslationInput } from './resource-translation';
-import { cleanString, requiredString } from './resource-values';
+import { sql } from 'drizzle-orm';
+import type { ResourceTranslationInput } from './resource-translation';
+import { cleanString } from './resource-values';
 
 const RESOURCE_TRANSLATION_REVISION_RE = /^[0-9a-f]{32}$/;
 
@@ -21,42 +20,8 @@ export function isResourceTranslationRevision(value: unknown): value is string {
 	return typeof value === 'string' && RESOURCE_TRANSLATION_REVISION_RE.test(value);
 }
 
-function resourceTranslationRevisionSql(input: { content: SQL; lang: SQL; summary: SQL; title: SQL }): SQL {
-	return sql`MD5(jsonb_build_array(${input.lang}, ${input.title}, ${input.summary}, ${input.content})::text)`;
-}
-
-function eligibleResourceTranslationPredicate(resourceId: string): SQL {
-	return sql`${resources.id} = ${resourceId}::uuid
-		AND ${resources.scope} = 'corpus'
-		AND ${resourceTranslationIdentityPredicate()}
-		AND ${resources.url} IS NOT NULL
-		AND ${resources.originalLang} <> ${ZH_HANT_RESOURCE_LANG}
-		AND NULLIF(BTRIM(original.title), '') IS NOT NULL
-		AND NULLIF(BTRIM(original.content), '') IS NOT NULL
-		AND length(original.content) <= ${CONTENT_TRANSLATION_MAX_LENGTH}`;
-}
-
-export function loadEligibleResourceTranslationRevision(env: CoreEnv, resourceId: string): Promise<string | null> {
-	return withCoreDb(env, async (db) => {
-		const result = await db.execute<{ source_revision: string }>(sql`
-			SELECT ${resourceTranslationRevisionSql({
-				content: sql`original.content`,
-				lang: sql`original.lang`,
-				summary: sql`original.summary`,
-				title: sql`original.title`,
-			})} AS source_revision
-			FROM ${resources}
-			JOIN ${resourceTranslations} original
-			  ON original.resource_id = ${resources.id}
-			 AND original.lang = ${resources.originalLang}
-			WHERE ${eligibleResourceTranslationPredicate(resourceId)}
-			LIMIT 1
-		`);
-		return result.rows[0]?.source_revision ?? null;
-	});
-}
-
 type ResourceTranslationInputRow = {
+	file_type: string | null;
 	id: string;
 	kind: string;
 	resource_platform: string | null;
@@ -69,15 +34,17 @@ type ResourceTranslationInputRow = {
 	zh_hant_content: string | null;
 	zh_hant_source: string | null;
 	source_revision: string;
+	url: string | null;
 };
 
-export function loadEligibleResourceTranslationInput(
+export function loadResourceTranslationInput(
 	env: CoreEnv,
 	resourceId: string,
 ): Promise<{ resource: ResourceTranslationInput; sourceRevision: string } | null> {
 	return withCoreDb(env, async (db) => {
 		const result = await db.execute<ResourceTranslationInputRow>(sql`
 			SELECT
+				${resources.fileType} AS file_type,
 				${resources.id}::text AS id,
 				${resources.kind} AS kind,
 				${resources.resourcePlatform} AS resource_platform,
@@ -89,12 +56,13 @@ export function loadEligibleResourceTranslationInput(
 				zh_hant.summary AS zh_hant_summary,
 				zh_hant.content AS zh_hant_content,
 				zh_hant.source AS zh_hant_source,
-				${resourceTranslationRevisionSql({
-					content: sql`original.content`,
-					lang: sql`original.lang`,
-					summary: sql`original.summary`,
-					title: sql`original.title`,
-				})} AS source_revision
+				${resources.url} AS url,
+				MD5(jsonb_build_array(
+					original.lang,
+					original.title,
+					original.summary,
+					original.content
+				)::text) AS source_revision
 			FROM ${resources}
 			JOIN ${resourceTranslations} original
 			  ON original.resource_id = ${resources.id}
@@ -102,7 +70,8 @@ export function loadEligibleResourceTranslationInput(
 			LEFT JOIN ${resourceTranslations} zh_hant
 			  ON zh_hant.resource_id = ${resources.id}
 			 AND zh_hant.lang = ${ZH_HANT_RESOURCE_LANG}
-			WHERE ${eligibleResourceTranslationPredicate(resourceId)}
+			WHERE ${resources.id} = ${resourceId}::uuid
+			  AND ${resources.scope} = 'corpus'
 			LIMIT 1
 		`);
 		const row = result.rows[0];
@@ -116,11 +85,13 @@ export function loadEligibleResourceTranslationInput(
 		return {
 			resource: {
 				...toResourceIdentityColumns(identity),
+				file_type: row.file_type,
 				id: row.id,
 				original_lang: canonicalizeResourceLang(row.original_lang),
-				title: requiredString(row.title, 'original translation title'),
+				title: row.title ?? '',
 				summary: row.summary,
-				content: requiredString(row.content, 'original translation content'),
+				content: row.content ?? '',
+				url: row.url,
 				zhHantTranslation: zhHantSource
 					? {
 							title: cleanString(row.zh_hant_title),

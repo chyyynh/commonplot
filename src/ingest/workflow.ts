@@ -26,7 +26,6 @@ import {
 } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
 import { resourceSourceRevision } from './domain/resource-revision';
-import { loadEligibleResourceTranslationRevision } from './domain/resource-translation-store';
 import { stageHackerNewsAnnotation } from './platforms/hackernews';
 import { applyPaperEnrichment, privatePaperAttachment, stagePaperEnrichment } from './platforms/paper';
 import { stageOpenAlexContentAcquisition } from './platforms/paper-content';
@@ -495,9 +494,10 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						}),
 				);
 			}
-			await step.do('enqueue-eligible-resource-translation-v1', RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG, async () => {
-				const revision = await loadEligibleResourceTranslationRevision(this.env, persistedResourceId);
-				return revision ? enqueueResourceTranslation(this.env, persistedResourceId, revision) : null;
+			await step.do('enqueue-resource-translation-v2', RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG, async () => {
+				return persistence.translationRevision
+					? enqueueResourceTranslation(this.env, persistedResourceId, persistence.translationRevision)
+					: null;
 			});
 			await step.do('sync-resolved-ai-search-v1', AI_SEARCH_SYNC_STEP_CONFIG, async () => {
 				await syncCorpusItem(this.env, persistedResourceId);

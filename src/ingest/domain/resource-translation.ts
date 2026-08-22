@@ -1,4 +1,9 @@
-import { type ResourceIdentityColumns, type ResourceTranslationSource, ZH_HANT_RESOURCE_LANG } from '@core-shared/resource-types';
+import {
+	type ResourceIdentityColumns,
+	type ResourceTranslationSource,
+	TRANSLATABLE_RESOURCE_KINDS,
+	ZH_HANT_RESOURCE_LANG,
+} from '@core-shared/resource-types';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
@@ -17,11 +22,13 @@ const MIN_TRANSLATABLE_TEXT_LENGTH = 20;
 const INLINE_TWITTER_CONTENT_TRANSLATION_MAX_LENGTH = 1000;
 
 export type ResourceTranslationInput = {
+	file_type: string | null;
 	id: string;
 	original_lang: string;
 	title: string;
 	summary: string | null;
 	content: string;
+	url: string | null;
 	zhHantTranslation: {
 		title: string | null;
 		summary: string | null;
@@ -94,7 +101,15 @@ function needsMachineContentTranslation(resource: ResourceTranslationInput): boo
 
 export function planZhHantTranslation(resource: ResourceTranslationInput): ZhHantTranslationPlan {
 	const translation = resource.zhHantTranslation;
-	if (resource.original_lang === ZH_HANT_RESOURCE_LANG || translation?.source === 'human') {
+	if (
+		!(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(resource.kind) ||
+		!resource.url ||
+		(resource.file_type === 'application/pdf' && resource.resource_platform === null) ||
+		isBlank(resource.title) ||
+		isBlank(resource.content) ||
+		resource.original_lang === ZH_HANT_RESOURCE_LANG ||
+		translation?.source === 'human'
+	) {
 		return { metadata: null, content: null };
 	}
 

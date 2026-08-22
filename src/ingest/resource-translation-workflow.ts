@@ -1,5 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { isResourceTranslationRevision, loadEligibleResourceTranslationInput } from '@ingest/domain/resource-translation-store';
+import { isResourceTranslationRevision, loadResourceTranslationInput } from '@ingest/domain/resource-translation-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import {
 	CONTENT_TRANSLATION_MAX_LENGTH,
@@ -10,7 +10,7 @@ import {
 
 type ResourceTranslationPayload = { resourceId: string; sourceRevision: string };
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v4';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v5';
 
 function workflowId(resourceId: string, sourceRevision: string): string {
 	return `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${sourceRevision}`;
@@ -39,10 +39,10 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 				timeout: '30 seconds',
 			},
-			() => loadEligibleResourceTranslationInput(this.env, resourceId),
+			() => loadResourceTranslationInput(this.env, resourceId),
 		);
 		if (!input) {
-			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'No longer eligible; skipping', resource_id: resourceId });
+			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Resource original is unavailable; skipping', resource_id: resourceId });
 			return { success: true, resource_id: resourceId, skipped: true };
 		}
 		if (input.sourceRevision !== sourceRevision) {
@@ -51,21 +51,23 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		}
 
 		const resource = input.resource;
-		const initialContent = resource.content.trim();
-		if (!initialContent) throw new Error(`Resource ${resourceId} has no persisted original content`);
-
 		const translationPlan = planZhHantTranslation(resource);
 		if (translationPlan.content === 'skip-too-long') {
 			console.info({
 				tag: 'RESOURCE_TRANSLATION',
 				msg: 'Body too long to translate in one call; keeping the original',
 				resource_id: resource.id,
-				chars: initialContent.length,
+				chars: resource.content.trim().length,
 				limit: CONTENT_TRANSLATION_MAX_LENGTH,
 			});
 		}
-
 		const metadataTask = translationPlan.metadata;
+		if (!metadataTask && translationPlan.content !== 'translate') {
+			return { success: true, resource_id: resourceId, skipped: true };
+		}
+		const initialContent = resource.content.trim();
+		if (!initialContent) throw new Error(`Resource ${resourceId} has no persisted original content`);
+
 		if (metadataTask) {
 			const translatedMetadata = await step.do(
 				'translate-zh-hant-title-summary',
