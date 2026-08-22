@@ -8,9 +8,9 @@ import {
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { isPaperIdentifier, normalizeResourceIdentifiers, type ResourceIdentifier } from '@core-shared/resource-identifiers';
 import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
-import { DEFAULT_RESOURCE_LANG, type ResourcePlatform } from '@core-shared/resource-types';
+import { DEFAULT_RESOURCE_LANG } from '@core-shared/resource-types';
 import type { MaterializedResource, ResolvedResource } from '@core-shared/types';
-import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
+import { canonicalResourcePlatformUrl } from '@core-shared/url';
 import { connectCoreDb } from '@db/connection';
 import { loadResourceReacquisitionInput, loadStoredPdfInput } from '@ingest/stored-resource';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
@@ -31,7 +31,7 @@ import { acquireStoredPdf } from './platforms/pdf';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import { markStoredBlobProcessingFailed, type PersistProcessedTarget, persistProcessedResource } from './resource-persistence';
-import { exactPlatformLocator, materializeAcquiredResource } from './resource-resolver';
+import { exactPlatformLocator, materializeAcquiredResource, type ResourcePlatformLocator } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 
 class ResourceProcessingRejectedError extends Error {}
@@ -105,7 +105,6 @@ async function stageSavedUrlAcquisition(
 					tag: 'RESOURCE_ACQUISITION',
 					event: 'sequenced_acquisition_attempt',
 					resource_id: input.processingId,
-					resource_platform: detectResourceUrl(input.sourceUrl)?.resourcePlatform ?? null,
 					provider_sequence: providerSequence,
 					attempt: ctx.attempt,
 				});
@@ -138,7 +137,6 @@ type ResolvedProcessingCall = {
 	origin: ResourceMaterializationSeed;
 	identityUrl: string | null;
 	resourceIdentifiers: ResourceIdentifier[];
-	resourcePlatform: ResourcePlatform | null;
 	translatePaperUrl: boolean;
 	persistenceTarget: PersistProcessedTarget;
 };
@@ -175,7 +173,6 @@ async function resolveProcessingCall(
 			},
 			identityUrl: target.url,
 			resourceIdentifiers: [],
-			resourcePlatform: null,
 			translatePaperUrl: target.admission.kind !== 'source',
 			persistenceTarget: {
 				kind: 'draft',
@@ -213,7 +210,6 @@ async function resolveProcessingCall(
 			origin: storedPdf,
 			identityUrl: storedPdf.url,
 			resourceIdentifiers: storedPdf.resourceIdentifiers,
-			resourcePlatform: storedPdf.resourcePlatform,
 			translatePaperUrl: false,
 			persistenceTarget: {
 				kind: 'storedPdf',
@@ -244,7 +240,6 @@ async function resolveProcessingCall(
 		origin: snapshot,
 		identityUrl: sourceUrl,
 		resourceIdentifiers: snapshot.resourceIdentifiers,
-		resourcePlatform: snapshot.resourcePlatform,
 		translatePaperUrl: snapshot.translatePaperUrl,
 		persistenceTarget: {
 			kind: 'existing',
@@ -257,27 +252,30 @@ async function resolveProcessingCall(
 
 function resolveProcessingIdentity(call: ResolvedProcessingCall): {
 	canonicalUrl: string | null;
-	detected: ReturnType<typeof detectResourceUrl>;
+	platformIdentity: ResourcePlatformLocator | null;
 	resourceIdentifiers: ResourceIdentifier[];
 } {
 	const canonicalUrl = call.acquiredContent.canonicalUrl?.trim() || call.origin.url;
 	const exactPaper = resolveExactPaperInput(call.identityUrl ?? canonicalUrl);
-	const detected = exactPaper || !canonicalUrl ? null : detectResourceUrl(canonicalUrl);
+	const platformIdentity =
+		exactPaper || call.acquiredContent.provider === null
+			? null
+			: { resourcePlatform: call.acquiredContent.provider, platformId: call.acquiredContent.platformId };
 	const discoveredIdentifiers = exactPaper
 		? paperIdentifiersFromIdentity(exactPaper.identity)
-		: detected
-			? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId } as const]
+		: platformIdentity
+			? [{ preferred: true, scheme: platformIdentity.resourcePlatform, value: platformIdentity.platformId } as const]
 			: [];
 	return {
 		canonicalUrl,
-		detected,
+		platformIdentity,
 		resourceIdentifiers: normalizeResourceIdentifiers([...call.resourceIdentifiers, ...discoveredIdentifiers]),
 	};
 }
 
 async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, call: ResolvedProcessingCall): Promise<ResolvedResource> {
 	const { acquiredContent: initialAcquiredContent, origin, processingId } = call;
-	const { canonicalUrl, detected, resourceIdentifiers } = resolveProcessingIdentity(call);
+	const { canonicalUrl, platformIdentity, resourceIdentifiers } = resolveProcessingIdentity(call);
 	let publishedDate = origin.publishedDate;
 	if (initialAcquiredContent.publishedDate?.trim()) {
 		const parsed = new Date(initialAcquiredContent.publishedDate);
@@ -290,13 +288,13 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, ca
 		originSummary: origin.summary,
 		processingId,
 		publishedDate,
-		resourcePlatform: detected?.resourcePlatform ?? call.resourcePlatform,
+		resourcePlatform: platformIdentity?.resourcePlatform ?? null,
 		translateUrl: call.translatePaperUrl,
 	});
 	const acquiredContent = paper.acquiredContent;
 	let resource = materializeAcquiredResource(acquiredContent, origin, {
 		canonicalUrl,
-		detected,
+		platformIdentity,
 		publishedDate,
 		resourceIdentifiers: normalizeResourceIdentifiers([...paper.identifiers, ...resourceIdentifiers]),
 	});

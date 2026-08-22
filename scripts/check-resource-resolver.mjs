@@ -9,9 +9,11 @@ const base = {
 
 function materialize(input = {}) {
 	const url = input.url === undefined ? base.url : input.url;
+	const platformIdentity = url ? detectResourceUrl(url) : null;
 	return materializeAcquiredResource(
 		{
-			provider: null,
+			provider: platformIdentity?.resourcePlatform ?? null,
+			...(platformIdentity ? { platformId: platformIdentity.platformId } : {}),
 			...(url ? { canonicalUrl: url } : {}),
 			fileType: null,
 			title: 'Example',
@@ -39,7 +41,7 @@ function materialize(input = {}) {
 		},
 		{
 			canonicalUrl: url,
-			detected: url ? detectResourceUrl(url) : null,
+			platformIdentity,
 			publishedDate: null,
 			resourceIdentifiers: input.resourceIdentifiers ?? [],
 		},

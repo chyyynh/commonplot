@@ -14,12 +14,12 @@ import {
 import type { AcquiredMaterial, MaterializedResource, ResolvedResourceSubject } from '../shared/types.ts';
 import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../shared/url.ts';
 
-type ExactPlatformLocator = Readonly<{
+export type ResourcePlatformLocator = Readonly<{
 	resourcePlatform: PlatformResourceIdentifierScheme;
 	platformId: string;
 }>;
 
-export function exactPlatformLocator(identifiers: readonly ResourceIdentifier[]): ExactPlatformLocator | null {
+export function exactPlatformLocator(identifiers: readonly ResourceIdentifier[]): ResourcePlatformLocator | null {
 	const platformIdentifiers = normalizeResourceIdentifiers(identifiers).filter(
 		(identifier): identifier is ResourceIdentifier & { scheme: PlatformResourceIdentifierScheme } =>
 			identifier.scheme === 'hackernews' ||
@@ -38,26 +38,26 @@ export function materializeAcquiredResource(
 	origin: Pick<MaterializedResource, 'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'summary' | 'tags' | 'url'>,
 	resolution: {
 		canonicalUrl: string | null;
-		detected: ReturnType<typeof detectResourceUrl>;
+		platformIdentity: ResourcePlatformLocator | null;
 		publishedDate: string | null;
 		resourceIdentifiers: readonly ResourceIdentifier[];
 	},
 ): MaterializedResource {
 	const paperIdentifiers = resolution.resourceIdentifiers.filter(isPaperIdentifier);
-	const identity: ContentResourceIdentity = resolution.detected
-		? resourceIdentityForDetectedPlatform(resolution.detected.resourcePlatform)
+	const identity: ContentResourceIdentity = resolution.platformIdentity
+		? resourceIdentityForDetectedPlatform(resolution.platformIdentity.resourcePlatform)
 		: paperIdentifiers.some((identifier) => identifier.scheme === 'openalex')
 			? { kind: 'paper', resourcePlatform: null }
 			: { kind: 'blog', resourcePlatform: null };
 	const identifiers = normalizeResourceIdentifiers(
-		resolution.detected
-			? [{ preferred: true, scheme: resolution.detected.resourcePlatform, value: resolution.detected.platformId }]
+		resolution.platformIdentity
+			? [{ preferred: true, scheme: resolution.platformIdentity.resourcePlatform, value: resolution.platformIdentity.platformId }]
 			: identity.kind === 'paper'
 				? paperIdentifiers
 				: [],
 	);
-	const url = resolution.detected
-		? canonicalResourcePlatformUrl(resolution.detected.resourcePlatform, resolution.detected.platformId)
+	const url = resolution.platformIdentity
+		? canonicalResourcePlatformUrl(resolution.platformIdentity.resourcePlatform, resolution.platformIdentity.platformId)
 		: resolution.canonicalUrl;
 	return {
 		...identity,

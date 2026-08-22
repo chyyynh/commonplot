@@ -118,7 +118,11 @@ type AcquiredMaterialBase<T extends ResourcePlatform> = {
 	sourceSnapshotHash?: string;
 };
 
-type AcquiredMaterialSpecialization<T extends ResourcePlatform> = T extends 'youtube' ? { youtubeTranscript: YoutubeTranscript } : unknown;
+type AcquiredMaterialSpecialization<T extends ResourcePlatform> = T extends 'youtube'
+	? { platformId: string; youtubeTranscript: YoutubeTranscript }
+	: T extends Exclude<ResourcePlatform, null>
+		? { platformId: string }
+		: unknown;
 
 export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = T extends unknown
 	? AcquiredMaterialBase<T> & AcquiredMaterialSpecialization<T>

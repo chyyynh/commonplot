@@ -25,6 +25,7 @@ export type AcquiredContent = RawAcquiredContent & { sourceSnapshotHash: string 
 type SavedUrlAcquisitionResult = { status: 'acquired'; content: AcquiredContent } | { status: 'rejected'; message: string };
 
 const nullableStringSchema = z.string().nullable();
+const platformIdSchema = z.string().trim().min(1);
 const acquiredContentShape = {
 	canonicalUrl: z.url().optional(),
 	fileType: nullableStringSchema,
@@ -58,10 +59,12 @@ const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('
 	}),
 	acquiredMaterialSchema('hackernews', 'forum', {
 		hackerNewsItem: HackerNewsItemSchema,
+		platformId: platformIdSchema,
 	}),
-	acquiredMaterialSchema('lesswrong', 'blog', {}),
-	acquiredMaterialSchema('twitter', 'post', {}),
+	acquiredMaterialSchema('lesswrong', 'blog', { platformId: platformIdSchema }),
+	acquiredMaterialSchema('twitter', 'post', { platformId: platformIdSchema }),
 	acquiredMaterialSchema('youtube', 'video', {
+		platformId: platformIdSchema,
 		youtubeTranscript: YouTubeTranscriptSchema,
 	}),
 ]);
@@ -84,7 +87,13 @@ function validateAcquisitionUrl(url: string): string {
 }
 
 function acquiredSourceSnapshotHash(acquired: RawAcquiredContent, markdown: string): Promise<string> {
-	const providerFacts = acquired.subjectUrl ? { subjectUrl: acquired.subjectUrl } : null;
+	const providerFacts =
+		acquired.provider !== null || acquired.subjectUrl
+			? {
+					...(acquired.provider !== null ? { platformId: acquired.platformId } : {}),
+					...(acquired.subjectUrl ? { subjectUrl: acquired.subjectUrl } : {}),
+				}
+			: null;
 	const input = JSON.stringify({
 		provider: acquired.provider,
 		canonicalUrl: acquired.canonicalUrl,

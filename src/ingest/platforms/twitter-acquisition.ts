@@ -54,7 +54,7 @@ interface TwitterMetadata extends TwitterAuthorFields {
 }
 
 type AuthoredTweet = Tweet & { author: NonNullable<Tweet['author']> };
-type TwitterAcquiredMaterial = Omit<AcquiredMaterial<'twitter'>, 'kindMetadata'> & { kindMetadata: PostKindMetadata };
+type TwitterAcquiredMaterial = Omit<AcquiredMaterial<'twitter'>, 'kindMetadata' | 'platformId'> & { kindMetadata: PostKindMetadata };
 type TwitterResourceFields = Pick<TwitterAcquiredMaterial, 'creators' | 'kindMetadata' | 'subjectUrl'>;
 
 function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {
@@ -422,7 +422,7 @@ export async function scrapeTweet(
 		thread_posts: thread.length,
 		content_kind: resolved.kind,
 	});
-	return mergeResolvedTwitterThread(resolved, thread, tweetId);
+	return { ...mergeResolvedTwitterThread(resolved, thread, tweetId), platformId: tweetId };
 }
 
 type TwitterThreadSearchResult = {

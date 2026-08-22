@@ -258,6 +258,7 @@ export async function scrapeYouTube(
 
 	return {
 		provider: 'youtube',
+		platformId: videoId,
 		fileType: null,
 		title: snippet.title,
 		markdown: content,

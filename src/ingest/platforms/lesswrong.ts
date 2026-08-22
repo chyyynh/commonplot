@@ -65,6 +65,7 @@ export async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<
 	const author = post.user?.displayName?.trim() || post.user?.username?.trim() || null;
 	return {
 		provider: 'lesswrong',
+		platformId: postId,
 		fileType: null,
 		title,
 		markdown,
