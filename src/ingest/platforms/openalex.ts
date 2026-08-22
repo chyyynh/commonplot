@@ -10,7 +10,7 @@ import {
 import type { PaperRelationItem, PaperRelationSnapshot } from '@core-shared/resource';
 import { z } from 'zod';
 import { markdownFromXml } from '../document-conversion';
-import type { AcquiredMaterial } from './materialize';
+import type { GenericAcquiredMaterial } from './materialize';
 import { acquireFetchedPdfResponse } from './pdf';
 
 export interface PaperMetadata {
@@ -326,7 +326,7 @@ export async function resolveOpenAlexPaper(input: {
 	return normalizeOpenAlexWork(work, identifiers, relations);
 }
 
-export async function acquireOpenAlexPdf(input: { apiKey?: string; contentPdfUrl: string }): Promise<AcquiredMaterial<null>> {
+export async function acquireOpenAlexPdf(input: { apiKey?: string; contentPdfUrl: string }): Promise<GenericAcquiredMaterial> {
 	const apiKey = input.apiKey?.trim();
 	if (!apiKey) throw new Error('OpenAlex content download requires an API key');
 	const contentUrl = new URL(input.contentPdfUrl);

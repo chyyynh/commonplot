@@ -4,7 +4,7 @@ import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { extractFromHtml } from '@extractus/article-extractor';
 import { markdownFromHtml } from '../document-conversion';
-import { type AcquiredMaterial, literalCreator } from './materialize';
+import { type GenericAcquiredMaterial, literalCreator } from './materialize';
 import { acquireFetchedPdfResponse, PDF_MIME } from './pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
@@ -50,7 +50,7 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 	};
 }
 
-type AcquiredWebContent = AcquiredMaterial<null>;
+type AcquiredWebContent = GenericAcquiredMaterial;
 
 type PlatformRedirect = { redirectUrl: string };
 

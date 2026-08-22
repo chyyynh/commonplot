@@ -4,7 +4,7 @@
 // storing and under WHAT canonical key. Consumed by the ingest
 // pipeline (persistence + prompt exclusion lists).
 
-import { RESOURCE_PLATFORM_DISPLAY_LABELS, type ResourceCreator, type ResourcePlatform, resourceCreatorName } from '@core-shared/resource';
+import { type ResourceCreator, type ResourcePlatform, resourceCreatorName } from '@core-shared/resource';
 
 export type ResourceEntityInput = { name: string; name_cn: string; type: string };
 export const ENTITY_TYPES = ['person', 'organization', 'product', 'technology', 'event', 'location'] as const;
@@ -130,7 +130,7 @@ export function entityExtractionExclusionNames(
 ): string[] {
 	const seen = new Set<string>();
 	const names: string[] = [];
-	const platformAliases = resourcePlatform === null ? [] : [RESOURCE_PLATFORM_DISPLAY_LABELS[resourcePlatform]];
+	const platformAliases = resourcePlatform === null ? [] : [resourcePlatform];
 	for (const name of [...sourceNameAliases(source), ...creatorAliases(creators), ...platformAliases]) {
 		const canonical = canonicalizeEntityName(name);
 		if (!canonical || seen.has(canonical)) continue;

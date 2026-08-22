@@ -5,9 +5,9 @@ import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import {
-	type AcquiredMaterial,
 	literalCreator,
 	materializePlatformResource,
+	type PlatformAcquiredMaterial,
 	type ResolvedResource,
 	type ResourceAcquisitionOrigin,
 	type YouTubeResourceSpecialization,
@@ -60,7 +60,7 @@ const YouTubeChannelsResponseSchema = z.object({
 });
 type YouTubeThumbnails = z.infer<typeof YouTubeThumbnailsSchema>;
 type YouTubeVideosResponse = z.infer<typeof YouTubeVideosResponseSchema>;
-type YouTubeAcquisition = Omit<AcquiredMaterial<'youtube'>, 'markdown' | 'summary'> & {
+type YouTubeAcquisition = Omit<PlatformAcquiredMaterial<'youtube'>, 'markdown' | 'summary'> & {
 	description: string;
 	transcript: YouTubeTranscript;
 };
@@ -280,7 +280,7 @@ export async function stageYouTubeAcquisition(
 		sourceAvatarUrl: string | null;
 		videoId: string;
 	},
-): Promise<Extract<ResolvedResource, { resourcePlatform: 'youtube' }>> {
+): Promise<ResolvedResource> {
 	const contentStream = await step.do(
 		'acquire-youtube-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },

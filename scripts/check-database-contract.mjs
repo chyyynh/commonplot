@@ -14,20 +14,17 @@ const manualIndexesSource = readFileSync(manualIndexesPath, 'utf8');
 const resourceSource = readFileSync(resourcePath, 'utf8');
 const errors = [];
 
-function parseStringArray(source, name) {
-	const declaration = source.match(new RegExp(`(?:export )?const ${name} = \\[([^\\]]*)\\] as const`));
+function parseZodEnumProperty(source, name) {
+	const declaration = source.match(new RegExp(`${name}: z\\.enum\\(\\[([^\\]]*)\\]\\)`));
 	if (!declaration) return null;
 	return [...declaration[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
 }
 
-function parseStringOrNullArrayRecord(source, name) {
-	const body = source.match(new RegExp(`(?:export )?const ${name} = \\{([\\s\\S]*?)\\} as const`))?.[1];
+function parseStringRecordProperty(source, name) {
+	const body = source.match(new RegExp(`${name}: \\{([\\s\\S]*?)\\}`))?.[1];
 	if (!body) return null;
 	const entries = new Map();
-	for (const match of body.matchAll(/(\w+):\s*\[([^\]]*)\]/g)) {
-		const values = [...match[2].matchAll(/'([^']+)'|\b(null)\b/g)].map((value) => value[1] ?? null);
-		entries.set(match[1], values);
-	}
+	for (const match of body.matchAll(/(\w+):\s*'([^']+)'/g)) entries.set(match[1], match[2]);
 	return entries.size > 0 ? entries : null;
 }
 
@@ -38,14 +35,12 @@ function parseDomainConstraint(source, constraintName, columnName) {
 	return match ? [...match[1].matchAll(/'([^']+)'/g)].map((value) => value[1]) : null;
 }
 
-function parseKindPlatformMatrix(source) {
-	const body = source.match(/ADD CONSTRAINT resources_kind_platform_check\s+CHECK\s*\(\s*\(([\s\S]*?)\)\s+IS TRUE\s*\);/)?.[1];
+function parsePlatformKindConstraint(source) {
+	const body = source.match(/ADD CONSTRAINT resources_kind_platform_check\s+CHECK\s*\(([\s\S]*?)\);/)?.[1];
 	if (!body) return null;
-	const pairs = [];
-	for (const match of body.matchAll(/\(kind = '([^']+)' AND resource_platform (IS NULL|= '([^']+)')\)/g)) {
-		pairs.push(`${match[1]}:${match[2] === 'IS NULL' ? 'null' : match[3]}`);
-	}
-	return { allowsLegacyNullPair: /\(kind IS NULL AND resource_platform IS NULL\)/.test(body), pairs };
+	const entries = new Map();
+	for (const match of body.matchAll(/WHEN '([^']+)' THEN '([^']+)'/g)) entries.set(match[1], match[2]);
+	return /resource_platform IS NULL\s+OR kind = CASE resource_platform/.test(body) && entries.size > 0 ? entries : null;
 }
 
 function sameValues(actual, expected) {
@@ -66,20 +61,15 @@ if (/CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+resources_localized/i.test(manualIndexe
 	errors.push('manual-indexes.sql must not recreate the retired resources_localized projection');
 }
 
-const resourceKinds = parseStringArray(resourceSource, 'RESOURCE_KINDS');
-const resourcePlatforms = parseStringArray(resourceSource, 'RESOURCE_PLATFORMS');
-const validKindPlatforms = parseStringOrNullArrayRecord(resourceSource, 'VALID_KIND_PLATFORMS');
-if (!resourceKinds || !resourcePlatforms || !validKindPlatforms) {
+const resourceKinds = parseZodEnumProperty(resourceSource, 'kinds');
+const platformKinds = parseStringRecordProperty(resourceSource, 'platformKinds');
+const resourcePlatforms = platformKinds ? [...platformKinds.keys()] : null;
+if (!resourceKinds || !resourcePlatforms || !platformKinds) {
 	errors.push(`Unable to parse canonical resource identity domains from ${resourcePath}`);
 } else {
-	if (!sameMembers(validKindPlatforms.keys(), resourceKinds)) {
-		errors.push('VALID_KIND_PLATFORMS keys differ from canonical RESOURCE_KINDS');
-	}
-	const unknownPlatforms = [...validKindPlatforms.values()]
-		.flat()
-		.filter((platform) => platform !== null && !resourcePlatforms.includes(platform));
-	if (unknownPlatforms.length > 0) {
-		errors.push(`VALID_KIND_PLATFORMS contains unknown platforms: ${[...new Set(unknownPlatforms)].join(', ')}`);
+	const unknownKinds = [...platformKinds.values()].filter((kind) => !resourceKinds.includes(kind));
+	if (unknownKinds.length > 0) {
+		errors.push(`RESOURCE_TYPES.platformKinds contains unknown kinds: ${[...new Set(unknownKinds)].join(', ')}`);
 	}
 
 	const resourceModelBody = prismaSource.match(/model Resource \{([\s\S]*?)\n\}/)?.[1] ?? '';
@@ -92,18 +82,19 @@ if (!resourceKinds || !resourcePlatforms || !validKindPlatforms) {
 
 	const constrainedKinds = parseDomainConstraint(manualIndexesSource, 'resources_kind_check', 'kind');
 	if (!constrainedKinds || !sameValues(constrainedKinds, resourceKinds)) {
-		errors.push('resources_kind_check differs from canonical RESOURCE_KINDS');
+		errors.push('resources_kind_check differs from RESOURCE_TYPES.kinds');
 	}
 	const constrainedPlatforms = parseDomainConstraint(manualIndexesSource, 'resources_resource_platform_check', 'resource_platform');
 	if (!constrainedPlatforms || !sameValues(constrainedPlatforms, resourcePlatforms)) {
-		errors.push('resources_resource_platform_check differs from canonical RESOURCE_PLATFORMS');
+		errors.push('resources_resource_platform_check differs from RESOURCE_TYPES.platformKinds');
 	}
-	const expectedPairs = [...validKindPlatforms.entries()].flatMap(([kind, platforms]) =>
-		platforms.map((platform) => `${kind}:${platform ?? 'null'}`),
-	);
-	const matrix = parseKindPlatformMatrix(manualIndexesSource);
-	if (!matrix || matrix.allowsLegacyNullPair || !sameMembers(matrix.pairs, expectedPairs)) {
-		errors.push('resources_kind_platform_check differs from canonical VALID_KIND_PLATFORMS');
+	const constrainedPlatformKinds = parsePlatformKindConstraint(manualIndexesSource);
+	const expectedPlatformKinds = [...platformKinds].map(([platform, kind]) => `${platform}:${kind}`);
+	const actualPlatformKinds = constrainedPlatformKinds
+		? [...constrainedPlatformKinds].map(([platform, kind]) => `${platform}:${kind}`)
+		: [];
+	if (!constrainedPlatformKinds || !sameMembers(actualPlatformKinds, expectedPlatformKinds)) {
+		errors.push('resources_kind_platform_check differs from RESOURCE_TYPES.platformKinds');
 	}
 }
 
@@ -134,4 +125,4 @@ if (errors.length > 0) {
 	process.exit(1);
 }
 
-process.stdout.write('Database contract check passed for canonical resource/source domains and identity matrix.\n');
+process.stdout.write('Database contract check passed for canonical resource/source domains and platform-kind mapping.\n');

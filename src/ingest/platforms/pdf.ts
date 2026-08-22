@@ -5,7 +5,7 @@ import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/pa
 import { isPaperIdentifier, type ResourceCreator, type ResourceKindMetadata } from '@core-shared/resource';
 import { initSync, LiteParse } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
-import type { AcquiredMaterial, AcquiredResource, ResolvedResource } from './materialize';
+import type { GenericAcquiredMaterial, ResolvedResource } from './materialize';
 
 export const PDF_MIME = 'application/pdf';
 
@@ -49,7 +49,7 @@ async function parsePdfBytes(bytes: Uint8Array, source: string): Promise<string>
 	return text;
 }
 
-async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfAcquisitionInput): Promise<AcquiredMaterial<null>> {
+async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfAcquisitionInput): Promise<GenericAcquiredMaterial> {
 	if (resource.fileType !== PDF_MIME) {
 		throw new Error(`Stored resource ${resource.resourceId} is not an R2 PDF`);
 	}
@@ -71,7 +71,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfAcquisitionInpu
 	};
 }
 
-export async function acquireFetchedPdfResponse(response: Response, finalUrl: string): Promise<AcquiredMaterial<null>> {
+export async function acquireFetchedPdfResponse(response: Response, finalUrl: string): Promise<GenericAcquiredMaterial> {
 	let pdfBytes = 0;
 	const body = response.body?.pipeThrough(
 		new TransformStream<Uint8Array, Uint8Array>({
@@ -113,13 +113,13 @@ export async function stageStoredPdfAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	resource: StoredPdfAcquisitionInput,
-): Promise<Extract<AcquiredResource, { resourcePlatform: null }>> {
+): Promise<GenericAcquiredMaterial & { specialization: null }> {
 	const contentStream = await step.do(
 		'acquire-stored-pdf-v2',
 		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await acquireStoredPdf(env, resource)).body!,
 	);
-	return { ...(await new Response(contentStream).json<AcquiredMaterial<null>>()), specialization: null };
+	return { ...(await new Response(contentStream).json<GenericAcquiredMaterial>()), specialization: null };
 }
 
 export function storedPdfProcessingResult(

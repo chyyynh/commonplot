@@ -3,9 +3,9 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import type { PostKindMetadata, ResourceCreator, ResourceMediaAttachment } from '@core-shared/resource';
 import { extractTweetId } from '@core-shared/url';
 import {
-	type AcquiredMaterial,
 	literalCreator,
 	materializePlatformResource,
+	type PlatformAcquiredMaterial,
 	type ResolvedResource,
 	type ResourceAcquisitionOrigin,
 } from './materialize';
@@ -59,7 +59,9 @@ interface TwitterMetadata extends TwitterAuthorFields {
 }
 
 type AuthoredTweet = Tweet & { author: NonNullable<Tweet['author']> };
-type TwitterAcquiredMaterial = Omit<AcquiredMaterial<'twitter'>, 'kindMetadata' | 'platformId'> & { kindMetadata: PostKindMetadata };
+type TwitterAcquiredMaterial = Omit<PlatformAcquiredMaterial<'twitter'>, 'kindMetadata' | 'platformId'> & {
+	kindMetadata: PostKindMetadata;
+};
 type TwitterResourceFields = Pick<TwitterAcquiredMaterial, 'creators' | 'kindMetadata' | 'subjectUrl'>;
 
 function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {
@@ -399,7 +401,7 @@ async function scrapeTweet(
 	tweetId: string,
 	apiKey: string,
 	options: { discoverUnsignaledThread?: boolean; expectedReplyId?: string } = {},
-): Promise<AcquiredMaterial<'twitter'>> {
+): Promise<PlatformAcquiredMaterial<'twitter'>> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
 	const response = await fetch(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, {
 		headers: { 'x-api-key': apiKey },
@@ -462,7 +464,7 @@ export async function stageTwitterAcquisition(
 		providerSequence?: string;
 		tweetId: string;
 	},
-): Promise<Extract<ResolvedResource, { resourcePlatform: 'twitter' }>> {
+): Promise<ResolvedResource> {
 	const contentStream = await step.do(
 		'acquire-twitter-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
@@ -483,7 +485,7 @@ export async function stageTwitterAcquisition(
 		},
 	);
 	return materializePlatformResource(
-		{ ...(await new Response(contentStream).json<AcquiredMaterial<'twitter'>>()), specialization: null },
+		{ ...(await new Response(contentStream).json<PlatformAcquiredMaterial<'twitter'>>()), specialization: null },
 		input.origin,
 	);
 }

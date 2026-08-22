@@ -4,7 +4,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { type PaperIdentifier, paperIdentityFromText, resolveExactPaperInput } from '@core-shared/paper-identity';
 import type { PaperKindMetadata } from '@core-shared/resource';
 import { resolveBibliographicIdentifiers } from './bibliographic-resolver';
-import { type AcquiredMaterial, literalCreator } from './materialize';
+import { type GenericAcquiredMaterial, literalCreator } from './materialize';
 import { acquireOpenAlexGrobidText, acquireOpenAlexPdf, type PaperMetadata, resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME } from './pdf';
 
@@ -42,10 +42,10 @@ function isExplicitPaperUrl(url: string | null | undefined): boolean {
 }
 
 function applyPaperMetadata(
-	acquiredContent: AcquiredMaterial<null>,
+	acquiredContent: GenericAcquiredMaterial,
 	metadata: PaperMetadata | null,
 	publishedDate: string | null,
-): { acquiredContent: AcquiredMaterial<null>; publishedDate: string | null } {
+): { acquiredContent: GenericAcquiredMaterial; publishedDate: string | null } {
 	if (!metadata) return { acquiredContent, publishedDate };
 	if (!publishedDate && metadata.publicationDate) {
 		const candidate = new Date(`${metadata.publicationDate}T00:00:00.000Z`);
@@ -209,7 +209,7 @@ async function stageOpenAlexContentAcquisition(
 	step: WorkflowStep,
 	resource: PaperContentCandidate,
 	resolution: PaperEnrichmentResolution,
-): Promise<AcquiredMaterial<null> | null> {
+): Promise<GenericAcquiredMaterial | null> {
 	const { contentGrobidXmlUrl, contentPdfUrl, metadata } = resolution;
 	if (!contentPdfUrl && !contentGrobidXmlUrl) return null;
 
@@ -236,7 +236,7 @@ async function stageOpenAlexContentAcquisition(
 				return null;
 			});
 		if (contentStream) {
-			const acquired = await new Response(contentStream).json<AcquiredMaterial<null>>();
+			const acquired = await new Response(contentStream).json<GenericAcquiredMaterial>();
 			console.info({
 				tag: 'OPENALEX_CONTENT',
 				event: 'pdf_acquired',
@@ -265,7 +265,7 @@ async function stageOpenAlexContentAcquisition(
 				return null;
 			});
 		if (contentStream) {
-			const acquired = await new Response(contentStream).json<AcquiredMaterial<null>>();
+			const acquired = await new Response(contentStream).json<GenericAcquiredMaterial>();
 			console.info({
 				tag: 'OPENALEX_CONTENT',
 				event: 'grobid_acquired',
@@ -283,7 +283,7 @@ export async function stagePaperProcessing(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		acquiredContent: AcquiredMaterial<null>;
+		acquiredContent: GenericAcquiredMaterial;
 		canonicalUrl: string | null;
 		identifiers: readonly PaperIdentifier[];
 		originSummary: string | null;
@@ -291,7 +291,7 @@ export async function stagePaperProcessing(
 		publishedDate: string | null;
 		translateUrl: boolean;
 	},
-): Promise<{ acquiredContent: AcquiredMaterial<null>; identifiers: PaperIdentifier[]; publishedDate: string | null }> {
+): Promise<{ acquiredContent: GenericAcquiredMaterial; identifiers: PaperIdentifier[]; publishedDate: string | null }> {
 	const resolution = await stagePaperEnrichment(env, step, {
 		processingId: input.processingId,
 		url: input.canonicalUrl,

@@ -6,9 +6,9 @@ import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import {
-	type AcquiredMaterial,
 	literalCreator,
 	materializePlatformResource,
+	type PlatformAcquiredMaterial,
 	type ResolvedResource,
 	type ResourceAcquisitionOrigin,
 } from './materialize';
@@ -78,7 +78,7 @@ type HackerNewsDiscussionInput = {
 	totalCommentCount: number;
 };
 
-type HackerNewsAcquisition = AcquiredMaterial<'hackernews'> & { discussion: HackerNewsDiscussionInput };
+type HackerNewsAcquisition = PlatformAcquiredMaterial<'hackernews'> & { discussion: HackerNewsDiscussionInput };
 
 /** Every node in the tree, deleted ones included — the closest analogue to the count HN itself shows. */
 function countHnComments(children: HnComment[] | undefined): number {
@@ -181,7 +181,7 @@ export async function stageHackerNewsAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: { itemId: string; origin: ResourceAcquisitionOrigin; processingId: string },
-): Promise<Extract<ResolvedResource, { resourcePlatform: 'hackernews' }>> {
+): Promise<ResolvedResource> {
 	const contentStream = await step.do(
 		'acquire-hackernews-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },

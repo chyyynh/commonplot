@@ -5,7 +5,7 @@ import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
 import {
-	type AcquiredResource,
+	type GenericAcquiredMaterial,
 	materializeAcquiredResource,
 	type ResolvedResource,
 	type ResourceAcquisitionOrigin,
@@ -21,7 +21,7 @@ import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
 import { stageYouTubeAcquisition } from './platforms/youtube-acquisition';
 
-type GenericAcquiredResource = Extract<AcquiredResource, { resourcePlatform: null }>;
+type GenericAcquiredResource = GenericAcquiredMaterial & { specialization: null };
 
 async function resolveGenericAcquiredResource(
 	env: CoreEnv,

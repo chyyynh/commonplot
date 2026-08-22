@@ -2,9 +2,9 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
 import {
-	type AcquiredMaterial,
 	literalCreator,
 	materializePlatformResource,
+	type PlatformAcquiredMaterial,
 	type ResolvedResource,
 	type ResourceAcquisitionOrigin,
 } from './materialize';
@@ -42,7 +42,7 @@ type LessWrongGraphqlResponse = {
 	errors?: Array<{ message?: string }>;
 };
 
-async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<'lesswrong'>> {
+async function scrapeLessWrong(postId: string): Promise<PlatformAcquiredMaterial<'lesswrong'>> {
 	if (!LESSWRONG_POST_ID_RE.test(postId)) throw new NonRetryableError(`Invalid LessWrong post id: ${postId}`);
 	const response = await fetch(LESSWRONG_GRAPHQL_URL, {
 		method: 'POST',
@@ -89,14 +89,14 @@ export async function stageLessWrongAcquisition(
 	step: WorkflowStep,
 	postId: string,
 	origin: ResourceAcquisitionOrigin,
-): Promise<Extract<ResolvedResource, { resourcePlatform: 'lesswrong' }>> {
+): Promise<ResolvedResource> {
 	const contentStream = await step.do(
 		'acquire-lesswrong-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await scrapeLessWrong(postId)).body!,
 	);
 	return materializePlatformResource(
-		{ ...(await new Response(contentStream).json<AcquiredMaterial<'lesswrong'>>()), specialization: null },
+		{ ...(await new Response(contentStream).json<PlatformAcquiredMaterial<'lesswrong'>>()), specialization: null },
 		origin,
 	);
 }

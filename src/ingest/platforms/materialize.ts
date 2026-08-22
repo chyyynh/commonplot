@@ -5,6 +5,7 @@ import {
 	canonicalizeResourceLang,
 	isPaperIdentifier,
 	normalizeResourceIdentifiers,
+	RESOURCE_TYPES,
 	type ResourceCreator,
 	type ResourceIdentifier,
 	type ResourceKindMetadata,
@@ -44,42 +45,38 @@ export type YouTubeResourceSpecialization = Readonly<{
 	highlights: YouTubeHighlights | null;
 }>;
 
-export type ResolvedResource =
-	| (Extract<MaterializedResource, { kind: 'video'; resourcePlatform: 'youtube' }> & {
-			specialization: YouTubeResourceSpecialization;
-	  })
-	| (Exclude<MaterializedResource, { kind: 'video'; resourcePlatform: 'youtube' }> & {
-			specialization: null;
-	  });
+export type ResolvedResource = MaterializedResource & {
+	specialization: YouTubeResourceSpecialization | null;
+};
 
-export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = T extends unknown
-	? {
-			resourcePlatform: T;
-			canonicalUrl?: string;
-			fileType: string | null;
-			title: string;
-			markdown: string;
-			previewImageUrl?: string | null;
-			subjectUrl?: string;
-			source: string;
-			originalLang: string | null;
-			publishedDate: string | null;
-			summary: string | null;
-			creators: ResourceCreator[];
-			kindMetadata: ResourceKindMetadata;
-		} & (T extends Exclude<ResourcePlatform, null> ? { platformId: string } : unknown)
-	: never;
+type AcquiredMaterialFields = {
+	canonicalUrl?: string;
+	fileType: string | null;
+	title: string;
+	markdown: string;
+	previewImageUrl?: string | null;
+	subjectUrl?: string;
+	source: string;
+	originalLang: string | null;
+	publishedDate: string | null;
+	summary: string | null;
+	creators: ResourceCreator[];
+	kindMetadata: ResourceKindMetadata;
+};
 
-export type AcquiredResource =
-	| (Exclude<AcquiredMaterial, AcquiredMaterial<'youtube'>> & { specialization: null })
-	| (AcquiredMaterial<'youtube'> & { specialization: YouTubeResourceSpecialization });
+export type GenericAcquiredMaterial = AcquiredMaterialFields & {
+	resourcePlatform: null;
+};
 
-const DETECTED_PLATFORM_RESOURCE_IDENTITIES = {
-	hackernews: { kind: 'forum', resourcePlatform: 'hackernews' },
-	lesswrong: { kind: 'blog', resourcePlatform: 'lesswrong' },
-	twitter: { kind: 'post', resourcePlatform: 'twitter' },
-	youtube: { kind: 'video', resourcePlatform: 'youtube' },
-} as const satisfies Readonly<Record<Exclude<ResourcePlatform, null>, ContentResourceIdentity>>;
+export type PlatformAcquiredMaterial<T extends Exclude<ResourcePlatform, null> = Exclude<ResourcePlatform, null>> =
+	AcquiredMaterialFields & {
+		platformId: string;
+		resourcePlatform: T;
+	};
+
+export type AcquiredResource = (GenericAcquiredMaterial | PlatformAcquiredMaterial) & {
+	specialization: YouTubeResourceSpecialization | null;
+};
 
 export function literalCreator(
 	role: ResourceCreator['role'],
@@ -95,19 +92,18 @@ export type ResourceAcquisitionOrigin = Pick<
 	'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'resourceIdentifiers' | 'summary' | 'tags' | 'url'
 >;
 
-type MaterializedAcquisition<T extends AcquiredResource> = Extract<ResolvedResource, { resourcePlatform: T['resourcePlatform'] }>;
-type PlatformAcquiredResource = Exclude<AcquiredResource, { resourcePlatform: null }>;
+type PlatformAcquiredResource = PlatformAcquiredMaterial & Pick<AcquiredResource, 'specialization'>;
 
-export function materializeAcquiredResource<const T extends AcquiredResource>(
-	acquired: T,
+export function materializeAcquiredResource(
+	acquired: AcquiredResource,
 	origin: ResourceAcquisitionOrigin,
 	resolution: { canonicalUrl: string | null; publishedDate: string | null; resourceIdentifiers: readonly ResourceIdentifier[] },
-): MaterializedAcquisition<T> {
+): ResolvedResource {
 	const platformIdentity =
 		acquired.resourcePlatform === null ? null : { resourcePlatform: acquired.resourcePlatform, platformId: acquired.platformId };
 	const paperIdentifiers = resolution.resourceIdentifiers.filter(isPaperIdentifier);
 	const identity: ContentResourceIdentity = platformIdentity
-		? DETECTED_PLATFORM_RESOURCE_IDENTITIES[platformIdentity.resourcePlatform]
+		? { kind: RESOURCE_TYPES.platformKinds[platformIdentity.resourcePlatform], resourcePlatform: platformIdentity.resourcePlatform }
 		: paperIdentifiers.some((identifier) => identifier.scheme === 'openalex')
 			? { kind: 'paper', resourcePlatform: null }
 			: { kind: 'blog', resourcePlatform: null };
@@ -140,13 +136,10 @@ export function materializeAcquiredResource<const T extends AcquiredResource>(
 		previewImageUrl: acquired.previewImageUrl?.trim() || null,
 		subject: resolvedSubjectInput(acquired.subjectUrl?.trim()),
 		specialization: acquired.specialization,
-	} as MaterializedAcquisition<T>;
+	};
 }
 
-export function materializePlatformResource<const T extends PlatformAcquiredResource>(
-	acquired: T,
-	origin: ResourceAcquisitionOrigin,
-): MaterializedAcquisition<T> {
+export function materializePlatformResource(acquired: PlatformAcquiredResource, origin: ResourceAcquisitionOrigin): ResolvedResource {
 	let publishedDate = origin.publishedDate;
 	if (acquired.publishedDate?.trim()) {
 		const parsed = new Date(acquired.publishedDate);

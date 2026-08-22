@@ -2,7 +2,6 @@
 
 import { isPaperIdentifierScheme } from '@core-shared/paper-identity';
 import {
-	CONTENT_RESOURCE_KINDS,
 	type ContentResourceIdentity,
 	canonicalizeResourceLang,
 	isContentResourceIdentity,
@@ -11,7 +10,7 @@ import {
 	parseResourceCreators,
 	parseResourceIdentity,
 	parseStoredResourceKindMetadata,
-	RESOURCE_PLATFORMS,
+	RESOURCE_TYPES,
 	type ResourceCreator,
 	type ResourceIdentifier,
 	type ResourceIdentifierScheme,
@@ -139,7 +138,7 @@ async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limi
 			    WHERE user_files.resource_id = resources.id
 			  )
 			  AND updated_at < ${olderThan}
-			  AND ${inArray(sql`kind`, CONTENT_RESOURCE_KINDS)}
+			  AND ${inArray(sql`kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
 			ORDER BY updated_at ASC, id ASC
 			FOR UPDATE SKIP LOCKED
 			LIMIT ${limit}
@@ -366,7 +365,7 @@ function resourceIdentifiersValue(value: unknown): ResourceIdentifier[] {
 }
 
 function isResourceIdentifierScheme(value: unknown): value is ResourceIdentifierScheme {
-	return isPaperIdentifierScheme(value) || (typeof value === 'string' && (RESOURCE_PLATFORMS as readonly string[]).includes(value));
+	return isPaperIdentifierScheme(value) || (typeof value === 'string' && Object.hasOwn(RESOURCE_TYPES.platformKinds, value));
 }
 
 function storedResourceCreatorsValue(value: unknown, resourceId: string): ResourceCreator[] {

@@ -1,9 +1,9 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import {
-	CONTENT_RESOURCE_KINDS,
 	type ContentResourceIdentity,
 	isContentResourceIdentity,
 	parseResourceIdentity,
+	RESOURCE_TYPES,
 	type ResourcePlatform,
 } from '@core-shared/resource';
 import { type CoreDb, connectCoreDb } from '@db/connection';
@@ -153,7 +153,7 @@ async function loadCorpusDocuments(db: CoreDb, resourceIds: readonly string[]): 
 		WHERE ${inArray(sql`r.id`, resourceIds)}
 		  AND r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND ${inArray(sql`r.kind`, CONTENT_RESOURCE_KINDS)}
+		  AND ${inArray(sql`r.kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
 		`);
 	return result.rows;
 }
@@ -226,7 +226,7 @@ async function loadCorpusCount(db: CoreDb): Promise<number> {
 		FROM resources r
 		WHERE r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND ${inArray(sql`r.kind`, CONTENT_RESOURCE_KINDS)}
+		  AND ${inArray(sql`r.kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
 	`);
 	const [row] = result.rows;
 	const count = Number(row?.count);
@@ -240,7 +240,7 @@ async function listCorpusIdsAfter(db: CoreDb, cursor: string | null): Promise<st
 		FROM resources r
 		WHERE r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND ${inArray(sql`r.kind`, CONTENT_RESOURCE_KINDS)}
+		  AND ${inArray(sql`r.kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
 		  AND (${cursor}::uuid IS NULL OR r.id > ${cursor}::uuid)
 		ORDER BY r.id
 		LIMIT ${REINDEX_PAGE_SIZE}
@@ -281,7 +281,7 @@ async function listCorpusDeltaAfter(db: CoreDb, startedAt: string, cursor: Searc
 		  LEFT JOIN resource_translations translation ON translation.resource_id = r.id
 		  WHERE r.scope = 'corpus'
 		    AND r.enrichment_status = 'enriched'
-		    AND ${inArray(sql`r.kind`, CONTENT_RESOURCE_KINDS)}
+		    AND ${inArray(sql`r.kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
 		  GROUP BY r.id, r.updated_at
 		)
 		SELECT id::text, to_char(updated_at, ${UTC_TIMESTAMP_FORMAT}) AS updated_at
@@ -326,7 +326,7 @@ async function loadEligibleCorpusIds(db: CoreDb, resourceIds: readonly string[])
 		WHERE ${inArray(sql`r.id`, resourceIds)}
 		  AND r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND ${inArray(sql`r.kind`, CONTENT_RESOURCE_KINDS)}
+		  AND ${inArray(sql`r.kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
 	`);
 	return new Set(result.rows.map((row) => row.id));
 }

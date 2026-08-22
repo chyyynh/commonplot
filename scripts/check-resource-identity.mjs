@@ -1,17 +1,17 @@
 import assert from 'node:assert/strict';
-import { parseResourceIdentity, parseResourceProviderSequence, VALID_KIND_PLATFORMS } from '../src/shared/resource.ts';
+import { parseResourceIdentity, parseResourceProviderSequence, RESOURCE_TYPES } from '../src/shared/resource.ts';
 import { detectResourceUrl, normalizeUrl, parseTwitterUsername } from '../src/shared/url.ts';
 
-const canonicalIdentities = Object.entries(VALID_KIND_PLATFORMS).flatMap(([kind, resourcePlatforms]) =>
-	resourcePlatforms.map((resourcePlatform) => ({ kind, resourcePlatform })),
-);
+const canonicalIdentities = [
+	...RESOURCE_TYPES.kinds.options.map((kind) => ({ kind, resourcePlatform: null })),
+	...Object.entries(RESOURCE_TYPES.platformKinds).map(([resourcePlatform, kind]) => ({ kind, resourcePlatform })),
+];
 for (const identity of canonicalIdentities) {
 	assert.deepEqual(parseResourceIdentity(identity.kind, identity.resourcePlatform), identity);
 }
-assert.equal(parseResourceIdentity('post', null), null);
 assert.equal(parseResourceIdentity('blog', 'hackernews'), null);
-assert.equal(parseResourceIdentity('forum', null), null);
 assert.equal(parseResourceIdentity('paper', 'hackernews'), null);
+assert.equal(parseResourceIdentity('video', 'twitter'), null);
 assert.equal(parseResourceIdentity('document', null), null);
 
 assert.deepEqual(detectResourceUrl('https://x.com/openai/status/1234567890'), {
@@ -60,7 +60,7 @@ assert.equal(parseResourceProviderSequence('not-a-sequence'), null);
 console.info({
 	event: 'resource_identity_smoke_passed',
 	canonicalIdentityCases: canonicalIdentities.length,
-	invalidIdentityCases: 5,
+	invalidIdentityCases: 4,
 	providerSequenceCases: 5,
 	twitterUsernameCases: twitterUsernameCases.length,
 	urlCases: 5,

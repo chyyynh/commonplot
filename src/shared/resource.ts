@@ -2,69 +2,47 @@ import { z } from 'zod';
 import { isPaperIdentifierScheme, normalizePaperIdentifiers, type PaperIdentifier, type PaperIdentifierScheme } from './paper-identity.ts';
 import { parseExternalHttpUrl } from './url.ts';
 
-export const RESOURCE_KINDS = ['blog', 'forum', 'post', 'video', 'paper', 'image', 'file'] as const;
+export const RESOURCE_TYPES = {
+	kinds: z.enum(['blog', 'forum', 'post', 'video', 'paper', 'image', 'file']),
+	platformKinds: {
+		hackernews: 'forum',
+		lesswrong: 'blog',
+		twitter: 'post',
+		youtube: 'video',
+	},
+} as const;
 
-export type ResourceKind = (typeof RESOURCE_KINDS)[number];
+export type ResourceKind = z.infer<typeof RESOURCE_TYPES.kinds>;
 
-export const CONTENT_RESOURCE_KINDS = ['blog', 'forum', 'post', 'video', 'paper'] as const satisfies readonly ResourceKind[];
+export type ContentResourceKind = Exclude<ResourceKind, 'image' | 'file'>;
 
-export type ContentResourceKind = (typeof CONTENT_RESOURCE_KINDS)[number];
+export type ResourcePlatform = keyof typeof RESOURCE_TYPES.platformKinds | null;
 
-export const RESOURCE_PLATFORMS = ['hackernews', 'lesswrong', 'twitter', 'youtube'] as const;
+export type ResourceIdentity = Readonly<{
+	kind: ResourceKind;
+	resourcePlatform: ResourcePlatform;
+}>;
 
-export type ResourcePlatform = (typeof RESOURCE_PLATFORMS)[number] | null;
-
-export const VALID_KIND_PLATFORMS = {
-	blog: [null, 'lesswrong'],
-	forum: ['hackernews'],
-	post: ['twitter'],
-	video: ['youtube'],
-	paper: [null],
-	image: [null],
-	file: [null],
-} as const satisfies Readonly<Record<ResourceKind, readonly ResourcePlatform[]>>;
-
-export type ResourceIdentity = {
-	[K in ResourceKind]: Readonly<{
-		kind: K;
-		resourcePlatform: (typeof VALID_KIND_PLATFORMS)[K][number];
-	}>;
-}[ResourceKind];
-
-export type ContentResourceIdentity = Extract<ResourceIdentity, { kind: ContentResourceKind }>;
-
-export const RESOURCE_KIND_DISPLAY_LABELS = {
-	blog: 'Blog',
-	forum: 'Forum',
-	post: 'Post',
-	video: 'Video',
-	paper: 'Paper',
-	image: 'Image',
-	file: 'File',
-} as const satisfies Readonly<Record<ResourceKind, string>>;
-
-export const RESOURCE_PLATFORM_DISPLAY_LABELS = {
-	hackernews: 'Hacker News',
-	lesswrong: 'LessWrong',
-	twitter: 'Twitter',
-	youtube: 'YouTube',
-} as const satisfies Readonly<Record<Exclude<ResourcePlatform, null>, string>>;
+export type ContentResourceIdentity = Readonly<{
+	kind: ContentResourceKind;
+	resourcePlatform: ResourcePlatform;
+}>;
 
 export function isContentResourceKind(value: unknown): value is ContentResourceKind {
-	return typeof value === 'string' && (CONTENT_RESOURCE_KINDS as readonly string[]).includes(value);
+	const kind = RESOURCE_TYPES.kinds.safeParse(value);
+	return kind.success && kind.data !== 'image' && kind.data !== 'file';
 }
 
 function isResourcePlatform(value: unknown): value is ResourcePlatform {
-	return value === null || (typeof value === 'string' && (RESOURCE_PLATFORMS as readonly string[]).includes(value));
+	return value === null || (typeof value === 'string' && Object.hasOwn(RESOURCE_TYPES.platformKinds, value));
 }
 
 export function parseResourceIdentity(kind: unknown, resourcePlatform: unknown): ResourceIdentity | null {
-	if (typeof kind !== 'string' || !(RESOURCE_KINDS as readonly string[]).includes(kind) || !isResourcePlatform(resourcePlatform)) {
-		return null;
-	}
-	const resourceKind = kind as ResourceKind;
-	const validPlatforms: readonly ResourcePlatform[] = VALID_KIND_PLATFORMS[resourceKind];
-	return validPlatforms.includes(resourcePlatform) ? ({ kind: resourceKind, resourcePlatform } as ResourceIdentity) : null;
+	const parsedKind = RESOURCE_TYPES.kinds.safeParse(kind);
+	if (!parsedKind.success || !isResourcePlatform(resourcePlatform)) return null;
+	const resourceKind = parsedKind.data;
+	if (resourcePlatform !== null && RESOURCE_TYPES.platformKinds[resourcePlatform] !== resourceKind) return null;
+	return { kind: resourceKind, resourcePlatform };
 }
 
 export function isContentResourceIdentity(identity: ResourceIdentity): identity is ContentResourceIdentity {
