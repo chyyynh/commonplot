@@ -1,11 +1,21 @@
+import type { WorkflowStep } from 'cloudflare:workers';
+import { NonRetryableError } from 'cloudflare:workflows';
+import { readBytesWithLimit } from '@core-shared/http';
+import type { ResourceCreator, ResourceKindMetadata } from '@core-shared/resource-metadata';
+import type { AcquiredMaterial } from '@core-shared/types';
 import { initSync, LiteParse } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
-import type { StoredPdfInput } from '../stored-resource';
-import type { AcquiredWebContent } from '../web-acquisition';
+import {
+	acquiredContentArtifact,
+	type NormalizedAcquiredContent,
+	NullPlatformAcquiredContentSchema,
+	normalizeAcquiredContent,
+	readAcquiredContentArtifact,
+} from '../acquired-content';
 
 export const PDF_MIME = 'application/pdf';
 
-export type PdfTextArtifact = {
+type PdfTextArtifact = {
 	chars: number;
 	pages: number;
 	status: 'ok' | 'needs_ocr';
@@ -16,12 +26,25 @@ const MIN_PDF_CHARS = 40;
 const MIN_PDF_CHARS_PER_PAGE = 20;
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
 
+export type StoredPdfAcquisitionInput = {
+	creators: ResourceCreator[];
+	fileType: string;
+	kindMetadata: ResourceKindMetadata | null;
+	originalLang: string;
+	publishedDate: string | null;
+	resourceId: string;
+	source: string;
+	storageKey: string;
+	summary: string | null;
+	title: string;
+};
+
 function extractedTextChars(markdown: string): number {
 	const content = markdown.replace(/^```[^\n]*$/gm, '').replace(/^[-_*]{3,}$/gm, '');
 	return content.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
 }
 
-export async function parsePdfBytes(bytes: Uint8Array): Promise<PdfTextArtifact> {
+async function parsePdfBytes(bytes: Uint8Array): Promise<PdfTextArtifact> {
 	initSync({ module: wasmModule });
 	const parser = new LiteParse({ ocrEnabled: false, outputFormat: 'markdown', imageMode: 'off' });
 	const raw = (await parser.parse(bytes)) as { text?: unknown; pages?: unknown };
@@ -34,7 +57,7 @@ export async function parsePdfBytes(bytes: Uint8Array): Promise<PdfTextArtifact>
 	return { text, pages, chars, status };
 }
 
-export async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise<AcquiredWebContent> {
+async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfAcquisitionInput): Promise<AcquiredMaterial<null>> {
 	if (resource.fileType !== PDF_MIME) {
 		throw new Error(`Stored resource ${resource.resourceId} is not an R2 PDF`);
 	}
@@ -55,4 +78,48 @@ export async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): 
 		creators: resource.creators,
 		kindMetadata: resource.kindMetadata,
 	};
+}
+
+export async function acquireFetchedPdfResponse(response: Response, finalUrl: string): Promise<AcquiredMaterial<null>> {
+	const parsed = await parsePdfBytes(await readBytesWithLimit(response, MAX_PDF_BYTES));
+	if (parsed.status === 'needs_ocr') throw new NonRetryableError(`PDF requires OCR: ${finalUrl}`);
+	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
+	let fileName = encodedName || 'document.pdf';
+	if (encodedName) {
+		try {
+			fileName = decodeURIComponent(encodedName) || 'document.pdf';
+		} catch {
+			fileName = encodedName;
+		}
+	}
+	const title = fileName.replace(/\.[a-z0-9]+$/i, '').trim();
+	if (!title) throw new Error(`File name has no title: ${fileName}`);
+	const source = new URL(finalUrl).hostname.replace(/^www\./, '');
+	return {
+		resourcePlatform: null,
+		fileType: PDF_MIME,
+		title,
+		markdown: parsed.text,
+		source,
+		originalLang: null,
+		publishedDate: null,
+		summary: parsed.text.slice(0, 500) || null,
+		creators: [],
+		kindMetadata: { siteName: source },
+	};
+}
+
+export async function stageStoredPdfAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	resource: StoredPdfAcquisitionInput,
+): Promise<NormalizedAcquiredContent<null>> {
+	return readAcquiredContentArtifact(
+		await step.do(
+			'acquire-stored-pdf-v2',
+			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+			async () => acquiredContentArtifact(await normalizeAcquiredContent(await acquireStoredPdf(env, resource))),
+		),
+		NullPlatformAcquiredContentSchema,
+	);
 }

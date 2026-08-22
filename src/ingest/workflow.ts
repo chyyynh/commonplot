@@ -7,12 +7,6 @@ import { loadResourceReacquisitionInput, loadStoredPdfInput } from '@ingest/stor
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
 import {
-	acquiredContentArtifact,
-	NullPlatformAcquiredContentSchema,
-	normalizeAcquiredContent,
-	readAcquiredContentArtifact,
-} from './acquired-content';
-import {
 	type AcquiredContent,
 	ResourceProcessingRejectedError,
 	type ResourceResolutionOrigin,
@@ -20,7 +14,7 @@ import {
 	stageSavedUrlAcquisition,
 } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
-import { acquireStoredPdf } from './platforms/pdf';
+import { stageStoredPdfAcquisition } from './platforms/pdf';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import { markStoredBlobProcessingFailed, type PersistProcessedTarget, persistProcessedResource } from './resource-persistence';
@@ -131,14 +125,7 @@ async function resolveProcessingCall(
 		);
 		return {
 			processingId: target.resourceId,
-			acquiredContent: await readAcquiredContentArtifact(
-				await step.do(
-					'acquire-stored-pdf-v1',
-					{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-					async () => acquiredContentArtifact(await normalizeAcquiredContent(await acquireStoredPdf(env, storedPdf))),
-				),
-				NullPlatformAcquiredContentSchema,
-			),
+			acquiredContent: await stageStoredPdfAcquisition(env, step, storedPdf),
 			origin: storedPdf,
 			translatePaperUrl: false,
 			persistenceTarget: {

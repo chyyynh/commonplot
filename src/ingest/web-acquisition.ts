@@ -1,17 +1,17 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { fetchWithTimeout, readBytesWithLimit, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
+import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import { literalCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { extractFromHtml } from '@extractus/article-extractor';
 import { acquisitionResultArtifact, DEFAULT_ACQUISITION_STEP_CONFIG, normalizeAcquiredContent } from './acquired-content';
-import { PDF_MIME, parsePdfBytes } from './platforms/pdf';
+import { markdownFromHtml } from './document-conversion';
+import { acquireFetchedPdfResponse, PDF_MIME } from './platforms/pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
-const GENERIC_PDF_MAX_BYTES = 25 * 1024 * 1024;
 const MIN_ARTICLE_CONTENT_CHARS = 180;
 
 type ExtractedHtmlArticle = {
@@ -52,96 +52,9 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 	};
 }
 
-export type AcquiredWebContent = AcquiredMaterial<null>;
+type AcquiredWebContent = AcquiredMaterial<null>;
 
-export type PlatformRedirect = { redirectUrl: string };
-
-function urlHost(url: string): string {
-	return new URL(url).hostname.replace(/^www\./, '');
-}
-
-function stripLeadingFrontmatter(markdown: string): string {
-	return markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '').trim();
-}
-
-async function markdownFromDocument(
-	env: CoreEnv,
-	document: MarkdownDocument,
-	context: { feature: string; processingId?: string },
-	conversionOptions?: ConversionOptions,
-): Promise<string> {
-	const result = await env.AI.toMarkdown(document, {
-		gateway: {
-			id: 'core-ingest',
-			collectLog: true,
-			retries: { maxAttempts: 1 },
-			metadata: {
-				feature: context.feature,
-				environment: env.AI_GATEWAY_ENVIRONMENT,
-				...(context.processingId ? { processing_id: context.processingId } : {}),
-			},
-		},
-		extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
-		...(conversionOptions ? { conversionOptions } : {}),
-	});
-	// Conversion failures are returned in-band rather than thrown.
-	if (result.format === 'error') throw new Error(`Workers AI toMarkdown failed: ${result.error}`);
-	return stripLeadingFrontmatter(result.data);
-}
-
-export function markdownFromHtml(env: CoreEnv, html: string, url: string, processingId?: string): Promise<string> {
-	return markdownFromDocument(
-		env,
-		{
-			name: `${urlHost(url)}.html`,
-			blob: new Blob([html], { type: 'text/html' }),
-		},
-		{ feature: 'html-to-markdown', processingId },
-		{ html: { hostname: new URL(url).hostname } },
-	);
-}
-
-export function markdownFromXml(env: CoreEnv, xml: string, processingId?: string): Promise<string> {
-	return markdownFromDocument(
-		env,
-		{ name: 'openalex.grobid.xml', blob: new Blob([xml], { type: 'application/xml' }) },
-		{ feature: 'xml-to-markdown', processingId },
-	);
-}
-
-async function acquirePdfBytes(bytes: Uint8Array, url: string): Promise<AcquiredWebContent> {
-	const parsed = await parsePdfBytes(bytes);
-	if (parsed.status === 'needs_ocr') throw new NonRetryableError(`PDF requires OCR: ${url}`);
-	const encodedName = new URL(url).pathname.split('/').filter(Boolean).at(-1) ?? '';
-	let fileName = encodedName || 'document.pdf';
-	if (encodedName) {
-		try {
-			fileName = decodeURIComponent(encodedName) || 'document.pdf';
-		} catch {
-			fileName = encodedName;
-		}
-	}
-	const title = fileName.replace(/\.[a-z0-9]+$/i, '').trim();
-	if (!title) throw new Error(`File name has no title: ${fileName}`);
-	const source = urlHost(url);
-	return {
-		resourcePlatform: null,
-		fileType: PDF_MIME,
-		title,
-		markdown: parsed.text,
-		source,
-		originalLang: null,
-		publishedDate: null,
-		summary: parsed.text.slice(0, 500) || null,
-		creators: [],
-		kindMetadata: { siteName: source },
-	};
-}
-
-export async function acquireFetchedPdfResponse(response: Response, finalUrl: string): Promise<AcquiredWebContent> {
-	const bytes = await readBytesWithLimit(response, GENERIC_PDF_MAX_BYTES);
-	return acquirePdfBytes(bytes, finalUrl);
-}
+type PlatformRedirect = { redirectUrl: string };
 
 async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, processingId?: string): Promise<AcquiredWebContent> {
 	const article = await extractHtmlArticle(html, url);

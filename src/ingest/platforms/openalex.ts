@@ -9,9 +9,10 @@ import {
 	paperIdentityFromIdentifiers,
 } from '@core-shared/paper-identity';
 import type { PaperRelationItem, PaperRelationSnapshot } from '@core-shared/resource-metadata';
-import type { PaperMetadata } from '@core-shared/types';
+import type { AcquiredMaterial, PaperMetadata } from '@core-shared/types';
 import { z } from 'zod';
-import { type AcquiredWebContent, acquireFetchedPdfResponse, markdownFromXml } from '../web-acquisition';
+import { markdownFromXml } from '../document-conversion';
+import { acquireFetchedPdfResponse } from './pdf';
 
 const OPENALEX_BASE = 'https://api.openalex.org';
 const OPENALEX_CONTENT_HOST = 'content.openalex.org';
@@ -314,7 +315,7 @@ export async function resolveOpenAlexPaper(input: {
 	return normalizeOpenAlexWork(work, identifiers, relations);
 }
 
-export async function acquireOpenAlexPdf(input: { apiKey?: string; contentPdfUrl: string }): Promise<AcquiredWebContent> {
+export async function acquireOpenAlexPdf(input: { apiKey?: string; contentPdfUrl: string }): Promise<AcquiredMaterial<null>> {
 	const apiKey = input.apiKey?.trim();
 	if (!apiKey) throw new Error('OpenAlex content download requires an API key');
 	const contentUrl = new URL(input.contentPdfUrl);
