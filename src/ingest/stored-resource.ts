@@ -15,6 +15,7 @@ import {
 	parseResourceIdentity,
 	type ResourceIdentity,
 } from '@core-shared/resource-types';
+import { parseExternalHttpUrl } from '@core-shared/url';
 import type { CoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
 import { sql } from 'drizzle-orm';
@@ -101,7 +102,7 @@ export async function assertResourceProcessable(db: CoreDb, resourceId: string):
 	if (!identity || !isContentResourceKind(identity.kind)) {
 		throw new Error(`Resource kind is not processable by core: ${identity?.kind ?? row.kind}`);
 	}
-	if (!row.url?.trim()) throw new Error(`Resource ${resourceId} is not URL-backed and cannot be reacquired`);
+	if (!parseExternalHttpUrl(row.url)) throw new Error(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
 }
 
 export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promise<StoredPdfInput> {
@@ -221,11 +222,11 @@ export async function loadResourceReacquisitionInput(db: CoreDb, resourceId: str
 	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
 	storedResourceIdentity(row);
 	const base = storedResourceBase(row);
-	const url = base.url?.trim();
-	if (!url) throw new Error(`Resource ${resourceId} is not URL-backed and cannot be reacquired`);
+	const url = parseExternalHttpUrl(base.url);
+	if (!url) throw new Error(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
 	return {
 		...base,
-		url,
+		url: url.toString(),
 		isMonitoredOnly: row.is_monitored_only,
 		sourceAvatarUrl: row.source_avatar_url?.trim() || null,
 		translatePaperUrl: row.translate_paper_url,

@@ -44,7 +44,10 @@ const ResourceDraftTargetSchema = z
 	.object({
 		kind: z.literal('draft'),
 		admission: DraftAdmissionSchema,
-		url: z.url().max(2_048),
+		url: z
+			.url({ protocol: /^https?$/ })
+			.max(2_048)
+			.refine((value) => parseExternalHttpUrl(value) !== null, 'URL credentials are not allowed'),
 		sourceHints: z
 			.object({
 				summary: z.string().max(20_000).optional(),

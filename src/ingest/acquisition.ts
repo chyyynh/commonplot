@@ -2,7 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource-identifiers';
 import type { AcquiredResource, MaterializedResource, ResolvedResource } from '@core-shared/types';
-import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
+import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
 import { stagePaperProcessing } from './platforms/paper';
@@ -12,12 +12,6 @@ import { materializeAcquiredResource, type ResourceMaterializationOrigin } from 
 import { stageWebAcquisition } from './web-acquisition';
 
 export type ResourceResolutionOrigin = ResourceMaterializationOrigin & Pick<MaterializedResource, 'resourceIdentifiers'>;
-
-function validateAcquisitionUrl(url: string): string {
-	const parsed = parseExternalHttpUrl(url);
-	if (!parsed) throw new Error('Only http(s) URLs without credentials are allowed');
-	return normalizeUrl(parsed.toString());
-}
 
 export async function stageUrlAcquisition(
 	env: CoreEnv,
@@ -31,12 +25,12 @@ export async function stageUrlAcquisition(
 	},
 	providerSequence?: string,
 ): Promise<AcquiredResource> {
-	let acquisitionUrl = validateAcquisitionUrl(input.sourceUrl);
+	let acquisitionUrl = normalizeUrl(input.sourceUrl);
 	let detected = detectResourceUrl(acquisitionUrl);
 	if (!detected) {
 		const acquired = await stageWebAcquisition(env, step, { processingId: input.processingId, url: acquisitionUrl });
 		if (!('redirectUrl' in acquired)) return { ...acquired, specialization: null };
-		acquisitionUrl = validateAcquisitionUrl(acquired.redirectUrl);
+		acquisitionUrl = acquired.redirectUrl;
 		detected = detectResourceUrl(acquisitionUrl);
 		if (!detected) throw new Error(`Web acquisition ${input.processingId} returned an undetectable platform redirect`);
 	}
