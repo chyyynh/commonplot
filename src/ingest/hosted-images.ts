@@ -1,3 +1,5 @@
+// Shared media rehosting for every Resource platform; this is not the image Resource kind adapter.
+import type { WorkflowStep } from 'cloudflare:workers';
 import { sha256Hex } from '@core-shared/hash';
 import { fetchWithTimeout } from '@core-shared/http';
 import { hostedResourceImageUrl } from '@core-shared/resource-image-fields';
@@ -80,7 +82,7 @@ function deliveryUrl(image: ImageMetadata): string {
 	return hosted;
 }
 
-export async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Promise<HostedResourceImage> {
+async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Promise<HostedResourceImage> {
 	if (normalizedResourceImageUrl(sourceUrl) !== sourceUrl) throw new TypeError('Resource image source URL is invalid');
 	const alreadyHosted = hostedResourceImageUrl(sourceUrl);
 	if (alreadyHosted) return { deliveryUrl: alreadyHosted, sourceUrl };
@@ -125,4 +127,26 @@ export async function rehostResourceImage(images: ImagesBinding, sourceUrl: stri
 		source_host: new URL(sourceUrl).hostname,
 	});
 	return { deliveryUrl: deliveryUrl(image), sourceUrl };
+}
+
+export async function stageResourceImages(
+	env: CoreEnv,
+	step: WorkflowStep,
+	processingId: string,
+	sourceUrls: readonly string[],
+): Promise<HostedResourceImage[]> {
+	if (sourceUrls.length === 0) return [];
+	const images = await step.do(
+		'rehost-resource-images-v2',
+		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '10 minutes' },
+		async () => {
+			const hosted: HostedResourceImage[] = [];
+			for (let offset = 0; offset < sourceUrls.length; offset += 3) {
+				hosted.push(...(await Promise.all(sourceUrls.slice(offset, offset + 3).map((url) => rehostResourceImage(env.IMAGES, url)))));
+			}
+			return hosted;
+		},
+	);
+	console.info({ tag: 'RESOURCE_IMAGE', event: 'eager_rehost_completed', processing_id: processingId, ready: images.length });
+	return images;
 }

@@ -60,20 +60,17 @@ function hostedImageMap(images: readonly HostedResourceImage[]): ReadonlyMap<str
 	return result;
 }
 
-function mappedImageUrl(rawUrl: string | null | undefined, images: ReadonlyMap<string, string>): string | null {
-	const sourceUrl = normalizedResourceImageUrl(rawUrl);
-	return sourceUrl ? (images.get(sourceUrl) ?? null) : null;
-}
+type MapImageUrl = (rawUrl: string | null | undefined) => string | null;
 
-function withHostedAvatar(creator: ResourceCreator, images: ReadonlyMap<string, string>): ResourceCreator {
+function withHostedAvatar(creator: ResourceCreator, mapImageUrl: MapImageUrl): ResourceCreator {
 	const { avatarUrl: sourceAvatarUrl, ...rest } = creator;
-	const avatarUrl = mappedImageUrl(sourceAvatarUrl, images);
+	const avatarUrl = mapImageUrl(sourceAvatarUrl);
 	return avatarUrl ? { ...rest, avatarUrl } : rest;
 }
 
-function withHostedPostMetadata(metadata: PostKindMetadata, images: ReadonlyMap<string, string>): PostKindMetadata {
+function withHostedPostMetadata(metadata: PostKindMetadata, mapImageUrl: MapImageUrl): PostKindMetadata {
 	const attachments = metadata.attachments.flatMap((attachment) => {
-		const url = mappedImageUrl(attachment.url, images);
+		const url = mapImageUrl(attachment.url);
 		return url ? [{ ...attachment, url }] : [];
 	});
 	return {
@@ -83,7 +80,7 @@ function withHostedPostMetadata(metadata: PostKindMetadata, images: ReadonlyMap<
 			? {
 					quote: {
 						...metadata.quote,
-						creator: withHostedAvatar(metadata.quote.creator, images),
+						creator: withHostedAvatar(metadata.quote.creator, mapImageUrl),
 					},
 				}
 			: {}),
@@ -95,15 +92,23 @@ export function hostedResourceImageFields(
 	images: readonly HostedResourceImage[],
 ): { creators: ResourceCreator[]; kindMetadata: ResourceKindMetadata | null; ogImageUrl: string | null } {
 	const imageMap = hostedImageMap(images);
-	const sourceUrls = resourceImageSourceUrls(resource);
-	if (imageMap.size !== sourceUrls.length || sourceUrls.some((sourceUrl) => !imageMap.has(sourceUrl))) {
-		throw new TypeError('Hosted Resource images do not cover every source');
-	}
-	const postMetadata = resourcePostMetadata(resource);
-	const kindMetadata = postMetadata ? withHostedPostMetadata(postMetadata, imageMap) : (resource.kindMetadata ?? null);
-	return {
-		creators: resource.creators?.map((creator) => withHostedAvatar(creator, imageMap)) ?? [],
-		kindMetadata,
-		ogImageUrl: mappedImageUrl(resource.ogImageUrl, imageMap),
+	const consumedSources = new Set<string>();
+	const mapImageUrl: MapImageUrl = (rawUrl) => {
+		if (rawUrl === null || rawUrl === undefined) return null;
+		const sourceUrl = normalizedResourceImageUrl(rawUrl);
+		if (!sourceUrl) throw new TypeError('Resource image source URL is invalid');
+		const deliveryUrl = imageMap.get(sourceUrl);
+		if (!deliveryUrl) throw new TypeError('Hosted Resource images do not cover every source');
+		consumedSources.add(sourceUrl);
+		return deliveryUrl;
 	};
+	const postMetadata = resourcePostMetadata(resource);
+	const kindMetadata = postMetadata ? withHostedPostMetadata(postMetadata, mapImageUrl) : (resource.kindMetadata ?? null);
+	const result = {
+		creators: resource.creators?.map((creator) => withHostedAvatar(creator, mapImageUrl)) ?? [],
+		kindMetadata,
+		ogImageUrl: mapImageUrl(resource.ogImageUrl),
+	};
+	if (consumedSources.size !== imageMap.size) throw new TypeError('Hosted Resource images do not cover every source');
+	return result;
 }

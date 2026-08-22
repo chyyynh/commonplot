@@ -1,5 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
-import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
+import { resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
 import { DEFAULT_RESOURCE_LANG } from '@core-shared/resource-types';
 import type { ResolvedResource } from '@core-shared/types';
 import { connectCoreDb } from '@db/connection';
@@ -8,8 +8,8 @@ import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
 import { stageStoredPdfResource, stageUrlAcquisition } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
+import { stageResourceImages } from './hosted-images';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './resource-admission';
-import { rehostResourceImage } from './resource-image-rehosting';
 import { type PersistProcessedTarget, persistProcessedResource } from './resource-persistence';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 
@@ -17,33 +17,6 @@ const WORKFLOW_ENQUEUE_STEP_CONFIG = {
 	retries: DURABLE_WORKFLOW_RETRIES,
 	timeout: '30 seconds',
 } as const satisfies WorkflowStepConfig;
-async function stageResourceImages(
-	env: CoreEnv,
-	step: WorkflowStep,
-	processingId: string,
-	sourceUrls: readonly string[],
-): Promise<HostedResourceImage[]> {
-	if (sourceUrls.length === 0) return [];
-	const images = await step.do(
-		'rehost-resource-images-v2',
-		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '10 minutes' },
-		async () => {
-			const hosted: HostedResourceImage[] = [];
-			for (let offset = 0; offset < sourceUrls.length; offset += 3) {
-				hosted.push(...(await Promise.all(sourceUrls.slice(offset, offset + 3).map((url) => rehostResourceImage(env.IMAGES, url)))));
-			}
-			return hosted;
-		},
-	);
-	console.info({
-		tag: 'RESOURCE_IMAGE',
-		event: 'eager_rehost_completed',
-		processing_id: processingId,
-		ready: images.length,
-	});
-	return images;
-}
-
 type ResolvedProcessingCall = {
 	resource: ResolvedResource;
 	persistenceTarget: PersistProcessedTarget;
