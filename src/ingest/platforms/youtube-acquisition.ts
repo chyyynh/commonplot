@@ -9,6 +9,7 @@ import type {
 	YouTubeChapter,
 	YouTubeHighlights,
 	YouTubeResourceSpecialization,
+	YouTubeTranscript,
 } from '@core-shared/types';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
@@ -62,7 +63,10 @@ const YouTubeChannelsResponseSchema = z.object({
 });
 type YouTubeThumbnails = z.infer<typeof YouTubeThumbnailsSchema>;
 type YouTubeVideosResponse = z.infer<typeof YouTubeVideosResponseSchema>;
-type YouTubeAcquisition = Omit<AcquiredMaterial<'youtube'>, 'markdown' | 'summary'> & { description: string };
+type YouTubeAcquisition = Omit<AcquiredMaterial<'youtube'>, 'markdown' | 'summary'> & {
+	description: string;
+	transcript: YouTubeTranscript;
+};
 
 function bestThumbnailUrl(thumbnails: YouTubeThumbnails): string | null {
 	return (
@@ -260,8 +264,7 @@ async function scrapeYouTube(
 			...(stats.commentCount ? { commentCount: Number.parseInt(stats.commentCount, 10) } : {}),
 		},
 		previewImageUrl: thumbnailUrl,
-		youtubeTranscript: {
-			videoId: video.id,
+		transcript: {
 			segments: transcript,
 			language: snippet.defaultAudioLanguage ?? null,
 			chapters,
@@ -281,8 +284,8 @@ export async function stageYouTubeAcquisition(
 		async () => Response.json(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY, input.monitoredOnly, input.sourceAvatarUrl)).body!,
 	);
 	const acquired = await new Response(contentStream).json<YouTubeAcquisition>();
-	const { description, youtubeTranscript, ...material } = acquired;
-	const transcriptMarkdown = youtubeTranscript.segments
+	const { description, transcript, ...material } = acquired;
+	const transcriptMarkdown = transcript.segments
 		.map((segment) => segment.text.trim())
 		.filter(Boolean)
 		.join('\n');
@@ -290,7 +293,7 @@ export async function stageYouTubeAcquisition(
 		...material,
 		markdown: transcriptMarkdown || description.trim(),
 		summary: description.substring(0, 500) || null,
-		specialization: await stageYouTubeEnrichment(env, step, acquired, input.processingId),
+		specialization: await stageYouTubeEnrichment(env, step, transcript, input.videoId, input.processingId),
 	};
 }
 
@@ -316,11 +319,10 @@ const HIGHLIGHTS_SYSTEM_PROMPT = `你是專業的影片內容分析師。分析 
 async function stageYouTubeEnrichment(
 	env: CoreEnv,
 	step: WorkflowStep,
-	acquired: YouTubeAcquisition,
+	transcript: YouTubeTranscript,
+	videoId: string,
 	processingId: string,
 ): Promise<YouTubeResourceSpecialization> {
-	const transcript = acquired.youtubeTranscript;
-	const videoId = acquired.platformId;
 	const highlights = transcript.segments.length
 		? await step
 				.do(
@@ -340,12 +342,7 @@ async function stageYouTubeEnrichment(
 		: null;
 	return {
 		kind: 'youtube',
-		transcript: {
-			segments: transcript.segments,
-			language: transcript.language,
-			chapters: transcript.chapters,
-			chaptersFromDescription: transcript.chaptersFromDescription,
-		},
+		transcript,
 		highlights,
 	};
 }

@@ -72,8 +72,7 @@ export interface YouTubeHighlights {
 	generatedAt: string;
 }
 
-export interface YoutubeTranscript {
-	videoId: string;
+export interface YouTubeTranscript {
 	segments: TranscriptSegment[];
 	language: string | null;
 	chapters: YouTubeChapter[];
@@ -82,7 +81,7 @@ export interface YoutubeTranscript {
 
 export type YouTubeResourceSpecialization = Readonly<{
 	kind: 'youtube';
-	transcript: Omit<YoutubeTranscript, 'videoId'> | null;
+	transcript: YouTubeTranscript | null;
 	highlights: YouTubeHighlights | null;
 }>;
 
@@ -114,11 +113,8 @@ type AcquiredMaterialBase<T extends ResourcePlatform> = {
 	kindMetadata: ResourceKindMetadata;
 };
 
-type AcquiredMaterialSpecialization<T extends ResourcePlatform> = T extends 'youtube'
-	? { platformId: string; youtubeTranscript: YoutubeTranscript }
-	: T extends Exclude<ResourcePlatform, null>
-		? { platformId: string }
-		: unknown;
+type AcquiredMaterialSpecialization<T extends ResourcePlatform> =
+	T extends Exclude<ResourcePlatform, null> ? { platformId: string } : unknown;
 
 export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = T extends unknown
 	? AcquiredMaterialBase<T> & AcquiredMaterialSpecialization<T>
@@ -127,7 +123,7 @@ export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = T 
 /** Canonical adapter output after provider-specific Workflow steps have completed. */
 export type AcquiredResource =
 	| (Exclude<AcquiredMaterial, AcquiredMaterial<'youtube'>> & { specialization: null })
-	| (Omit<AcquiredMaterial<'youtube'>, 'youtubeTranscript'> & { specialization: YouTubeResourceSpecialization });
+	| (AcquiredMaterial<'youtube'> & { specialization: YouTubeResourceSpecialization });
 
 export interface PaperMetadata {
 	title?: string;
