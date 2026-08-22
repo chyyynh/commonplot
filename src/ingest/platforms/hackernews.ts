@@ -7,7 +7,14 @@ import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { acquisitionResultArtifact, DEFAULT_ACQUISITION_STEP_CONFIG, normalizeAcquiredContent } from '../acquired-content';
+import {
+	acquiredContentSchema,
+	acquisitionResultArtifact,
+	DEFAULT_ACQUISITION_STEP_CONFIG,
+	type NormalizedAcquiredContent,
+	normalizeAcquiredContent,
+	readAcquisitionResultArtifact,
+} from '../acquired-content';
 
 const HN_ALGOLIA_API = 'https://hn.algolia.com/api/v1/items';
 const HN_ITEM_MAX_BYTES = 5 * 1024 * 1024;
@@ -46,7 +53,7 @@ const HnCommentSchema: z.ZodType<HnComment> = z.lazy(() =>
 // Shape of Algolia's /items/{id} response. It carries the whole comment tree in
 // `children` but has no `descendants` — that is a Firebase field, so discussion
 // size has to be counted from the tree.
-export const HackerNewsItemSchema = z.object({
+const HackerNewsItemSchema = z.object({
 	id: z.number().int().positive(),
 	title: optionalStringSchema,
 	url: optionalStringSchema,
@@ -68,6 +75,8 @@ export const HackerNewsItemSchema = z.object({
 
 export type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
 export type HackerNewsAcquiredContent = AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem };
+const HackerNewsAcquiredContentSchema: z.ZodType<NormalizedAcquiredContent<'hackernews'> & { hackerNewsItem: HackerNewsItem }> =
+	acquiredContentSchema('hackernews', { hackerNewsItem: HackerNewsItemSchema, platformId: z.string().trim().min(1) });
 
 /** Every node in the tree, deleted ones included — the closest analogue to the count HN itself shows. */
 function countHnComments(children: HnComment[] | undefined): number {
@@ -156,12 +165,14 @@ async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquiredConte
 	};
 }
 
-export function stageHackerNewsAcquisition(
-	step: WorkflowStep,
-	input: { itemId: string; route: number; url: string },
-): Promise<ReadableStream<Uint8Array>> {
-	return step.do(`acquire-hackernews-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
-		acquisitionResultArtifact(async () => normalizeAcquiredContent({ ...(await scrapeHackerNews(input.itemId)), canonicalUrl: input.url })),
+export async function stageHackerNewsAcquisition(step: WorkflowStep, input: { itemId: string; route: number; url: string }) {
+	return readAcquisitionResultArtifact(
+		await step.do(`acquire-hackernews-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
+			acquisitionResultArtifact(async () =>
+				normalizeAcquiredContent({ ...(await scrapeHackerNews(input.itemId)), canonicalUrl: input.url }),
+			),
+		),
+		HackerNewsAcquiredContentSchema,
 	);
 }
 

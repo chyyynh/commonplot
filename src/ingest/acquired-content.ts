@@ -100,6 +100,19 @@ export async function acquisitionResultArtifact<T extends NormalizedAcquiredCont
 	return new Blob([JSON.stringify(result)], { type: 'application/json' }).stream();
 }
 
+export async function readAcquisitionResultArtifact<T>(
+	artifact: ReadableStream<Uint8Array>,
+	contentSchema: z.ZodType<T>,
+): Promise<AcquisitionArtifactResult<T>> {
+	return z
+		.discriminatedUnion('status', [
+			z.object({ status: z.literal('acquired'), content: contentSchema }),
+			z.object({ status: z.literal('redirect'), redirectUrl: z.url() }),
+			z.object({ status: z.literal('rejected'), message: z.string().trim().min(1).max(500) }),
+		])
+		.parse(await new Response(artifact).json());
+}
+
 export function acquiredContentArtifact(acquired: NormalizedAcquiredContent): ReadableStream<Uint8Array> {
 	return new Blob([JSON.stringify(acquired)], { type: 'application/json' }).stream();
 }

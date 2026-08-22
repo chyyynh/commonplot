@@ -4,11 +4,22 @@ import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import { literalCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
-import { acquisitionResultArtifact, DEFAULT_ACQUISITION_STEP_CONFIG, normalizeAcquiredContent } from '../acquired-content';
+import { z } from 'zod';
+import {
+	acquiredContentSchema,
+	acquisitionResultArtifact,
+	DEFAULT_ACQUISITION_STEP_CONFIG,
+	type NormalizedAcquiredContent,
+	normalizeAcquiredContent,
+	readAcquisitionResultArtifact,
+} from '../acquired-content';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
 const LESSWRONG_RESPONSE_MAX_BYTES = 5 * 1024 * 1024;
 const LESSWRONG_POST_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+const LessWrongAcquiredContentSchema: z.ZodType<NormalizedAcquiredContent<'lesswrong'>> = acquiredContentSchema('lesswrong', {
+	platformId: z.string().trim().min(1),
+});
 
 const POST_QUERY = `query PostForIngest($id: String!) {
   post(selector: { documentId: $id }) {
@@ -84,11 +95,13 @@ async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<'lesswr
 	};
 }
 
-export function stageLessWrongAcquisition(
-	step: WorkflowStep,
-	input: { postId: string; route: number; url: string },
-): Promise<ReadableStream<Uint8Array>> {
-	return step.do(`acquire-lesswrong-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
-		acquisitionResultArtifact(async () => normalizeAcquiredContent({ ...(await scrapeLessWrong(input.postId)), canonicalUrl: input.url })),
+export async function stageLessWrongAcquisition(step: WorkflowStep, input: { postId: string; route: number; url: string }) {
+	return readAcquisitionResultArtifact(
+		await step.do(`acquire-lesswrong-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
+			acquisitionResultArtifact(async () =>
+				normalizeAcquiredContent({ ...(await scrapeLessWrong(input.postId)), canonicalUrl: input.url }),
+			),
+		),
+		LessWrongAcquiredContentSchema,
 	);
 }

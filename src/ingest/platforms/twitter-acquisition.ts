@@ -4,7 +4,15 @@ import { readTextWithLimit } from '@core-shared/http';
 import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
 import { extractTweetId } from '@core-shared/url';
-import { acquisitionResultArtifact, DEFAULT_ACQUISITION_STEP_CONFIG, normalizeAcquiredContent } from '../acquired-content';
+import { z } from 'zod';
+import {
+	acquiredContentSchema,
+	acquisitionResultArtifact,
+	DEFAULT_ACQUISITION_STEP_CONFIG,
+	type NormalizedAcquiredContent,
+	normalizeAcquiredContent,
+	readAcquisitionResultArtifact,
+} from '../acquired-content';
 import {
 	assertExpectedTwitterThreadPost,
 	buildTwitterAuthorThread,
@@ -27,6 +35,9 @@ import { fetchTwitterProvider } from './twitter-provider';
 
 const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
 const TWITTER_SEARCH_MAX_REQUESTS = 256;
+const TwitterAcquiredContentSchema: z.ZodType<NormalizedAcquiredContent<'twitter'>> = acquiredContentSchema('twitter', {
+	platformId: z.string().trim().min(1),
+});
 
 // A source watermark can advance after a sequenced draft is admitted, so the
 // Twitter adapter must outlive a provider outage. The bounded retry horizon
@@ -447,7 +458,7 @@ async function scrapeTweet(
 	return { ...mergeResolvedTwitterThread(resolved, thread, tweetId), platformId: tweetId };
 }
 
-export function stageTwitterAcquisition(
+export async function stageTwitterAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
@@ -458,24 +469,27 @@ export function stageTwitterAcquisition(
 		tweetId: string;
 		url: string;
 	},
-): Promise<ReadableStream<Uint8Array>> {
-	return step.do(
-		`acquire-twitter-v1-${input.route}`,
-		input.providerSequence ? TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG : DEFAULT_ACQUISITION_STEP_CONFIG,
-		(ctx) => {
-			if (input.providerSequence) {
-				logSequencedTwitterAcquisitionAttempt(input.processingId, input.providerSequence, ctx.attempt);
-			}
-			return acquisitionResultArtifact(async () =>
-				normalizeAcquiredContent({
-					...(await scrapeTweet(input.tweetId, env.KAITO_API_KEY, {
-						discoverUnsignaledThread: input.discoverRelatedContent,
-						expectedReplyId: input.providerSequence,
-					})),
-					canonicalUrl: input.url,
-				}),
-			);
-		},
+) {
+	return readAcquisitionResultArtifact(
+		await step.do(
+			`acquire-twitter-v1-${input.route}`,
+			input.providerSequence ? TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG : DEFAULT_ACQUISITION_STEP_CONFIG,
+			(ctx) => {
+				if (input.providerSequence) {
+					logSequencedTwitterAcquisitionAttempt(input.processingId, input.providerSequence, ctx.attempt);
+				}
+				return acquisitionResultArtifact(async () =>
+					normalizeAcquiredContent({
+						...(await scrapeTweet(input.tweetId, env.KAITO_API_KEY, {
+							discoverUnsignaledThread: input.discoverRelatedContent,
+							expectedReplyId: input.providerSequence,
+						})),
+						canonicalUrl: input.url,
+					}),
+				);
+			},
+		),
+		TwitterAcquiredContentSchema,
 	);
 }
 

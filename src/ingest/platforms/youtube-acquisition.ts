@@ -13,7 +13,14 @@ import type {
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { acquisitionResultArtifact, DEFAULT_ACQUISITION_STEP_CONFIG, normalizeAcquiredContent } from '../acquired-content';
+import {
+	acquiredContentSchema,
+	acquisitionResultArtifact,
+	DEFAULT_ACQUISITION_STEP_CONFIG,
+	type NormalizedAcquiredContent,
+	normalizeAcquiredContent,
+	readAcquisitionResultArtifact,
+} from '../acquired-content';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
@@ -61,12 +68,16 @@ const YouTubeChannelsResponseSchema = z.object({
 		.optional(),
 	error: YouTubeApiErrorSchema.optional(),
 });
-export const YouTubeTranscriptSchema: z.ZodType<YoutubeTranscript> = z.object({
+const YouTubeTranscriptSchema: z.ZodType<YoutubeTranscript> = z.object({
 	videoId: z.string().min(1),
 	segments: z.array(z.object({ startTime: z.number(), endTime: z.number(), text: z.string() })),
 	language: z.string().nullable(),
 	chapters: z.array(z.object({ title: z.string(), startTime: z.number(), endTime: z.number().optional() })),
 	chaptersFromDescription: z.boolean(),
+});
+const YouTubeAcquiredContentSchema: z.ZodType<NormalizedAcquiredContent<'youtube'>> = acquiredContentSchema('youtube', {
+	platformId: z.string().trim().min(1),
+	youtubeTranscript: YouTubeTranscriptSchema,
 });
 
 type YouTubeThumbnails = z.infer<typeof YouTubeThumbnailsSchema>;
@@ -284,18 +295,21 @@ async function scrapeYouTube(
 	};
 }
 
-export function stageYouTubeAcquisition(
+export async function stageYouTubeAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: { monitoredOnly: boolean; route: number; sourceAvatarUrl: string | null; url: string; videoId: string },
-): Promise<ReadableStream<Uint8Array>> {
-	return step.do(`acquire-youtube-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
-		acquisitionResultArtifact(async () =>
-			normalizeAcquiredContent({
-				...(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY, input.monitoredOnly, input.sourceAvatarUrl)),
-				canonicalUrl: input.url,
-			}),
+) {
+	return readAcquisitionResultArtifact(
+		await step.do(`acquire-youtube-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
+			acquisitionResultArtifact(async () =>
+				normalizeAcquiredContent({
+					...(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY, input.monitoredOnly, input.sourceAvatarUrl)),
+					canonicalUrl: input.url,
+				}),
+			),
 		),
+		YouTubeAcquiredContentSchema,
 	);
 }
 

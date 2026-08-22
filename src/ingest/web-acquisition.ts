@@ -6,7 +6,15 @@ import { literalCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { extractFromHtml } from '@extractus/article-extractor';
-import { acquisitionResultArtifact, DEFAULT_ACQUISITION_STEP_CONFIG, normalizeAcquiredContent } from './acquired-content';
+import type { z } from 'zod';
+import {
+	acquiredContentSchema,
+	acquisitionResultArtifact,
+	DEFAULT_ACQUISITION_STEP_CONFIG,
+	type NormalizedAcquiredContent,
+	normalizeAcquiredContent,
+	readAcquisitionResultArtifact,
+} from './acquired-content';
 import { markdownFromHtml } from './document-conversion';
 import { acquireFetchedPdfResponse, PDF_MIME } from './platforms/pdf';
 
@@ -55,6 +63,7 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 type AcquiredWebContent = AcquiredMaterial<null>;
 
 type PlatformRedirect = { redirectUrl: string };
+const WebAcquiredContentSchema: z.ZodType<NormalizedAcquiredContent<null>> = acquiredContentSchema(null, {});
 
 async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, processingId?: string): Promise<AcquiredWebContent> {
 	const article = await extractHtmlArticle(html, url);
@@ -128,15 +137,14 @@ async function acquireWebResource(url: string, env: CoreEnv, processingId?: stri
 	return { ...(await acquireHtmlArticle(env, html, finalUrl, processingId)), canonicalUrl: finalUrl };
 }
 
-export function stageWebAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: { processingId: string; route: number; url: string },
-): Promise<ReadableStream<Uint8Array>> {
-	return step.do(`acquire-web-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
-		acquisitionResultArtifact(async () => {
-			const acquired = await acquireWebResource(input.url, env, input.processingId);
-			return 'redirectUrl' in acquired ? acquired : normalizeAcquiredContent(acquired);
-		}),
+export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { processingId: string; route: number; url: string }) {
+	return readAcquisitionResultArtifact(
+		await step.do(`acquire-web-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
+			acquisitionResultArtifact(async () => {
+				const acquired = await acquireWebResource(input.url, env, input.processingId);
+				return 'redirectUrl' in acquired ? acquired : normalizeAcquiredContent(acquired);
+			}),
+		),
+		WebAcquiredContentSchema,
 	);
 }
