@@ -1,50 +1,44 @@
 import { normalizeUrl } from '@core-shared/url';
-import { type CoreDb, withCoreDb } from '@db/client';
+import type { CoreDb } from '@db/connection';
 import { contentResourceIdentitySql } from '@db/resource-identity-sql';
 import { sql } from 'drizzle-orm';
 
 /** Re-admits only record-first app-owned blobs whose DB-to-Workflow handoff was interrupted. */
-export async function claimStalePendingBlobAdmissions(
-	env: CoreEnv,
-	olderThan: Date,
-	limit: number,
-): Promise<Array<{ resourceId: string }>> {
-	return withCoreDb(env, async (db) => {
-		const claimed = await db.execute<{ resource_id: string }>(sql`
-			WITH candidates AS (
-				SELECT id
-				FROM resources
-				WHERE enrichment_status = 'pending'
-				  AND scope = 'private'
-				  AND storage_key IS NOT NULL
-				  AND EXISTS (
-				    SELECT 1
-				    FROM user_files
-				    WHERE user_files.resource_id = resources.id
-				  )
-				  AND updated_at < ${olderThan}
-				  AND ${contentResourceIdentitySql({
-						kind: sql`kind`,
-						resourcePlatform: sql`resource_platform`,
-					})}
-				ORDER BY updated_at ASC, id ASC
-				FOR UPDATE SKIP LOCKED
-				LIMIT ${limit}
-			)
-			UPDATE resources AS resource
-			SET updated_at = NOW()
-			FROM candidates
-			WHERE resource.id = candidates.id
-			RETURNING resource.id::text AS resource_id
-		`);
-		return claimed.rows.map(({ resource_id }) => ({ resourceId: resource_id }));
-	});
+export async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limit: number): Promise<Array<{ resourceId: string }>> {
+	const claimed = await db.execute<{ resource_id: string }>(sql`
+		WITH candidates AS (
+			SELECT id
+			FROM resources
+			WHERE enrichment_status = 'pending'
+			  AND scope = 'private'
+			  AND storage_key IS NOT NULL
+			  AND EXISTS (
+			    SELECT 1
+			    FROM user_files
+			    WHERE user_files.resource_id = resources.id
+			  )
+			  AND updated_at < ${olderThan}
+			  AND ${contentResourceIdentitySql({
+					kind: sql`kind`,
+					resourcePlatform: sql`resource_platform`,
+				})}
+			ORDER BY updated_at ASC, id ASC
+			FOR UPDATE SKIP LOCKED
+			LIMIT ${limit}
+		)
+		UPDATE resources AS resource
+		SET updated_at = NOW()
+		FROM candidates
+		WHERE resource.id = candidates.id
+		RETURNING resource.id::text AS resource_id
+	`);
+	return claimed.rows.map(({ resource_id }) => ({ resourceId: resource_id }));
 }
 
 /**
  * Finds previously discovered Resources and atomically claims missing source
- * provenance. Provider monitors supply canonical drafts; the store owns the
- * database handshake and returns only the admission decision they need.
+ * provenance. Provider monitors supply canonical drafts; the store returns
+ * only the admission decision they need.
  */
 export async function claimExistingDiscoveredResources(
 	db: CoreDb,

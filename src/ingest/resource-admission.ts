@@ -2,7 +2,7 @@ import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contract
 import { sha256Hex } from '@core-shared/hash';
 import { canonicalizeOptionalResourceLang } from '@core-shared/resource-types';
 import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
-import { withCoreDb } from '@db/client';
+import type { CoreDb } from '@db/connection';
 import { claimExistingDiscoveredResources, claimStalePendingBlobAdmissions } from '@ingest/domain/resource-admission-store';
 import { cleanString, dateValue, requiredString, stringArrayValue } from '@ingest/domain/resource-values';
 import { z } from 'zod';
@@ -221,10 +221,11 @@ async function admitDiscoveredSourceResource(
 
 export async function admitDiscoveredSourceResources(
 	env: CoreEnv,
+	db: CoreDb,
 	drafts: SourceResourceDraft[],
 ): Promise<Array<PromiseSettledResult<SourceResourceAdmissionOutcome>>> {
 	if (!drafts.length) return [];
-	const existing = await withCoreDb(env, (db) => claimExistingDiscoveredResources(db, drafts));
+	const existing = await claimExistingDiscoveredResources(db, drafts);
 	const existingByUrl = new Map(existing.map((resource) => [normalizeUrl(resource.url), resource]));
 	const outcomes: Array<PromiseSettledResult<SourceResourceAdmissionOutcome>> = [];
 	for (let offset = 0; offset < drafts.length; offset += DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY) {
@@ -284,8 +285,8 @@ export async function enqueueSupersededResourceRefresh(
 }
 
 /** Repairs only interrupted DB-to-Workflow handoffs for record-first app-owned blobs. */
-export async function reconcilePendingBlobProcessing(env: CoreEnv): Promise<void> {
-	const admissions = await claimStalePendingBlobAdmissions(env, new Date(Date.now() - PENDING_BLOB_GRACE_MS), PENDING_BLOB_RECONCILE_LIMIT);
+export async function reconcilePendingBlobProcessing(env: CoreEnv, db: CoreDb): Promise<void> {
+	const admissions = await claimStalePendingBlobAdmissions(db, new Date(Date.now() - PENDING_BLOB_GRACE_MS), PENDING_BLOB_RECONCILE_LIMIT);
 	if (!admissions.length) return;
 
 	let reconciled = 0;

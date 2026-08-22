@@ -1,4 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
+import { connectCoreDb } from '@db/connection';
 import { isResourceTranslationRevision, loadResourceTranslationInput } from '@ingest/domain/resource-translation-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import {
@@ -39,7 +40,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 				timeout: '30 seconds',
 			},
-			() => loadResourceTranslationInput(this.env, resourceId),
+			async () => loadResourceTranslationInput(await connectCoreDb(this.env), resourceId),
 		);
 		if (!input) {
 			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Resource original is unavailable; skipping', resource_id: resourceId });
@@ -113,7 +114,9 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			);
 			if (!persisted) return { success: true, resource_id: resourceId, skipped: true, superseded: true };
 		}
-		await step.do('sync-translated-resource-to-ai-search', AI_SEARCH_SYNC_STEP_CONFIG, () => syncCorpusItem(this.env, resourceId));
+		await step.do('sync-translated-resource-to-ai-search', AI_SEARCH_SYNC_STEP_CONFIG, async () =>
+			syncCorpusItem(this.env, await connectCoreDb(this.env), resourceId),
+		);
 		console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Completed', resource_id: resourceId });
 		return { success: true, resource_id: resourceId };
 	}

@@ -8,7 +8,7 @@ import type {
 import { type HostedResourceImage, hostedResourceImageFields } from '@core-shared/resource-image-mapping';
 import { parseResourceIdentity } from '@core-shared/resource-types';
 import type { ResolvedResource } from '@core-shared/types';
-import { withCoreDb } from '@db/client';
+import type { CoreDb } from '@db/connection';
 import { toStoredResourceEntities } from '@entities/normalize';
 import { sql } from 'drizzle-orm';
 import type { ResourceClassificationResult } from './domain/resource-classification';
@@ -27,45 +27,43 @@ type PersistProcessedInput = {
 };
 
 export async function markStoredBlobProcessingFailed(
-	env: CoreEnv,
+	db: CoreDb,
 	resourceId: string,
 	expectedSourceRevision: string | null,
 ): Promise<'failed' | 'superseded'> {
-	return withCoreDb(env, async (db) => {
-		const failed = await db.execute(sql`
-			UPDATE resources AS resource
-			SET enrichment_status = 'failed',
-			    updated_at = NOW()
-			WHERE resource.id = ${resourceId}::uuid
-			  AND resource.enrichment_status <> 'enriched'
-			  AND resource.source_revision IS NOT DISTINCT FROM ${expectedSourceRevision}
-			  AND resource.scope = 'private'
-			  AND resource.storage_key IS NOT NULL
-			  AND EXISTS (
-			    SELECT 1
-			    FROM user_files
-			    WHERE user_files.resource_id = resource.id
-			  )
-			RETURNING resource.id
-		`);
-		if (failed.rows.length) return 'failed';
-		const existing = await db.execute<{ enrichment_status: string; source_revision: string | null }>(sql`
-			SELECT enrichment_status, source_revision
-			FROM resources
-			WHERE id = ${resourceId}::uuid
-			LIMIT 1
-		`);
-		const current = existing.rows[0];
-		console.info({
-			tag: 'RESOURCE_PERSIST',
-			event: 'stored_blob_failure_mark_skipped',
-			resource_id: resourceId,
-			expected_source_revision: expectedSourceRevision,
-			current_source_revision: current?.source_revision ?? null,
-			current_status: current?.enrichment_status ?? 'deleted',
-		});
-		return 'superseded';
+	const failed = await db.execute(sql`
+		UPDATE resources AS resource
+		SET enrichment_status = 'failed',
+		    updated_at = NOW()
+		WHERE resource.id = ${resourceId}::uuid
+		  AND resource.enrichment_status <> 'enriched'
+		  AND resource.source_revision IS NOT DISTINCT FROM ${expectedSourceRevision}
+		  AND resource.scope = 'private'
+		  AND resource.storage_key IS NOT NULL
+		  AND EXISTS (
+		    SELECT 1
+		    FROM user_files
+		    WHERE user_files.resource_id = resource.id
+		  )
+		RETURNING resource.id
+	`);
+	if (failed.rows.length) return 'failed';
+	const existing = await db.execute<{ enrichment_status: string; source_revision: string | null }>(sql`
+		SELECT enrichment_status, source_revision
+		FROM resources
+		WHERE id = ${resourceId}::uuid
+		LIMIT 1
+	`);
+	const current = existing.rows[0];
+	console.info({
+		tag: 'RESOURCE_PERSIST',
+		event: 'stored_blob_failure_mark_skipped',
+		resource_id: resourceId,
+		expected_source_revision: expectedSourceRevision,
+		current_source_revision: current?.source_revision ?? null,
+		current_status: current?.enrichment_status ?? 'deleted',
 	});
+	return 'superseded';
 }
 
 export async function persistProcessedResource(

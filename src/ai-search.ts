@@ -5,7 +5,7 @@ import {
 	parseResourceIdentity,
 	type ResourcePlatform,
 } from '@core-shared/resource-types';
-import { type CoreDb, isValidUuid, withCoreDb } from '@db/client';
+import { type CoreDb, connectCoreDb } from '@db/connection';
 import { contentResourceIdentitySql, resourceDisplaySourceSql } from '@db/resource-identity-sql';
 import { inArray, sql } from 'drizzle-orm';
 import { DURABLE_WORKFLOW_RETRIES } from './workflow-control';
@@ -13,6 +13,11 @@ import { DURABLE_WORKFLOW_RETRIES } from './workflow-control';
 const AI_SEARCH_ITEM_PREFIX = 'resources/';
 const AI_SEARCH_ITEM_SUFFIX = '.md';
 const NULL_RESOURCE_PLATFORM_METADATA = 'none';
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isValidUuid(value: string): boolean {
+	return UUID_RE.test(value);
+}
 
 function aiSearchItemKey(resourceId: string): string {
 	return `${AI_SEARCH_ITEM_PREFIX}${resourceId}${AI_SEARCH_ITEM_SUFFIX}`;
@@ -187,9 +192,9 @@ async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<boole
 	return true;
 }
 
-export async function syncCorpusItem(env: CoreEnv, resourceId: string): Promise<'uploaded' | 'deleted' | 'skipped'> {
+export async function syncCorpusItem(env: CoreEnv, db: CoreDb, resourceId: string): Promise<'uploaded' | 'deleted' | 'skipped'> {
 	if (!isValidUuid(resourceId)) return 'skipped';
-	const document = await withCoreDb(env, async (db) => (await loadCorpusDocuments(db, [resourceId]))[0] ?? null);
+	const document = (await loadCorpusDocuments(db, [resourceId]))[0] ?? null;
 	if (!document) {
 		await deleteCorpusItem(env, resourceId);
 		return 'deleted';
@@ -224,17 +229,15 @@ const BATCH_STEP_OPTIONS = { retries: STEP_RETRIES, timeout: '300 seconds' } as 
 const UTC_TIMESTAMP_FORMAT = 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"';
 const CORPUS_FOLDER_FILTER = JSON.stringify({ folder: AI_SEARCH_ITEM_PREFIX });
 
-async function loadCorpusCount(env: CoreEnv): Promise<number> {
-	const [row] = await withCoreDb(env, async (db) => {
-		const result = await db.execute<{ count: string }>(sql`
-			SELECT COUNT(*)::text AS count
-			FROM resources r
-			WHERE r.scope = 'corpus'
-			  AND r.enrichment_status = 'enriched'
-			  AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
-		`);
-		return result.rows;
-	});
+async function loadCorpusCount(db: CoreDb): Promise<number> {
+	const result = await db.execute<{ count: string }>(sql`
+		SELECT COUNT(*)::text AS count
+		FROM resources r
+		WHERE r.scope = 'corpus'
+		  AND r.enrichment_status = 'enriched'
+		  AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
+	`);
+	const [row] = result.rows;
 	const count = Number(row?.count);
 	if (!Number.isSafeInteger(count) || count < 0) throw new Error(`Invalid corpus count: ${row?.count}`);
 	return count;
@@ -270,13 +273,12 @@ async function uploadCorpusIds(env: CoreEnv, db: CoreDb, ids: readonly string[])
 
 async function syncCorpusPageAfter(
 	env: CoreEnv,
+	db: CoreDb,
 	cursor: string | null,
 ): Promise<{ cursor: string | null; done: boolean; uploaded: number }> {
-	return withCoreDb(env, async (db) => {
-		const ids = await listCorpusIdsAfter(db, cursor);
-		if (!ids.length) return { cursor, done: true, uploaded: 0 };
-		return { cursor: ids.at(-1)!, done: false, uploaded: await uploadCorpusIds(env, db, ids) };
-	});
+	const ids = await listCorpusIdsAfter(db, cursor);
+	if (!ids.length) return { cursor, done: true, uploaded: 0 };
+	return { cursor: ids.at(-1)!, done: false, uploaded: await uploadCorpusIds(env, db, ids) };
 }
 
 async function listCorpusDeltaAfter(db: CoreDb, startedAt: string, cursor: SearchDeltaCursor | null): Promise<SearchDeltaRow[]> {
@@ -307,38 +309,35 @@ async function listCorpusDeltaAfter(db: CoreDb, startedAt: string, cursor: Searc
 
 async function syncCorpusDeltaAfter(
 	env: CoreEnv,
+	db: CoreDb,
 	startedAt: string,
 	cursor: SearchDeltaCursor | null,
 ): Promise<{ cursor: SearchDeltaCursor | null; done: boolean; uploaded: number }> {
-	return withCoreDb(env, async (db) => {
-		const rows = await listCorpusDeltaAfter(db, startedAt, cursor);
-		if (!rows.length) return { cursor, done: true, uploaded: 0 };
-		const last = rows.at(-1)!;
-		return {
-			cursor: { id: last.id, updatedAt: last.updated_at },
-			done: false,
-			uploaded: await uploadCorpusIds(
-				env,
-				db,
-				rows.map((row) => row.id),
-			),
-		};
-	});
+	const rows = await listCorpusDeltaAfter(db, startedAt, cursor);
+	if (!rows.length) return { cursor, done: true, uploaded: 0 };
+	const last = rows.at(-1)!;
+	return {
+		cursor: { id: last.id, updatedAt: last.updated_at },
+		done: false,
+		uploaded: await uploadCorpusIds(
+			env,
+			db,
+			rows.map((row) => row.id),
+		),
+	};
 }
 
-async function loadEligibleCorpusIds(env: CoreEnv, resourceIds: readonly string[]): Promise<Set<string>> {
+async function loadEligibleCorpusIds(db: CoreDb, resourceIds: readonly string[]): Promise<Set<string>> {
 	if (!resourceIds.length) return new Set();
-	return withCoreDb(env, async (db) => {
-		const result = await db.execute<{ id: string }>(sql`
-			SELECT r.id::text
-			FROM resources r
-			WHERE ${inArray(sql`r.id`, resourceIds)}
-			  AND r.scope = 'corpus'
-			  AND r.enrichment_status = 'enriched'
-			  AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
-		`);
-		return new Set(result.rows.map((row) => row.id));
-	});
+	const result = await db.execute<{ id: string }>(sql`
+		SELECT r.id::text
+		FROM resources r
+		WHERE ${inArray(sql`r.id`, resourceIds)}
+		  AND r.scope = 'corpus'
+		  AND r.enrichment_status = 'enriched'
+		  AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
+	`);
+	return new Set(result.rows.map((row) => row.id));
 }
 
 async function loadSearchItemPageCount(env: CoreEnv): Promise<number> {
@@ -353,7 +352,7 @@ async function loadSearchItemPageCount(env: CoreEnv): Promise<number> {
 	return Math.ceil(total / REINDEX_PAGE_SIZE);
 }
 
-async function pruneSearchItemPage(env: CoreEnv, page: number): Promise<number> {
+async function pruneSearchItemPage(env: CoreEnv, db: CoreDb, page: number): Promise<number> {
 	const listed = await env.AI_SEARCH.items.list({
 		metadata_filter: CORPUS_FOLDER_FILTER,
 		page,
@@ -362,7 +361,7 @@ async function pruneSearchItemPage(env: CoreEnv, page: number): Promise<number> 
 	});
 	const ownedItems = listed.result.filter((item) => item.source_id === 'builtin');
 	const resourceIds = ownedItems.map((item) => resourceIdFromAiSearchItemKey(item.key)).filter((id): id is string => id !== null);
-	const eligibleIds = await loadEligibleCorpusIds(env, resourceIds);
+	const eligibleIds = await loadEligibleCorpusIds(db, resourceIds);
 	const staleItems = ownedItems.filter((item) => {
 		const resourceId = resourceIdFromAiSearchItemKey(item.key);
 		return resourceId === null || !eligibleIds.has(resourceId);
@@ -373,9 +372,9 @@ async function pruneSearchItemPage(env: CoreEnv, page: number): Promise<number> 
 	return staleItems.length;
 }
 
-async function pruneSearchItemPages(env: CoreEnv, firstPage: number, lastPage: number): Promise<number> {
+async function pruneSearchItemPages(env: CoreEnv, db: CoreDb, firstPage: number, lastPage: number): Promise<number> {
 	let deleted = 0;
-	for (let page = lastPage; page >= firstPage; page--) deleted += await pruneSearchItemPage(env, page);
+	for (let page = lastPage; page >= firstPage; page--) deleted += await pruneSearchItemPage(env, db, page);
 	return deleted;
 }
 
@@ -386,8 +385,8 @@ async function reconcileSearchItems(env: CoreEnv, step: WorkflowStep) {
 		let passDeleted = 0;
 		for (let lastPage = pageCount; lastPage >= 1; lastPage -= REINDEX_PRUNE_PAGES_PER_STEP) {
 			const firstPage = Math.max(1, lastPage - REINDEX_PRUNE_PAGES_PER_STEP + 1);
-			passDeleted += await step.do(`prune-search-items-${pass}-${firstPage}-${lastPage}`, BATCH_STEP_OPTIONS, () =>
-				pruneSearchItemPages(env, firstPage, lastPage),
+			passDeleted += await step.do(`prune-search-items-${pass}-${firstPage}-${lastPage}`, BATCH_STEP_OPTIONS, async () =>
+				pruneSearchItemPages(env, await connectCoreDb(env), firstPage, lastPage),
 			);
 		}
 		deleted += passDeleted;
@@ -425,7 +424,7 @@ async function ensureCanonicalSearchInstanceConfig(env: CoreEnv): Promise<'uncha
 	return 'updated';
 }
 
-async function observeSearchIndex(env: CoreEnv): Promise<SearchIndexStats & { configReady: boolean }> {
+async function observeSearchIndex(env: CoreEnv, db: CoreDb): Promise<SearchIndexStats & { configReady: boolean }> {
 	const info = await env.AI_SEARCH.info();
 	const stats = await env.AI_SEARCH.stats();
 	const listed = await env.AI_SEARCH.items.list({
@@ -440,7 +439,7 @@ async function observeSearchIndex(env: CoreEnv): Promise<SearchIndexStats & { co
 		completed: stats.completed ?? 0,
 		configReady: canonicalSearchInstanceConfigMatches(info),
 		error: stats.error ?? 0,
-		expectedItems: await loadCorpusCount(env),
+		expectedItems: await loadCorpusCount(db),
 		indexedItems,
 		outdated: stats.outdated ?? 0,
 		queued: stats.queued ?? 0,
@@ -452,7 +451,9 @@ async function observeSearchIndex(env: CoreEnv): Promise<SearchIndexStats & { co
 async function waitForSearchIndex(env: CoreEnv, step: WorkflowStep) {
 	let last: (SearchIndexStats & { configReady: boolean }) | null = null;
 	for (let attempt = 0; attempt < REINDEX_READY_POLL_ATTEMPTS; attempt++) {
-		last = await step.do(`observe-search-index-${attempt}`, SHORT_STEP_OPTIONS, () => observeSearchIndex(env));
+		last = await step.do(`observe-search-index-${attempt}`, SHORT_STEP_OPTIONS, async () =>
+			observeSearchIndex(env, await connectCoreDb(env)),
+		);
 		if (last.error > 0 || last.skipped > 0 || last.outdated > 0) {
 			throw new Error(`AI Search finished with terminal items: ${JSON.stringify(last)}`);
 		}
@@ -484,8 +485,8 @@ export class SearchIndexGeneration5RebuildWorkflow extends WorkflowEntrypoint<Co
 		let uploaded = 0;
 		let pages = 0;
 		while (true) {
-			const result = await step.do(`upload-generation-5-corpus-page-native-v2-${pages}`, BATCH_STEP_OPTIONS, () =>
-				syncCorpusPageAfter(this.env, cursor),
+			const result = await step.do(`upload-generation-5-corpus-page-native-v2-${pages}`, BATCH_STEP_OPTIONS, async () =>
+				syncCorpusPageAfter(this.env, await connectCoreDb(this.env), cursor),
 			);
 			if (result.done) break;
 			if (!result.cursor) throw new Error(`AI Search rebuild page ${pages} did not return a cursor`);
@@ -498,8 +499,8 @@ export class SearchIndexGeneration5RebuildWorkflow extends WorkflowEntrypoint<Co
 		let deltaUploaded = 0;
 		let deltaPages = 0;
 		while (true) {
-			const result = await step.do(`upload-generation-5-delta-page-native-v2-${deltaPages}`, BATCH_STEP_OPTIONS, () =>
-				syncCorpusDeltaAfter(this.env, startedAt, deltaCursor),
+			const result = await step.do(`upload-generation-5-delta-page-native-v2-${deltaPages}`, BATCH_STEP_OPTIONS, async () =>
+				syncCorpusDeltaAfter(this.env, await connectCoreDb(this.env), startedAt, deltaCursor),
 			);
 			if (result.done) break;
 			deltaCursor = result.cursor;

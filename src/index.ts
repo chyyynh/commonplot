@@ -1,4 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { connectCoreDb } from '@db/connection';
 import { type ResolveMonitoredSourceInput, resolveMonitoredSource } from '@ingest/monitored-source';
 import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';
@@ -18,7 +19,8 @@ import { type PublicResourceSearchInput, searchPublicResourceIds } from './publi
 export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexGeneration5RebuildWorkflow };
 
 async function runFiveMinuteCycle(env: CoreEnv): Promise<void> {
-	const results = await Promise.allSettled([handleRSSCron(env), reconcilePendingBlobProcessing(env)]);
+	const db = await connectCoreDb(env);
+	const results = await Promise.allSettled([handleRSSCron(env, db), reconcilePendingBlobProcessing(env, db)]);
 	const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
 	if (failures.length) {
 		throw new AggregateError(
@@ -60,7 +62,8 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 
 	/** Reacquire a URL-backed resource through the enrichment workflow. */
 	async resyncResource(resourceId: string) {
-		await assertResourceProcessable(this.env, resourceId);
+		const db = await connectCoreDb(this.env);
+		await assertResourceProcessable(db, resourceId);
 		return enqueueResourceResync(this.env, resourceId);
 	}
 

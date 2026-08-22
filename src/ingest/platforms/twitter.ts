@@ -1,5 +1,6 @@
 import { readTextWithLimit } from '@core-shared/http';
 import { canonicalResourcePlatformUrl, normalizeUrl } from '@core-shared/url';
+import { type CoreDb, connectCoreDb } from '@db/connection';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
 import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/resource-admission';
 import {
@@ -254,13 +255,13 @@ function emptyTwitterAdmissionCounts(): TwitterAdmissionCounts {
 	return { created: 0, existing: 0, refreshed: 0 };
 }
 
-async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource): Promise<TweetSaveResult> {
+async function saveTweets(env: CoreEnv, db: CoreDb, tweets: Tweet[], source: MonitoredSource): Promise<TweetSaveResult> {
 	const counts = emptyTwitterAdmissionCounts();
 	const prepared = twitterResourceDrafts(tweets, source);
 	const { drafts, errors } = prepared;
 	const pending = [...drafts.values()];
 	if (!pending.length) return { admittedDrafts: 0, counts, errors };
-	const outcomes = await admitDiscoveredSourceResources(env, pending).catch((error) => {
+	const outcomes = await admitDiscoveredSourceResources(env, db, pending).catch((error) => {
 		console.error({
 			tag: 'TWITTER',
 			msg: 'Twitter resource lookup failed',
@@ -316,14 +317,14 @@ function twitterSourceFailure(userName: string, errors: unknown[]): Error {
 	return new Error(`${errors.length} Twitter monitor operation(s) failed for @${userName}: ${message}`);
 }
 
-async function processTwitterSource(env: CoreEnv, source: MonitoredSource, windowEnd: Date): Promise<TwitterSourceOutcome> {
+async function processTwitterSource(env: CoreEnv, db: CoreDb, source: MonitoredSource, windowEnd: Date): Promise<TwitterSourceOutcome> {
 	let window: TwitterSearchWindow | null = null;
 	try {
 		window = twitterSearchWindow(source.scrapedAt ?? source.createdAt, windowEnd, TWITTER_WATERMARK_OVERLAP_MS);
 		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, window);
-		const saved = await saveTweets(env, fetched.tweets, source);
+		const saved = await saveTweets(env, db, fetched.tweets, source);
 		const errors = [...fetched.errors, ...saved.errors];
-		if (errors.length) await recordSourceFailure(env, source.id, twitterSourceFailure(source.handle, errors));
+		if (errors.length) await recordSourceFailure(db, source.id, twitterSourceFailure(source.handle, errors));
 		const outcome: TwitterSourceOutcome = {
 			admittedDrafts: saved.admittedDrafts,
 			complete: errors.length === 0,
@@ -351,7 +352,7 @@ async function processTwitterSource(env: CoreEnv, source: MonitoredSource, windo
 		});
 		return outcome;
 	} catch (error) {
-		await recordSourceFailure(env, source.id, error);
+		await recordSourceFailure(db, source.id, error);
 		console.error({
 			tag: 'TWITTER',
 			event: 'twitter_source_failed',
@@ -386,11 +387,16 @@ type TwitterMonitorOutcome = {
 	systemFailures: unknown[];
 };
 
-async function processTwitterSources(env: CoreEnv, sources: MonitoredSource[], windowEnd: Date): Promise<TwitterMonitorOutcome> {
+async function processTwitterSources(
+	env: CoreEnv,
+	db: CoreDb,
+	sources: MonitoredSource[],
+	windowEnd: Date,
+): Promise<TwitterMonitorOutcome> {
 	const outcomes: TwitterSourceOutcome[] = [];
 	for (let offset = 0; offset < sources.length; offset += TWITTER_SOURCE_CONCURRENCY) {
 		const group = sources.slice(offset, offset + TWITTER_SOURCE_CONCURRENCY);
-		outcomes.push(...(await Promise.all(group.map((source) => processTwitterSource(env, source, windowEnd)))));
+		outcomes.push(...(await Promise.all(group.map((source) => processTwitterSource(env, db, source, windowEnd)))));
 	}
 
 	const completedSourceIds = outcomes.filter((outcome) => outcome.complete).map((outcome) => outcome.sourceId);
@@ -399,7 +405,7 @@ async function processTwitterSources(env: CoreEnv, sources: MonitoredSource[], w
 	let watermarkFailures = 0;
 	if (completedSourceIds.length) {
 		try {
-			advancedSources = await markSourcesScraped(env, completedSourceIds, windowEnd);
+			advancedSources = await markSourcesScraped(db, completedSourceIds, windowEnd);
 		} catch (error) {
 			watermarkFailures = completedSourceIds.length;
 			systemFailures.push(error);
@@ -433,8 +439,9 @@ async function processTwitterSources(env: CoreEnv, sources: MonitoredSource[], w
 export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date()): Promise<void> {
 	if (!env.KAITO_API_KEY) throw new Error('KAITO_API_KEY is not configured');
 	if (!Number.isFinite(windowEnd.getTime())) throw new Error('Twitter monitor window end is invalid');
+	const db = await connectCoreDb(env);
 	console.info({ tag: 'TWITTER', msg: 'start', window_end: windowEnd.toISOString() });
-	const sources = await loadMonitoredSources(env, 'twitter');
+	const sources = await loadMonitoredSources(db, 'twitter');
 	if (!sources.length) {
 		console.info({ tag: 'TWITTER', msg: 'No twitter sources configured' });
 		return;
@@ -442,7 +449,7 @@ export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date
 
 	const groups = Math.ceil(sources.length / TWITTER_SOURCE_CONCURRENCY);
 	console.info({ tag: 'TWITTER', msg: 'Fetching via Advanced Search', sources: sources.length, groups });
-	const outcome = await processTwitterSources(env, sources, windowEnd);
+	const outcome = await processTwitterSources(env, db, sources, windowEnd);
 
 	console.info({
 		tag: 'TWITTER',

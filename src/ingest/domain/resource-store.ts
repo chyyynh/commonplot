@@ -19,7 +19,7 @@ import {
 	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
 import type { ResourceForProcessing } from '@core-shared/types';
-import { type CoreDb, withCoreDb } from '@db/client';
+import type { CoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
 import { sql } from 'drizzle-orm';
 import { cleanString, dateValue, requiredString } from './resource-values';
@@ -71,8 +71,8 @@ function storedResourceSourceRevision(value: unknown, resourceId: string): strin
 	return value;
 }
 
-export async function loadStoredResourceForProcessing(env: CoreEnv, resourceId: string): Promise<StoredResourceProcessingInput> {
-	const row = await withCoreDb(env, (db) => loadStoredResourceRow(db, resourceId));
+export async function loadStoredResourceForProcessing(db: CoreDb, resourceId: string): Promise<StoredResourceProcessingInput> {
+	const row = await loadStoredResourceRow(db, resourceId);
 	return {
 		resource: resourceStoreRowToProcessing(row),
 		isMonitoredOnly: row.is_monitored_only,
@@ -80,21 +80,19 @@ export async function loadStoredResourceForProcessing(env: CoreEnv, resourceId: 
 	};
 }
 
-export async function assertResourceProcessable(env: CoreEnv, resourceId: string): Promise<void> {
-	await withCoreDb(env, async (db) => {
-		const result = await db.execute<StoredResourceIdentityRow>(sql`
-			SELECT kind, resource_platform
-			FROM resources
-			WHERE id = ${resourceId}::uuid
-			LIMIT 1
-		`);
-		const row = result.rows[0];
-		if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
-		const identity = storedResourceIdentity(row);
-		if (!isContentResourceKind(identity.kind)) {
-			throw new Error(`Resource kind is not processable by core: ${identity.kind}`);
-		}
-	});
+export async function assertResourceProcessable(db: CoreDb, resourceId: string): Promise<void> {
+	const result = await db.execute<StoredResourceIdentityRow>(sql`
+		SELECT kind, resource_platform
+		FROM resources
+		WHERE id = ${resourceId}::uuid
+		LIMIT 1
+	`);
+	const row = result.rows[0];
+	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
+	const identity = storedResourceIdentity(row);
+	if (!isContentResourceKind(identity.kind)) {
+		throw new Error(`Resource kind is not processable by core: ${identity.kind}`);
+	}
 }
 
 async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<ResourceStoreRow> {

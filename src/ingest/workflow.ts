@@ -12,6 +12,7 @@ import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/
 import { DEFAULT_RESOURCE_LANG } from '@core-shared/resource-types';
 import type { ResolvedResource } from '@core-shared/types';
 import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
+import { connectCoreDb } from '@db/connection';
 import { loadStoredResourceForProcessing, type StoredResourceProcessingInput } from '@ingest/domain/resource-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES, shouldReconcileSupersededRefresh } from '../workflow-control';
@@ -302,7 +303,7 @@ async function reconcileSupersededProviderRefresh(
 	const supersedingResource = await step.do(
 		'load-superseding-provider-refresh-v1',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-		() => loadStoredResourceForProcessing(env, input.resourceId),
+		async () => loadStoredResourceForProcessing(await connectCoreDb(env), input.resourceId),
 	);
 	if (!shouldReconcileSupersededRefresh(acquiredSourceRevision, supersedingResource.resource.source_revision)) return;
 	await step.do('enqueue-superseded-provider-refresh-v1', WORKFLOW_ENQUEUE_STEP_CONFIG, () =>
@@ -325,12 +326,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				const stored = await step.do(
 					'fetch-stored-resource-input-kind-platform-v1',
 					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() => loadStoredResourceForProcessing(this.env, target.resourceId),
+					async () => loadStoredResourceForProcessing(await connectCoreDb(this.env), target.resourceId),
 					target.kind === 'storedBlob'
 						? {
 								rollback: async ({ output }) => {
 									if (!output) return;
-									await markStoredBlobProcessingFailed(this.env, target.resourceId, output.resource.source_revision);
+									await markStoredBlobProcessingFailed(await connectCoreDb(this.env), target.resourceId, output.resource.source_revision);
 								},
 								rollbackConfig: {
 									retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
@@ -418,9 +419,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const persistedResourceId = persistence.resourceId;
 			const translationRevision = persistence.translationRevision;
 			const followUps: Promise<unknown>[] = [
-				step.do('sync-resolved-ai-search-v1', AI_SEARCH_SYNC_STEP_CONFIG, () =>
-					Promise.all([persistedResourceId, ...persistence.retiredResourceIds].map((resourceId) => syncCorpusItem(this.env, resourceId))),
-				),
+				step.do('sync-resolved-ai-search-v1', AI_SEARCH_SYNC_STEP_CONFIG, async () => {
+					const db = await connectCoreDb(this.env);
+					return Promise.all(
+						[persistedResourceId, ...persistence.retiredResourceIds].map((resourceId) => syncCorpusItem(this.env, db, resourceId)),
+					);
+				}),
 			];
 			if (translationRevision) {
 				followUps.push(
