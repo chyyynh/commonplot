@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { materializeAcquiredResource } from '../src/ingest/resource-resolver.ts';
+import { materializeAcquiredResource } from '../src/ingest/platforms/materialize.ts';
 import { detectResourceUrl } from '../src/shared/url.ts';
 
 const base = {
@@ -191,4 +191,4 @@ assert.deepEqual(
 	'generic subjects retain their normalized URL identity',
 );
 
-console.info(`Resource resolver contract checks passed (${cases.length + 2} cases).`);
+console.info(`Platform materialization contract checks passed (${cases.length + 2} cases).`);

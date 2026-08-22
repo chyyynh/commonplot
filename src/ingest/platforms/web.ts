@@ -6,8 +6,8 @@ import { literalCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { extractFromHtml } from '@extractus/article-extractor';
-import { markdownFromHtml } from './document-conversion';
-import { acquireFetchedPdfResponse, PDF_MIME } from './platforms/pdf';
+import { markdownFromHtml } from '../document-conversion';
+import { acquireFetchedPdfResponse, PDF_MIME } from './pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;

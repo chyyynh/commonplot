@@ -1,18 +1,16 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
 import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
 import { DEFAULT_RESOURCE_LANG } from '@core-shared/resource-types';
-import type { AcquiredResource } from '@core-shared/types';
+import type { ResolvedResource } from '@core-shared/types';
 import { connectCoreDb } from '@db/connection';
 import { loadResourceReacquisitionInput, loadStoredPdfInput } from '@ingest/stored-resource';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
-import { resolveAcquiredResource, stageUrlAcquisition } from './acquisition';
+import { stageStoredPdfResource, stageUrlAcquisition } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
-import { stageStoredPdfAcquisition } from './platforms/pdf';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import { markStoredBlobProcessingFailed, type PersistProcessedTarget, persistProcessedResource } from './resource-persistence';
-import type { ResourceResolutionOrigin } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 
 const WORKFLOW_ENQUEUE_STEP_CONFIG = {
@@ -47,10 +45,7 @@ async function stageResourceImages(
 }
 
 type ResolvedProcessingCall = {
-	processingId: string;
-	acquiredContent: AcquiredResource;
-	origin: ResourceResolutionOrigin;
-	translatePaperUrl: boolean;
+	resource: ResolvedResource;
 	persistenceTarget: PersistProcessedTarget;
 };
 
@@ -61,31 +56,27 @@ async function resolveProcessingCall(
 	instanceId: string,
 ): Promise<ResolvedProcessingCall> {
 	if (target.kind === 'draft') {
+		const origin = {
+			originalLang: target.sourceHints?.originalLang ?? DEFAULT_RESOURCE_LANG,
+			summary: target.sourceHints?.summary ?? null,
+			url: target.url,
+			publishedDate: target.sourceHints?.publishedDate ?? null,
+			tags: [],
+			keywords: target.sourceHints?.keywords ?? [],
+			normalizedUrl: target.url,
+			resourceIdentifiers: [],
+		};
 		return {
-			processingId: instanceId,
-			acquiredContent: await stageUrlAcquisition(
-				env,
-				step,
-				{
-					discoverRelatedContent: target.admission.kind !== 'source',
-					isMonitoredOnly: target.admission.kind === 'source',
-					processingId: instanceId,
-					sourceAvatarUrl: target.sourceHints?.sourceAvatarUrl ?? null,
-					sourceUrl: target.url,
-				},
-				target.providerSequence,
-			),
-			origin: {
-				originalLang: target.sourceHints?.originalLang ?? DEFAULT_RESOURCE_LANG,
-				summary: target.sourceHints?.summary ?? null,
-				url: target.url,
-				publishedDate: target.sourceHints?.publishedDate ?? null,
-				tags: [],
-				keywords: target.sourceHints?.keywords ?? [],
-				normalizedUrl: target.url,
-				resourceIdentifiers: [],
-			},
-			translatePaperUrl: target.admission.kind !== 'source',
+			resource: await stageUrlAcquisition(env, step, {
+				discoverRelatedContent: target.admission.kind !== 'source',
+				isMonitoredOnly: target.admission.kind === 'source',
+				origin,
+				processingId: instanceId,
+				...(target.providerSequence ? { providerSequence: target.providerSequence } : {}),
+				sourceAvatarUrl: target.sourceHints?.sourceAvatarUrl ?? null,
+				sourceUrl: target.url,
+				translatePaperUrl: target.admission.kind !== 'source',
+			}),
 			persistenceTarget: {
 				kind: 'draft',
 				admission: target.admission,
@@ -108,10 +99,7 @@ async function resolveProcessingCall(
 			},
 		);
 		return {
-			processingId: target.resourceId,
-			acquiredContent: await stageStoredPdfAcquisition(env, step, storedPdf),
-			origin: storedPdf,
-			translatePaperUrl: false,
+			resource: await stageStoredPdfResource(env, step, storedPdf),
 			persistenceTarget: {
 				kind: 'storedPdf',
 				resourceId: target.resourceId,
@@ -126,16 +114,15 @@ async function resolveProcessingCall(
 		async () => loadResourceReacquisitionInput(await connectCoreDb(env), target.resourceId),
 	);
 	return {
-		processingId: target.resourceId,
-		acquiredContent: await stageUrlAcquisition(env, step, {
+		resource: await stageUrlAcquisition(env, step, {
 			discoverRelatedContent: true,
 			isMonitoredOnly: snapshot.isMonitoredOnly,
+			origin: snapshot,
 			processingId: target.resourceId,
 			sourceAvatarUrl: snapshot.sourceAvatarUrl,
 			sourceUrl: snapshot.url,
+			translatePaperUrl: snapshot.translatePaperUrl,
 		}),
-		origin: snapshot,
-		translatePaperUrl: snapshot.translatePaperUrl,
 		persistenceTarget: {
 			kind: 'existing',
 			resourceId: target.resourceId,
@@ -149,14 +136,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const { target } = parseResourceProcessingWorkflowPayload(event.payload);
 		const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
 		const call = await resolveProcessingCall(this.env, step, target, event.instanceId);
-		const resource = await resolveAcquiredResource(
-			this.env,
-			step,
-			call.acquiredContent,
-			call.origin,
-			call.processingId,
-			call.translatePaperUrl,
-		);
+		const resource = call.resource;
 
 		console.info({
 			tag: 'WORKFLOW',

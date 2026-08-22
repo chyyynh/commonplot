@@ -1,23 +1,24 @@
-import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '../shared/paper-identity.ts';
-import { isPaperIdentifier, normalizeResourceIdentifiers, type ResourceIdentifier } from '../shared/resource-identifiers.ts';
+import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '../../shared/paper-identity.ts';
+import { isPaperIdentifier, normalizeResourceIdentifiers, type ResourceIdentifier } from '../../shared/resource-identifiers.ts';
 import {
 	type ContentResourceIdentity,
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
 	resourceIdentityForDetectedPlatform,
-} from '../shared/resource-types.ts';
-import type { AcquiredResource, MaterializedResource, ResolvedResource, ResolvedResourceSubject } from '../shared/types.ts';
-import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../shared/url.ts';
+} from '../../shared/resource-types.ts';
+import type { AcquiredResource, MaterializedResource, ResolvedResource, ResolvedResourceSubject } from '../../shared/types.ts';
+import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../../shared/url.ts';
 
-export type ResourceResolutionOrigin = Pick<
+export type ResourceAcquisitionOrigin = Pick<
 	MaterializedResource,
 	'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'resourceIdentifiers' | 'summary' | 'tags' | 'url'
 >;
+
 type MaterializedAcquisition<T extends AcquiredResource> = Extract<ResolvedResource, { resourcePlatform: T['resourcePlatform'] }>;
 
 export function materializeAcquiredResource<const T extends AcquiredResource>(
 	acquired: T,
-	origin: ResourceResolutionOrigin,
+	origin: ResourceAcquisitionOrigin,
 	resolution: { canonicalUrl: string | null; publishedDate: string | null; resourceIdentifiers: readonly ResourceIdentifier[] },
 ): MaterializedAcquisition<T> {
 	const platformIdentity =
