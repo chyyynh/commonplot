@@ -5,7 +5,7 @@
 // pipeline (persistence + prompt exclusion lists).
 
 import { type ResourceCreator, resourceCreatorName } from '@core-shared/resource-metadata';
-import type { ResourcePlatform } from '@core-shared/resource-types';
+import { RESOURCE_PLATFORM_DISPLAY_LABELS, type ResourcePlatform } from '@core-shared/resource-types';
 import { ENTITY_TYPES, type EntityType, type StoredResourceEntity } from '@core-shared/types';
 
 export type ResourceEntityInput = { name: string; name_cn: string; type: string };
@@ -129,16 +129,7 @@ export function entityExtractionExclusionNames(
 ): string[] {
 	const seen = new Set<string>();
 	const names: string[] = [];
-	const platformAliases =
-		resourcePlatform === 'twitter'
-			? ['Twitter', 'X']
-			: resourcePlatform === 'youtube'
-				? ['YouTube']
-				: resourcePlatform === 'hackernews'
-					? ['Hacker News']
-					: resourcePlatform === 'lesswrong'
-						? ['LessWrong']
-						: [];
+	const platformAliases = resourcePlatform === null ? [] : [RESOURCE_PLATFORM_DISPLAY_LABELS[resourcePlatform]];
 	for (const name of [...sourceNameAliases(source), ...creatorAliases(creators), ...platformAliases]) {
 		const canonical = canonicalizeEntityName(name);
 		if (!canonical || seen.has(canonical)) continue;

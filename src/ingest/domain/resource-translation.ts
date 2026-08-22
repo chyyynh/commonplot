@@ -19,7 +19,7 @@ const METADATA_CONTENT_MAX_LENGTH = 10000;
 export const CONTENT_TRANSLATION_MAX_LENGTH = 36000;
 const PARTIAL_CONTENT_TRANSLATION_RATIO = 0.2;
 const MIN_TRANSLATABLE_TEXT_LENGTH = 20;
-const INLINE_TWITTER_CONTENT_TRANSLATION_MAX_LENGTH = 1000;
+const INLINE_POST_CONTENT_TRANSLATION_MAX_LENGTH = 1000;
 
 export type ResourceTranslationInput = {
 	fileType: string | null;
@@ -46,17 +46,12 @@ const ZhHantTitleTranslationSchema = z.object({
 	title: z.string().min(1),
 });
 
-const ZhHantTwitterTranslationSchema = z.object({
+const ZhHantPostTranslationSchema = z.object({
 	title: z.string().min(1),
 	content: z.string().min(1),
 });
 
-type ZhHantMetadataTranslationTask =
-	| 'article-title-summary'
-	| 'paper-title'
-	| 'paper-title-summary'
-	| 'twitter-title'
-	| 'twitter-title-content';
+type ZhHantMetadataTranslationTask = 'article-title-summary' | 'paper-title' | 'paper-title-summary' | 'post-title' | 'post-title-content';
 
 type ZhHantTranslationPlan = {
 	metadata: ZhHantMetadataTranslationTask | null;
@@ -69,12 +64,12 @@ function isBlank(value: string | null | undefined): boolean {
 
 function metadataTranslationTask(resource: ResourceTranslationInput): ZhHantMetadataTranslationTask | null {
 	const translation = resource.zhHantTranslation;
-	if (resource.resourcePlatform === 'twitter') {
+	if (resource.kind === 'post') {
 		const content = resource.content.trim();
-		if (content && content.length <= INLINE_TWITTER_CONTENT_TRANSLATION_MAX_LENGTH) {
-			return isBlank(translation?.title) || isBlank(translation?.content) ? 'twitter-title-content' : null;
+		if (content && content.length <= INLINE_POST_CONTENT_TRANSLATION_MAX_LENGTH) {
+			return isBlank(translation?.title) || isBlank(translation?.content) ? 'post-title-content' : null;
 		}
-		return isBlank(translation?.title) ? 'twitter-title' : null;
+		return isBlank(translation?.title) ? 'post-title' : null;
 	}
 	if (resource.kind === 'paper') {
 		if (isBlank(resource.summary)) return isBlank(translation?.title) ? 'paper-title' : null;
@@ -118,15 +113,15 @@ export function planZhHantTranslation(resource: ResourceTranslationInput): ZhHan
 	if (!content || !hasTranslatableContent(content) || !needsMachineContentTranslation(resource)) {
 		return { metadata, content: null };
 	}
-	if (metadata === 'twitter-title-content') return { metadata, content: null };
+	if (metadata === 'post-title-content') return { metadata, content: null };
 	return { metadata, content: content.length > CONTENT_TRANSLATION_MAX_LENGTH ? 'skip-too-long' : 'translate' };
 }
 
 function metadataTranslationRequest(task: ZhHantMetadataTranslationTask) {
 	switch (task) {
-		case 'twitter-title-content':
+		case 'post-title-content':
 			return {
-				schema: ZhHantTwitterTranslationSchema,
+				schema: ZhHantPostTranslationSchema,
 				maxOutputTokens: 2400,
 				system: `你是專業的新聞翻譯編輯。請只輸出符合 schema 的繁體中文結果。
 
@@ -139,7 +134,7 @@ function metadataTranslationRequest(task: ZhHantMetadataTranslationTask) {
 - 若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然繁體中文
 - 不要使用 Markdown。`,
 			};
-		case 'twitter-title':
+		case 'post-title':
 			return {
 				schema: ZhHantTitleTranslationSchema,
 				maxOutputTokens: 400,
@@ -194,7 +189,7 @@ export async function generateZhHantMetadataTranslation(
 ): Promise<
 	| z.infer<typeof ZhHantMetadataTranslationSchema>
 	| z.infer<typeof ZhHantTitleTranslationSchema>
-	| z.infer<typeof ZhHantTwitterTranslationSchema>
+	| z.infer<typeof ZhHantPostTranslationSchema>
 > {
 	const content = resource.content.trim();
 	if (!content) throw new Error(`Resource ${resource.id} has no content`);

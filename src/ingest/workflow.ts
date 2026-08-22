@@ -41,8 +41,8 @@ const WORKFLOW_ENQUEUE_STEP_CONFIG = {
 	timeout: '30 seconds',
 } as const satisfies WorkflowStepConfig;
 // A source watermark can advance after a sequenced draft is admitted, so that
-// acquisition must survive a provider outage. Keep attempts bounded because
-// twitterapi.io requests (especially Article requests) are paid operations.
+// acquisition must survive a provider outage. Keep the retry horizon bounded
+// because provider requests can consume paid quota.
 const sequencedSourceRetryDelay: WorkflowDelayFunction = ({ ctx }) =>
 	ctx.attempt <= 3 ? '10 seconds' : ctx.attempt <= 15 ? '1 minute' : '30 minutes';
 const SEQUENCED_SOURCE_ACQUISITION_STEP_CONFIG = {
@@ -88,7 +88,7 @@ async function stageSavedUrlAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		discoverTwitterThread: boolean;
+		discoverRelatedContent: boolean;
 		isMonitoredOnly: boolean;
 		processingId: string;
 		sourceAvatarUrl: string | null;
@@ -117,7 +117,7 @@ async function stageSavedUrlAcquisition(
 				input.sourceAvatarUrl,
 				input.processingId,
 				providerSequence,
-				input.discoverTwitterThread,
+				input.discoverRelatedContent,
 			);
 		}),
 	);
@@ -162,7 +162,7 @@ async function resolveProcessingCall(
 				env,
 				step,
 				{
-					discoverTwitterThread: target.admission.kind !== 'source',
+					discoverRelatedContent: target.admission.kind !== 'source',
 					isMonitoredOnly: target.admission.kind === 'source',
 					processingId: instanceId,
 					sourceAvatarUrl: target.sourceHints?.sourceAvatarUrl ?? null,
@@ -241,7 +241,7 @@ async function resolveProcessingCall(
 	return {
 		processingId: target.resourceId,
 		acquiredContent: await stageSavedUrlAcquisition(env, step, {
-			discoverTwitterThread: true,
+			discoverRelatedContent: true,
 			isMonitoredOnly: snapshot.isMonitoredOnly,
 			processingId: target.resourceId,
 			sourceAvatarUrl: snapshot.sourceAvatarUrl,

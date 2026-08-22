@@ -191,7 +191,7 @@ export async function loadResourceReacquisitionInput(db: CoreDb, resourceId: str
 				WHERE identifier.resource_id = resource.id
 			) AS resource_identifiers,
 			resource.url,
-			CASE WHEN monitored_source.platform = 'youtube' THEN monitored_source.avatar_url END AS source_avatar_url,
+			monitored_source.avatar_url AS source_avatar_url,
 			resource.scope = 'corpus'
 				AND resource.source_id IS NOT NULL
 				AND NOT EXISTS (SELECT 1 FROM resource_saves save WHERE save.resource_id = resource.id)

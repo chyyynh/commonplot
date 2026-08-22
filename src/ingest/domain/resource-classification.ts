@@ -97,12 +97,10 @@ export async function classifyResource(
 	if (finishReason === 'length') throw new Error('Resource classification hit its output token cap');
 	const tags = classification.tags.slice(0, 5);
 	const keywords = classification.keywords.slice(0, 8);
-	const platformTag =
-		resource.resourcePlatform === 'hackernews' ? 'HackerNews' : resource.resourcePlatform === 'twitter' ? 'Twitter' : null;
 	return {
 		category: classification.category,
 		entities: classification.entities.slice(0, 10),
-		...(!resource.tags.length ? { tags: [...new Set([...tags, classification.category, ...(platformTag ? [platformTag] : [])])] } : {}),
+		...(!resource.tags.length ? { tags: [...new Set([...tags, classification.category])] } : {}),
 		...(!resource.keywords.length && keywords.length ? { keywords } : {}),
 	};
 }
