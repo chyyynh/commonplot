@@ -188,20 +188,12 @@ function resolveProcessingIdentity(call: ResolvedProcessingCall): {
 } {
 	const canonicalUrl = call.acquiredContent.canonicalUrl?.trim() || call.origin.url;
 	const exactPaper = resolveExactPaperInput(call.origin.url ?? canonicalUrl);
-	const discoveredIdentifiers = exactPaper
-		? paperIdentifiersFromIdentity(exactPaper.identity)
-		: call.acquiredContent.resourcePlatform !== null
-			? [
-					{
-						preferred: true,
-						scheme: call.acquiredContent.resourcePlatform,
-						value: call.acquiredContent.platformId,
-					} as const,
-				]
-			: [];
 	return {
 		canonicalUrl,
-		resourceIdentifiers: normalizeResourceIdentifiers([...call.origin.resourceIdentifiers, ...discoveredIdentifiers]),
+		resourceIdentifiers: normalizeResourceIdentifiers([
+			...call.origin.resourceIdentifiers,
+			...(exactPaper ? paperIdentifiersFromIdentity(exactPaper.identity) : []),
+		]),
 	};
 }
 
