@@ -1,7 +1,7 @@
 import { readTextWithLimit } from '@core-shared/http';
 import { canonicalResourcePlatformUrl, normalizeUrl } from '@core-shared/url';
 import { type CoreDb, connectCoreDb } from '@db/connection';
-import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
+import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/monitored-source';
 import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/resource-admission';
 import {
 	buildTwitterMonitorSearchQueries,

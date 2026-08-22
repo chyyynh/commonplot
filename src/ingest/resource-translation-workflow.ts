@@ -7,7 +7,6 @@ import {
 	ZH_HANT_RESOURCE_LANG,
 } from '@core-shared/resource-types';
 import { type CoreDb, connectCoreDb } from '@db/connection';
-import { cleanString } from '@ingest/domain/resource-values';
 import { sql } from 'drizzle-orm';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import {
@@ -108,9 +107,9 @@ async function loadResourceTranslationInput(
 			url: row.url,
 			zhHantTranslation: zhHantSource
 				? {
-						title: cleanString(row.zh_hant_title),
-						summary: cleanString(row.zh_hant_summary),
-						content: cleanString(row.zh_hant_content),
+						title: row.zh_hant_title?.trim() || null,
+						summary: row.zh_hant_summary?.trim() || null,
+						content: row.zh_hant_content?.trim() || null,
 						source: zhHantSource,
 					}
 				: null,

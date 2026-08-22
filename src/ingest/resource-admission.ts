@@ -1,11 +1,9 @@
 import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
-import { canonicalizeOptionalResourceLang } from '@core-shared/resource-types';
+import { CONTENT_RESOURCE_KINDS, canonicalizeOptionalResourceLang } from '@core-shared/resource-types';
 import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
 import type { CoreDb } from '@db/connection';
-import { contentResourceIdentitySql } from '@db/resource-identity-sql';
-import { cleanString, dateValue, requiredString, stringArrayValue } from '@ingest/domain/resource-values';
-import { sql } from 'drizzle-orm';
+import { inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { enqueueOrRestartWorkflow, workflowOutputWasSuperseded } from '../workflow-control';
 
@@ -118,7 +116,7 @@ export type AppResourceDraftInput = Readonly<{
 	admission: Extract<ResourceDraftAdmission, { kind: 'profileSave' | 'container' }>;
 }>;
 
-export type SourceResourceAdmissionOutcome = 'created' | 'existing' | 'refreshed';
+type SourceResourceAdmissionOutcome = 'created' | 'existing' | 'refreshed';
 
 type ExistingRefreshResource = { id: string; url: string };
 
@@ -156,17 +154,18 @@ export async function enqueueAppResourceDraft(env: CoreEnv, input: AppResourceDr
 
 function sourceDraftTarget(base: SourceResourceDraft): ResourceDraftTarget {
 	const originalLang = canonicalizeOptionalResourceLang(base.originalLang);
-	const publishedDate = base.publishedDate === null ? null : dateValue(base.publishedDate, 'published_date').toISOString();
-	const parsedUrl = parseExternalHttpUrl(requiredString(base.url, 'url'));
+	if (base.publishedDate && !Number.isFinite(base.publishedDate.getTime())) throw new Error('Source published date is invalid');
+	const publishedDate = base.publishedDate?.toISOString() ?? null;
+	const parsedUrl = parseExternalHttpUrl(base.url.trim());
 	if (!parsedUrl) throw new Error('Source resource URL must be external http(s)');
 	const url = normalizeUrl(parsedUrl.toString());
-	const summary = cleanString(base.summary);
-	const keywords = stringArrayValue(base.keywords ?? [], 'keywords');
+	const summary = base.summary?.trim() || null;
+	const keywords = base.keywords ?? [];
 	const sourceAvatarUrl = validatedExternalMediaUrl(base.sourceAvatarUrl);
 	return parseResourceProcessingWorkflowPayload({
 		target: {
 			kind: 'draft',
-			admission: { kind: 'source', sourceId: requiredString(base.sourceId, 'source_id') },
+			admission: { kind: 'source', sourceId: base.sourceId.trim() },
 			url,
 			sourceHints: {
 				...(summary ? { summary } : {}),
@@ -223,10 +222,7 @@ async function claimExistingRefreshResources(db: CoreDb, drafts: SourceResourceD
 			WHERE resource.normalized_url = discovered.normalized_url
 			  AND resource.source_id IS NULL
 			  AND resource.enrichment_status = 'enriched'
-			  AND ${contentResourceIdentitySql({
-					kind: sql`resource.kind`,
-					resourcePlatform: sql`resource.resource_platform`,
-				})}
+			  AND ${inArray(sql`resource.kind`, CONTENT_RESOURCE_KINDS)}
 			RETURNING resource.id
 		)
 		SELECT
@@ -235,10 +231,7 @@ async function claimExistingRefreshResources(db: CoreDb, drafts: SourceResourceD
 		FROM resources AS resource
 		JOIN discovered ON discovered.normalized_url = resource.normalized_url
 		WHERE resource.enrichment_status = 'enriched'
-		  AND ${contentResourceIdentitySql({
-				kind: sql`resource.kind`,
-				resourcePlatform: sql`resource.resource_platform`,
-			})}
+		  AND ${inArray(sql`resource.kind`, CONTENT_RESOURCE_KINDS)}
 	`);
 	return result.rows;
 }
@@ -338,10 +331,7 @@ async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limi
 			    WHERE user_files.resource_id = resources.id
 			  )
 			  AND updated_at < ${olderThan}
-			  AND ${contentResourceIdentitySql({
-					kind: sql`kind`,
-					resourcePlatform: sql`resource_platform`,
-				})}
+			  AND ${inArray(sql`kind`, CONTENT_RESOURCE_KINDS)}
 			ORDER BY updated_at ASC, id ASC
 			FOR UPDATE SKIP LOCKED
 			LIMIT ${limit}

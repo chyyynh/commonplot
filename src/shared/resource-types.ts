@@ -31,11 +31,6 @@ export type ResourceIdentity = {
 
 export type ContentResourceIdentity = Extract<ResourceIdentity, { kind: ContentResourceKind }>;
 
-export type ResourceIdentityFilters = Readonly<{
-	kinds?: readonly ResourceKind[];
-	resourcePlatforms?: readonly ResourcePlatform[];
-}>;
-
 const DETECTED_PLATFORM_RESOURCE_IDENTITIES = {
 	hackernews: { kind: 'forum', resourcePlatform: 'hackernews' },
 	lesswrong: { kind: 'blog', resourcePlatform: 'lesswrong' },

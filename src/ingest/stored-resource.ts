@@ -21,7 +21,6 @@ import type { ResourceForProcessing } from '@core-shared/types';
 import type { CoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
 import { sql } from 'drizzle-orm';
-import { cleanString, dateValue, requiredString } from './domain/resource-values';
 
 export type StoredResourceProcessingInput = {
 	resource: ResourceForProcessing;
@@ -75,7 +74,7 @@ export async function loadStoredResourceForProcessing(db: CoreDb, resourceId: st
 	return {
 		resource: storedResourceRowToProcessing(row),
 		isMonitoredOnly: row.is_monitored_only,
-		sourceAvatarUrl: cleanString(row.source_avatar_url),
+		sourceAvatarUrl: row.source_avatar_url?.trim() || null,
 	};
 }
 
@@ -162,18 +161,22 @@ function storedResourceRowToProcessing(row: StoredResourceRow): ResourceForProce
 	if (!isContentResourceIdentity(identity)) {
 		throw new Error(`Stored resource ${row.id} is not processable by core: ${identity.kind}`);
 	}
+	const title = row.title?.trim();
+	if (!title) throw new Error('Invalid title: expected non-empty string');
+	const publishedDate = row.published_date instanceof Date ? row.published_date : row.published_date ? new Date(row.published_date) : null;
+	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new Error('Invalid published_date: expected date');
 	const resourceIdentifiers = resourceIdentifiersValue(row.resource_identifiers);
 	return {
 		...identity,
 		processingId: row.id,
 		sourceId: row.source_id,
 		originalLang: canonicalizeResourceLang(row.original_lang),
-		title: requiredString(row.title, 'title'),
+		title,
 		summary: row.summary,
 		content: null,
 		url: row.url,
-		source: cleanString(row.source),
-		publishedDate: row.published_date === null ? null : dateValue(row.published_date, 'published_date').toISOString(),
+		source: row.source?.trim() || null,
+		publishedDate: publishedDate?.toISOString() ?? null,
 		tags: row.tags,
 		keywords: row.keywords,
 		scope: parseResourceScope(row.scope),

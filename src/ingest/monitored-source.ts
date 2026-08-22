@@ -1,6 +1,8 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { isSourcePlatform, SOURCE_INPUT_MAX_LENGTH, type SourcePlatform } from '@core-shared/resource-types';
 import { parseExternalHttpUrl, parseTwitterUsername } from '@core-shared/url';
+import type { CoreDb } from '@db/connection';
+import { inArray, sql } from 'drizzle-orm';
 import { loadFeed } from './platforms/rss-feed';
 
 // Resolves an explicitly requested monitor (feed / account / channel) into the
@@ -132,5 +134,87 @@ export async function resolveMonitoredSource(env: CoreEnv, input: ResolveMonitor
 			return resolveTwitterSource(raw);
 		case 'youtube':
 			return resolveYouTubeSource(env, raw);
+	}
+}
+
+export type MonitoredSource = {
+	id: string;
+	name: string;
+	handle: string;
+	avatarUrl: string | null;
+	scrapedAt: Date | null;
+	createdAt: Date;
+};
+
+/** Loads enabled sources due to be polled by the requested monitor. */
+export async function loadMonitoredSources(db: CoreDb, monitor: 'feed' | 'twitter'): Promise<MonitoredSource[]> {
+	const platformFilter =
+		monitor === 'twitter'
+			? sql`platform = 'twitter'`
+			: sql`platform IN ('rss', 'lesswrong', 'youtube')
+					AND (platform <> 'youtube' OR scraped_at IS NULL OR scraped_at < NOW() - INTERVAL '30 minutes')`;
+	const result = await db.execute<MonitoredSource>(sql`
+		SELECT
+			id::text AS id,
+			name,
+			handle,
+			avatar_url AS "avatarUrl",
+			scraped_at AS "scrapedAt",
+			created_at AS "createdAt"
+		FROM sources
+		WHERE enabled = true
+		  AND ${platformFilter}
+	`);
+	return result.rows;
+}
+
+export async function markSourcesScraped(db: CoreDb, sourceIds: string[], scrapedAt: Date = new Date()): Promise<number> {
+	if (!sourceIds.length) return 0;
+	if (!Number.isFinite(scrapedAt.getTime())) throw new Error('Source watermark is invalid');
+	const updated = await db.execute(sql`
+		UPDATE sources
+		SET scraped_at = ${scrapedAt},
+		    updated_at = NOW(),
+		    status = 'active',
+		    scrape_state = NULL
+		WHERE ${inArray(sql`id`, sourceIds)}
+		  AND (scraped_at IS NULL OR scraped_at <= ${scrapedAt})
+		RETURNING id
+	`);
+	return updated.rows.length;
+}
+
+const PENDING_VALIDATION_FAILURE_LIMIT = 3;
+
+// Failure bookkeeping must not break per-source cron isolation. Pending
+// sources are disabled after three failed validation attempts; active sources
+// keep monitoring through transient provider failures.
+export async function recordSourceFailure(db: CoreDb, sourceId: string, error: unknown): Promise<void> {
+	const failedAt = new Date();
+	const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+	try {
+		await db.execute(sql`
+			UPDATE sources SET
+				scrape_state = jsonb_build_object(
+					'consecutiveFailures', COALESCE((scrape_state->>'consecutiveFailures')::int, 0) + 1,
+					'lastError', ${message}::text,
+					'lastFailureAt', ${failedAt.toISOString()}::text
+				),
+				status = CASE
+					WHEN status = 'pending' AND COALESCE((scrape_state->>'consecutiveFailures')::int, 0) + 1 >= ${PENDING_VALIDATION_FAILURE_LIMIT}
+					THEN 'failed' ELSE status END,
+				enabled = CASE
+					WHEN status = 'pending' AND COALESCE((scrape_state->>'consecutiveFailures')::int, 0) + 1 >= ${PENDING_VALIDATION_FAILURE_LIMIT}
+					THEN false ELSE enabled END,
+				updated_at = ${failedAt}
+			WHERE id = ${sourceId}
+		`);
+	} catch (recordError) {
+		console.error({
+			tag: 'SOURCES',
+			msg: 'Failed to record source failure',
+			sourceId,
+			error: recordError instanceof Error ? recordError.message : String(recordError),
+		});
 	}
 }

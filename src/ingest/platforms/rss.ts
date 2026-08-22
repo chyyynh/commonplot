@@ -1,5 +1,5 @@
 import type { CoreDb } from '@db/connection';
-import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/domain/source-store';
+import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/monitored-source';
 import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/resource-admission';
 import { loadFeed } from './rss-feed';
 

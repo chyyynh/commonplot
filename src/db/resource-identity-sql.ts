@@ -6,16 +6,6 @@ type ResourceIdentitySqlFields = {
 	resourcePlatform: SQL;
 };
 
-export function contentResourceIdentitySql(fields: ResourceIdentitySqlFields): SQL {
-	return sql`(
-		(${fields.kind} = 'blog' AND (${fields.resourcePlatform} IS NULL OR ${fields.resourcePlatform} = 'lesswrong'))
-		OR (${fields.kind} = 'forum' AND ${fields.resourcePlatform} = 'hackernews')
-		OR (${fields.kind} = 'post' AND ${fields.resourcePlatform} = 'twitter')
-		OR (${fields.kind} = 'video' AND ${fields.resourcePlatform} = 'youtube')
-		OR (${fields.kind} = 'paper' AND ${fields.resourcePlatform} IS NULL)
-	)`;
-}
-
 export function resourceDisplaySourceSql(
 	fields: ResourceIdentitySqlFields & {
 		creatorName: SQL;

@@ -1,12 +1,13 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
 import {
+	CONTENT_RESOURCE_KINDS,
 	type ContentResourceIdentity,
 	isContentResourceIdentity,
 	parseResourceIdentity,
 	type ResourcePlatform,
 } from '@core-shared/resource-types';
 import { type CoreDb, connectCoreDb } from '@db/connection';
-import { contentResourceIdentitySql, resourceDisplaySourceSql } from '@db/resource-identity-sql';
+import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
 import { inArray, sql } from 'drizzle-orm';
 import { DURABLE_WORKFLOW_RETRIES } from './workflow-control';
 
@@ -157,10 +158,7 @@ async function loadCorpusDocuments(db: CoreDb, resourceIds: readonly string[]): 
 		WHERE ${inArray(sql`r.id`, resourceIds)}
 		  AND r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND ${contentResourceIdentitySql({
-				kind: sql`r.kind`,
-				resourcePlatform: sql`r.resource_platform`,
-			})}
+		  AND ${inArray(sql`r.kind`, CONTENT_RESOURCE_KINDS)}
 		`);
 	return result.rows;
 }
@@ -235,7 +233,7 @@ async function loadCorpusCount(db: CoreDb): Promise<number> {
 		FROM resources r
 		WHERE r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
+		  AND ${inArray(sql`r.kind`, CONTENT_RESOURCE_KINDS)}
 	`);
 	const [row] = result.rows;
 	const count = Number(row?.count);
@@ -249,7 +247,7 @@ async function listCorpusIdsAfter(db: CoreDb, cursor: string | null): Promise<st
 		FROM resources r
 		WHERE r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
+		  AND ${inArray(sql`r.kind`, CONTENT_RESOURCE_KINDS)}
 		  AND (${cursor}::uuid IS NULL OR r.id > ${cursor}::uuid)
 		ORDER BY r.id
 		LIMIT ${REINDEX_PAGE_SIZE}
@@ -290,7 +288,7 @@ async function listCorpusDeltaAfter(db: CoreDb, startedAt: string, cursor: Searc
 		  LEFT JOIN resource_translations translation ON translation.resource_id = r.id
 		  WHERE r.scope = 'corpus'
 		    AND r.enrichment_status = 'enriched'
-		    AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
+		    AND ${inArray(sql`r.kind`, CONTENT_RESOURCE_KINDS)}
 		  GROUP BY r.id, r.updated_at
 		)
 		SELECT id::text, to_char(updated_at, ${UTC_TIMESTAMP_FORMAT}) AS updated_at
@@ -335,7 +333,7 @@ async function loadEligibleCorpusIds(db: CoreDb, resourceIds: readonly string[])
 		WHERE ${inArray(sql`r.id`, resourceIds)}
 		  AND r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
+		  AND ${inArray(sql`r.kind`, CONTENT_RESOURCE_KINDS)}
 	`);
 	return new Set(result.rows.map((row) => row.id));
 }
