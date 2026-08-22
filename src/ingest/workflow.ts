@@ -66,48 +66,31 @@ async function stageResourceImages(
 	processingId: string,
 	sourceUrls: readonly string[],
 ): Promise<HostedResourceImage[]> {
-	const images: HostedResourceImage[] = [];
-	for (let offset = 0; offset < sourceUrls.length; offset += 3) {
-		const batch = sourceUrls.slice(offset, offset + 3);
-		const results = await Promise.allSettled(
-			batch.map((sourceUrl, batchIndex) => {
-				const index = offset + batchIndex;
-				return step.do(
-					`rehost-resource-image-${index + 1}-v1`,
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-					() => rehostResourceImage(env.IMAGES, sourceUrl),
-				);
-			}),
+	if (sourceUrls.length === 0) return [];
+	let images: HostedResourceImage[];
+	try {
+		images = await step.do(
+			'rehost-resource-images-v2',
+			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '10 minutes' },
+			async () => {
+				const hosted: HostedResourceImage[] = [];
+				for (let offset = 0; offset < sourceUrls.length; offset += 3) {
+					hosted.push(...(await Promise.all(sourceUrls.slice(offset, offset + 3).map((url) => rehostResourceImage(env.IMAGES, url)))));
+				}
+				return hosted;
+			},
 		);
-		for (const [index, result] of results.entries()) {
-			if (result.status === 'fulfilled') {
-				images.push(result.value);
-				continue;
-			}
-			console.error({
-				tag: 'RESOURCE_IMAGE',
-				event: 'eager_rehost_failed',
-				processing_id: processingId,
-				source_host: new URL(batch[index]!).hostname,
-				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-			});
-		}
-		const failed = results.filter((result) => result.status === 'rejected').length;
-		if (failed) {
-			throw new ResourceProcessingRejectedError(
-				`Processing ${processingId} failed to host ${failed} canonical image${failed === 1 ? '' : 's'}`,
-			);
-		}
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		console.error({ tag: 'RESOURCE_IMAGE', event: 'eager_rehost_failed', processing_id: processingId, error: message });
+		throw new ResourceProcessingRejectedError(`Processing ${processingId} failed to host canonical images: ${message}`);
 	}
-	if (sourceUrls.length > 0) {
-		console.info({
-			tag: 'RESOURCE_IMAGE',
-			event: 'eager_rehost_completed',
-			processing_id: processingId,
-			ready: images.length,
-			failed: sourceUrls.length - images.length,
-		});
-	}
+	console.info({
+		tag: 'RESOURCE_IMAGE',
+		event: 'eager_rehost_completed',
+		processing_id: processingId,
+		ready: images.length,
+	});
 	return images;
 }
 
@@ -438,13 +421,17 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const persistedResourceId = persistence.resourceId;
 			const translationRevision = persistence.translationRevision;
 			const followUps: Promise<unknown>[] = [
-				step.do('enqueue-resource-translation-v2', RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG, async () =>
-					translationRevision ? enqueueResourceTranslation(this.env, persistedResourceId, translationRevision) : null,
-				),
 				step.do('sync-resolved-ai-search-v1', AI_SEARCH_SYNC_STEP_CONFIG, () =>
 					Promise.all([persistedResourceId, ...persistence.retiredResourceIds].map((resourceId) => syncCorpusItem(this.env, resourceId))),
 				),
 			];
+			if (translationRevision) {
+				followUps.push(
+					step.do('enqueue-resource-translation-v2', RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG, () =>
+						enqueueResourceTranslation(this.env, persistedResourceId, translationRevision),
+					),
+				);
+			}
 			if (subject && !persistence.subjectAttached) {
 				followUps.push(
 					step.do(
