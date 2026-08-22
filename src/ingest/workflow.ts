@@ -10,7 +10,7 @@ import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shar
 import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource-identifiers';
 import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
 import { DEFAULT_RESOURCE_LANG } from '@core-shared/resource-types';
-import type { ResourceForProcessing } from '@core-shared/types';
+import type { ResolvedResource } from '@core-shared/types';
 import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
 import { loadStoredResourceForProcessing, type StoredResourceProcessingInput } from '@ingest/domain/resource-store';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
@@ -25,7 +25,6 @@ import {
 	scrapeSavedUrlArtifact,
 } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
-import { resourceSourceRevision } from './domain/resource-revision';
 import { stageHackerNewsAnnotation } from './platforms/hackernews';
 import { applyPaperEnrichment, privatePaperAttachment, stagePaperEnrichment } from './platforms/paper';
 import { stageOpenAlexContentAcquisition } from './platforms/paper-content';
@@ -139,7 +138,7 @@ async function stageSavedUrlAcquisition(
 
 type PreparedResource = {
 	previewImageUrl: string | null;
-	resource: ResourceForProcessing;
+	resource: ResolvedResource;
 	subject: ResolvedSubjectInput | null;
 	youtube: YouTubeSpecializationMutation | null;
 };
@@ -293,13 +292,13 @@ async function reconcileSupersededProviderRefresh(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		acquiredResource: ResourceForProcessing;
+		acquiredResource: ResolvedResource;
 		expectedProviderRevision: string;
 		resourceId: string;
 		supersededSourceRevision: string | null;
 	},
 ): Promise<void> {
-	const acquiredSourceRevision = await resourceSourceRevision(input.acquiredResource);
+	const acquiredSourceRevision = input.acquiredResource.source_revision;
 	const supersedingResource = await step.do(
 		'load-superseding-provider-refresh-v1',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
@@ -440,7 +439,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						async () =>
 							enqueueSubjectDraft(this.env, {
 								parentResourceId: persistedResourceId,
-								parentRevision: await resourceSourceRevision(resource),
+								parentRevision: resource.source_revision,
 								url: subject.url,
 							}),
 					),

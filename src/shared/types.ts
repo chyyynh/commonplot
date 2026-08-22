@@ -26,6 +26,7 @@ type ResourceForProcessingBase = {
 };
 
 export type ResourceForProcessing = ResourceForProcessingBase & Extract<ResourceIdentityColumns, { kind: ContentResourceKind }>;
+export type ResolvedResource = ResourceForProcessing & { content: string; source_revision: string };
 
 export const ENTITY_TYPES = ['person', 'organization', 'product', 'technology', 'event', 'location'] as const;
 export type EntityType = (typeof ENTITY_TYPES)[number];

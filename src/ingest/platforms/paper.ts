@@ -10,7 +10,7 @@ import {
 } from '@core-shared/paper-identity';
 import { isPaperIdentifier } from '@core-shared/resource-identifiers';
 import { literalCreator, type PaperKindMetadata } from '@core-shared/resource-metadata';
-import type { PaperMetadata, ResourceForProcessing } from '@core-shared/types';
+import type { PaperMetadata, ResolvedResource, ResourceForProcessing } from '@core-shared/types';
 import { resolveBibliographicIdentifiers } from './bibliographic-resolver';
 import { resolveOpenAlexPaper } from './openalex';
 
@@ -35,7 +35,7 @@ function isExplicitPaperUrl(url: string | null | undefined): boolean {
 }
 
 /** OpenAlex fields become canonical once academic enrichment resolves the work. */
-export function applyPaperEnrichment(resource: ResourceForProcessing, metadata: PaperMetadata | null): ResourceForProcessing {
+export function applyPaperEnrichment(resource: ResolvedResource, metadata: PaperMetadata | null): ResolvedResource {
 	if (!metadata) return resource;
 
 	let publishedDate = resource.published_date;

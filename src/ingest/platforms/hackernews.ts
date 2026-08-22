@@ -2,7 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { type ForumKindMetadata, literalCreator } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, ResourceForProcessing } from '@core-shared/types';
+import type { AcquiredMaterial, ResolvedResource } from '@core-shared/types';
 import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
@@ -232,7 +232,7 @@ function withoutPreviousDiscussion(content: string): string {
 	return content.split(`\n\n---\n\n${HN_DISCUSSION_HEADING}`, 1)[0].trim();
 }
 
-async function buildHackerNewsAnnotation(resource: ResourceForProcessing, env: CoreEnv, item: HackerNewsItem): Promise<string> {
+async function buildHackerNewsAnnotation(resource: ResolvedResource, env: CoreEnv, item: HackerNewsItem): Promise<string> {
 	const comments = item.children?.length ? collectAllComments(item.children) : [];
 	const digest = await generateHnDiscussionDigest(env, resource.processing_id, resource.title, item.text ?? null, comments);
 	// Count nodes, not text-bearing comments, so this matches Forum kind metadata.
@@ -252,9 +252,9 @@ function applyHackerNewsAnnotation(content: string, annotation: string): string 
 export async function stageHackerNewsAnnotation(
 	env: CoreEnv,
 	step: WorkflowStep,
-	resource: ResourceForProcessing,
+	resource: ResolvedResource,
 	acquiredItem: HackerNewsItem,
-): Promise<ResourceForProcessing> {
+): Promise<ResolvedResource> {
 	const annotation = await step
 		.do(
 			'build-hacker-news-annotation-v1',
@@ -270,5 +270,5 @@ export async function stageHackerNewsAnnotation(
 			});
 			return null;
 		});
-	return annotation && resource.content ? { ...resource, content: applyHackerNewsAnnotation(resource.content, annotation) } : resource;
+	return annotation ? { ...resource, content: applyHackerNewsAnnotation(resource.content, annotation) } : resource;
 }

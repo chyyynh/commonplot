@@ -7,19 +7,18 @@ import type {
 } from '@app-domain/resource-graph-contracts';
 import { type HostedResourceImage, hostedResourceImageFields } from '@core-shared/resource-image-mapping';
 import { parseResourceIdentity } from '@core-shared/resource-types';
-import type { ResourceForProcessing } from '@core-shared/types';
+import type { ResolvedResource } from '@core-shared/types';
 import { withCoreDb } from '@db/client';
 import { resources } from '@db/schema';
 import { toStoredResourceEntities } from '@entities/normalize';
 import { eq, sql } from 'drizzle-orm';
 import type { ResourceClassificationResult } from './domain/resource-classification';
-import { resourceSourceRevision } from './domain/resource-revision';
 import type { ResolvedSubjectInput } from './resource-resolver';
 
 type PersistProcessedInput = {
 	classification: ResourceClassificationResult;
 	previewImageUrl: string | null;
-	resource: ResourceForProcessing;
+	resource: ResolvedResource;
 	subject: ResolvedSubjectInput | null;
 	target:
 		| { kind: 'draft'; admission: ResourceDraftAdmission }
@@ -73,7 +72,7 @@ export async function persistProcessedResource(
 	input: PersistProcessedInput,
 	hostedImages: readonly HostedResourceImage[],
 ): Promise<PersistResolvedResourceGraphResult> {
-	const mutation = await resolvedResourceMutation(input, hostedImages);
+	const mutation = resolvedResourceMutation(input, hostedImages);
 	switch (input.target.kind) {
 		case 'existing': {
 			const storedMutation: PersistResolvedResourceGraphInput = {
@@ -108,16 +107,13 @@ export async function persistProcessedResource(
 	}
 }
 
-async function resolvedResourceMutation(
+function resolvedResourceMutation(
 	input: PersistProcessedInput,
 	hostedImages: readonly HostedResourceImage[],
-): Promise<Omit<PersistResolvedResourceGraphInput, 'resourceId' | 'expectedSourceRevision'>> {
+): Omit<PersistResolvedResourceGraphInput, 'resourceId' | 'expectedSourceRevision'> {
 	const resource = input.resource;
 	const identity = parseResourceIdentity(resource.kind, resource.resource_platform);
 	if (!identity) throw new Error(`Resource processing ${resource.processing_id} resolved to an invalid identity`);
-	const sourceRevision = await resourceSourceRevision(resource);
-	const content = resource.content;
-	if (!content?.trim()) throw new Error(`Refusing to persist resource processing ${resource.processing_id} without content`);
 	const ogImageUrl = input.previewImageUrl?.trim() || null;
 	const media = hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kind_metadata, ogImageUrl }, hostedImages);
 	return {
@@ -125,12 +121,12 @@ async function resolvedResourceMutation(
 		identifiers: resource.resource_identifiers,
 		creators: media.creators,
 		kindMetadata: media.kindMetadata,
-		sourceRevision,
+		sourceRevision: resource.source_revision,
 		youtube: resource.kind === 'video' ? input.youtube : null,
 		originalLang: resource.original_lang,
 		title: resource.title,
 		summary: resource.summary,
-		content,
+		content: resource.content,
 		keywords: input.classification.keywords ?? resource.keywords,
 		tags: input.classification.tags ?? resource.tags,
 		category: input.classification.category,

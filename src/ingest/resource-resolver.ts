@@ -12,7 +12,7 @@ import {
 	resourceIdentityForDetectedPlatform,
 	toResourceIdentityColumns,
 } from '../shared/resource-types.ts';
-import type { AcquiredMaterial, ResourceForProcessing } from '../shared/types.ts';
+import type { AcquiredMaterial, ResolvedResource, ResourceForProcessing } from '../shared/types.ts';
 import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../shared/url.ts';
 
 type ExactPlatformLocator = Readonly<{
@@ -56,7 +56,7 @@ export function materializeAcquiredResource(
 		publishedDate: string | null;
 		resourceIdentifiers: readonly ResourceIdentifier[];
 	},
-): ResourceForProcessing {
+): ResolvedResource {
 	const paperIdentifiers = resolution.resourceIdentifiers.filter(isPaperIdentifier);
 	const identity: ContentResourceIdentity = resolution.detected
 		? resourceIdentityForDetectedPlatform(resolution.detected.resourcePlatform)
