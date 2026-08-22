@@ -12,10 +12,8 @@ export async function enqueueOrRestartWorkflow<Params>(workflow: Workflow<Params
 	const [created] = await workflow.createBatch([{ id, params }]);
 	if (created) return created.id;
 	const instance = await workflow.get(id);
-	const { output, status } = await instance.status();
+	const { status } = await instance.status();
 	if (status === 'unknown') throw new Error(`Workflow ${id} has unknown status`);
-	const rejected =
-		status === 'complete' && typeof output === 'object' && output !== null && 'status' in output && output.status === 'rejected';
-	if (status === 'errored' || rejected) await instance.restart();
+	if (status === 'errored') await instance.restart();
 	return instance.id;
 }

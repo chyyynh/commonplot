@@ -25,8 +25,6 @@ export type ResourceResolutionOrigin = ResourceMaterializationOrigin & Pick<Mate
 
 type SavedUrlAcquisitionResult = AcquisitionArtifactResult<AcquiredContent>;
 
-export class ResourceProcessingRejectedError extends Error {}
-
 function validateAcquisitionUrl(url: string): string {
 	const parsed = parseExternalHttpUrl(url);
 	if (!parsed) throw new Error('Only http(s) URLs without credentials are allowed');
@@ -48,7 +46,7 @@ export async function stageSavedUrlAcquisition(
 ): Promise<AcquiredContent> {
 	const locator = exactPlatformLocator(input.resourceIdentifiers ?? []);
 	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : input.sourceUrl;
-	if (!sourceUrl) throw new ResourceProcessingRejectedError(`Resource processing ${input.processingId} has no source URL`);
+	if (!sourceUrl) throw new Error(`Resource processing ${input.processingId} has no source URL`);
 	let acquisitionUrl = validateAcquisitionUrl(sourceUrl);
 	for (let route = 0; route < 5; route++) {
 		const detected = detectResourceUrl(acquisitionUrl);
@@ -88,11 +86,10 @@ export async function stageSavedUrlAcquisition(
 			}
 		}
 		const acquisition = await staged;
-		if (acquisition.status === 'rejected') throw new ResourceProcessingRejectedError(acquisition.message);
 		if (acquisition.status === 'acquired') return acquisition.content;
 		acquisitionUrl = validateAcquisitionUrl(acquisition.redirectUrl);
 	}
-	throw new ResourceProcessingRejectedError(`Resource acquisition ${input.processingId} exceeded its platform redirect limit`);
+	throw new Error(`Resource acquisition ${input.processingId} exceeded its platform redirect limit`);
 }
 
 export async function resolveAcquiredResource(
@@ -126,7 +123,7 @@ export async function resolveAcquiredResource(
 			translateUrl: translatePaperUrl,
 		});
 		if (!paper.acquiredContent.markdown.trim()) {
-			throw new ResourceProcessingRejectedError(`Processing ${processingId} has no extractable content`);
+			throw new Error(`Processing ${processingId} has no extractable content`);
 		}
 		return {
 			...materializeAcquiredResource(paper.acquiredContent, origin, {
@@ -139,7 +136,7 @@ export async function resolveAcquiredResource(
 	}
 
 	if (!acquired.markdown.trim()) {
-		throw new ResourceProcessingRejectedError(`Processing ${processingId} has no extractable content`);
+		throw new Error(`Processing ${processingId} has no extractable content`);
 	}
 	const resolution = { canonicalUrl, publishedDate, resourceIdentifiers };
 	switch (acquired.resourcePlatform) {

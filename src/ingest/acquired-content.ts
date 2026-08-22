@@ -1,5 +1,4 @@
 import type { WorkflowStepConfig } from 'cloudflare:workers';
-import { NonRetryableError } from 'cloudflare:workflows';
 import { sha256Hex } from '@core-shared/hash';
 import { parseResourceCreators, parseStoredResourceKindMetadata } from '@core-shared/resource-metadata';
 import { type ResourcePlatform, resourceIdentityForDetectedPlatform } from '@core-shared/resource-types';
@@ -13,10 +12,7 @@ type WithSourceSnapshot<T extends AcquiredMaterial> = T extends unknown
 
 export type NormalizedAcquiredContent<T extends ResourcePlatform = ResourcePlatform> = WithSourceSnapshot<AcquiredMaterial<T>>;
 
-export type AcquisitionArtifactResult<T> =
-	| { status: 'acquired'; content: T }
-	| { status: 'redirect'; redirectUrl: string }
-	| { status: 'rejected'; message: string };
+export type AcquisitionArtifactResult<T> = { status: 'acquired'; content: T } | { status: 'redirect'; redirectUrl: string };
 
 export const DEFAULT_ACQUISITION_STEP_CONFIG = {
 	retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' },
@@ -85,18 +81,9 @@ export async function normalizeAcquiredContent<T extends AcquiredMaterial>(acqui
 export async function acquisitionResultArtifact<T extends NormalizedAcquiredContent>(
 	acquire: () => Promise<T | { redirectUrl: string }>,
 ): Promise<ReadableStream<Uint8Array>> {
-	let result: AcquisitionArtifactResult<T>;
-	try {
-		const acquired = await acquire();
-		result =
-			'redirectUrl' in acquired ? { status: 'redirect', redirectUrl: acquired.redirectUrl } : { status: 'acquired', content: acquired };
-	} catch (error) {
-		if (!(error instanceof NonRetryableError)) throw error;
-		result = {
-			status: 'rejected',
-			message: error.message.trim().slice(0, 500) || 'Resource acquisition was rejected',
-		};
-	}
+	const acquired = await acquire();
+	const result: AcquisitionArtifactResult<T> =
+		'redirectUrl' in acquired ? { status: 'redirect', redirectUrl: acquired.redirectUrl } : { status: 'acquired', content: acquired };
 	return new Blob([JSON.stringify(result)], { type: 'application/json' }).stream();
 }
 
@@ -108,7 +95,6 @@ export async function readAcquisitionResultArtifact<T>(
 		.discriminatedUnion('status', [
 			z.object({ status: z.literal('acquired'), content: contentSchema }),
 			z.object({ status: z.literal('redirect'), redirectUrl: z.url() }),
-			z.object({ status: z.literal('rejected'), message: z.string().trim().min(1).max(500) }),
 		])
 		.parse(await new Response(artifact).json());
 }
