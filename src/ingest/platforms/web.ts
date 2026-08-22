@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
+import { readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
 import type { AcquiredMaterial } from '@core-shared/resource';
 import { literalCreator } from '@core-shared/resource';
@@ -79,17 +79,14 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, proce
 }
 
 async function acquireWebResource(url: string, env: CoreEnv, processingId?: string): Promise<AcquiredWebContent | PlatformRedirect> {
-	const response = await fetchWithTimeout(
-		url,
-		{
-			headers: {
-				'User-Agent': WEB_FETCH_USER_AGENT,
-				Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.5',
-				'Accept-Language': 'en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7',
-			},
+	const response = await fetch(url, {
+		headers: {
+			'User-Agent': WEB_FETCH_USER_AGENT,
+			Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.5',
+			'Accept-Language': 'en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7',
 		},
-		GENERIC_FETCH_TIMEOUT_MS,
-	);
+		signal: AbortSignal.timeout(GENERIC_FETCH_TIMEOUT_MS),
+	});
 	if (!response.ok) {
 		await response.body?.cancel();
 		if (response.status === 404 || response.status === 410) {

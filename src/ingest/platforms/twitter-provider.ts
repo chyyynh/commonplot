@@ -1,4 +1,3 @@
-import { fetchWithTimeout } from '@core-shared/http';
 import { shouldRetryTwitterProviderStatus, twitterProviderRetryDelayMs } from './twitter-data';
 
 const TWITTER_PROVIDER_MAX_ATTEMPTS = 3;
@@ -47,7 +46,12 @@ export async function fetchTwitterProvider(
 	for (let attempt = 1; attempt <= TWITTER_PROVIDER_MAX_ATTEMPTS; attempt++) {
 		let response: Response;
 		try {
-			response = await fetchWithTimeout(url.toString(), { ...init, headers }, context.timeoutMs ?? 20_000);
+			const timeout = AbortSignal.timeout(context.timeoutMs ?? 20_000);
+			response = await fetch(url, {
+				...init,
+				headers,
+				signal: init.signal ? AbortSignal.any([init.signal, timeout]) : timeout,
+			});
 		} catch (error) {
 			if (attempt === TWITTER_PROVIDER_MAX_ATTEMPTS) throw error;
 			await waitForTwitterProviderRetry({ attempt, context, error });

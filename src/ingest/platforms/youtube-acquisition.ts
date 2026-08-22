@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
+import { readTextWithLimit } from '@core-shared/http';
 import type {
 	AcquiredMaterial,
 	ResolvedResource,
@@ -101,8 +101,8 @@ function parseChaptersFromDescription(description: string): YouTubeChapter[] {
 }
 
 const transcriptFetch: typeof fetch = (input, init) => {
-	const url = typeof input === 'string' || input instanceof URL ? input.toString() : input.url;
-	return fetchWithTimeout(url, init, TRANSCRIPT_FETCH_TIMEOUT_MS);
+	const timeout = AbortSignal.timeout(TRANSCRIPT_FETCH_TIMEOUT_MS);
+	return fetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
 };
 
 /**
@@ -131,7 +131,7 @@ async function fetchYouTubeVideoData(videoId: string, youtubeApiKey: string): Pr
 	url.searchParams.set('key', youtubeApiKey);
 
 	try {
-		const response = await fetchWithTimeout(url.toString(), undefined, YOUTUBE_API_TIMEOUT_MS);
+		const response = await fetch(url, { signal: AbortSignal.timeout(YOUTUBE_API_TIMEOUT_MS) });
 		if (!response.ok) {
 			await response.body?.cancel();
 			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
@@ -153,7 +153,7 @@ async function fetchYouTubeChannelAvatar(channelId: string, youtubeApiKey: strin
 	url.searchParams.set('key', youtubeApiKey);
 
 	try {
-		const response = await fetchWithTimeout(url.toString(), undefined, YOUTUBE_API_TIMEOUT_MS);
+		const response = await fetch(url, { signal: AbortSignal.timeout(YOUTUBE_API_TIMEOUT_MS) });
 		if (!response.ok) {
 			await response.body?.cancel();
 			throw new Error(`HTTP ${response.status}: ${response.statusText}`);

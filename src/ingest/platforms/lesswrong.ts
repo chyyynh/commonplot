@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
+import { readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
 import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
 import { literalCreator } from '@core-shared/resource';
@@ -42,13 +42,14 @@ type LessWrongGraphqlResponse = {
 
 async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<'lesswrong'>> {
 	if (!LESSWRONG_POST_ID_RE.test(postId)) throw new NonRetryableError(`Invalid LessWrong post id: ${postId}`);
-	const response = await fetchWithTimeout(LESSWRONG_GRAPHQL_URL, {
+	const response = await fetch(LESSWRONG_GRAPHQL_URL, {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
 			'User-Agent': WEB_FETCH_USER_AGENT,
 		},
 		body: JSON.stringify({ query: POST_QUERY, variables: { id: postId } }),
+		signal: AbortSignal.timeout(15_000),
 	});
 	if (!response.ok) {
 		await response.body?.cancel();

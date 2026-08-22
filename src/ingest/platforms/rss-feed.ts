@@ -1,4 +1,4 @@
-import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
+import { readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { extractHackerNewsId, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { parseFeed } from 'feedsmith';
 import { decode } from 'html-entities';
@@ -103,11 +103,12 @@ export async function loadFeed(feedUrl: string): Promise<{
 }> {
 	const requestedUrl = parseExternalHttpUrl(feedUrl);
 	if (!requestedUrl) throw new Error('Enter a valid feed URL (http/https).');
-	const response = await fetchWithTimeout(requestedUrl.toString(), {
+	const response = await fetch(requestedUrl, {
 		headers: {
 			'User-Agent': WEB_FETCH_USER_AGENT,
 			Accept: 'application/rss+xml, application/atom+xml, application/feed+json, application/json, application/xml, text/xml, */*',
 		},
+		signal: AbortSignal.timeout(15_000),
 	});
 	if (!response.ok) {
 		const status = response.status;

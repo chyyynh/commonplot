@@ -1,7 +1,6 @@
 // Shared media rehosting for every Resource platform; this is not the image Resource kind adapter.
 import type { WorkflowStep } from 'cloudflare:workers';
 import { sha256Hex } from '@core-shared/hash';
-import { fetchWithTimeout } from '@core-shared/http';
 import { type HostedResourceImage, hostedResourceImageUrl, normalizedResourceImageUrl } from '@core-shared/image-mapping';
 import { validatedExternalMediaUrl } from '@core-shared/url';
 
@@ -49,15 +48,11 @@ async function fetchImageSource(sourceUrl: string): Promise<Response> {
 	for (let redirects = 0; ; redirects += 1) {
 		let response: Response;
 		try {
-			response = await fetchWithTimeout(
-				currentUrl,
-				{
-					headers: { Accept: 'image/*', 'User-Agent': SOURCE_USER_AGENT },
-					redirect: 'manual',
-					signal,
-				},
-				REHOST_TIMEOUT_MS,
-			);
+			response = await fetch(currentUrl, {
+				headers: { Accept: 'image/*', 'User-Agent': SOURCE_USER_AGENT },
+				redirect: 'manual',
+				signal,
+			});
 		} catch (error) {
 			throw failure('fetch_error', error instanceof Error ? error.message : String(error));
 		}

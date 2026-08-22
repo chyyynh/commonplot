@@ -18,84 +18,34 @@ async function responseContentLength(response: Response): Promise<number | null>
 	return length;
 }
 
-export async function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs = 15_000): Promise<Response> {
-	try {
-		const timeout = AbortSignal.timeout(timeoutMs);
-		return await fetch(url, { ...options, signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout });
-	} catch (err) {
-		if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) {
-			// URLs may contain API keys, signed tokens, private resource paths, or
-			// user-authored queries. Callers can add a safe resource identifier when
-			// they need context; the shared transport must never echo credentials.
-			throw new Error(`Request timed out after ${timeoutMs}ms`);
-		}
-		throw err;
+async function responseBodyWithLimit(response: Response, maxBytes: number): Promise<ReadableStream<Uint8Array> | null> {
+	const contentLength = await responseContentLength(response);
+	if (contentLength !== null && contentLength > maxBytes) {
+		await response.body?.cancel();
+		throw new Error(`Response too large: ${contentLength} bytes`);
 	}
+	if (!response.body) return null;
+
+	let totalBytes = 0;
+	return response.body.pipeThrough(
+		new TransformStream<Uint8Array, Uint8Array>({
+			transform(chunk, controller) {
+				totalBytes += chunk.byteLength;
+				if (totalBytes > maxBytes) {
+					throw new Error(`Response body exceeded ${maxBytes} bytes`);
+				}
+				controller.enqueue(chunk);
+			},
+		}),
+	);
 }
 
 export async function readTextWithLimit(response: Response, maxBytes = DEFAULT_TEXT_MAX_BYTES): Promise<string> {
-	const contentLength = await responseContentLength(response);
-	if (contentLength !== null && contentLength > maxBytes) {
-		await response.body?.cancel();
-		throw new Error(`Response too large: ${contentLength} bytes`);
-	}
-	if (!response.body) return '';
-
-	const reader = response.body.getReader();
-	const decoder = new TextDecoder();
-	let text = '';
-	let totalBytes = 0;
-
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) return text + decoder.decode();
-
-			totalBytes += value.byteLength;
-			if (totalBytes > maxBytes) {
-				await reader.cancel();
-				throw new Error(`Response body exceeded ${maxBytes} bytes`);
-			}
-			text += decoder.decode(value, { stream: true });
-		}
-	} finally {
-		reader.releaseLock();
-	}
+	const body = await responseBodyWithLimit(response, maxBytes);
+	return body ? new Response(body).text() : '';
 }
 
 export async function readBytesWithLimit(response: Response, maxBytes: number): Promise<Uint8Array> {
-	const contentLength = await responseContentLength(response);
-	if (contentLength !== null && contentLength > maxBytes) {
-		await response.body?.cancel();
-		throw new Error(`Response too large: ${contentLength} bytes`);
-	}
-	if (!response.body) return new Uint8Array();
-
-	const reader = response.body.getReader();
-	const chunks: Uint8Array[] = [];
-	let totalBytes = 0;
-
-	try {
-		for (;;) {
-			const { done, value } = await reader.read();
-			if (done) {
-				const bytes = new Uint8Array(totalBytes);
-				let offset = 0;
-				for (const chunk of chunks) {
-					bytes.set(chunk, offset);
-					offset += chunk.byteLength;
-				}
-				return bytes;
-			}
-
-			totalBytes += value.byteLength;
-			if (totalBytes > maxBytes) {
-				await reader.cancel();
-				throw new Error(`Response body exceeded ${maxBytes} bytes`);
-			}
-			chunks.push(value);
-		}
-	} finally {
-		reader.releaseLock();
-	}
+	const body = await responseBodyWithLimit(response, maxBytes);
+	return body ? new Response(body).bytes() : new Uint8Array();
 }

@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
+import { readTextWithLimit } from '@core-shared/http';
 import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
 import { type ForumKindMetadata, literalCreator } from '@core-shared/resource';
 import { generateText } from 'ai';
@@ -88,7 +88,7 @@ function countHnComments(children: HnComment[] | undefined): number {
 }
 
 async function fetchHnItem(itemId: string): Promise<HackerNewsItem> {
-	const response = await fetchWithTimeout(`${HN_ALGOLIA_API}/${itemId}`);
+	const response = await fetch(`${HN_ALGOLIA_API}/${itemId}`, { signal: AbortSignal.timeout(15_000) });
 	if (!response.ok) {
 		await response.body?.cancel();
 		if (response.status === 404 || response.status === 410) {

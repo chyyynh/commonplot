@@ -1,4 +1,4 @@
-import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
+import { readTextWithLimit } from '@core-shared/http';
 import { isSourcePlatform, SOURCE_INPUT_MAX_LENGTH, type SourcePlatform } from '@core-shared/source';
 import { parseExternalHttpUrl, parseTwitterUsername } from '@core-shared/url';
 import type { CoreDb } from '@db/connection';
@@ -75,9 +75,9 @@ type YouTubeChannelLookup = { id: string; title: string | null; avatarUrl: strin
 
 async function fetchYouTubeChannel(env: CoreEnv, query: string): Promise<YouTubeChannelLookup | null> {
 	if (!env.YOUTUBE_API_KEY) throw new Error('YouTube channel lookup is not configured.');
-	const response = await fetchWithTimeout(
-		`https://www.googleapis.com/youtube/v3/channels?part=snippet&${query}&key=${env.YOUTUBE_API_KEY}`,
-	);
+	const response = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&${query}&key=${env.YOUTUBE_API_KEY}`, {
+		signal: AbortSignal.timeout(15_000),
+	});
 	if (!response.ok) {
 		const status = response.status;
 		await response.body?.cancel();

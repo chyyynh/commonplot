@@ -1,4 +1,4 @@
-import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
+import { readTextWithLimit } from '@core-shared/http';
 import {
 	normalizeArxivId,
 	normalizeDoi,
@@ -231,7 +231,7 @@ function normalizeOpenAlexWork(
 async function fetchOpenAlexJson(path: string, apiKey: string): Promise<unknown | null> {
 	const headers: Record<string, string> = { Accept: 'application/json' };
 	if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
-	const response = await fetchWithTimeout(`${OPENALEX_BASE}${path}`, { headers }, REQUEST_TIMEOUT_MS);
+	const response = await fetch(`${OPENALEX_BASE}${path}`, { headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 	if (response.ok) {
 		return JSON.parse(await readTextWithLimit(response, RESPONSE_MAX_BYTES));
 	}
@@ -330,7 +330,10 @@ export async function acquireOpenAlexPdf(input: { apiKey?: string; contentPdfUrl
 	}
 	const requestUrl = new URL(contentUrl);
 	requestUrl.searchParams.set('api_key', apiKey);
-	const response = await fetchWithTimeout(requestUrl.toString(), { headers: { Accept: 'application/pdf' } }, CONTENT_REQUEST_TIMEOUT_MS);
+	const response = await fetch(requestUrl, {
+		headers: { Accept: 'application/pdf' },
+		signal: AbortSignal.timeout(CONTENT_REQUEST_TIMEOUT_MS),
+	});
 	if (!response.ok) {
 		const status = response.status;
 		await response.body?.cancel();
@@ -360,11 +363,10 @@ export async function acquireOpenAlexGrobidText(input: {
 	}
 	const requestUrl = new URL(contentUrl);
 	requestUrl.searchParams.set('api_key', apiKey);
-	const response = await fetchWithTimeout(
-		requestUrl.toString(),
-		{ headers: { Accept: 'application/xml,text/xml' } },
-		CONTENT_REQUEST_TIMEOUT_MS,
-	);
+	const response = await fetch(requestUrl, {
+		headers: { Accept: 'application/xml,text/xml' },
+		signal: AbortSignal.timeout(CONTENT_REQUEST_TIMEOUT_MS),
+	});
 	if (!response.ok) {
 		const status = response.status;
 		await response.body?.cancel();

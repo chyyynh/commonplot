@@ -1,4 +1,4 @@
-import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
+import { readTextWithLimit } from '@core-shared/http';
 import {
 	normalizePaperIdentifiers,
 	PAPER_IDENTIFIER_SCHEMES,
@@ -46,17 +46,14 @@ function citoidItemIdentifiers(item: z.infer<typeof CitoidItemSchema>): PaperIde
 }
 
 async function resolveCitoidIdentifiers(url: string): Promise<PaperIdentifier[]> {
-	const response = await fetchWithTimeout(
-		`${CITOID_BASE}${encodeURIComponent(url)}`,
-		{
-			headers: {
-				Accept: 'application/json',
-				'Api-User-Agent': CITOID_USER_AGENT,
-				'User-Agent': CITOID_USER_AGENT,
-			},
+	const response = await fetch(`${CITOID_BASE}${encodeURIComponent(url)}`, {
+		headers: {
+			Accept: 'application/json',
+			'Api-User-Agent': CITOID_USER_AGENT,
+			'User-Agent': CITOID_USER_AGENT,
 		},
-		CITOID_TIMEOUT_MS,
-	);
+		signal: AbortSignal.timeout(CITOID_TIMEOUT_MS),
+	});
 	if (!response.ok) {
 		const status = response.status;
 		const retryAfter = response.headers.get('retry-after');
