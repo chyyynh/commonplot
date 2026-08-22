@@ -20,7 +20,7 @@ import type { CoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
 import { sql } from 'drizzle-orm';
 
-type StoredResourceBase = ContentResourceIdentity & {
+type StoredResourceBase = {
 	resourceId: string;
 	originalLang: string;
 	summary: string | null;
@@ -153,6 +153,7 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 	`);
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch stored PDF ${resourceId}: not found or not an owned private blob`);
+	const identity = storedResourceIdentity(row);
 	const base = storedResourceBase(row);
 	const title = row.title?.trim();
 	const source = row.source?.trim();
@@ -164,7 +165,7 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 		title,
 		source,
 		creators: storedResourceCreatorsValue(row.creators, resourceId),
-		kindMetadata: storedResourceKindMetadataValue(base, row.kind_metadata, resourceId),
+		kindMetadata: storedResourceKindMetadataValue(identity, row.kind_metadata, resourceId),
 		storageKey: row.storage_key,
 		fileType: row.file_type,
 	};
@@ -219,6 +220,7 @@ export async function loadResourceReacquisitionInput(db: CoreDb, resourceId: str
 	`);
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
+	storedResourceIdentity(row);
 	return {
 		...storedResourceBase(row),
 		isMonitoredOnly: row.is_monitored_only,
@@ -231,7 +233,6 @@ function storedResourceBase(row: StoredResourceBaseRow): StoredResourceBase {
 	const publishedDate = row.published_date instanceof Date ? row.published_date : row.published_date ? new Date(row.published_date) : null;
 	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new Error('Invalid published_date: expected date');
 	return {
-		...storedResourceIdentity(row),
 		resourceId: row.id,
 		originalLang: canonicalizeResourceLang(row.original_lang),
 		summary: row.summary,
