@@ -112,20 +112,7 @@ const ResourceMediaAttachmentSchema = z.object({
 
 export type ResourceMediaAttachment = Readonly<z.infer<typeof ResourceMediaAttachmentSchema>>;
 
-const BlogKindMetadataSchema = z.object({ siteName: z.string().trim().min(1).optional() });
-const ForumKindMetadataSchema = z.object({
-	itemType: z.enum(['story', 'ask', 'show', 'job']).optional(),
-	points: z.number().int().nonnegative().optional(),
-	commentCount: z.number().int().nonnegative().optional(),
-});
 const PostQuoteSchema = z.object({ creator: ResourceCreatorSchema, text: z.string().trim().min(1) });
-const PostKindMetadataSchema = z.object({ attachments: z.array(ResourceMediaAttachmentSchema).max(16), quote: PostQuoteSchema.optional() });
-const VideoKindMetadataSchema = z.object({
-	durationSeconds: z.number().int().positive().optional(),
-	viewCount: z.number().int().nonnegative().optional(),
-	likeCount: z.number().int().nonnegative().optional(),
-	commentCount: z.number().int().nonnegative().optional(),
-});
 const PaperRelationItemSchema = z.object({
 	openAlexId: z.string().regex(/^W\d+$/),
 	doi: z.string().trim().min(1).optional(),
@@ -136,53 +123,50 @@ const PaperRelationItemSchema = z.object({
 	citedByCount: z.number().int().nonnegative().optional(),
 });
 const PaperRelationSnapshotSchema = z.object({ total: z.number().int().nonnegative(), items: z.array(PaperRelationItemSchema) });
-const PaperKindMetadataSchema = z.object({
-	venue: z.string().trim().min(1).optional(),
-	year: z.number().int().positive().optional(),
-	citedByCount: z.number().int().nonnegative().optional(),
-	referenceCount: z.number().int().nonnegative().optional(),
-	pdfUrl: optionalHttpUrl.optional(),
-	references: PaperRelationSnapshotSchema.optional(),
-	citations: PaperRelationSnapshotSchema.optional(),
-});
-
-type BlogKindMetadata = Readonly<z.infer<typeof BlogKindMetadataSchema>>;
-export type ForumKindMetadata = Readonly<z.infer<typeof ForumKindMetadataSchema>>;
-export type PostKindMetadata = Readonly<z.infer<typeof PostKindMetadataSchema>>;
-type VideoKindMetadata = Readonly<z.infer<typeof VideoKindMetadataSchema>>;
 export type PaperRelationItem = Readonly<z.infer<typeof PaperRelationItemSchema>>;
 export type PaperRelationSnapshot = Readonly<z.infer<typeof PaperRelationSnapshotSchema>>;
-export type PaperKindMetadata = Readonly<z.infer<typeof PaperKindMetadataSchema>>;
+
+const ResourceKindMetadataSchemas = {
+	blog: z.object({ siteName: z.string().trim().min(1).optional() }).nullable(),
+	forum: z.object({
+		itemType: z.enum(['story', 'ask', 'show', 'job']).optional(),
+		points: z.number().int().nonnegative().optional(),
+		commentCount: z.number().int().nonnegative().optional(),
+	}),
+	post: z.object({ attachments: z.array(ResourceMediaAttachmentSchema).max(16), quote: PostQuoteSchema.optional() }),
+	video: z.object({
+		durationSeconds: z.number().int().positive().optional(),
+		viewCount: z.number().int().nonnegative().optional(),
+		likeCount: z.number().int().nonnegative().optional(),
+		commentCount: z.number().int().nonnegative().optional(),
+	}),
+	paper: z.object({
+		venue: z.string().trim().min(1).optional(),
+		year: z.number().int().positive().optional(),
+		citedByCount: z.number().int().nonnegative().optional(),
+		referenceCount: z.number().int().nonnegative().optional(),
+		pdfUrl: optionalHttpUrl.optional(),
+		references: PaperRelationSnapshotSchema.optional(),
+		citations: PaperRelationSnapshotSchema.optional(),
+	}),
+	image: z.null(),
+	file: z.null(),
+} as const satisfies Readonly<Record<ResourceKind, z.ZodType>>;
 
 export type ResourceKindMetadataByKind = Readonly<{
-	blog: BlogKindMetadata | null;
-	forum: ForumKindMetadata;
-	post: PostKindMetadata;
-	video: VideoKindMetadata;
-	paper: PaperKindMetadata;
+	[K in ResourceKind]: z.infer<(typeof ResourceKindMetadataSchemas)[K]>;
 }>;
+
+export type ForumKindMetadata = ResourceKindMetadataByKind['forum'];
+export type PostKindMetadata = ResourceKindMetadataByKind['post'];
+export type PaperKindMetadata = ResourceKindMetadataByKind['paper'];
 
 export type ResourceKindMetadata = ResourceKindMetadataByKind[keyof ResourceKindMetadataByKind];
 
 export const ResourceCreatorsSchema = z.array(ResourceCreatorSchema);
 
 export function parseStoredResourceKindMetadata(kind: ResourceKind, value: unknown): ResourceKindMetadata | null {
-	switch (kind) {
-		case 'blog':
-			return value === null ? null : BlogKindMetadataSchema.parse(value);
-		case 'forum':
-			return ForumKindMetadataSchema.parse(value);
-		case 'post':
-			return PostKindMetadataSchema.parse(value);
-		case 'video':
-			return VideoKindMetadataSchema.parse(value);
-		case 'paper':
-			return PaperKindMetadataSchema.parse(value);
-		case 'image':
-		case 'file':
-			if (value !== null) throw new Error(`${kind} resources cannot have kind metadata`);
-			return null;
-	}
+	return ResourceKindMetadataSchemas[kind].parse(value);
 }
 
 type PlatformResourceIdentifierScheme = Exclude<ResourcePlatform, null>;
