@@ -140,8 +140,3 @@ export interface PaperMetadata {
 	references?: PaperRelationSnapshot;
 	citations?: PaperRelationSnapshot;
 }
-
-export interface PdfExtractionMetadata {
-	status: 'ok' | 'needs_ocr';
-	pages: number;
-}

@@ -291,10 +291,6 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, ca
 		publishedDate,
 		resourceIdentifiers: normalizeResourceIdentifiers([...paper.identifiers, ...resourceIdentifiers]),
 	});
-	const extractionStatus = acquiredContent.resourcePlatform === null ? acquiredContent.extraction?.status : undefined;
-	if (extractionStatus === 'needs_ocr') {
-		throw new ResourceProcessingRejectedError(`PDF processing ${processingId} requires OCR`);
-	}
 	if (!acquiredContent.markdown.trim()) {
 		throw new ResourceProcessingRejectedError(`Processing ${processingId} has no extractable content`);
 	}

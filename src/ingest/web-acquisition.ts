@@ -2,10 +2,10 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readBytesWithLimit, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import { literalCreator } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, PdfExtractionMetadata } from '@core-shared/types';
+import type { AcquiredMaterial } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { extractFromHtml } from '@extractus/article-extractor';
-import { PDF_MIME, type PdfTextArtifact, parsePdfBytes } from './platforms/pdf';
+import { PDF_MIME, parsePdfBytes } from './platforms/pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
@@ -50,18 +50,12 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 	};
 }
 
-export type AcquiredWebContent = AcquiredMaterial<null> & {
-	extraction?: PdfExtractionMetadata;
-};
+export type AcquiredWebContent = AcquiredMaterial<null>;
 
 type PlatformRedirect = { redirectUrl: string };
 
 function urlHost(url: string): string {
 	return new URL(url).hostname.replace(/^www\./, '');
-}
-
-function pdfExtractionMetadata(pdf: PdfTextArtifact): PdfExtractionMetadata {
-	return { status: pdf.status, pages: pdf.pages };
 }
 
 function stripLeadingFrontmatter(markdown: string): string {
@@ -115,6 +109,7 @@ export function markdownFromXml(env: CoreEnv, xml: string, processingId?: string
 
 async function acquirePdfBytes(bytes: Uint8Array, url: string): Promise<AcquiredWebContent> {
 	const parsed = await parsePdfBytes(bytes);
+	if (parsed.status === 'needs_ocr') throw new NonRetryableError(`PDF requires OCR: ${url}`);
 	const encodedName = new URL(url).pathname.split('/').filter(Boolean).at(-1) ?? '';
 	let fileName = encodedName || 'document.pdf';
 	if (encodedName) {
@@ -138,7 +133,6 @@ async function acquirePdfBytes(bytes: Uint8Array, url: string): Promise<Acquired
 		summary: parsed.text.slice(0, 500) || null,
 		creators: [],
 		kindMetadata: { siteName: source },
-		extraction: pdfExtractionMetadata(parsed),
 	};
 }
 

@@ -51,9 +51,7 @@ function acquiredMaterialSchema<const T extends ResourcePlatform, Extra extends 
 }
 
 const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('resourcePlatform', [
-	acquiredMaterialSchema(null, {
-		extraction: z.object({ status: z.enum(['ok', 'needs_ocr']), pages: z.number() }).optional(),
-	}),
+	acquiredMaterialSchema(null, {}),
 	acquiredMaterialSchema('hackernews', {
 		hackerNewsItem: HackerNewsItemSchema,
 		platformId: platformIdSchema,

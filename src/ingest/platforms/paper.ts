@@ -263,7 +263,6 @@ async function stageOpenAlexContentAcquisition(
 				event: 'pdf_acquired',
 				processing_id: resource.processingId,
 				chars: acquired.markdown.length,
-				pages: acquired.resourcePlatform === null ? (acquired.extraction?.pages ?? null) : null,
 			});
 			return acquired;
 		}

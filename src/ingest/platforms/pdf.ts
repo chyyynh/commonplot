@@ -42,6 +42,7 @@ export async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): 
 	if (!obj) throw new Error(`PDF source object missing: ${resource.storageKey}`);
 	if (obj.size > MAX_PDF_BYTES) throw new Error(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
 	const parsed = await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()));
+	if (parsed.status === 'needs_ocr') throw new Error(`Stored PDF ${resource.resourceId} requires OCR`);
 	return {
 		resourcePlatform: null,
 		fileType: PDF_MIME,
@@ -53,6 +54,5 @@ export async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): 
 		summary: resource.summary,
 		creators: resource.creators,
 		kindMetadata: resource.kindMetadata,
-		extraction: { status: parsed.status, pages: parsed.pages },
 	};
 }
