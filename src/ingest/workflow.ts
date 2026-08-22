@@ -1,10 +1,8 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import {
-	type PersistResolvedResourceInput,
-	type PersistResolvedResourceResult,
-	type PersistResolvedResourceTarget,
-	type ResourceCategory,
-	ResourceCategorySchema,
+import type {
+	PersistResolvedResourceInput,
+	PersistResolvedResourceResult,
+	PersistResolvedResourceTarget,
 } from '@app-domain/resource-graph-contracts';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/image-mapping';
 import { connectCoreDb } from '@db/connection';
@@ -24,7 +22,6 @@ type ResourceClassification = {
 	tags: string[];
 	keywords: string[];
 	entities: ResourceEntityInput[];
-	category: ResourceCategory;
 };
 
 type ResolvedProcessingCall = {
@@ -44,13 +41,12 @@ const ResourceClassificationSchema = z.object({
 			type: z.enum(ENTITY_TYPES),
 		}),
 	),
-	category: ResourceCategorySchema,
 });
 
 const RESOURCE_CLASSIFICATION_SYSTEM_PROMPT = `你是專業的新聞分類和實體分析師。請只輸出符合 schema 的分類資料。
 
 任務：
-- 產生 tags、keywords、category
+- 產生 tags、keywords
 - 擷取重要 named entities
 
 標籤規則：
@@ -67,9 +63,7 @@ const RESOURCE_CLASSIFICATION_SYSTEM_PROMPT = `你是專業的新聞分類和實
 - 不要把文章來源、平台、作者名稱當作實體，除非文章主題就是該來源、平台或作者本身
 - 不要提取泛詞、短縮碎片、股票代號或單字母縮寫，例如 AI、X、Go、US、C、RL、PI、$GOOGL
 - 模型、產品、活動請使用完整慣用名稱，例如 Claude Opus 4.7、DeepSeek V4、TechCrunch Disrupt 2026
-- 如果只能判斷出泛詞、版本碎片或來源名稱，寧可少提取
-
-分類只能是：AI, Tech, Finance, Research, Business, Other。`;
+- 如果只能判斷出泛詞、版本碎片或來源名稱，寧可少提取`;
 
 async function classifyResource(resource: ResolvedResource, env: CoreEnv, processingId: string): Promise<ResourceClassification> {
 	console.info({ tag: 'AI', msg: 'Analyzing', title: resource.title.substring(0, 80) });
@@ -107,9 +101,8 @@ ${resource.content.trim().substring(0, CLASSIFICATION_CONTENT_MAX_LENGTH)}`;
 	if (finishReason === 'length') throw new Error('Resource classification hit its output token cap');
 	const tags = classification.tags.slice(0, 5);
 	return {
-		category: classification.category,
 		entities: classification.entities.slice(0, 10),
-		tags: resource.tags.length ? resource.tags : [...new Set([...tags, classification.category])],
+		tags: resource.tags.length ? resource.tags : tags,
 		keywords: resource.keywords.length ? resource.keywords : classification.keywords.slice(0, 8),
 	};
 }
@@ -138,7 +131,6 @@ function resolvedResourceMutation(
 		content: resource.content,
 		keywords: classification.keywords,
 		tags: classification.tags,
-		category: classification.category,
 		entities: toStoredResourceEntities(classification.entities, resource.resourcePlatform, resource.source, resource.creators),
 		subjectReference: resource.subject
 			? {
