@@ -38,26 +38,27 @@ export function materializeAcquiredResource(
 	origin: Pick<MaterializedResource, 'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'summary' | 'tags' | 'url'>,
 	resolution: {
 		canonicalUrl: string | null;
-		platformIdentity: ResourcePlatformLocator | null;
 		publishedDate: string | null;
 		resourceIdentifiers: readonly ResourceIdentifier[];
 	},
 ): MaterializedResource {
+	const platformIdentity =
+		acquired.resourcePlatform === null ? null : { resourcePlatform: acquired.resourcePlatform, platformId: acquired.platformId };
 	const paperIdentifiers = resolution.resourceIdentifiers.filter(isPaperIdentifier);
-	const identity: ContentResourceIdentity = resolution.platformIdentity
-		? resourceIdentityForDetectedPlatform(resolution.platformIdentity.resourcePlatform)
+	const identity: ContentResourceIdentity = platformIdentity
+		? resourceIdentityForDetectedPlatform(platformIdentity.resourcePlatform)
 		: paperIdentifiers.some((identifier) => identifier.scheme === 'openalex')
 			? { kind: 'paper', resourcePlatform: null }
 			: { kind: 'blog', resourcePlatform: null };
 	const identifiers = normalizeResourceIdentifiers(
-		resolution.platformIdentity
-			? [{ preferred: true, scheme: resolution.platformIdentity.resourcePlatform, value: resolution.platformIdentity.platformId }]
+		platformIdentity
+			? [{ preferred: true, scheme: platformIdentity.resourcePlatform, value: platformIdentity.platformId }]
 			: identity.kind === 'paper'
 				? paperIdentifiers
 				: [],
 	);
-	const url = resolution.platformIdentity
-		? canonicalResourcePlatformUrl(resolution.platformIdentity.resourcePlatform, resolution.platformIdentity.platformId)
+	const url = platformIdentity
+		? canonicalResourcePlatformUrl(platformIdentity.resourcePlatform, platformIdentity.platformId)
 		: resolution.canonicalUrl;
 	return {
 		...identity,

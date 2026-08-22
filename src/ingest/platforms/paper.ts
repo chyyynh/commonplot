@@ -3,7 +3,6 @@
 import type { WorkflowDynamicDelayContext, WorkflowSleepDuration, WorkflowStep } from 'cloudflare:workers';
 import { type PaperIdentifier, paperIdentityFromText, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { literalCreator, type PaperKindMetadata } from '@core-shared/resource-metadata';
-import type { ResourcePlatform } from '@core-shared/resource-types';
 import type { MaterializedResource, PaperMetadata } from '@core-shared/types';
 import {
 	ACQUISITION_STEP,
@@ -22,7 +21,6 @@ const IDENTIFIER_SCAN_CHARS = 3_000;
 type PaperEnrichmentCandidate = {
 	processingId: string;
 	url: string | null;
-	resourcePlatform: MaterializedResource['resourcePlatform'];
 	identifierText?: string | null;
 	identifiers?: readonly PaperIdentifier[];
 	translateUrl?: boolean;
@@ -77,7 +75,6 @@ export function applyPaperEnrichment(resource: MaterializedResource, metadata: P
 }
 
 function localPaperEvidence(candidate: PaperEnrichmentCandidate): boolean {
-	if (candidate.resourcePlatform !== null) return false;
 	return (
 		isExplicitPaperUrl(candidate.url) ||
 		!!paperIdentityFromText(candidate.identifierText?.slice(0, IDENTIFIER_SCAN_CHARS)) ||
@@ -97,7 +94,7 @@ function paperEnrichmentRetryDelay({ ctx, error }: WorkflowDynamicDelayContext):
 	return `${Math.min(30, ctx.attempt * 5)} seconds`;
 }
 
-export async function stagePaperEnrichment(
+async function stagePaperEnrichment(
 	env: CoreEnv,
 	step: WorkflowStep,
 	candidate: PaperEnrichmentCandidate,
@@ -310,14 +307,15 @@ export async function stagePaperProcessing(
 		originSummary: string | null;
 		processingId: string;
 		publishedDate: string | null;
-		resourcePlatform: ResourcePlatform;
 		translateUrl: boolean;
 	},
 ): Promise<{ acquiredContent: AcquiredContent; identifiers: PaperIdentifier[]; metadata: PaperMetadata | null }> {
+	if (input.acquiredContent.resourcePlatform !== null) {
+		return { acquiredContent: input.acquiredContent, identifiers: [], metadata: null };
+	}
 	const resolution = await stagePaperEnrichment(env, step, {
 		processingId: input.processingId,
 		url: input.canonicalUrl,
-		resourcePlatform: input.resourcePlatform,
 		identifierText: input.acquiredContent.fileType === PDF_MIME ? input.acquiredContent.markdown : null,
 		identifiers: input.identifiers,
 		translateUrl: input.translateUrl,
