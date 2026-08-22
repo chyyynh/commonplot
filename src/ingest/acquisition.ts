@@ -1,8 +1,8 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
-import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource-identifiers';
+import { isPaperIdentifier, normalizeResourceIdentifiers, type ResourceIdentifier } from '@core-shared/resource-identifiers';
 import type { AcquiredMaterial, MaterializedResource, ResolvedResource } from '@core-shared/types';
-import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
+import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { z } from 'zod';
 import { type AcquisitionArtifactResult, acquiredContentSchema } from './acquired-content';
 import {
@@ -15,7 +15,7 @@ import { stageLessWrongAcquisition } from './platforms/lesswrong';
 import { stagePaperProcessing } from './platforms/paper';
 import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageYouTubeAcquisition, stageYouTubeEnrichment, YouTubeTranscriptSchema } from './platforms/youtube-acquisition';
-import { materializeAcquiredResource, type ResourceMaterializationOrigin } from './resource-resolver';
+import { exactPlatformLocator, materializeAcquiredResource, type ResourceMaterializationOrigin } from './resource-resolver';
 import { stageWebAcquisition } from './web-acquisition';
 
 type RawAcquiredContent =
@@ -70,12 +70,16 @@ export async function stageSavedUrlAcquisition(
 		discoverRelatedContent: boolean;
 		isMonitoredOnly: boolean;
 		processingId: string;
+		resourceIdentifiers?: readonly ResourceIdentifier[];
 		sourceAvatarUrl: string | null;
-		sourceUrl: string;
+		sourceUrl: string | null;
 	},
 	providerSequence?: string,
 ): Promise<AcquiredContent> {
-	let acquisitionUrl = validateAcquisitionUrl(input.sourceUrl);
+	const locator = exactPlatformLocator(input.resourceIdentifiers ?? []);
+	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : input.sourceUrl;
+	if (!sourceUrl) throw new ResourceProcessingRejectedError(`Resource processing ${input.processingId} has no source URL`);
+	let acquisitionUrl = validateAcquisitionUrl(sourceUrl);
 	for (let route = 0; route < 5; route++) {
 		const detected = detectResourceUrl(acquisitionUrl);
 		let artifact: Promise<ReadableStream<Uint8Array>>;

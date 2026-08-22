@@ -1,7 +1,6 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
 import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
 import { DEFAULT_RESOURCE_LANG } from '@core-shared/resource-types';
-import { canonicalResourcePlatformUrl } from '@core-shared/url';
 import { connectCoreDb } from '@db/connection';
 import { loadResourceReacquisitionInput, loadStoredPdfInput } from '@ingest/stored-resource';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
@@ -18,7 +17,6 @@ import { stageStoredPdfAcquisition } from './platforms/pdf';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import { markStoredBlobProcessingFailed, type PersistProcessedTarget, persistProcessedResource } from './resource-persistence';
-import { exactPlatformLocator } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 
 const WORKFLOW_ENQUEUE_STEP_CONFIG = {
@@ -142,17 +140,15 @@ async function resolveProcessingCall(
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 		async () => loadResourceReacquisitionInput(await connectCoreDb(env), target.resourceId),
 	);
-	const locator = exactPlatformLocator(snapshot.resourceIdentifiers);
-	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : snapshot.url;
-	if (!sourceUrl) throw new ResourceProcessingRejectedError(`Resource processing ${target.resourceId} has no source URL`);
 	return {
 		processingId: target.resourceId,
 		acquiredContent: await stageSavedUrlAcquisition(env, step, {
 			discoverRelatedContent: true,
 			isMonitoredOnly: snapshot.isMonitoredOnly,
 			processingId: target.resourceId,
+			resourceIdentifiers: snapshot.resourceIdentifiers,
 			sourceAvatarUrl: snapshot.sourceAvatarUrl,
-			sourceUrl,
+			sourceUrl: snapshot.url,
 		}),
 		origin: snapshot,
 		translatePaperUrl: snapshot.translatePaperUrl,
