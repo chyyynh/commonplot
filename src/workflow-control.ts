@@ -8,14 +8,6 @@ export const DURABLE_WORKFLOW_RETRIES = {
 	delay: durableWorkflowRetryDelay,
 } as const;
 
-export function workflowOutputWasSuperseded(output: unknown): boolean {
-	return typeof output === 'object' && output !== null && 'status' in output && output.status === 'superseded';
-}
-
-export function shouldReconcileSupersededRefresh(acquiredSourceRevision: string, currentSourceRevision: string | null): boolean {
-	return acquiredSourceRevision !== currentSourceRevision;
-}
-
 export async function enqueueOrRestartWorkflow<Params>(workflow: Workflow<Params>, id: string, params: Params): Promise<string> {
 	const [created] = await workflow.createBatch([{ id, params }]);
 	if (created) return created.id;

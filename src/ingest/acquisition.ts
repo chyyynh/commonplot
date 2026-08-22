@@ -120,7 +120,7 @@ async function scrapeSavedUrl(
 	monitoredOnly: boolean,
 	sourceAvatarUrl: string | null,
 	processingId: string,
-	expectedProviderRevision?: string,
+	providerSequence?: string,
 	discoverTwitterThread = true,
 ): Promise<AcquiredContent> {
 	let acquisitionUrl = validateAcquisitionUrl(url);
@@ -137,7 +137,7 @@ async function scrapeSavedUrl(
 					return sanitizeAcquiredContent({
 						...(await scrapeTweet(detected.platformId, env.KAITO_API_KEY, {
 							discoverUnsignaledThread: discoverTwitterThread,
-							expectedReplyId: expectedProviderRevision,
+							expectedReplyId: providerSequence,
 						})),
 						canonicalUrl: acquisitionUrl,
 					});
@@ -165,21 +165,13 @@ export async function scrapeSavedUrlArtifact(
 	monitoredOnly: boolean,
 	sourceAvatarUrl: string | null,
 	processingId: string,
-	expectedProviderRevision?: string,
+	providerSequence?: string,
 	discoverTwitterThread = true,
 ): Promise<ReadableStream<Uint8Array>> {
 	try {
 		const result: SavedUrlAcquisitionResult = {
 			status: 'acquired',
-			content: await scrapeSavedUrl(
-				url,
-				env,
-				monitoredOnly,
-				sourceAvatarUrl,
-				processingId,
-				expectedProviderRevision,
-				discoverTwitterThread,
-			),
+			content: await scrapeSavedUrl(url, env, monitoredOnly, sourceAvatarUrl, processingId, providerSequence, discoverTwitterThread),
 		};
 		return new Blob([JSON.stringify(result)], { type: 'application/json' }).stream();
 	} catch (error) {

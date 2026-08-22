@@ -24,7 +24,6 @@ import {
 	twitterThreadSearchWindow,
 	withTwitterSearchWindow,
 } from '../src/ingest/platforms/twitter-data.ts';
-import { shouldReconcileSupersededRefresh, workflowOutputWasSuperseded } from '../src/workflow-control.ts';
 
 function tweet(id, author, inReplyToId, overrides = {}) {
 	return {
@@ -198,12 +197,6 @@ assert.throws(
 	() => parseTwitterAdvancedSearchPage({ tweets: [], has_next_page: false, status: 'error', message: 'search failed' }),
 	/search failed/,
 );
-assert.equal(workflowOutputWasSuperseded({ status: 'superseded', resourceId: 'resource-id' }), true);
-assert.equal(workflowOutputWasSuperseded({ status: 'persisted', resourceId: 'resource-id' }), false);
-assert.equal(workflowOutputWasSuperseded(null), false);
-assert.equal(shouldReconcileSupersededRefresh('new-revision', 'old-revision'), true);
-assert.equal(shouldReconcileSupersededRefresh('same-revision', 'same-revision'), false);
-
 console.info({
 	event: 'twitter_thread_smoke_passed',
 	articleCases: 3,
@@ -214,5 +207,4 @@ console.info({
 	replyPredicateCases: 5,
 	selfReplyRootCases: 4,
 	responseShapeCases: 7,
-	workflowRefreshCases: 5,
 });

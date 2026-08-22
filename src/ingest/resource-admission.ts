@@ -1,18 +1,18 @@
 import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
-import { CONTENT_RESOURCE_KINDS, canonicalizeOptionalResourceLang } from '@core-shared/resource-types';
+import { CONTENT_RESOURCE_KINDS, canonicalizeOptionalResourceLang, parseResourceProviderSequence } from '@core-shared/resource-types';
 import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
 import type { CoreDb } from '@db/connection';
 import { inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { enqueueOrRestartWorkflow, workflowOutputWasSuperseded } from '../workflow-control';
+import { enqueueOrRestartWorkflow } from '../workflow-control';
 
-const ProviderRevisionSchema = z
+const ProviderSequenceSchema = z
 	.string()
 	.trim()
 	.min(1)
-	.max(80)
-	.regex(/^[a-zA-Z0-9_-]+$/);
+	.max(19)
+	.refine((value) => parseResourceProviderSequence(value) !== null);
 
 const DraftAdmissionSchema = z.discriminatedUnion('kind', [
 	z
@@ -65,7 +65,7 @@ const ResourceDraftTargetSchema = z
 			})
 			.strict()
 			.optional(),
-		expectedProviderRevision: ProviderRevisionSchema.optional(),
+		providerSequence: ProviderSequenceSchema.optional(),
 	})
 	.strict();
 
@@ -82,7 +82,6 @@ const ResourceProcessingWorkflowPayloadSchema = z
 				.object({
 					kind: z.literal('reacquire'),
 					resourceId: z.string().uuid(),
-					expectedProviderRevision: ProviderRevisionSchema.optional(),
 				})
 				.strict(),
 			ResourceDraftTargetSchema,
@@ -106,8 +105,8 @@ export type SourceResourceDraft = {
 	originalLang?: string;
 	keywords?: string[];
 	sourceAvatarUrl?: string | null;
-	/** Provider event revision that should refresh an already-enriched Resource once. */
-	refreshRevision?: string;
+	/** Monotonic provider event sequence used to reject stale draft commits. */
+	providerSequence?: string;
 };
 
 export type AppResourceDraftInput = Readonly<{
@@ -116,13 +115,11 @@ export type AppResourceDraftInput = Readonly<{
 	admission: Extract<ResourceDraftAdmission, { kind: 'profileSave' | 'container' }>;
 }>;
 
-type SourceResourceAdmissionOutcome = 'created' | 'existing' | 'refreshed';
-
-type ExistingRefreshResource = { id: string; url: string };
+type SourceResourceAdmissionOutcome = 'created' | 'existing';
 
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v9';
-const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v3';
+const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v4';
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
 const PENDING_BLOB_RECONCILE_CONCURRENCY = 10;
 const DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY = 5;
@@ -174,7 +171,7 @@ function sourceDraftTarget(base: SourceResourceDraft): ResourceDraftTarget {
 				...(keywords.length ? { keywords } : {}),
 				...(sourceAvatarUrl ? { sourceAvatarUrl } : {}),
 			},
-			...(base.refreshRevision?.trim() ? { expectedProviderRevision: base.refreshRevision.trim() } : {}),
+			...(base.providerSequence?.trim() ? { providerSequence: base.providerSequence.trim() } : {}),
 		},
 	}).target as ResourceDraftTarget;
 }
@@ -202,48 +199,7 @@ export async function enqueueSubjectDraft(
 	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `subject-draft-v3-${identity}`, { target });
 }
 
-async function claimExistingRefreshResources(db: CoreDb, drafts: SourceResourceDraft[]): Promise<ExistingRefreshResource[]> {
-	const discovered = new Map<string, string>();
-	for (const draft of drafts) {
-		if (!draft.refreshRevision) continue;
-		const url = normalizeUrl(draft.url);
-		if (!discovered.has(url)) discovered.set(url, draft.sourceId);
-	}
-	if (!discovered.size) return [];
-
-	const values = [...discovered].map(([url, sourceId]) => sql`(${url}, ${sourceId}::uuid)`);
-	const result = await db.execute<ExistingRefreshResource>(sql`
-		WITH discovered(normalized_url, source_id) AS (
-			VALUES ${sql.join(values, sql`, `)}
-		), attached AS (
-			UPDATE resources AS resource
-			SET source_id = discovered.source_id
-			FROM discovered
-			WHERE resource.normalized_url = discovered.normalized_url
-			  AND resource.source_id IS NULL
-			  AND resource.enrichment_status = 'enriched'
-			  AND ${inArray(sql`resource.kind`, CONTENT_RESOURCE_KINDS)}
-			RETURNING resource.id
-		)
-		SELECT
-			resource.id::text AS id,
-			resource.normalized_url AS url
-		FROM resources AS resource
-		JOIN discovered ON discovered.normalized_url = resource.normalized_url
-		WHERE resource.enrichment_status = 'enriched'
-		  AND ${inArray(sql`resource.kind`, CONTENT_RESOURCE_KINDS)}
-	`);
-	return result.rows;
-}
-
-async function admitDiscoveredSourceResource(
-	env: CoreEnv,
-	draft: SourceResourceDraft,
-	refreshResource: ExistingRefreshResource | undefined,
-): Promise<SourceResourceAdmissionOutcome> {
-	if (refreshResource && draft.refreshRevision) {
-		return (await enqueueResourceRefresh(env, refreshResource.id, draft.refreshRevision)) ? 'refreshed' : 'existing';
-	}
+async function admitDiscoveredSourceResource(env: CoreEnv, draft: SourceResourceDraft): Promise<SourceResourceAdmissionOutcome> {
 	const target = sourceDraftTarget(draft);
 	const identity = await sha256Hex(JSON.stringify(target));
 	const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
@@ -254,67 +210,15 @@ async function admitDiscoveredSourceResource(
 
 export async function admitDiscoveredSourceResources(
 	env: CoreEnv,
-	db: CoreDb,
 	drafts: SourceResourceDraft[],
 ): Promise<Array<PromiseSettledResult<SourceResourceAdmissionOutcome>>> {
 	if (!drafts.length) return [];
-	const refreshResources = await claimExistingRefreshResources(db, drafts);
-	const refreshResourceByUrl = new Map(refreshResources.map((resource) => [normalizeUrl(resource.url), resource]));
 	const outcomes: Array<PromiseSettledResult<SourceResourceAdmissionOutcome>> = [];
 	for (let offset = 0; offset < drafts.length; offset += DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY) {
 		const batch = drafts.slice(offset, offset + DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY);
-		outcomes.push(
-			...(await Promise.allSettled(
-				batch.map((draft) => admitDiscoveredSourceResource(env, draft, refreshResourceByUrl.get(normalizeUrl(draft.url)))),
-			)),
-		);
+		outcomes.push(...(await Promise.allSettled(batch.map((draft) => admitDiscoveredSourceResource(env, draft)))));
 	}
 	return outcomes;
-}
-
-async function startResourceRefreshWorkflow(env: CoreEnv, id: string, resourceId: string, revision: string): Promise<boolean> {
-	const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
-		{ id, params: { target: { kind: 'reacquire', resourceId, expectedProviderRevision: revision } } },
-	]);
-	if (created) return true;
-	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.get(id);
-	const { output, status } = await instance.status();
-	if (status === 'errored' || (status === 'complete' && workflowOutputWasSuperseded(output))) {
-		await instance.restart();
-		return true;
-	}
-	if (status === 'unknown') throw new Error(`Resource refresh Workflow ${id} has unknown status`);
-	return false;
-}
-
-async function enqueueResourceRefresh(env: CoreEnv, resourceId: string, refreshRevision: string): Promise<boolean> {
-	const revision = ProviderRevisionSchema.parse(refreshRevision);
-	const id = ['resource-refresh-v5', workflowIdPart(resourceId), workflowIdPart(revision)].join('-');
-	return startResourceRefreshWorkflow(env, id, resourceId, revision);
-}
-
-export async function enqueueSupersededResourceRefresh(
-	env: CoreEnv,
-	input: {
-		resourceId: string;
-		refreshRevision: string;
-		supersededSourceRevision: string | null;
-	},
-): Promise<string> {
-	const revision = ProviderRevisionSchema.parse(input.refreshRevision);
-	const identity = await sha256Hex(JSON.stringify([input.resourceId, revision, input.supersededSourceRevision]));
-	const id = `resource-refresh-reconcile-v2-${identity}`;
-	const started = await startResourceRefreshWorkflow(env, id, input.resourceId, revision);
-	console.info({
-		tag: 'RESOURCE_WORKFLOW',
-		event: 'superseded_provider_refresh_reconciled',
-		resource_id: input.resourceId,
-		expected_provider_revision: revision,
-		superseded_source_revision: input.supersededSourceRevision,
-		workflow_id: id,
-		started,
-	});
-	return id;
 }
 
 async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limit: number): Promise<Array<{ resourceId: string }>> {

@@ -82,6 +82,12 @@ export function isResourceSourceSnapshotHash(value: unknown): value is string {
 	return typeof value === 'string' && RESOURCE_SOURCE_SNAPSHOT_HASH_RE.test(value);
 }
 
+export function parseResourceProviderSequence(value: unknown): bigint | null {
+	if (typeof value !== 'string' || !/^[1-9]\d{0,18}$/.test(value)) return null;
+	const sequence = BigInt(value);
+	return sequence <= 9_223_372_036_854_775_807n ? sequence : null;
+}
+
 export function resourceIdentityForDetectedPlatform(resourcePlatform: Exclude<ResourcePlatform, null>): ContentResourceIdentity {
 	return DETECTED_PLATFORM_RESOURCE_IDENTITIES[resourcePlatform];
 }

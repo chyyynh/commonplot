@@ -23,7 +23,7 @@ async function processFeed(env: CoreEnv, db: CoreDb, feed: MonitoredSource): Pro
 		originalLang: item.originalLang,
 		sourceAvatarUrl: feed.avatarUrl,
 	}));
-	const outcomes = await admitDiscoveredSourceResources(env, db, drafts);
+	const outcomes = await admitDiscoveredSourceResources(env, drafts);
 	let created = 0;
 	let existing = 0;
 	for (const [index, outcome] of outcomes.entries()) {

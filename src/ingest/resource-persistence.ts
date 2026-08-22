@@ -20,7 +20,7 @@ type PersistProcessedInput = {
 	resource: ResolvedResource;
 	subject: ResolvedSubjectInput | null;
 	target:
-		| { kind: 'draft'; admission: ResourceDraftAdmission }
+		| { kind: 'draft'; admission: ResourceDraftAdmission; providerSequence: string | null }
 		| { kind: 'existing'; resourceId: string; expectedSourceRevision: string | null }
 		| { kind: 'privatePaper'; canonicalUrl: string; fileResourceId: string; expectedFileRevision: string | null };
 	youtube: YouTubeSpecializationMutation | null;
@@ -91,6 +91,7 @@ export async function persistProcessedResource(
 				},
 				url: input.target.canonicalUrl,
 				normalizedUrl: input.target.canonicalUrl,
+				providerSequence: null,
 				storageKey: null,
 			};
 			return env.DOMAIN.persistResolvedResourceDraft(draftMutation);
@@ -99,6 +100,7 @@ export async function persistProcessedResource(
 			const draftMutation: PersistResolvedResourceDraftInput = {
 				...mutation,
 				admission: input.target.admission,
+				providerSequence: input.target.providerSequence,
 				storageKey: null,
 			};
 			return env.DOMAIN.persistResolvedResourceDraft(draftMutation);

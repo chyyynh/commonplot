@@ -15,7 +15,7 @@ import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/ur
 import { connectCoreDb } from '@db/connection';
 import { loadStoredResourceForProcessing, type StoredResourceProcessingInput } from '@ingest/stored-resource';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
-import { DURABLE_WORKFLOW_RETRIES, shouldReconcileSupersededRefresh } from '../workflow-control';
+import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
 import {
 	ACQUISITION_STEP,
 	type AcquiredContent,
@@ -34,7 +34,6 @@ import { stageYouTubeEnrichment } from './platforms/youtube';
 import {
 	type ExistingResourceTarget,
 	enqueueSubjectDraft,
-	enqueueSupersededResourceRefresh,
 	parseResourceProcessingWorkflowPayload,
 	type ResourceDraftTarget,
 	type ResourceProcessingWorkflowPayload,
@@ -50,13 +49,13 @@ const WORKFLOW_ENQUEUE_STEP_CONFIG = {
 	retries: DURABLE_WORKFLOW_RETRIES,
 	timeout: '30 seconds',
 } as const satisfies WorkflowStepConfig;
-// Source watermarks can advance after refresh admission, so the acquisition
-// instance itself must survive a provider outage. Keep attempts bounded because
+// A source watermark can advance after a sequenced draft is admitted, so that
+// acquisition must survive a provider outage. Keep attempts bounded because
 // twitterapi.io requests (especially Article requests) are paid operations.
-const resourceRefreshRetryDelay: WorkflowDelayFunction = ({ ctx }) =>
+const sequencedSourceRetryDelay: WorkflowDelayFunction = ({ ctx }) =>
 	ctx.attempt <= 3 ? '10 seconds' : ctx.attempt <= 15 ? '1 minute' : '30 minutes';
-const RESOURCE_REFRESH_ACQUISITION_STEP_CONFIG = {
-	retries: { limit: 50, delay: resourceRefreshRetryDelay },
+const SEQUENCED_SOURCE_ACQUISITION_STEP_CONFIG = {
+	retries: { limit: 50, delay: sequencedSourceRetryDelay },
 	timeout: '120 seconds',
 } as const satisfies WorkflowStepConfig;
 
@@ -104,19 +103,19 @@ async function stageSavedUrlAcquisition(
 		sourceAvatarUrl: string | null;
 		sourceUrl: string;
 	},
-	expectedProviderRevision?: string,
+	providerSequence?: string,
 ): Promise<AcquiredContent> {
-	const expectsProviderRevision = !!expectedProviderRevision;
-	const stepConfig = expectsProviderRevision ? RESOURCE_REFRESH_ACQUISITION_STEP_CONFIG : ACQUISITION_STEP;
+	const expectsProviderSequence = !!providerSequence;
+	const stepConfig = expectsProviderSequence ? SEQUENCED_SOURCE_ACQUISITION_STEP_CONFIG : ACQUISITION_STEP;
 	const acquisition = await readSavedUrlAcquisitionArtifact(
 		await step.do('acquire-content-kind-platform-v1', stepConfig, (ctx) => {
-			if (expectsProviderRevision) {
+			if (expectsProviderSequence) {
 				console.info({
 					tag: 'RESOURCE_ACQUISITION',
-					event: 'refresh_acquisition_attempt',
+					event: 'sequenced_acquisition_attempt',
 					resource_id: input.processingId,
 					resource_platform: detectResourceUrl(input.sourceUrl)?.resourcePlatform ?? null,
-					expects_provider_revision: expectsProviderRevision,
+					provider_sequence: providerSequence,
 					attempt: ctx.attempt,
 				});
 			}
@@ -126,7 +125,7 @@ async function stageSavedUrlAcquisition(
 				input.isMonitoredOnly,
 				input.sourceAvatarUrl,
 				input.processingId,
-				expectedProviderRevision,
+				providerSequence,
 				input.discoverTwitterThread,
 			);
 		}),
@@ -173,7 +172,7 @@ async function acquireResource(env: CoreEnv, step: WorkflowStep, input: Resource
 				sourceAvatarUrl: input.sourceHints?.sourceAvatarUrl ?? null,
 				sourceUrl: input.url,
 			},
-			input.expectedProviderRevision,
+			input.providerSequence,
 		);
 	}
 	const locator = exactPlatformLocator(input.stored.resource.resourceIdentifiers);
@@ -181,18 +180,13 @@ async function acquireResource(env: CoreEnv, step: WorkflowStep, input: Resource
 	if (!sourceUrl) {
 		throw new ResourceProcessingRejectedError(`Resource processing ${input.stored.resource.processingId} has no source URL`);
 	}
-	return stageSavedUrlAcquisition(
-		env,
-		step,
-		{
-			discoverTwitterThread: true,
-			isMonitoredOnly: input.stored.isMonitoredOnly,
-			processingId: input.stored.resource.processingId,
-			sourceAvatarUrl: input.stored.sourceAvatarUrl,
-			sourceUrl,
-		},
-		input.expectedProviderRevision,
-	);
+	return stageSavedUrlAcquisition(env, step, {
+		discoverTwitterThread: true,
+		isMonitoredOnly: input.stored.isMonitoredOnly,
+		processingId: input.stored.resource.processingId,
+		sourceAvatarUrl: input.stored.sourceAvatarUrl,
+		sourceUrl,
+	});
 }
 
 async function prepareResourceForProcessing(
@@ -289,32 +283,6 @@ async function prepareResourceForProcessing(
 	};
 }
 
-async function reconcileSupersededProviderRefresh(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: {
-		acquiredResource: ResolvedResource;
-		expectedProviderRevision: string;
-		resourceId: string;
-		supersededSourceRevision: string | null;
-	},
-): Promise<void> {
-	const acquiredSourceRevision = input.acquiredResource.sourceRevision;
-	const supersedingResource = await step.do(
-		'load-superseding-provider-refresh-v1',
-		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-		async () => loadStoredResourceForProcessing(await connectCoreDb(env), input.resourceId),
-	);
-	if (!shouldReconcileSupersededRefresh(acquiredSourceRevision, supersedingResource.resource.sourceRevision)) return;
-	await step.do('enqueue-superseded-provider-refresh-v1', WORKFLOW_ENQUEUE_STEP_CONFIG, () =>
-		enqueueSupersededResourceRefresh(env, {
-			resourceId: input.resourceId,
-			refreshRevision: input.expectedProviderRevision,
-			supersededSourceRevision: input.supersededSourceRevision,
-		}),
-	);
-}
-
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingWorkflowPayload> {
 	async run(event: WorkflowEvent<ResourceProcessingWorkflowPayload>, step: WorkflowStep) {
 		const { target } = parseResourceProcessingWorkflowPayload(event.payload);
@@ -346,14 +314,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				preparationInput = { ...target, processingId };
 			}
 			const acquiredContent = await acquireResource(this.env, step, preparationInput);
-			if (target.kind === 'reacquire' && target.expectedProviderRevision && acquiredContent.sourceSnapshotHash === expectedSourceRevision) {
-				console.info({
-					tag: 'WORKFLOW',
-					msg: 'Provider refresh content is unchanged',
-					resource_id: target.resourceId,
-				});
-				return { status: 'unchanged', resourceId: target.resourceId, changed: false } as const;
-			}
 			const prepared = await prepareResourceForProcessing(this.env, step, preparationInput, acquiredContent);
 			const { previewImageUrl, resource, subject, youtube } = prepared;
 
@@ -386,7 +346,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const privatePaper = target.kind === 'storedBlob' ? privatePaperAttachment(resource) : null;
 			const persistenceTarget =
 				target.kind === 'draft'
-					? ({ kind: 'draft', admission: target.admission } as const)
+					? ({ kind: 'draft', admission: target.admission, providerSequence: target.providerSequence ?? null } as const)
 					: privatePaper
 						? ({
 								kind: 'privatePaper',
@@ -406,14 +366,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					),
 			);
 			if (!persistence.persisted) {
-				if (target.kind === 'reacquire' && target.expectedProviderRevision) {
-					await reconcileSupersededProviderRefresh(this.env, step, {
-						acquiredResource: resource,
-						expectedProviderRevision: target.expectedProviderRevision,
-						resourceId: persistence.resourceId,
-						supersededSourceRevision: expectedSourceRevision,
-					});
-				}
 				return { status: 'superseded', resourceId: persistence.resourceId } as const;
 			}
 			const persistedResourceId = persistence.resourceId;

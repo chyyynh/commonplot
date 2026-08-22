@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {
 	isResourceSourceSnapshotHash,
 	parseResourceIdentity,
+	parseResourceProviderSequence,
 	resourceIdentityForDetectedPlatform,
 	VALID_KIND_PLATFORMS,
 } from '../src/shared/resource-types.ts';
@@ -64,6 +65,11 @@ assert.equal(isResourceSourceSnapshotHash('a'.repeat(64)), true);
 assert.equal(isResourceSourceSnapshotHash('A'.repeat(64)), false);
 assert.equal(isResourceSourceSnapshotHash('a'.repeat(63)), false);
 assert.equal(isResourceSourceSnapshotHash(null), false);
+assert.equal(parseResourceProviderSequence('1'), 1n);
+assert.equal(parseResourceProviderSequence('1999999999999999999'), 1_999_999_999_999_999_999n);
+assert.equal(parseResourceProviderSequence('0'), null);
+assert.equal(parseResourceProviderSequence('9223372036854775808'), null);
+assert.equal(parseResourceProviderSequence('not-a-sequence'), null);
 
 console.info({
 	event: 'resource_identity_smoke_passed',
@@ -71,6 +77,7 @@ console.info({
 	detectedPlatformIdentityCases: 4,
 	invalidIdentityCases: 5,
 	sourceRevisionCases: 4,
+	providerSequenceCases: 5,
 	twitterUsernameCases: twitterUsernameCases.length,
 	urlCases: 5,
 	canonicalPlatformUrlCases: canonicalPlatformUrlCases.length,

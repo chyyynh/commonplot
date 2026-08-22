@@ -1,4 +1,5 @@
 import { readTextWithLimit } from '@core-shared/http';
+import { parseResourceProviderSequence } from '@core-shared/resource-types';
 import { canonicalResourcePlatformUrl, normalizeUrl } from '@core-shared/url';
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/monitored-source';
@@ -159,7 +160,7 @@ async function fetchTweetsForSource(apiKey: string, userName: string, window: Tw
 	};
 }
 
-const TWITTER_ADMISSION_STATUSES = ['created', 'existing', 'refreshed'] as const;
+const TWITTER_ADMISSION_STATUSES = ['created', 'existing'] as const;
 type TwitterAdmissionStatus = (typeof TWITTER_ADMISSION_STATUSES)[number];
 
 type TwitterAdmissionCounts = Record<TwitterAdmissionStatus, number>;
@@ -179,21 +180,22 @@ function latestTwitterDraft(left: TwitterResourceDraft, right: TwitterResourceDr
 	const leftIsReply = isTwitterReply(left.tweet);
 	const rightIsReply = isTwitterReply(right.tweet);
 	const canonical = leftIsReply && !rightIsReply ? right : left;
-	const refresh = [left, right]
-		.filter((draft) => draft.refreshRevision)
-		.sort((a, b) => twitterDraftTimestamp(b) - twitterDraftTimestamp(a))[0];
-	return refresh?.refreshRevision ? { ...canonical, refreshRevision: refresh.refreshRevision } : canonical;
-}
-
-function twitterDraftTimestamp(draft: TwitterResourceDraft): number {
-	const timestamp = new Date(draft.tweet.createdAt).getTime();
-	return Number.isFinite(timestamp) ? timestamp : 0;
+	const sequenced = [left, right].filter((draft): draft is TwitterResourceDraft & { providerSequence: string } => !!draft.providerSequence);
+	const latest = sequenced.reduce<(TwitterResourceDraft & { providerSequence: string }) | null>((current, draft) => {
+		const candidate = parseResourceProviderSequence(draft.providerSequence);
+		if (candidate === null) throw new Error('Twitter provider sequence is invalid');
+		if (!current) return draft;
+		const previous = parseResourceProviderSequence(current.providerSequence);
+		if (previous === null) throw new Error('Twitter provider sequence is invalid');
+		return candidate > previous ? draft : current;
+	}, null);
+	return latest ? { ...canonical, providerSequence: latest.providerSequence } : canonical;
 }
 
 function twitterSelfReplyRootDraft(tweet: Tweet, source: MonitoredSource): TwitterResourceDraft | null {
 	const rootId = twitterSelfReplyRootId(tweet);
-	const refreshRevision = tweet.id?.trim();
-	if (!rootId || !refreshRevision) return null;
+	const providerSequence = tweet.id?.trim();
+	if (!rootId || !providerSequence) return null;
 	return {
 		tweet,
 		source,
@@ -203,7 +205,7 @@ function twitterSelfReplyRootDraft(tweet: Tweet, source: MonitoredSource): Twitt
 		summary: null,
 		originalLang: tweet.lang,
 		keywords: [],
-		refreshRevision,
+		providerSequence,
 	};
 }
 
@@ -214,6 +216,8 @@ function twitterResourceDraft(tweet: Tweet, source: MonitoredSource): TwitterRes
 	if (isTwitterReply(tweet)) return twitterSelfReplyRootDraft(tweet, source);
 
 	const url = normalizeUrl(tweet.url);
+	const providerSequence = tweet.id?.trim();
+	if (parseResourceProviderSequence(providerSequence) === null) throw new Error(`Tweet ${tweet.url} has an invalid provider sequence`);
 	const publishedDate = new Date(tweet.createdAt);
 	if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id ?? url} has invalid publishedDate`);
 	return {
@@ -225,6 +229,7 @@ function twitterResourceDraft(tweet: Tweet, source: MonitoredSource): TwitterRes
 		summary: null,
 		originalLang: tweet.lang,
 		keywords: tweet.hashTags,
+		providerSequence,
 	};
 }
 
@@ -252,19 +257,19 @@ function twitterResourceDrafts(tweets: Tweet[], source: MonitoredSource): { draf
 }
 
 function emptyTwitterAdmissionCounts(): TwitterAdmissionCounts {
-	return { created: 0, existing: 0, refreshed: 0 };
+	return { created: 0, existing: 0 };
 }
 
-async function saveTweets(env: CoreEnv, db: CoreDb, tweets: Tweet[], source: MonitoredSource): Promise<TweetSaveResult> {
+async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource): Promise<TweetSaveResult> {
 	const counts = emptyTwitterAdmissionCounts();
 	const prepared = twitterResourceDrafts(tweets, source);
 	const { drafts, errors } = prepared;
 	const pending = [...drafts.values()];
 	if (!pending.length) return { admittedDrafts: 0, counts, errors };
-	const outcomes = await admitDiscoveredSourceResources(env, db, pending).catch((error) => {
+	const outcomes = await admitDiscoveredSourceResources(env, pending).catch((error) => {
 		console.error({
 			tag: 'TWITTER',
-			msg: 'Twitter resource lookup failed',
+			msg: 'Twitter resource admission failed',
 			userName: source.handle,
 			error: error instanceof Error ? error.message : String(error),
 		});
@@ -283,7 +288,7 @@ async function saveTweets(env: CoreEnv, db: CoreDb, tweets: Tweet[], source: Mon
 				admission: outcome.value,
 				userName: source.handle,
 				url: draft.url,
-				refreshRevision: draft.refreshRevision,
+				providerSequence: draft.providerSequence,
 			});
 			continue;
 		}
@@ -322,7 +327,7 @@ async function processTwitterSource(env: CoreEnv, db: CoreDb, source: MonitoredS
 	try {
 		window = twitterSearchWindow(source.scrapedAt ?? source.createdAt, windowEnd, TWITTER_WATERMARK_OVERLAP_MS);
 		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, window);
-		const saved = await saveTweets(env, db, fetched.tweets, source);
+		const saved = await saveTweets(env, fetched.tweets, source);
 		const errors = [...fetched.errors, ...saved.errors];
 		if (errors.length) await recordSourceFailure(db, source.id, twitterSourceFailure(source.handle, errors));
 		const outcome: TwitterSourceOutcome = {
