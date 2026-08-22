@@ -1,4 +1,4 @@
-import type { ResourcePlatform } from './resource.ts';
+import type { RESOURCE_TYPES } from './resource.ts';
 
 const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
 
@@ -71,7 +71,10 @@ export function normalizeUrl(url: string): string {
 	return parsed.toString();
 }
 
-export function canonicalResourcePlatformUrl(resourcePlatform: Exclude<ResourcePlatform, null>, platformId: string): string {
+export function canonicalResourcePlatformUrl(
+	resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number],
+	platformId: string,
+): string {
 	switch (resourcePlatform) {
 		case 'hackernews':
 			return `https://news.ycombinator.com/item?id=${platformId}`;
@@ -117,7 +120,7 @@ function extractLessWrongPostId(url: string): string | null {
 }
 
 type DetectedResourceUrl = Readonly<{
-	resourcePlatform: Exclude<ResourcePlatform, null>;
+	resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number];
 	platformId: string;
 }>;
 

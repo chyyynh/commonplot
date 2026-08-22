@@ -1,59 +1,27 @@
 import { z } from 'zod';
 import { isPaperIdentifierScheme, normalizePaperIdentifiers, type PaperIdentifier, type PaperIdentifierScheme } from './paper-identity.ts';
-import { parseExternalHttpUrl } from './url.ts';
+
+const resourceKinds = z.enum(['blog', 'forum', 'post', 'video', 'paper', 'image', 'file']);
+const platformKinds = {
+	hackernews: 'forum',
+	lesswrong: 'blog',
+	twitter: 'post',
+	youtube: 'video',
+} as const;
+const resourcePlatforms = z.enum(Object.keys(platformKinds) as [keyof typeof platformKinds, ...(keyof typeof platformKinds)[]]);
 
 export const RESOURCE_TYPES = {
-	kinds: z.enum(['blog', 'forum', 'post', 'video', 'paper', 'image', 'file']),
-	platformKinds: {
-		hackernews: 'forum',
-		lesswrong: 'blog',
-		twitter: 'post',
-		youtube: 'video',
-	},
+	kinds: resourceKinds,
+	platformKinds,
+	platforms: resourcePlatforms,
+	identity: z
+		.object({ kind: resourceKinds, resourcePlatform: resourcePlatforms.nullable() })
+		.refine(({ kind, resourcePlatform }) => resourcePlatform === null || platformKinds[resourcePlatform] === kind),
+	providerSequence: z
+		.string()
+		.trim()
+		.refine((value) => /^[1-9]\d{0,18}$/.test(value) && BigInt(value) <= 9_223_372_036_854_775_807n),
 } as const;
-
-export type ResourceKind = z.infer<typeof RESOURCE_TYPES.kinds>;
-
-export type ContentResourceKind = Exclude<ResourceKind, 'image' | 'file'>;
-
-export type ResourcePlatform = keyof typeof RESOURCE_TYPES.platformKinds | null;
-
-export type ResourceIdentity = Readonly<{
-	kind: ResourceKind;
-	resourcePlatform: ResourcePlatform;
-}>;
-
-export type ContentResourceIdentity = Readonly<{
-	kind: ContentResourceKind;
-	resourcePlatform: ResourcePlatform;
-}>;
-
-export function isContentResourceKind(value: unknown): value is ContentResourceKind {
-	const kind = RESOURCE_TYPES.kinds.safeParse(value);
-	return kind.success && kind.data !== 'image' && kind.data !== 'file';
-}
-
-function isResourcePlatform(value: unknown): value is ResourcePlatform {
-	return value === null || (typeof value === 'string' && Object.hasOwn(RESOURCE_TYPES.platformKinds, value));
-}
-
-export function parseResourceIdentity(kind: unknown, resourcePlatform: unknown): ResourceIdentity | null {
-	const parsedKind = RESOURCE_TYPES.kinds.safeParse(kind);
-	if (!parsedKind.success || !isResourcePlatform(resourcePlatform)) return null;
-	const resourceKind = parsedKind.data;
-	if (resourcePlatform !== null && RESOURCE_TYPES.platformKinds[resourcePlatform] !== resourceKind) return null;
-	return { kind: resourceKind, resourcePlatform };
-}
-
-export function isContentResourceIdentity(identity: ResourceIdentity): identity is ContentResourceIdentity {
-	return isContentResourceKind(identity.kind);
-}
-
-export function parseResourceProviderSequence(value: unknown): bigint | null {
-	if (typeof value !== 'string' || !/^[1-9]\d{0,18}$/.test(value)) return null;
-	const sequence = BigInt(value);
-	return sequence <= 9_223_372_036_854_775_807n ? sequence : null;
-}
 
 const RESOURCE_LANG_MAX_LENGTH = 35;
 
@@ -82,7 +50,10 @@ export function canonicalizeOptionalResourceLang(value: unknown): string | null 
 }
 
 const RESOURCE_CREATOR_ROLES = ['author', 'editor', 'submitter', 'channel'] as const;
-const optionalHttpUrl = z.url().refine((value) => parseExternalHttpUrl(value) !== null);
+const optionalHttpUrl = z.url({ protocol: /^https?$/ }).refine((value) => {
+	const url = URL.parse(value);
+	return url !== null && !url.username && !url.password;
+});
 const ResourceCreatorSchema = z
 	.object({
 		role: z.enum(RESOURCE_CREATOR_ROLES),
@@ -151,10 +122,10 @@ const ResourceKindMetadataSchemas = {
 	}),
 	image: z.null(),
 	file: z.null(),
-} as const satisfies Readonly<Record<ResourceKind, z.ZodType>>;
+} as const satisfies Readonly<Record<(typeof RESOURCE_TYPES.kinds.options)[number], z.ZodType>>;
 
 export type ResourceKindMetadataByKind = Readonly<{
-	[K in ResourceKind]: z.infer<(typeof ResourceKindMetadataSchemas)[K]>;
+	[K in (typeof RESOURCE_TYPES.kinds.options)[number]]: z.infer<(typeof ResourceKindMetadataSchemas)[K]>;
 }>;
 
 export type ForumKindMetadata = ResourceKindMetadataByKind['forum'];
@@ -165,11 +136,14 @@ export type ResourceKindMetadata = ResourceKindMetadataByKind[keyof ResourceKind
 
 export const ResourceCreatorsSchema = z.array(ResourceCreatorSchema);
 
-export function parseStoredResourceKindMetadata(kind: ResourceKind, value: unknown): ResourceKindMetadata | null {
+export function parseStoredResourceKindMetadata(
+	kind: (typeof RESOURCE_TYPES.kinds.options)[number],
+	value: unknown,
+): ResourceKindMetadata | null {
 	return ResourceKindMetadataSchemas[kind].parse(value);
 }
 
-type PlatformResourceIdentifierScheme = Exclude<ResourcePlatform, null>;
+type PlatformResourceIdentifierScheme = (typeof RESOURCE_TYPES.platforms.options)[number];
 
 export type ResourceIdentifierScheme = PaperIdentifierScheme | PlatformResourceIdentifierScheme;
 

@@ -1,4 +1,4 @@
-import { type ContentResourceKind, isContentResourceKind, RESOURCE_TYPES, type ResourcePlatform } from '@core-shared/resource';
+import { RESOURCE_TYPES } from '@core-shared/resource';
 import { aiSearchResourcePlatformMetadata, isValidUuid, resourceIdFromAiSearchItemKey } from './ai-search';
 
 export type PublicResourceSearchInput = {
@@ -6,18 +6,15 @@ export type PublicResourceSearchInput = {
 	mode?: 'hybrid' | 'vector';
 	filters?: {
 		effectiveAfter?: Date;
-		kinds?: ContentResourceKind[];
-		resourcePlatforms?: ResourcePlatform[];
+		kinds?: Exclude<(typeof RESOURCE_TYPES.kinds.options)[number], 'image' | 'file'>[];
+		resourcePlatforms?: ((typeof RESOURCE_TYPES.platforms.options)[number] | null)[];
 		sourceIds?: string[];
 	};
 };
 
-type NormalizedSearchFilters = {
+type NormalizedSearchFilters = Omit<NonNullable<PublicResourceSearchInput['filters']>, 'effectiveAfter'> & {
 	effectiveAfter: Date | null;
 	excludeAll: boolean;
-	kinds?: ContentResourceKind[];
-	resourcePlatforms?: ResourcePlatform[];
-	sourceIds?: string[];
 };
 
 const RESULT_LIMIT_MAX = 50;
@@ -31,11 +28,11 @@ function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSea
 	const sourceIds = filters.sourceIds === undefined ? undefined : [...new Set(filters.sourceIds.map((value) => value.trim()))];
 	if (sourceIds?.some((value) => !isValidUuid(value))) throw new Error('Invalid sourceIds');
 	const kinds = filters.kinds === undefined ? undefined : [...new Set(filters.kinds)];
-	if (kinds?.some((value) => !isContentResourceKind(value))) throw new Error('Invalid resource kinds');
+	if (kinds?.some((value) => !RESOURCE_TYPES.kinds.exclude(['image', 'file']).safeParse(value).success)) {
+		throw new Error('Invalid resource kinds');
+	}
 	const resourcePlatforms = filters.resourcePlatforms === undefined ? undefined : [...new Set(filters.resourcePlatforms)];
-	if (
-		resourcePlatforms?.some((value) => value !== null && (typeof value !== 'string' || !Object.hasOwn(RESOURCE_TYPES.platformKinds, value)))
-	) {
+	if (resourcePlatforms?.some((value) => !RESOURCE_TYPES.platforms.nullable().safeParse(value).success)) {
 		throw new Error('Invalid resource platforms');
 	}
 	return {

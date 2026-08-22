@@ -2,19 +2,14 @@
 
 import { isPaperIdentifierScheme } from '@core-shared/paper-identity';
 import {
-	type ContentResourceIdentity,
 	canonicalizeResourceLang,
-	isContentResourceIdentity,
-	isContentResourceKind,
 	normalizeResourceIdentifiers,
-	parseResourceIdentity,
 	parseStoredResourceKindMetadata,
 	RESOURCE_TYPES,
 	type ResourceCreator,
 	ResourceCreatorsSchema,
 	type ResourceIdentifier,
 	type ResourceIdentifierScheme,
-	type ResourceIdentity,
 	type ResourceKindMetadata,
 } from '@core-shared/resource';
 import { parseExternalHttpUrl } from '@core-shared/url';
@@ -185,12 +180,6 @@ export async function reconcilePendingBlobProcessing(env: CoreEnv, db: CoreDb): 
 	});
 }
 
-function storedResourceIdentity(row: StoredResourceIdentityRow): ContentResourceIdentity {
-	const stored = parseResourceIdentity(row.kind, row.resource_platform);
-	if (stored && isContentResourceIdentity(stored)) return stored;
-	throw new Error(`Invalid stored resource identity: ${String(row.kind)} / ${String(row.resource_platform)}`);
-}
-
 export async function assertResourceProcessable(db: CoreDb, resourceId: string): Promise<void> {
 	const result = await db.execute<ResourceProcessableRow>(sql`
 		SELECT kind, resource_platform, url
@@ -200,9 +189,9 @@ export async function assertResourceProcessable(db: CoreDb, resourceId: string):
 	`);
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
-	const identity = parseResourceIdentity(row.kind, row.resource_platform);
-	if (!identity || !isContentResourceKind(identity.kind)) {
-		throw new Error(`Resource kind is not processable by core: ${identity?.kind ?? row.kind}`);
+	const identity = RESOURCE_TYPES.identity.safeParse({ kind: row.kind, resourcePlatform: row.resource_platform });
+	if (!identity.success || !RESOURCE_TYPES.kinds.exclude(['image', 'file']).safeParse(identity.data.kind).success) {
+		throw new Error(`Resource kind is not processable by core: ${identity.success ? identity.data.kind : row.kind}`);
 	}
 	if (!parseExternalHttpUrl(row.url)) throw new Error(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
 }
@@ -256,7 +245,7 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 	`);
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch stored PDF ${resourceId}: not found or not an owned private blob`);
-	const identity = storedResourceIdentity(row);
+	const identity = RESOURCE_TYPES.identity.parse({ kind: row.kind, resourcePlatform: row.resource_platform });
 	const base = storedResourceBase(row);
 	const title = row.title?.trim();
 	const source = row.source?.trim();
@@ -322,7 +311,7 @@ export async function loadResourceReacquisitionInput(db: CoreDb, resourceId: str
 	`);
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
-	storedResourceIdentity(row);
+	RESOURCE_TYPES.identity.parse({ kind: row.kind, resourcePlatform: row.resource_platform });
 	const base = storedResourceBase(row);
 	const url = parseExternalHttpUrl(base.url);
 	if (!url) throw new Error(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
@@ -376,7 +365,7 @@ function storedResourceCreatorsValue(value: unknown, resourceId: string): Resour
 	}
 }
 
-function emptyStoredResourceKindMetadata(identity: ResourceIdentity): ResourceKindMetadata | null {
+function emptyStoredResourceKindMetadata(identity: z.infer<typeof RESOURCE_TYPES.identity>): ResourceKindMetadata | null {
 	switch (identity.kind) {
 		case 'blog':
 		case 'image':
@@ -391,7 +380,11 @@ function emptyStoredResourceKindMetadata(identity: ResourceIdentity): ResourceKi
 	}
 }
 
-function storedResourceKindMetadataValue(identity: ResourceIdentity, value: unknown, resourceId: string): ResourceKindMetadata | null {
+function storedResourceKindMetadataValue(
+	identity: z.infer<typeof RESOURCE_TYPES.identity>,
+	value: unknown,
+	resourceId: string,
+): ResourceKindMetadata | null {
 	if (value === null || value === undefined) return emptyStoredResourceKindMetadata(identity);
 	try {
 		return parseStoredResourceKindMetadata(identity.kind, value);

@@ -1,11 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import {
-	type ContentResourceIdentity,
-	isContentResourceIdentity,
-	parseResourceIdentity,
-	RESOURCE_TYPES,
-	type ResourcePlatform,
-} from '@core-shared/resource';
+import { RESOURCE_TYPES } from '@core-shared/resource';
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/display-source-sql';
 import { inArray, sql } from 'drizzle-orm';
@@ -29,7 +23,7 @@ export function resourceIdFromAiSearchItemKey(key: string): string | null {
 	return isValidUuid(resourceId) ? resourceId : null;
 }
 
-export function aiSearchResourcePlatformMetadata(resourcePlatform: ResourcePlatform): string {
+export function aiSearchResourcePlatformMetadata(resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number] | null): string {
 	return resourcePlatform ?? NULL_RESOURCE_PLATFORM_METADATA;
 }
 
@@ -81,14 +75,15 @@ function documentEffectiveAt(row: CorpusDocument): string | undefined {
 	return date.toISOString();
 }
 
-function corpusDocumentIdentity(document: CorpusDocument): ContentResourceIdentity {
-	const identity = parseResourceIdentity(document.kind, document.resource_platform);
-	if (!identity || !isContentResourceIdentity(identity)) {
+function corpusDocumentIdentity(document: CorpusDocument) {
+	const identity = RESOURCE_TYPES.identity.safeParse({ kind: document.kind, resourcePlatform: document.resource_platform });
+	const kind = identity.success ? RESOURCE_TYPES.kinds.exclude(['image', 'file']).safeParse(identity.data.kind) : null;
+	if (!identity.success || !kind?.success) {
 		throw new Error(
 			`AI Search document ${document.id} has invalid persisted identity ${String(document.kind)} / ${String(document.resource_platform)}`,
 		);
 	}
-	return identity;
+	return { ...identity.data, kind: kind.data };
 }
 
 function serializeTranslation(translation: CorpusTranslationRow, originalLang: string): string {

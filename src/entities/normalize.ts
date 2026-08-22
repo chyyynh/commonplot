@@ -4,7 +4,7 @@
 // storing and under WHAT canonical key. Consumed by the ingest
 // pipeline (persistence + prompt exclusion lists).
 
-import { type ResourceCreator, type ResourcePlatform, resourceCreatorName } from '@core-shared/resource';
+import { type RESOURCE_TYPES, type ResourceCreator, resourceCreatorName } from '@core-shared/resource';
 
 export type ResourceEntityInput = { name: string; name_cn: string; type: string };
 export const ENTITY_TYPES = ['person', 'organization', 'product', 'technology', 'event', 'location'] as const;
@@ -115,7 +115,7 @@ function creatorAliases(creators: readonly ResourceCreator[]): string[] {
 }
 
 function excludedEntityCanonicalNames(
-	resourcePlatform: ResourcePlatform,
+	resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number] | null,
 	source: string | null | undefined,
 	creators: readonly ResourceCreator[],
 ): Set<string> {
@@ -124,7 +124,7 @@ function excludedEntityCanonicalNames(
 }
 
 export function entityExtractionExclusionNames(
-	resourcePlatform: ResourcePlatform,
+	resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number] | null,
 	source?: string | null,
 	creators: readonly ResourceCreator[] = [],
 ): string[] {
@@ -143,7 +143,7 @@ export function entityExtractionExclusionNames(
 
 export function toStoredResourceEntities(
 	entities: ResourceEntityInput[],
-	resourcePlatform: ResourcePlatform,
+	resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number] | null,
 	source?: string | null,
 	creators: readonly ResourceCreator[] = [],
 ): StoredResourceEntity[] {

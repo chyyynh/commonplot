@@ -1,6 +1,6 @@
 // Durable translation execution; resource processing only enqueues this Workflow.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { canonicalizeResourceLang, parseResourceIdentity, type ResourceIdentity } from '@core-shared/resource';
+import { canonicalizeResourceLang, RESOURCE_TYPES } from '@core-shared/resource';
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { generateText, Output } from 'ai';
 import { sql } from 'drizzle-orm';
@@ -27,7 +27,7 @@ type ResourceTranslationInput = {
 		content: string | null;
 		source: ResourceTranslationSource;
 	} | null;
-} & ResourceIdentity;
+} & z.infer<typeof RESOURCE_TYPES.identity>;
 
 type ResourceTranslationInputRow = {
 	file_type: string | null;
@@ -339,15 +339,15 @@ async function loadResourceTranslationInput(
 	`);
 	const row = result.rows[0];
 	if (!row) return null;
-	const identity = parseResourceIdentity(row.kind, row.resource_platform);
-	if (!identity) throw new Error(`Invalid translation resource identity: ${row.kind} / ${String(row.resource_platform)}`);
+	const identity = RESOURCE_TYPES.identity.safeParse({ kind: row.kind, resourcePlatform: row.resource_platform });
+	if (!identity.success) throw new Error(`Invalid translation resource identity: ${row.kind} / ${String(row.resource_platform)}`);
 	if (!isResourceTranslationRevision(row.translation_revision)) {
 		throw new Error(`Invalid translation revision for ${resourceId}`);
 	}
 	const zhHantSource = parseTranslationSource(row.zh_hant_source);
 	return {
 		resource: {
-			...identity,
+			...identity.data,
 			fileType: row.file_type,
 			id: row.id,
 			originalLang: canonicalizeResourceLang(row.original_lang),

@@ -7,7 +7,7 @@
 	"scripts": {
 		"deploy": "wrangler deploy",
 		"deploy:dry-run": "pnpm run typecheck && wrangler deploy --dry-run",
-		"check:db-contract": "node scripts/check-database-contract.mjs",
+		"check:db-contract": "node --experimental-strip-types scripts/check-database-contract.mjs",
 		"check:resource-identity": "node --experimental-strip-types scripts/check-resource-identity.mjs",
 		"check:platform-materialization": "node --experimental-strip-types scripts/check-platform-materialization.mjs",
 		"check:twitter-thread": "node --experimental-strip-types scripts/check-twitter-thread.mjs",

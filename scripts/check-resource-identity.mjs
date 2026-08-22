@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { parseResourceIdentity, parseResourceProviderSequence, RESOURCE_TYPES } from '../src/shared/resource.ts';
+import { RESOURCE_TYPES } from '../src/shared/resource.ts';
 import { detectResourceUrl, normalizeUrl, parseTwitterUsername } from '../src/shared/url.ts';
 
 const canonicalIdentities = [
@@ -7,12 +7,12 @@ const canonicalIdentities = [
 	...Object.entries(RESOURCE_TYPES.platformKinds).map(([resourcePlatform, kind]) => ({ kind, resourcePlatform })),
 ];
 for (const identity of canonicalIdentities) {
-	assert.deepEqual(parseResourceIdentity(identity.kind, identity.resourcePlatform), identity);
+	assert.deepEqual(RESOURCE_TYPES.identity.parse(identity), identity);
 }
-assert.equal(parseResourceIdentity('blog', 'hackernews'), null);
-assert.equal(parseResourceIdentity('paper', 'hackernews'), null);
-assert.equal(parseResourceIdentity('video', 'twitter'), null);
-assert.equal(parseResourceIdentity('document', null), null);
+assert.equal(RESOURCE_TYPES.identity.safeParse({ kind: 'blog', resourcePlatform: 'hackernews' }).success, false);
+assert.equal(RESOURCE_TYPES.identity.safeParse({ kind: 'paper', resourcePlatform: 'hackernews' }).success, false);
+assert.equal(RESOURCE_TYPES.identity.safeParse({ kind: 'video', resourcePlatform: 'twitter' }).success, false);
+assert.equal(RESOURCE_TYPES.identity.safeParse({ kind: 'document', resourcePlatform: null }).success, false);
 
 assert.deepEqual(detectResourceUrl('https://x.com/openai/status/1234567890'), {
 	resourcePlatform: 'twitter',
@@ -51,11 +51,11 @@ const twitterUsernameCases = [
 ];
 for (const [input, expected] of twitterUsernameCases) assert.equal(parseTwitterUsername(input), expected);
 
-assert.equal(parseResourceProviderSequence('1'), 1n);
-assert.equal(parseResourceProviderSequence('1999999999999999999'), 1_999_999_999_999_999_999n);
-assert.equal(parseResourceProviderSequence('0'), null);
-assert.equal(parseResourceProviderSequence('9223372036854775808'), null);
-assert.equal(parseResourceProviderSequence('not-a-sequence'), null);
+assert.equal(RESOURCE_TYPES.providerSequence.safeParse('1').success, true);
+assert.equal(RESOURCE_TYPES.providerSequence.safeParse('1999999999999999999').success, true);
+assert.equal(RESOURCE_TYPES.providerSequence.safeParse('0').success, false);
+assert.equal(RESOURCE_TYPES.providerSequence.safeParse('9223372036854775808').success, false);
+assert.equal(RESOURCE_TYPES.providerSequence.safeParse('not-a-sequence').success, false);
 
 console.info({
 	event: 'resource_identity_smoke_passed',

@@ -1,6 +1,5 @@
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '../../shared/paper-identity.ts';
 import {
-	type ContentResourceIdentity,
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
 	isPaperIdentifier,
@@ -9,7 +8,6 @@ import {
 	type ResourceCreator,
 	type ResourceIdentifier,
 	type ResourceKindMetadata,
-	type ResourcePlatform,
 	type YouTubeHighlights,
 	type YouTubeTranscript,
 } from '../../shared/resource.ts';
@@ -20,7 +18,10 @@ type ResolvedResourceSubject = Readonly<{
 	normalizedUrl: string;
 }>;
 
-type MaterializedResource = ContentResourceIdentity & {
+type MaterializedResource = Readonly<{
+	kind: Exclude<(typeof RESOURCE_TYPES.kinds.options)[number], 'image' | 'file'>;
+	resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number] | null;
+}> & {
 	originalLang: string;
 	title: string;
 	summary: string | null;
@@ -68,11 +69,12 @@ export type GenericAcquiredMaterial = AcquiredMaterialFields & {
 	resourcePlatform: null;
 };
 
-export type PlatformAcquiredMaterial<T extends Exclude<ResourcePlatform, null> = Exclude<ResourcePlatform, null>> =
-	AcquiredMaterialFields & {
-		platformId: string;
-		resourcePlatform: T;
-	};
+export type PlatformAcquiredMaterial<
+	T extends (typeof RESOURCE_TYPES.platforms.options)[number] = (typeof RESOURCE_TYPES.platforms.options)[number],
+> = AcquiredMaterialFields & {
+	platformId: string;
+	resourcePlatform: T;
+};
 
 export type AcquiredResource = (GenericAcquiredMaterial | PlatformAcquiredMaterial) & {
 	specialization: YouTubeResourceSpecialization | null;
@@ -102,7 +104,7 @@ export function materializeAcquiredResource(
 	const platformIdentity =
 		acquired.resourcePlatform === null ? null : { resourcePlatform: acquired.resourcePlatform, platformId: acquired.platformId };
 	const paperIdentifiers = resolution.resourceIdentifiers.filter(isPaperIdentifier);
-	const identity: ContentResourceIdentity = platformIdentity
+	const identity: Pick<MaterializedResource, 'kind' | 'resourcePlatform'> = platformIdentity
 		? { kind: RESOURCE_TYPES.platformKinds[platformIdentity.resourcePlatform], resourcePlatform: platformIdentity.resourcePlatform }
 		: paperIdentifiers.some((identifier) => identifier.scheme === 'openalex')
 			? { kind: 'paper', resourcePlatform: null }
