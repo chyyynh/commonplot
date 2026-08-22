@@ -7,6 +7,7 @@ import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
+import { acquisitionResultArtifact, DEFAULT_ACQUISITION_STEP_CONFIG, normalizeAcquiredContent } from '../acquired-content';
 
 const HN_ALGOLIA_API = 'https://hn.algolia.com/api/v1/items';
 const HN_ITEM_MAX_BYTES = 5 * 1024 * 1024;
@@ -121,7 +122,7 @@ function hackerNewsItemTitle(item: HackerNewsItem, itemId: string): string {
 	return `Hacker News item #${itemId}`;
 }
 
-export async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquiredContent> {
+async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquiredContent> {
 	console.info({ tag: 'HN', msg: 'Fetching item', itemId });
 	const item = await fetchHnItem(itemId);
 	const title = hackerNewsItemTitle(item, itemId);
@@ -153,6 +154,15 @@ export async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquir
 		kindMetadata: { points: item.points, commentCount, itemType } satisfies ForumKindMetadata,
 		hackerNewsItem: item,
 	};
+}
+
+export function stageHackerNewsAcquisition(
+	step: WorkflowStep,
+	input: { itemId: string; route: number; url: string },
+): Promise<ReadableStream<Uint8Array>> {
+	return step.do(`acquire-hackernews-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
+		acquisitionResultArtifact(async () => normalizeAcquiredContent({ ...(await scrapeHackerNews(input.itemId)), canonicalUrl: input.url })),
+	);
 }
 
 function collectAllComments(children: HnComment[]): HnCollectedComment[] {

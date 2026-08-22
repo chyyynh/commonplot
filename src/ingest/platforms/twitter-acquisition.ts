@@ -1,9 +1,10 @@
-import type { WorkflowDelayFunction, WorkflowStepConfig } from 'cloudflare:workers';
+import type { WorkflowDelayFunction, WorkflowStep, WorkflowStepConfig } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { readTextWithLimit } from '@core-shared/http';
 import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
 import { extractTweetId } from '@core-shared/url';
+import { acquisitionResultArtifact, DEFAULT_ACQUISITION_STEP_CONFIG, normalizeAcquiredContent } from '../acquired-content';
 import {
 	assertExpectedTwitterThreadPost,
 	buildTwitterAuthorThread,
@@ -32,12 +33,12 @@ const TWITTER_SEARCH_MAX_REQUESTS = 256;
 // also limits paid twitterapi.io requests.
 const sequencedTwitterRetryDelay: WorkflowDelayFunction = ({ ctx }) =>
 	ctx.attempt <= 3 ? '10 seconds' : ctx.attempt <= 15 ? '1 minute' : '30 minutes';
-export const TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG = {
+const TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG = {
 	retries: { limit: 50, delay: sequencedTwitterRetryDelay },
 	timeout: '120 seconds',
 } as const satisfies WorkflowStepConfig;
 
-export function logSequencedTwitterAcquisitionAttempt(processingId: string, providerSequence: string, attempt: number): void {
+function logSequencedTwitterAcquisitionAttempt(processingId: string, providerSequence: string, attempt: number): void {
 	console.info({
 		tag: 'TWITTER',
 		event: 'sequenced_acquisition_attempt',
@@ -407,7 +408,7 @@ function mergeResolvedTwitterThread(resolved: ResolvedTweetContent, thread: Twee
 	};
 }
 
-export async function scrapeTweet(
+async function scrapeTweet(
 	tweetId: string,
 	apiKey: string,
 	options: { discoverUnsignaledThread?: boolean; expectedReplyId?: string } = {},
@@ -444,6 +445,38 @@ export async function scrapeTweet(
 		content_kind: resolved.kind,
 	});
 	return { ...mergeResolvedTwitterThread(resolved, thread, tweetId), platformId: tweetId };
+}
+
+export function stageTwitterAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: {
+		discoverRelatedContent: boolean;
+		processingId: string;
+		providerSequence?: string;
+		route: number;
+		tweetId: string;
+		url: string;
+	},
+): Promise<ReadableStream<Uint8Array>> {
+	return step.do(
+		`acquire-twitter-v1-${input.route}`,
+		input.providerSequence ? TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG : DEFAULT_ACQUISITION_STEP_CONFIG,
+		(ctx) => {
+			if (input.providerSequence) {
+				logSequencedTwitterAcquisitionAttempt(input.processingId, input.providerSequence, ctx.attempt);
+			}
+			return acquisitionResultArtifact(async () =>
+				normalizeAcquiredContent({
+					...(await scrapeTweet(input.tweetId, env.KAITO_API_KEY, {
+						discoverUnsignaledThread: input.discoverRelatedContent,
+						expectedReplyId: input.providerSequence,
+					})),
+					canonicalUrl: input.url,
+				}),
+			);
+		},
+	);
 }
 
 type TwitterThreadSearchResult = {

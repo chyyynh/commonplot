@@ -13,6 +13,7 @@ import type {
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
+import { acquisitionResultArtifact, DEFAULT_ACQUISITION_STEP_CONFIG, normalizeAcquiredContent } from '../acquired-content';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
@@ -210,7 +211,7 @@ async function fetchTranscript(videoId: string): Promise<TranscriptSegment[]> {
 	return segments;
 }
 
-export async function scrapeYouTube(
+async function scrapeYouTube(
 	videoId: string,
 	youtubeApiKey: string,
 	monitoredOnly: boolean,
@@ -281,6 +282,21 @@ export async function scrapeYouTube(
 			chaptersFromDescription: chapters.length > 0,
 		},
 	};
+}
+
+export function stageYouTubeAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: { monitoredOnly: boolean; route: number; sourceAvatarUrl: string | null; url: string; videoId: string },
+): Promise<ReadableStream<Uint8Array>> {
+	return step.do(`acquire-youtube-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
+		acquisitionResultArtifact(async () =>
+			normalizeAcquiredContent({
+				...(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY, input.monitoredOnly, input.sourceAvatarUrl)),
+				canonicalUrl: input.url,
+			}),
+		),
+	);
 }
 
 const YouTubeHighlightSchema = z.object({

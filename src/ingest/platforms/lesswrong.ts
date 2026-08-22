@@ -1,8 +1,10 @@
+import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import { literalCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
+import { acquisitionResultArtifact, DEFAULT_ACQUISITION_STEP_CONFIG, normalizeAcquiredContent } from '../acquired-content';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
 const LESSWRONG_RESPONSE_MAX_BYTES = 5 * 1024 * 1024;
@@ -39,7 +41,7 @@ type LessWrongGraphqlResponse = {
 	errors?: Array<{ message?: string }>;
 };
 
-export async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<'lesswrong'>> {
+async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<'lesswrong'>> {
 	if (!LESSWRONG_POST_ID_RE.test(postId)) throw new NonRetryableError(`Invalid LessWrong post id: ${postId}`);
 	const response = await fetchWithTimeout(LESSWRONG_GRAPHQL_URL, {
 		method: 'POST',
@@ -80,4 +82,13 @@ export async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<
 		creators: literalCreator('author', author),
 		kindMetadata: { siteName: 'LessWrong' },
 	};
+}
+
+export function stageLessWrongAcquisition(
+	step: WorkflowStep,
+	input: { postId: string; route: number; url: string },
+): Promise<ReadableStream<Uint8Array>> {
+	return step.do(`acquire-lesswrong-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
+		acquisitionResultArtifact(async () => normalizeAcquiredContent({ ...(await scrapeLessWrong(input.postId)), canonicalUrl: input.url })),
+	);
 }

@@ -1,3 +1,5 @@
+import type { WorkflowStepConfig } from 'cloudflare:workers';
+import { NonRetryableError } from 'cloudflare:workflows';
 import { sha256Hex } from '@core-shared/hash';
 import { parseResourceCreators, parseStoredResourceKindMetadata } from '@core-shared/resource-metadata';
 import { type ResourcePlatform, resourceIdentityForDetectedPlatform } from '@core-shared/resource-types';
@@ -10,6 +12,16 @@ type WithSourceSnapshot<T extends AcquiredMaterial> = T extends unknown
 	: never;
 
 export type NormalizedAcquiredContent<T extends ResourcePlatform = ResourcePlatform> = WithSourceSnapshot<AcquiredMaterial<T>>;
+
+export type AcquisitionArtifactResult<T> =
+	| { status: 'acquired'; content: T }
+	| { status: 'redirect'; redirectUrl: string }
+	| { status: 'rejected'; message: string };
+
+export const DEFAULT_ACQUISITION_STEP_CONFIG = {
+	retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' },
+	timeout: '120 seconds',
+} as const satisfies WorkflowStepConfig;
 
 const nullableStringSchema = z.string().nullable();
 const acquiredContentShape = {
@@ -68,6 +80,24 @@ function sourceSnapshotHash(acquired: AcquiredMaterial, markdown: string): Promi
 export async function normalizeAcquiredContent<T extends AcquiredMaterial>(acquired: T): Promise<WithSourceSnapshot<T>> {
 	const markdown = sanitizeExtractedMarkdown(acquired.markdown);
 	return { ...acquired, markdown, sourceSnapshotHash: await sourceSnapshotHash(acquired, markdown) } as WithSourceSnapshot<T>;
+}
+
+export async function acquisitionResultArtifact<T extends NormalizedAcquiredContent>(
+	acquire: () => Promise<T | { redirectUrl: string }>,
+): Promise<ReadableStream<Uint8Array>> {
+	let result: AcquisitionArtifactResult<T>;
+	try {
+		const acquired = await acquire();
+		result =
+			'redirectUrl' in acquired ? { status: 'redirect', redirectUrl: acquired.redirectUrl } : { status: 'acquired', content: acquired };
+	} catch (error) {
+		if (!(error instanceof NonRetryableError)) throw error;
+		result = {
+			status: 'rejected',
+			message: error.message.trim().slice(0, 500) || 'Resource acquisition was rejected',
+		};
+	}
+	return new Blob([JSON.stringify(result)], { type: 'application/json' }).stream();
 }
 
 export function acquiredContentArtifact(acquired: NormalizedAcquiredContent): ReadableStream<Uint8Array> {

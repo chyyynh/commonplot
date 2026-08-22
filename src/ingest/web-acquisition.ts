@@ -1,3 +1,4 @@
+import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readBytesWithLimit, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
@@ -5,6 +6,7 @@ import { literalCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { extractFromHtml } from '@extractus/article-extractor';
+import { acquisitionResultArtifact, DEFAULT_ACQUISITION_STEP_CONFIG, normalizeAcquiredContent } from './acquired-content';
 import { PDF_MIME, parsePdfBytes } from './platforms/pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
@@ -164,7 +166,7 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, proce
 	};
 }
 
-export async function acquireWebResource(url: string, env: CoreEnv, processingId?: string): Promise<AcquiredWebContent | PlatformRedirect> {
+async function acquireWebResource(url: string, env: CoreEnv, processingId?: string): Promise<AcquiredWebContent | PlatformRedirect> {
 	const response = await fetchWithTimeout(
 		url,
 		{
@@ -211,4 +213,17 @@ export async function acquireWebResource(url: string, env: CoreEnv, processingId
 
 	const html = await readTextWithLimit(response, GENERIC_HTML_MAX_BYTES);
 	return { ...(await acquireHtmlArticle(env, html, finalUrl, processingId)), canonicalUrl: finalUrl };
+}
+
+export function stageWebAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: { processingId: string; route: number; url: string },
+): Promise<ReadableStream<Uint8Array>> {
+	return step.do(`acquire-web-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
+		acquisitionResultArtifact(async () => {
+			const acquired = await acquireWebResource(input.url, env, input.processingId);
+			return 'redirectUrl' in acquired ? acquired : normalizeAcquiredContent(acquired);
+		}),
+	);
 }
