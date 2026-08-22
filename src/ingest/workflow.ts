@@ -6,12 +6,13 @@ import { connectCoreDb } from '@db/connection';
 import { loadResourceReacquisitionInput, loadStoredPdfInput } from '@ingest/stored-resource';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
-import { type ResourceResolutionOrigin, resolveAcquiredResource, stageUrlAcquisition } from './acquisition';
+import { resolveAcquiredResource, stageUrlAcquisition } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
 import { stageStoredPdfAcquisition } from './platforms/pdf';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import { markStoredBlobProcessingFailed, type PersistProcessedTarget, persistProcessedResource } from './resource-persistence';
+import type { ResourceResolutionOrigin } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 
 const WORKFLOW_ENQUEUE_STEP_CONFIG = {
@@ -207,7 +208,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				step.do('enqueue-resolved-subject-child-v1', WORKFLOW_ENQUEUE_STEP_CONFIG, () =>
 					enqueueSubjectDraft(this.env, {
 						parentResourceId: persistedResourceId,
-						url: subject.url,
+						url: subject.normalizedUrl,
 					}),
 				),
 			);

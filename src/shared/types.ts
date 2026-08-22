@@ -5,7 +5,6 @@ import type { PaperRelationSnapshot, ResourceCreator, ResourceKindMetadata } fro
 export type ResolvedResourceSubject = Readonly<{
 	identifiers: ResourceIdentifier[];
 	normalizedUrl: string;
-	url: string;
 }>;
 
 type MaterializedResourceFields = {

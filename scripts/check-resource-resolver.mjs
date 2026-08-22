@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { materializeAcquiredResource, resolvedSubjectInput } from '../src/ingest/resource-resolver.ts';
+import { materializeAcquiredResource } from '../src/ingest/resource-resolver.ts';
 import { detectResourceUrl } from '../src/shared/url.ts';
 
 const base = {
@@ -15,6 +15,7 @@ function materialize(input = {}) {
 			resourcePlatform: platformIdentity?.resourcePlatform ?? null,
 			...(platformIdentity ? { platformId: platformIdentity.platformId } : {}),
 			...(url ? { canonicalUrl: url } : {}),
+			...(input.subjectUrl ? { subjectUrl: input.subjectUrl } : {}),
 			fileType: null,
 			title: 'Example',
 			markdown: 'Example content',
@@ -173,21 +174,19 @@ assert.deepEqual(
 );
 
 assert.deepEqual(
-	resolvedSubjectInput('https://doi.org/10.1000/example'),
+	materialize({ subjectUrl: 'https://doi.org/10.1000/example' }).subject,
 	{
 		identifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
 		normalizedUrl: 'https://doi.org/10.1000/example',
-		url: 'https://doi.org/10.1000/example',
 	},
 	'paper subjects resolve independently from their carrier',
 );
 
 assert.deepEqual(
-	resolvedSubjectInput('https://example.com/article'),
+	materialize({ subjectUrl: 'https://example.com/article' }).subject,
 	{
 		identifiers: [],
 		normalizedUrl: 'https://example.com/article',
-		url: 'https://example.com/article',
 	},
 	'generic subjects retain their normalized URL identity',
 );

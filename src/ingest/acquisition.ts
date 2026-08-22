@@ -1,17 +1,15 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource-identifiers';
-import type { AcquiredResource, MaterializedResource, ResolvedResource } from '@core-shared/types';
+import type { AcquiredResource, ResolvedResource } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
 import { stagePaperProcessing } from './platforms/paper';
 import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageYouTubeAcquisition } from './platforms/youtube-acquisition';
-import { materializeAcquiredResource, type ResourceMaterializationOrigin } from './resource-resolver';
+import { materializeAcquiredResource, type ResourceResolutionOrigin } from './resource-resolver';
 import { stageWebAcquisition } from './web-acquisition';
-
-export type ResourceResolutionOrigin = ResourceMaterializationOrigin & Pick<MaterializedResource, 'resourceIdentifiers'>;
 
 export async function stageUrlAcquisition(
 	env: CoreEnv,
