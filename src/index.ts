@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { connectCoreDb } from '@db/connection';
-import { type ResolveMonitoredSourceInput, resolveMonitoredSource } from '@ingest/monitored-source';
+import { resolveMonitoredSource } from '@ingest/monitored-source';
 import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';
 import { type AppResourceDraftInput, enqueueAppResourceDraft } from '@ingest/processing-jobs';
@@ -38,7 +38,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		console.info({ tag: 'CORE', msg: 'Scheduled', cron: event.cron });
 
 		// YouTube channels ride the feed monitor through their Atom URLs; Core
-		// derives their slower polling cadence from platform.
+		// derives their slower polling cadence from the canonical feed URL.
 		if (event.cron === '*/5 * * * *') {
 			this.ctx.waitUntil(runFiveMinuteCycle(this.env));
 		} else if (event.cron === '0 */6 * * *') {
@@ -77,8 +77,8 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		return instance.status();
 	}
 
-	/** Resolve an explicitly requested feed/account/channel monitor into a source row candidate (#237). */
-	resolveMonitoredSource(input: ResolveMonitoredSourceInput) {
+	/** Resolve a feed/account/channel monitor into a source row candidate (#237). */
+	resolveMonitoredSource(input: string) {
 		return resolveMonitoredSource(this.env, input);
 	}
 }

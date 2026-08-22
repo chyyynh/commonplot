@@ -43,8 +43,8 @@ async function processFeed(env: CoreEnv, db: CoreDb, feed: MonitoredSource): Pro
 
 export async function handleRSSCron(env: CoreEnv, db: CoreDb): Promise<void> {
 	console.info({ tag: 'RSS', msg: 'start' });
-	// Every feed-discovered source, whatever its platform says: a YouTube channel
-	// handle is an Atom feed URL, so there is nothing for a separate monitor to do.
+	// Every feed source uses the same parser. A YouTube channel handle is an Atom
+	// feed URL, so there is nothing for a separate monitor to do.
 	// Its entries still resolve to resource_platform='youtube' at acquisition.
 	const feeds = await loadMonitoredSources(db, 'feed');
 	for (let index = 0; index < feeds.length; index += FEED_CONCURRENCY) {

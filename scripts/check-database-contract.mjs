@@ -7,25 +7,17 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const prismaPath = resolve(root, '../../web-tanstack/prisma/schema.prisma');
 const manualIndexesPath = resolve(root, '../../web-tanstack/prisma/manual-indexes.sql');
-const sourceSchemaPath = resolve(root, '../../web-tanstack/src/server/schemas.ts');
 const resourcePath = resolve(root, 'src/shared/resource.ts');
 
 const prismaSource = readFileSync(prismaPath, 'utf8');
 const manualIndexesSource = readFileSync(manualIndexesPath, 'utf8');
 const resourceSource = readFileSync(resourcePath, 'utf8');
-const sourceSchemaSource = readFileSync(sourceSchemaPath, 'utf8');
 const errors = [];
 
 function parseStringArray(source, name) {
 	const declaration = source.match(new RegExp(`(?:export )?const ${name} = \\[([^\\]]*)\\] as const`));
 	if (!declaration) return null;
 	return [...declaration[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
-}
-
-function parseZodEnum(source, name) {
-	const declaration = source.match(new RegExp(`(?:export )?const ${name} = z\\.enum\\(\\[([^\\]]*)\\]\\)`));
-	if (!declaration) return null;
-	return [...declaration[1].matchAll(/["']([^"']+)["']/g)].map((match) => match[1]);
 }
 
 function parseStringOrNullArrayRecord(source, name) {
@@ -115,29 +107,25 @@ if (!resourceKinds || !resourcePlatforms || !validKindPlatforms) {
 	}
 }
 
-const sourcePlatforms = parseZodEnum(sourceSchemaSource, 'SourcePlatformSchema');
-if (!sourcePlatforms) {
-	errors.push(`Unable to parse canonical source platforms from ${sourceSchemaPath}`);
-} else {
-	if (/\bcontent_mode\b|\bpoll_interval_minutes\b/.test(prismaSource)) {
-		errors.push('Prisma Source model must not restore retired routing/cadence columns');
-	}
-	const platformConstraint = manualIndexesSource.match(/ADD CONSTRAINT sources_platform_check\s+CHECK \(platform IN \(([^)]+)\)\);/);
-	const constrainedPlatforms = platformConstraint ? [...platformConstraint[1].matchAll(/'([^']+)'/g)].map((match) => match[1]) : null;
-	if (!constrainedPlatforms || !sameMembers(constrainedPlatforms, sourcePlatforms)) {
-		errors.push('sources_platform_check differs from canonical SOURCE_PLATFORMS');
-	}
-	const twitterHandleConstraint = manualIndexesSource.match(
-		/ADD CONSTRAINT sources_twitter_handle_check\s+CHECK \(([\s\S]*?)\n {2}\);/,
-	)?.[1];
-	const normalizedTwitterConstraint = twitterHandleConstraint?.replace(/\s+/g, ' ').trim();
-	if (
-		!normalizedTwitterConstraint?.includes("platform <> 'twitter'") ||
-		!normalizedTwitterConstraint.includes('handle = lower(handle)') ||
-		!normalizedTwitterConstraint.includes("handle ~ '^[a-z0-9_]{1,15}$'")
-	) {
-		errors.push('sources_twitter_handle_check must enforce canonical Twitter handles');
-	}
+const sourceModelBody = prismaSource.match(/model Source \{([\s\S]*?)\n\}/)?.[1] ?? '';
+if (!/^\s*monitorKind\s+String\s+@map\("monitor_kind"\)\s*$/m.test(sourceModelBody)) {
+	errors.push('Prisma Source.monitorKind must map to monitor_kind');
+}
+if (/^\s*platform\s+/m.test(sourceModelBody) || /\bcontent_mode\b|\bpoll_interval_minutes\b/.test(sourceModelBody)) {
+	errors.push('Prisma Source model must not restore retired platform/routing/cadence columns');
+}
+const constrainedMonitorKinds = parseDomainConstraint(manualIndexesSource, 'sources_monitor_kind_check', 'monitor_kind');
+if (!constrainedMonitorKinds || !sameValues(constrainedMonitorKinds, ['feed', 'twitter'])) {
+	errors.push('sources_monitor_kind_check must allow only feed and twitter');
+}
+const twitterHandleConstraint = manualIndexesSource.match(/ADD CONSTRAINT sources_twitter_handle_check\s+CHECK \(([\s\S]*?)\n {2}\);/)?.[1];
+const normalizedTwitterConstraint = twitterHandleConstraint?.replace(/\s+/g, ' ').trim();
+if (
+	!normalizedTwitterConstraint?.includes("monitor_kind <> 'twitter'") ||
+	!normalizedTwitterConstraint.includes('handle = lower(handle)') ||
+	!normalizedTwitterConstraint.includes("handle ~ '^[a-z0-9_]{1,15}$'")
+) {
+	errors.push('sources_twitter_handle_check must enforce canonical Twitter handles');
 }
 
 if (errors.length > 0) {

@@ -3,14 +3,11 @@ import type { CoreDb } from '@db/connection';
 import { inArray, sql } from 'drizzle-orm';
 import { loadFeed } from './platforms/rss-feed';
 
-// Resolves an explicitly requested monitor (feed / account / channel) into the
-// exact source row the crons can poll. Ordinary web URLs belong to resource
-// ingestion and never enter this path.
-
-export type ResolveMonitoredSourceInput = { platform: 'rss' | 'lesswrong' | 'twitter' | 'youtube'; input: string };
+// Resolves a feed/account/channel input into the exact source row the crons can
+// poll. Ordinary resource URLs use resource ingestion instead of this RPC.
 
 type ResolvedMonitoredSource = {
-	platform: ResolveMonitoredSourceInput['platform'];
+	monitorKind: 'feed' | 'twitter';
 	handle: string;
 	name: string;
 	siteUrl: string | null;
@@ -24,7 +21,7 @@ async function resolveFeedSource(input: string): Promise<ResolvedMonitoredSource
 	const { effectiveUrl: feedUrl, title } = await loadFeed(input);
 	const host = feedUrl.hostname.toLowerCase().replace(/^www\./, '');
 	return {
-		platform: host === 'lesswrong.com' ? 'lesswrong' : 'rss',
+		monitorKind: 'feed',
 		handle: feedUrl.toString(),
 		name: title ?? host,
 		siteUrl: feedUrl.origin,
@@ -37,7 +34,7 @@ function resolveTwitterSource(input: string): ResolvedMonitoredSource {
 	if (!handle) throw new Error('Enter a valid X/Twitter handle or profile URL.');
 	const lower = handle.toLowerCase();
 	return {
-		platform: 'twitter',
+		monitorKind: 'twitter',
 		handle: lower,
 		name: `@${lower}`,
 		siteUrl: `https://x.com/${lower}`,
@@ -60,7 +57,6 @@ function youtubeChannelIdFromInput(input: string): string | null {
 
 function youtubeHandleFromInput(input: string): string | null {
 	const trimmed = input.trim();
-	if (trimmed.startsWith('@') && YOUTUBE_HANDLE_RE.test(trimmed)) return trimmed.replace(/^@/, '');
 	const url = parseExternalHttpUrl(trimmed);
 	if (!url) return null;
 	const host = url.hostname.toLowerCase().replace(/^(www|m)\./, '');
@@ -102,12 +98,12 @@ async function resolveYouTubeSource(env: CoreEnv, input: string): Promise<Resolv
 		channel = (await fetchYouTubeChannel(env, `id=${channelId}`)) ?? { id: channelId, title: null, avatarUrl: null };
 	} else {
 		const handle = youtubeHandleFromInput(input);
-		if (!handle) throw new Error('Enter a YouTube channel URL, @handle, or channel ID.');
+		if (!handle) throw new Error('Enter a YouTube channel URL or channel ID.');
 		channel = await fetchYouTubeChannel(env, `forHandle=${encodeURIComponent(`@${handle}`)}`);
 		if (!channel) throw new Error(`YouTube channel @${handle} was not found.`);
 	}
 	return {
-		platform: 'youtube',
+		monitorKind: 'feed',
 		handle: `https://www.youtube.com/feeds/videos.xml?channel_id=${channel.id}`,
 		name: channel.title ?? channel.id,
 		siteUrl: `https://www.youtube.com/channel/${channel.id}`,
@@ -115,22 +111,15 @@ async function resolveYouTubeSource(env: CoreEnv, input: string): Promise<Resolv
 	};
 }
 
-export async function resolveMonitoredSource(env: CoreEnv, input: ResolveMonitoredSourceInput): Promise<ResolvedMonitoredSource> {
-	const raw = typeof input.input === 'string' ? input.input.trim() : '';
+export async function resolveMonitoredSource(env: CoreEnv, input: string): Promise<ResolvedMonitoredSource> {
+	const raw = typeof input === 'string' ? input.trim() : '';
 	if (!raw) throw new Error('Source input is required.');
-	switch (input.platform) {
-		case 'rss':
-			return resolveFeedSource(raw);
-		case 'lesswrong': {
-			const candidate = await resolveFeedSource(raw);
-			if (candidate.platform !== 'lesswrong') throw new Error('Enter a LessWrong RSS feed URL.');
-			return candidate;
-		}
-		case 'twitter':
-			return resolveTwitterSource(raw);
-		case 'youtube':
-			return resolveYouTubeSource(env, raw);
-	}
+	const url = parseExternalHttpUrl(raw);
+	const host = url?.hostname.toLowerCase().replace(/^(www|m)\./, '');
+	if (YOUTUBE_CHANNEL_ID_RE.test(raw) || host === 'youtube.com') return resolveYouTubeSource(env, raw);
+	if (host === 'x.com' || host === 'twitter.com' || (!url && parseTwitterUsername(raw))) return resolveTwitterSource(raw);
+	if (url) return resolveFeedSource(raw);
+	throw new Error('Enter a feed URL, YouTube channel URL or ID, or X/Twitter handle.');
 }
 
 export type MonitoredSource = {
@@ -144,11 +133,13 @@ export type MonitoredSource = {
 
 /** Loads enabled sources due to be polled by the requested monitor. */
 export async function loadMonitoredSources(db: CoreDb, monitor: 'feed' | 'twitter'): Promise<MonitoredSource[]> {
-	const platformFilter =
+	const monitorFilter =
 		monitor === 'twitter'
-			? sql`platform = 'twitter'`
-			: sql`platform IN ('rss', 'lesswrong', 'youtube')
-					AND (platform <> 'youtube' OR scraped_at IS NULL OR scraped_at < NOW() - INTERVAL '30 minutes')`;
+			? sql`monitor_kind = 'twitter'`
+			: sql`monitor_kind = 'feed'
+					AND (handle NOT LIKE 'https://www.youtube.com/feeds/videos.xml?channel_id=%'
+						OR scraped_at IS NULL
+						OR scraped_at < NOW() - INTERVAL '30 minutes')`;
 	const result = await db.execute<MonitoredSource>(sql`
 		SELECT
 			id::text AS id,
@@ -159,7 +150,7 @@ export async function loadMonitoredSources(db: CoreDb, monitor: 'feed' | 'twitte
 			created_at AS "createdAt"
 		FROM sources
 		WHERE enabled = true
-		  AND ${platformFilter}
+		  AND ${monitorFilter}
 	`);
 	return result.rows;
 }
