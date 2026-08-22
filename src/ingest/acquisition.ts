@@ -12,10 +12,12 @@ import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
 import { stageYouTubeAcquisition } from './platforms/youtube-acquisition';
 
-async function resolveAcquiredResource(
+type GenericAcquiredResource = Extract<AcquiredResource, { resourcePlatform: null }>;
+
+async function resolveGenericAcquiredResource(
 	env: CoreEnv,
 	step: WorkflowStep,
-	acquired: AcquiredResource,
+	acquired: GenericAcquiredResource,
 	origin: ResourceAcquisitionOrigin,
 	processingId: string,
 	translatePaperUrl: boolean,
@@ -26,36 +28,29 @@ async function resolveAcquiredResource(
 		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
 	}
 
-	if (acquired.resourcePlatform === null) {
-		const canonicalUrl = acquired.canonicalUrl?.trim() || origin.url;
-		const exactPaper = resolveExactPaperInput(origin.url) ?? resolveExactPaperInput(canonicalUrl);
-		const resourceIdentifiers = normalizeResourceIdentifiers([
-			...origin.resourceIdentifiers,
-			...(exactPaper ? paperIdentifiersFromIdentity(exactPaper.identity) : []),
-		]);
-		const paper = await stagePaperProcessing(env, step, {
-			acquiredContent: acquired,
-			canonicalUrl,
-			identifiers: resourceIdentifiers.filter(isPaperIdentifier),
-			originSummary: origin.summary,
-			processingId,
-			publishedDate,
-			translateUrl: translatePaperUrl,
-		});
-		if (!paper.acquiredContent.markdown.trim()) {
-			throw new Error(`Processing ${processingId} has no extractable content`);
-		}
-		return materializeAcquiredResource({ ...paper.acquiredContent, specialization: null }, origin, {
-			canonicalUrl,
-			publishedDate: paper.publishedDate,
-			resourceIdentifiers: normalizeResourceIdentifiers([...paper.identifiers, ...resourceIdentifiers]),
-		});
-	}
-
-	if (!acquired.markdown.trim()) {
+	const canonicalUrl = acquired.canonicalUrl?.trim() || origin.url;
+	const exactPaper = resolveExactPaperInput(origin.url) ?? resolveExactPaperInput(canonicalUrl);
+	const resourceIdentifiers = normalizeResourceIdentifiers([
+		...origin.resourceIdentifiers,
+		...(exactPaper ? paperIdentifiersFromIdentity(exactPaper.identity) : []),
+	]);
+	const paper = await stagePaperProcessing(env, step, {
+		acquiredContent: acquired,
+		canonicalUrl,
+		identifiers: resourceIdentifiers.filter(isPaperIdentifier),
+		originSummary: origin.summary,
+		processingId,
+		publishedDate,
+		translateUrl: translatePaperUrl,
+	});
+	if (!paper.acquiredContent.markdown.trim()) {
 		throw new Error(`Processing ${processingId} has no extractable content`);
 	}
-	return materializeAcquiredResource(acquired, origin, { canonicalUrl: null, publishedDate, resourceIdentifiers: [] });
+	return materializeAcquiredResource({ ...paper.acquiredContent, specialization: null }, origin, {
+		canonicalUrl,
+		publishedDate: paper.publishedDate,
+		resourceIdentifiers: normalizeResourceIdentifiers([...paper.identifiers, ...resourceIdentifiers]),
+	});
 }
 
 export async function stageUrlAcquisition(
@@ -74,48 +69,51 @@ export async function stageUrlAcquisition(
 ): Promise<ResolvedResource> {
 	let acquisitionUrl = normalizeUrl(input.sourceUrl);
 	let detected = detectResourceUrl(acquisitionUrl);
-	let acquired: AcquiredResource | null = null;
 	if (!detected) {
 		const web = await stageWebAcquisition(env, step, { processingId: input.processingId, url: acquisitionUrl });
 		if (!('redirectUrl' in web)) {
-			acquired = { ...web, specialization: null };
-		} else {
-			acquisitionUrl = web.redirectUrl;
-			detected = detectResourceUrl(acquisitionUrl);
-			if (!detected) throw new Error(`Web acquisition ${input.processingId} returned an undetectable platform redirect`);
+			return resolveGenericAcquiredResource(
+				env,
+				step,
+				{ ...web, specialization: null },
+				input.origin,
+				input.processingId,
+				input.translatePaperUrl,
+			);
 		}
+		acquisitionUrl = web.redirectUrl;
+		detected = detectResourceUrl(acquisitionUrl);
+		if (!detected) throw new Error(`Web acquisition ${input.processingId} returned an undetectable platform redirect`);
 	}
-	if (detected) {
-		switch (detected.resourcePlatform) {
-			case 'hackernews':
-				acquired = await stageHackerNewsAcquisition(env, step, { itemId: detected.platformId, processingId: input.processingId });
-				break;
-			case 'lesswrong':
-				acquired = await stageLessWrongAcquisition(step, detected.platformId);
-				break;
-			case 'twitter':
-				acquired = await stageTwitterAcquisition(env, step, {
-					discoverRelatedContent: input.discoverRelatedContent,
-					processingId: input.processingId,
-					...(input.providerSequence ? { providerSequence: input.providerSequence } : {}),
-					tweetId: detected.platformId,
-				});
-				break;
-			case 'youtube':
-				acquired = await stageYouTubeAcquisition(env, step, {
-					monitoredOnly: input.isMonitoredOnly,
-					processingId: input.processingId,
-					sourceAvatarUrl: input.sourceAvatarUrl,
-					videoId: detected.platformId,
-				});
-				break;
-			default:
-				detected.resourcePlatform satisfies never;
-				throw new Error(`Unsupported resource platform for ${input.processingId}`);
-		}
+	switch (detected.resourcePlatform) {
+		case 'hackernews':
+			return stageHackerNewsAcquisition(env, step, {
+				itemId: detected.platformId,
+				origin: input.origin,
+				processingId: input.processingId,
+			});
+		case 'lesswrong':
+			return stageLessWrongAcquisition(step, detected.platformId, input.origin);
+		case 'twitter':
+			return stageTwitterAcquisition(env, step, {
+				discoverRelatedContent: input.discoverRelatedContent,
+				origin: input.origin,
+				processingId: input.processingId,
+				...(input.providerSequence ? { providerSequence: input.providerSequence } : {}),
+				tweetId: detected.platformId,
+			});
+		case 'youtube':
+			return stageYouTubeAcquisition(env, step, {
+				monitoredOnly: input.isMonitoredOnly,
+				origin: input.origin,
+				processingId: input.processingId,
+				sourceAvatarUrl: input.sourceAvatarUrl,
+				videoId: detected.platformId,
+			});
+		default:
+			detected.resourcePlatform satisfies never;
+			throw new Error(`Unsupported resource platform for ${input.processingId}`);
 	}
-	if (!acquired) throw new Error(`Resource platform routing failed for ${input.processingId}`);
-	return resolveAcquiredResource(env, step, acquired, input.origin, input.processingId, input.translatePaperUrl);
 }
 
 export async function stageStoredPdfResource(
@@ -124,5 +122,5 @@ export async function stageStoredPdfResource(
 	resource: StoredPdfAcquisitionInput & ResourceAcquisitionOrigin,
 ): Promise<ResolvedResource> {
 	const acquired = await stageStoredPdfAcquisition(env, step, resource);
-	return resolveAcquiredResource(env, step, acquired, resource, resource.resourceId, false);
+	return resolveGenericAcquiredResource(env, step, acquired, resource, resource.resourceId, false);
 }

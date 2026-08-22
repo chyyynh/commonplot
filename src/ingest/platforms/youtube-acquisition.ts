@@ -4,7 +4,7 @@ import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { literalCreator } from '@core-shared/resource-metadata';
 import type {
 	AcquiredMaterial,
-	AcquiredResource,
+	ResolvedResource,
 	TranscriptSegment,
 	YouTubeChapter,
 	YouTubeHighlights,
@@ -14,6 +14,7 @@ import type {
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
+import { materializePlatformResource, type ResourceAcquisitionOrigin } from './materialize';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
@@ -276,8 +277,14 @@ async function scrapeYouTube(
 export async function stageYouTubeAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { monitoredOnly: boolean; processingId: string; sourceAvatarUrl: string | null; videoId: string },
-): Promise<Extract<AcquiredResource, { resourcePlatform: 'youtube' }>> {
+	input: {
+		monitoredOnly: boolean;
+		origin: ResourceAcquisitionOrigin;
+		processingId: string;
+		sourceAvatarUrl: string | null;
+		videoId: string;
+	},
+): Promise<Extract<ResolvedResource, { resourcePlatform: 'youtube' }>> {
 	const contentStream = await step.do(
 		'acquire-youtube-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
@@ -289,12 +296,15 @@ export async function stageYouTubeAcquisition(
 		.map((segment) => segment.text.trim())
 		.filter(Boolean)
 		.join('\n');
-	return {
-		...material,
-		markdown: transcriptMarkdown || description.trim(),
-		summary: description.substring(0, 500) || null,
-		specialization: await stageYouTubeEnrichment(env, step, transcript, input.videoId, input.processingId),
-	};
+	return materializePlatformResource(
+		{
+			...material,
+			markdown: transcriptMarkdown || description.trim(),
+			summary: description.substring(0, 500) || null,
+			specialization: await stageYouTubeEnrichment(env, step, transcript, input.videoId, input.processingId),
+		},
+		input.origin,
+	);
 }
 
 const YouTubeHighlightSchema = z.object({

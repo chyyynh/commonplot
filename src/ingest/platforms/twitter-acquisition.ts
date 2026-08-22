@@ -2,8 +2,9 @@ import type { WorkflowDelayFunction, WorkflowStep, WorkflowStepConfig } from 'cl
 import { NonRetryableError } from 'cloudflare:workflows';
 import { readTextWithLimit } from '@core-shared/http';
 import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, AcquiredResource } from '@core-shared/types';
+import type { AcquiredMaterial, ResolvedResource } from '@core-shared/types';
 import { extractTweetId } from '@core-shared/url';
+import { materializePlatformResource, type ResourceAcquisitionOrigin } from './materialize';
 import {
 	assertExpectedTwitterThreadPost,
 	buildTwitterAuthorThread,
@@ -454,11 +455,12 @@ export async function stageTwitterAcquisition(
 	step: WorkflowStep,
 	input: {
 		discoverRelatedContent: boolean;
+		origin: ResourceAcquisitionOrigin;
 		processingId: string;
 		providerSequence?: string;
 		tweetId: string;
 	},
-): Promise<Extract<AcquiredResource, { resourcePlatform: 'twitter' }>> {
+): Promise<Extract<ResolvedResource, { resourcePlatform: 'twitter' }>> {
 	const contentStream = await step.do(
 		'acquire-twitter-v1',
 		input.providerSequence ? TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG : TWITTER_ACQUISITION_STEP_CONFIG,
@@ -474,7 +476,10 @@ export async function stageTwitterAcquisition(
 			).body!;
 		},
 	);
-	return { ...(await new Response(contentStream).json<AcquiredMaterial<'twitter'>>()), specialization: null };
+	return materializePlatformResource(
+		{ ...(await new Response(contentStream).json<AcquiredMaterial<'twitter'>>()), specialization: null },
+		input.origin,
+	);
 }
 
 type TwitterThreadSearchResult = {

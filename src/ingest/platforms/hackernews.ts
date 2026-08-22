@@ -2,11 +2,12 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { type ForumKindMetadata, literalCreator } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, AcquiredResource } from '@core-shared/types';
+import type { AcquiredMaterial, ResolvedResource } from '@core-shared/types';
 import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
+import { materializePlatformResource, type ResourceAcquisitionOrigin } from './materialize';
 
 const HN_ALGOLIA_API = 'https://hn.algolia.com/api/v1/items';
 const HN_ITEM_MAX_BYTES = 5 * 1024 * 1024;
@@ -177,8 +178,8 @@ async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquisition> 
 export async function stageHackerNewsAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { itemId: string; processingId: string },
-): Promise<Extract<AcquiredResource, { resourcePlatform: 'hackernews' }>> {
+	input: { itemId: string; origin: ResourceAcquisitionOrigin; processingId: string },
+): Promise<Extract<ResolvedResource, { resourcePlatform: 'hackernews' }>> {
 	const contentStream = await step.do(
 		'acquire-hackernews-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
@@ -201,11 +202,14 @@ export async function stageHackerNewsAcquisition(
 			return null;
 		});
 	const { discussion: _discussion, ...resource } = acquired;
-	return {
-		...resource,
-		...(annotation ? { markdown: applyHackerNewsAnnotation(resource.markdown, annotation) } : {}),
-		specialization: null,
-	};
+	return materializePlatformResource(
+		{
+			...resource,
+			...(annotation ? { markdown: applyHackerNewsAnnotation(resource.markdown, annotation) } : {}),
+			specialization: null,
+		},
+		input.origin,
+	);
 }
 
 function collectAllComments(children: HnComment[]): HnCollectedComment[] {

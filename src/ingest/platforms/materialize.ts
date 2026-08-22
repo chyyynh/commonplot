@@ -15,6 +15,7 @@ export type ResourceAcquisitionOrigin = Pick<
 >;
 
 type MaterializedAcquisition<T extends AcquiredResource> = Extract<ResolvedResource, { resourcePlatform: T['resourcePlatform'] }>;
+type PlatformAcquiredResource = Exclude<AcquiredResource, { resourcePlatform: null }>;
 
 export function materializeAcquiredResource<const T extends AcquiredResource>(
 	acquired: T,
@@ -59,6 +60,18 @@ export function materializeAcquiredResource<const T extends AcquiredResource>(
 		subject: resolvedSubjectInput(acquired.subjectUrl?.trim()),
 		specialization: acquired.specialization,
 	} as MaterializedAcquisition<T>;
+}
+
+export function materializePlatformResource<const T extends PlatformAcquiredResource>(
+	acquired: T,
+	origin: ResourceAcquisitionOrigin,
+): MaterializedAcquisition<T> {
+	let publishedDate = origin.publishedDate;
+	if (acquired.publishedDate?.trim()) {
+		const parsed = new Date(acquired.publishedDate);
+		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
+	}
+	return materializeAcquiredResource(acquired, origin, { canonicalUrl: null, publishedDate, resourceIdentifiers: [] });
 }
 
 function resolvedSubjectInput(subjectUrl: string | null | undefined): ResolvedResourceSubject | null {
