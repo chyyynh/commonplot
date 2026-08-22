@@ -55,10 +55,6 @@ export function parseResourceProviderSequence(value: unknown): bigint | null {
 	return sequence <= 9_223_372_036_854_775_807n ? sequence : null;
 }
 
-export const DEFAULT_RESOURCE_LANG = 'en';
-
-export const ZH_HANT_RESOURCE_LANG = 'zh-Hant';
-
 const RESOURCE_LANG_MAX_LENGTH = 35;
 
 export function canonicalizeResourceLang(value: unknown): string {
@@ -84,10 +80,6 @@ export function canonicalizeOptionalResourceLang(value: unknown): string | null 
 		return null;
 	}
 }
-
-export const RESOURCE_CATEGORIES = ['AI', 'Tech', 'Finance', 'Research', 'Business', 'Other'] as const;
-
-export type ResourceCategory = (typeof RESOURCE_CATEGORIES)[number];
 
 const RESOURCE_CREATOR_ROLES = ['author', 'editor', 'submitter', 'channel'] as const;
 const optionalHttpUrl = z.url().refine((value) => parseExternalHttpUrl(value) !== null);
@@ -172,9 +164,7 @@ export type ResourceKindMetadataByKind = Readonly<{
 
 export type ResourceKindMetadata = ResourceKindMetadataByKind[keyof ResourceKindMetadataByKind];
 
-export function parseResourceCreators(value: unknown): ResourceCreator[] {
-	return z.array(ResourceCreatorSchema).parse(value);
-}
+export const ResourceCreatorsSchema = z.array(ResourceCreatorSchema);
 
 export function parseStoredResourceKindMetadata(kind: ResourceKind, value: unknown): ResourceKindMetadata | null {
 	switch (kind) {

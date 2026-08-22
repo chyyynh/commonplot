@@ -1,11 +1,12 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import type {
-	PersistResolvedResourceInput,
-	PersistResolvedResourceResult,
-	PersistResolvedResourceTarget,
+import {
+	type PersistResolvedResourceInput,
+	type PersistResolvedResourceResult,
+	type PersistResolvedResourceTarget,
+	type ResourceCategory,
+	ResourceCategorySchema,
 } from '@app-domain/resource-graph-contracts';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/image-mapping';
-import { DEFAULT_RESOURCE_LANG, RESOURCE_CATEGORIES, type ResourceCategory } from '@core-shared/resource';
 import { connectCoreDb } from '@db/connection';
 import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
 import type { ResolvedResource } from '@ingest/platforms/materialize';
@@ -43,7 +44,7 @@ const ResourceClassificationSchema = z.object({
 			type: z.enum(ENTITY_TYPES),
 		}),
 	),
-	category: z.enum(RESOURCE_CATEGORIES),
+	category: ResourceCategorySchema,
 });
 
 const RESOURCE_CLASSIFICATION_SYSTEM_PROMPT = `你是專業的新聞分類和實體分析師。請只輸出符合 schema 的分類資料。
@@ -161,7 +162,7 @@ async function resolveProcessingCall(
 ): Promise<ResolvedProcessingCall> {
 	if (target.kind === 'draft') {
 		const origin = {
-			originalLang: target.sourceHints?.originalLang ?? DEFAULT_RESOURCE_LANG,
+			originalLang: target.sourceHints?.originalLang ?? 'en',
 			summary: target.sourceHints?.summary ?? null,
 			url: target.url,
 			publishedDate: target.sourceHints?.publishedDate ?? null,

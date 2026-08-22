@@ -7,11 +7,11 @@ import {
 	isContentResourceIdentity,
 	isContentResourceKind,
 	normalizeResourceIdentifiers,
-	parseResourceCreators,
 	parseResourceIdentity,
 	parseStoredResourceKindMetadata,
 	RESOURCE_TYPES,
 	type ResourceCreator,
+	ResourceCreatorsSchema,
 	type ResourceIdentifier,
 	type ResourceIdentifierScheme,
 	type ResourceIdentity,
@@ -370,7 +370,7 @@ function isResourceIdentifierScheme(value: unknown): value is ResourceIdentifier
 
 function storedResourceCreatorsValue(value: unknown, resourceId: string): ResourceCreator[] {
 	try {
-		return parseResourceCreators(value);
+		return ResourceCreatorsSchema.parse(value);
 	} catch (error) {
 		throw new Error(`Invalid creators for ${resourceId}: ${error instanceof Error ? error.message : String(error)}`);
 	}

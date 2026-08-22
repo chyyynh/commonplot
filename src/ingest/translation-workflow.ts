@@ -1,6 +1,6 @@
 // Durable translation execution; resource processing only enqueues this Workflow.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { canonicalizeResourceLang, parseResourceIdentity, type ResourceIdentity, ZH_HANT_RESOURCE_LANG } from '@core-shared/resource';
+import { canonicalizeResourceLang, parseResourceIdentity, type ResourceIdentity } from '@core-shared/resource';
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { generateText, Output } from 'ai';
 import { sql } from 'drizzle-orm';
@@ -124,7 +124,7 @@ function planZhHantTranslation(resource: ResourceTranslationInput): ZhHantTransl
 		(resource.fileType === 'application/pdf' && resource.resourcePlatform === null) ||
 		isBlank(resource.title) ||
 		isBlank(resource.content) ||
-		resource.originalLang === ZH_HANT_RESOURCE_LANG ||
+		resource.originalLang === 'zh-Hant' ||
 		translation?.source === 'human'
 	) {
 		return { metadata: null, content: null };
@@ -332,7 +332,7 @@ async function loadResourceTranslationInput(
 		 AND original.lang = resource.original_lang
 		LEFT JOIN resource_translations zh_hant
 		  ON zh_hant.resource_id = resource.id
-		 AND zh_hant.lang = ${ZH_HANT_RESOURCE_LANG}
+		 AND zh_hant.lang = 'zh-Hant'
 		WHERE resource.id = ${resourceId}::uuid
 		  AND resource.scope = 'corpus'
 		LIMIT 1
