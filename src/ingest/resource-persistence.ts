@@ -12,7 +12,6 @@ import type { CoreDb } from '@db/connection';
 import { toStoredResourceEntities } from '@entities/normalize';
 import { sql } from 'drizzle-orm';
 import type { ResourceClassificationResult } from './domain/resource-classification';
-import type { ResolvedSubjectInput } from './resource-resolver';
 
 export type PersistProcessedTarget =
 	| PersistResolvedResourceTarget
@@ -21,9 +20,7 @@ export type PersistProcessedTarget =
 type PersistProcessedInput = {
 	classification: ResourceClassificationResult;
 	processingId: string;
-	previewImageUrl: string | null;
 	resource: ResolvedResource;
-	subject: ResolvedSubjectInput | null;
 	target: PersistProcessedTarget;
 };
 
@@ -116,7 +113,7 @@ function resolvedResourceMutation(
 	const resource = input.resource;
 	const identity = parseResourceIdentity(resource.kind, resource.resourcePlatform);
 	if (!identity) throw new Error(`Resource processing ${input.processingId} resolved to an invalid identity`);
-	const ogImageUrl = input.previewImageUrl?.trim() || null;
+	const ogImageUrl = resource.previewImageUrl;
 	const media = hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kindMetadata, ogImageUrl }, hostedImages);
 	const youtube =
 		resource.specialization?.kind === 'youtube'
@@ -137,10 +134,10 @@ function resolvedResourceMutation(
 		tags: input.classification.tags ?? resource.tags,
 		category: input.classification.category,
 		entities: toStoredResourceEntities(input.classification.entities, resource.resourcePlatform, resource.source, resource.creators),
-		subjectReference: input.subject
+		subjectReference: resource.subject
 			? {
-					identifiers: input.subject.identifiers,
-					normalizedUrl: input.subject.normalizedUrl,
+					identifiers: resource.subject.identifiers,
+					normalizedUrl: resource.subject.normalizedUrl,
 				}
 			: null,
 		url: resource.url,

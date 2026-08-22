@@ -11,7 +11,7 @@ import {
 	canonicalizeResourceLang,
 	resourceIdentityForDetectedPlatform,
 } from '../shared/resource-types.ts';
-import type { AcquiredMaterial, MaterializedResource } from '../shared/types.ts';
+import type { AcquiredMaterial, MaterializedResource, ResolvedResourceSubject } from '../shared/types.ts';
 import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../shared/url.ts';
 
 type ExactPlatformLocator = Readonly<{
@@ -76,16 +76,12 @@ export function materializeAcquiredResource(
 		resourceIdentifiers: identifiers,
 		fileType: acquired.fileType,
 		normalizedUrl: url ?? origin.normalizedUrl,
+		previewImageUrl: acquired.previewImageUrl?.trim() || null,
+		subject: resolvedSubjectInput(acquired.subjectUrl?.trim()),
 	};
 }
 
-export type ResolvedSubjectInput = Readonly<{
-	identifiers: ResourceIdentifier[];
-	normalizedUrl: string;
-	url: string;
-}>;
-
-export function resolvedSubjectInput(subjectUrl: string | null | undefined): ResolvedSubjectInput | null {
+export function resolvedSubjectInput(subjectUrl: string | null | undefined): ResolvedResourceSubject | null {
 	if (!subjectUrl) return null;
 	const url = normalizeUrl(subjectUrl);
 	const paper = resolveExactPaperInput(url);

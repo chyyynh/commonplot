@@ -2,6 +2,12 @@ import type { ContentResourceIdentity, ResourcePlatform } from '@core-shared/res
 import type { ResourceIdentifier } from './resource-identifiers';
 import type { PaperRelationSnapshot, ResourceCreator, ResourceKindMetadata } from './resource-metadata';
 
+export type ResolvedResourceSubject = Readonly<{
+	identifiers: ResourceIdentifier[];
+	normalizedUrl: string;
+	url: string;
+}>;
+
 type MaterializedResourceFields = {
 	originalLang: string;
 	title: string;
@@ -18,6 +24,8 @@ type MaterializedResourceFields = {
 	resourceIdentifiers: ResourceIdentifier[];
 	fileType: string | null;
 	normalizedUrl: string | null;
+	previewImageUrl: string | null;
+	subject: ResolvedResourceSubject | null;
 };
 
 export type MaterializedResource = ContentResourceIdentity & MaterializedResourceFields;

@@ -31,7 +31,7 @@ import { acquireStoredPdf } from './platforms/pdf';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import { markStoredBlobProcessingFailed, type PersistProcessedTarget, persistProcessedResource } from './resource-persistence';
-import { exactPlatformLocator, materializeAcquiredResource, type ResolvedSubjectInput, resolvedSubjectInput } from './resource-resolver';
+import { exactPlatformLocator, materializeAcquiredResource } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 
 class ResourceProcessingRejectedError extends Error {}
@@ -126,12 +126,6 @@ async function stageSavedUrlAcquisition(
 	}
 	return acquisition.content;
 }
-
-type PreparedResource = {
-	previewImageUrl: string | null;
-	resource: ResolvedResource;
-	subject: ResolvedSubjectInput | null;
-};
 
 type ResourceMaterializationSeed = Pick<
 	MaterializedResource,
@@ -281,7 +275,7 @@ function resolveProcessingIdentity(call: ResolvedProcessingCall): {
 	};
 }
 
-async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, call: ResolvedProcessingCall): Promise<PreparedResource> {
+async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, call: ResolvedProcessingCall): Promise<ResolvedResource> {
 	const { acquiredContent: initialAcquiredContent, origin, processingId } = call;
 	const { canonicalUrl, detected, resourceIdentifiers } = resolveProcessingIdentity(call);
 	let publishedDate = origin.publishedDate;
@@ -314,12 +308,7 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, ca
 		throw new ResourceProcessingRejectedError(`Processing ${processingId} has no extractable content`);
 	}
 	resource = applyPaperEnrichment(resource, paper.metadata);
-	const resolvedResource = await stagePlatformEnrichment(env, step, acquiredContent, resource, processingId);
-	return {
-		previewImageUrl: acquiredContent.previewImageUrl?.trim() || null,
-		resource: resolvedResource,
-		subject: resolvedSubjectInput(acquiredContent.subjectUrl?.trim()),
-	};
+	return stagePlatformEnrichment(env, step, acquiredContent, resource, processingId);
 }
 
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingWorkflowPayload> {
@@ -328,8 +317,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
 		try {
 			const call = await resolveProcessingCall(this.env, step, target, event.instanceId);
-			const prepared = await prepareResourceForProcessing(this.env, step, call);
-			const { previewImageUrl, resource, subject } = prepared;
+			const resource = await prepareResourceForProcessing(this.env, step, call);
 
 			console.info({
 				tag: 'WORKFLOW',
@@ -344,7 +332,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				imageSources = resourceImageSourceUrls({
 					creators: resource.creators,
 					kindMetadata: resource.kindMetadata,
-					ogImageUrl: previewImageUrl,
+					ogImageUrl: resource.previewImageUrl,
 				});
 			} catch (error) {
 				throw new ResourceProcessingRejectedError(
@@ -360,12 +348,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const persistence = await step.do(
 				'persist-resolved-resource-v1',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() =>
-					persistProcessedResource(
-						this.env,
-						{ classification, processingId, previewImageUrl, resource, subject, target: call.persistenceTarget },
-						hostedImages,
-					),
+				() => persistProcessedResource(this.env, { classification, processingId, resource, target: call.persistenceTarget }, hostedImages),
 			);
 			if (!persistence.persisted) {
 				return { status: 'superseded', resourceId: persistence.resourceId } as const;
@@ -387,6 +370,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					),
 				);
 			}
+			const subject = resource.subject;
 			if (subject && !persistence.subjectAttached) {
 				followUps.push(
 					step.do('enqueue-resolved-subject-child-v1', WORKFLOW_ENQUEUE_STEP_CONFIG, () =>
