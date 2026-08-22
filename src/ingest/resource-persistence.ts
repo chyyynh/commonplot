@@ -5,6 +5,8 @@ import type {
 	ResourceDraftAdmission,
 	YouTubeSpecializationMutation,
 } from '@app-domain/resource-graph-contracts';
+import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
+import { isPaperIdentifier } from '@core-shared/resource-identifiers';
 import { type HostedResourceImage, hostedResourceImageFields } from '@core-shared/resource-image-mapping';
 import { parseResourceIdentity } from '@core-shared/resource-types';
 import type { ResolvedResource } from '@core-shared/types';
@@ -14,16 +16,18 @@ import { sql } from 'drizzle-orm';
 import type { ResourceClassificationResult } from './domain/resource-classification';
 import type { ResolvedSubjectInput } from './resource-resolver';
 
+export type PersistProcessedTarget =
+	| { kind: 'draft'; admission: ResourceDraftAdmission; providerSequence: string | null }
+	| { kind: 'existing'; resourceId: string; expectedSourceRevision: string | null; storageKey: string | null }
+	| { kind: 'storedPdf'; resourceId: string; expectedSourceRevision: string | null; storageKey: string };
+
 type PersistProcessedInput = {
 	classification: ResourceClassificationResult;
 	processingId: string;
 	previewImageUrl: string | null;
 	resource: ResolvedResource;
 	subject: ResolvedSubjectInput | null;
-	target:
-		| { kind: 'draft'; admission: ResourceDraftAdmission; providerSequence: string | null }
-		| { kind: 'existing'; resourceId: string; expectedSourceRevision: string | null; storageKey: string | null }
-		| { kind: 'privatePaper'; canonicalUrl: string; fileResourceId: string; expectedFileRevision: string | null };
+	target: PersistProcessedTarget;
 	youtube: YouTubeSpecializationMutation | null;
 };
 
@@ -82,16 +86,26 @@ export async function persistProcessedResource(
 			};
 			return env.DOMAIN.persistResolvedResourceGraph(storedMutation);
 		}
-		case 'privatePaper': {
+		case 'storedPdf': {
+			if (input.resource.kind !== 'paper') {
+				return env.DOMAIN.persistResolvedResourceGraph({
+					...mutation,
+					resourceId: input.target.resourceId,
+					expectedSourceRevision: input.target.expectedSourceRevision,
+				});
+			}
+			const paperIdentity = paperIdentityFromIdentifiers(input.resource.resourceIdentifiers.filter(isPaperIdentifier));
+			if (!paperIdentity) throw new Error(`Private paper processing ${input.processingId} has no canonical identity`);
+			const canonicalUrl = canonicalPaperUrl(paperIdentity);
 			const draftMutation: PersistResolvedResourceDraftInput = {
 				...mutation,
 				admission: {
 					kind: 'userFilePaper',
-					fileResourceId: input.target.fileResourceId,
-					expectedFileRevision: input.target.expectedFileRevision,
+					fileResourceId: input.target.resourceId,
+					expectedFileRevision: input.target.expectedSourceRevision,
 				},
-				url: input.target.canonicalUrl,
-				normalizedUrl: input.target.canonicalUrl,
+				url: canonicalUrl,
+				normalizedUrl: canonicalUrl,
 				providerSequence: null,
 				storageKey: null,
 			};
@@ -141,7 +155,8 @@ function resolvedResourceMutation(
 			: null,
 		url: resource.url,
 		normalizedUrl: resource.normalizedUrl ?? resource.url,
-		storageKey: input.target.kind === 'existing' ? input.target.storageKey : null,
+		storageKey:
+			input.target.kind === 'existing' || (input.target.kind === 'storedPdf' && resource.kind !== 'paper') ? input.target.storageKey : null,
 		fileType: resource.fileType ?? null,
 		publishedDate: resource.publishedDate,
 		ogImageUrl: media.ogImageUrl,

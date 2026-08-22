@@ -1,14 +1,7 @@
 // Provider-independent bibliographic resolution followed by OpenAlex enrichment.
 
 import type { WorkflowDynamicDelayContext, WorkflowSleepDuration, WorkflowStep } from 'cloudflare:workers';
-import {
-	canonicalPaperUrl,
-	type PaperIdentifier,
-	paperIdentityFromIdentifiers,
-	paperIdentityFromText,
-	resolveExactPaperInput,
-} from '@core-shared/paper-identity';
-import { isPaperIdentifier } from '@core-shared/resource-identifiers';
+import { type PaperIdentifier, paperIdentityFromText, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { literalCreator, type PaperKindMetadata } from '@core-shared/resource-metadata';
 import type { PaperMetadata, ResolvedResource } from '@core-shared/types';
 import { resolveBibliographicIdentifiers } from './bibliographic-resolver';
@@ -152,10 +145,4 @@ export async function stagePaperEnrichment(
 			metadata: null,
 		};
 	}
-}
-
-export function canonicalPrivatePaperUrl(resource: ResolvedResource, processingId: string): string {
-	const identity = paperIdentityFromIdentifiers(resource.resourceIdentifiers.filter(isPaperIdentifier));
-	if (!identity) throw new Error(`Private paper processing ${processingId} has no canonical identity`);
-	return canonicalPaperUrl(identity);
 }
