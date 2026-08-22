@@ -3,14 +3,14 @@ import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/
 import { DEFAULT_RESOURCE_LANG } from '@core-shared/resource-types';
 import type { ResolvedResource } from '@core-shared/types';
 import { connectCoreDb } from '@db/connection';
-import { loadResourceReacquisitionInput, loadStoredPdfInput } from '@ingest/stored-resource';
+import { loadResourceReacquisitionInput, loadStoredPdfInput, markStoredBlobProcessingFailed } from '@ingest/stored-resource';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
 import { stageStoredPdfResource, stageUrlAcquisition } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
-import { markStoredBlobProcessingFailed, type PersistProcessedTarget, persistProcessedResource } from './resource-persistence';
+import { type PersistProcessedTarget, persistProcessedResource } from './resource-persistence';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 
 const WORKFLOW_ENQUEUE_STEP_CONFIG = {
@@ -98,14 +98,7 @@ async function resolveProcessingCall(
 				},
 			},
 		);
-		return {
-			resource: await stageStoredPdfResource(env, step, storedPdf),
-			persistenceTarget: {
-				kind: 'storedPdf',
-				resourceId: target.resourceId,
-				storageKey: storedPdf.storageKey,
-			},
-		};
+		return stageStoredPdfResource(env, step, storedPdf);
 	}
 
 	const snapshot = await step.do(
@@ -160,7 +153,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const persistence = await step.do(
 			'persist-resolved-resource-v1',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			() => persistProcessedResource(this.env, { classification, processingId, resource, target: call.persistenceTarget }, hostedImages),
+			() => persistProcessedResource(this.env, { classification, resource, target: call.persistenceTarget }, hostedImages),
 		);
 		if (!persistence.persisted) {
 			return { resourceId: persistence.resourceId };

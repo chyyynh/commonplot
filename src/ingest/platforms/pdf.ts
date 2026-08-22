@@ -1,8 +1,11 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
+import type { PersistResolvedResourceTarget } from '@app-domain/resource-graph-contracts';
 import { readBytesWithLimit } from '@core-shared/http';
+import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
+import { isPaperIdentifier } from '@core-shared/resource-identifiers';
 import type { ResourceCreator, ResourceKindMetadata } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, AcquiredResource } from '@core-shared/types';
+import type { AcquiredMaterial, AcquiredResource, ResolvedResource } from '@core-shared/types';
 import { initSync, LiteParse } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
 
@@ -23,6 +26,11 @@ export type StoredPdfAcquisitionInput = {
 	storageKey: string;
 	summary: string | null;
 	title: string;
+};
+
+export type StoredPdfProcessingResult = {
+	resource: ResolvedResource;
+	persistenceTarget: PersistResolvedResourceTarget;
 };
 
 function extractedTextChars(markdown: string): number {
@@ -104,4 +112,27 @@ export async function stageStoredPdfAcquisition(
 		async () => Response.json(await acquireStoredPdf(env, resource)).body!,
 	);
 	return { ...(await new Response(contentStream).json<AcquiredMaterial<null>>()), specialization: null };
+}
+
+export function storedPdfProcessingResult(
+	resource: ResolvedResource,
+	input: { resourceId: string; storageKey: string },
+): StoredPdfProcessingResult {
+	if (resource.kind !== 'paper') {
+		return {
+			resource,
+			persistenceTarget: { kind: 'existing', resourceId: input.resourceId, storageKey: input.storageKey },
+		};
+	}
+	const identity = paperIdentityFromIdentifiers(resource.resourceIdentifiers.filter(isPaperIdentifier));
+	if (!identity) throw new Error(`Private paper processing ${input.resourceId} has no canonical identity`);
+	const url = canonicalPaperUrl(identity);
+	return {
+		resource: { ...resource, url, normalizedUrl: url },
+		persistenceTarget: {
+			kind: 'draft',
+			admission: { kind: 'userFilePaper', fileResourceId: input.resourceId },
+			providerSequence: null,
+		},
+	};
 }

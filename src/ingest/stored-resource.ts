@@ -8,6 +8,7 @@ import {
 	type ResourceKindMetadata,
 } from '@core-shared/resource-metadata';
 import {
+	CONTENT_RESOURCE_KINDS,
 	type ContentResourceIdentity,
 	canonicalizeResourceLang,
 	isContentResourceIdentity,
@@ -18,7 +19,14 @@ import {
 import { parseExternalHttpUrl } from '@core-shared/url';
 import type { CoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
-import { sql } from 'drizzle-orm';
+import { inArray, sql } from 'drizzle-orm';
+import { z } from 'zod';
+import { enqueueOrRestartWorkflow } from '../workflow-control';
+
+const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
+const PENDING_BLOB_RECONCILE_LIMIT = 50;
+const PENDING_BLOB_RECONCILE_CONCURRENCY = 10;
+const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v9';
 
 type StoredResourceBase = {
 	resourceId: string;
@@ -82,6 +90,100 @@ type ResourceReacquisitionRow = StoredResourceBaseRow & {
 	source_avatar_url: string | null;
 	translate_paper_url: boolean;
 };
+
+export async function enqueueProcessing(env: CoreEnv, resourceId: string): Promise<string> {
+	const id = z.uuid().parse(resourceId);
+	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `${STORED_RESOURCE_WORKFLOW_REVISION}-${id}`, {
+		target: { kind: 'storedBlob', resourceId: id },
+	});
+}
+
+export async function enqueueResourceResync(env: CoreEnv, resourceId: string): Promise<string> {
+	const id = z.uuid().parse(resourceId);
+	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
+		id: `resource-resync-v3-${id}-${crypto.randomUUID()}`,
+		params: { target: { kind: 'reacquire', resourceId: id } },
+	});
+	return instance.id;
+}
+
+export async function markStoredBlobProcessingFailed(db: CoreDb, resourceId: string): Promise<void> {
+	await db.execute(sql`
+		UPDATE resources AS resource
+		SET enrichment_status = 'failed',
+		    updated_at = NOW()
+		WHERE resource.id = ${resourceId}::uuid
+		  AND resource.enrichment_status <> 'enriched'
+		  AND resource.scope = 'private'
+		  AND resource.storage_key IS NOT NULL
+		  AND EXISTS (
+		    SELECT 1
+		    FROM user_files
+		    WHERE user_files.resource_id = resource.id
+		  )
+	`);
+}
+
+async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limit: number): Promise<Array<{ resourceId: string }>> {
+	const claimed = await db.execute<{ resource_id: string }>(sql`
+		WITH candidates AS (
+			SELECT id
+			FROM resources
+			WHERE enrichment_status = 'pending'
+			  AND scope = 'private'
+			  AND storage_key IS NOT NULL
+			  AND EXISTS (
+			    SELECT 1
+			    FROM user_files
+			    WHERE user_files.resource_id = resources.id
+			  )
+			  AND updated_at < ${olderThan}
+			  AND ${inArray(sql`kind`, CONTENT_RESOURCE_KINDS)}
+			ORDER BY updated_at ASC, id ASC
+			FOR UPDATE SKIP LOCKED
+			LIMIT ${limit}
+		)
+		UPDATE resources AS resource
+		SET updated_at = NOW()
+		FROM candidates
+		WHERE resource.id = candidates.id
+		RETURNING resource.id::text AS resource_id
+	`);
+	return claimed.rows.map(({ resource_id }) => ({ resourceId: resource_id }));
+}
+
+/** Repairs only interrupted DB-to-Workflow handoffs for record-first app-owned blobs. */
+export async function reconcilePendingBlobProcessing(env: CoreEnv, db: CoreDb): Promise<void> {
+	const admissions = await claimStalePendingBlobAdmissions(db, new Date(Date.now() - PENDING_BLOB_GRACE_MS), PENDING_BLOB_RECONCILE_LIMIT);
+	if (!admissions.length) return;
+
+	let reconciled = 0;
+	let failed = 0;
+	for (let offset = 0; offset < admissions.length; offset += PENDING_BLOB_RECONCILE_CONCURRENCY) {
+		const batch = admissions.slice(offset, offset + PENDING_BLOB_RECONCILE_CONCURRENCY);
+		const results = await Promise.allSettled(batch.map(({ resourceId }) => enqueueProcessing(env, resourceId)));
+		for (const [index, result] of results.entries()) {
+			if (result.status === 'fulfilled') {
+				reconciled++;
+				continue;
+			}
+			failed++;
+			console.error({
+				tag: 'RESOURCE_WORKFLOW',
+				event: 'pending_blob_reconciliation_failed',
+				resource_id: batch[index]?.resourceId,
+				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+			});
+		}
+	}
+	console.info({
+		tag: 'RESOURCE_WORKFLOW',
+		event: 'pending_blob_reconciliation_completed',
+		attempted: admissions.length,
+		reconciled,
+		failed,
+	});
+}
 
 function storedResourceIdentity(row: StoredResourceIdentityRow): ContentResourceIdentity {
 	const stored = parseResourceIdentity(row.kind, row.resource_platform);

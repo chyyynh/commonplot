@@ -3,79 +3,25 @@ import type {
 	PersistResolvedResourceResult,
 	PersistResolvedResourceTarget,
 } from '@app-domain/resource-graph-contracts';
-import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
-import { isPaperIdentifier } from '@core-shared/resource-identifiers';
 import { type HostedResourceImage, hostedResourceImageFields } from '@core-shared/resource-image-mapping';
 import type { ResolvedResource } from '@core-shared/types';
-import type { CoreDb } from '@db/connection';
 import { toStoredResourceEntities } from '@entities/normalize';
-import { sql } from 'drizzle-orm';
 import type { ResourceClassificationResult } from './domain/resource-classification';
 
-export type PersistProcessedTarget = PersistResolvedResourceTarget | { kind: 'storedPdf'; resourceId: string; storageKey: string };
+export type PersistProcessedTarget = PersistResolvedResourceTarget;
 
 type PersistProcessedInput = {
 	classification: ResourceClassificationResult;
-	processingId: string;
 	resource: ResolvedResource;
 	target: PersistProcessedTarget;
 };
-
-export async function markStoredBlobProcessingFailed(db: CoreDb, resourceId: string): Promise<void> {
-	await db.execute(sql`
-		UPDATE resources AS resource
-		SET enrichment_status = 'failed',
-		    updated_at = NOW()
-		WHERE resource.id = ${resourceId}::uuid
-		  AND resource.enrichment_status <> 'enriched'
-		  AND resource.scope = 'private'
-		  AND resource.storage_key IS NOT NULL
-		  AND EXISTS (
-		    SELECT 1
-		    FROM user_files
-		    WHERE user_files.resource_id = resource.id
-		  )
-	`);
-}
 
 export async function persistProcessedResource(
 	env: CoreEnv,
 	input: PersistProcessedInput,
 	hostedImages: readonly HostedResourceImage[],
 ): Promise<PersistResolvedResourceResult> {
-	const mutation = resolvedResourceMutation(input, hostedImages);
-	let resolvedMutation = mutation;
-	let target: PersistResolvedResourceTarget;
-	switch (input.target.kind) {
-		case 'existing':
-		case 'draft':
-			target = input.target;
-			break;
-		case 'storedPdf': {
-			if (input.resource.kind !== 'paper') {
-				target = {
-					kind: 'existing',
-					resourceId: input.target.resourceId,
-					storageKey: input.target.storageKey,
-				};
-				break;
-			}
-			const paperIdentity = paperIdentityFromIdentifiers(input.resource.resourceIdentifiers.filter(isPaperIdentifier));
-			if (!paperIdentity) throw new Error(`Private paper processing ${input.processingId} has no canonical identity`);
-			target = {
-				kind: 'draft',
-				admission: {
-					kind: 'userFilePaper',
-					fileResourceId: input.target.resourceId,
-				},
-				providerSequence: null,
-			};
-			const url = canonicalPaperUrl(paperIdentity);
-			resolvedMutation = { ...mutation, url, normalizedUrl: url };
-			break;
-		}
-	}
-	return env.DOMAIN.persistResolvedResource({ ...resolvedMutation, target });
+	return env.DOMAIN.persistResolvedResource({ ...resolvedResourceMutation(input, hostedImages), target: input.target });
 }
 
 function resolvedResourceMutation(

@@ -7,7 +7,12 @@ import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
 import { materializeAcquiredResource, type ResourceAcquisitionOrigin } from './platforms/materialize';
 import { stagePaperProcessing } from './platforms/paper';
-import { type StoredPdfAcquisitionInput, stageStoredPdfAcquisition } from './platforms/pdf';
+import {
+	type StoredPdfAcquisitionInput,
+	type StoredPdfProcessingResult,
+	stageStoredPdfAcquisition,
+	storedPdfProcessingResult,
+} from './platforms/pdf';
 import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
 import { stageYouTubeAcquisition } from './platforms/youtube-acquisition';
@@ -119,8 +124,11 @@ export async function stageUrlAcquisition(
 export async function stageStoredPdfResource(
 	env: CoreEnv,
 	step: WorkflowStep,
-	resource: StoredPdfAcquisitionInput & ResourceAcquisitionOrigin,
-): Promise<ResolvedResource> {
+	resource: StoredPdfAcquisitionInput & ResourceAcquisitionOrigin & { storageKey: string },
+): Promise<StoredPdfProcessingResult> {
 	const acquired = await stageStoredPdfAcquisition(env, step, resource);
-	return resolveGenericAcquiredResource(env, step, acquired, resource, resource.resourceId, false);
+	return storedPdfProcessingResult(
+		await resolveGenericAcquiredResource(env, step, acquired, resource, resource.resourceId, false),
+		resource,
+	);
 }

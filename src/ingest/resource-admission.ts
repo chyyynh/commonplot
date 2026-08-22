@@ -1,9 +1,7 @@
 import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
-import { CONTENT_RESOURCE_KINDS, canonicalizeOptionalResourceLang, parseResourceProviderSequence } from '@core-shared/resource-types';
+import { canonicalizeOptionalResourceLang, parseResourceProviderSequence } from '@core-shared/resource-types';
 import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
-import type { CoreDb } from '@db/connection';
-import { inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { enqueueOrRestartWorkflow } from '../workflow-control';
 
@@ -109,22 +107,8 @@ export type AppResourceDraftInput = Readonly<{
 
 type SourceResourceAdmissionOutcome = 'created' | 'existing';
 
-const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
-const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v9';
 const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v4';
-const PENDING_BLOB_RECONCILE_LIMIT = 50;
-const PENDING_BLOB_RECONCILE_CONCURRENCY = 10;
 const WORKFLOW_CREATE_BATCH_SIZE = 100;
-
-export async function enqueueProcessing(env: CoreEnv, resourceId: string): Promise<string> {
-	const id = z.uuid().parse(resourceId);
-	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `${STORED_RESOURCE_WORKFLOW_REVISION}-${id}`, {
-		target: {
-			kind: 'storedBlob',
-			resourceId: id,
-		},
-	});
-}
 
 export async function enqueueAppResourceDraft(env: CoreEnv, input: AppResourceDraftInput): Promise<string> {
 	if (!/^app-draft-v1-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.instanceId)) {
@@ -201,74 +185,4 @@ export async function admitDiscoveredSourceResources(
 		for (const instance of created) createdIds.add(instance.id);
 	}
 	return instances.map(({ id }) => (createdIds.has(id) ? 'created' : 'existing'));
-}
-
-async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limit: number): Promise<Array<{ resourceId: string }>> {
-	const claimed = await db.execute<{ resource_id: string }>(sql`
-		WITH candidates AS (
-			SELECT id
-			FROM resources
-			WHERE enrichment_status = 'pending'
-			  AND scope = 'private'
-			  AND storage_key IS NOT NULL
-			  AND EXISTS (
-			    SELECT 1
-			    FROM user_files
-			    WHERE user_files.resource_id = resources.id
-			  )
-			  AND updated_at < ${olderThan}
-			  AND ${inArray(sql`kind`, CONTENT_RESOURCE_KINDS)}
-			ORDER BY updated_at ASC, id ASC
-			FOR UPDATE SKIP LOCKED
-			LIMIT ${limit}
-		)
-		UPDATE resources AS resource
-		SET updated_at = NOW()
-		FROM candidates
-		WHERE resource.id = candidates.id
-		RETURNING resource.id::text AS resource_id
-	`);
-	return claimed.rows.map(({ resource_id }) => ({ resourceId: resource_id }));
-}
-
-/** Repairs only interrupted DB-to-Workflow handoffs for record-first app-owned blobs. */
-export async function reconcilePendingBlobProcessing(env: CoreEnv, db: CoreDb): Promise<void> {
-	const admissions = await claimStalePendingBlobAdmissions(db, new Date(Date.now() - PENDING_BLOB_GRACE_MS), PENDING_BLOB_RECONCILE_LIMIT);
-	if (!admissions.length) return;
-
-	let reconciled = 0;
-	let failed = 0;
-	for (let offset = 0; offset < admissions.length; offset += PENDING_BLOB_RECONCILE_CONCURRENCY) {
-		const batch = admissions.slice(offset, offset + PENDING_BLOB_RECONCILE_CONCURRENCY);
-		const results = await Promise.allSettled(batch.map(({ resourceId }) => enqueueProcessing(env, resourceId)));
-		for (const [index, result] of results.entries()) {
-			if (result.status === 'fulfilled') {
-				reconciled++;
-				continue;
-			}
-			failed++;
-			console.error({
-				tag: 'RESOURCE_WORKFLOW',
-				event: 'pending_blob_reconciliation_failed',
-				resource_id: batch[index]?.resourceId,
-				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-			});
-		}
-	}
-	console.info({
-		tag: 'RESOURCE_WORKFLOW',
-		event: 'pending_blob_reconciliation_completed',
-		attempted: admissions.length,
-		reconciled,
-		failed,
-	});
-}
-
-export async function enqueueResourceResync(env: CoreEnv, resourceId: string): Promise<string> {
-	const id = z.uuid().parse(resourceId);
-	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
-		id: `resource-resync-v3-${id}-${crypto.randomUUID()}`,
-		params: { target: { kind: 'reacquire', resourceId: id } },
-	});
-	return instance.id;
 }
