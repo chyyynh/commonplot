@@ -14,8 +14,7 @@ import { generateText, Output } from 'ai';
 import { sql } from 'drizzle-orm';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
-import { enqueueOrRestartWorkflow } from '../workflow-control';
+import { syncCorpusItem } from '../ai-search';
 
 type ResourceTranslationPayload = { resourceId: string; translationRevision: string };
 
@@ -374,15 +373,13 @@ async function loadResourceTranslationInput(
 	};
 }
 
-// One stable instance per translation revision dedupes completed translations while
-// allowing a failed attempt to be retried. A changed original gets a new ID.
+// One stable instance per translation revision dedupes duplicate enqueue calls;
+// a changed original gets a new ID.
 export async function enqueueResourceTranslation(env: CoreEnv, resourceId: string, translationRevision: string): Promise<string> {
 	if (!isResourceTranslationRevision(translationRevision)) throw new Error('Invalid resource translation revision');
-	return enqueueOrRestartWorkflow(
-		env.RESOURCE_TRANSLATION_V2_WORKFLOW,
-		`rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`,
-		{ resourceId, translationRevision },
-	);
+	const id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
+	await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([{ id, params: { resourceId, translationRevision } }]);
+	return id;
 }
 
 export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceTranslationPayload> {
@@ -427,7 +424,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			const translatedMetadata = await step.do(
 				'translate-zh-hant-title-summary',
 				{
-					retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' },
+					retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' },
 					timeout: '180 seconds',
 				},
 				() => generateZhHantMetadataTranslation(resource, this.env, metadataTask),
@@ -450,7 +447,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				'translate-zh-hant-content',
 				// A body at the 36k-character ceiling emits ~11.1k tokens at a
 				// measured ~90 tokens/s, so 180s left almost no margin.
-				{ retries: { limit: 3, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
+				{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 				() => translateZhHantContent(initialContent, this.env, resourceId),
 			);
 			const persisted = await step.do(
@@ -468,8 +465,10 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			);
 			if (!persisted) return;
 		}
-		await step.do('sync-translated-resource-to-ai-search', AI_SEARCH_SYNC_STEP_CONFIG, async () =>
-			syncCorpusItem(this.env, await connectCoreDb(this.env), resourceId),
+		await step.do(
+			'sync-translated-resource-to-ai-search',
+			{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '90 seconds' },
+			async () => syncCorpusItem(this.env, await connectCoreDb(this.env), resourceId),
 		);
 		console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Completed', resource_id: resourceId });
 	}

@@ -1,4 +1,4 @@
-import type { WorkflowDelayFunction, WorkflowStep, WorkflowStepConfig } from 'cloudflare:workers';
+import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { readTextWithLimit } from '@core-shared/http';
 import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
@@ -23,33 +23,9 @@ import {
 	twitterThreadSearchWindow,
 	withTwitterSearchWindow,
 } from './twitter-data';
-import { fetchTwitterProvider } from './twitter-provider';
 
 const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
-const TWITTER_SEARCH_MAX_REQUESTS = 256;
-// A source watermark can advance after a sequenced draft is admitted, so the
-// Twitter adapter must outlive a provider outage. The bounded retry horizon
-// also limits paid twitterapi.io requests.
-const sequencedTwitterRetryDelay: WorkflowDelayFunction = ({ ctx }) =>
-	ctx.attempt <= 3 ? '10 seconds' : ctx.attempt <= 15 ? '1 minute' : '30 minutes';
-const TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG = {
-	retries: { limit: 50, delay: sequencedTwitterRetryDelay },
-	timeout: '120 seconds',
-} as const satisfies WorkflowStepConfig;
-const TWITTER_ACQUISITION_STEP_CONFIG = {
-	retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' },
-	timeout: '120 seconds',
-} as const satisfies WorkflowStepConfig;
-
-function logSequencedTwitterAcquisitionAttempt(processingId: string, providerSequence: string, attempt: number): void {
-	console.info({
-		tag: 'TWITTER',
-		event: 'sequenced_acquisition_attempt',
-		processing_id: processingId,
-		provider_sequence: providerSequence,
-		attempt,
-	});
-}
+const TWITTER_THREAD_SEARCH_MAX_PAGES = 4;
 
 interface TwitterMedia {
 	url: string;
@@ -266,13 +242,17 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string): Promise<Twit
 	if (!tweetId) throw new Error(`Could not resolve tweet id for Twitter article ${tweet.url}`);
 	console.info({ tag: 'TWITTER', msg: 'Fetching longform for tweet', tweetId });
 
-	const response = await fetchTwitterProvider(`https://api.twitterapi.io/twitter/article?tweet_id=${tweetId}`, apiKey, {
-		operation: 'article',
-		resourceId: tweetId,
+	const response = await fetch(`https://api.twitterapi.io/twitter/article?tweet_id=${tweetId}`, {
+		headers: { 'x-api-key': apiKey },
+		signal: AbortSignal.timeout(20_000),
 	});
 	if (!response.ok) {
 		await response.body?.cancel();
-		throw new Error(`Twitter longform request failed with HTTP ${response.status}`);
+		const message = `Twitter longform request failed with HTTP ${response.status}`;
+		if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+			throw new NonRetryableError(message);
+		}
+		throw new Error(message);
 	}
 	const longform = parseTwitterArticleResponse(JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)), tweetId);
 	const title = longform.title?.trim();
@@ -417,24 +397,42 @@ async function scrapeTweet(
 	options: { discoverUnsignaledThread?: boolean; expectedReplyId?: string } = {},
 ): Promise<AcquiredMaterial<'twitter'>> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
-	const response = await fetchTwitterProvider(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, apiKey, {
-		operation: 'tweets-by-id',
-		resourceId: tweetId,
+	const response = await fetch(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, {
+		headers: { 'x-api-key': apiKey },
+		signal: AbortSignal.timeout(20_000),
 	});
 	if (!response.ok) {
 		await response.body?.cancel();
-		if (response.status === 404 || response.status === 410) {
-			throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
+		const message =
+			response.status === 404 || response.status === 410
+				? `Twitter API: Tweet ${tweetId} was not found`
+				: `HTTP ${response.status}: ${response.statusText}`;
+		if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+			throw new NonRetryableError(message);
 		}
-		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+		throw new Error(message);
 	}
 	const tweets = parseTwitterTweetsResponse(JSON.parse(await readTextWithLimit(response)));
 	const tweet = tweets[0];
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
-	const searchThread = shouldSearchTwitterThread(tweet, options.expectedReplyId, options.discoverUnsignaledThread);
-	const context = searchThread ? await fetchTwitterAuthorReplies(tweet, tweetId, apiKey) : { candidates: [], pages: 0, providerPosts: 0 };
+	const expectedReplyId = options.expectedReplyId === tweetId ? undefined : options.expectedReplyId;
+	const searchThread = shouldSearchTwitterThread(tweet, expectedReplyId, options.discoverUnsignaledThread);
+	let context: TwitterThreadSearchResult = { candidates: [], pages: 0, providerPosts: 0 };
+	if (searchThread) {
+		try {
+			context = await fetchTwitterAuthorReplies(tweet, tweetId, apiKey);
+		} catch (error) {
+			if (expectedReplyId) throw error;
+			console.warn({
+				tag: 'TWITTER',
+				event: 'optional_thread_search_failed',
+				tweet_id: tweetId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 	const thread = buildTwitterAuthorThread(tweet, context.candidates);
-	assertExpectedTwitterThreadPost(thread, options.expectedReplyId, tweetId);
+	assertExpectedTwitterThreadPost(thread, expectedReplyId, tweetId);
 	const resolved = await resolveTweetContent(tweet, apiKey);
 	console.info({
 		tag: 'TWITTER',
@@ -463,11 +461,15 @@ export async function stageTwitterAcquisition(
 ): Promise<Extract<ResolvedResource, { resourcePlatform: 'twitter' }>> {
 	const contentStream = await step.do(
 		'acquire-twitter-v1',
-		input.providerSequence ? TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG : TWITTER_ACQUISITION_STEP_CONFIG,
+		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async (ctx) => {
-			if (input.providerSequence) {
-				logSequencedTwitterAcquisitionAttempt(input.processingId, input.providerSequence, ctx.attempt);
-			}
+			console.info({
+				tag: 'TWITTER',
+				event: 'acquisition_attempt',
+				processing_id: input.processingId,
+				provider_sequence: input.providerSequence,
+				attempt: ctx.attempt,
+			});
 			return Response.json(
 				await scrapeTweet(input.tweetId, env.KAITO_API_KEY, {
 					discoverUnsignaledThread: input.discoverRelatedContent,
@@ -496,18 +498,21 @@ async function fetchTwitterAuthorReplies(root: Tweet, tweetId: string, apiKey: s
 	let pages = 0;
 	let providerPosts = 0;
 	while (true) {
-		if (pages >= TWITTER_SEARCH_MAX_REQUESTS) {
-			throw new Error(`Twitter thread search ${tweetId} exceeded ${TWITTER_SEARCH_MAX_REQUESTS} time-slice requests`);
+		if (pages >= TWITTER_THREAD_SEARCH_MAX_PAGES) {
+			throw new Error(`Twitter thread search ${tweetId} exceeded ${TWITTER_THREAD_SEARCH_MAX_PAGES} time-slice pages`);
 		}
 		const params = new URLSearchParams({ query: withTwitterSearchWindow(query, currentWindow), queryType: 'Latest' });
-		const response = await fetchTwitterProvider(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, apiKey, {
-			operation: 'advanced-search',
-			resourceId: tweetId,
-			searchKind: 'thread-author-replies',
+		const response = await fetch(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, {
+			headers: { 'x-api-key': apiKey },
+			signal: AbortSignal.timeout(20_000),
 		});
 		if (!response.ok) {
 			await response.body?.cancel();
-			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+			const message = `HTTP ${response.status}: ${response.statusText}`;
+			if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+				throw new NonRetryableError(message);
+			}
+			throw new Error(message);
 		}
 		const data = parseTwitterAdvancedSearchPage(JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)));
 		pages++;

@@ -4,7 +4,6 @@ import { sha256Hex } from '@core-shared/hash';
 import { canonicalizeOptionalResourceLang, parseResourceProviderSequence } from '@core-shared/resource';
 import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
 import { z } from 'zod';
-import { enqueueOrRestartWorkflow } from '../workflow-control';
 
 const ProviderSequenceSchema = z
 	.string()
@@ -123,7 +122,8 @@ export async function enqueueAppResourceDraft(env: CoreEnv, input: AppResourceDr
 		admission: input.admission,
 		url,
 	});
-	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, input.instanceId, { target });
+	await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id: input.instanceId, params: { target } }]);
+	return input.instanceId;
 }
 
 function sourceDraftTarget(base: SourceResourceDraft): ResourceDraftTarget {
@@ -167,7 +167,9 @@ export async function enqueueSubjectDraft(
 		url: normalizeUrl(input.url),
 	});
 	const identity = await sha256Hex(JSON.stringify(target));
-	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `subject-draft-v3-${identity}`, { target });
+	const id = `subject-draft-v3-${identity}`;
+	await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { target } }]);
+	return id;
 }
 
 export async function admitDiscoveredSourceResources(

@@ -17,7 +17,6 @@ import {
 	twitterSelfReplyRootId,
 	withTwitterSearchWindow,
 } from './twitter-data';
-import { fetchTwitterProvider } from './twitter-provider';
 
 // Twitter Monitor
 
@@ -25,7 +24,7 @@ const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/adv
 
 const TWITTER_SOURCE_CONCURRENCY = 5;
 const TWITTER_WATERMARK_OVERLAP_MS = 60 * 60 * 1000;
-const TWITTER_SEARCH_MAX_REQUESTS = 256;
+const TWITTER_SEARCH_MAX_PAGES = 4;
 
 function monitoredAuthorUserName(tweet: Tweet): string | null {
 	const userName = tweet.retweetedBy?.authorUserName || tweet.author?.userName;
@@ -105,16 +104,14 @@ async function fetchTweetsForSearch(
 	let currentWindow = window;
 
 	while (true) {
-		if (pages >= TWITTER_SEARCH_MAX_REQUESTS) {
-			throw new Error(`Twitter Advanced Search exceeded ${TWITTER_SEARCH_MAX_REQUESTS} time-slice requests`);
+		if (pages >= TWITTER_SEARCH_MAX_PAGES) {
+			throw new Error(`Twitter Advanced Search exceeded ${TWITTER_SEARCH_MAX_PAGES} time-slice pages`);
 		}
 		const params = new URLSearchParams({ query: withTwitterSearchWindow(search.query, currentWindow), queryType: 'Latest' });
 
-		const response = await fetchTwitterProvider(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, apiKey, {
-			operation: 'advanced-search',
-			searchKind: search.kind,
-			sourceHandle: userName,
-			timeoutMs: 20_000,
+		const response = await fetch(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, {
+			headers: { 'x-api-key': apiKey },
+			signal: AbortSignal.timeout(20_000),
 		});
 		if (!response.ok) {
 			await response.body?.cancel();

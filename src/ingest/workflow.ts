@@ -1,4 +1,4 @@
-import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
+import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type {
 	PersistResolvedResourceInput,
 	PersistResolvedResourceResult,
@@ -18,17 +18,11 @@ import { loadResourceReacquisitionInput, loadStoredPdfInput, markStoredBlobProce
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
-import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
+import { syncCorpusItem } from '../ai-search';
 import { stageStoredPdfResource, stageUrlAcquisition } from './acquisition';
 import { stageResourceImages } from './image-rehosting';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './processing-jobs';
 import { enqueueResourceTranslation } from './translation-workflow';
-
-const WORKFLOW_ENQUEUE_STEP_CONFIG = {
-	retries: DURABLE_WORKFLOW_RETRIES,
-	timeout: '30 seconds',
-} as const satisfies WorkflowStepConfig;
 
 type ResourceClassification = {
 	tags: string[];
@@ -260,7 +254,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			ogImageUrl: resource.previewImageUrl,
 		});
 		const [classification, hostedImages] = await Promise.all([
-			step.do('classify-resource', { retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' }, () =>
+			step.do('classify-resource', { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' }, () =>
 				classifyResource(resource, this.env, processingId),
 			),
 			stageResourceImages(this.env, step, processingId, imageSources),
@@ -280,28 +274,37 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const persistedResourceId = persistence.resourceId;
 		const translationRevision = persistence.translationRevision;
 		const followUps: Promise<unknown>[] = [
-			step.do('sync-resolved-ai-search-v1', AI_SEARCH_SYNC_STEP_CONFIG, async () => {
-				const db = await connectCoreDb(this.env);
-				await Promise.all(
-					[persistedResourceId, ...persistence.retiredResourceIds].map((resourceId) => syncCorpusItem(this.env, db, resourceId)),
-				);
-			}),
+			step.do(
+				'sync-resolved-ai-search-v1',
+				{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '90 seconds' },
+				async () => {
+					const db = await connectCoreDb(this.env);
+					await Promise.all(
+						[persistedResourceId, ...persistence.retiredResourceIds].map((resourceId) => syncCorpusItem(this.env, db, resourceId)),
+					);
+				},
+			),
 		];
 		if (translationRevision) {
 			followUps.push(
-				step.do('enqueue-resource-translation-v2', WORKFLOW_ENQUEUE_STEP_CONFIG, () =>
-					enqueueResourceTranslation(this.env, persistedResourceId, translationRevision),
+				step.do(
+					'enqueue-resource-translation-v2',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision),
 				),
 			);
 		}
 		const subject = resource.subject;
 		if (subject && !persistence.subjectAttached) {
 			followUps.push(
-				step.do('enqueue-resolved-subject-child-v1', WORKFLOW_ENQUEUE_STEP_CONFIG, () =>
-					enqueueSubjectDraft(this.env, {
-						parentResourceId: persistedResourceId,
-						url: subject.normalizedUrl,
-					}),
+				step.do(
+					'enqueue-resolved-subject-child-v1',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					() =>
+						enqueueSubjectDraft(this.env, {
+							parentResourceId: persistedResourceId,
+							url: subject.normalizedUrl,
+						}),
 				),
 			);
 		}

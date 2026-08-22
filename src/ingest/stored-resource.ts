@@ -21,7 +21,6 @@ import type { CoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/display-source-sql';
 import { inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { enqueueOrRestartWorkflow } from '../workflow-control';
 
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
@@ -92,10 +91,10 @@ type ResourceReacquisitionRow = StoredResourceBaseRow & {
 };
 
 export async function enqueueProcessing(env: CoreEnv, resourceId: string): Promise<string> {
-	const id = z.uuid().parse(resourceId);
-	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `${STORED_RESOURCE_WORKFLOW_REVISION}-${id}`, {
-		target: { kind: 'storedBlob', resourceId: id },
-	});
+	const resourceIdValue = z.uuid().parse(resourceId);
+	const id = `${STORED_RESOURCE_WORKFLOW_REVISION}-${resourceIdValue}`;
+	await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { target: { kind: 'storedBlob', resourceId: resourceIdValue } } }]);
+	return id;
 }
 
 export async function enqueueResourceResync(env: CoreEnv, resourceId: string): Promise<string> {

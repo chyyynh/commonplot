@@ -1,6 +1,6 @@
 // Provider-independent bibliographic resolution followed by OpenAlex enrichment.
 
-import type { WorkflowDynamicDelayContext, WorkflowSleepDuration, WorkflowStep } from 'cloudflare:workers';
+import type { WorkflowStep } from 'cloudflare:workers';
 import { type PaperIdentifier, paperIdentityFromText, resolveExactPaperInput } from '@core-shared/paper-identity';
 import type { AcquiredMaterial, PaperMetadata } from '@core-shared/resource';
 import { literalCreator, type PaperKindMetadata } from '@core-shared/resource';
@@ -8,11 +8,9 @@ import { resolveBibliographicIdentifiers } from './bibliographic-resolver';
 import { acquireOpenAlexGrobidText, acquireOpenAlexPdf, resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME } from './pdf';
 
-const DEFAULT_RATE_LIMIT_DELAY_SECONDS = 15;
-const MAX_RATE_LIMIT_DELAY_SECONDS = 5 * 60;
 const IDENTIFIER_SCAN_CHARS = 3_000;
 const PAPER_CONTENT_ACQUISITION_STEP = {
-	retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' },
+	retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' },
 	timeout: '120 seconds',
 } as const;
 type PaperEnrichmentCandidate = {
@@ -82,18 +80,6 @@ function localPaperEvidence(candidate: PaperEnrichmentCandidate): boolean {
 	);
 }
 
-function paperEnrichmentRetryDelay({ ctx, error }: WorkflowDynamicDelayContext): WorkflowSleepDuration {
-	const requestedDelay = error.message.match(/retry_after_seconds=(\d+)/)?.[1];
-	if (requestedDelay) {
-		const seconds = Math.min(MAX_RATE_LIMIT_DELAY_SECONDS, Math.max(1, Number(requestedDelay)));
-		return `${seconds} seconds`;
-	}
-	if (error.message.includes('HTTP 429')) {
-		return `${Math.min(MAX_RATE_LIMIT_DELAY_SECONDS, ctx.attempt * DEFAULT_RATE_LIMIT_DELAY_SECONDS)} seconds`;
-	}
-	return `${Math.min(30, ctx.attempt * 5)} seconds`;
-}
-
 async function stagePaperEnrichment(
 	env: CoreEnv,
 	step: WorkflowStep,
@@ -109,7 +95,7 @@ async function stagePaperEnrichment(
 	try {
 		const resolution = await step.do(
 			'resolve-paper-openalex-with-citations-v2',
-			{ retries: { limit: 5, delay: paperEnrichmentRetryDelay }, timeout: '30 seconds' },
+			{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 			async () => {
 				const startedAt = Date.now();
 				const bibliographic = await resolveBibliographicIdentifiers({

@@ -1,4 +1,4 @@
-import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
+import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import {
 	CONTENT_RESOURCE_KINDS,
 	type ContentResourceIdentity,
@@ -9,7 +9,6 @@ import {
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/display-source-sql';
 import { inArray, sql } from 'drizzle-orm';
-import { DURABLE_WORKFLOW_RETRIES } from './workflow-control';
 
 const AI_SEARCH_ITEM_PREFIX = 'resources/';
 const AI_SEARCH_ITEM_SUFFIX = '.md';
@@ -44,10 +43,6 @@ const CANONICAL_CUSTOM_METADATA = [
 const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
 const TRANSLATED_CONTENT_MAX_CHARS = 4_000;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
-export const AI_SEARCH_SYNC_STEP_CONFIG = {
-	retries: DURABLE_WORKFLOW_RETRIES,
-	timeout: '90 seconds',
-} as const satisfies WorkflowStepConfig;
 
 type CorpusTranslationRow = {
 	lang: string;
