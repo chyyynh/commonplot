@@ -1,6 +1,6 @@
 import type { CoreDb } from '@db/connection';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/monitored-source';
-import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/resource-admission';
+import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/processing-jobs';
 import { loadFeed } from './rss-feed';
 
 const FEED_CONCURRENCY = 4;

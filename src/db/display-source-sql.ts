@@ -1,3 +1,4 @@
+// One canonical fallback expression for the user-visible publisher/creator label.
 import { RESOURCE_KIND_DISPLAY_LABELS, RESOURCE_PLATFORM_DISPLAY_LABELS } from '@core-shared/resource';
 import { type SQL, sql } from 'drizzle-orm';
 

@@ -1,3 +1,4 @@
+// Durable translation execution; resource processing only enqueues this Workflow.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import {
 	canonicalizeResourceLang,

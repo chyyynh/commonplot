@@ -7,7 +7,7 @@ import {
 	type ResourcePlatform,
 } from '@core-shared/resource';
 import { type CoreDb, connectCoreDb } from '@db/connection';
-import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
+import { resourceDisplaySourceSql } from '@db/display-source-sql';
 import { inArray, sql } from 'drizzle-orm';
 import { DURABLE_WORKFLOW_RETRIES } from './workflow-control';
 

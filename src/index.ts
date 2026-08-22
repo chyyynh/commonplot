@@ -3,14 +3,14 @@ import { connectCoreDb } from '@db/connection';
 import { type ResolveMonitoredSourceInput, resolveMonitoredSource } from '@ingest/monitored-source';
 import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';
-import { type AppResourceDraftInput, enqueueAppResourceDraft } from '@ingest/resource-admission';
-import { ResourceTranslationV2Workflow } from '@ingest/resource-translation-workflow';
+import { type AppResourceDraftInput, enqueueAppResourceDraft } from '@ingest/processing-jobs';
 import {
 	assertResourceProcessable,
 	enqueueProcessing,
 	enqueueResourceResync,
 	reconcilePendingBlobProcessing,
 } from '@ingest/stored-resource';
+import { ResourceTranslationV2Workflow } from '@ingest/translation-workflow';
 import { ResourceProcessingV2Workflow } from '@ingest/workflow';
 import { SearchIndexGeneration5RebuildWorkflow } from './ai-search';
 import { type PublicResourceSearchInput, searchPublicResourceIds } from './public-search';

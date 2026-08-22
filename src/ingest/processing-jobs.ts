@@ -1,3 +1,4 @@
+// Validated Workflow payloads and enqueue entrypoints for app, monitor, and derived-resource jobs.
 import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
 import { canonicalizeOptionalResourceLang, parseResourceProviderSequence } from '@core-shared/resource';

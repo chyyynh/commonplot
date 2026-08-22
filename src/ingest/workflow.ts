@@ -4,6 +4,7 @@ import type {
 	PersistResolvedResourceResult,
 	PersistResolvedResourceTarget,
 } from '@app-domain/resource-graph-contracts';
+import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/hosted-images';
 import {
 	DEFAULT_RESOURCE_LANG,
 	ENTITY_TYPES,
@@ -11,7 +12,6 @@ import {
 	type ResolvedResource,
 	type ResourceCategory,
 } from '@core-shared/resource';
-import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
 import { connectCoreDb } from '@db/connection';
 import { entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
 import { loadResourceReacquisitionInput, loadStoredPdfInput, markStoredBlobProcessingFailed } from '@ingest/stored-resource';
@@ -21,9 +21,9 @@ import { z } from 'zod';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
 import { stageStoredPdfResource, stageUrlAcquisition } from './acquisition';
-import { stageResourceImages } from './hosted-images';
-import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './resource-admission';
-import { enqueueResourceTranslation } from './resource-translation-workflow';
+import { stageResourceImages } from './image-rehosting';
+import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './processing-jobs';
+import { enqueueResourceTranslation } from './translation-workflow';
 
 const WORKFLOW_ENQUEUE_STEP_CONFIG = {
 	retries: DURABLE_WORKFLOW_RETRIES,

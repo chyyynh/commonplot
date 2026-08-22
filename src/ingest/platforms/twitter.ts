@@ -3,7 +3,7 @@ import { parseResourceProviderSequence } from '@core-shared/resource';
 import { canonicalResourcePlatformUrl, normalizeUrl } from '@core-shared/url';
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/monitored-source';
-import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/resource-admission';
+import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/processing-jobs';
 import {
 	buildTwitterMonitorSearchQueries,
 	isTwitterReply,

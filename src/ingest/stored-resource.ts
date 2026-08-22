@@ -18,7 +18,7 @@ import {
 } from '@core-shared/resource';
 import { parseExternalHttpUrl } from '@core-shared/url';
 import type { CoreDb } from '@db/connection';
-import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
+import { resourceDisplaySourceSql } from '@db/display-source-sql';
 import { inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { enqueueOrRestartWorkflow } from '../workflow-control';
