@@ -34,22 +34,7 @@ export async function parsePdfBytes(bytes: Uint8Array): Promise<PdfTextArtifact>
 	return { text, pages, chars, status };
 }
 
-export async function acquireStoredPdf(
-	env: CoreEnv,
-	resource: Pick<
-		ResourceForProcessing,
-		| 'creators'
-		| 'file_type'
-		| 'kind_metadata'
-		| 'original_lang'
-		| 'processing_id'
-		| 'published_date'
-		| 'source'
-		| 'storage_key'
-		| 'summary'
-		| 'title'
-	>,
-): Promise<AcquiredWebContent> {
+export async function acquireStoredPdf(env: CoreEnv, resource: ResourceForProcessing): Promise<AcquiredWebContent> {
 	if (resource.file_type !== PDF_MIME || !resource.storage_key) {
 		throw new Error(`Stored resource ${resource.processing_id} is not an R2 PDF`);
 	}

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { materializeAcquiredResource, resolvedSubjectInput } from '../src/ingest/resource-resolver.ts';
+import { detectResourceUrl } from '../src/shared/url.ts';
 
 const base = {
 	url: 'https://example.com/article',
@@ -25,18 +26,23 @@ function materialize(input = {}) {
 		},
 		{
 			keywords: [],
-			normalizedUrl: url,
-			originalLang: 'en',
-			processingId: 'processing-id',
-			publishedDate: null,
+			normalized_url: url,
+			original_lang: 'en',
+			processing_id: 'processing-id',
+			published_date: null,
 			scope: 'corpus',
-			sourceId: null,
-			storageKey: null,
+			source_id: null,
+			storage_key: null,
 			summary: null,
 			tags: [],
 			url: url ?? 'https://openalex.org/W2',
 		},
-		input.resource_identifiers ?? [],
+		{
+			canonicalUrl: url,
+			detected: url ? detectResourceUrl(url) : null,
+			publishedDate: null,
+			resourceIdentifiers: input.resource_identifiers ?? [],
+		},
 	);
 }
 
