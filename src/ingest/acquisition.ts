@@ -1,12 +1,9 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { sha256Hex } from '@core-shared/hash';
-import { parseResourceCreators, parseStoredResourceKindMetadata } from '@core-shared/resource-metadata';
-import { type ResourcePlatform, resourceIdentityForDetectedPlatform } from '@core-shared/resource-types';
 import type { AcquiredMaterial, ResolvedResource } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { z } from 'zod';
-import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
+import { acquiredContentSchema, normalizeAcquiredContent } from './acquired-content';
 import { type HackerNewsAcquiredContent, HackerNewsItemSchema, scrapeHackerNews, stageHackerNewsEnrichment } from './platforms/hackernews';
 import { scrapeLessWrong } from './platforms/lesswrong';
 import {
@@ -36,41 +33,16 @@ type SavedUrlAcquisitionResult =
 	| { status: 'redirect'; redirectUrl: string }
 	| { status: 'rejected'; message: string };
 
-const nullableStringSchema = z.string().nullable();
 const platformIdSchema = z.string().trim().min(1);
-const acquiredContentShape = {
-	canonicalUrl: z.url().optional(),
-	fileType: nullableStringSchema,
-	title: z.string().trim().min(1),
-	markdown: z.string(),
-	previewImageUrl: nullableStringSchema.optional(),
-	subjectUrl: z.string().optional(),
-	source: z.string().trim().min(1),
-	originalLang: nullableStringSchema,
-	publishedDate: nullableStringSchema,
-	summary: nullableStringSchema,
-	creators: z.unknown().transform((value) => parseResourceCreators(value)),
-	sourceSnapshotHash: z.string().regex(/^[0-9a-f]{64}$/),
-};
-function acquiredMaterialSchema<const T extends ResourcePlatform, Extra extends z.ZodRawShape>(resourcePlatform: T, extra: Extra) {
-	const kind = resourcePlatform === null ? 'blog' : resourceIdentityForDetectedPlatform(resourcePlatform).kind;
-	return z.looseObject({
-		resourcePlatform: z.literal(resourcePlatform),
-		...acquiredContentShape,
-		kindMetadata: z.unknown().transform((value) => parseStoredResourceKindMetadata(kind, value)),
-		...extra,
-	});
-}
-
 const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('resourcePlatform', [
-	acquiredMaterialSchema(null, {}),
-	acquiredMaterialSchema('hackernews', {
+	acquiredContentSchema(null, {}),
+	acquiredContentSchema('hackernews', {
 		hackerNewsItem: HackerNewsItemSchema,
 		platformId: platformIdSchema,
 	}),
-	acquiredMaterialSchema('lesswrong', { platformId: platformIdSchema }),
-	acquiredMaterialSchema('twitter', { platformId: platformIdSchema }),
-	acquiredMaterialSchema('youtube', {
+	acquiredContentSchema('lesswrong', { platformId: platformIdSchema }),
+	acquiredContentSchema('twitter', { platformId: platformIdSchema }),
+	acquiredContentSchema('youtube', {
 		platformId: platformIdSchema,
 		youtubeTranscript: YouTubeTranscriptSchema,
 	}),
@@ -83,7 +55,7 @@ const SavedUrlAcquisitionResultSchema: z.ZodType<SavedUrlAcquisitionResult> = z.
 
 // Provider rejections are converted to a serializable result inside the step,
 // so only transient transport/provider failures reach Workflow retries.
-export const ACQUISITION_STEP = {
+const ACQUISITION_STEP = {
 	retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' },
 	timeout: '120 seconds',
 } as const;
@@ -94,36 +66,6 @@ function validateAcquisitionUrl(url: string): string {
 	const parsed = parseExternalHttpUrl(url);
 	if (!parsed) throw new Error('Only http(s) URLs without credentials are allowed');
 	return normalizeUrl(parsed.toString());
-}
-
-function acquiredSourceSnapshotHash(acquired: RawAcquiredContent, markdown: string): Promise<string> {
-	const providerFacts =
-		acquired.resourcePlatform !== null || acquired.subjectUrl
-			? {
-					...(acquired.resourcePlatform !== null ? { platformId: acquired.platformId } : {}),
-					...(acquired.subjectUrl ? { subjectUrl: acquired.subjectUrl } : {}),
-				}
-			: null;
-	const input = JSON.stringify({
-		resourcePlatform: acquired.resourcePlatform,
-		canonicalUrl: acquired.canonicalUrl,
-		fileType: acquired.fileType,
-		title: acquired.title,
-		markdown,
-		source: acquired.source,
-		originalLang: acquired.originalLang,
-		publishedDate: acquired.publishedDate,
-		summary: acquired.summary,
-		creators: acquired.creators,
-		kindMetadata: acquired.kindMetadata,
-		providerFacts,
-	});
-	return sha256Hex(input);
-}
-
-export async function sanitizeAcquiredContent(acquired: RawAcquiredContent): Promise<AcquiredContent> {
-	const markdown = sanitizeExtractedMarkdown(acquired.markdown);
-	return { ...acquired, markdown, sourceSnapshotHash: await acquiredSourceSnapshotHash(acquired, markdown) };
 }
 
 async function acquireSavedUrlRoute(
@@ -139,12 +81,12 @@ async function acquireSavedUrlRoute(
 	if (detected) {
 		switch (detected.resourcePlatform) {
 			case 'youtube':
-				return sanitizeAcquiredContent({
+				return normalizeAcquiredContent({
 					...(await scrapeYouTube(detected.platformId, env.YOUTUBE_API_KEY, monitoredOnly, sourceAvatarUrl)),
 					canonicalUrl: url,
 				});
 			case 'twitter':
-				return sanitizeAcquiredContent({
+				return normalizeAcquiredContent({
 					...(await scrapeTweet(detected.platformId, env.KAITO_API_KEY, {
 						discoverUnsignaledThread: discoverRelatedContent,
 						expectedReplyId: providerSequence,
@@ -152,15 +94,15 @@ async function acquireSavedUrlRoute(
 					canonicalUrl: url,
 				});
 			case 'hackernews':
-				return sanitizeAcquiredContent({ ...(await scrapeHackerNews(detected.platformId)), canonicalUrl: url });
+				return normalizeAcquiredContent({ ...(await scrapeHackerNews(detected.platformId)), canonicalUrl: url });
 			case 'lesswrong':
-				return sanitizeAcquiredContent({ ...(await scrapeLessWrong(detected.platformId)), canonicalUrl: url });
+				return normalizeAcquiredContent({ ...(await scrapeLessWrong(detected.platformId)), canonicalUrl: url });
 			default:
 				detected.resourcePlatform satisfies never;
 		}
 	}
 	const web = await acquireWebResource(url, env, processingId);
-	return 'redirectUrl' in web ? web : sanitizeAcquiredContent(web);
+	return 'redirectUrl' in web ? web : normalizeAcquiredContent(web);
 }
 
 async function scrapeSavedUrlArtifact(
@@ -190,15 +132,6 @@ async function scrapeSavedUrlArtifact(
 		const message = error.message.trim().slice(0, 500) || 'Resource acquisition was rejected';
 		return new Blob([JSON.stringify({ status: 'rejected', message })], { type: 'application/json' }).stream();
 	}
-}
-
-export function acquiredContentArtifact(acquired: AcquiredContent): ReadableStream<Uint8Array> {
-	const bytes = new TextEncoder().encode(JSON.stringify(acquired));
-	return new Blob([bytes], { type: 'application/json' }).stream();
-}
-
-export async function readAcquiredContentArtifact(artifact: ReadableStream<Uint8Array>): Promise<AcquiredContent> {
-	return AcquiredContentSchema.parse(await new Response(artifact).json());
 }
 
 async function readSavedUrlAcquisitionArtifact(artifact: ReadableStream<Uint8Array>): Promise<SavedUrlAcquisitionResult> {

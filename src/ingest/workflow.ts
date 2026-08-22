@@ -10,14 +10,12 @@ import { loadResourceReacquisitionInput, loadStoredPdfInput } from '@ingest/stor
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
 import {
-	type AcquiredContent,
 	acquiredContentArtifact,
-	ResourceProcessingRejectedError,
+	NullPlatformAcquiredContentSchema,
+	normalizeAcquiredContent,
 	readAcquiredContentArtifact,
-	resolveAcquiredResource,
-	sanitizeAcquiredContent,
-	stageSavedUrlAcquisition,
-} from './acquisition';
+} from './acquired-content';
+import { type AcquiredContent, ResourceProcessingRejectedError, resolveAcquiredResource, stageSavedUrlAcquisition } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
 import { stagePaperProcessing } from './platforms/paper';
 import { acquireStoredPdf } from './platforms/pdf';
@@ -140,8 +138,9 @@ async function resolveProcessingCall(
 				await step.do(
 					'acquire-stored-pdf-v1',
 					{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-					async () => acquiredContentArtifact(await sanitizeAcquiredContent(await acquireStoredPdf(env, storedPdf))),
+					async () => acquiredContentArtifact(await normalizeAcquiredContent(await acquireStoredPdf(env, storedPdf))),
 				),
+				NullPlatformAcquiredContentSchema,
 			),
 			origin: storedPdf,
 			translatePaperUrl: false,
@@ -205,15 +204,18 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, ca
 		const parsed = new Date(initialAcquiredContent.publishedDate);
 		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
 	}
-	const paper = await stagePaperProcessing(env, step, {
-		acquiredContent: initialAcquiredContent,
-		canonicalUrl,
-		identifiers: resourceIdentifiers.filter(isPaperIdentifier),
-		originSummary: origin.summary,
-		processingId,
-		publishedDate,
-		translateUrl: call.translatePaperUrl,
-	});
+	const paper =
+		initialAcquiredContent.resourcePlatform === null
+			? await stagePaperProcessing(env, step, {
+					acquiredContent: initialAcquiredContent,
+					canonicalUrl,
+					identifiers: resourceIdentifiers.filter(isPaperIdentifier),
+					originSummary: origin.summary,
+					processingId,
+					publishedDate,
+					translateUrl: call.translatePaperUrl,
+				})
+			: { acquiredContent: initialAcquiredContent, identifiers: [], publishedDate };
 	const acquiredContent = paper.acquiredContent;
 	if (!acquiredContent.markdown.trim()) {
 		throw new ResourceProcessingRejectedError(`Processing ${processingId} has no extractable content`);

@@ -5,12 +5,12 @@ import { type PaperIdentifier, paperIdentityFromText, resolveExactPaperInput } f
 import { literalCreator, type PaperKindMetadata } from '@core-shared/resource-metadata';
 import type { PaperMetadata } from '@core-shared/types';
 import {
-	ACQUISITION_STEP,
-	type AcquiredContent,
 	acquiredContentArtifact,
+	type NormalizedAcquiredContent,
+	NullPlatformAcquiredContentSchema,
+	normalizeAcquiredContent,
 	readAcquiredContentArtifact,
-	sanitizeAcquiredContent,
-} from '../acquisition';
+} from '../acquired-content';
 import { resolveBibliographicIdentifiers } from './bibliographic-resolver';
 import { acquireOpenAlexGrobidText, acquireOpenAlexPdf, resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME } from './pdf';
@@ -18,6 +18,10 @@ import { PDF_MIME } from './pdf';
 const DEFAULT_RATE_LIMIT_DELAY_SECONDS = 15;
 const MAX_RATE_LIMIT_DELAY_SECONDS = 5 * 60;
 const IDENTIFIER_SCAN_CHARS = 3_000;
+const PAPER_CONTENT_ACQUISITION_STEP = {
+	retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' },
+	timeout: '120 seconds',
+} as const;
 type PaperEnrichmentCandidate = {
 	processingId: string;
 	url: string | null;
@@ -47,11 +51,11 @@ function isExplicitPaperUrl(url: string | null | undefined): boolean {
 }
 
 function applyPaperMetadata(
-	acquiredContent: AcquiredContent,
+	acquiredContent: NormalizedAcquiredContent<null>,
 	metadata: PaperMetadata | null,
 	publishedDate: string | null,
-): { acquiredContent: AcquiredContent; publishedDate: string | null } {
-	if (acquiredContent.resourcePlatform !== null || !metadata) return { acquiredContent, publishedDate };
+): { acquiredContent: NormalizedAcquiredContent<null>; publishedDate: string | null } {
+	if (!metadata) return { acquiredContent, publishedDate };
 	if (!publishedDate && metadata.publicationDate) {
 		const candidate = new Date(`${metadata.publicationDate}T00:00:00.000Z`);
 		if (!Number.isNaN(candidate.getTime())) publishedDate = candidate.toISOString();
@@ -180,7 +184,7 @@ async function acquireOpenAlexPdfArtifact(
 	const sourceName = input.sourceName.trim();
 	if (!sourceName) throw new Error(`Processing ${input.processingId} has no source name for its OpenAlex PDF`);
 	return acquiredContentArtifact(
-		await sanitizeAcquiredContent({
+		await normalizeAcquiredContent({
 			...acquired,
 			title: input.title,
 			source: sourceName,
@@ -210,7 +214,7 @@ async function acquireOpenAlexGrobidArtifact(
 	const sourceName = input.sourceName.trim();
 	if (!sourceName) throw new Error('OpenAlex GROBID acquisition has no source name');
 	return acquiredContentArtifact(
-		await sanitizeAcquiredContent({
+		await normalizeAcquiredContent({
 			resourcePlatform: null,
 			fileType: null,
 			title: input.title,
@@ -230,7 +234,7 @@ async function stageOpenAlexContentAcquisition(
 	step: WorkflowStep,
 	resource: PaperContentCandidate,
 	resolution: PaperEnrichmentResolution,
-): Promise<AcquiredContent | null> {
+): Promise<NormalizedAcquiredContent<null> | null> {
 	const { contentGrobidXmlUrl, contentPdfUrl, metadata } = resolution;
 	if (!contentPdfUrl && !contentGrobidXmlUrl) return null;
 
@@ -241,7 +245,7 @@ async function stageOpenAlexContentAcquisition(
 
 	if (contentPdfUrl) {
 		const artifact = await step
-			.do('acquire-openalex-content-pdf-v2', ACQUISITION_STEP, () =>
+			.do('acquire-openalex-content-pdf-v2', PAPER_CONTENT_ACQUISITION_STEP, () =>
 				acquireOpenAlexPdfArtifact(
 					{ contentPdfUrl, description, publishedDate, processingId: resource.processingId, sourceName, title },
 					env,
@@ -257,7 +261,7 @@ async function stageOpenAlexContentAcquisition(
 				return null;
 			});
 		if (artifact) {
-			const acquired = await readAcquiredContentArtifact(artifact);
+			const acquired = await readAcquiredContentArtifact(artifact, NullPlatformAcquiredContentSchema);
 			console.info({
 				tag: 'OPENALEX_CONTENT',
 				event: 'pdf_acquired',
@@ -270,7 +274,7 @@ async function stageOpenAlexContentAcquisition(
 
 	if (contentGrobidXmlUrl) {
 		const artifact = await step
-			.do('acquire-openalex-content-grobid-v2', ACQUISITION_STEP, () =>
+			.do('acquire-openalex-content-grobid-v2', PAPER_CONTENT_ACQUISITION_STEP, () =>
 				acquireOpenAlexGrobidArtifact(
 					{ contentGrobidXmlUrl, description, processingId: resource.processingId, publishedDate, sourceName, title },
 					env,
@@ -286,7 +290,7 @@ async function stageOpenAlexContentAcquisition(
 				return null;
 			});
 		if (artifact) {
-			const acquired = await readAcquiredContentArtifact(artifact);
+			const acquired = await readAcquiredContentArtifact(artifact, NullPlatformAcquiredContentSchema);
 			console.info({
 				tag: 'OPENALEX_CONTENT',
 				event: 'grobid_acquired',
@@ -304,7 +308,7 @@ export async function stagePaperProcessing(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		acquiredContent: AcquiredContent;
+		acquiredContent: NormalizedAcquiredContent<null>;
 		canonicalUrl: string | null;
 		identifiers: readonly PaperIdentifier[];
 		originSummary: string | null;
@@ -312,10 +316,7 @@ export async function stagePaperProcessing(
 		publishedDate: string | null;
 		translateUrl: boolean;
 	},
-): Promise<{ acquiredContent: AcquiredContent; identifiers: PaperIdentifier[]; publishedDate: string | null }> {
-	if (input.acquiredContent.resourcePlatform !== null) {
-		return { acquiredContent: input.acquiredContent, identifiers: [], publishedDate: input.publishedDate };
-	}
+): Promise<{ acquiredContent: NormalizedAcquiredContent<null>; identifiers: PaperIdentifier[]; publishedDate: string | null }> {
 	const resolution = await stagePaperEnrichment(env, step, {
 		processingId: input.processingId,
 		url: input.canonicalUrl,
