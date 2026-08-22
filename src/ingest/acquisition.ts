@@ -9,9 +9,13 @@ import { z } from 'zod';
 import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
 import { type HackerNewsAcquiredContent, HackerNewsItemSchema, scrapeHackerNews, stageHackerNewsEnrichment } from './platforms/hackernews';
 import { scrapeLessWrong } from './platforms/lesswrong';
-import { scrapeTweet } from './platforms/twitter-acquisition';
+import {
+	logSequencedTwitterAcquisitionAttempt,
+	scrapeTweet,
+	TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG,
+} from './platforms/twitter-acquisition';
 import { scrapeYouTube, stageYouTubeEnrichment, YouTubeTranscriptSchema } from './platforms/youtube-acquisition';
-import { type AcquiredWebContent, acquireWebResource } from './web-acquisition';
+import { type AcquiredWebContent, acquireWebResource, type PlatformRedirect } from './web-acquisition';
 
 type RawAcquiredContent =
 	| AcquiredWebContent
@@ -22,7 +26,10 @@ type RawAcquiredContent =
 
 export type AcquiredContent = RawAcquiredContent & { sourceSnapshotHash: string };
 
-type SavedUrlAcquisitionResult = { status: 'acquired'; content: AcquiredContent } | { status: 'rejected'; message: string };
+type SavedUrlAcquisitionResult =
+	| { status: 'acquired'; content: AcquiredContent }
+	| { status: 'redirect'; redirectUrl: string }
+	| { status: 'rejected'; message: string };
 
 const nullableStringSchema = z.string().nullable();
 const platformIdSchema = z.string().trim().min(1);
@@ -65,6 +72,7 @@ const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('
 ]);
 const SavedUrlAcquisitionResultSchema: z.ZodType<SavedUrlAcquisitionResult> = z.discriminatedUnion('status', [
 	z.object({ status: z.literal('acquired'), content: AcquiredContentSchema }),
+	z.object({ status: z.literal('redirect'), redirectUrl: z.url() }),
 	z.object({ status: z.literal('rejected'), message: z.string().trim().min(1).max(500) }),
 ]);
 
@@ -74,6 +82,8 @@ export const ACQUISITION_STEP = {
 	retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' },
 	timeout: '120 seconds',
 } as const;
+
+export class ResourceProcessingRejectedError extends Error {}
 
 function validateAcquisitionUrl(url: string): string {
 	const parsed = parseExternalHttpUrl(url);
@@ -111,7 +121,7 @@ export async function sanitizeAcquiredContent(acquired: RawAcquiredContent): Pro
 	return { ...acquired, markdown, sourceSnapshotHash: await acquiredSourceSnapshotHash(acquired, markdown) };
 }
 
-async function scrapeSavedUrl(
+async function acquireSavedUrlRoute(
 	url: string,
 	env: CoreEnv,
 	monitoredOnly: boolean,
@@ -119,44 +129,36 @@ async function scrapeSavedUrl(
 	processingId: string,
 	providerSequence?: string,
 	discoverRelatedContent = true,
-): Promise<AcquiredContent> {
-	let acquisitionUrl = validateAcquisitionUrl(url);
-	for (;;) {
-		const detected = detectResourceUrl(acquisitionUrl);
-		if (detected) {
-			switch (detected.resourcePlatform) {
-				case 'youtube':
-					return sanitizeAcquiredContent({
-						...(await scrapeYouTube(detected.platformId, env.YOUTUBE_API_KEY, monitoredOnly, sourceAvatarUrl)),
-						canonicalUrl: acquisitionUrl,
-					});
-				case 'twitter':
-					return sanitizeAcquiredContent({
-						...(await scrapeTweet(detected.platformId, env.KAITO_API_KEY, {
-							discoverUnsignaledThread: discoverRelatedContent,
-							expectedReplyId: providerSequence,
-						})),
-						canonicalUrl: acquisitionUrl,
-					});
-				case 'hackernews':
-					return sanitizeAcquiredContent({ ...(await scrapeHackerNews(detected.platformId)), canonicalUrl: acquisitionUrl });
-				case 'lesswrong':
-					return sanitizeAcquiredContent({ ...(await scrapeLessWrong(detected.platformId)), canonicalUrl: acquisitionUrl });
-				default:
-					detected.resourcePlatform satisfies never;
-			}
+): Promise<AcquiredContent | PlatformRedirect> {
+	const detected = detectResourceUrl(url);
+	if (detected) {
+		switch (detected.resourcePlatform) {
+			case 'youtube':
+				return sanitizeAcquiredContent({
+					...(await scrapeYouTube(detected.platformId, env.YOUTUBE_API_KEY, monitoredOnly, sourceAvatarUrl)),
+					canonicalUrl: url,
+				});
+			case 'twitter':
+				return sanitizeAcquiredContent({
+					...(await scrapeTweet(detected.platformId, env.KAITO_API_KEY, {
+						discoverUnsignaledThread: discoverRelatedContent,
+						expectedReplyId: providerSequence,
+					})),
+					canonicalUrl: url,
+				});
+			case 'hackernews':
+				return sanitizeAcquiredContent({ ...(await scrapeHackerNews(detected.platformId)), canonicalUrl: url });
+			case 'lesswrong':
+				return sanitizeAcquiredContent({ ...(await scrapeLessWrong(detected.platformId)), canonicalUrl: url });
+			default:
+				detected.resourcePlatform satisfies never;
 		}
-
-		const web = await acquireWebResource(acquisitionUrl, env, processingId);
-		if ('redirectUrl' in web) {
-			acquisitionUrl = validateAcquisitionUrl(web.redirectUrl);
-			continue;
-		}
-		return sanitizeAcquiredContent(web);
 	}
+	const web = await acquireWebResource(url, env, processingId);
+	return 'redirectUrl' in web ? web : sanitizeAcquiredContent(web);
 }
 
-export async function scrapeSavedUrlArtifact(
+async function scrapeSavedUrlArtifact(
 	url: string,
 	env: CoreEnv,
 	monitoredOnly: boolean,
@@ -166,10 +168,17 @@ export async function scrapeSavedUrlArtifact(
 	discoverRelatedContent = true,
 ): Promise<ReadableStream<Uint8Array>> {
 	try {
-		const result: SavedUrlAcquisitionResult = {
-			status: 'acquired',
-			content: await scrapeSavedUrl(url, env, monitoredOnly, sourceAvatarUrl, processingId, providerSequence, discoverRelatedContent),
-		};
+		const acquired = await acquireSavedUrlRoute(
+			url,
+			env,
+			monitoredOnly,
+			sourceAvatarUrl,
+			processingId,
+			providerSequence,
+			discoverRelatedContent,
+		);
+		const result: SavedUrlAcquisitionResult =
+			'redirectUrl' in acquired ? { status: 'redirect', redirectUrl: acquired.redirectUrl } : { status: 'acquired', content: acquired };
 		return new Blob([JSON.stringify(result)], { type: 'application/json' }).stream();
 	} catch (error) {
 		if (!(error instanceof NonRetryableError)) throw error;
@@ -187,8 +196,49 @@ export async function readAcquiredContentArtifact(artifact: ReadableStream<Uint8
 	return AcquiredContentSchema.parse(await new Response(artifact).json());
 }
 
-export async function readSavedUrlAcquisitionArtifact(artifact: ReadableStream<Uint8Array>): Promise<SavedUrlAcquisitionResult> {
+async function readSavedUrlAcquisitionArtifact(artifact: ReadableStream<Uint8Array>): Promise<SavedUrlAcquisitionResult> {
 	return SavedUrlAcquisitionResultSchema.parse(await new Response(artifact).json());
+}
+
+export async function stageSavedUrlAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: {
+		discoverRelatedContent: boolean;
+		isMonitoredOnly: boolean;
+		processingId: string;
+		sourceAvatarUrl: string | null;
+		sourceUrl: string;
+	},
+	providerSequence?: string,
+): Promise<AcquiredContent> {
+	let acquisitionUrl = validateAcquisitionUrl(input.sourceUrl);
+	for (let route = 0; route < 5; route++) {
+		const platform = detectResourceUrl(acquisitionUrl)?.resourcePlatform ?? null;
+		const sequencedTwitter = platform === 'twitter' && !!providerSequence;
+		const acquisition = await readSavedUrlAcquisitionArtifact(
+			await step.do(
+				`acquire-content-route-v2-${route}`,
+				sequencedTwitter ? TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG : ACQUISITION_STEP,
+				(ctx) => {
+					if (sequencedTwitter) logSequencedTwitterAcquisitionAttempt(input.processingId, providerSequence, ctx.attempt);
+					return scrapeSavedUrlArtifact(
+						acquisitionUrl,
+						env,
+						input.isMonitoredOnly,
+						input.sourceAvatarUrl,
+						input.processingId,
+						providerSequence,
+						input.discoverRelatedContent,
+					);
+				},
+			),
+		);
+		if (acquisition.status === 'rejected') throw new ResourceProcessingRejectedError(acquisition.message);
+		if (acquisition.status === 'acquired') return acquisition.content;
+		acquisitionUrl = validateAcquisitionUrl(acquisition.redirectUrl);
+	}
+	throw new ResourceProcessingRejectedError(`Resource acquisition ${input.processingId} exceeded its platform redirect limit`);
 }
 
 export async function stagePlatformEnrichment(

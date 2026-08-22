@@ -1,10 +1,4 @@
-import {
-	type WorkflowDelayFunction,
-	WorkflowEntrypoint,
-	type WorkflowEvent,
-	type WorkflowStep,
-	type WorkflowStepConfig,
-} from 'cloudflare:workers';
+import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { isPaperIdentifier, normalizeResourceIdentifiers, type ResourceIdentifier } from '@core-shared/resource-identifiers';
 import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
@@ -16,14 +10,13 @@ import { loadResourceReacquisitionInput, loadStoredPdfInput } from '@ingest/stor
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
 import {
-	ACQUISITION_STEP,
 	type AcquiredContent,
 	acquiredContentArtifact,
+	ResourceProcessingRejectedError,
 	readAcquiredContentArtifact,
-	readSavedUrlAcquisitionArtifact,
 	sanitizeAcquiredContent,
-	scrapeSavedUrlArtifact,
 	stagePlatformEnrichment,
+	stageSavedUrlAcquisition,
 } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
 import { applyPaperEnrichment, stagePaperProcessing } from './platforms/paper';
@@ -34,22 +27,10 @@ import { markStoredBlobProcessingFailed, type PersistProcessedTarget, persistPro
 import { exactPlatformLocator, materializeAcquiredResource, type ResourcePlatformLocator } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 
-class ResourceProcessingRejectedError extends Error {}
-
 const WORKFLOW_ENQUEUE_STEP_CONFIG = {
 	retries: DURABLE_WORKFLOW_RETRIES,
 	timeout: '30 seconds',
 } as const satisfies WorkflowStepConfig;
-// A source watermark can advance after a sequenced draft is admitted, so that
-// acquisition must survive a provider outage. Keep the retry horizon bounded
-// because provider requests can consume paid quota.
-const sequencedSourceRetryDelay: WorkflowDelayFunction = ({ ctx }) =>
-	ctx.attempt <= 3 ? '10 seconds' : ctx.attempt <= 15 ? '1 minute' : '30 minutes';
-const SEQUENCED_SOURCE_ACQUISITION_STEP_CONFIG = {
-	retries: { limit: 50, delay: sequencedSourceRetryDelay },
-	timeout: '120 seconds',
-} as const satisfies WorkflowStepConfig;
-
 async function stageResourceImages(
 	env: CoreEnv,
 	step: WorkflowStep,
@@ -82,48 +63,6 @@ async function stageResourceImages(
 		ready: images.length,
 	});
 	return images;
-}
-
-async function stageSavedUrlAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: {
-		discoverRelatedContent: boolean;
-		isMonitoredOnly: boolean;
-		processingId: string;
-		sourceAvatarUrl: string | null;
-		sourceUrl: string;
-	},
-	providerSequence?: string,
-): Promise<AcquiredContent> {
-	const expectsProviderSequence = !!providerSequence;
-	const stepConfig = expectsProviderSequence ? SEQUENCED_SOURCE_ACQUISITION_STEP_CONFIG : ACQUISITION_STEP;
-	const acquisition = await readSavedUrlAcquisitionArtifact(
-		await step.do('acquire-content-kind-platform-v1', stepConfig, (ctx) => {
-			if (expectsProviderSequence) {
-				console.info({
-					tag: 'RESOURCE_ACQUISITION',
-					event: 'sequenced_acquisition_attempt',
-					resource_id: input.processingId,
-					provider_sequence: providerSequence,
-					attempt: ctx.attempt,
-				});
-			}
-			return scrapeSavedUrlArtifact(
-				input.sourceUrl,
-				env,
-				input.isMonitoredOnly,
-				input.sourceAvatarUrl,
-				input.processingId,
-				providerSequence,
-				input.discoverRelatedContent,
-			);
-		}),
-	);
-	if (acquisition.status === 'rejected') {
-		throw new ResourceProcessingRejectedError(acquisition.message);
-	}
-	return acquisition.content;
 }
 
 type ResourceMaterializationSeed = Pick<

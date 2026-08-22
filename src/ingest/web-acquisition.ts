@@ -52,7 +52,7 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 
 export type AcquiredWebContent = AcquiredMaterial<null>;
 
-type PlatformRedirect = { redirectUrl: string };
+export type PlatformRedirect = { redirectUrl: string };
 
 function urlHost(url: string): string {
 	return new URL(url).hostname.replace(/^www\./, '');

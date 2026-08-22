@@ -1,3 +1,4 @@
+import type { WorkflowDelayFunction, WorkflowStepConfig } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { readTextWithLimit } from '@core-shared/http';
 import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource-metadata';
@@ -25,6 +26,26 @@ import { fetchTwitterProvider } from './twitter-provider';
 
 const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
 const TWITTER_SEARCH_MAX_REQUESTS = 256;
+
+// A source watermark can advance after a sequenced draft is admitted, so the
+// Twitter adapter must outlive a provider outage. The bounded retry horizon
+// also limits paid twitterapi.io requests.
+const sequencedTwitterRetryDelay: WorkflowDelayFunction = ({ ctx }) =>
+	ctx.attempt <= 3 ? '10 seconds' : ctx.attempt <= 15 ? '1 minute' : '30 minutes';
+export const TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG = {
+	retries: { limit: 50, delay: sequencedTwitterRetryDelay },
+	timeout: '120 seconds',
+} as const satisfies WorkflowStepConfig;
+
+export function logSequencedTwitterAcquisitionAttempt(processingId: string, providerSequence: string, attempt: number): void {
+	console.info({
+		tag: 'TWITTER',
+		event: 'sequenced_acquisition_attempt',
+		processing_id: processingId,
+		provider_sequence: providerSequence,
+		attempt,
+	});
+}
 
 interface TwitterMedia {
 	url: string;
