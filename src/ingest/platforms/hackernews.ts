@@ -9,11 +9,9 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import {
 	acquiredContentSchema,
-	acquisitionResultArtifact,
 	DEFAULT_ACQUISITION_STEP_CONFIG,
 	type NormalizedAcquiredContent,
 	normalizeAcquiredContent,
-	readAcquisitionResultArtifact,
 } from '../acquired-content';
 
 const HN_ALGOLIA_API = 'https://hn.algolia.com/api/v1/items';
@@ -166,14 +164,12 @@ async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquiredConte
 }
 
 export async function stageHackerNewsAcquisition(step: WorkflowStep, input: { itemId: string; route: number; url: string }) {
-	return readAcquisitionResultArtifact(
-		await step.do(`acquire-hackernews-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
-			acquisitionResultArtifact(async () =>
-				normalizeAcquiredContent({ ...(await scrapeHackerNews(input.itemId)), canonicalUrl: input.url }),
-			),
-		),
-		HackerNewsAcquiredContentSchema,
+	const contentStream = await step.do(
+		`acquire-hackernews-v1-${input.route}`,
+		DEFAULT_ACQUISITION_STEP_CONFIG,
+		async () => Response.json(await normalizeAcquiredContent({ ...(await scrapeHackerNews(input.itemId)), canonicalUrl: input.url })).body!,
 	);
+	return HackerNewsAcquiredContentSchema.parse(await new Response(contentStream).json());
 }
 
 function collectAllComments(children: HnComment[]): HnCollectedComment[] {

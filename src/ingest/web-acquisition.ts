@@ -9,11 +9,9 @@ import { extractFromHtml } from '@extractus/article-extractor';
 import type { z } from 'zod';
 import {
 	acquiredContentSchema,
-	acquisitionResultArtifact,
 	DEFAULT_ACQUISITION_STEP_CONFIG,
 	type NormalizedAcquiredContent,
 	normalizeAcquiredContent,
-	readAcquisitionResultArtifact,
 } from './acquired-content';
 import { markdownFromHtml } from './document-conversion';
 import { acquireFetchedPdfResponse, PDF_MIME } from './platforms/pdf';
@@ -138,13 +136,9 @@ async function acquireWebResource(url: string, env: CoreEnv, processingId?: stri
 }
 
 export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { processingId: string; route: number; url: string }) {
-	return readAcquisitionResultArtifact(
-		await step.do(`acquire-web-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
-			acquisitionResultArtifact(async () => {
-				const acquired = await acquireWebResource(input.url, env, input.processingId);
-				return 'redirectUrl' in acquired ? acquired : normalizeAcquiredContent(acquired);
-			}),
-		),
-		WebAcquiredContentSchema,
-	);
+	const result = await step.do(`acquire-web-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, async () => {
+		const acquired = await acquireWebResource(input.url, env, input.processingId);
+		return 'redirectUrl' in acquired ? acquired : Response.json(await normalizeAcquiredContent(acquired)).body!;
+	});
+	return 'redirectUrl' in result ? result : WebAcquiredContentSchema.parse(await new Response(result).json());
 }

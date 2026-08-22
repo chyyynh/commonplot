@@ -3,7 +3,6 @@ import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shar
 import { isPaperIdentifier, normalizeResourceIdentifiers, type ResourceIdentifier } from '@core-shared/resource-identifiers';
 import type { AcquiredMaterial, MaterializedResource, ResolvedResource } from '@core-shared/types';
 import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
-import type { AcquisitionArtifactResult } from './acquired-content';
 import { type HackerNewsAcquiredContent, stageHackerNewsAcquisition, stageHackerNewsEnrichment } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
 import { stagePaperProcessing } from './platforms/paper';
@@ -23,7 +22,7 @@ export type AcquiredContent = RawAcquiredContent & { sourceSnapshotHash: string 
 
 export type ResourceResolutionOrigin = ResourceMaterializationOrigin & Pick<MaterializedResource, 'resourceIdentifiers'>;
 
-type SavedUrlAcquisitionResult = AcquisitionArtifactResult<AcquiredContent>;
+type SavedUrlAcquisitionResult = AcquiredContent | { redirectUrl: string };
 
 function validateAcquisitionUrl(url: string): string {
 	const parsed = parseExternalHttpUrl(url);
@@ -86,7 +85,7 @@ export async function stageSavedUrlAcquisition(
 			}
 		}
 		const acquisition = await staged;
-		if (acquisition.status === 'acquired') return acquisition.content;
+		if (!('redirectUrl' in acquisition)) return acquisition;
 		acquisitionUrl = validateAcquisitionUrl(acquisition.redirectUrl);
 	}
 	throw new Error(`Resource acquisition ${input.processingId} exceeded its platform redirect limit`);

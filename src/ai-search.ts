@@ -180,25 +180,23 @@ async function uploadCorpusDocument(env: CoreEnv, document: CorpusDocument): Pro
 	});
 }
 
-async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<boolean> {
+async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<void> {
 	const key = aiSearchItemKey(resourceId);
 	const listed = await env.AI_SEARCH.items.list({ key, source: 'builtin', per_page: 1 });
 	const item = listed.result.find((candidate) => candidate.key === key && candidate.source_id === 'builtin');
-	if (!item) return false;
+	if (!item) return;
 	await env.AI_SEARCH.items.delete(item.id);
 	console.info({ tag: 'AI_SEARCH', msg: 'Corpus item deleted', resource_id: resourceId, item_id: item.id });
-	return true;
 }
 
-export async function syncCorpusItem(env: CoreEnv, db: CoreDb, resourceId: string): Promise<'uploaded' | 'deleted' | 'skipped'> {
-	if (!isValidUuid(resourceId)) return 'skipped';
+export async function syncCorpusItem(env: CoreEnv, db: CoreDb, resourceId: string): Promise<void> {
+	if (!isValidUuid(resourceId)) return;
 	const document = (await loadCorpusDocuments(db, [resourceId]))[0] ?? null;
 	if (!document) {
 		await deleteCorpusItem(env, resourceId);
-		return 'deleted';
+		return;
 	}
 	await uploadCorpusDocument(env, document);
-	return 'uploaded';
 }
 
 type SearchIndexRebuildPayload = Record<string, never>;

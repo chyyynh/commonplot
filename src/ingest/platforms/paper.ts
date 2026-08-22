@@ -4,13 +4,7 @@ import type { WorkflowDynamicDelayContext, WorkflowSleepDuration, WorkflowStep }
 import { type PaperIdentifier, paperIdentityFromText, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { literalCreator, type PaperKindMetadata } from '@core-shared/resource-metadata';
 import type { PaperMetadata } from '@core-shared/types';
-import {
-	acquiredContentArtifact,
-	type NormalizedAcquiredContent,
-	NullPlatformAcquiredContentSchema,
-	normalizeAcquiredContent,
-	readAcquiredContentArtifact,
-} from '../acquired-content';
+import { type NormalizedAcquiredContent, NullPlatformAcquiredContentSchema, normalizeAcquiredContent } from '../acquired-content';
 import { resolveBibliographicIdentifiers } from './bibliographic-resolver';
 import { acquireOpenAlexGrobidText, acquireOpenAlexPdf, resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME } from './pdf';
@@ -169,7 +163,7 @@ async function stagePaperEnrichment(
 	}
 }
 
-async function acquireOpenAlexPdfArtifact(
+async function acquireOpenAlexPdfStream(
 	input: {
 		contentPdfUrl: string;
 		description: string | null;
@@ -183,7 +177,7 @@ async function acquireOpenAlexPdfArtifact(
 	const acquired = await acquireOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
 	const sourceName = input.sourceName.trim();
 	if (!sourceName) throw new Error(`Processing ${input.processingId} has no source name for its OpenAlex PDF`);
-	return acquiredContentArtifact(
+	return Response.json(
 		await normalizeAcquiredContent({
 			...acquired,
 			title: input.title,
@@ -192,10 +186,10 @@ async function acquireOpenAlexPdfArtifact(
 			summary: input.description,
 			kindMetadata: { siteName: sourceName },
 		}),
-	);
+	).body!;
 }
 
-async function acquireOpenAlexGrobidArtifact(
+async function acquireOpenAlexGrobidStream(
 	input: {
 		contentGrobidXmlUrl: string;
 		description: string | null;
@@ -213,7 +207,7 @@ async function acquireOpenAlexGrobidArtifact(
 	});
 	const sourceName = input.sourceName.trim();
 	if (!sourceName) throw new Error('OpenAlex GROBID acquisition has no source name');
-	return acquiredContentArtifact(
+	return Response.json(
 		await normalizeAcquiredContent({
 			resourcePlatform: null,
 			fileType: null,
@@ -226,7 +220,7 @@ async function acquireOpenAlexGrobidArtifact(
 			creators: [],
 			kindMetadata: { siteName: sourceName },
 		}),
-	);
+	).body!;
 }
 
 async function stageOpenAlexContentAcquisition(
@@ -244,9 +238,9 @@ async function stageOpenAlexContentAcquisition(
 	const title = metadata?.title?.trim() || resource.title;
 
 	if (contentPdfUrl) {
-		const artifact = await step
+		const contentStream = await step
 			.do('acquire-openalex-content-pdf-v2', PAPER_CONTENT_ACQUISITION_STEP, () =>
-				acquireOpenAlexPdfArtifact(
+				acquireOpenAlexPdfStream(
 					{ contentPdfUrl, description, publishedDate, processingId: resource.processingId, sourceName, title },
 					env,
 				),
@@ -260,8 +254,8 @@ async function stageOpenAlexContentAcquisition(
 				});
 				return null;
 			});
-		if (artifact) {
-			const acquired = await readAcquiredContentArtifact(artifact, NullPlatformAcquiredContentSchema);
+		if (contentStream) {
+			const acquired = NullPlatformAcquiredContentSchema.parse(await new Response(contentStream).json());
 			console.info({
 				tag: 'OPENALEX_CONTENT',
 				event: 'pdf_acquired',
@@ -273,9 +267,9 @@ async function stageOpenAlexContentAcquisition(
 	}
 
 	if (contentGrobidXmlUrl) {
-		const artifact = await step
+		const contentStream = await step
 			.do('acquire-openalex-content-grobid-v2', PAPER_CONTENT_ACQUISITION_STEP, () =>
-				acquireOpenAlexGrobidArtifact(
+				acquireOpenAlexGrobidStream(
 					{ contentGrobidXmlUrl, description, processingId: resource.processingId, publishedDate, sourceName, title },
 					env,
 				),
@@ -289,8 +283,8 @@ async function stageOpenAlexContentAcquisition(
 				});
 				return null;
 			});
-		if (artifact) {
-			const acquired = await readAcquiredContentArtifact(artifact, NullPlatformAcquiredContentSchema);
+		if (contentStream) {
+			const acquired = NullPlatformAcquiredContentSchema.parse(await new Response(contentStream).json());
 			console.info({
 				tag: 'OPENALEX_CONTENT',
 				event: 'grobid_acquired',

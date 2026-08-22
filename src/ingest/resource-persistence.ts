@@ -24,11 +24,7 @@ type PersistProcessedInput = {
 	target: PersistProcessedTarget;
 };
 
-export async function markStoredBlobProcessingFailed(
-	db: CoreDb,
-	resourceId: string,
-	expectedSourceRevision: string | null,
-): Promise<'failed' | 'superseded'> {
+export async function markStoredBlobProcessingFailed(db: CoreDb, resourceId: string, expectedSourceRevision: string | null): Promise<void> {
 	const failed = await db.execute(sql`
 		UPDATE resources AS resource
 		SET enrichment_status = 'failed',
@@ -45,7 +41,7 @@ export async function markStoredBlobProcessingFailed(
 		  )
 		RETURNING resource.id
 	`);
-	if (failed.rows.length) return 'failed';
+	if (failed.rows.length) return;
 	const existing = await db.execute<{ enrichment_status: string; source_revision: string | null }>(sql`
 		SELECT enrichment_status, source_revision
 		FROM resources
@@ -61,7 +57,6 @@ export async function markStoredBlobProcessingFailed(
 		current_source_revision: current?.source_revision ?? null,
 		current_status: current?.enrichment_status ?? 'deleted',
 	});
-	return 'superseded';
 }
 
 export async function persistProcessedResource(

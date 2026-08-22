@@ -149,11 +149,11 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		);
 		if (!input) {
 			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Resource original is unavailable; skipping', resource_id: resourceId });
-			return { success: true, resource_id: resourceId, skipped: true };
+			return;
 		}
 		if (input.sourceRevision !== sourceRevision) {
 			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Source revision was superseded; skipping', resource_id: resourceId });
-			return { success: true, resource_id: resourceId, skipped: true, superseded: true };
+			return;
 		}
 
 		const resource = input.resource;
@@ -169,7 +169,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		}
 		const metadataTask = translationPlan.metadata;
 		if (!metadataTask && translationPlan.content !== 'translate') {
-			return { success: true, resource_id: resourceId, skipped: true };
+			return;
 		}
 		const initialContent = resource.content.trim();
 		if (!initialContent) throw new Error(`Resource ${resourceId} has no persisted original content`);
@@ -193,7 +193,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 						patch: translatedMetadata,
 					}),
 			);
-			if (!persisted) return { success: true, resource_id: resourceId, skipped: true, superseded: true };
+			if (!persisted) return;
 		}
 
 		if (translationPlan.content === 'translate') {
@@ -217,12 +217,11 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 						patch: { content: translated },
 					}),
 			);
-			if (!persisted) return { success: true, resource_id: resourceId, skipped: true, superseded: true };
+			if (!persisted) return;
 		}
 		await step.do('sync-translated-resource-to-ai-search', AI_SEARCH_SYNC_STEP_CONFIG, async () =>
 			syncCorpusItem(this.env, await connectCoreDb(this.env), resourceId),
 		);
 		console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Completed', resource_id: resourceId });
-		return { success: true, resource_id: resourceId };
 	}
 }

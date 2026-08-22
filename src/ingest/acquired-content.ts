@@ -4,15 +4,10 @@ import { parseResourceCreators, parseStoredResourceKindMetadata } from '@core-sh
 import { type ResourcePlatform, resourceIdentityForDetectedPlatform } from '@core-shared/resource-types';
 import type { AcquiredMaterial } from '@core-shared/types';
 import { z } from 'zod';
-import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
 
-type WithSourceSnapshot<T extends AcquiredMaterial> = T extends unknown
-	? Omit<T, 'markdown' | 'sourceSnapshotHash'> & { markdown: string; sourceSnapshotHash: string }
-	: never;
+type WithSourceSnapshot<T extends AcquiredMaterial> = T extends unknown ? T & { sourceSnapshotHash: string } : never;
 
 export type NormalizedAcquiredContent<T extends ResourcePlatform = ResourcePlatform> = WithSourceSnapshot<AcquiredMaterial<T>>;
-
-export type AcquisitionArtifactResult<T> = { status: 'acquired'; content: T } | { status: 'redirect'; redirectUrl: string };
 
 export const DEFAULT_ACQUISITION_STEP_CONFIG = {
 	retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' },
@@ -47,7 +42,7 @@ export function acquiredContentSchema<const T extends ResourcePlatform, Extra ex
 
 export const NullPlatformAcquiredContentSchema: z.ZodType<NormalizedAcquiredContent<null>> = acquiredContentSchema(null, {});
 
-function sourceSnapshotHash(acquired: AcquiredMaterial, markdown: string): Promise<string> {
+export async function normalizeAcquiredContent<T extends AcquiredMaterial>(acquired: T): Promise<WithSourceSnapshot<T>> {
 	const providerFacts =
 		acquired.resourcePlatform !== null || acquired.subjectUrl
 			? {
@@ -55,13 +50,13 @@ function sourceSnapshotHash(acquired: AcquiredMaterial, markdown: string): Promi
 					...(acquired.subjectUrl ? { subjectUrl: acquired.subjectUrl } : {}),
 				}
 			: null;
-	return sha256Hex(
+	const sourceSnapshotHash = await sha256Hex(
 		JSON.stringify({
 			resourcePlatform: acquired.resourcePlatform,
 			canonicalUrl: acquired.canonicalUrl,
 			fileType: acquired.fileType,
 			title: acquired.title,
-			markdown,
+			markdown: acquired.markdown.trim(),
 			source: acquired.source,
 			originalLang: acquired.originalLang,
 			publishedDate: acquired.publishedDate,
@@ -71,38 +66,5 @@ function sourceSnapshotHash(acquired: AcquiredMaterial, markdown: string): Promi
 			providerFacts,
 		}),
 	);
-}
-
-export async function normalizeAcquiredContent<T extends AcquiredMaterial>(acquired: T): Promise<WithSourceSnapshot<T>> {
-	const markdown = sanitizeExtractedMarkdown(acquired.markdown);
-	return { ...acquired, markdown, sourceSnapshotHash: await sourceSnapshotHash(acquired, markdown) } as WithSourceSnapshot<T>;
-}
-
-export async function acquisitionResultArtifact<T extends NormalizedAcquiredContent>(
-	acquire: () => Promise<T | { redirectUrl: string }>,
-): Promise<ReadableStream<Uint8Array>> {
-	const acquired = await acquire();
-	const result: AcquisitionArtifactResult<T> =
-		'redirectUrl' in acquired ? { status: 'redirect', redirectUrl: acquired.redirectUrl } : { status: 'acquired', content: acquired };
-	return new Blob([JSON.stringify(result)], { type: 'application/json' }).stream();
-}
-
-export async function readAcquisitionResultArtifact<T>(
-	artifact: ReadableStream<Uint8Array>,
-	contentSchema: z.ZodType<T>,
-): Promise<AcquisitionArtifactResult<T>> {
-	return z
-		.discriminatedUnion('status', [
-			z.object({ status: z.literal('acquired'), content: contentSchema }),
-			z.object({ status: z.literal('redirect'), redirectUrl: z.url() }),
-		])
-		.parse(await new Response(artifact).json());
-}
-
-export function acquiredContentArtifact(acquired: NormalizedAcquiredContent): ReadableStream<Uint8Array> {
-	return new Blob([JSON.stringify(acquired)], { type: 'application/json' }).stream();
-}
-
-export async function readAcquiredContentArtifact<T>(artifact: ReadableStream<Uint8Array>, schema: z.ZodType<T>): Promise<T> {
-	return schema.parse(await new Response(artifact).json());
+	return { ...acquired, sourceSnapshotHash } as WithSourceSnapshot<T>;
 }

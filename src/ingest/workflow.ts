@@ -187,14 +187,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			() => persistProcessedResource(this.env, { classification, processingId, resource, target: call.persistenceTarget }, hostedImages),
 		);
 		if (!persistence.persisted) {
-			return { status: 'superseded', resourceId: persistence.resourceId } as const;
+			return { resourceId: persistence.resourceId };
 		}
 		const persistedResourceId = persistence.resourceId;
 		const translationRevision = persistence.translationRevision;
 		const followUps: Promise<unknown>[] = [
 			step.do('sync-resolved-ai-search-v1', AI_SEARCH_SYNC_STEP_CONFIG, async () => {
 				const db = await connectCoreDb(this.env);
-				return Promise.all(
+				await Promise.all(
 					[persistedResourceId, ...persistence.retiredResourceIds].map((resourceId) => syncCorpusItem(this.env, db, resourceId)),
 				);
 			}),
@@ -221,10 +221,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		await Promise.all(followUps);
 
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
-		return {
-			status: 'persisted',
-			resourceId: persistedResourceId,
-			...(target.kind === 'reacquire' ? { changed: true } : {}),
-		} as const;
+		return { resourceId: persistedResourceId };
 	}
 }

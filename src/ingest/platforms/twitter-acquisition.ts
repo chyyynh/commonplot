@@ -7,11 +7,9 @@ import { extractTweetId } from '@core-shared/url';
 import { z } from 'zod';
 import {
 	acquiredContentSchema,
-	acquisitionResultArtifact,
 	DEFAULT_ACQUISITION_STEP_CONFIG,
 	type NormalizedAcquiredContent,
 	normalizeAcquiredContent,
-	readAcquisitionResultArtifact,
 } from '../acquired-content';
 import {
 	assertExpectedTwitterThreadPost,
@@ -470,27 +468,25 @@ export async function stageTwitterAcquisition(
 		url: string;
 	},
 ) {
-	return readAcquisitionResultArtifact(
-		await step.do(
-			`acquire-twitter-v1-${input.route}`,
-			input.providerSequence ? TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG : DEFAULT_ACQUISITION_STEP_CONFIG,
-			(ctx) => {
-				if (input.providerSequence) {
-					logSequencedTwitterAcquisitionAttempt(input.processingId, input.providerSequence, ctx.attempt);
-				}
-				return acquisitionResultArtifact(async () =>
-					normalizeAcquiredContent({
-						...(await scrapeTweet(input.tweetId, env.KAITO_API_KEY, {
-							discoverUnsignaledThread: input.discoverRelatedContent,
-							expectedReplyId: input.providerSequence,
-						})),
-						canonicalUrl: input.url,
-					}),
-				);
-			},
-		),
-		TwitterAcquiredContentSchema,
+	const contentStream = await step.do(
+		`acquire-twitter-v1-${input.route}`,
+		input.providerSequence ? TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG : DEFAULT_ACQUISITION_STEP_CONFIG,
+		async (ctx) => {
+			if (input.providerSequence) {
+				logSequencedTwitterAcquisitionAttempt(input.processingId, input.providerSequence, ctx.attempt);
+			}
+			return Response.json(
+				await normalizeAcquiredContent({
+					...(await scrapeTweet(input.tweetId, env.KAITO_API_KEY, {
+						discoverUnsignaledThread: input.discoverRelatedContent,
+						expectedReplyId: input.providerSequence,
+					})),
+					canonicalUrl: input.url,
+				}),
+			).body!;
+		},
 	);
+	return TwitterAcquiredContentSchema.parse(await new Response(contentStream).json());
 }
 
 type TwitterThreadSearchResult = {

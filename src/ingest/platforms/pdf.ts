@@ -5,22 +5,9 @@ import type { ResourceCreator, ResourceKindMetadata } from '@core-shared/resourc
 import type { AcquiredMaterial } from '@core-shared/types';
 import { initSync, LiteParse } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
-import {
-	acquiredContentArtifact,
-	type NormalizedAcquiredContent,
-	NullPlatformAcquiredContentSchema,
-	normalizeAcquiredContent,
-	readAcquiredContentArtifact,
-} from '../acquired-content';
+import { type NormalizedAcquiredContent, NullPlatformAcquiredContentSchema, normalizeAcquiredContent } from '../acquired-content';
 
 export const PDF_MIME = 'application/pdf';
-
-type PdfTextArtifact = {
-	chars: number;
-	pages: number;
-	status: 'ok' | 'needs_ocr';
-	text: string;
-};
 
 const MIN_PDF_CHARS = 40;
 const MIN_PDF_CHARS_PER_PAGE = 20;
@@ -44,7 +31,7 @@ function extractedTextChars(markdown: string): number {
 	return content.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
 }
 
-async function parsePdfBytes(bytes: Uint8Array): Promise<PdfTextArtifact> {
+async function parsePdfBytes(bytes: Uint8Array, source: string): Promise<string> {
 	initSync({ module: wasmModule });
 	const parser = new LiteParse({ ocrEnabled: false, outputFormat: 'markdown', imageMode: 'off' });
 	const raw = (await parser.parse(bytes)) as { text?: unknown; pages?: unknown };
@@ -53,8 +40,8 @@ async function parsePdfBytes(bytes: Uint8Array): Promise<PdfTextArtifact> {
 	const text = raw.text.trim();
 	const pages = raw.pages.length;
 	const chars = extractedTextChars(text);
-	const status = chars < MIN_PDF_CHARS || chars / pages < MIN_PDF_CHARS_PER_PAGE ? 'needs_ocr' : 'ok';
-	return { text, pages, chars, status };
+	if (chars < MIN_PDF_CHARS || chars / pages < MIN_PDF_CHARS_PER_PAGE) throw new NonRetryableError(`${source} requires OCR`);
+	return text;
 }
 
 async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfAcquisitionInput): Promise<AcquiredMaterial<null>> {
@@ -64,13 +51,12 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfAcquisitionInpu
 	const obj = await env.R2.get(resource.storageKey);
 	if (!obj) throw new Error(`PDF source object missing: ${resource.storageKey}`);
 	if (obj.size > MAX_PDF_BYTES) throw new Error(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
-	const parsed = await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()));
-	if (parsed.status === 'needs_ocr') throw new Error(`Stored PDF ${resource.resourceId} requires OCR`);
+	const markdown = await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()), `Stored PDF ${resource.resourceId}`);
 	return {
 		resourcePlatform: null,
 		fileType: PDF_MIME,
 		title: resource.title,
-		markdown: parsed.text,
+		markdown,
 		source: resource.source,
 		originalLang: resource.originalLang,
 		publishedDate: resource.publishedDate,
@@ -81,8 +67,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfAcquisitionInpu
 }
 
 export async function acquireFetchedPdfResponse(response: Response, finalUrl: string): Promise<AcquiredMaterial<null>> {
-	const parsed = await parsePdfBytes(await readBytesWithLimit(response, MAX_PDF_BYTES));
-	if (parsed.status === 'needs_ocr') throw new NonRetryableError(`PDF requires OCR: ${finalUrl}`);
+	const markdown = await parsePdfBytes(await readBytesWithLimit(response, MAX_PDF_BYTES), `PDF ${finalUrl}`);
 	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
 	let fileName = encodedName || 'document.pdf';
 	if (encodedName) {
@@ -99,11 +84,11 @@ export async function acquireFetchedPdfResponse(response: Response, finalUrl: st
 		resourcePlatform: null,
 		fileType: PDF_MIME,
 		title,
-		markdown: parsed.text,
+		markdown,
 		source,
 		originalLang: null,
 		publishedDate: null,
-		summary: parsed.text.slice(0, 500) || null,
+		summary: markdown.slice(0, 500) || null,
 		creators: [],
 		kindMetadata: { siteName: source },
 	};
@@ -114,12 +99,10 @@ export async function stageStoredPdfAcquisition(
 	step: WorkflowStep,
 	resource: StoredPdfAcquisitionInput,
 ): Promise<NormalizedAcquiredContent<null>> {
-	return readAcquiredContentArtifact(
-		await step.do(
-			'acquire-stored-pdf-v2',
-			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-			async () => acquiredContentArtifact(await normalizeAcquiredContent(await acquireStoredPdf(env, resource))),
-		),
-		NullPlatformAcquiredContentSchema,
+	const contentStream = await step.do(
+		'acquire-stored-pdf-v2',
+		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+		async () => Response.json(await normalizeAcquiredContent(await acquireStoredPdf(env, resource))).body!,
 	);
+	return NullPlatformAcquiredContentSchema.parse(await new Response(contentStream).json());
 }

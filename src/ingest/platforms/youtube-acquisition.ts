@@ -15,11 +15,9 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import {
 	acquiredContentSchema,
-	acquisitionResultArtifact,
 	DEFAULT_ACQUISITION_STEP_CONFIG,
 	type NormalizedAcquiredContent,
 	normalizeAcquiredContent,
-	readAcquisitionResultArtifact,
 } from '../acquired-content';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
@@ -300,17 +298,18 @@ export async function stageYouTubeAcquisition(
 	step: WorkflowStep,
 	input: { monitoredOnly: boolean; route: number; sourceAvatarUrl: string | null; url: string; videoId: string },
 ) {
-	return readAcquisitionResultArtifact(
-		await step.do(`acquire-youtube-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
-			acquisitionResultArtifact(async () =>
-				normalizeAcquiredContent({
+	const contentStream = await step.do(
+		`acquire-youtube-v1-${input.route}`,
+		DEFAULT_ACQUISITION_STEP_CONFIG,
+		async () =>
+			Response.json(
+				await normalizeAcquiredContent({
 					...(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY, input.monitoredOnly, input.sourceAvatarUrl)),
 					canonicalUrl: input.url,
 				}),
-			),
-		),
-		YouTubeAcquiredContentSchema,
+			).body!,
 	);
+	return YouTubeAcquiredContentSchema.parse(await new Response(contentStream).json());
 }
 
 const YouTubeHighlightSchema = z.object({

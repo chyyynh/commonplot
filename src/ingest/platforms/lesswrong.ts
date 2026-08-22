@@ -7,11 +7,9 @@ import type { AcquiredMaterial } from '@core-shared/types';
 import { z } from 'zod';
 import {
 	acquiredContentSchema,
-	acquisitionResultArtifact,
 	DEFAULT_ACQUISITION_STEP_CONFIG,
 	type NormalizedAcquiredContent,
 	normalizeAcquiredContent,
-	readAcquisitionResultArtifact,
 } from '../acquired-content';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
@@ -96,12 +94,10 @@ async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<'lesswr
 }
 
 export async function stageLessWrongAcquisition(step: WorkflowStep, input: { postId: string; route: number; url: string }) {
-	return readAcquisitionResultArtifact(
-		await step.do(`acquire-lesswrong-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, () =>
-			acquisitionResultArtifact(async () =>
-				normalizeAcquiredContent({ ...(await scrapeLessWrong(input.postId)), canonicalUrl: input.url }),
-			),
-		),
-		LessWrongAcquiredContentSchema,
+	const contentStream = await step.do(
+		`acquire-lesswrong-v1-${input.route}`,
+		DEFAULT_ACQUISITION_STEP_CONFIG,
+		async () => Response.json(await normalizeAcquiredContent({ ...(await scrapeLessWrong(input.postId)), canonicalUrl: input.url })).body!,
 	);
+	return LessWrongAcquiredContentSchema.parse(await new Response(contentStream).json());
 }
