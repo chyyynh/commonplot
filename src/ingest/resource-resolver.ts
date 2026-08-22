@@ -10,7 +10,6 @@ import {
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
 	resourceIdentityForDetectedPlatform,
-	toResourceIdentityColumns,
 } from '../shared/resource-types.ts';
 import type { AcquiredMaterial, ResolvedResource, ResourceForProcessing } from '../shared/types.ts';
 import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../shared/url.ts';
@@ -39,13 +38,13 @@ export function materializeAcquiredResource(
 	origin: Pick<
 		ResourceForProcessing,
 		| 'keywords'
-		| 'normalized_url'
-		| 'original_lang'
-		| 'processing_id'
-		| 'published_date'
+		| 'normalizedUrl'
+		| 'originalLang'
+		| 'processingId'
+		| 'publishedDate'
 		| 'scope'
-		| 'source_id'
-		| 'storage_key'
+		| 'sourceId'
+		| 'storageKey'
 		| 'summary'
 		| 'tags'
 		| 'url'
@@ -74,26 +73,26 @@ export function materializeAcquiredResource(
 		? canonicalResourcePlatformUrl(resolution.detected.resourcePlatform, resolution.detected.platformId)
 		: resolution.canonicalUrl;
 	return {
-		...toResourceIdentityColumns(identity),
-		processing_id: origin.processing_id,
-		source_id: origin.source_id,
+		...identity,
+		processingId: origin.processingId,
+		sourceId: origin.sourceId,
 		scope: origin.scope,
-		original_lang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeResourceLang(origin.original_lang),
+		originalLang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeResourceLang(origin.originalLang),
 		title: acquired.title.trim(),
 		summary: acquired.summary ?? origin.summary,
 		content: acquired.markdown,
 		url,
 		source: acquired.source,
-		published_date: resolution.publishedDate,
+		publishedDate: resolution.publishedDate,
 		tags: origin.tags,
 		keywords: origin.keywords,
 		creators: acquired.creators,
-		kind_metadata: acquired.kindMetadata,
-		source_revision: acquired.sourceSnapshotHash,
-		resource_identifiers: identifiers,
-		storage_key: origin.scope === 'private' ? origin.storage_key : null,
-		file_type: acquired.fileType,
-		normalized_url: url ?? origin.normalized_url,
+		kindMetadata: acquired.kindMetadata,
+		sourceRevision: acquired.sourceSnapshotHash,
+		resourceIdentifiers: identifiers,
+		storageKey: origin.scope === 'private' ? origin.storageKey : null,
+		fileType: acquired.fileType,
+		normalizedUrl: url ?? origin.normalizedUrl,
 	};
 }
 

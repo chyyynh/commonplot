@@ -1,5 +1,5 @@
 import { RESOURCE_CATEGORIES, type ResourceCategory } from '@core-shared/resource-types';
-import { ENTITY_TYPES, type ResourceForProcessing } from '@core-shared/types';
+import { ENTITY_TYPES, type ResolvedResource } from '@core-shared/types';
 import { entityExtractionExclusionNames, type ResourceEntityInput } from '@entities/normalize';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
@@ -51,24 +51,22 @@ const RESOURCE_CLASSIFICATION_SYSTEM_PROMPT = `你是專業的新聞分類和實
 
 分類只能是：AI, Tech, Finance, Research, Business, Other。`;
 
-function resourceClassificationPrompt(resource: ResourceForProcessing): string {
-	const source = resource.source?.trim();
-	if (!source) throw new Error(`Resource processing ${resource.processing_id} has no source`);
-	const content = resource.content?.trim();
-	if (!content) throw new Error(`Resource processing ${resource.processing_id} has no content`);
-	const excludedEntities = entityExtractionExclusionNames(resource.resource_platform, resource.source, resource.creators);
+function resourceClassificationPrompt(resource: ResolvedResource): string {
+	const source = resource.source.trim();
+	const content = resource.content.trim();
+	const excludedEntities = entityExtractionExclusionNames(resource.resourcePlatform, resource.source, resource.creators);
 	const excludedLine = excludedEntities.length ? `\n實體排除名單: ${excludedEntities.join(', ')}` : '';
 	const summaryLine = resource.summary?.trim() ? `\n摘要: ${resource.summary.trim()}` : '';
 	return `文章資訊:
 標題: ${resource.title}
 來源: ${source}
 資源種類: ${resource.kind}
-資源平台: ${resource.resource_platform ?? 'none'}${excludedLine}${summaryLine}
+資源平台: ${resource.resourcePlatform ?? 'none'}${excludedLine}${summaryLine}
 內容:
 ${content.substring(0, CLASSIFICATION_CONTENT_MAX_LENGTH)}`;
 }
 
-export async function classifyResource(resource: ResourceForProcessing, env: CoreEnv): Promise<ResourceClassificationResult> {
+export async function classifyResource(resource: ResolvedResource, env: CoreEnv): Promise<ResourceClassificationResult> {
 	console.info({ tag: 'AI', msg: 'Analyzing', title: resource.title.substring(0, 80) });
 
 	const { finishReason, output: classification } = await generateText({
@@ -80,7 +78,7 @@ export async function classifyResource(resource: ResourceForProcessing, env: Cor
 				metadata: {
 					feature: 'resource-classification',
 					environment: env.AI_GATEWAY_ENVIRONMENT,
-					processing_id: resource.processing_id,
+					processing_id: resource.processingId,
 				},
 			},
 			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
@@ -96,7 +94,7 @@ export async function classifyResource(resource: ResourceForProcessing, env: Cor
 	const tags = classification.tags.slice(0, 5);
 	const keywords = classification.keywords.slice(0, 8);
 	const platformTag =
-		resource.resource_platform === 'hackernews' ? 'HackerNews' : resource.resource_platform === 'twitter' ? 'Twitter' : null;
+		resource.resourcePlatform === 'hackernews' ? 'HackerNews' : resource.resourcePlatform === 'twitter' ? 'Twitter' : null;
 	return {
 		category: classification.category,
 		entities: classification.entities.slice(0, 10),

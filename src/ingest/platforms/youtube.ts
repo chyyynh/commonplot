@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import type { YouTubeSpecializationMutation } from '@app-domain/resource-graph-contracts';
-import type { ResourceForProcessing, TranscriptSegment, YouTubeHighlights, YoutubeTranscript } from '@core-shared/types';
+import type { ResolvedResource, TranscriptSegment, YouTubeHighlights, YoutubeTranscript } from '@core-shared/types';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
@@ -36,23 +36,23 @@ const YOUTUBE_HIGHLIGHTS_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
 export async function stageYouTubeEnrichment(
 	env: CoreEnv,
 	step: WorkflowStep,
-	resource: ResourceForProcessing,
+	resource: ResolvedResource,
 	transcript: YoutubeTranscript,
 ): Promise<YouTubeSpecializationMutation> {
-	const videoId = resource.resource_identifiers.find((identifier) => identifier.scheme === 'youtube')?.value;
-	if (!videoId) throw new Error(`YouTube processing ${resource.processing_id} has no exact video identifier`);
+	const videoId = resource.resourceIdentifiers.find((identifier) => identifier.scheme === 'youtube')?.value;
+	if (!videoId) throw new Error(`YouTube processing ${resource.processingId} has no exact video identifier`);
 	const highlights = transcript.segments.length
 		? await step
 				.do(
 					'prepare-youtube-highlights-v2',
 					{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
-					() => prepareYouTubeHighlightsFromTranscript(env, resource.processing_id, videoId, transcript.segments),
+					() => prepareYouTubeHighlightsFromTranscript(env, resource.processingId, videoId, transcript.segments),
 				)
 				.catch((error) => {
 					console.error({
 						tag: 'YOUTUBE',
 						msg: 'Optional YouTube highlights failed after retries',
-						processing_id: resource.processing_id,
+						processing_id: resource.processingId,
 						error: error instanceof Error ? error.message : String(error),
 					});
 					return null;

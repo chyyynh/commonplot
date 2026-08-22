@@ -1,5 +1,5 @@
 import {
-	type ResourceIdentityColumns,
+	type ResourceIdentity,
 	type ResourceTranslationSource,
 	TRANSLATABLE_RESOURCE_KINDS,
 	ZH_HANT_RESOURCE_LANG,
@@ -22,9 +22,9 @@ const MIN_TRANSLATABLE_TEXT_LENGTH = 20;
 const INLINE_TWITTER_CONTENT_TRANSLATION_MAX_LENGTH = 1000;
 
 export type ResourceTranslationInput = {
-	file_type: string | null;
+	fileType: string | null;
 	id: string;
-	original_lang: string;
+	originalLang: string;
 	title: string;
 	summary: string | null;
 	content: string;
@@ -35,7 +35,7 @@ export type ResourceTranslationInput = {
 		content: string | null;
 		source: ResourceTranslationSource;
 	} | null;
-} & ResourceIdentityColumns;
+} & ResourceIdentity;
 
 const ZhHantMetadataTranslationSchema = z.object({
 	title: z.string().min(1),
@@ -69,7 +69,7 @@ function isBlank(value: string | null | undefined): boolean {
 
 function metadataTranslationTask(resource: ResourceTranslationInput): ZhHantMetadataTranslationTask | null {
 	const translation = resource.zhHantTranslation;
-	if (resource.resource_platform === 'twitter') {
+	if (resource.resourcePlatform === 'twitter') {
 		const content = resource.content.trim();
 		if (content && content.length <= INLINE_TWITTER_CONTENT_TRANSLATION_MAX_LENGTH) {
 			return isBlank(translation?.title) || isBlank(translation?.content) ? 'twitter-title-content' : null;
@@ -104,10 +104,10 @@ export function planZhHantTranslation(resource: ResourceTranslationInput): ZhHan
 	if (
 		!(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(resource.kind) ||
 		!resource.url ||
-		(resource.file_type === 'application/pdf' && resource.resource_platform === null) ||
+		(resource.fileType === 'application/pdf' && resource.resourcePlatform === null) ||
 		isBlank(resource.title) ||
 		isBlank(resource.content) ||
-		resource.original_lang === ZH_HANT_RESOURCE_LANG ||
+		resource.originalLang === ZH_HANT_RESOURCE_LANG ||
 		translation?.source === 'human'
 	) {
 		return { metadata: null, content: null };
@@ -201,7 +201,7 @@ export async function generateZhHantMetadataTranslation(
 	const summaryLine = resource.summary?.trim() ? `\n摘要：${resource.summary.trim()}` : '';
 	const prompt = `原文資訊：
 資源種類：${resource.kind}
-資源平台：${resource.resource_platform ?? 'none'}
+資源平台：${resource.resourcePlatform ?? 'none'}
 標題：${resource.title}${summaryLine}
 內容：
 ${content.slice(0, METADATA_CONTENT_MAX_LENGTH)}`;

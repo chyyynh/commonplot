@@ -111,25 +111,25 @@ function resolvedResourceMutation(
 	hostedImages: readonly HostedResourceImage[],
 ): Omit<PersistResolvedResourceGraphInput, 'resourceId' | 'expectedSourceRevision'> {
 	const resource = input.resource;
-	const identity = parseResourceIdentity(resource.kind, resource.resource_platform);
-	if (!identity) throw new Error(`Resource processing ${resource.processing_id} resolved to an invalid identity`);
+	const identity = parseResourceIdentity(resource.kind, resource.resourcePlatform);
+	if (!identity) throw new Error(`Resource processing ${resource.processingId} resolved to an invalid identity`);
 	const ogImageUrl = input.previewImageUrl?.trim() || null;
-	const media = hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kind_metadata, ogImageUrl }, hostedImages);
+	const media = hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kindMetadata, ogImageUrl }, hostedImages);
 	return {
 		identity,
-		identifiers: resource.resource_identifiers,
+		identifiers: resource.resourceIdentifiers,
 		creators: media.creators,
 		kindMetadata: media.kindMetadata,
-		sourceRevision: resource.source_revision,
+		sourceRevision: resource.sourceRevision,
 		youtube: resource.kind === 'video' ? input.youtube : null,
-		originalLang: resource.original_lang,
+		originalLang: resource.originalLang,
 		title: resource.title,
 		summary: resource.summary,
 		content: resource.content,
 		keywords: input.classification.keywords ?? resource.keywords,
 		tags: input.classification.tags ?? resource.tags,
 		category: input.classification.category,
-		entities: toStoredResourceEntities(input.classification.entities, resource.resource_platform, resource.source, resource.creators),
+		entities: toStoredResourceEntities(input.classification.entities, resource.resourcePlatform, resource.source, resource.creators),
 		subjectReference: input.subject
 			? {
 					identifiers: input.subject.identifiers,
@@ -137,10 +137,10 @@ function resolvedResourceMutation(
 				}
 			: null,
 		url: resource.url,
-		normalizedUrl: resource.normalized_url ?? resource.url,
-		storageKey: resource.scope === 'private' ? (resource.storage_key ?? null) : null,
-		fileType: resource.file_type ?? null,
-		publishedDate: resource.published_date,
+		normalizedUrl: resource.normalizedUrl ?? resource.url,
+		storageKey: resource.scope === 'private' ? (resource.storageKey ?? null) : null,
+		fileType: resource.fileType ?? null,
+		publishedDate: resource.publishedDate,
 		ogImageUrl: media.ogImageUrl,
 	};
 }

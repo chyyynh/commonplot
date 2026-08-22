@@ -29,24 +29,7 @@ export type ResourceIdentity = {
 	}>;
 }[ResourceKind];
 
-/** Canonical resource identity using the database/workflow column names. */
-export type ResourceIdentityColumns = {
-	[K in ResourceKind]: Readonly<{
-		kind: K;
-		resource_platform: (typeof VALID_KIND_PLATFORMS)[K][number];
-	}>;
-}[ResourceKind];
-
 export type ContentResourceIdentity = Extract<ResourceIdentity, { kind: ContentResourceKind }>;
-
-export function toResourceIdentityColumns<const Identity extends ResourceIdentity>(
-	identity: Identity,
-): Extract<ResourceIdentityColumns, { kind: Identity['kind'] }> {
-	return { kind: identity.kind, resource_platform: identity.resourcePlatform } as Extract<
-		ResourceIdentityColumns,
-		{ kind: Identity['kind'] }
-	>;
-}
 
 export type ResourceIdentityFilters = Readonly<{
 	kinds?: readonly ResourceKind[];

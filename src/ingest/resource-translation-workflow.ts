@@ -4,7 +4,6 @@ import {
 	parseResourceIdentity,
 	RESOURCE_TRANSLATION_SOURCES,
 	type ResourceTranslationSource,
-	toResourceIdentityColumns,
 	ZH_HANT_RESOURCE_LANG,
 } from '@core-shared/resource-types';
 import { type CoreDb, connectCoreDb } from '@db/connection';
@@ -99,10 +98,10 @@ async function loadResourceTranslationInput(
 	const zhHantSource = parseTranslationSource(row.zh_hant_source);
 	return {
 		resource: {
-			...toResourceIdentityColumns(identity),
-			file_type: row.file_type,
+			...identity,
+			fileType: row.file_type,
 			id: row.id,
-			original_lang: canonicalizeResourceLang(row.original_lang),
+			originalLang: canonicalizeResourceLang(row.original_lang),
 			title: row.title ?? '',
 			summary: row.summary,
 			content: row.content ?? '',

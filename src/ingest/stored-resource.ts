@@ -16,7 +16,6 @@ import {
 	RESOURCE_SCOPES,
 	type ResourceIdentity,
 	type ResourceScope,
-	toResourceIdentityColumns,
 } from '@core-shared/resource-types';
 import type { ResourceForProcessing } from '@core-shared/types';
 import type { CoreDb } from '@db/connection';
@@ -165,26 +164,26 @@ function storedResourceRowToProcessing(row: StoredResourceRow): ResourceForProce
 	}
 	const resourceIdentifiers = resourceIdentifiersValue(row.resource_identifiers);
 	return {
-		...toResourceIdentityColumns(identity),
-		processing_id: row.id,
-		source_id: row.source_id,
-		original_lang: canonicalizeResourceLang(row.original_lang),
+		...identity,
+		processingId: row.id,
+		sourceId: row.source_id,
+		originalLang: canonicalizeResourceLang(row.original_lang),
 		title: requiredString(row.title, 'title'),
 		summary: row.summary,
 		content: null,
 		url: row.url,
 		source: cleanString(row.source),
-		published_date: row.published_date === null ? null : dateValue(row.published_date, 'published_date').toISOString(),
+		publishedDate: row.published_date === null ? null : dateValue(row.published_date, 'published_date').toISOString(),
 		tags: row.tags,
 		keywords: row.keywords,
 		scope: parseResourceScope(row.scope),
 		creators: storedResourceCreatorsValue(row.creators, row.id),
-		kind_metadata: storedResourceKindMetadataValue(identity, row.kind_metadata, row.id),
-		source_revision: row.source_revision === null ? null : storedResourceSourceRevision(row.source_revision, row.id),
-		resource_identifiers: resourceIdentifiers,
-		storage_key: row.storage_key,
-		file_type: row.file_type,
-		normalized_url: row.normalized_url,
+		kindMetadata: storedResourceKindMetadataValue(identity, row.kind_metadata, row.id),
+		sourceRevision: row.source_revision === null ? null : storedResourceSourceRevision(row.source_revision, row.id),
+		resourceIdentifiers,
+		storageKey: row.storage_key,
+		fileType: row.file_type,
+		normalizedUrl: row.normalized_url,
 	};
 }
 

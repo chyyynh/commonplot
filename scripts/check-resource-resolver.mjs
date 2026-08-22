@@ -4,7 +4,7 @@ import { detectResourceUrl } from '../src/shared/url.ts';
 
 const base = {
 	url: 'https://example.com/article',
-	resource_identifiers: [],
+	resourceIdentifiers: [],
 };
 
 function materialize(input = {}) {
@@ -26,13 +26,13 @@ function materialize(input = {}) {
 		},
 		{
 			keywords: [],
-			normalized_url: url,
-			original_lang: 'en',
-			processing_id: 'processing-id',
-			published_date: null,
+			normalizedUrl: url,
+			originalLang: 'en',
+			processingId: 'processing-id',
+			publishedDate: null,
 			scope: 'corpus',
-			source_id: null,
-			storage_key: null,
+			sourceId: null,
+			storageKey: null,
 			summary: null,
 			tags: [],
 			url: url ?? 'https://openalex.org/W2',
@@ -41,7 +41,7 @@ function materialize(input = {}) {
 			canonicalUrl: url,
 			detected: url ? detectResourceUrl(url) : null,
 			publishedDate: null,
-			resourceIdentifiers: input.resource_identifiers ?? [],
+			resourceIdentifiers: input.resourceIdentifiers ?? [],
 		},
 	);
 }
@@ -50,21 +50,21 @@ const cases = [
 	{
 		name: 'generic blog',
 		input: {},
-		expected: { kind: 'blog', resource_platform: null, resource_identifiers: [] },
+		expected: { kind: 'blog', resourcePlatform: null, resourceIdentifiers: [] },
 	},
 	{
 		name: 'exact DOI URL',
 		input: {
 			url: 'https://doi.org/10.1000/example',
-			resource_identifiers: [
+			resourceIdentifiers: [
 				{ preferred: true, scheme: 'doi', value: '10.1000/example' },
 				{ preferred: true, scheme: 'openalex', value: 'W1' },
 			],
 		},
 		expected: {
 			kind: 'paper',
-			resource_platform: null,
-			resource_identifiers: [
+			resourcePlatform: null,
+			resourceIdentifiers: [
 				{ preferred: true, scheme: 'doi', value: '10.1000/example' },
 				{ preferred: true, scheme: 'openalex', value: 'W1' },
 			],
@@ -73,15 +73,15 @@ const cases = [
 	{
 		name: 'Citoid academic URL',
 		input: {
-			resource_identifiers: [
+			resourceIdentifiers: [
 				{ preferred: true, scheme: 'doi', value: '10.1000/example' },
 				{ preferred: true, scheme: 'openalex', value: 'W1' },
 			],
 		},
 		expected: {
 			kind: 'paper',
-			resource_platform: null,
-			resource_identifiers: [
+			resourcePlatform: null,
+			resourceIdentifiers: [
 				{ preferred: true, scheme: 'doi', value: '10.1000/example' },
 				{ preferred: true, scheme: 'openalex', value: 'W1' },
 			],
@@ -91,12 +91,12 @@ const cases = [
 		name: 'HN carrier with legacy academic identifiers stays forum',
 		input: {
 			url: 'https://news.ycombinator.com/item?id=123',
-			resource_identifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
+			resourceIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
 		},
 		expected: {
 			kind: 'forum',
-			resource_platform: 'hackernews',
-			resource_identifiers: [{ preferred: true, scheme: 'hackernews', value: '123' }],
+			resourcePlatform: 'hackernews',
+			resourceIdentifiers: [{ preferred: true, scheme: 'hackernews', value: '123' }],
 		},
 	},
 	{
@@ -106,8 +106,8 @@ const cases = [
 		},
 		expected: {
 			kind: 'forum',
-			resource_platform: 'hackernews',
-			resource_identifiers: [{ preferred: true, scheme: 'hackernews', value: '124' }],
+			resourcePlatform: 'hackernews',
+			resourceIdentifiers: [{ preferred: true, scheme: 'hackernews', value: '124' }],
 		},
 	},
 	{
@@ -117,8 +117,8 @@ const cases = [
 		},
 		expected: {
 			kind: 'post',
-			resource_platform: 'twitter',
-			resource_identifiers: [{ preferred: true, scheme: 'twitter', value: '125' }],
+			resourcePlatform: 'twitter',
+			resourceIdentifiers: [{ preferred: true, scheme: 'twitter', value: '125' }],
 		},
 	},
 	{
@@ -128,8 +128,8 @@ const cases = [
 		},
 		expected: {
 			kind: 'video',
-			resource_platform: 'youtube',
-			resource_identifiers: [{ preferred: true, scheme: 'youtube', value: 'abcdefghijk' }],
+			resourcePlatform: 'youtube',
+			resourceIdentifiers: [{ preferred: true, scheme: 'youtube', value: 'abcdefghijk' }],
 		},
 	},
 	{
@@ -139,20 +139,20 @@ const cases = [
 		},
 		expected: {
 			kind: 'blog',
-			resource_platform: 'lesswrong',
-			resource_identifiers: [{ preferred: true, scheme: 'lesswrong', value: 'A2kJKqnHhh5Hq4p2S' }],
+			resourcePlatform: 'lesswrong',
+			resourceIdentifiers: [{ preferred: true, scheme: 'lesswrong', value: 'A2kJKqnHhh5Hq4p2S' }],
 		},
 	},
 	{
 		name: 'OpenAlex-resolved paper',
 		input: {
 			url: null,
-			resource_identifiers: [{ preferred: true, scheme: 'openalex', value: 'W2' }],
+			resourceIdentifiers: [{ preferred: true, scheme: 'openalex', value: 'W2' }],
 		},
 		expected: {
 			kind: 'paper',
-			resource_platform: null,
-			resource_identifiers: [{ preferred: true, scheme: 'openalex', value: 'W2' }],
+			resourcePlatform: null,
+			resourceIdentifiers: [{ preferred: true, scheme: 'openalex', value: 'W2' }],
 		},
 	},
 ];
@@ -164,13 +164,13 @@ for (const testCase of cases) {
 
 const migratedCarrier = materialize({
 	url: 'https://news.ycombinator.com/item?id=126',
-	resource_identifiers: [
+	resourceIdentifiers: [
 		{ preferred: true, scheme: 'doi', value: '10.1000/example' },
 		{ preferred: true, scheme: 'openalex', value: 'W1' },
 	],
 });
 assert.deepEqual(
-	migratedCarrier.resource_identifiers,
+	migratedCarrier.resourceIdentifiers,
 	[{ preferred: true, scheme: 'hackernews', value: '126' }],
 	'carrier identity drops legacy academic identifiers',
 );

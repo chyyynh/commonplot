@@ -176,10 +176,10 @@ async function acquireResource(env: CoreEnv, step: WorkflowStep, input: Resource
 			input.expectedProviderRevision,
 		);
 	}
-	const locator = exactPlatformLocator(input.stored.resource.resource_identifiers);
+	const locator = exactPlatformLocator(input.stored.resource.resourceIdentifiers);
 	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : input.stored.resource.url;
 	if (!sourceUrl) {
-		throw new ResourceProcessingRejectedError(`Resource processing ${input.stored.resource.processing_id} has no source URL`);
+		throw new ResourceProcessingRejectedError(`Resource processing ${input.stored.resource.processingId} has no source URL`);
 	}
 	return stageSavedUrlAcquisition(
 		env,
@@ -187,7 +187,7 @@ async function acquireResource(env: CoreEnv, step: WorkflowStep, input: Resource
 		{
 			discoverTwitterThread: true,
 			isMonitoredOnly: input.stored.isMonitoredOnly,
-			processingId: input.stored.resource.processing_id,
+			processingId: input.stored.resource.processingId,
 			sourceAvatarUrl: input.stored.sourceAvatarUrl,
 			sourceUrl,
 		},
@@ -204,17 +204,17 @@ async function prepareResourceForProcessing(
 	const origin =
 		input.kind === 'draft'
 			? {
-					processing_id: input.processingId,
-					source_id: input.admission.kind === 'source' ? input.admission.sourceId : null,
+					processingId: input.processingId,
+					sourceId: input.admission.kind === 'source' ? input.admission.sourceId : null,
 					scope: 'corpus' as const,
-					original_lang: input.sourceHints?.originalLang ?? DEFAULT_RESOURCE_LANG,
+					originalLang: input.sourceHints?.originalLang ?? DEFAULT_RESOURCE_LANG,
 					summary: input.sourceHints?.summary ?? null,
 					url: input.url,
-					published_date: input.sourceHints?.publishedDate ?? null,
+					publishedDate: input.sourceHints?.publishedDate ?? null,
 					tags: [],
 					keywords: input.sourceHints?.keywords ?? [],
-					storage_key: null,
-					normalized_url: input.url,
+					storageKey: null,
+					normalizedUrl: input.url,
 				}
 			: input.stored.resource;
 	const canonicalUrl = initialAcquiredContent.canonicalUrl?.trim() || origin.url;
@@ -229,28 +229,28 @@ async function prepareResourceForProcessing(
 							? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]
 							: [],
 				)
-			: input.stored.resource.resource_identifiers;
-	let publishedDate = origin.published_date;
+			: input.stored.resource.resourceIdentifiers;
+	let publishedDate = origin.publishedDate;
 	if ((input.kind === 'draft' || publishedDate === null) && initialAcquiredContent.publishedDate?.trim()) {
 		const parsed = new Date(initialAcquiredContent.publishedDate);
 		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
 	}
 	const paperResolution = await stagePaperEnrichment(env, step, {
-		processing_id: origin.processing_id,
+		processingId: origin.processingId,
 		url: canonicalUrl,
 		scope: origin.scope,
-		source_id: origin.source_id,
-		resource_platform: detected?.resourcePlatform ?? (input.kind === 'draft' ? null : input.stored.resource.resource_platform),
+		sourceId: origin.sourceId,
+		resourcePlatform: detected?.resourcePlatform ?? (input.kind === 'draft' ? null : input.stored.resource.resourcePlatform),
 		identifierText: initialAcquiredContent.fileType === PDF_MIME ? initialAcquiredContent.markdown : null,
 		identifiers: resourceIdentifiers.filter(isPaperIdentifier),
 	});
 	let acquiredContent = initialAcquiredContent;
-	if (paperResolution && origin.scope === 'corpus' && !origin.storage_key) {
+	if (paperResolution && origin.scope === 'corpus' && !origin.storageKey) {
 		const openAlexContent = await stageOpenAlexContentAcquisition(
 			env,
 			step,
 			{
-				processingId: origin.processing_id,
+				processingId: origin.processingId,
 				publishedDate,
 				source: acquiredContent.source,
 				summary: acquiredContent.summary ?? origin.summary,
@@ -270,10 +270,10 @@ async function prepareResourceForProcessing(
 	});
 	const extractionStatus = acquiredContent.provider === null ? acquiredContent.extraction?.status : undefined;
 	if (extractionStatus === 'needs_ocr') {
-		throw new ResourceProcessingRejectedError(`PDF processing ${resource.processing_id} requires OCR`);
+		throw new ResourceProcessingRejectedError(`PDF processing ${resource.processingId} requires OCR`);
 	}
 	if (!acquiredContent.markdown.trim()) {
-		throw new ResourceProcessingRejectedError(`Processing ${resource.processing_id} has no extractable content`);
+		throw new ResourceProcessingRejectedError(`Processing ${resource.processingId} has no extractable content`);
 	}
 	if (resource.kind === 'paper') resource = applyPaperEnrichment(resource, paperEnrichment);
 	if (acquiredContent.provider === 'hackernews') {
@@ -299,13 +299,13 @@ async function reconcileSupersededProviderRefresh(
 		supersededSourceRevision: string | null;
 	},
 ): Promise<void> {
-	const acquiredSourceRevision = input.acquiredResource.source_revision;
+	const acquiredSourceRevision = input.acquiredResource.sourceRevision;
 	const supersedingResource = await step.do(
 		'load-superseding-provider-refresh-v1',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 		async () => loadStoredResourceForProcessing(await connectCoreDb(env), input.resourceId),
 	);
-	if (!shouldReconcileSupersededRefresh(acquiredSourceRevision, supersedingResource.resource.source_revision)) return;
+	if (!shouldReconcileSupersededRefresh(acquiredSourceRevision, supersedingResource.resource.sourceRevision)) return;
 	await step.do('enqueue-superseded-provider-refresh-v1', WORKFLOW_ENQUEUE_STEP_CONFIG, () =>
 		enqueueSupersededResourceRefresh(env, {
 			resourceId: input.resourceId,
@@ -331,7 +331,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						? {
 								rollback: async ({ output }) => {
 									if (!output) return;
-									await markStoredBlobProcessingFailed(await connectCoreDb(this.env), target.resourceId, output.resource.source_revision);
+									await markStoredBlobProcessingFailed(await connectCoreDb(this.env), target.resourceId, output.resource.sourceRevision);
 								},
 								rollbackConfig: {
 									retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
@@ -340,7 +340,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							}
 						: undefined,
 				);
-				expectedSourceRevision = stored.resource.source_revision;
+				expectedSourceRevision = stored.resource.sourceRevision;
 				preparationInput = { ...target, stored };
 			} else {
 				preparationInput = { ...target, processingId };
@@ -361,7 +361,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				tag: 'WORKFLOW',
 				msg: 'Starting',
 				resourceKind: resource.kind,
-				resourcePlatform: resource.resource_platform,
+				resourcePlatform: resource.resourcePlatform,
 				processing_id: processingId,
 				target_kind: target.kind,
 			});
@@ -369,7 +369,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			try {
 				imageSources = resourceImageSourceUrls({
 					creators: resource.creators,
-					kindMetadata: resource.kind_metadata,
+					kindMetadata: resource.kindMetadata,
 					ogImageUrl: previewImageUrl,
 				});
 			} catch (error) {
@@ -438,7 +438,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					step.do('enqueue-resolved-subject-child-v1', WORKFLOW_ENQUEUE_STEP_CONFIG, () =>
 						enqueueSubjectDraft(this.env, {
 							parentResourceId: persistedResourceId,
-							parentRevision: resource.source_revision,
+							parentRevision: resource.sourceRevision,
 							url: subject.url,
 						}),
 					),

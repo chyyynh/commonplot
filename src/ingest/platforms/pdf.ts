@@ -35,13 +35,13 @@ export async function parsePdfBytes(bytes: Uint8Array): Promise<PdfTextArtifact>
 }
 
 export async function acquireStoredPdf(env: CoreEnv, resource: ResourceForProcessing): Promise<AcquiredWebContent> {
-	if (resource.file_type !== PDF_MIME || !resource.storage_key) {
-		throw new Error(`Stored resource ${resource.processing_id} is not an R2 PDF`);
+	if (resource.fileType !== PDF_MIME || !resource.storageKey) {
+		throw new Error(`Stored resource ${resource.processingId} is not an R2 PDF`);
 	}
 	const source = resource.source?.trim();
-	if (!source) throw new Error(`Stored PDF ${resource.processing_id} has no source`);
-	const obj = await env.R2.get(resource.storage_key);
-	if (!obj) throw new Error(`PDF source object missing: ${resource.storage_key}`);
+	if (!source) throw new Error(`Stored PDF ${resource.processingId} has no source`);
+	const obj = await env.R2.get(resource.storageKey);
+	if (!obj) throw new Error(`PDF source object missing: ${resource.storageKey}`);
 	if (obj.size > MAX_PDF_BYTES) throw new Error(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
 	const parsed = await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()));
 	return {
@@ -50,11 +50,11 @@ export async function acquireStoredPdf(env: CoreEnv, resource: ResourceForProces
 		title: resource.title,
 		markdown: parsed.text,
 		source,
-		originalLang: resource.original_lang,
-		publishedDate: resource.published_date,
+		originalLang: resource.originalLang,
+		publishedDate: resource.publishedDate,
 		summary: resource.summary,
 		creators: resource.creators,
-		kindMetadata: resource.kind_metadata,
+		kindMetadata: resource.kindMetadata,
 		extraction: { status: parsed.status, pages: parsed.pages },
 	};
 }

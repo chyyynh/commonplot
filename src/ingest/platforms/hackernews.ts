@@ -234,7 +234,7 @@ function withoutPreviousDiscussion(content: string): string {
 
 async function buildHackerNewsAnnotation(resource: ResolvedResource, env: CoreEnv, item: HackerNewsItem): Promise<string> {
 	const comments = item.children?.length ? collectAllComments(item.children) : [];
-	const digest = await generateHnDiscussionDigest(env, resource.processing_id, resource.title, item.text ?? null, comments);
+	const digest = await generateHnDiscussionDigest(env, resource.processingId, resource.title, item.text ?? null, comments);
 	// Count nodes, not text-bearing comments, so this matches Forum kind metadata.
 	const commentCount = countHnComments(item.children);
 	const stats = [item.points !== undefined ? `${item.points} points` : null, commentCount > 0 ? `${commentCount} comments` : null]
@@ -265,7 +265,7 @@ export async function stageHackerNewsAnnotation(
 			console.error({
 				tag: 'HN',
 				msg: 'Optional Hacker News discussion annotation failed after retries',
-				processing_id: resource.processing_id,
+				processing_id: resource.processingId,
 				error: error instanceof Error ? error.message : String(error),
 			});
 			return null;

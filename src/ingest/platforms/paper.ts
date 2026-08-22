@@ -17,7 +17,7 @@ import { resolveOpenAlexPaper } from './openalex';
 const DEFAULT_RATE_LIMIT_DELAY_SECONDS = 15;
 const MAX_RATE_LIMIT_DELAY_SECONDS = 5 * 60;
 const IDENTIFIER_SCAN_CHARS = 3_000;
-type PaperEnrichmentCandidate = Pick<ResourceForProcessing, 'processing_id' | 'url' | 'scope' | 'source_id' | 'resource_platform'> & {
+type PaperEnrichmentCandidate = Pick<ResourceForProcessing, 'processingId' | 'url' | 'scope' | 'sourceId' | 'resourcePlatform'> & {
 	identifierText?: string | null;
 	identifiers?: readonly PaperIdentifier[];
 	translateUrl?: boolean;
@@ -38,7 +38,7 @@ function isExplicitPaperUrl(url: string | null | undefined): boolean {
 export function applyPaperEnrichment(resource: ResolvedResource, metadata: PaperMetadata | null): ResolvedResource {
 	if (!metadata) return resource;
 
-	let publishedDate = resource.published_date;
+	let publishedDate = resource.publishedDate;
 	if (!publishedDate && metadata.publicationDate) {
 		const candidate = new Date(`${metadata.publicationDate}T00:00:00.000Z`);
 		if (!Number.isNaN(candidate.getTime())) publishedDate = candidate.toISOString();
@@ -56,14 +56,14 @@ export function applyPaperEnrichment(resource: ResolvedResource, metadata: Paper
 	return {
 		...resource,
 		...(abstract ? { summary: abstract } : {}),
-		published_date: publishedDate,
+		publishedDate,
 		creators: metadata.authors.flatMap((author) => literalCreator('author', author)),
-		kind_metadata: kindMetadata,
+		kindMetadata,
 	};
 }
 
 function localPaperEvidence(candidate: PaperEnrichmentCandidate): boolean {
-	if (candidate.resource_platform !== null) return false;
+	if (candidate.resourcePlatform !== null) return false;
 	return (
 		isExplicitPaperUrl(candidate.url) ||
 		!!paperIdentityFromText(candidate.identifierText?.slice(0, IDENTIFIER_SCAN_CHARS)) ||
@@ -74,7 +74,7 @@ function localPaperEvidence(candidate: PaperEnrichmentCandidate): boolean {
 function shouldTranslateSavedUrl(candidate: PaperEnrichmentCandidate): boolean {
 	return (
 		candidate.translateUrl === true ||
-		(candidate.scope === 'corpus' && candidate.source_id == null && candidate.resource_platform == null && !!candidate.url?.trim())
+		(candidate.scope === 'corpus' && candidate.sourceId == null && candidate.resourcePlatform == null && !!candidate.url?.trim())
 	);
 }
 
@@ -126,7 +126,7 @@ export async function stagePaperEnrichment(
 					tag: 'PAPER_PROVIDER',
 					event: 'academic_enrichment',
 					provider: 'openalex',
-					processing_id: candidate.processing_id,
+					processing_id: candidate.processingId,
 					identity_schemes: [...new Set(bibliographic.map(({ scheme }) => scheme))],
 					outcome: paper ? 'resolved' : 'not_found',
 					latency_ms: Date.now() - startedAt,
@@ -144,7 +144,7 @@ export async function stagePaperEnrichment(
 		console.warn({
 			tag: 'PAPER_PROVIDER',
 			event: 'academic_enrichment',
-			processing_id: candidate.processing_id,
+			processing_id: candidate.processingId,
 			outcome: 'failed',
 			latency_ms: Date.now() - attemptStartedAt,
 			error: error instanceof Error ? error.message : String(error),
@@ -159,8 +159,8 @@ export async function stagePaperEnrichment(
 }
 
 export function privatePaperAttachment(resource: ResourceForProcessing): { canonicalUrl: string } | null {
-	if (resource.scope !== 'private' || !resource.storage_key) return null;
-	const identity = paperIdentityFromIdentifiers(resource.resource_identifiers.filter(isPaperIdentifier));
-	if (!identity) throw new Error(`Private paper processing ${resource.processing_id} has no canonical identity`);
+	if (resource.scope !== 'private' || !resource.storageKey) return null;
+	const identity = paperIdentityFromIdentifiers(resource.resourceIdentifiers.filter(isPaperIdentifier));
+	if (!identity) throw new Error(`Private paper processing ${resource.processingId} has no canonical identity`);
 	return { canonicalUrl: canonicalPaperUrl(identity) };
 }
