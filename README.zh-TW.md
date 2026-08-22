@@ -136,6 +136,8 @@ pnpm run deploy
 
 Core 沒有產品 HTTP API；default fetch handler 只回傳 404。App URL import 透過 Cloudflare service-binding RPC 傳入 Workflow instance ID、URL 與 admission intent；monitor 與 derived subject 在 Core 內排入相同 draft target。只有 uploaded blob 與 explicit resync 傳入已持久化的 resource ID。URL acquisition 只存在於 canonical resource Workflow 內部。
 
+URL／platform acquisition 與 app-owned R2 PDF 讀取都輸出相同、帶 revision、以 stream 持久化的 acquired-content artifact。Core 先選定可能的學術替代正文，再只 materialize 一次 canonical processing aggregate，透過 app Domain transaction commit，最後以並行 durable steps 執行彼此獨立的 subject、translation 與 AI Search follow-up。
+
 ## Hosted MCP
 
 newsence app 在 `https://www.newsence.app/api/mcp` 提供匿名、唯讀的 hosted

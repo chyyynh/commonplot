@@ -140,6 +140,8 @@ Or run locally with `pnpm dev` (uses `wrangler dev --test-scheduled`, so you can
 
 Core exposes no product HTTP API; its default fetch handler only returns 404. App URL imports call a Cloudflare service-binding RPC with a Workflow instance ID, URL, and admission intent; monitors and derived subjects enqueue the same draft target internally. Uploaded blobs and explicit resyncs use persisted resource IDs. URL acquisition is an internal stage of the canonical resource Workflow.
 
+URL/platform acquisition and app-owned R2 PDF reads all emit the same revisioned, stream-backed acquired-content artifact. Core selects any academic replacement content first, materializes one canonical processing aggregate, commits it through the app Domain transaction, then runs independent subject, translation, and AI Search follow-ups in parallel durable steps.
+
 ## Hosted MCP
 
 The newsence app exposes an anonymous, read-only hosted
