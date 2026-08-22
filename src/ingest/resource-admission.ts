@@ -120,7 +120,7 @@ export type AppResourceDraftInput = Readonly<{
 
 export type SourceResourceAdmissionOutcome = 'created' | 'existing' | 'refreshed';
 
-type ExistingDiscoveredResource = { id: string; url: string };
+type ExistingRefreshResource = { id: string; url: string };
 
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v9';
@@ -203,16 +203,17 @@ export async function enqueueSubjectDraft(
 	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `subject-draft-v3-${identity}`, { target });
 }
 
-async function claimExistingDiscoveredResources(db: CoreDb, drafts: SourceResourceDraft[]): Promise<ExistingDiscoveredResource[]> {
+async function claimExistingRefreshResources(db: CoreDb, drafts: SourceResourceDraft[]): Promise<ExistingRefreshResource[]> {
 	const discovered = new Map<string, string>();
 	for (const draft of drafts) {
+		if (!draft.refreshRevision) continue;
 		const url = normalizeUrl(draft.url);
 		if (!discovered.has(url)) discovered.set(url, draft.sourceId);
 	}
 	if (!discovered.size) return [];
 
 	const values = [...discovered].map(([url, sourceId]) => sql`(${url}, ${sourceId}::uuid)`);
-	const result = await db.execute<ExistingDiscoveredResource>(sql`
+	const result = await db.execute<ExistingRefreshResource>(sql`
 		WITH discovered(normalized_url, source_id) AS (
 			VALUES ${sql.join(values, sql`, `)}
 		), attached AS (
@@ -245,18 +246,17 @@ async function claimExistingDiscoveredResources(db: CoreDb, drafts: SourceResour
 async function admitDiscoveredSourceResource(
 	env: CoreEnv,
 	draft: SourceResourceDraft,
-	resource: ExistingDiscoveredResource | undefined,
+	refreshResource: ExistingRefreshResource | undefined,
 ): Promise<SourceResourceAdmissionOutcome> {
-	if (!resource) {
-		const target = sourceDraftTarget(draft);
-		const identity = await sha256Hex(JSON.stringify(target));
-		const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
-			{ id: `${SOURCE_DRAFT_WORKFLOW_REVISION}-${identity}`, params: { target } },
-		]);
-		return created ? 'created' : 'existing';
+	if (refreshResource && draft.refreshRevision) {
+		return (await enqueueResourceRefresh(env, refreshResource.id, draft.refreshRevision)) ? 'refreshed' : 'existing';
 	}
-	if (!draft.refreshRevision) return 'existing';
-	return (await enqueueResourceRefresh(env, resource.id, draft.refreshRevision)) ? 'refreshed' : 'existing';
+	const target = sourceDraftTarget(draft);
+	const identity = await sha256Hex(JSON.stringify(target));
+	const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
+		{ id: `${SOURCE_DRAFT_WORKFLOW_REVISION}-${identity}`, params: { target } },
+	]);
+	return created ? 'created' : 'existing';
 }
 
 export async function admitDiscoveredSourceResources(
@@ -265,14 +265,14 @@ export async function admitDiscoveredSourceResources(
 	drafts: SourceResourceDraft[],
 ): Promise<Array<PromiseSettledResult<SourceResourceAdmissionOutcome>>> {
 	if (!drafts.length) return [];
-	const existing = await claimExistingDiscoveredResources(db, drafts);
-	const existingByUrl = new Map(existing.map((resource) => [normalizeUrl(resource.url), resource]));
+	const refreshResources = await claimExistingRefreshResources(db, drafts);
+	const refreshResourceByUrl = new Map(refreshResources.map((resource) => [normalizeUrl(resource.url), resource]));
 	const outcomes: Array<PromiseSettledResult<SourceResourceAdmissionOutcome>> = [];
 	for (let offset = 0; offset < drafts.length; offset += DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY) {
 		const batch = drafts.slice(offset, offset + DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY);
 		outcomes.push(
 			...(await Promise.allSettled(
-				batch.map((draft) => admitDiscoveredSourceResource(env, draft, existingByUrl.get(normalizeUrl(draft.url)))),
+				batch.map((draft) => admitDiscoveredSourceResource(env, draft, refreshResourceByUrl.get(normalizeUrl(draft.url)))),
 			)),
 		);
 	}
