@@ -1,5 +1,5 @@
-import { uuidArraySql, withCoreDb } from '@db/client';
-import { sql } from 'drizzle-orm';
+import { withCoreDb } from '@db/client';
+import { inArray, sql } from 'drizzle-orm';
 
 export type MonitoredSource = {
 	id: string;
@@ -51,7 +51,7 @@ export async function markSourcesScraped(env: CoreEnv, sourceIds: string[], scra
 			    updated_at = NOW(),
 			    status = 'active',
 			    scrape_state = NULL
-			WHERE id = ANY(${uuidArraySql(sourceIds)})
+			WHERE ${inArray(sql`id`, sourceIds)}
 			  AND (scraped_at IS NULL OR scraped_at <= ${scrapedAt})
 			RETURNING id
 		`);

@@ -1,11 +1,5 @@
-import {
-	RESOURCE_KIND_DISPLAY_LABELS,
-	RESOURCE_PLATFORM_DISPLAY_LABELS,
-	type ResourceIdentityFilters,
-	type ResourcePlatform,
-} from '@core-shared/resource-types';
+import { RESOURCE_KIND_DISPLAY_LABELS, RESOURCE_PLATFORM_DISPLAY_LABELS } from '@core-shared/resource-types';
 import { type SQL, sql } from 'drizzle-orm';
-import { textArraySql } from './client';
 
 type ResourceIdentitySqlFields = {
 	kind: SQL;
@@ -19,26 +13,6 @@ export function contentResourceIdentitySql(fields: ResourceIdentitySqlFields): S
 		OR (${fields.kind} = 'post' AND ${fields.resourcePlatform} = 'twitter')
 		OR (${fields.kind} = 'video' AND ${fields.resourcePlatform} = 'youtube')
 		OR (${fields.kind} = 'paper' AND ${fields.resourcePlatform} IS NULL)
-	)`;
-}
-
-function resourcePlatformFilterSql(field: SQL, resourcePlatforms: ResourceIdentityFilters['resourcePlatforms']): SQL {
-	if (resourcePlatforms === undefined) return sql`TRUE`;
-	const includesNull = resourcePlatforms.includes(null);
-	const nonNullPlatforms = resourcePlatforms.filter((platform): platform is Exclude<ResourcePlatform, null> => platform !== null);
-	if (includesNull && nonNullPlatforms.length > 0) {
-		return sql`(${field} IS NULL OR ${field} = ANY(${textArraySql(nonNullPlatforms)}))`;
-	}
-	if (includesNull) return sql`${field} IS NULL`;
-	if (nonNullPlatforms.length > 0) return sql`${field} = ANY(${textArraySql(nonNullPlatforms)})`;
-	return sql`FALSE`;
-}
-
-export function resourceIdentityFilterSql(fields: ResourceIdentitySqlFields, filters: ResourceIdentityFilters): SQL {
-	if (filters.kinds === undefined && filters.resourcePlatforms === undefined) return sql`TRUE`;
-	return sql`(
-		${filters.kinds === undefined ? sql`TRUE` : sql`${fields.kind} = ANY(${textArraySql(filters.kinds)})`}
-		AND ${resourcePlatformFilterSql(fields.resourcePlatform, filters.resourcePlatforms)}
 	)`;
 }
 

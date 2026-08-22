@@ -5,9 +5,9 @@ import {
 	parseResourceIdentity,
 	type ResourcePlatform,
 } from '@core-shared/resource-types';
-import { type CoreDb, isValidUuid, queryRows, textArraySql, uuidArraySql, withCoreDb } from '@db/client';
+import { type CoreDb, isValidUuid, withCoreDb } from '@db/client';
 import { contentResourceIdentitySql, resourceDisplaySourceSql } from '@db/resource-identity-sql';
-import { sql } from 'drizzle-orm';
+import { inArray, sql } from 'drizzle-orm';
 import { DURABLE_WORKFLOW_RETRIES } from './workflow-control';
 
 const AI_SEARCH_ITEM_PREFIX = 'resources/';
@@ -118,48 +118,46 @@ function serializeDocument(row: CorpusDocument): string {
 
 async function loadCorpusDocuments(db: CoreDb, resourceIds: readonly string[]): Promise<CorpusDocument[]> {
 	if (!resourceIds.length) return [];
-	return queryRows<CorpusDocument>(
-		db,
-		sql`
-			SELECT r.id::text,
-			       r.source_id::text,
-			       r.kind,
-			       r.resource_platform,
-			       r.original_lang,
-			       COALESCE(r.published_date, r.scraped_date, r.created_at) AS effective_at,
-			       r.tags,
-			       ${resourceDisplaySourceSql({
-								creatorName: sql`COALESCE(r.creators->0->>'literal', CONCAT_WS(' ', r.creators->0->>'given', r.creators->0->>'family'))`,
-								kind: sql`r.kind`,
-								monitoredSourceName: sql`s.name`,
-								resourcePlatform: sql`r.resource_platform`,
-							})} AS source,
-			       COALESCE((
-			         SELECT jsonb_agg(
-			           jsonb_build_object(
-			             'lang', translation.lang,
-			             'title', translation.title,
-			             'summary', translation.summary,
-			             'content', translation.content,
-			             'keywords', translation.keywords
-			           )
-			           ORDER BY (translation.lang = r.original_lang) DESC, translation.lang
-			         )
-			         FROM resource_translations translation
-			         WHERE translation.resource_id = r.id
-			           AND (translation.lang = r.original_lang OR translation.lang = ANY(${textArraySql(INDEX_TRANSLATION_LANGS)}))
-			       ), '[]'::jsonb) AS translations
-			FROM resources r
-			LEFT JOIN sources s ON s.id = r.source_id
-			WHERE r.id = ANY(${uuidArraySql(resourceIds)})
-			  AND r.scope = 'corpus'
-			  AND r.enrichment_status = 'enriched'
-			  AND ${contentResourceIdentitySql({
-					kind: sql`r.kind`,
-					resourcePlatform: sql`r.resource_platform`,
-				})}
-		`,
-	);
+	const result = await db.execute<CorpusDocument>(sql`
+		SELECT r.id::text,
+		       r.source_id::text,
+		       r.kind,
+		       r.resource_platform,
+		       r.original_lang,
+		       COALESCE(r.published_date, r.scraped_date, r.created_at) AS effective_at,
+		       r.tags,
+		       ${resourceDisplaySourceSql({
+							creatorName: sql`COALESCE(r.creators->0->>'literal', CONCAT_WS(' ', r.creators->0->>'given', r.creators->0->>'family'))`,
+							kind: sql`r.kind`,
+							monitoredSourceName: sql`s.name`,
+							resourcePlatform: sql`r.resource_platform`,
+						})} AS source,
+		       COALESCE((
+		         SELECT jsonb_agg(
+		           jsonb_build_object(
+		             'lang', translation.lang,
+		             'title', translation.title,
+		             'summary', translation.summary,
+		             'content', translation.content,
+		             'keywords', translation.keywords
+		           )
+		           ORDER BY (translation.lang = r.original_lang) DESC, translation.lang
+		         )
+		         FROM resource_translations translation
+		         WHERE translation.resource_id = r.id
+		           AND (translation.lang = r.original_lang OR ${inArray(sql`translation.lang`, INDEX_TRANSLATION_LANGS)})
+		       ), '[]'::jsonb) AS translations
+		FROM resources r
+		LEFT JOIN sources s ON s.id = r.source_id
+		WHERE ${inArray(sql`r.id`, resourceIds)}
+		  AND r.scope = 'corpus'
+		  AND r.enrichment_status = 'enriched'
+		  AND ${contentResourceIdentitySql({
+				kind: sql`r.kind`,
+				resourcePlatform: sql`r.resource_platform`,
+			})}
+		`);
+	return result.rows;
 }
 
 function corpusItemMetadata(document: CorpusDocument): Record<string, unknown> {
@@ -227,47 +225,40 @@ const UTC_TIMESTAMP_FORMAT = 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"';
 const CORPUS_FOLDER_FILTER = JSON.stringify({ folder: AI_SEARCH_ITEM_PREFIX });
 
 async function loadCorpusCount(env: CoreEnv): Promise<number> {
-	const [row] = await withCoreDb(env, (db) =>
-		queryRows<{ count: string }>(
-			db,
-			sql`
-				SELECT COUNT(*)::text AS count
-				FROM resources r
-				WHERE r.scope = 'corpus'
-				  AND r.enrichment_status = 'enriched'
-				  AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
-			`,
-		),
-	);
+	const [row] = await withCoreDb(env, async (db) => {
+		const result = await db.execute<{ count: string }>(sql`
+			SELECT COUNT(*)::text AS count
+			FROM resources r
+			WHERE r.scope = 'corpus'
+			  AND r.enrichment_status = 'enriched'
+			  AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
+		`);
+		return result.rows;
+	});
 	const count = Number(row?.count);
 	if (!Number.isSafeInteger(count) || count < 0) throw new Error(`Invalid corpus count: ${row?.count}`);
 	return count;
 }
 
-async function listCorpusIdsAfter(env: CoreEnv, cursor: string | null): Promise<string[]> {
-	return withCoreDb(env, async (db) => {
-		const rows = await queryRows<{ id: string }>(
-			db,
-			sql`
-				SELECT r.id::text
-				FROM resources r
-				WHERE r.scope = 'corpus'
-				  AND r.enrichment_status = 'enriched'
-				  AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
-				  AND (${cursor}::uuid IS NULL OR r.id > ${cursor}::uuid)
-				ORDER BY r.id
-				LIMIT ${REINDEX_PAGE_SIZE}
-			`,
-		);
-		return rows.map((row) => row.id);
-	});
+async function listCorpusIdsAfter(db: CoreDb, cursor: string | null): Promise<string[]> {
+	const result = await db.execute<{ id: string }>(sql`
+		SELECT r.id::text
+		FROM resources r
+		WHERE r.scope = 'corpus'
+		  AND r.enrichment_status = 'enriched'
+		  AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
+		  AND (${cursor}::uuid IS NULL OR r.id > ${cursor}::uuid)
+		ORDER BY r.id
+		LIMIT ${REINDEX_PAGE_SIZE}
+	`);
+	return result.rows.map((row) => row.id);
 }
 
-async function uploadCorpusIds(env: CoreEnv, ids: readonly string[]): Promise<number> {
+async function uploadCorpusIds(env: CoreEnv, db: CoreDb, ids: readonly string[]): Promise<number> {
 	let uploaded = 0;
 	for (let offset = 0; offset < ids.length; offset += REINDEX_AI_SEARCH_CONCURRENCY) {
 		const batch = ids.slice(offset, offset + REINDEX_AI_SEARCH_CONCURRENCY);
-		const documents = await withCoreDb(env, (db) => loadCorpusDocuments(db, batch));
+		const documents = await loadCorpusDocuments(db, batch);
 		if (documents.length !== batch.length) {
 			throw new Error(`Corpus changed while rebuilding: loaded ${documents.length}/${batch.length} documents`);
 		}
@@ -281,39 +272,37 @@ async function syncCorpusPageAfter(
 	env: CoreEnv,
 	cursor: string | null,
 ): Promise<{ cursor: string | null; done: boolean; uploaded: number }> {
-	const ids = await listCorpusIdsAfter(env, cursor);
-	if (!ids.length) return { cursor, done: true, uploaded: 0 };
-	return { cursor: ids.at(-1)!, done: false, uploaded: await uploadCorpusIds(env, ids) };
+	return withCoreDb(env, async (db) => {
+		const ids = await listCorpusIdsAfter(db, cursor);
+		if (!ids.length) return { cursor, done: true, uploaded: 0 };
+		return { cursor: ids.at(-1)!, done: false, uploaded: await uploadCorpusIds(env, db, ids) };
+	});
 }
 
-async function listCorpusDeltaAfter(env: CoreEnv, startedAt: string, cursor: SearchDeltaCursor | null): Promise<SearchDeltaRow[]> {
-	return withCoreDb(env, (db) =>
-		queryRows<SearchDeltaRow>(
-			db,
-			sql`
-				WITH changed_resources AS (
-				  SELECT r.id,
-				         GREATEST(r.updated_at, COALESCE(MAX(translation.updated_at), r.updated_at)) AT TIME ZONE 'UTC' AS updated_at
-				  FROM resources r
-				  LEFT JOIN resource_translations translation ON translation.resource_id = r.id
-				  WHERE r.scope = 'corpus'
-				    AND r.enrichment_status = 'enriched'
-				    AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
-				  GROUP BY r.id, r.updated_at
-				)
-				SELECT id::text, to_char(updated_at, ${UTC_TIMESTAMP_FORMAT}) AS updated_at
-				FROM changed_resources
-				WHERE updated_at >= ${startedAt}::timestamptz
-				  AND (
-				    ${cursor?.updatedAt ?? null}::timestamptz IS NULL
-				    OR updated_at > ${cursor?.updatedAt ?? null}::timestamptz
-				    OR (updated_at = ${cursor?.updatedAt ?? null}::timestamptz AND id > ${cursor?.id ?? null}::uuid)
-				  )
-				ORDER BY updated_at, id
-				LIMIT ${REINDEX_PAGE_SIZE}
-			`,
-		),
-	);
+async function listCorpusDeltaAfter(db: CoreDb, startedAt: string, cursor: SearchDeltaCursor | null): Promise<SearchDeltaRow[]> {
+	const result = await db.execute<SearchDeltaRow>(sql`
+		WITH changed_resources AS (
+		  SELECT r.id,
+		         GREATEST(r.updated_at, COALESCE(MAX(translation.updated_at), r.updated_at)) AT TIME ZONE 'UTC' AS updated_at
+		  FROM resources r
+		  LEFT JOIN resource_translations translation ON translation.resource_id = r.id
+		  WHERE r.scope = 'corpus'
+		    AND r.enrichment_status = 'enriched'
+		    AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
+		  GROUP BY r.id, r.updated_at
+		)
+		SELECT id::text, to_char(updated_at, ${UTC_TIMESTAMP_FORMAT}) AS updated_at
+		FROM changed_resources
+		WHERE updated_at >= ${startedAt}::timestamptz
+		  AND (
+		    ${cursor?.updatedAt ?? null}::timestamptz IS NULL
+		    OR updated_at > ${cursor?.updatedAt ?? null}::timestamptz
+		    OR (updated_at = ${cursor?.updatedAt ?? null}::timestamptz AND id > ${cursor?.id ?? null}::uuid)
+		  )
+		ORDER BY updated_at, id
+		LIMIT ${REINDEX_PAGE_SIZE}
+	`);
+	return result.rows;
 }
 
 async function syncCorpusDeltaAfter(
@@ -321,34 +310,34 @@ async function syncCorpusDeltaAfter(
 	startedAt: string,
 	cursor: SearchDeltaCursor | null,
 ): Promise<{ cursor: SearchDeltaCursor | null; done: boolean; uploaded: number }> {
-	const rows = await listCorpusDeltaAfter(env, startedAt, cursor);
-	if (!rows.length) return { cursor, done: true, uploaded: 0 };
-	const last = rows.at(-1)!;
-	return {
-		cursor: { id: last.id, updatedAt: last.updated_at },
-		done: false,
-		uploaded: await uploadCorpusIds(
-			env,
-			rows.map((row) => row.id),
-		),
-	};
+	return withCoreDb(env, async (db) => {
+		const rows = await listCorpusDeltaAfter(db, startedAt, cursor);
+		if (!rows.length) return { cursor, done: true, uploaded: 0 };
+		const last = rows.at(-1)!;
+		return {
+			cursor: { id: last.id, updatedAt: last.updated_at },
+			done: false,
+			uploaded: await uploadCorpusIds(
+				env,
+				db,
+				rows.map((row) => row.id),
+			),
+		};
+	});
 }
 
 async function loadEligibleCorpusIds(env: CoreEnv, resourceIds: readonly string[]): Promise<Set<string>> {
 	if (!resourceIds.length) return new Set();
 	return withCoreDb(env, async (db) => {
-		const rows = await queryRows<{ id: string }>(
-			db,
-			sql`
-				SELECT r.id::text
-				FROM resources r
-				WHERE r.id = ANY(${uuidArraySql(resourceIds)})
-				  AND r.scope = 'corpus'
-				  AND r.enrichment_status = 'enriched'
-				  AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
-			`,
-		);
-		return new Set(rows.map((row) => row.id));
+		const result = await db.execute<{ id: string }>(sql`
+			SELECT r.id::text
+			FROM resources r
+			WHERE ${inArray(sql`r.id`, resourceIds)}
+			  AND r.scope = 'corpus'
+			  AND r.enrichment_status = 'enriched'
+			  AND ${contentResourceIdentitySql({ kind: sql`r.kind`, resourcePlatform: sql`r.resource_platform` })}
+		`);
+		return new Set(result.rows.map((row) => row.id));
 	});
 }
 

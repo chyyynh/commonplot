@@ -1,4 +1,3 @@
-import { type SQL, sql } from 'drizzle-orm';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Client } from 'pg';
 
@@ -10,25 +9,6 @@ type CoreDbOperation<T> = (db: CoreDb) => Promise<T>;
 
 export function isValidUuid(value: string): boolean {
 	return UUID_RE.test(value);
-}
-
-export function textArraySql(values: readonly string[]): SQL {
-	return sql`ARRAY[${sql.join(
-		values.map((value) => sql`${value}`),
-		sql`, `,
-	)}]::text[]`;
-}
-
-export function uuidArraySql(values: readonly string[]): SQL {
-	return sql`ARRAY[${sql.join(
-		values.map((value) => sql`${value}`),
-		sql`, `,
-	)}]::uuid[]`;
-}
-
-export async function queryRows<T>(db: CoreDb, statement: SQL): Promise<T[]> {
-	const result = await db.execute(statement);
-	return result.rows as T[];
 }
 
 export async function withCoreDb<T>(env: CoreEnv, operation: CoreDbOperation<T>): Promise<T> {
