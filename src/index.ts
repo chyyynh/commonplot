@@ -13,7 +13,7 @@ import {
 import { ResourceTranslationV2Workflow } from '@ingest/resource-translation-workflow';
 import { ResourceProcessingV2Workflow } from '@ingest/workflow';
 import { SearchIndexGeneration5RebuildWorkflow } from './ai-search';
-import { assertResourceProcessable } from './ingest/domain/resource-store';
+import { assertResourceProcessable } from './ingest/stored-resource';
 import { type PublicResourceSearchInput, searchPublicResourceIds } from './public-search';
 
 export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexGeneration5RebuildWorkflow };

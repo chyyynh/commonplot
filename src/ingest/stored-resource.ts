@@ -1,4 +1,4 @@
-// Read store: canonical resource loading and processability gates for the Workflow.
+// Database projection for stored blobs and explicit resource reacquisition.
 
 import { isResourceIdentifierScheme, normalizeResourceIdentifiers, type ResourceIdentifier } from '@core-shared/resource-identifiers';
 import {
@@ -22,7 +22,7 @@ import type { ResourceForProcessing } from '@core-shared/types';
 import type { CoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
 import { sql } from 'drizzle-orm';
-import { cleanString, dateValue, requiredString } from './resource-values';
+import { cleanString, dateValue, requiredString } from './domain/resource-values';
 
 export type StoredResourceProcessingInput = {
 	resource: ResourceForProcessing;
@@ -30,7 +30,7 @@ export type StoredResourceProcessingInput = {
 	sourceAvatarUrl: string | null;
 };
 
-type ResourceStoreRow = {
+type StoredResourceRow = {
 	id: string;
 	source_id: string | null;
 	kind: string;
@@ -74,7 +74,7 @@ function storedResourceSourceRevision(value: unknown, resourceId: string): strin
 export async function loadStoredResourceForProcessing(db: CoreDb, resourceId: string): Promise<StoredResourceProcessingInput> {
 	const row = await loadStoredResourceRow(db, resourceId);
 	return {
-		resource: resourceStoreRowToProcessing(row),
+		resource: storedResourceRowToProcessing(row),
 		isMonitoredOnly: row.is_monitored_only,
 		sourceAvatarUrl: cleanString(row.source_avatar_url),
 	};
@@ -95,8 +95,8 @@ export async function assertResourceProcessable(db: CoreDb, resourceId: string):
 	}
 }
 
-async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<ResourceStoreRow> {
-	const result = await db.execute<ResourceStoreRow>(sql`
+async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<StoredResourceRow> {
+	const result = await db.execute<StoredResourceRow>(sql`
 		SELECT
 			resource.id::text AS id,
 			resource.source_id::text AS source_id,
@@ -158,7 +158,7 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<Re
 	return row;
 }
 
-function resourceStoreRowToProcessing(row: ResourceStoreRow): ResourceForProcessing {
+function storedResourceRowToProcessing(row: StoredResourceRow): ResourceForProcessing {
 	const identity = storedResourceIdentity(row);
 	if (!isContentResourceIdentity(identity)) {
 		throw new Error(`Stored resource ${row.id} is not processable by core: ${identity.kind}`);

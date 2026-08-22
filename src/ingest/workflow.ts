@@ -13,7 +13,7 @@ import { DEFAULT_RESOURCE_LANG } from '@core-shared/resource-types';
 import type { ResolvedResource } from '@core-shared/types';
 import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
 import { connectCoreDb } from '@db/connection';
-import { loadStoredResourceForProcessing, type StoredResourceProcessingInput } from '@ingest/domain/resource-store';
+import { loadStoredResourceForProcessing, type StoredResourceProcessingInput } from '@ingest/stored-resource';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES, shouldReconcileSupersededRefresh } from '../workflow-control';
 import {

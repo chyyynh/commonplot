@@ -219,12 +219,13 @@ migration 保留在 git history；目前操作直接從 target schema 開始，�
 ## 新增擷取 adapter
 
 擷取 adapter 集中在 `ingest/platforms/*.ts`，只放它真正需要的
-discovery / scrape / process 邏輯。App-owned saved URL 先寫入 `resources`
-與 `resource_saves`；upload 則寫入 `resources` 與 `user_files`。Workflow
-收到的是 `resourceId`。Core 透過 `ingest/domain/resource-store.ts` 讀取
-canonical rows；processed graph 寫入則跨越 app-owned
-`DOMAIN.persistResolvedResourceGraph` transaction boundary。Admission、
-translation 與 YouTube 的 Core-owned stores 仍保留在本地。
+discovery / scrape / process 邏輯。App-owned saved URL 以 Workflow draft
+進入 Core，成功處理後才建立 canonical row；upload 則先寫入 `resources`
+與 `user_files`，再以 `resourceId` 啟動 Workflow。Core 透過
+`ingest/stored-resource.ts` 讀取既有 upload 或 resync rows；processed graph
+寫入則跨越 app-owned `DOMAIN.persistResolvedResourceGraph` transaction
+boundary。Admission query 與 translation input query 分別與各自流程放在
+`resource-admission.ts` 和 `resource-translation-workflow.ts`。
 
 各軸要分開：acquisition（generic web 或專用 adapter）不是 canonical
 `ResourcePlatform`（`youtube`、`twitter`、`hackernews`、`lesswrong` 或 null），也不是
