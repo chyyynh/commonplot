@@ -5,12 +5,11 @@ import {
 	type WorkflowStep,
 	type WorkflowStepConfig,
 } from 'cloudflare:workers';
-import type { YouTubeSpecializationMutation } from '@app-domain/resource-graph-contracts';
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { isPaperIdentifier, normalizeResourceIdentifiers, type ResourceIdentifier } from '@core-shared/resource-identifiers';
 import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
 import { DEFAULT_RESOURCE_LANG, type ResourcePlatform } from '@core-shared/resource-types';
-import type { ResolvedResource } from '@core-shared/types';
+import type { MaterializedResource, ResolvedResource } from '@core-shared/types';
 import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
 import { connectCoreDb } from '@db/connection';
 import { loadResourceReacquisitionInput, loadStoredPdfInput } from '@ingest/stored-resource';
@@ -24,13 +23,11 @@ import {
 	readSavedUrlAcquisitionArtifact,
 	sanitizeAcquiredContent,
 	scrapeSavedUrlArtifact,
+	stagePlatformEnrichment,
 } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
-import { stageHackerNewsAnnotation } from './platforms/hackernews';
-import { applyPaperEnrichment, stagePaperEnrichment } from './platforms/paper';
-import { stageOpenAlexContentAcquisition } from './platforms/paper-content';
-import { acquireStoredPdf, PDF_MIME } from './platforms/pdf';
-import { stageYouTubeEnrichment } from './platforms/youtube';
+import { applyPaperEnrichment, stagePaperProcessing } from './platforms/paper';
+import { acquireStoredPdf } from './platforms/pdf';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import { markStoredBlobProcessingFailed, type PersistProcessedTarget, persistProcessedResource } from './resource-persistence';
@@ -134,11 +131,10 @@ type PreparedResource = {
 	previewImageUrl: string | null;
 	resource: ResolvedResource;
 	subject: ResolvedSubjectInput | null;
-	youtube: YouTubeSpecializationMutation | null;
 };
 
 type ResourceMaterializationSeed = Pick<
-	ResolvedResource,
+	MaterializedResource,
 	'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'summary' | 'tags' | 'url'
 >;
 
@@ -293,35 +289,22 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, ca
 		const parsed = new Date(initialAcquiredContent.publishedDate);
 		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
 	}
-	const paperResolution = await stagePaperEnrichment(env, step, {
-		processingId,
-		url: canonicalUrl,
-		resourcePlatform: detected?.resourcePlatform ?? call.resourcePlatform,
-		identifierText: initialAcquiredContent.fileType === PDF_MIME ? initialAcquiredContent.markdown : null,
+	const paper = await stagePaperProcessing(env, step, {
+		acquiredContent: initialAcquiredContent,
+		canonicalUrl,
 		identifiers: resourceIdentifiers.filter(isPaperIdentifier),
+		originSummary: origin.summary,
+		processingId,
+		publishedDate,
+		resourcePlatform: detected?.resourcePlatform ?? call.resourcePlatform,
 		translateUrl: call.translatePaperUrl,
 	});
-	let acquiredContent = initialAcquiredContent;
-	const openAlexContent = await stageOpenAlexContentAcquisition(
-		env,
-		step,
-		{
-			processingId,
-			publishedDate,
-			source: acquiredContent.source,
-			summary: acquiredContent.summary ?? origin.summary,
-			title: acquiredContent.title,
-			url: canonicalUrl,
-		},
-		paperResolution,
-	);
-	if (openAlexContent) acquiredContent = openAlexContent;
-	const paperEnrichment = paperResolution.metadata;
+	const acquiredContent = paper.acquiredContent;
 	let resource = materializeAcquiredResource(acquiredContent, origin, {
 		canonicalUrl,
 		detected,
 		publishedDate,
-		resourceIdentifiers: normalizeResourceIdentifiers([...paperResolution.identifiers, ...resourceIdentifiers]),
+		resourceIdentifiers: normalizeResourceIdentifiers([...paper.identifiers, ...resourceIdentifiers]),
 	});
 	const extractionStatus = acquiredContent.provider === null ? acquiredContent.extraction?.status : undefined;
 	if (extractionStatus === 'needs_ocr') {
@@ -330,19 +313,12 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, ca
 	if (!acquiredContent.markdown.trim()) {
 		throw new ResourceProcessingRejectedError(`Processing ${processingId} has no extractable content`);
 	}
-	if (resource.kind === 'paper') resource = applyPaperEnrichment(resource, paperEnrichment);
-	if (acquiredContent.provider === 'hackernews') {
-		resource = await stageHackerNewsAnnotation(env, step, resource, acquiredContent.hackerNewsItem, processingId);
-	}
-	const youtube =
-		acquiredContent.provider === 'youtube'
-			? await stageYouTubeEnrichment(env, step, resource, acquiredContent.youtubeTranscript, processingId)
-			: null;
+	resource = applyPaperEnrichment(resource, paper.metadata);
+	const resolvedResource = await stagePlatformEnrichment(env, step, acquiredContent, resource, processingId);
 	return {
 		previewImageUrl: acquiredContent.previewImageUrl?.trim() || null,
-		resource,
+		resource: resolvedResource,
 		subject: resolvedSubjectInput(acquiredContent.subjectUrl?.trim()),
-		youtube,
 	};
 }
 
@@ -353,7 +329,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		try {
 			const call = await resolveProcessingCall(this.env, step, target, event.instanceId);
 			const prepared = await prepareResourceForProcessing(this.env, step, call);
-			const { previewImageUrl, resource, subject, youtube } = prepared;
+			const { previewImageUrl, resource, subject } = prepared;
 
 			console.info({
 				tag: 'WORKFLOW',
@@ -387,7 +363,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				() =>
 					persistProcessedResource(
 						this.env,
-						{ classification, processingId, previewImageUrl, resource, subject, target: call.persistenceTarget, youtube },
+						{ classification, processingId, previewImageUrl, resource, subject, target: call.persistenceTarget },
 						hostedImages,
 					),
 			);

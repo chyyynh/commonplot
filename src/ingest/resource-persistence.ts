@@ -2,7 +2,6 @@ import type {
 	PersistResolvedResourceInput,
 	PersistResolvedResourceResult,
 	PersistResolvedResourceTarget,
-	YouTubeSpecializationMutation,
 } from '@app-domain/resource-graph-contracts';
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
 import { isPaperIdentifier } from '@core-shared/resource-identifiers';
@@ -26,7 +25,6 @@ type PersistProcessedInput = {
 	resource: ResolvedResource;
 	subject: ResolvedSubjectInput | null;
 	target: PersistProcessedTarget;
-	youtube: YouTubeSpecializationMutation | null;
 };
 
 export async function markStoredBlobProcessingFailed(
@@ -120,13 +118,17 @@ function resolvedResourceMutation(
 	if (!identity) throw new Error(`Resource processing ${input.processingId} resolved to an invalid identity`);
 	const ogImageUrl = input.previewImageUrl?.trim() || null;
 	const media = hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kindMetadata, ogImageUrl }, hostedImages);
+	const youtube =
+		resource.specialization?.kind === 'youtube'
+			? { transcript: resource.specialization.transcript, highlights: resource.specialization.highlights }
+			: null;
 	return {
 		identity,
 		identifiers: resource.resourceIdentifiers,
 		creators: media.creators,
 		kindMetadata: media.kindMetadata,
 		sourceRevision: resource.sourceRevision,
-		youtube: resource.kind === 'video' ? input.youtube : null,
+		youtube,
 		originalLang: resource.originalLang,
 		title: resource.title,
 		summary: resource.summary,

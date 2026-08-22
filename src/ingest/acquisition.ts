@@ -1,20 +1,21 @@
+import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { sha256Hex } from '@core-shared/hash';
 import { parseResourceCreators, parseStoredResourceKindMetadata } from '@core-shared/resource-metadata';
 import type { ContentResourceKind, ResourcePlatform } from '@core-shared/resource-types';
-import type { AcquiredMaterial } from '@core-shared/types';
+import type { AcquiredMaterial, MaterializedResource, ResolvedResource } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { z } from 'zod';
 import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
-import { type HackerNewsItem, scrapeHackerNews } from './platforms/hackernews';
+import { type HackerNewsAcquiredContent, HackerNewsItemSchema, scrapeHackerNews, stageHackerNewsEnrichment } from './platforms/hackernews';
 import { scrapeLessWrong } from './platforms/lesswrong';
 import { scrapeTweet } from './platforms/twitter-acquisition';
-import { scrapeYouTube } from './platforms/youtube-acquisition';
+import { scrapeYouTube, stageYouTubeEnrichment, YouTubeTranscriptSchema } from './platforms/youtube-acquisition';
 import { type AcquiredWebContent, acquireWebResource } from './web-acquisition';
 
 type RawAcquiredContent =
 	| AcquiredWebContent
-	| (AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem })
+	| HackerNewsAcquiredContent
 	| AcquiredMaterial<'lesswrong'>
 	| AcquiredMaterial<'twitter'>
 	| AcquiredMaterial<'youtube'>;
@@ -38,14 +39,6 @@ const acquiredContentShape = {
 	creators: z.unknown().transform((value) => parseResourceCreators(value)),
 	sourceSnapshotHash: z.string().regex(/^[0-9a-f]{64}$/),
 };
-const youtubeTranscriptSchema = z.object({
-	videoId: z.string().min(1),
-	segments: z.array(z.object({ startTime: z.number(), endTime: z.number(), text: z.string() })),
-	language: nullableStringSchema,
-	chapters: z.array(z.object({ title: z.string(), startTime: z.number(), endTime: z.number().optional() })),
-	chaptersFromDescription: z.boolean(),
-});
-
 function acquiredMaterialSchema<const T extends ResourcePlatform, Extra extends z.ZodRawShape>(
 	provider: T,
 	kind: ContentResourceKind,
@@ -64,12 +57,12 @@ const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('
 		extraction: z.object({ status: z.enum(['ok', 'needs_ocr']), pages: z.number() }).optional(),
 	}),
 	acquiredMaterialSchema('hackernews', 'forum', {
-		hackerNewsItem: z.looseObject({ id: z.number().int().positive() }),
+		hackerNewsItem: HackerNewsItemSchema,
 	}),
 	acquiredMaterialSchema('lesswrong', 'blog', {}),
 	acquiredMaterialSchema('twitter', 'post', {}),
 	acquiredMaterialSchema('youtube', 'video', {
-		youtubeTranscript: youtubeTranscriptSchema,
+		youtubeTranscript: YouTubeTranscriptSchema,
 	}),
 ]);
 const SavedUrlAcquisitionResultSchema: z.ZodType<SavedUrlAcquisitionResult> = z.discriminatedUnion('status', [
@@ -192,4 +185,36 @@ export async function readAcquiredContentArtifact(artifact: ReadableStream<Uint8
 
 export async function readSavedUrlAcquisitionArtifact(artifact: ReadableStream<Uint8Array>): Promise<SavedUrlAcquisitionResult> {
 	return SavedUrlAcquisitionResultSchema.parse(await new Response(artifact).json());
+}
+
+export async function stagePlatformEnrichment(
+	env: CoreEnv,
+	step: WorkflowStep,
+	acquired: AcquiredContent,
+	resource: MaterializedResource,
+	processingId: string,
+): Promise<ResolvedResource> {
+	switch (acquired.provider) {
+		case 'hackernews': {
+			if (resource.resourcePlatform !== 'hackernews')
+				throw new Error(`Hacker News processing ${processingId} resolved to another platform`);
+			return { ...(await stageHackerNewsEnrichment(env, step, resource, acquired, processingId)), specialization: null };
+		}
+		case 'youtube': {
+			if (resource.resourcePlatform !== 'youtube') throw new Error(`YouTube processing ${processingId} resolved to another platform`);
+			return stageYouTubeEnrichment(env, step, resource, acquired, processingId);
+		}
+		case null:
+			if (resource.resourcePlatform !== null) throw new Error(`Web processing ${processingId} resolved to a platform resource`);
+			return { ...resource, specialization: null };
+		case 'lesswrong':
+			if (resource.resourcePlatform !== 'lesswrong') throw new Error(`LessWrong processing ${processingId} resolved to another platform`);
+			return { ...resource, specialization: null };
+		case 'twitter':
+			if (resource.resourcePlatform !== 'twitter') throw new Error(`Twitter processing ${processingId} resolved to another platform`);
+			return { ...resource, specialization: null };
+		default:
+			acquired satisfies never;
+			throw new Error(`Unsupported acquired resource platform for ${processingId}`);
+	}
 }

@@ -2,7 +2,7 @@ import type { ContentResourceIdentity, ResourcePlatform } from '@core-shared/res
 import type { ResourceIdentifier } from './resource-identifiers';
 import type { PaperRelationSnapshot, ResourceCreator, ResourceKindMetadata } from './resource-metadata';
 
-export type ResolvedResource = ContentResourceIdentity & {
+type MaterializedResourceFields = {
 	originalLang: string;
 	title: string;
 	summary: string | null;
@@ -19,6 +19,8 @@ export type ResolvedResource = ContentResourceIdentity & {
 	fileType: string | null;
 	normalizedUrl: string | null;
 };
+
+export type MaterializedResource = ContentResourceIdentity & MaterializedResourceFields;
 
 export const ENTITY_TYPES = ['person', 'organization', 'product', 'technology', 'event', 'location'] as const;
 export type EntityType = (typeof ENTITY_TYPES)[number];
@@ -70,6 +72,20 @@ export interface YoutubeTranscript {
 	chapters: YouTubeChapter[];
 	chaptersFromDescription: boolean;
 }
+
+export type YouTubeResourceSpecialization = Readonly<{
+	kind: 'youtube';
+	transcript: Omit<YoutubeTranscript, 'videoId'> | null;
+	highlights: YouTubeHighlights | null;
+}>;
+
+export type ResolvedResource =
+	| (Extract<MaterializedResource, { kind: 'video'; resourcePlatform: 'youtube' }> & {
+			specialization: YouTubeResourceSpecialization;
+	  })
+	| (Exclude<MaterializedResource, { kind: 'video'; resourcePlatform: 'youtube' }> & {
+			specialization: null;
+	  });
 
 type AcquiredMaterialBase<T extends ResourcePlatform> = {
 	/** Acquisition adapter identity. This is not the Resource product identity. */

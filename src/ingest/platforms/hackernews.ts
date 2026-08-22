@@ -2,7 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { type ForumKindMetadata, literalCreator } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, ResolvedResource } from '@core-shared/types';
+import type { AcquiredMaterial, MaterializedResource } from '@core-shared/types';
 import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
@@ -45,7 +45,7 @@ const HnCommentSchema: z.ZodType<HnComment> = z.lazy(() =>
 // Shape of Algolia's /items/{id} response. It carries the whole comment tree in
 // `children` but has no `descendants` — that is a Firebase field, so discussion
 // size has to be counted from the tree.
-const HackerNewsItemSchema = z.object({
+export const HackerNewsItemSchema = z.object({
 	id: z.number().int().positive(),
 	title: optionalStringSchema,
 	url: optionalStringSchema,
@@ -66,6 +66,8 @@ const HackerNewsItemSchema = z.object({
 });
 
 export type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
+export type HackerNewsAcquiredContent = AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem };
+type HackerNewsResource = Extract<MaterializedResource, { kind: 'forum'; resourcePlatform: 'hackernews' }>;
 
 /** Every node in the tree, deleted ones included — the closest analogue to the count HN itself shows. */
 function countHnComments(children: HnComment[] | undefined): number {
@@ -120,7 +122,7 @@ function hackerNewsItemTitle(item: HackerNewsItem, itemId: string): string {
 	return `Hacker News item #${itemId}`;
 }
 
-export async function scrapeHackerNews(itemId: string): Promise<AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem }> {
+export async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquiredContent> {
 	console.info({ tag: 'HN', msg: 'Fetching item', itemId });
 	const item = await fetchHnItem(itemId);
 	const title = hackerNewsItemTitle(item, itemId);
@@ -233,7 +235,7 @@ function withoutPreviousDiscussion(content: string): string {
 }
 
 async function buildHackerNewsAnnotation(
-	resource: ResolvedResource,
+	resource: MaterializedResource,
 	env: CoreEnv,
 	item: HackerNewsItem,
 	processingId: string,
@@ -254,18 +256,18 @@ function applyHackerNewsAnnotation(content: string, annotation: string): string 
 	return [carrierContent, '---', annotation].join('\n\n');
 }
 
-export async function stageHackerNewsAnnotation(
+export async function stageHackerNewsEnrichment(
 	env: CoreEnv,
 	step: WorkflowStep,
-	resource: ResolvedResource,
-	acquiredItem: HackerNewsItem,
+	resource: HackerNewsResource,
+	acquired: HackerNewsAcquiredContent,
 	processingId: string,
-): Promise<ResolvedResource> {
+): Promise<HackerNewsResource> {
 	const annotation = await step
 		.do(
 			'build-hacker-news-annotation-v1',
 			{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
-			() => buildHackerNewsAnnotation(resource, env, acquiredItem, processingId),
+			() => buildHackerNewsAnnotation(resource, env, acquired.hackerNewsItem, processingId),
 		)
 		.catch((error) => {
 			console.error({

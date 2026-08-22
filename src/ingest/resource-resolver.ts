@@ -11,7 +11,7 @@ import {
 	canonicalizeResourceLang,
 	resourceIdentityForDetectedPlatform,
 } from '../shared/resource-types.ts';
-import type { AcquiredMaterial, ResolvedResource } from '../shared/types.ts';
+import type { AcquiredMaterial, MaterializedResource } from '../shared/types.ts';
 import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../shared/url.ts';
 
 type ExactPlatformLocator = Readonly<{
@@ -35,14 +35,14 @@ export function exactPlatformLocator(identifiers: readonly ResourceIdentifier[])
 
 export function materializeAcquiredResource(
 	acquired: AcquiredMaterial & { sourceSnapshotHash: string },
-	origin: Pick<ResolvedResource, 'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'summary' | 'tags' | 'url'>,
+	origin: Pick<MaterializedResource, 'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'summary' | 'tags' | 'url'>,
 	resolution: {
 		canonicalUrl: string | null;
 		detected: ReturnType<typeof detectResourceUrl>;
 		publishedDate: string | null;
 		resourceIdentifiers: readonly ResourceIdentifier[];
 	},
-): ResolvedResource {
+): MaterializedResource {
 	const paperIdentifiers = resolution.resourceIdentifiers.filter(isPaperIdentifier);
 	const identity: ContentResourceIdentity = resolution.detected
 		? resourceIdentityForDetectedPlatform(resolution.detected.resourcePlatform)
