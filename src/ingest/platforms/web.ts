@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { normalizedResourceImageUrl } from '@core-shared/hosted-images';
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
+import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
 import type { AcquiredMaterial } from '@core-shared/resource';
 import { literalCreator } from '@core-shared/resource';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';

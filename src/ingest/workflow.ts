@@ -4,7 +4,7 @@ import type {
 	PersistResolvedResourceResult,
 	PersistResolvedResourceTarget,
 } from '@app-domain/resource-graph-contracts';
-import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/hosted-images';
+import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/image-mapping';
 import {
 	DEFAULT_RESOURCE_LANG,
 	ENTITY_TYPES,

@@ -1,3 +1,4 @@
+// Pure Resource image selection and Hosted Images URL mapping; Cloudflare I/O lives in image-rehosting.ts.
 import type { PostKindMetadata, ResourceCreator, ResourceKindMetadata } from './resource.ts';
 import { validatedExternalMediaUrl } from './url.ts';
 

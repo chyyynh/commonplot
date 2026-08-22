@@ -1,8 +1,8 @@
 // Shared media rehosting for every Resource platform; this is not the image Resource kind adapter.
 import type { WorkflowStep } from 'cloudflare:workers';
 import { sha256Hex } from '@core-shared/hash';
-import { type HostedResourceImage, hostedResourceImageUrl, normalizedResourceImageUrl } from '@core-shared/hosted-images';
 import { fetchWithTimeout } from '@core-shared/http';
+import { type HostedResourceImage, hostedResourceImageUrl, normalizedResourceImageUrl } from '@core-shared/image-mapping';
 import { validatedExternalMediaUrl } from '@core-shared/url';
 
 const REHOST_TIMEOUT_MS = 8_000;
