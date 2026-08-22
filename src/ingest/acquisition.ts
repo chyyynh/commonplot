@@ -1,5 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
-import type { AcquiredMaterial, ResolvedResource } from '@core-shared/types';
+import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
+import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource-identifiers';
+import type { AcquiredMaterial, MaterializedResource, ResolvedResource } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { z } from 'zod';
 import { type AcquisitionArtifactResult, acquiredContentSchema } from './acquired-content';
@@ -10,13 +12,10 @@ import {
 	stageHackerNewsEnrichment,
 } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
+import { stagePaperProcessing } from './platforms/paper';
 import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageYouTubeAcquisition, stageYouTubeEnrichment, YouTubeTranscriptSchema } from './platforms/youtube-acquisition';
-import {
-	materializeAcquiredResource,
-	type ResourceMaterializationOrigin,
-	type ResourceMaterializationResolution,
-} from './resource-resolver';
+import { materializeAcquiredResource, type ResourceMaterializationOrigin } from './resource-resolver';
 import { stageWebAcquisition } from './web-acquisition';
 
 type RawAcquiredContent =
@@ -27,6 +26,8 @@ type RawAcquiredContent =
 	| AcquiredMaterial<'youtube'>;
 
 export type AcquiredContent = RawAcquiredContent & { sourceSnapshotHash: string };
+
+export type ResourceResolutionOrigin = ResourceMaterializationOrigin & Pick<MaterializedResource, 'resourceIdentifiers'>;
 
 type SavedUrlAcquisitionResult = AcquisitionArtifactResult<AcquiredContent>;
 
@@ -124,10 +125,49 @@ export async function resolveAcquiredResource(
 	env: CoreEnv,
 	step: WorkflowStep,
 	acquired: AcquiredContent,
-	origin: ResourceMaterializationOrigin,
-	resolution: ResourceMaterializationResolution,
+	origin: ResourceResolutionOrigin,
 	processingId: string,
+	translatePaperUrl: boolean,
 ): Promise<ResolvedResource> {
+	const canonicalUrl = acquired.canonicalUrl?.trim() || origin.url;
+	const exactPaper = resolveExactPaperInput(origin.url) ?? resolveExactPaperInput(canonicalUrl);
+	const resourceIdentifiers = normalizeResourceIdentifiers([
+		...origin.resourceIdentifiers,
+		...(exactPaper ? paperIdentifiersFromIdentity(exactPaper.identity) : []),
+	]);
+	let publishedDate = origin.publishedDate;
+	if (acquired.publishedDate?.trim()) {
+		const parsed = new Date(acquired.publishedDate);
+		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
+	}
+
+	if (acquired.resourcePlatform === null) {
+		const paper = await stagePaperProcessing(env, step, {
+			acquiredContent: acquired,
+			canonicalUrl,
+			identifiers: resourceIdentifiers.filter(isPaperIdentifier),
+			originSummary: origin.summary,
+			processingId,
+			publishedDate,
+			translateUrl: translatePaperUrl,
+		});
+		if (!paper.acquiredContent.markdown.trim()) {
+			throw new ResourceProcessingRejectedError(`Processing ${processingId} has no extractable content`);
+		}
+		return {
+			...materializeAcquiredResource(paper.acquiredContent, origin, {
+				canonicalUrl,
+				publishedDate: paper.publishedDate,
+				resourceIdentifiers: normalizeResourceIdentifiers([...paper.identifiers, ...resourceIdentifiers]),
+			}),
+			specialization: null,
+		};
+	}
+
+	if (!acquired.markdown.trim()) {
+		throw new ResourceProcessingRejectedError(`Processing ${processingId} has no extractable content`);
+	}
+	const resolution = { canonicalUrl, publishedDate, resourceIdentifiers };
 	switch (acquired.resourcePlatform) {
 		case 'hackernews':
 			return {

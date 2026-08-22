@@ -1,9 +1,6 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
-import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
-import { isPaperIdentifier, normalizeResourceIdentifiers, type ResourceIdentifier } from '@core-shared/resource-identifiers';
 import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
 import { DEFAULT_RESOURCE_LANG } from '@core-shared/resource-types';
-import type { MaterializedResource, ResolvedResource } from '@core-shared/types';
 import { canonicalResourcePlatformUrl } from '@core-shared/url';
 import { connectCoreDb } from '@db/connection';
 import { loadResourceReacquisitionInput, loadStoredPdfInput } from '@ingest/stored-resource';
@@ -15,9 +12,14 @@ import {
 	normalizeAcquiredContent,
 	readAcquiredContentArtifact,
 } from './acquired-content';
-import { type AcquiredContent, ResourceProcessingRejectedError, resolveAcquiredResource, stageSavedUrlAcquisition } from './acquisition';
+import {
+	type AcquiredContent,
+	ResourceProcessingRejectedError,
+	type ResourceResolutionOrigin,
+	resolveAcquiredResource,
+	stageSavedUrlAcquisition,
+} from './acquisition';
 import { classifyResource } from './domain/resource-classification';
-import { stagePaperProcessing } from './platforms/paper';
 import { acquireStoredPdf } from './platforms/pdf';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
@@ -63,15 +65,10 @@ async function stageResourceImages(
 	return images;
 }
 
-type ResourceMaterializationSeed = Pick<
-	MaterializedResource,
-	'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'resourceIdentifiers' | 'summary' | 'tags' | 'url'
->;
-
 type ResolvedProcessingCall = {
 	processingId: string;
 	acquiredContent: AcquiredContent;
-	origin: ResourceMaterializationSeed;
+	origin: ResourceResolutionOrigin;
 	translatePaperUrl: boolean;
 	persistenceTarget: PersistProcessedTarget;
 };
@@ -181,66 +178,20 @@ async function resolveProcessingCall(
 	};
 }
 
-function resolveProcessingIdentity(call: ResolvedProcessingCall): {
-	canonicalUrl: string | null;
-	resourceIdentifiers: ResourceIdentifier[];
-} {
-	const canonicalUrl = call.acquiredContent.canonicalUrl?.trim() || call.origin.url;
-	const exactPaper = resolveExactPaperInput(call.origin.url ?? canonicalUrl);
-	return {
-		canonicalUrl,
-		resourceIdentifiers: normalizeResourceIdentifiers([
-			...call.origin.resourceIdentifiers,
-			...(exactPaper ? paperIdentifiersFromIdentity(exactPaper.identity) : []),
-		]),
-	};
-}
-
-async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, call: ResolvedProcessingCall): Promise<ResolvedResource> {
-	const { acquiredContent: initialAcquiredContent, origin, processingId } = call;
-	const { canonicalUrl, resourceIdentifiers } = resolveProcessingIdentity(call);
-	let publishedDate = origin.publishedDate;
-	if (initialAcquiredContent.publishedDate?.trim()) {
-		const parsed = new Date(initialAcquiredContent.publishedDate);
-		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
-	}
-	const paper =
-		initialAcquiredContent.resourcePlatform === null
-			? await stagePaperProcessing(env, step, {
-					acquiredContent: initialAcquiredContent,
-					canonicalUrl,
-					identifiers: resourceIdentifiers.filter(isPaperIdentifier),
-					originSummary: origin.summary,
-					processingId,
-					publishedDate,
-					translateUrl: call.translatePaperUrl,
-				})
-			: { acquiredContent: initialAcquiredContent, identifiers: [], publishedDate };
-	const acquiredContent = paper.acquiredContent;
-	if (!acquiredContent.markdown.trim()) {
-		throw new ResourceProcessingRejectedError(`Processing ${processingId} has no extractable content`);
-	}
-	return resolveAcquiredResource(
-		env,
-		step,
-		acquiredContent,
-		origin,
-		{
-			canonicalUrl,
-			publishedDate: paper.publishedDate,
-			resourceIdentifiers: normalizeResourceIdentifiers([...paper.identifiers, ...resourceIdentifiers]),
-		},
-		processingId,
-	);
-}
-
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingWorkflowPayload> {
 	async run(event: WorkflowEvent<ResourceProcessingWorkflowPayload>, step: WorkflowStep) {
 		const { target } = parseResourceProcessingWorkflowPayload(event.payload);
 		const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
 		try {
 			const call = await resolveProcessingCall(this.env, step, target, event.instanceId);
-			const resource = await prepareResourceForProcessing(this.env, step, call);
+			const resource = await resolveAcquiredResource(
+				this.env,
+				step,
+				call.acquiredContent,
+				call.origin,
+				call.processingId,
+				call.translatePaperUrl,
+			);
 
 			console.info({
 				tag: 'WORKFLOW',
