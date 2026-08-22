@@ -5,9 +5,7 @@ import { literalCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial, PdfExtractionMetadata } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { extractFromHtml } from '@extractus/article-extractor';
-import { type PdfTextArtifact, parsePdfBytes } from './platforms/pdf';
-
-export const PDF_MIME = 'application/pdf';
+import { PDF_MIME, type PdfTextArtifact, parsePdfBytes } from './platforms/pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;

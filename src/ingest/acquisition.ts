@@ -1,8 +1,8 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 import { sha256Hex } from '@core-shared/hash';
 import { parseResourceCreators, parseStoredResourceKindMetadata } from '@core-shared/resource-metadata';
-import { type ContentResourceKind, canonicalizeOptionalResourceLang, type ResourcePlatform } from '@core-shared/resource-types';
-import type { AcquiredMaterial, ResourceForProcessing } from '@core-shared/types';
+import type { ContentResourceKind, ResourcePlatform } from '@core-shared/resource-types';
+import type { AcquiredMaterial } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { z } from 'zod';
 import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
@@ -12,12 +12,14 @@ import { scrapeTweet } from './platforms/twitter-acquisition';
 import { scrapeYouTube } from './platforms/youtube-acquisition';
 import { type AcquiredWebContent, acquireWebResource } from './web-acquisition';
 
-export type AcquiredContent =
+type RawAcquiredContent =
 	| AcquiredWebContent
 	| (AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem })
 	| AcquiredMaterial<'lesswrong'>
 	| AcquiredMaterial<'twitter'>
 	| AcquiredMaterial<'youtube'>;
+
+export type AcquiredContent = RawAcquiredContent & { sourceSnapshotHash: string };
 
 type SavedUrlAcquisitionResult = { status: 'acquired'; content: AcquiredContent } | { status: 'rejected'; message: string };
 
@@ -34,10 +36,7 @@ const acquiredContentShape = {
 	publishedDate: nullableStringSchema,
 	summary: nullableStringSchema,
 	creators: z.unknown().transform((value) => parseResourceCreators(value)),
-	sourceSnapshotHash: z
-		.string()
-		.regex(/^[0-9a-f]{64}$/)
-		.optional(),
+	sourceSnapshotHash: z.string().regex(/^[0-9a-f]{64}$/),
 };
 const youtubeTranscriptSchema = z.object({
 	videoId: z.string().min(1),
@@ -85,39 +84,13 @@ export const ACQUISITION_STEP = {
 	timeout: '120 seconds',
 } as const;
 
-export function applyAcquiredMaterial(resource: ResourceForProcessing, acquired?: AcquiredContent): ResourceForProcessing {
-	if (!acquired) return resource;
-	const canonicalUrl = acquired.canonicalUrl?.trim();
-	let publishedDate = resource.published_date;
-	if (publishedDate === null && acquired.publishedDate?.trim()) {
-		const parsed = new Date(acquired.publishedDate);
-		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
-	}
-	return {
-		...resource,
-		title: acquired.title.trim(),
-		summary: acquired.summary ?? resource.summary,
-		content: acquired.markdown,
-		source: acquired.source,
-		original_lang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? resource.original_lang,
-		creators: acquired.creators,
-		kind_metadata: acquired.kindMetadata,
-		source_revision: acquired.sourceSnapshotHash ?? resource.source_revision ?? null,
-		file_type: acquired.fileType,
-		storage_key: resource.scope === 'private' ? resource.storage_key : null,
-		url: canonicalUrl ?? resource.url,
-		normalized_url: canonicalUrl ?? resource.normalized_url,
-		published_date: publishedDate,
-	};
-}
-
 function validateAcquisitionUrl(url: string): string {
 	const parsed = parseExternalHttpUrl(url);
 	if (!parsed) throw new Error('Only http(s) URLs without credentials are allowed');
 	return normalizeUrl(parsed.toString());
 }
 
-function acquiredSourceSnapshotHash(acquired: AcquiredContent, markdown: string): Promise<string> {
+function acquiredSourceSnapshotHash(acquired: RawAcquiredContent, markdown: string): Promise<string> {
 	const providerFacts = acquired.subjectUrl ? { subjectUrl: acquired.subjectUrl } : null;
 	const input = JSON.stringify({
 		provider: acquired.provider,
@@ -136,7 +109,7 @@ function acquiredSourceSnapshotHash(acquired: AcquiredContent, markdown: string)
 	return sha256Hex(input);
 }
 
-export async function sanitizeAcquiredContent(acquired: AcquiredContent): Promise<AcquiredContent> {
+export async function sanitizeAcquiredContent(acquired: RawAcquiredContent): Promise<AcquiredContent> {
 	const markdown = sanitizeExtractedMarkdown(acquired.markdown);
 	return { ...acquired, markdown, sourceSnapshotHash: await acquiredSourceSnapshotHash(acquired, markdown) };
 }

@@ -1,16 +1,16 @@
-import type { WorkflowStep } from 'cloudflare:workers';
+import type { ResourceForProcessing } from '@core-shared/types';
 import { initSync, LiteParse } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
-import { z } from 'zod';
+import type { AcquiredWebContent } from '../web-acquisition';
 
-const PdfTextArtifactSchema = z.object({
-	text: z.string(),
-	status: z.enum(['ok', 'needs_ocr']),
-	pages: z.number().int().positive(),
-	chars: z.number().int().nonnegative(),
-});
+export const PDF_MIME = 'application/pdf';
 
-export type PdfTextArtifact = z.infer<typeof PdfTextArtifactSchema>;
+export type PdfTextArtifact = {
+	chars: number;
+	pages: number;
+	status: 'ok' | 'needs_ocr';
+	text: string;
+};
 
 const MIN_PDF_CHARS = 40;
 const MIN_PDF_CHARS_PER_PAGE = 20;
@@ -34,23 +34,42 @@ export async function parsePdfBytes(bytes: Uint8Array): Promise<PdfTextArtifact>
 	return { text, pages, chars, status };
 }
 
-async function extractPdfText(env: CoreEnv, input: { sourceStorageKey: string }): Promise<ReadableStream<Uint8Array>> {
-	const obj = await env.R2.get(input.sourceStorageKey);
-	if (!obj) throw new Error(`PDF source object missing: ${input.sourceStorageKey}`);
-	if (obj.size > MAX_PDF_BYTES) throw new Error(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
-	const { text, status, chars, pages } = await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()));
-	return new Response(JSON.stringify({ status, chars, pages, text } satisfies PdfTextArtifact)).body!;
-}
-
-export async function stagePdfTextExtraction(
+export async function acquireStoredPdf(
 	env: CoreEnv,
-	step: WorkflowStep,
-	input: { sourceStorageKey: string },
-): Promise<PdfTextArtifact> {
-	const artifact = await step.do(
-		'extract-pdf-text',
-		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		() => extractPdfText(env, input),
-	);
-	return PdfTextArtifactSchema.parse(await new Response(artifact).json());
+	resource: Pick<
+		ResourceForProcessing,
+		| 'creators'
+		| 'file_type'
+		| 'kind_metadata'
+		| 'original_lang'
+		| 'processing_id'
+		| 'published_date'
+		| 'source'
+		| 'storage_key'
+		| 'summary'
+		| 'title'
+	>,
+): Promise<AcquiredWebContent> {
+	if (resource.file_type !== PDF_MIME || !resource.storage_key) {
+		throw new Error(`Stored resource ${resource.processing_id} is not an R2 PDF`);
+	}
+	const source = resource.source?.trim();
+	if (!source) throw new Error(`Stored PDF ${resource.processing_id} has no source`);
+	const obj = await env.R2.get(resource.storage_key);
+	if (!obj) throw new Error(`PDF source object missing: ${resource.storage_key}`);
+	if (obj.size > MAX_PDF_BYTES) throw new Error(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
+	const parsed = await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()));
+	return {
+		provider: null,
+		fileType: PDF_MIME,
+		title: resource.title,
+		markdown: parsed.text,
+		source,
+		originalLang: resource.original_lang,
+		publishedDate: resource.published_date,
+		summary: resource.summary,
+		creators: resource.creators,
+		kindMetadata: resource.kind_metadata,
+		extraction: { status: parsed.status, pages: parsed.pages },
+	};
 }

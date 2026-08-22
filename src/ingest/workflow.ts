@@ -9,13 +9,7 @@ import type { YouTubeSpecializationMutation } from '@app-domain/resource-graph-c
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource-identifiers';
 import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
-import {
-	canonicalizeOptionalResourceLang,
-	canonicalizeResourceLang,
-	DEFAULT_RESOURCE_LANG,
-	resourceIdentityForDetectedPlatform,
-	toResourceIdentityColumns,
-} from '@core-shared/resource-types';
+import { DEFAULT_RESOURCE_LANG } from '@core-shared/resource-types';
 import type { ResourceForProcessing } from '@core-shared/types';
 import { canonicalResourcePlatformUrl, detectResourceUrl } from '@core-shared/url';
 import { loadStoredResourceForProcessing, type StoredResourceProcessingInput } from '@ingest/domain/resource-store';
@@ -24,8 +18,10 @@ import { DURABLE_WORKFLOW_RETRIES, shouldReconcileSupersededRefresh } from '../w
 import {
 	ACQUISITION_STEP,
 	type AcquiredContent,
-	applyAcquiredMaterial,
+	acquiredContentArtifact,
+	readAcquiredContentArtifact,
 	readSavedUrlAcquisitionArtifact,
+	sanitizeAcquiredContent,
 	scrapeSavedUrlArtifact,
 } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
@@ -34,7 +30,7 @@ import { loadEligibleResourceTranslationRevision } from './domain/resource-trans
 import { stageHackerNewsAnnotation } from './platforms/hackernews';
 import { applyPaperEnrichment, privatePaperAttachment, stagePaperEnrichment } from './platforms/paper';
 import { stageOpenAlexContentAcquisition } from './platforms/paper-content';
-import { stagePdfTextExtraction } from './platforms/pdf';
+import { acquireStoredPdf, PDF_MIME } from './platforms/pdf';
 import { stageYouTubeEnrichment } from './platforms/youtube';
 import {
 	type ExistingResourceTarget,
@@ -46,9 +42,8 @@ import {
 } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import { markStoredBlobProcessingFailed, persistProcessedResource } from './resource-persistence';
-import { exactPlatformLocator, type ResolvedSubjectInput, resolveContentResource, resolvedSubjectInput } from './resource-resolver';
+import { exactPlatformLocator, materializeAcquiredResource, type ResolvedSubjectInput, resolvedSubjectInput } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
-import { PDF_MIME } from './web-acquisition';
 
 class ResourceProcessingRejectedError extends Error {}
 
@@ -175,32 +170,12 @@ type ResourcePreparationInput =
 			stored: StoredResourceProcessingInput;
 	  });
 
-type InitialResourceAcquisition = {
-	acquiredContent: AcquiredContent | undefined;
-	resource: ResourceForProcessing;
-};
-
 async function acquireDraftResource(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: Extract<ResourcePreparationInput, { kind: 'draft' }>,
-): Promise<InitialResourceAcquisition> {
-	const exactPaper = resolveExactPaperInput(input.url);
-	const detected = exactPaper ? null : detectResourceUrl(input.url);
-	const identity = exactPaper
-		? ({ kind: 'paper', resourcePlatform: null } as const)
-		: detected
-			? resourceIdentityForDetectedPlatform(detected.resourcePlatform)
-			: ({ kind: 'blog', resourcePlatform: null } as const);
-	const resourceIdentifiers = normalizeResourceIdentifiers(
-		exactPaper
-			? paperIdentifiersFromIdentity(exactPaper.identity)
-			: detected
-				? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]
-				: [],
-	);
-	const sourceId = input.admission.kind === 'source' ? input.admission.sourceId : null;
-	const acquiredContent = await stageSavedUrlAcquisition(
+): Promise<AcquiredContent> {
+	return stageSavedUrlAcquisition(
 		env,
 		step,
 		{
@@ -212,56 +187,29 @@ async function acquireDraftResource(
 		},
 		input.expectedProviderRevision,
 	);
-	const canonicalUrl = acquiredContent.canonicalUrl?.trim() || input.url;
-	let publishedDate = input.sourceHints?.publishedDate ?? null;
-	if (acquiredContent.publishedDate?.trim()) {
-		const parsed = new Date(acquiredContent.publishedDate);
-		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
-	}
-	return {
-		acquiredContent,
-		resource: {
-			...toResourceIdentityColumns(identity),
-			processing_id: input.processingId,
-			source_id: sourceId,
-			scope: 'corpus',
-			original_lang:
-				canonicalizeOptionalResourceLang(acquiredContent.originalLang) ??
-				canonicalizeResourceLang(input.sourceHints?.originalLang ?? DEFAULT_RESOURCE_LANG),
-			title: acquiredContent.title.trim(),
-			summary: acquiredContent.summary ?? input.sourceHints?.summary ?? null,
-			content: acquiredContent.markdown,
-			url: canonicalUrl,
-			source: acquiredContent.source,
-			published_date: publishedDate,
-			tags: [],
-			keywords: input.sourceHints?.keywords ?? [],
-			creators: acquiredContent.creators,
-			kind_metadata: acquiredContent.kindMetadata,
-			source_revision: acquiredContent.sourceSnapshotHash ?? null,
-			resource_identifiers: resourceIdentifiers,
-			storage_key: null,
-			file_type: acquiredContent.fileType,
-			normalized_url: canonicalUrl,
-		},
-	};
 }
 
 async function acquireExistingResource(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: Extract<ResourcePreparationInput, { kind: 'storedBlob' | 'reacquire' }>,
-): Promise<InitialResourceAcquisition> {
+): Promise<AcquiredContent> {
 	const storedResource = input.stored.resource;
 	if (input.kind === 'storedBlob') {
-		return { acquiredContent: undefined, resource: storedResource };
+		return readAcquiredContentArtifact(
+			await step.do(
+				'acquire-stored-pdf-v1',
+				{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+				async () => acquiredContentArtifact(await sanitizeAcquiredContent(await acquireStoredPdf(env, storedResource))),
+			),
+		);
 	}
 	const locator = exactPlatformLocator(storedResource.resource_identifiers);
 	const sourceUrl = locator ? canonicalResourcePlatformUrl(locator.resourcePlatform, locator.platformId) : storedResource.url;
 	if (!sourceUrl) {
 		throw new ResourceProcessingRejectedError(`Resource processing ${storedResource.processing_id} has no source URL`);
 	}
-	const acquiredContent = await stageSavedUrlAcquisition(
+	return stageSavedUrlAcquisition(
 		env,
 		step,
 		{
@@ -273,70 +221,131 @@ async function acquireExistingResource(
 		},
 		input.expectedProviderRevision,
 	);
-	return { acquiredContent, resource: applyAcquiredMaterial(storedResource, acquiredContent) };
+}
+
+function resourceOriginFromTarget(input: ResourcePreparationInput) {
+	if (input.kind === 'draft') {
+		return {
+			origin: {
+				keywords: input.sourceHints?.keywords ?? [],
+				normalizedUrl: input.url,
+				originalLang: input.sourceHints?.originalLang ?? DEFAULT_RESOURCE_LANG,
+				processingId: input.processingId,
+				publishedDate: input.sourceHints?.publishedDate ?? null,
+				scope: 'corpus' as const,
+				sourceId: input.admission.kind === 'source' ? input.admission.sourceId : null,
+				storageKey: null,
+				summary: input.sourceHints?.summary ?? null,
+				tags: [],
+				url: input.url,
+			},
+			resourceIdentifiers: [],
+			resourcePlatform: null,
+			sourceUrl: input.url,
+		};
+	}
+	const resource = input.stored.resource;
+	return {
+		origin: {
+			keywords: resource.keywords,
+			normalizedUrl: resource.normalized_url,
+			originalLang: resource.original_lang,
+			processingId: resource.processing_id,
+			publishedDate: resource.published_date,
+			scope: resource.scope,
+			sourceId: resource.source_id,
+			storageKey: resource.storage_key,
+			summary: resource.summary,
+			tags: resource.tags,
+			url: resource.url,
+		},
+		resourceIdentifiers: resource.resource_identifiers,
+		resourcePlatform: resource.resource_platform,
+		sourceUrl: resource.url,
+	};
+}
+
+function resolveAcquiredResourceOrigin(input: ResourcePreparationInput, acquired: AcquiredContent) {
+	const target = resourceOriginFromTarget(input);
+	const { origin } = target;
+	let { resourceIdentifiers, resourcePlatform } = target;
+	origin.originalLang = acquired.originalLang?.trim() || origin.originalLang;
+	if ((input.kind === 'draft' || origin.publishedDate === null) && acquired.publishedDate?.trim()) {
+		const parsed = new Date(acquired.publishedDate);
+		if (!Number.isNaN(parsed.getTime())) origin.publishedDate = parsed.toISOString();
+	}
+	const canonicalUrl = acquired.canonicalUrl?.trim() || target.sourceUrl;
+	const exactPaper = resolveExactPaperInput(input.kind === 'draft' ? input.url : canonicalUrl);
+	const detected = exactPaper || !canonicalUrl ? null : detectResourceUrl(canonicalUrl);
+	if (input.kind === 'draft') {
+		resourceIdentifiers = normalizeResourceIdentifiers(
+			exactPaper
+				? paperIdentifiersFromIdentity(exactPaper.identity)
+				: detected
+					? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]
+					: [],
+		);
+	}
+	resourcePlatform = detected?.resourcePlatform ?? resourcePlatform;
+	return { canonicalUrl, origin, resourceIdentifiers, resourcePlatform };
 }
 
 async function prepareResourceForProcessing(
 	env: CoreEnv,
 	step: WorkflowStep,
-	acquired: InitialResourceAcquisition,
+	input: ResourcePreparationInput,
+	initialAcquiredContent: AcquiredContent,
 ): Promise<PreparedResource> {
-	let { acquiredContent, resource } = acquired;
-	const pdfTextArtifact =
-		resource.storage_key && resource.file_type === PDF_MIME && acquiredContent?.fileType !== PDF_MIME
-			? await stagePdfTextExtraction(env, step, { sourceStorageKey: resource.storage_key })
-			: null;
-	const identifierText = pdfTextArtifact?.text?.trim() || (resource.file_type === PDF_MIME ? resource.content : null);
+	const { canonicalUrl, origin, resourceIdentifiers, resourcePlatform } = resolveAcquiredResourceOrigin(input, initialAcquiredContent);
 	const paperResolution = await stagePaperEnrichment(env, step, {
-		...resource,
-		identifierText,
-		identifiers: resource.resource_identifiers.filter(isPaperIdentifier),
+		processing_id: origin.processingId,
+		url: canonicalUrl,
+		scope: origin.scope,
+		source_id: origin.sourceId,
+		resource_platform: resourcePlatform,
+		identifierText: initialAcquiredContent.fileType === PDF_MIME ? initialAcquiredContent.markdown : null,
+		identifiers: resourceIdentifiers.filter(isPaperIdentifier),
 	});
-	if (paperResolution && resource.scope === 'corpus' && !resource.storage_key) {
+	let acquiredContent = initialAcquiredContent;
+	if (paperResolution && origin.scope === 'corpus' && !origin.storageKey) {
 		const openAlexContent = await stageOpenAlexContentAcquisition(
 			env,
 			step,
 			{
-				processingId: resource.processing_id,
-				publishedDate: resource.published_date,
-				source: resource.source,
-				summary: resource.summary,
-				title: resource.title,
-				url: resource.url,
+				processingId: origin.processingId,
+				publishedDate: acquiredContent.publishedDate ?? origin.publishedDate,
+				source: acquiredContent.source,
+				summary: acquiredContent.summary ?? origin.summary,
+				title: acquiredContent.title,
+				url: canonicalUrl,
 			},
 			paperResolution,
 		);
-		if (openAlexContent) {
-			acquiredContent = openAlexContent;
-			resource = applyAcquiredMaterial(resource, openAlexContent);
-		}
+		if (openAlexContent) acquiredContent = openAlexContent;
 	}
 	const paperEnrichment = paperResolution?.metadata ?? null;
-	const resourceIdentifiers = normalizeResourceIdentifiers([...(paperResolution?.identifiers ?? []), ...resource.resource_identifiers]);
-	const subjectUrl = acquiredContent?.subjectUrl?.trim() || null;
-	resource = resolveContentResource({
-		...resource,
-		resource_identifiers: resourceIdentifiers,
-	});
-	const extractionStatus = pdfTextArtifact?.status ?? (acquiredContent?.provider === null ? acquiredContent.extraction?.status : undefined);
+	let resource = materializeAcquiredResource(
+		acquiredContent,
+		origin,
+		normalizeResourceIdentifiers([...(paperResolution?.identifiers ?? []), ...resourceIdentifiers]),
+	);
+	const extractionStatus = acquiredContent.provider === null ? acquiredContent.extraction?.status : undefined;
 	if (extractionStatus === 'needs_ocr') {
 		throw new ResourceProcessingRejectedError(`PDF processing ${resource.processing_id} requires OCR`);
 	}
-	const extractedPdfText = pdfTextArtifact?.text?.trim();
-	if (!extractedPdfText && !acquiredContent?.markdown?.trim()) {
+	if (!acquiredContent.markdown.trim()) {
 		throw new ResourceProcessingRejectedError(`Processing ${resource.processing_id} has no extractable content`);
 	}
-	if (extractedPdfText) resource = { ...resource, content: extractedPdfText };
 	if (resource.kind === 'paper') resource = applyPaperEnrichment(resource, paperEnrichment);
-	if (acquiredContent?.provider === 'hackernews') {
+	if (acquiredContent.provider === 'hackernews') {
 		resource = await stageHackerNewsAnnotation(env, step, resource, acquiredContent.hackerNewsItem);
 	}
 	const youtube =
-		acquiredContent?.provider === 'youtube' ? await stageYouTubeEnrichment(env, step, resource, acquiredContent.youtubeTranscript) : null;
+		acquiredContent.provider === 'youtube' ? await stageYouTubeEnrichment(env, step, resource, acquiredContent.youtubeTranscript) : null;
 	return {
-		previewImageUrl: acquiredContent?.previewImageUrl?.trim() || null,
+		previewImageUrl: acquiredContent.previewImageUrl?.trim() || null,
 		resource,
-		subject: resolvedSubjectInput(subjectUrl),
+		subject: resolvedSubjectInput(acquiredContent.subjectUrl?.trim()),
 		youtube,
 	};
 }
@@ -373,7 +382,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
 		let expectedSourceRevision: string | null = null;
 		try {
-			let acquired: InitialResourceAcquisition;
+			let preparationInput: ResourcePreparationInput;
+			let acquiredContent: AcquiredContent;
 			if (target.kind !== 'draft') {
 				const stored = await step.do(
 					'fetch-stored-resource-input-kind-platform-v1',
@@ -393,15 +403,13 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						: undefined,
 				);
 				expectedSourceRevision = stored.resource.source_revision;
-				acquired = await acquireExistingResource(this.env, step, { ...target, stored });
+				preparationInput = { ...target, stored };
+				acquiredContent = await acquireExistingResource(this.env, step, preparationInput);
 			} else {
-				acquired = await acquireDraftResource(this.env, step, { ...target, processingId });
+				preparationInput = { ...target, processingId };
+				acquiredContent = await acquireDraftResource(this.env, step, preparationInput);
 			}
-			if (
-				target.kind === 'reacquire' &&
-				target.expectedProviderRevision &&
-				acquired.acquiredContent?.sourceSnapshotHash === expectedSourceRevision
-			) {
+			if (target.kind === 'reacquire' && target.expectedProviderRevision && acquiredContent.sourceSnapshotHash === expectedSourceRevision) {
 				console.info({
 					tag: 'WORKFLOW',
 					msg: 'Provider refresh content is unchanged',
@@ -409,7 +417,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				});
 				return { status: 'unchanged', resourceId: target.resourceId, changed: false } as const;
 			}
-			const prepared = await prepareResourceForProcessing(this.env, step, acquired);
+			const prepared = await prepareResourceForProcessing(this.env, step, preparationInput, acquiredContent);
 			const { previewImageUrl, resource, subject, youtube } = prepared;
 			const logContext = { processing_id: processingId, target_kind: target.kind };
 

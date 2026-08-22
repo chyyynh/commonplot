@@ -1,13 +1,44 @@
 import assert from 'node:assert/strict';
-import { resolveContentResource, resolvedSubjectInput } from '../src/ingest/resource-resolver.ts';
+import { materializeAcquiredResource, resolvedSubjectInput } from '../src/ingest/resource-resolver.ts';
 
 const base = {
-	kind: 'blog',
-	resource_platform: null,
 	url: 'https://example.com/article',
-	normalized_url: 'https://example.com/article',
 	resource_identifiers: [],
 };
+
+function materialize(input = {}) {
+	const url = input.url === undefined ? base.url : input.url;
+	return materializeAcquiredResource(
+		{
+			provider: null,
+			...(url ? { canonicalUrl: url } : {}),
+			fileType: null,
+			title: 'Example',
+			markdown: 'Example content',
+			source: 'Example',
+			originalLang: 'en',
+			publishedDate: null,
+			summary: null,
+			creators: [],
+			kindMetadata: null,
+			sourceSnapshotHash: 'a'.repeat(64),
+		},
+		{
+			keywords: [],
+			normalizedUrl: url,
+			originalLang: 'en',
+			processingId: 'processing-id',
+			publishedDate: null,
+			scope: 'corpus',
+			sourceId: null,
+			storageKey: null,
+			summary: null,
+			tags: [],
+			url: url ?? 'https://openalex.org/W2',
+		},
+		input.resource_identifiers ?? [],
+	);
+}
 
 const cases = [
 	{
@@ -121,12 +152,11 @@ const cases = [
 ];
 
 for (const testCase of cases) {
-	const actual = resolveContentResource({ ...base, ...testCase.input });
+	const actual = materialize(testCase.input);
 	assert.deepEqual(Object.fromEntries(Object.keys(testCase.expected).map((key) => [key, actual[key]])), testCase.expected, testCase.name);
 }
 
-const migratedCarrier = resolveContentResource({
-	...base,
+const migratedCarrier = materialize({
 	url: 'https://news.ycombinator.com/item?id=126',
 	resource_identifiers: [
 		{ preferred: true, scheme: 'doi', value: '10.1000/example' },

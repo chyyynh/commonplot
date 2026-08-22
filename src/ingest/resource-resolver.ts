@@ -5,8 +5,15 @@ import {
 	type PlatformResourceIdentifierScheme,
 	type ResourceIdentifier,
 } from '../shared/resource-identifiers.ts';
-import { type ContentResourceIdentity, resourceIdentityForDetectedPlatform, toResourceIdentityColumns } from '../shared/resource-types.ts';
-import type { ResourceForProcessing } from '../shared/types.ts';
+import {
+	type ContentResourceIdentity,
+	canonicalizeOptionalResourceLang,
+	canonicalizeResourceLang,
+	type ResourceScope,
+	resourceIdentityForDetectedPlatform,
+	toResourceIdentityColumns,
+} from '../shared/resource-types.ts';
+import type { AcquiredMaterial, ResourceForProcessing } from '../shared/types.ts';
 import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../shared/url.ts';
 
 type ExactPlatformLocator = Readonly<{
@@ -28,9 +35,26 @@ export function exactPlatformLocator(identifiers: readonly ResourceIdentifier[])
 	return locator ? { resourcePlatform: locator[0], platformId: locator[1] } : null;
 }
 
-export function resolveContentResource(resource: ResourceForProcessing): ResourceForProcessing {
-	const detected = resource.url ? detectResourceUrl(resource.url) : null;
-	const paperIdentifiers = resource.resource_identifiers.filter(isPaperIdentifier);
+export function materializeAcquiredResource(
+	acquired: AcquiredMaterial & { sourceSnapshotHash: string },
+	origin: {
+		keywords: string[];
+		normalizedUrl: string | null;
+		originalLang: string;
+		processingId: string;
+		publishedDate: string | null;
+		scope: ResourceScope;
+		sourceId: string | null;
+		storageKey: string | null;
+		summary: string | null;
+		tags: string[];
+		url: string | null;
+	},
+	resourceIdentifiers: readonly ResourceIdentifier[],
+): ResourceForProcessing {
+	const canonicalUrl = acquired.canonicalUrl?.trim() || origin.url;
+	const detected = canonicalUrl ? detectResourceUrl(canonicalUrl) : null;
+	const paperIdentifiers = resourceIdentifiers.filter(isPaperIdentifier);
 	const identity: ContentResourceIdentity = detected
 		? resourceIdentityForDetectedPlatform(detected.resourcePlatform)
 		: paperIdentifiers.some((identifier) => identifier.scheme === 'openalex')
@@ -43,13 +67,33 @@ export function resolveContentResource(resource: ResourceForProcessing): Resourc
 				? paperIdentifiers
 				: [],
 	);
-	const url = detected ? canonicalResourcePlatformUrl(detected.resourcePlatform, detected.platformId) : resource.url;
+	const url = detected ? canonicalResourcePlatformUrl(detected.resourcePlatform, detected.platformId) : canonicalUrl;
+	let publishedDate = origin.publishedDate;
+	if (publishedDate === null && acquired.publishedDate?.trim()) {
+		const parsed = new Date(acquired.publishedDate);
+		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
+	}
 	return {
-		...resource,
 		...toResourceIdentityColumns(identity),
-		resource_identifiers: identifiers,
+		processing_id: origin.processingId,
+		source_id: origin.sourceId,
+		scope: origin.scope,
+		original_lang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeResourceLang(origin.originalLang),
+		title: acquired.title.trim(),
+		summary: acquired.summary ?? origin.summary,
+		content: acquired.markdown,
 		url,
-		normalized_url: url ?? resource.normalized_url ?? null,
+		source: acquired.source,
+		published_date: publishedDate,
+		tags: origin.tags,
+		keywords: origin.keywords,
+		creators: acquired.creators,
+		kind_metadata: acquired.kindMetadata,
+		source_revision: acquired.sourceSnapshotHash,
+		resource_identifiers: identifiers,
+		storage_key: origin.scope === 'private' ? origin.storageKey : null,
+		file_type: acquired.fileType,
+		normalized_url: url ?? origin.normalizedUrl,
 	};
 }
 
