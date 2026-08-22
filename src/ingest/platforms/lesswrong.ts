@@ -1,9 +1,9 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
+import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
+import { literalCreator } from '@core-shared/resource';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
-import { literalCreator } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, ResolvedResource } from '@core-shared/types';
 import { materializePlatformResource, type ResourceAcquisitionOrigin } from './materialize';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';

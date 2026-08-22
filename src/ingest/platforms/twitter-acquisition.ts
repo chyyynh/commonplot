@@ -1,8 +1,8 @@
 import type { WorkflowDelayFunction, WorkflowStep, WorkflowStepConfig } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { readTextWithLimit } from '@core-shared/http';
-import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, ResolvedResource } from '@core-shared/types';
+import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
+import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource';
 import { extractTweetId } from '@core-shared/url';
 import { materializePlatformResource, type ResourceAcquisitionOrigin } from './materialize';
 import {

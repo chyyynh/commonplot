@@ -1,4 +1,4 @@
-import { type ContentResourceKind, isContentResourceKind, isResourcePlatform, type ResourcePlatform } from '@core-shared/resource-types';
+import { type ContentResourceKind, isContentResourceKind, isResourcePlatform, type ResourcePlatform } from '@core-shared/resource';
 import { aiSearchResourcePlatformMetadata, isValidUuid, resourceIdFromAiSearchItemKey } from './ai-search';
 
 export type PublicResourceSearchInput = {

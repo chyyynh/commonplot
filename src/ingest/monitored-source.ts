@@ -1,5 +1,5 @@
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import { isSourcePlatform, SOURCE_INPUT_MAX_LENGTH, type SourcePlatform } from '@core-shared/resource-types';
+import { isSourcePlatform, SOURCE_INPUT_MAX_LENGTH, type SourcePlatform } from '@core-shared/source';
 import { parseExternalHttpUrl, parseTwitterUsername } from '@core-shared/url';
 import type { CoreDb } from '@db/connection';
 import { inArray, sql } from 'drizzle-orm';

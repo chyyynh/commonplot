@@ -2,8 +2,8 @@
 
 import type { WorkflowDynamicDelayContext, WorkflowSleepDuration, WorkflowStep } from 'cloudflare:workers';
 import { type PaperIdentifier, paperIdentityFromText, resolveExactPaperInput } from '@core-shared/paper-identity';
-import { literalCreator, type PaperKindMetadata } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, PaperMetadata } from '@core-shared/types';
+import type { AcquiredMaterial, PaperMetadata } from '@core-shared/resource';
+import { literalCreator, type PaperKindMetadata } from '@core-shared/resource';
 import { resolveBibliographicIdentifiers } from './bibliographic-resolver';
 import { acquireOpenAlexGrobidText, acquireOpenAlexPdf, resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME } from './pdf';

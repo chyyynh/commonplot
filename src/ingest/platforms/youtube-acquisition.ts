@@ -1,7 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import { literalCreator } from '@core-shared/resource-metadata';
 import type {
 	AcquiredMaterial,
 	ResolvedResource,
@@ -10,7 +9,8 @@ import type {
 	YouTubeHighlights,
 	YouTubeResourceSpecialization,
 	YouTubeTranscript,
-} from '@core-shared/types';
+} from '@core-shared/resource';
+import { literalCreator } from '@core-shared/resource';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';

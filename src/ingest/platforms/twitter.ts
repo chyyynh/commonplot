@@ -1,5 +1,5 @@
 import { readTextWithLimit } from '@core-shared/http';
-import { parseResourceProviderSequence } from '@core-shared/resource-types';
+import { parseResourceProviderSequence } from '@core-shared/resource';
 import { canonicalResourcePlatformUrl, normalizeUrl } from '@core-shared/url';
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/monitored-source';

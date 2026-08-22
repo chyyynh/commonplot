@@ -1,12 +1,14 @@
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '../../shared/paper-identity.ts';
-import { isPaperIdentifier, normalizeResourceIdentifiers, type ResourceIdentifier } from '../../shared/resource-identifiers.ts';
+import type { AcquiredResource, MaterializedResource, ResolvedResource, ResolvedResourceSubject } from '../../shared/resource.ts';
 import {
 	type ContentResourceIdentity,
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
+	isPaperIdentifier,
+	normalizeResourceIdentifiers,
+	type ResourceIdentifier,
 	resourceIdentityForDetectedPlatform,
-} from '../../shared/resource-types.ts';
-import type { AcquiredResource, MaterializedResource, ResolvedResource, ResolvedResourceSubject } from '../../shared/types.ts';
+} from '../../shared/resource.ts';
 import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../../shared/url.ts';
 
 export type ResourceAcquisitionOrigin = Pick<

@@ -1,6 +1,6 @@
 import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
-import { canonicalizeOptionalResourceLang, parseResourceProviderSequence } from '@core-shared/resource-types';
+import { canonicalizeOptionalResourceLang, parseResourceProviderSequence } from '@core-shared/resource';
 import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
 import { z } from 'zod';
 import { enqueueOrRestartWorkflow } from '../workflow-control';

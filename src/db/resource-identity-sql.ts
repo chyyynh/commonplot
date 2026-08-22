@@ -1,4 +1,4 @@
-import { RESOURCE_KIND_DISPLAY_LABELS, RESOURCE_PLATFORM_DISPLAY_LABELS } from '@core-shared/resource-types';
+import { RESOURCE_KIND_DISPLAY_LABELS, RESOURCE_PLATFORM_DISPLAY_LABELS } from '@core-shared/resource';
 import { type SQL, sql } from 'drizzle-orm';
 
 type ResourceIdentitySqlFields = {

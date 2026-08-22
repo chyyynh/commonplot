@@ -1,8 +1,8 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import { type ForumKindMetadata, literalCreator } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, ResolvedResource } from '@core-shared/types';
+import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
+import { type ForumKindMetadata, literalCreator } from '@core-shared/resource';
 import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';

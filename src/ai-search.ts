@@ -5,7 +5,7 @@ import {
 	isContentResourceIdentity,
 	parseResourceIdentity,
 	type ResourcePlatform,
-} from '@core-shared/resource-types';
+} from '@core-shared/resource';
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
 import { inArray, sql } from 'drizzle-orm';

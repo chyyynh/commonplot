@@ -1,10 +1,10 @@
+import type { PostKindMetadata, ResourceCreator, ResourceKindMetadata } from './resource.ts';
 import {
 	hostedResourceImageUrl,
 	type ResourceImageFields,
 	resourceImageCandidates,
 	resourcePostMetadata,
 } from './resource-image-fields.ts';
-import type { PostKindMetadata, ResourceCreator, ResourceKindMetadata } from './resource-metadata.ts';
 import { validatedExternalMediaUrl } from './url.ts';
 
 const PREVIEW_IMAGE_TARGET_WIDTH = 1200;

@@ -4,7 +4,7 @@ import {
 	parseResourceProviderSequence,
 	resourceIdentityForDetectedPlatform,
 	VALID_KIND_PLATFORMS,
-} from '../src/shared/resource-types.ts';
+} from '../src/shared/resource.ts';
 import { detectResourceUrl, normalizeUrl, parseTwitterUsername } from '../src/shared/url.ts';
 
 const canonicalIdentities = Object.entries(VALID_KIND_PLATFORMS).flatMap(([kind, resourcePlatforms]) =>

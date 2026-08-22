@@ -4,9 +4,14 @@ import type {
 	PersistResolvedResourceResult,
 	PersistResolvedResourceTarget,
 } from '@app-domain/resource-graph-contracts';
+import {
+	DEFAULT_RESOURCE_LANG,
+	ENTITY_TYPES,
+	RESOURCE_CATEGORIES,
+	type ResolvedResource,
+	type ResourceCategory,
+} from '@core-shared/resource';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
-import { DEFAULT_RESOURCE_LANG, RESOURCE_CATEGORIES, type ResourceCategory } from '@core-shared/resource-types';
-import { ENTITY_TYPES, type ResolvedResource } from '@core-shared/types';
 import { connectCoreDb } from '@db/connection';
 import { entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
 import { loadResourceReacquisitionInput, loadStoredPdfInput, markStoredBlobProcessingFailed } from '@ingest/stored-resource';

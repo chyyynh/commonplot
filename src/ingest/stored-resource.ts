@@ -1,21 +1,21 @@
 // Narrow database projections for the two record-first processing paths.
 
-import { isResourceIdentifierScheme, normalizeResourceIdentifiers, type ResourceIdentifier } from '@core-shared/resource-identifiers';
-import {
-	parseResourceCreators,
-	parseStoredResourceKindMetadata,
-	type ResourceCreator,
-	type ResourceKindMetadata,
-} from '@core-shared/resource-metadata';
 import {
 	CONTENT_RESOURCE_KINDS,
 	type ContentResourceIdentity,
 	canonicalizeResourceLang,
 	isContentResourceIdentity,
 	isContentResourceKind,
+	isResourceIdentifierScheme,
+	normalizeResourceIdentifiers,
+	parseResourceCreators,
 	parseResourceIdentity,
+	parseStoredResourceKindMetadata,
+	type ResourceCreator,
+	type ResourceIdentifier,
 	type ResourceIdentity,
-} from '@core-shared/resource-types';
+	type ResourceKindMetadata,
+} from '@core-shared/resource';
 import { parseExternalHttpUrl } from '@core-shared/url';
 import type { CoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/resource-identity-sql';

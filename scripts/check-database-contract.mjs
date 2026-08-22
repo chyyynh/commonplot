@@ -7,11 +7,13 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const prismaPath = resolve(root, '../../web-tanstack/prisma/schema.prisma');
 const manualIndexesPath = resolve(root, '../../web-tanstack/prisma/manual-indexes.sql');
-const resourceTypesPath = resolve(root, 'src/shared/resource-types.ts');
+const resourcePath = resolve(root, 'src/shared/resource.ts');
+const sourcePath = resolve(root, 'src/shared/source.ts');
 
 const prismaSource = readFileSync(prismaPath, 'utf8');
 const manualIndexesSource = readFileSync(manualIndexesPath, 'utf8');
-const resourceTypesSource = readFileSync(resourceTypesPath, 'utf8');
+const resourceSource = readFileSync(resourcePath, 'utf8');
+const sourceSource = readFileSync(sourcePath, 'utf8');
 const errors = [];
 
 function parseStringArray(source, name) {
@@ -66,11 +68,11 @@ if (/CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+resources_localized/i.test(manualIndexe
 	errors.push('manual-indexes.sql must not recreate the retired resources_localized projection');
 }
 
-const resourceKinds = parseStringArray(resourceTypesSource, 'RESOURCE_KINDS');
-const resourcePlatforms = parseStringArray(resourceTypesSource, 'RESOURCE_PLATFORMS');
-const validKindPlatforms = parseStringOrNullArrayRecord(resourceTypesSource, 'VALID_KIND_PLATFORMS');
+const resourceKinds = parseStringArray(resourceSource, 'RESOURCE_KINDS');
+const resourcePlatforms = parseStringArray(resourceSource, 'RESOURCE_PLATFORMS');
+const validKindPlatforms = parseStringOrNullArrayRecord(resourceSource, 'VALID_KIND_PLATFORMS');
 if (!resourceKinds || !resourcePlatforms || !validKindPlatforms) {
-	errors.push(`Unable to parse canonical resource identity domains from ${resourceTypesPath}`);
+	errors.push(`Unable to parse canonical resource identity domains from ${resourcePath}`);
 } else {
 	if (!sameMembers(validKindPlatforms.keys(), resourceKinds)) {
 		errors.push('VALID_KIND_PLATFORMS keys differ from canonical RESOURCE_KINDS');
@@ -107,9 +109,9 @@ if (!resourceKinds || !resourcePlatforms || !validKindPlatforms) {
 	}
 }
 
-const sourcePlatforms = parseStringArray(resourceTypesSource, 'SOURCE_PLATFORMS');
+const sourcePlatforms = parseStringArray(sourceSource, 'SOURCE_PLATFORMS');
 if (!sourcePlatforms) {
-	errors.push(`Unable to parse canonical source platforms from ${resourceTypesPath}`);
+	errors.push(`Unable to parse canonical source platforms from ${sourcePath}`);
 } else {
 	if (/\bcontent_mode\b|\bpoll_interval_minutes\b/.test(prismaSource)) {
 		errors.push('Prisma Source model must not restore retired routing/cadence columns');

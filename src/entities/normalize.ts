@@ -4,9 +4,15 @@
 // storing and under WHAT canonical key. Consumed by the ingest
 // pipeline (persistence + prompt exclusion lists).
 
-import { type ResourceCreator, resourceCreatorName } from '@core-shared/resource-metadata';
-import { RESOURCE_PLATFORM_DISPLAY_LABELS, type ResourcePlatform } from '@core-shared/resource-types';
-import { ENTITY_TYPES, type EntityType, type StoredResourceEntity } from '@core-shared/types';
+import {
+	ENTITY_TYPES,
+	type EntityType,
+	RESOURCE_PLATFORM_DISPLAY_LABELS,
+	type ResourceCreator,
+	type ResourcePlatform,
+	resourceCreatorName,
+	type StoredResourceEntity,
+} from '@core-shared/resource';
 
 export type ResourceEntityInput = { name: string; name_cn: string; type: string };
 type NormalizedResourceEntity = { name: string; name_cn: string; type: EntityType };

@@ -3,9 +3,8 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import type { PersistResolvedResourceTarget } from '@app-domain/resource-graph-contracts';
 import { readBytesWithLimit } from '@core-shared/http';
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
-import { isPaperIdentifier } from '@core-shared/resource-identifiers';
-import type { ResourceCreator, ResourceKindMetadata } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, AcquiredResource, ResolvedResource } from '@core-shared/types';
+import type { AcquiredMaterial, AcquiredResource, ResolvedResource, ResourceCreator, ResourceKindMetadata } from '@core-shared/resource';
+import { isPaperIdentifier } from '@core-shared/resource';
 import { initSync, LiteParse } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
 

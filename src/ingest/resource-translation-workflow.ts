@@ -7,7 +7,7 @@ import {
 	type ResourceTranslationSource,
 	TRANSLATABLE_RESOURCE_KINDS,
 	ZH_HANT_RESOURCE_LANG,
-} from '@core-shared/resource-types';
+} from '@core-shared/resource';
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { generateText, Output } from 'ai';
 import { sql } from 'drizzle-orm';

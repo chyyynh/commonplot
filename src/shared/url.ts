@@ -1,4 +1,4 @@
-import type { ResourcePlatform } from './resource-types.ts';
+import type { ResourcePlatform } from './resource.ts';
 
 const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
 

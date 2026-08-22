@@ -8,8 +8,7 @@ import {
 	type PaperIdentity,
 	paperIdentityFromIdentifiers,
 } from '@core-shared/paper-identity';
-import type { PaperRelationItem, PaperRelationSnapshot } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, PaperMetadata } from '@core-shared/types';
+import type { AcquiredMaterial, PaperMetadata, PaperRelationItem, PaperRelationSnapshot } from '@core-shared/resource';
 import { z } from 'zod';
 import { markdownFromXml } from '../document-conversion';
 import { acquireFetchedPdfResponse } from './pdf';

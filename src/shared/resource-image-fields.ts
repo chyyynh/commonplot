@@ -1,4 +1,4 @@
-import type { PostKindMetadata, ResourceCreator, ResourceKindMetadata } from './resource-metadata.ts';
+import type { PostKindMetadata, ResourceCreator, ResourceKindMetadata } from './resource.ts';
 
 const HOSTED_RESOURCE_IMAGE_PATTERN = /^https:\/\/imagedelivery\.net\/[a-zA-Z0-9_-]+\/resource-[a-f0-9]{64}\/public$/;
 
