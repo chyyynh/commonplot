@@ -14,17 +14,17 @@ import {
 	acquiredContentArtifact,
 	ResourceProcessingRejectedError,
 	readAcquiredContentArtifact,
+	resolveAcquiredResource,
 	sanitizeAcquiredContent,
-	stagePlatformEnrichment,
 	stageSavedUrlAcquisition,
 } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
-import { applyPaperEnrichment, stagePaperProcessing } from './platforms/paper';
+import { stagePaperProcessing } from './platforms/paper';
 import { acquireStoredPdf } from './platforms/pdf';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './resource-admission';
 import { rehostResourceImage } from './resource-image-rehosting';
 import { markStoredBlobProcessingFailed, type PersistProcessedTarget, persistProcessedResource } from './resource-persistence';
-import { exactPlatformLocator, materializeAcquiredResource } from './resource-resolver';
+import { exactPlatformLocator } from './resource-resolver';
 import { enqueueResourceTranslation } from './resource-translation-workflow';
 
 const WORKFLOW_ENQUEUE_STEP_CONFIG = {
@@ -223,16 +223,21 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, ca
 		translateUrl: call.translatePaperUrl,
 	});
 	const acquiredContent = paper.acquiredContent;
-	let resource = materializeAcquiredResource(acquiredContent, origin, {
-		canonicalUrl,
-		publishedDate,
-		resourceIdentifiers: normalizeResourceIdentifiers([...paper.identifiers, ...resourceIdentifiers]),
-	});
 	if (!acquiredContent.markdown.trim()) {
 		throw new ResourceProcessingRejectedError(`Processing ${processingId} has no extractable content`);
 	}
-	resource = applyPaperEnrichment(resource, paper.metadata);
-	return stagePlatformEnrichment(env, step, acquiredContent, resource, processingId);
+	return resolveAcquiredResource(
+		env,
+		step,
+		acquiredContent,
+		origin,
+		{
+			canonicalUrl,
+			publishedDate: paper.publishedDate,
+			resourceIdentifiers: normalizeResourceIdentifiers([...paper.identifiers, ...resourceIdentifiers]),
+		},
+		processingId,
+	);
 }
 
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingWorkflowPayload> {

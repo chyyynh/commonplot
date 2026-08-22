@@ -2,7 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { type ForumKindMetadata, literalCreator } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial, MaterializedResource } from '@core-shared/types';
+import type { AcquiredMaterial } from '@core-shared/types';
 import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
@@ -67,7 +67,6 @@ export const HackerNewsItemSchema = z.object({
 
 export type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
 export type HackerNewsAcquiredContent = AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem };
-type HackerNewsResource = Extract<MaterializedResource, { kind: 'forum'; resourcePlatform: 'hackernews' }>;
 
 /** Every node in the tree, deleted ones included — the closest analogue to the count HN itself shows. */
 function countHnComments(children: HnComment[] | undefined): number {
@@ -235,14 +234,9 @@ function withoutPreviousDiscussion(content: string): string {
 	return content.split(`\n\n---\n\n${HN_DISCUSSION_HEADING}`, 1)[0].trim();
 }
 
-async function buildHackerNewsAnnotation(
-	resource: MaterializedResource,
-	env: CoreEnv,
-	item: HackerNewsItem,
-	processingId: string,
-): Promise<string> {
+async function buildHackerNewsAnnotation(title: string, env: CoreEnv, item: HackerNewsItem, processingId: string): Promise<string> {
 	const comments = item.children?.length ? collectAllComments(item.children) : [];
-	const digest = await generateHnDiscussionDigest(env, processingId, resource.title, item.text ?? null, comments);
+	const digest = await generateHnDiscussionDigest(env, processingId, title, item.text ?? null, comments);
 	// Count nodes, not text-bearing comments, so this matches Forum kind metadata.
 	const commentCount = countHnComments(item.children);
 	const stats = [item.points !== undefined ? `${item.points} points` : null, commentCount > 0 ? `${commentCount} comments` : null]
@@ -257,18 +251,17 @@ function applyHackerNewsAnnotation(content: string, annotation: string): string 
 	return [carrierContent, '---', annotation].join('\n\n');
 }
 
-export async function stageHackerNewsEnrichment(
+export async function stageHackerNewsEnrichment<const T extends HackerNewsAcquiredContent>(
 	env: CoreEnv,
 	step: WorkflowStep,
-	resource: HackerNewsResource,
-	acquired: HackerNewsAcquiredContent,
+	acquired: T,
 	processingId: string,
-): Promise<HackerNewsResource> {
+): Promise<T> {
 	const annotation = await step
 		.do(
 			'build-hacker-news-annotation-v1',
 			{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
-			() => buildHackerNewsAnnotation(resource, env, acquired.hackerNewsItem, processingId),
+			() => buildHackerNewsAnnotation(acquired.title, env, acquired.hackerNewsItem, processingId),
 		)
 		.catch((error) => {
 			console.error({
@@ -279,5 +272,5 @@ export async function stageHackerNewsEnrichment(
 			});
 			return null;
 		});
-	return annotation ? { ...resource, content: applyHackerNewsAnnotation(resource.content, annotation) } : resource;
+	return annotation ? { ...acquired, markdown: applyHackerNewsAnnotation(acquired.markdown, annotation) } : acquired;
 }

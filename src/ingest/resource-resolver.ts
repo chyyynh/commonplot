@@ -33,15 +33,22 @@ export function exactPlatformLocator(identifiers: readonly ResourceIdentifier[])
 	return locator ? { resourcePlatform: locator[0], platformId: locator[1] } : null;
 }
 
-export function materializeAcquiredResource(
-	acquired: AcquiredMaterial & { sourceSnapshotHash: string },
-	origin: Pick<MaterializedResource, 'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'summary' | 'tags' | 'url'>,
-	resolution: {
-		canonicalUrl: string | null;
-		publishedDate: string | null;
-		resourceIdentifiers: readonly ResourceIdentifier[];
-	},
-): MaterializedResource {
+export type ResourceMaterializationOrigin = Pick<
+	MaterializedResource,
+	'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'summary' | 'tags' | 'url'
+>;
+export type ResourceMaterializationResolution = {
+	canonicalUrl: string | null;
+	publishedDate: string | null;
+	resourceIdentifiers: readonly ResourceIdentifier[];
+};
+type MaterializedAcquisition<T extends AcquiredMaterial> = Extract<MaterializedResource, { resourcePlatform: T['resourcePlatform'] }>;
+
+export function materializeAcquiredResource<const T extends AcquiredMaterial & { sourceSnapshotHash: string }>(
+	acquired: T,
+	origin: ResourceMaterializationOrigin,
+	resolution: ResourceMaterializationResolution,
+): MaterializedAcquisition<T> {
 	const platformIdentity =
 		acquired.resourcePlatform === null ? null : { resourcePlatform: acquired.resourcePlatform, platformId: acquired.platformId };
 	const paperIdentifiers = resolution.resourceIdentifiers.filter(isPaperIdentifier);
@@ -79,7 +86,7 @@ export function materializeAcquiredResource(
 		normalizedUrl: url ?? origin.normalizedUrl,
 		previewImageUrl: acquired.previewImageUrl?.trim() || null,
 		subject: resolvedSubjectInput(acquired.subjectUrl?.trim()),
-	};
+	} as MaterializedAcquisition<T>;
 }
 
 export function resolvedSubjectInput(subjectUrl: string | null | undefined): ResolvedResourceSubject | null {

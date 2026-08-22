@@ -3,7 +3,7 @@
 import type { WorkflowDynamicDelayContext, WorkflowSleepDuration, WorkflowStep } from 'cloudflare:workers';
 import { type PaperIdentifier, paperIdentityFromText, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { literalCreator, type PaperKindMetadata } from '@core-shared/resource-metadata';
-import type { MaterializedResource, PaperMetadata } from '@core-shared/types';
+import type { PaperMetadata } from '@core-shared/types';
 import {
 	ACQUISITION_STEP,
 	type AcquiredContent,
@@ -46,11 +46,12 @@ function isExplicitPaperUrl(url: string | null | undefined): boolean {
 	return resolveExactPaperInput(url) !== null;
 }
 
-/** OpenAlex fields become canonical once academic enrichment resolves the work. */
-export function applyPaperEnrichment(resource: MaterializedResource, metadata: PaperMetadata | null): MaterializedResource {
-	if (resource.kind !== 'paper' || !metadata) return resource;
-
-	let publishedDate = resource.publishedDate;
+function applyPaperMetadata(
+	acquiredContent: AcquiredContent,
+	metadata: PaperMetadata | null,
+	publishedDate: string | null,
+): { acquiredContent: AcquiredContent; publishedDate: string | null } {
+	if (acquiredContent.resourcePlatform !== null || !metadata) return { acquiredContent, publishedDate };
 	if (!publishedDate && metadata.publicationDate) {
 		const candidate = new Date(`${metadata.publicationDate}T00:00:00.000Z`);
 		if (!Number.isNaN(candidate.getTime())) publishedDate = candidate.toISOString();
@@ -66,11 +67,13 @@ export function applyPaperEnrichment(resource: MaterializedResource, metadata: P
 		...(metadata.citations ? { citations: metadata.citations } : {}),
 	};
 	return {
-		...resource,
-		...(abstract ? { summary: abstract } : {}),
+		acquiredContent: {
+			...acquiredContent,
+			...(abstract ? { summary: abstract } : {}),
+			creators: metadata.authors.flatMap((author) => literalCreator('author', author)),
+			kindMetadata,
+		},
 		publishedDate,
-		creators: metadata.authors.flatMap((author) => literalCreator('author', author)),
-		kindMetadata,
 	};
 }
 
@@ -309,9 +312,9 @@ export async function stagePaperProcessing(
 		publishedDate: string | null;
 		translateUrl: boolean;
 	},
-): Promise<{ acquiredContent: AcquiredContent; identifiers: PaperIdentifier[]; metadata: PaperMetadata | null }> {
+): Promise<{ acquiredContent: AcquiredContent; identifiers: PaperIdentifier[]; publishedDate: string | null }> {
 	if (input.acquiredContent.resourcePlatform !== null) {
-		return { acquiredContent: input.acquiredContent, identifiers: [], metadata: null };
+		return { acquiredContent: input.acquiredContent, identifiers: [], publishedDate: input.publishedDate };
 	}
 	const resolution = await stagePaperEnrichment(env, step, {
 		processingId: input.processingId,
@@ -334,5 +337,5 @@ export async function stagePaperProcessing(
 			},
 			resolution,
 		)) ?? input.acquiredContent;
-	return { acquiredContent, identifiers: resolution.identifiers, metadata: resolution.metadata };
+	return { ...applyPaperMetadata(acquiredContent, resolution.metadata, input.publishedDate), identifiers: resolution.identifiers };
 }

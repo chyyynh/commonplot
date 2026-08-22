@@ -4,11 +4,10 @@ import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { literalCreator } from '@core-shared/resource-metadata';
 import type {
 	AcquiredMaterial,
-	MaterializedResource,
-	ResolvedResource,
 	TranscriptSegment,
 	YouTubeChapter,
 	YouTubeHighlights,
+	YouTubeResourceSpecialization,
 	YoutubeTranscript,
 } from '@core-shared/types';
 import { generateText, Output } from 'ai';
@@ -306,13 +305,11 @@ const HIGHLIGHTS_SYSTEM_PROMPT = `你是專業的影片內容分析師。分析 
 export async function stageYouTubeEnrichment(
 	env: CoreEnv,
 	step: WorkflowStep,
-	resource: Extract<MaterializedResource, { kind: 'video'; resourcePlatform: 'youtube' }>,
 	acquired: AcquiredMaterial<'youtube'>,
 	processingId: string,
-): Promise<Extract<ResolvedResource, { kind: 'video'; resourcePlatform: 'youtube' }>> {
+): Promise<YouTubeResourceSpecialization> {
 	const transcript = acquired.youtubeTranscript;
-	const videoId = resource.resourceIdentifiers.find((identifier) => identifier.scheme === 'youtube')?.value;
-	if (!videoId) throw new Error(`YouTube processing ${processingId} has no exact video identifier`);
+	const videoId = acquired.platformId;
 	const highlights = transcript.segments.length
 		? await step
 				.do(
@@ -331,17 +328,14 @@ export async function stageYouTubeEnrichment(
 				})
 		: null;
 	return {
-		...resource,
-		specialization: {
-			kind: 'youtube',
-			transcript: {
-				segments: transcript.segments,
-				language: transcript.language,
-				chapters: transcript.chapters,
-				chaptersFromDescription: transcript.chaptersFromDescription,
-			},
-			highlights,
+		kind: 'youtube',
+		transcript: {
+			segments: transcript.segments,
+			language: transcript.language,
+			chapters: transcript.chapters,
+			chaptersFromDescription: transcript.chaptersFromDescription,
 		},
+		highlights,
 	};
 }
 

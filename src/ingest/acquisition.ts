@@ -3,7 +3,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { sha256Hex } from '@core-shared/hash';
 import { parseResourceCreators, parseStoredResourceKindMetadata } from '@core-shared/resource-metadata';
 import { type ResourcePlatform, resourceIdentityForDetectedPlatform } from '@core-shared/resource-types';
-import type { AcquiredMaterial, MaterializedResource, ResolvedResource } from '@core-shared/types';
+import type { AcquiredMaterial, ResolvedResource } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { z } from 'zod';
 import { sanitizeExtractedMarkdown } from './domain/content-sanitization';
@@ -15,6 +15,11 @@ import {
 	TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG,
 } from './platforms/twitter-acquisition';
 import { scrapeYouTube, stageYouTubeEnrichment, YouTubeTranscriptSchema } from './platforms/youtube-acquisition';
+import {
+	materializeAcquiredResource,
+	type ResourceMaterializationOrigin,
+	type ResourceMaterializationResolution,
+} from './resource-resolver';
 import { type AcquiredWebContent, acquireWebResource, type PlatformRedirect } from './web-acquisition';
 
 type RawAcquiredContent =
@@ -241,32 +246,29 @@ export async function stageSavedUrlAcquisition(
 	throw new ResourceProcessingRejectedError(`Resource acquisition ${input.processingId} exceeded its platform redirect limit`);
 }
 
-export async function stagePlatformEnrichment(
+export async function resolveAcquiredResource(
 	env: CoreEnv,
 	step: WorkflowStep,
 	acquired: AcquiredContent,
-	resource: MaterializedResource,
+	origin: ResourceMaterializationOrigin,
+	resolution: ResourceMaterializationResolution,
 	processingId: string,
 ): Promise<ResolvedResource> {
 	switch (acquired.resourcePlatform) {
-		case 'hackernews': {
-			if (resource.resourcePlatform !== 'hackernews')
-				throw new Error(`Hacker News processing ${processingId} resolved to another platform`);
-			return { ...(await stageHackerNewsEnrichment(env, step, resource, acquired, processingId)), specialization: null };
-		}
-		case 'youtube': {
-			if (resource.resourcePlatform !== 'youtube') throw new Error(`YouTube processing ${processingId} resolved to another platform`);
-			return stageYouTubeEnrichment(env, step, resource, acquired, processingId);
-		}
+		case 'hackernews':
+			return {
+				...materializeAcquiredResource(await stageHackerNewsEnrichment(env, step, acquired, processingId), origin, resolution),
+				specialization: null,
+			};
+		case 'youtube':
+			return {
+				...materializeAcquiredResource(acquired, origin, resolution),
+				specialization: await stageYouTubeEnrichment(env, step, acquired, processingId),
+			};
 		case null:
-			if (resource.resourcePlatform !== null) throw new Error(`Web processing ${processingId} resolved to a platform resource`);
-			return { ...resource, specialization: null };
 		case 'lesswrong':
-			if (resource.resourcePlatform !== 'lesswrong') throw new Error(`LessWrong processing ${processingId} resolved to another platform`);
-			return { ...resource, specialization: null };
 		case 'twitter':
-			if (resource.resourcePlatform !== 'twitter') throw new Error(`Twitter processing ${processingId} resolved to another platform`);
-			return { ...resource, specialization: null };
+			return { ...materializeAcquiredResource(acquired, origin, resolution), specialization: null };
 		default:
 			acquired satisfies never;
 			throw new Error(`Unsupported acquired resource platform for ${processingId}`);
