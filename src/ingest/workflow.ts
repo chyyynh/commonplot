@@ -45,7 +45,7 @@ import { enqueueResourceTranslation } from './resource-translation-workflow';
 
 class ResourceProcessingRejectedError extends Error {}
 
-const RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG = {
+const WORKFLOW_ENQUEUE_STEP_CONFIG = {
 	retries: DURABLE_WORKFLOW_RETRIES,
 	timeout: '30 seconds',
 } as const satisfies WorkflowStepConfig;
@@ -305,7 +305,7 @@ async function reconcileSupersededProviderRefresh(
 		() => loadStoredResourceForProcessing(env, input.resourceId),
 	);
 	if (!shouldReconcileSupersededRefresh(acquiredSourceRevision, supersedingResource.resource.source_revision)) return;
-	await step.do('enqueue-superseded-provider-refresh-v1', RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG, () =>
+	await step.do('enqueue-superseded-provider-refresh-v1', WORKFLOW_ENQUEUE_STEP_CONFIG, () =>
 		enqueueSupersededResourceRefresh(env, {
 			resourceId: input.resourceId,
 			refreshRevision: input.expectedProviderRevision,
@@ -355,14 +355,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			}
 			const prepared = await prepareResourceForProcessing(this.env, step, preparationInput, acquiredContent);
 			const { previewImageUrl, resource, subject, youtube } = prepared;
-			const logContext = { processing_id: processingId, target_kind: target.kind };
 
 			console.info({
 				tag: 'WORKFLOW',
 				msg: 'Starting',
 				resourceKind: resource.kind,
 				resourcePlatform: resource.resource_platform,
-				...logContext,
+				processing_id: processingId,
+				target_kind: target.kind,
 			});
 			let imageSources: string[];
 			try {
@@ -383,13 +383,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				stageResourceImages(this.env, step, processingId, imageSources),
 			]);
 			const privatePaper = target.kind === 'storedBlob' ? privatePaperAttachment(resource) : null;
-			const persistenceInput = {
-				classification,
-				previewImageUrl,
-				resource,
-				subject,
-				youtube,
-			};
 			const persistenceTarget =
 				target.kind === 'draft'
 					? ({ kind: 'draft', admission: target.admission } as const)
@@ -404,7 +397,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const persistence = await step.do(
 				'persist-resolved-resource-v1',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() => persistProcessedResource(this.env, { ...persistenceInput, target: persistenceTarget }, hostedImages),
+				() =>
+					persistProcessedResource(
+						this.env,
+						{ classification, previewImageUrl, resource, subject, target: persistenceTarget, youtube },
+						hostedImages,
+					),
 			);
 			if (!persistence.persisted) {
 				if (target.kind === 'reacquire' && target.expectedProviderRevision) {
@@ -426,22 +424,19 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			];
 			if (translationRevision) {
 				followUps.push(
-					step.do('enqueue-resource-translation-v2', RESOURCE_TRANSLATION_ADMISSION_STEP_CONFIG, () =>
+					step.do('enqueue-resource-translation-v2', WORKFLOW_ENQUEUE_STEP_CONFIG, () =>
 						enqueueResourceTranslation(this.env, persistedResourceId, translationRevision),
 					),
 				);
 			}
 			if (subject && !persistence.subjectAttached) {
 				followUps.push(
-					step.do(
-						'enqueue-resolved-subject-child-v1',
-						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						async () =>
-							enqueueSubjectDraft(this.env, {
-								parentResourceId: persistedResourceId,
-								parentRevision: resource.source_revision,
-								url: subject.url,
-							}),
+					step.do('enqueue-resolved-subject-child-v1', WORKFLOW_ENQUEUE_STEP_CONFIG, () =>
+						enqueueSubjectDraft(this.env, {
+							parentResourceId: persistedResourceId,
+							parentRevision: resource.source_revision,
+							url: subject.url,
+						}),
 					),
 				);
 			}
