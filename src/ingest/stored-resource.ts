@@ -12,7 +12,6 @@ import {
 	canonicalizeResourceLang,
 	isContentResourceIdentity,
 	isContentResourceKind,
-	isResourceSourceSnapshotHash,
 	parseResourceIdentity,
 	type ResourceIdentity,
 } from '@core-shared/resource-types';
@@ -28,7 +27,6 @@ type StoredResourceBase = {
 	publishedDate: string | null;
 	tags: string[];
 	keywords: string[];
-	sourceRevision: string | null;
 	resourceIdentifiers: ResourceIdentifier[];
 	storageKey: string | null;
 	normalizedUrl: string | null;
@@ -62,7 +60,6 @@ type StoredResourceBaseRow = StoredResourceIdentityRow & {
 	published_date: Date | string | null;
 	tags: string[];
 	keywords: string[];
-	source_revision: string | null;
 	resource_identifiers: unknown;
 	storage_key: string | null;
 	normalized_url: string | null;
@@ -136,7 +133,6 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 			original.keywords,
 			resource.creators,
 			resource.kind_metadata,
-			resource.source_revision,
 			resource.storage_key,
 			resource.file_type,
 			resource.normalized_url
@@ -207,7 +203,6 @@ export async function loadResourceReacquisitionInput(db: CoreDb, resourceId: str
 			resource.published_date,
 			resource.tags,
 			original.keywords,
-			resource.source_revision,
 			resource.storage_key,
 			resource.normalized_url
 		FROM resources resource
@@ -240,16 +235,10 @@ function storedResourceBase(row: StoredResourceBaseRow): StoredResourceBase {
 		publishedDate: publishedDate?.toISOString() ?? null,
 		tags: row.tags,
 		keywords: row.keywords,
-		sourceRevision: row.source_revision === null ? null : storedResourceSourceRevision(row.source_revision, row.id),
 		resourceIdentifiers: resourceIdentifiersValue(row.resource_identifiers),
 		storageKey: row.storage_key,
 		normalizedUrl: row.normalized_url,
 	};
-}
-
-function storedResourceSourceRevision(value: unknown, resourceId: string): string {
-	if (!isResourceSourceSnapshotHash(value)) throw new Error(`Invalid source_revision for ${resourceId}`);
-	return value;
 }
 
 function resourceIdentifiersValue(value: unknown): ResourceIdentifier[] {

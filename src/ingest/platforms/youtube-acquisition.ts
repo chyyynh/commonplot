@@ -8,17 +8,10 @@ import type {
 	YouTubeChapter,
 	YouTubeHighlights,
 	YouTubeResourceSpecialization,
-	YoutubeTranscript,
 } from '@core-shared/types';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import {
-	acquiredContentSchema,
-	DEFAULT_ACQUISITION_STEP_CONFIG,
-	type NormalizedAcquiredContent,
-	normalizeAcquiredContent,
-} from '../acquired-content';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
@@ -66,18 +59,6 @@ const YouTubeChannelsResponseSchema = z.object({
 		.optional(),
 	error: YouTubeApiErrorSchema.optional(),
 });
-const YouTubeTranscriptSchema: z.ZodType<YoutubeTranscript> = z.object({
-	videoId: z.string().min(1),
-	segments: z.array(z.object({ startTime: z.number(), endTime: z.number(), text: z.string() })),
-	language: z.string().nullable(),
-	chapters: z.array(z.object({ title: z.string(), startTime: z.number(), endTime: z.number().optional() })),
-	chaptersFromDescription: z.boolean(),
-});
-const YouTubeAcquiredContentSchema: z.ZodType<NormalizedAcquiredContent<'youtube'>> = acquiredContentSchema('youtube', {
-	platformId: z.string().trim().min(1),
-	youtubeTranscript: YouTubeTranscriptSchema,
-});
-
 type YouTubeThumbnails = z.infer<typeof YouTubeThumbnailsSchema>;
 type YouTubeVideosResponse = z.infer<typeof YouTubeVideosResponseSchema>;
 
@@ -300,16 +281,14 @@ export async function stageYouTubeAcquisition(
 ) {
 	const contentStream = await step.do(
 		`acquire-youtube-v1-${input.route}`,
-		DEFAULT_ACQUISITION_STEP_CONFIG,
+		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () =>
-			Response.json(
-				await normalizeAcquiredContent({
-					...(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY, input.monitoredOnly, input.sourceAvatarUrl)),
-					canonicalUrl: input.url,
-				}),
-			).body!,
+			Response.json({
+				...(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY, input.monitoredOnly, input.sourceAvatarUrl)),
+				canonicalUrl: input.url,
+			}).body!,
 	);
-	return YouTubeAcquiredContentSchema.parse(await new Response(contentStream).json());
+	return new Response(contentStream).json<AcquiredMaterial<'youtube'>>();
 }
 
 const YouTubeHighlightSchema = z.object({

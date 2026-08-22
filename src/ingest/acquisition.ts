@@ -18,7 +18,7 @@ type RawAcquiredContent =
 	| AcquiredMaterial<'twitter'>
 	| AcquiredMaterial<'youtube'>;
 
-export type AcquiredContent = RawAcquiredContent & { sourceSnapshotHash: string };
+export type AcquiredContent = RawAcquiredContent;
 
 export type ResourceResolutionOrigin = ResourceMaterializationOrigin & Pick<MaterializedResource, 'resourceIdentifiers'>;
 

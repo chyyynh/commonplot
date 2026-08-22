@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import {
-	isResourceSourceSnapshotHash,
 	parseResourceIdentity,
 	parseResourceProviderSequence,
 	resourceIdentityForDetectedPlatform,
@@ -61,10 +60,6 @@ assert.deepEqual(resourceIdentityForDetectedPlatform('twitter'), { kind: 'post',
 assert.deepEqual(resourceIdentityForDetectedPlatform('youtube'), { kind: 'video', resourcePlatform: 'youtube' });
 assert.deepEqual(resourceIdentityForDetectedPlatform('hackernews'), { kind: 'forum', resourcePlatform: 'hackernews' });
 assert.deepEqual(resourceIdentityForDetectedPlatform('lesswrong'), { kind: 'blog', resourcePlatform: 'lesswrong' });
-assert.equal(isResourceSourceSnapshotHash('a'.repeat(64)), true);
-assert.equal(isResourceSourceSnapshotHash('A'.repeat(64)), false);
-assert.equal(isResourceSourceSnapshotHash('a'.repeat(63)), false);
-assert.equal(isResourceSourceSnapshotHash(null), false);
 assert.equal(parseResourceProviderSequence('1'), 1n);
 assert.equal(parseResourceProviderSequence('1999999999999999999'), 1_999_999_999_999_999_999n);
 assert.equal(parseResourceProviderSequence('0'), null);
@@ -76,7 +71,6 @@ console.info({
 	canonicalIdentityCases: canonicalIdentities.length,
 	detectedPlatformIdentityCases: 4,
 	invalidIdentityCases: 5,
-	sourceRevisionCases: 4,
 	providerSequenceCases: 5,
 	twitterUsernameCases: twitterUsernameCases.length,
 	urlCases: 5,

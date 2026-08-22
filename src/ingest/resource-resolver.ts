@@ -44,7 +44,7 @@ export type ResourceMaterializationResolution = {
 };
 type MaterializedAcquisition<T extends AcquiredMaterial> = Extract<MaterializedResource, { resourcePlatform: T['resourcePlatform'] }>;
 
-export function materializeAcquiredResource<const T extends AcquiredMaterial & { sourceSnapshotHash: string }>(
+export function materializeAcquiredResource<const T extends AcquiredMaterial>(
 	acquired: T,
 	origin: ResourceMaterializationOrigin,
 	resolution: ResourceMaterializationResolution,
@@ -80,7 +80,6 @@ export function materializeAcquiredResource<const T extends AcquiredMaterial & {
 		keywords: origin.keywords,
 		creators: acquired.creators,
 		kindMetadata: acquired.kindMetadata,
-		sourceRevision: acquired.sourceSnapshotHash,
 		resourceIdentifiers: identifiers,
 		fileType: acquired.fileType,
 		normalizedUrl: url ?? origin.normalizedUrl,

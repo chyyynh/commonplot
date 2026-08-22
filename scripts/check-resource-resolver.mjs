@@ -24,7 +24,6 @@ function materialize(input = {}) {
 			summary: null,
 			creators: [],
 			kindMetadata: null,
-			sourceSnapshotHash: 'a'.repeat(64),
 		},
 		{
 			keywords: [],

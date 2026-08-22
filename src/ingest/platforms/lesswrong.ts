@@ -4,21 +4,10 @@ import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import { literalCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
-import { z } from 'zod';
-import {
-	acquiredContentSchema,
-	DEFAULT_ACQUISITION_STEP_CONFIG,
-	type NormalizedAcquiredContent,
-	normalizeAcquiredContent,
-} from '../acquired-content';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
 const LESSWRONG_RESPONSE_MAX_BYTES = 5 * 1024 * 1024;
 const LESSWRONG_POST_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
-const LessWrongAcquiredContentSchema: z.ZodType<NormalizedAcquiredContent<'lesswrong'>> = acquiredContentSchema('lesswrong', {
-	platformId: z.string().trim().min(1),
-});
-
 const POST_QUERY = `query PostForIngest($id: String!) {
   post(selector: { documentId: $id }) {
     result {
@@ -96,8 +85,8 @@ async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<'lesswr
 export async function stageLessWrongAcquisition(step: WorkflowStep, input: { postId: string; route: number; url: string }) {
 	const contentStream = await step.do(
 		`acquire-lesswrong-v1-${input.route}`,
-		DEFAULT_ACQUISITION_STEP_CONFIG,
-		async () => Response.json(await normalizeAcquiredContent({ ...(await scrapeLessWrong(input.postId)), canonicalUrl: input.url })).body!,
+		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+		async () => Response.json({ ...(await scrapeLessWrong(input.postId)), canonicalUrl: input.url }).body!,
 	);
-	return LessWrongAcquiredContentSchema.parse(await new Response(contentStream).json());
+	return new Response(contentStream).json<AcquiredMaterial<'lesswrong'>>();
 }

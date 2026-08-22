@@ -6,13 +6,6 @@ import { literalCreator } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { extractFromHtml } from '@extractus/article-extractor';
-import type { z } from 'zod';
-import {
-	acquiredContentSchema,
-	DEFAULT_ACQUISITION_STEP_CONFIG,
-	type NormalizedAcquiredContent,
-	normalizeAcquiredContent,
-} from './acquired-content';
 import { markdownFromHtml } from './document-conversion';
 import { acquireFetchedPdfResponse, PDF_MIME } from './platforms/pdf';
 
@@ -61,7 +54,6 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 type AcquiredWebContent = AcquiredMaterial<null>;
 
 type PlatformRedirect = { redirectUrl: string };
-const WebAcquiredContentSchema: z.ZodType<NormalizedAcquiredContent<null>> = acquiredContentSchema(null, {});
 
 async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, processingId?: string): Promise<AcquiredWebContent> {
 	const article = await extractHtmlArticle(html, url);
@@ -136,9 +128,13 @@ async function acquireWebResource(url: string, env: CoreEnv, processingId?: stri
 }
 
 export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { processingId: string; route: number; url: string }) {
-	const result = await step.do(`acquire-web-v1-${input.route}`, DEFAULT_ACQUISITION_STEP_CONFIG, async () => {
-		const acquired = await acquireWebResource(input.url, env, input.processingId);
-		return 'redirectUrl' in acquired ? acquired : Response.json(await normalizeAcquiredContent(acquired)).body!;
-	});
-	return 'redirectUrl' in result ? result : WebAcquiredContentSchema.parse(await new Response(result).json());
+	const result = await step.do(
+		`acquire-web-v1-${input.route}`,
+		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+		async () => {
+			const acquired = await acquireWebResource(input.url, env, input.processingId);
+			return 'redirectUrl' in acquired ? acquired : Response.json(acquired).body!;
+		},
+	);
+	return 'redirectUrl' in result ? result : new Response(result).json<AcquiredWebContent>();
 }

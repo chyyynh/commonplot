@@ -7,12 +7,6 @@ import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import {
-	acquiredContentSchema,
-	DEFAULT_ACQUISITION_STEP_CONFIG,
-	type NormalizedAcquiredContent,
-	normalizeAcquiredContent,
-} from '../acquired-content';
 
 const HN_ALGOLIA_API = 'https://hn.algolia.com/api/v1/items';
 const HN_ITEM_MAX_BYTES = 5 * 1024 * 1024;
@@ -73,8 +67,6 @@ const HackerNewsItemSchema = z.object({
 
 export type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
 export type HackerNewsAcquiredContent = AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem };
-const HackerNewsAcquiredContentSchema: z.ZodType<NormalizedAcquiredContent<'hackernews'> & { hackerNewsItem: HackerNewsItem }> =
-	acquiredContentSchema('hackernews', { hackerNewsItem: HackerNewsItemSchema, platformId: z.string().trim().min(1) });
 
 /** Every node in the tree, deleted ones included — the closest analogue to the count HN itself shows. */
 function countHnComments(children: HnComment[] | undefined): number {
@@ -166,10 +158,10 @@ async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquiredConte
 export async function stageHackerNewsAcquisition(step: WorkflowStep, input: { itemId: string; route: number; url: string }) {
 	const contentStream = await step.do(
 		`acquire-hackernews-v1-${input.route}`,
-		DEFAULT_ACQUISITION_STEP_CONFIG,
-		async () => Response.json(await normalizeAcquiredContent({ ...(await scrapeHackerNews(input.itemId)), canonicalUrl: input.url })).body!,
+		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+		async () => Response.json({ ...(await scrapeHackerNews(input.itemId)), canonicalUrl: input.url }).body!,
 	);
-	return HackerNewsAcquiredContentSchema.parse(await new Response(contentStream).json());
+	return new Response(contentStream).json<HackerNewsAcquiredContent>();
 }
 
 function collectAllComments(children: HnComment[]): HnCollectedComment[] {

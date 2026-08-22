@@ -13,9 +13,7 @@ import { toStoredResourceEntities } from '@entities/normalize';
 import { sql } from 'drizzle-orm';
 import type { ResourceClassificationResult } from './domain/resource-classification';
 
-export type PersistProcessedTarget =
-	| PersistResolvedResourceTarget
-	| { kind: 'storedPdf'; resourceId: string; expectedSourceRevision: string | null; storageKey: string };
+export type PersistProcessedTarget = PersistResolvedResourceTarget | { kind: 'storedPdf'; resourceId: string; storageKey: string };
 
 type PersistProcessedInput = {
 	classification: ResourceClassificationResult;
@@ -24,14 +22,13 @@ type PersistProcessedInput = {
 	target: PersistProcessedTarget;
 };
 
-export async function markStoredBlobProcessingFailed(db: CoreDb, resourceId: string, expectedSourceRevision: string | null): Promise<void> {
-	const failed = await db.execute(sql`
+export async function markStoredBlobProcessingFailed(db: CoreDb, resourceId: string): Promise<void> {
+	await db.execute(sql`
 		UPDATE resources AS resource
 		SET enrichment_status = 'failed',
 		    updated_at = NOW()
 		WHERE resource.id = ${resourceId}::uuid
 		  AND resource.enrichment_status <> 'enriched'
-		  AND resource.source_revision IS NOT DISTINCT FROM ${expectedSourceRevision}
 		  AND resource.scope = 'private'
 		  AND resource.storage_key IS NOT NULL
 		  AND EXISTS (
@@ -39,24 +36,7 @@ export async function markStoredBlobProcessingFailed(db: CoreDb, resourceId: str
 		    FROM user_files
 		    WHERE user_files.resource_id = resource.id
 		  )
-		RETURNING resource.id
 	`);
-	if (failed.rows.length) return;
-	const existing = await db.execute<{ enrichment_status: string; source_revision: string | null }>(sql`
-		SELECT enrichment_status, source_revision
-		FROM resources
-		WHERE id = ${resourceId}::uuid
-		LIMIT 1
-	`);
-	const current = existing.rows[0];
-	console.info({
-		tag: 'RESOURCE_PERSIST',
-		event: 'stored_blob_failure_mark_skipped',
-		resource_id: resourceId,
-		expected_source_revision: expectedSourceRevision,
-		current_source_revision: current?.source_revision ?? null,
-		current_status: current?.enrichment_status ?? 'deleted',
-	});
 }
 
 export async function persistProcessedResource(
@@ -77,7 +57,6 @@ export async function persistProcessedResource(
 				target = {
 					kind: 'existing',
 					resourceId: input.target.resourceId,
-					expectedSourceRevision: input.target.expectedSourceRevision,
 					storageKey: input.target.storageKey,
 				};
 				break;
@@ -89,7 +68,6 @@ export async function persistProcessedResource(
 				admission: {
 					kind: 'userFilePaper',
 					fileResourceId: input.target.resourceId,
-					expectedFileRevision: input.target.expectedSourceRevision,
 				},
 				providerSequence: null,
 			};
@@ -119,7 +97,6 @@ function resolvedResourceMutation(
 		identifiers: resource.resourceIdentifiers,
 		creators: media.creators,
 		kindMetadata: media.kindMetadata,
-		sourceRevision: resource.sourceRevision,
 		youtube,
 		originalLang: resource.originalLang,
 		title: resource.title,

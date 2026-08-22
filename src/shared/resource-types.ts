@@ -76,12 +76,6 @@ export function isContentResourceIdentity(identity: ResourceIdentity): identity 
 	return isContentResourceKind(identity.kind);
 }
 
-const RESOURCE_SOURCE_SNAPSHOT_HASH_RE = /^[0-9a-f]{64}$/;
-
-export function isResourceSourceSnapshotHash(value: unknown): value is string {
-	return typeof value === 'string' && RESOURCE_SOURCE_SNAPSHOT_HASH_RE.test(value);
-}
-
 export function parseResourceProviderSequence(value: unknown): bigint | null {
 	if (typeof value !== 'string' || !/^[1-9]\d{0,18}$/.test(value)) return null;
 	const sequence = BigInt(value);

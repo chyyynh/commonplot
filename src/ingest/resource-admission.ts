@@ -30,22 +30,12 @@ const DraftAdmissionSchema = z.discriminatedUnion('kind', [
 		.object({
 			kind: z.literal('subject'),
 			parentResourceId: z.string().uuid(),
-			expectedParentRevision: z
-				.string()
-				.length(64)
-				.regex(/^[0-9a-f]+$/)
-				.nullable(),
 		})
 		.strict(),
 	z
 		.object({
 			kind: z.literal('userFilePaper'),
 			fileResourceId: z.string().uuid(),
-			expectedFileRevision: z
-				.string()
-				.length(64)
-				.regex(/^[0-9a-f]+$/)
-				.nullable(),
 		})
 		.strict(),
 ]);
@@ -177,7 +167,6 @@ export async function enqueueSubjectDraft(
 	env: CoreEnv,
 	input: {
 		parentResourceId: string;
-		parentRevision: string | null;
 		url: string;
 	},
 ): Promise<string> {
@@ -186,7 +175,6 @@ export async function enqueueSubjectDraft(
 		admission: {
 			kind: 'subject',
 			parentResourceId: input.parentResourceId,
-			expectedParentRevision: input.parentRevision,
 		},
 		url: normalizeUrl(input.url),
 	});

@@ -5,7 +5,6 @@ import type { ResourceCreator, ResourceKindMetadata } from '@core-shared/resourc
 import type { AcquiredMaterial } from '@core-shared/types';
 import { initSync, LiteParse } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
-import { type NormalizedAcquiredContent, NullPlatformAcquiredContentSchema, normalizeAcquiredContent } from '../acquired-content';
 
 export const PDF_MIME = 'application/pdf';
 
@@ -98,11 +97,11 @@ export async function stageStoredPdfAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	resource: StoredPdfAcquisitionInput,
-): Promise<NormalizedAcquiredContent<null>> {
+): Promise<AcquiredMaterial<null>> {
 	const contentStream = await step.do(
 		'acquire-stored-pdf-v2',
 		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await normalizeAcquiredContent(await acquireStoredPdf(env, resource))).body!,
+		async () => Response.json(await acquireStoredPdf(env, resource)).body!,
 	);
-	return NullPlatformAcquiredContentSchema.parse(await new Response(contentStream).json());
+	return new Response(contentStream).json<AcquiredMaterial<null>>();
 }

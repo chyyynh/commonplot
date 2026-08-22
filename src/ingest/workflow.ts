@@ -98,10 +98,7 @@ async function resolveProcessingCall(
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 			async () => loadStoredPdfInput(await connectCoreDb(env), target.resourceId),
 			{
-				rollback: async ({ output }) => {
-					if (!output) return;
-					await markStoredBlobProcessingFailed(await connectCoreDb(env), target.resourceId, output.sourceRevision);
-				},
+				rollback: async () => markStoredBlobProcessingFailed(await connectCoreDb(env), target.resourceId),
 				rollbackConfig: {
 					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 					timeout: '30 seconds',
@@ -116,7 +113,6 @@ async function resolveProcessingCall(
 			persistenceTarget: {
 				kind: 'storedPdf',
 				resourceId: target.resourceId,
-				expectedSourceRevision: storedPdf.sourceRevision,
 				storageKey: storedPdf.storageKey,
 			},
 		};
@@ -142,7 +138,6 @@ async function resolveProcessingCall(
 		persistenceTarget: {
 			kind: 'existing',
 			resourceId: target.resourceId,
-			expectedSourceRevision: snapshot.sourceRevision,
 			storageKey: snapshot.storageKey,
 		},
 	};
@@ -212,7 +207,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				step.do('enqueue-resolved-subject-child-v1', WORKFLOW_ENQUEUE_STEP_CONFIG, () =>
 					enqueueSubjectDraft(this.env, {
 						parentResourceId: persistedResourceId,
-						parentRevision: resource.sourceRevision,
 						url: subject.url,
 					}),
 				),

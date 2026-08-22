@@ -17,7 +17,7 @@ import {
 	translateZhHantContent,
 } from './domain/resource-translation';
 
-type ResourceTranslationPayload = { resourceId: string; sourceRevision: string };
+type ResourceTranslationPayload = { resourceId: string; translationRevision: string };
 
 type ResourceTranslationInputRow = {
 	file_type: string | null;
@@ -32,7 +32,7 @@ type ResourceTranslationInputRow = {
 	zh_hant_summary: string | null;
 	zh_hant_content: string | null;
 	zh_hant_source: string | null;
-	source_revision: string;
+	translation_revision: string;
 	url: string | null;
 };
 
@@ -54,7 +54,7 @@ function parseTranslationSource(value: unknown): ResourceTranslationSource | nul
 async function loadResourceTranslationInput(
 	db: CoreDb,
 	resourceId: string,
-): Promise<{ resource: ResourceTranslationInput; sourceRevision: string } | null> {
+): Promise<{ resource: ResourceTranslationInput; translationRevision: string } | null> {
 	const result = await db.execute<ResourceTranslationInputRow>(sql`
 		SELECT
 			resource.file_type,
@@ -75,7 +75,7 @@ async function loadResourceTranslationInput(
 				original.title,
 				original.summary,
 				original.content
-			)::text) AS source_revision
+			)::text) AS translation_revision
 		FROM resources resource
 		JOIN resource_translations original
 		  ON original.resource_id = resource.id
@@ -91,8 +91,8 @@ async function loadResourceTranslationInput(
 	if (!row) return null;
 	const identity = parseResourceIdentity(row.kind, row.resource_platform);
 	if (!identity) throw new Error(`Invalid translation resource identity: ${row.kind} / ${String(row.resource_platform)}`);
-	if (!isResourceTranslationRevision(row.source_revision)) {
-		throw new Error(`Invalid translation source revision for ${resourceId}`);
+	if (!isResourceTranslationRevision(row.translation_revision)) {
+		throw new Error(`Invalid translation revision for ${resourceId}`);
 	}
 	const zhHantSource = parseTranslationSource(row.zh_hant_source);
 	return {
@@ -114,20 +114,20 @@ async function loadResourceTranslationInput(
 					}
 				: null,
 		},
-		sourceRevision: row.source_revision,
+		translationRevision: row.translation_revision,
 	};
 }
 
-function workflowId(resourceId: string, sourceRevision: string): string {
-	return `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${sourceRevision}`;
+function workflowId(resourceId: string, translationRevision: string): string {
+	return `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
 }
 
-// One stable instance per source revision dedupes completed translations while
+// One stable instance per translation revision dedupes completed translations while
 // allowing a failed attempt to be retried. A changed original gets a new ID.
-export async function enqueueResourceTranslation(env: CoreEnv, resourceId: string, sourceRevision: string): Promise<string> {
-	if (!isResourceTranslationRevision(sourceRevision)) throw new Error('Invalid resource translation source revision');
-	const id = workflowId(resourceId, sourceRevision);
-	const [created] = await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([{ id, params: { resourceId, sourceRevision } }]);
+export async function enqueueResourceTranslation(env: CoreEnv, resourceId: string, translationRevision: string): Promise<string> {
+	if (!isResourceTranslationRevision(translationRevision)) throw new Error('Invalid resource translation revision');
+	const id = workflowId(resourceId, translationRevision);
+	const [created] = await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([{ id, params: { resourceId, translationRevision } }]);
 	if (created) return created.id;
 	const instance = await env.RESOURCE_TRANSLATION_V2_WORKFLOW.get(id);
 	const { status } = await instance.status();
@@ -138,7 +138,7 @@ export async function enqueueResourceTranslation(env: CoreEnv, resourceId: strin
 
 export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceTranslationPayload> {
 	async run(event: WorkflowEvent<ResourceTranslationPayload>, step: WorkflowStep) {
-		const { resourceId, sourceRevision } = event.payload;
+		const { resourceId, translationRevision } = event.payload;
 		const input = await step.do(
 			'load-resource-translation-input-kind-platform-v2',
 			{
@@ -151,8 +151,8 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Resource original is unavailable; skipping', resource_id: resourceId });
 			return;
 		}
-		if (input.sourceRevision !== sourceRevision) {
-			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Source revision was superseded; skipping', resource_id: resourceId });
+		if (input.translationRevision !== translationRevision) {
+			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Translation revision was superseded; skipping', resource_id: resourceId });
 			return;
 		}
 
@@ -189,7 +189,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				() =>
 					this.env.DOMAIN.persistMachineZhHantTranslation({
 						resourceId,
-						sourceRevision,
+						translationRevision,
 						patch: translatedMetadata,
 					}),
 			);
@@ -213,7 +213,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				() =>
 					this.env.DOMAIN.persistMachineZhHantTranslation({
 						resourceId,
-						sourceRevision,
+						translationRevision,
 						patch: { content: translated },
 					}),
 			);

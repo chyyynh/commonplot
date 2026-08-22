@@ -4,13 +4,6 @@ import { readTextWithLimit } from '@core-shared/http';
 import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource-metadata';
 import type { AcquiredMaterial } from '@core-shared/types';
 import { extractTweetId } from '@core-shared/url';
-import { z } from 'zod';
-import {
-	acquiredContentSchema,
-	DEFAULT_ACQUISITION_STEP_CONFIG,
-	type NormalizedAcquiredContent,
-	normalizeAcquiredContent,
-} from '../acquired-content';
 import {
 	assertExpectedTwitterThreadPost,
 	buildTwitterAuthorThread,
@@ -33,10 +26,6 @@ import { fetchTwitterProvider } from './twitter-provider';
 
 const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
 const TWITTER_SEARCH_MAX_REQUESTS = 256;
-const TwitterAcquiredContentSchema: z.ZodType<NormalizedAcquiredContent<'twitter'>> = acquiredContentSchema('twitter', {
-	platformId: z.string().trim().min(1),
-});
-
 // A source watermark can advance after a sequenced draft is admitted, so the
 // Twitter adapter must outlive a provider outage. The bounded retry horizon
 // also limits paid twitterapi.io requests.
@@ -44,6 +33,10 @@ const sequencedTwitterRetryDelay: WorkflowDelayFunction = ({ ctx }) =>
 	ctx.attempt <= 3 ? '10 seconds' : ctx.attempt <= 15 ? '1 minute' : '30 minutes';
 const TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG = {
 	retries: { limit: 50, delay: sequencedTwitterRetryDelay },
+	timeout: '120 seconds',
+} as const satisfies WorkflowStepConfig;
+const TWITTER_ACQUISITION_STEP_CONFIG = {
+	retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' },
 	timeout: '120 seconds',
 } as const satisfies WorkflowStepConfig;
 
@@ -470,23 +463,21 @@ export async function stageTwitterAcquisition(
 ) {
 	const contentStream = await step.do(
 		`acquire-twitter-v1-${input.route}`,
-		input.providerSequence ? TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG : DEFAULT_ACQUISITION_STEP_CONFIG,
+		input.providerSequence ? TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG : TWITTER_ACQUISITION_STEP_CONFIG,
 		async (ctx) => {
 			if (input.providerSequence) {
 				logSequencedTwitterAcquisitionAttempt(input.processingId, input.providerSequence, ctx.attempt);
 			}
-			return Response.json(
-				await normalizeAcquiredContent({
-					...(await scrapeTweet(input.tweetId, env.KAITO_API_KEY, {
-						discoverUnsignaledThread: input.discoverRelatedContent,
-						expectedReplyId: input.providerSequence,
-					})),
-					canonicalUrl: input.url,
-				}),
-			).body!;
+			return Response.json({
+				...(await scrapeTweet(input.tweetId, env.KAITO_API_KEY, {
+					discoverUnsignaledThread: input.discoverRelatedContent,
+					expectedReplyId: input.providerSequence,
+				})),
+				canonicalUrl: input.url,
+			}).body!;
 		},
 	);
-	return TwitterAcquiredContentSchema.parse(await new Response(contentStream).json());
+	return new Response(contentStream).json<AcquiredMaterial<'twitter'>>();
 }
 
 type TwitterThreadSearchResult = {

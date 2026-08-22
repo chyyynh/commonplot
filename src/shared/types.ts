@@ -20,7 +20,6 @@ type MaterializedResourceFields = {
 	keywords: string[];
 	creators: ResourceCreator[];
 	kindMetadata: ResourceKindMetadata | null;
-	sourceRevision: string;
 	resourceIdentifiers: ResourceIdentifier[];
 	fileType: string | null;
 	normalizedUrl: string | null;
@@ -113,8 +112,6 @@ type AcquiredMaterialBase<T extends ResourcePlatform> = {
 	summary: string | null;
 	creators: ResourceCreator[];
 	kindMetadata: ResourceKindMetadata;
-	/** Hash of normalized source fields used to identify the acquired revision. */
-	sourceSnapshotHash?: string;
 };
 
 type AcquiredMaterialSpecialization<T extends ResourcePlatform> = T extends 'youtube'
