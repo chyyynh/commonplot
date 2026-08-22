@@ -1,4 +1,3 @@
-import { limitBody } from '@core-shared/http';
 import {
 	normalizePaperIdentifiers,
 	PAPER_IDENTIFIER_SCHEMES,
@@ -13,7 +12,6 @@ import { z } from 'zod';
 
 const CITOID_BASE = 'https://en.wikipedia.org/api/rest_v1/data/citation/zotero/';
 const CITOID_TIMEOUT_MS = 8_000;
-const CITOID_RESPONSE_MAX_BYTES = 1024 * 1024;
 const CITOID_USER_AGENT = 'Newsence/1.0 (https://www.newsence.app; bibliographic metadata resolver)';
 const IDENTIFIER_SCAN_CHARS = 3_000;
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
@@ -64,7 +62,7 @@ async function resolveCitoidIdentifiers(url: string): Promise<PaperIdentifier[]>
 		console.warn({ tag: 'CITOID', event: 'translation_unavailable', status });
 		return [];
 	}
-	const items = CitoidResponseSchema.parse(JSON.parse(await new Response(limitBody(response, CITOID_RESPONSE_MAX_BYTES)).text()));
+	const items = CitoidResponseSchema.parse(await response.json());
 	const academicItem = items.find((item) => item.itemType && ACADEMIC_ITEM_TYPES.has(item.itemType));
 	return academicItem ? normalizePaperIdentifiers(citoidItemIdentifiers(academicItem)) : [];
 }

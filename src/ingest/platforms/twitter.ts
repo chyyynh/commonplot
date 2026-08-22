@@ -1,4 +1,3 @@
-import { limitBody } from '@core-shared/http';
 import { parseResourceProviderSequence } from '@core-shared/resource';
 import { canonicalResourcePlatformUrl, normalizeUrl } from '@core-shared/url';
 import { type CoreDb, connectCoreDb } from '@db/connection';
@@ -117,7 +116,7 @@ async function fetchTweetsForSearch(
 			await response.body?.cancel();
 			throw new Error(`Twitter Advanced Search failed with HTTP ${response.status}`);
 		}
-		const apiRes = parseTwitterAdvancedSearchPage(JSON.parse(await new Response(limitBody(response, 2 * 1024 * 1024)).text()));
+		const apiRes = parseTwitterAdvancedSearchPage(await response.json());
 		pages++;
 		providerTweets += apiRes.tweets.length;
 		for (const tweet of apiRes.tweets) terminalTweets.set(tweet.id?.trim() || tweet.url, tweet);

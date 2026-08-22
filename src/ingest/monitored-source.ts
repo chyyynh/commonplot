@@ -1,4 +1,3 @@
-import { limitBody } from '@core-shared/http';
 import { isSourcePlatform, SOURCE_INPUT_MAX_LENGTH, type SourcePlatform } from '@core-shared/source';
 import { parseExternalHttpUrl, parseTwitterUsername } from '@core-shared/url';
 import type { CoreDb } from '@db/connection';
@@ -83,9 +82,9 @@ async function fetchYouTubeChannel(env: CoreEnv, query: string): Promise<YouTube
 		await response.body?.cancel();
 		throw new Error(`YouTube channel lookup failed with HTTP ${status}`);
 	}
-	const data = JSON.parse(await new Response(limitBody(response, 64 * 1024)).text()) as {
+	const data = await response.json<{
 		items?: { id?: string; snippet?: { title?: string; thumbnails?: { default?: { url?: string } } } }[];
-	};
+	}>();
 	const item = data.items?.[0];
 	if (!item?.id) return null;
 	return {

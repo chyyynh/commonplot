@@ -1,7 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { PersistResolvedResourceTarget } from '@app-domain/resource-graph-contracts';
-import { limitBody } from '@core-shared/http';
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
 import type { AcquiredMaterial, AcquiredResource, ResolvedResource, ResourceCreator, ResourceKindMetadata } from '@core-shared/resource';
 import { isPaperIdentifier } from '@core-shared/resource';
@@ -73,7 +72,17 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfAcquisitionInpu
 }
 
 export async function acquireFetchedPdfResponse(response: Response, finalUrl: string): Promise<AcquiredMaterial<null>> {
-	const markdown = await parsePdfBytes(await new Response(limitBody(response, MAX_PDF_BYTES)).bytes(), `PDF ${finalUrl}`);
+	let pdfBytes = 0;
+	const body = response.body?.pipeThrough(
+		new TransformStream<Uint8Array, Uint8Array>({
+			transform(chunk, controller) {
+				pdfBytes += chunk.byteLength;
+				if (pdfBytes > MAX_PDF_BYTES) throw new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`);
+				controller.enqueue(chunk);
+			},
+		}),
+	);
+	const markdown = await parsePdfBytes(await new Response(body).bytes(), `PDF ${finalUrl}`);
 	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
 	let fileName = encodedName || 'document.pdf';
 	if (encodedName) {

@@ -1,6 +1,5 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { limitBody } from '@core-shared/http';
 import type {
 	AcquiredMaterial,
 	ResolvedResource,
@@ -18,7 +17,6 @@ import { materializePlatformResource, type ResourceAcquisitionOrigin } from './m
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
-const YOUTUBE_API_MAX_BYTES = 1024 * 1024;
 const MIN_MONITORED_VIDEO_DURATION_SECONDS = 180;
 const YouTubeThumbnailSchema = z.object({ url: z.string().min(1) });
 const YouTubeThumbnailsSchema = z.object({
@@ -137,7 +135,7 @@ async function fetchYouTubeVideoData(videoId: string, youtubeApiKey: string): Pr
 			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 		}
 
-		return YouTubeVideosResponseSchema.parse(JSON.parse(await new Response(limitBody(response, YOUTUBE_API_MAX_BYTES)).text()));
+		return YouTubeVideosResponseSchema.parse(await response.json());
 	} catch (error) {
 		const message = String(error);
 		throw new Error(
@@ -159,9 +157,7 @@ async function fetchYouTubeChannelAvatar(channelId: string, youtubeApiKey: strin
 			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 		}
 
-		const channelData = YouTubeChannelsResponseSchema.parse(
-			JSON.parse(await new Response(limitBody(response, YOUTUBE_API_MAX_BYTES)).text()),
-		);
+		const channelData = YouTubeChannelsResponseSchema.parse(await response.json());
 		if (channelData.error) throw new Error(channelData.error.message);
 		if (!channelData.items?.length) throw new Error('Channel not found');
 		return bestThumbnailUrl(channelData.items[0].snippet.thumbnails);

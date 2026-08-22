@@ -1,4 +1,3 @@
-import { limitBody } from '@core-shared/http';
 import {
 	normalizeArxivId,
 	normalizeDoi,
@@ -17,8 +16,6 @@ const OPENALEX_BASE = 'https://api.openalex.org';
 const OPENALEX_CONTENT_HOST = 'content.openalex.org';
 const REQUEST_TIMEOUT_MS = 8_000;
 const CONTENT_REQUEST_TIMEOUT_MS = 120_000;
-const GROBID_RESPONSE_MAX_BYTES = 25 * 1024 * 1024;
-const RESPONSE_MAX_BYTES = 5 * 1024 * 1024;
 const MAX_RELATION_ITEMS = 100;
 const WORK_FIELDS = [
 	'id',
@@ -233,7 +230,7 @@ async function fetchOpenAlexJson(path: string, apiKey: string): Promise<unknown 
 	if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 	const response = await fetch(`${OPENALEX_BASE}${path}`, { headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 	if (response.ok) {
-		return JSON.parse(await new Response(limitBody(response, RESPONSE_MAX_BYTES)).text());
+		return response.json();
 	}
 	const status = response.status;
 	const retryAfter = response.headers.get('retry-after');
@@ -372,5 +369,5 @@ export async function acquireOpenAlexGrobidText(input: {
 		await response.body?.cancel();
 		throw new Error(`OpenAlex content GROBID XML request failed with HTTP ${status}`);
 	}
-	return markdownFromXml(input.env, await new Response(limitBody(response, GROBID_RESPONSE_MAX_BYTES)).text(), input.processingId);
+	return markdownFromXml(input.env, await response.text(), input.processingId);
 }

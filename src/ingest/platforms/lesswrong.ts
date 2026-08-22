@@ -1,13 +1,11 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { limitBody, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
 import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
 import { literalCreator } from '@core-shared/resource';
 import { materializePlatformResource, type ResourceAcquisitionOrigin } from './materialize';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
-const LESSWRONG_RESPONSE_MAX_BYTES = 5 * 1024 * 1024;
 const LESSWRONG_POST_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const POST_QUERY = `query PostForIngest($id: String!) {
   post(selector: { documentId: $id }) {
@@ -46,7 +44,6 @@ async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<'lesswr
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
-			'User-Agent': WEB_FETCH_USER_AGENT,
 		},
 		body: JSON.stringify({ query: POST_QUERY, variables: { id: postId } }),
 		signal: AbortSignal.timeout(15_000),
@@ -55,7 +52,7 @@ async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<'lesswr
 		await response.body?.cancel();
 		throw new Error(`LessWrong GraphQL failed with HTTP ${response.status}`);
 	}
-	const payload = JSON.parse(await new Response(limitBody(response, LESSWRONG_RESPONSE_MAX_BYTES)).text()) as LessWrongGraphqlResponse;
+	const payload = await response.json<LessWrongGraphqlResponse>();
 	const graphqlError = payload.errors?.map((error) => error.message?.trim()).find(Boolean);
 	if (graphqlError) throw new Error(`LessWrong GraphQL failed: ${graphqlError}`);
 	const post = payload.data?.post?.result;

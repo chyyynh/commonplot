@@ -1,4 +1,3 @@
-import { limitBody, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { extractHackerNewsId, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { parseFeed } from 'feedsmith';
 import { decode } from 'html-entities';
@@ -6,6 +5,7 @@ import { decode } from 'html-entities';
 const MAX_FEED_BYTES = 3 * 1024 * 1024;
 const MAX_FEED_ITEMS = 30;
 const FEED_SUMMARY_MAX_CHARS = 500;
+const RSS_FETCH_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 
 type ParsedFeed = ReturnType<typeof parseFeed>;
 type RawFeedItem = {
@@ -105,7 +105,7 @@ export async function loadFeed(feedUrl: string): Promise<{
 	if (!requestedUrl) throw new Error('Enter a valid feed URL (http/https).');
 	const response = await fetch(requestedUrl, {
 		headers: {
-			'User-Agent': WEB_FETCH_USER_AGENT,
+			'User-Agent': RSS_FETCH_USER_AGENT,
 			Accept: 'application/rss+xml, application/atom+xml, application/feed+json, application/json, application/xml, text/xml, */*',
 		},
 		signal: AbortSignal.timeout(15_000),
@@ -123,7 +123,17 @@ export async function loadFeed(feedUrl: string): Promise<{
 
 	let parsed: ParsedFeed;
 	try {
-		parsed = parseFeed(await new Response(limitBody(response, MAX_FEED_BYTES)).text(), {
+		let feedBytes = 0;
+		const body = response.body?.pipeThrough(
+			new TransformStream<Uint8Array, Uint8Array>({
+				transform(chunk, controller) {
+					feedBytes += chunk.byteLength;
+					if (feedBytes > MAX_FEED_BYTES) throw new Error(`Feed exceeded ${MAX_FEED_BYTES} bytes`);
+					controller.enqueue(chunk);
+				},
+			}),
+		);
+		parsed = parseFeed(await new Response(body).text(), {
 			maxItems: MAX_FEED_ITEMS,
 		});
 	} catch {

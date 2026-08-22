@@ -1,6 +1,5 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { limitBody } from '@core-shared/http';
 import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
 import { type ForumKindMetadata, literalCreator } from '@core-shared/resource';
 import { generateText } from 'ai';
@@ -10,8 +9,6 @@ import { z } from 'zod';
 import { materializePlatformResource, type ResourceAcquisitionOrigin } from './materialize';
 
 const HN_ALGOLIA_API = 'https://hn.algolia.com/api/v1/items';
-const HN_ITEM_MAX_BYTES = 5 * 1024 * 1024;
-
 interface HnComment {
 	author?: string;
 	text?: string;
@@ -96,7 +93,7 @@ async function fetchHnItem(itemId: string): Promise<HackerNewsItem> {
 		}
 		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 	}
-	const payload: unknown = JSON.parse(await new Response(limitBody(response, HN_ITEM_MAX_BYTES)).text());
+	const payload: unknown = await response.json();
 	if (payload === null) throw new NonRetryableError(`Hacker News item ${itemId} was not found`);
 	return HackerNewsItemSchema.parse(payload);
 }
