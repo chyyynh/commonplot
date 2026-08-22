@@ -7,19 +7,25 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const prismaPath = resolve(root, '../../web-tanstack/prisma/schema.prisma');
 const manualIndexesPath = resolve(root, '../../web-tanstack/prisma/manual-indexes.sql');
+const sourceSchemaPath = resolve(root, '../../web-tanstack/src/server/schemas.ts');
 const resourcePath = resolve(root, 'src/shared/resource.ts');
-const sourcePath = resolve(root, 'src/shared/source.ts');
 
 const prismaSource = readFileSync(prismaPath, 'utf8');
 const manualIndexesSource = readFileSync(manualIndexesPath, 'utf8');
 const resourceSource = readFileSync(resourcePath, 'utf8');
-const sourceSource = readFileSync(sourcePath, 'utf8');
+const sourceSchemaSource = readFileSync(sourceSchemaPath, 'utf8');
 const errors = [];
 
 function parseStringArray(source, name) {
 	const declaration = source.match(new RegExp(`(?:export )?const ${name} = \\[([^\\]]*)\\] as const`));
 	if (!declaration) return null;
 	return [...declaration[1].matchAll(/'([^']+)'/g)].map((match) => match[1]);
+}
+
+function parseZodEnum(source, name) {
+	const declaration = source.match(new RegExp(`(?:export )?const ${name} = z\\.enum\\(\\[([^\\]]*)\\]\\)`));
+	if (!declaration) return null;
+	return [...declaration[1].matchAll(/["']([^"']+)["']/g)].map((match) => match[1]);
 }
 
 function parseStringOrNullArrayRecord(source, name) {
@@ -109,9 +115,9 @@ if (!resourceKinds || !resourcePlatforms || !validKindPlatforms) {
 	}
 }
 
-const sourcePlatforms = parseStringArray(sourceSource, 'SOURCE_PLATFORMS');
+const sourcePlatforms = parseZodEnum(sourceSchemaSource, 'SourcePlatformSchema');
 if (!sourcePlatforms) {
-	errors.push(`Unable to parse canonical source platforms from ${sourcePath}`);
+	errors.push(`Unable to parse canonical source platforms from ${sourceSchemaPath}`);
 } else {
 	if (/\bcontent_mode\b|\bpoll_interval_minutes\b/.test(prismaSource)) {
 		errors.push('Prisma Source model must not restore retired routing/cadence columns');

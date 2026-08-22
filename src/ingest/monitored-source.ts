@@ -1,4 +1,3 @@
-import { isSourcePlatform, SOURCE_INPUT_MAX_LENGTH, type SourcePlatform } from '@core-shared/source';
 import { parseExternalHttpUrl, parseTwitterUsername } from '@core-shared/url';
 import type { CoreDb } from '@db/connection';
 import { inArray, sql } from 'drizzle-orm';
@@ -8,10 +7,10 @@ import { loadFeed } from './platforms/rss-feed';
 // exact source row the crons can poll. Ordinary web URLs belong to resource
 // ingestion and never enter this path.
 
-export type ResolveMonitoredSourceInput = { platform: SourcePlatform; input: string };
+export type ResolveMonitoredSourceInput = { platform: 'rss' | 'lesswrong' | 'twitter' | 'youtube'; input: string };
 
 type ResolvedMonitoredSource = {
-	platform: SourcePlatform;
+	platform: ResolveMonitoredSourceInput['platform'];
 	handle: string;
 	name: string;
 	siteUrl: string | null;
@@ -117,10 +116,8 @@ async function resolveYouTubeSource(env: CoreEnv, input: string): Promise<Resolv
 }
 
 export async function resolveMonitoredSource(env: CoreEnv, input: ResolveMonitoredSourceInput): Promise<ResolvedMonitoredSource> {
-	if (!isSourcePlatform(input.platform)) throw new Error('Unsupported source platform.');
 	const raw = typeof input.input === 'string' ? input.input.trim() : '';
 	if (!raw) throw new Error('Source input is required.');
-	if (raw.length > SOURCE_INPUT_MAX_LENGTH) throw new Error('Source input is too long.');
 	switch (input.platform) {
 		case 'rss':
 			return resolveFeedSource(raw);
