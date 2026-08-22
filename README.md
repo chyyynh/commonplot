@@ -261,9 +261,9 @@ items enter the Workflow as immutable drafts; only successful processing creates
 or merges a canonical `resources` row and applies its save, container, source or
 subject admission in the same app-Domain transaction. App-owned uploads remain
 the explicit record-first exception and create `resources` plus `user_files`
-before Core reads the stored blob. Draft writes cross
-`DOMAIN.persistResolvedResourceDraft`; stored blob/resync writes cross the
-revision-guarded `DOMAIN.persistResolvedResourceGraph` boundary.
+before Core reads the stored blob. Every successful path crosses the single
+`DOMAIN.persistResolvedResource` transaction boundary with either a draft
+admission target or a revision-guarded existing-resource target.
 
 Keep the axes separate: acquisition (generic web or a specialized adapter) is
 not canonical `ResourcePlatform` (`youtube`, `twitter`, `hackernews`, `lesswrong`, or null),

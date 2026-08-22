@@ -223,8 +223,8 @@ discovery / scrape / process 邏輯。App-owned saved URL 以 Workflow draft
 進入 Core，成功處理後才建立 canonical row；upload 則先寫入 `resources`
 與 `user_files`，再以 `resourceId` 啟動 Workflow。Core 透過
 `ingest/stored-resource.ts` 讀取既有 upload 或 resync rows；processed graph
-寫入則跨越 app-owned `DOMAIN.persistResolvedResourceGraph` transaction
-boundary。Admission query 與 translation input query 分別與各自流程放在
+寫入統一跨越 app-owned `DOMAIN.persistResolvedResource` transaction
+boundary，並以 draft admission 或 revision-guarded existing target 區分語意。Admission query 與 translation input query 分別與各自流程放在
 `resource-admission.ts` 和 `resource-translation-workflow.ts`。
 
 各軸要分開：acquisition（generic web 或專用 adapter）不是 canonical

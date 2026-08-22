@@ -1,8 +1,7 @@
 import type {
-	PersistResolvedResourceDraftInput,
-	PersistResolvedResourceGraphInput,
-	PersistResolvedResourceGraphResult,
-	ResourceDraftAdmission,
+	PersistResolvedResourceInput,
+	PersistResolvedResourceResult,
+	PersistResolvedResourceTarget,
 	YouTubeSpecializationMutation,
 } from '@app-domain/resource-graph-contracts';
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
@@ -17,8 +16,7 @@ import type { ResourceClassificationResult } from './domain/resource-classificat
 import type { ResolvedSubjectInput } from './resource-resolver';
 
 export type PersistProcessedTarget =
-	| { kind: 'draft'; admission: ResourceDraftAdmission; providerSequence: string | null }
-	| { kind: 'existing'; resourceId: string; expectedSourceRevision: string | null; storageKey: string | null }
+	| PersistResolvedResourceTarget
 	| { kind: 'storedPdf'; resourceId: string; expectedSourceRevision: string | null; storageKey: string };
 
 type PersistProcessedInput = {
@@ -75,58 +73,48 @@ export async function persistProcessedResource(
 	env: CoreEnv,
 	input: PersistProcessedInput,
 	hostedImages: readonly HostedResourceImage[],
-): Promise<PersistResolvedResourceGraphResult> {
+): Promise<PersistResolvedResourceResult> {
 	const mutation = resolvedResourceMutation(input, hostedImages);
+	let resolvedMutation = mutation;
+	let target: PersistResolvedResourceTarget;
 	switch (input.target.kind) {
-		case 'existing': {
-			const storedMutation: PersistResolvedResourceGraphInput = {
-				...mutation,
-				resourceId: input.target.resourceId,
-				expectedSourceRevision: input.target.expectedSourceRevision,
-			};
-			return env.DOMAIN.persistResolvedResourceGraph(storedMutation);
-		}
+		case 'existing':
+		case 'draft':
+			target = input.target;
+			break;
 		case 'storedPdf': {
 			if (input.resource.kind !== 'paper') {
-				return env.DOMAIN.persistResolvedResourceGraph({
-					...mutation,
+				target = {
+					kind: 'existing',
 					resourceId: input.target.resourceId,
 					expectedSourceRevision: input.target.expectedSourceRevision,
-				});
+					storageKey: input.target.storageKey,
+				};
+				break;
 			}
 			const paperIdentity = paperIdentityFromIdentifiers(input.resource.resourceIdentifiers.filter(isPaperIdentifier));
 			if (!paperIdentity) throw new Error(`Private paper processing ${input.processingId} has no canonical identity`);
-			const canonicalUrl = canonicalPaperUrl(paperIdentity);
-			const draftMutation: PersistResolvedResourceDraftInput = {
-				...mutation,
+			target = {
+				kind: 'draft',
 				admission: {
 					kind: 'userFilePaper',
 					fileResourceId: input.target.resourceId,
 					expectedFileRevision: input.target.expectedSourceRevision,
 				},
-				url: canonicalUrl,
-				normalizedUrl: canonicalUrl,
 				providerSequence: null,
-				storageKey: null,
 			};
-			return env.DOMAIN.persistResolvedResourceDraft(draftMutation);
-		}
-		case 'draft': {
-			const draftMutation: PersistResolvedResourceDraftInput = {
-				...mutation,
-				admission: input.target.admission,
-				providerSequence: input.target.providerSequence,
-				storageKey: null,
-			};
-			return env.DOMAIN.persistResolvedResourceDraft(draftMutation);
+			const url = canonicalPaperUrl(paperIdentity);
+			resolvedMutation = { ...mutation, url, normalizedUrl: url };
+			break;
 		}
 	}
+	return env.DOMAIN.persistResolvedResource({ ...resolvedMutation, target });
 }
 
 function resolvedResourceMutation(
 	input: PersistProcessedInput,
 	hostedImages: readonly HostedResourceImage[],
-): Omit<PersistResolvedResourceGraphInput, 'resourceId' | 'expectedSourceRevision'> {
+): Omit<PersistResolvedResourceInput, 'target'> {
 	const resource = input.resource;
 	const identity = parseResourceIdentity(resource.kind, resource.resourcePlatform);
 	if (!identity) throw new Error(`Resource processing ${input.processingId} resolved to an invalid identity`);
@@ -155,8 +143,6 @@ function resolvedResourceMutation(
 			: null,
 		url: resource.url,
 		normalizedUrl: resource.normalizedUrl ?? resource.url,
-		storageKey:
-			input.target.kind === 'existing' || (input.target.kind === 'storedPdf' && resource.kind !== 'paper') ? input.target.storageKey : null,
 		fileType: resource.fileType ?? null,
 		publishedDate: resource.publishedDate,
 		ogImageUrl: media.ogImageUrl,
