@@ -128,15 +128,13 @@ async function stageSavedUrlAcquisition(
 
 type ResourceMaterializationSeed = Pick<
 	MaterializedResource,
-	'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'summary' | 'tags' | 'url'
+	'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'resourceIdentifiers' | 'summary' | 'tags' | 'url'
 >;
 
 type ResolvedProcessingCall = {
 	processingId: string;
 	acquiredContent: AcquiredContent;
 	origin: ResourceMaterializationSeed;
-	identityUrl: string | null;
-	resourceIdentifiers: ResourceIdentifier[];
 	translatePaperUrl: boolean;
 	persistenceTarget: PersistProcessedTarget;
 };
@@ -170,9 +168,8 @@ async function resolveProcessingCall(
 				tags: [],
 				keywords: target.sourceHints?.keywords ?? [],
 				normalizedUrl: target.url,
+				resourceIdentifiers: [],
 			},
-			identityUrl: target.url,
-			resourceIdentifiers: [],
 			translatePaperUrl: target.admission.kind !== 'source',
 			persistenceTarget: {
 				kind: 'draft',
@@ -208,8 +205,6 @@ async function resolveProcessingCall(
 				),
 			),
 			origin: storedPdf,
-			identityUrl: storedPdf.url,
-			resourceIdentifiers: storedPdf.resourceIdentifiers,
 			translatePaperUrl: false,
 			persistenceTarget: {
 				kind: 'storedPdf',
@@ -238,8 +233,6 @@ async function resolveProcessingCall(
 			sourceUrl,
 		}),
 		origin: snapshot,
-		identityUrl: sourceUrl,
-		resourceIdentifiers: snapshot.resourceIdentifiers,
 		translatePaperUrl: snapshot.translatePaperUrl,
 		persistenceTarget: {
 			kind: 'existing',
@@ -256,7 +249,7 @@ function resolveProcessingIdentity(call: ResolvedProcessingCall): {
 	resourceIdentifiers: ResourceIdentifier[];
 } {
 	const canonicalUrl = call.acquiredContent.canonicalUrl?.trim() || call.origin.url;
-	const exactPaper = resolveExactPaperInput(call.identityUrl ?? canonicalUrl);
+	const exactPaper = resolveExactPaperInput(call.origin.url ?? canonicalUrl);
 	const platformIdentity =
 		exactPaper || call.acquiredContent.resourcePlatform === null
 			? null
@@ -269,7 +262,7 @@ function resolveProcessingIdentity(call: ResolvedProcessingCall): {
 	return {
 		canonicalUrl,
 		platformIdentity,
-		resourceIdentifiers: normalizeResourceIdentifiers([...call.resourceIdentifiers, ...discoveredIdentifiers]),
+		resourceIdentifiers: normalizeResourceIdentifiers([...call.origin.resourceIdentifiers, ...discoveredIdentifiers]),
 	};
 }
 
