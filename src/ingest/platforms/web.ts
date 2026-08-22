@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
+import { limitBody, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
 import type { AcquiredMaterial } from '@core-shared/resource';
 import { literalCreator } from '@core-shared/resource';
@@ -120,7 +120,7 @@ async function acquireWebResource(url: string, env: CoreEnv, processingId?: stri
 		throw new NonRetryableError(`Unsupported response content type: ${contentType}`);
 	}
 
-	const html = await readTextWithLimit(response, GENERIC_HTML_MAX_BYTES);
+	const html = await new Response(limitBody(response, GENERIC_HTML_MAX_BYTES)).text();
 	return { ...(await acquireHtmlArticle(env, html, finalUrl, processingId)), canonicalUrl: finalUrl };
 }
 

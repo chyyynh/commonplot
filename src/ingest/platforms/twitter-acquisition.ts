@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { readTextWithLimit } from '@core-shared/http';
+import { limitBody } from '@core-shared/http';
 import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
 import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource';
 import { extractTweetId } from '@core-shared/url';
@@ -254,7 +254,7 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string): Promise<Twit
 		}
 		throw new Error(message);
 	}
-	const longform = parseTwitterArticleResponse(JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)), tweetId);
+	const longform = parseTwitterArticleResponse(JSON.parse(await new Response(limitBody(response, 2 * 1024 * 1024)).text()), tweetId);
 	const title = longform.title?.trim();
 	const contentText = expandKnownTweetUrls(renderTwitterArticleMarkdown(longform), tweet);
 	if (!title || !contentText) throw new Error(`Twitter longform ${tweetId} requires both title and renderable content`);
@@ -412,7 +412,7 @@ async function scrapeTweet(
 		}
 		throw new Error(message);
 	}
-	const tweets = parseTwitterTweetsResponse(JSON.parse(await readTextWithLimit(response)));
+	const tweets = parseTwitterTweetsResponse(JSON.parse(await new Response(limitBody(response)).text()));
 	const tweet = tweets[0];
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
 	const expectedReplyId = options.expectedReplyId === tweetId ? undefined : options.expectedReplyId;
@@ -514,7 +514,7 @@ async function fetchTwitterAuthorReplies(root: Tweet, tweetId: string, apiKey: s
 			}
 			throw new Error(message);
 		}
-		const data = parseTwitterAdvancedSearchPage(JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)));
+		const data = parseTwitterAdvancedSearchPage(JSON.parse(await new Response(limitBody(response, 2 * 1024 * 1024)).text()));
 		pages++;
 		providerPosts += data.tweets.length;
 		for (const candidate of twitterAuthorThreadCandidates(root, data.tweets)) {

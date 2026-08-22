@@ -1,4 +1,4 @@
-import { readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
+import { limitBody, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { extractHackerNewsId, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { parseFeed } from 'feedsmith';
 import { decode } from 'html-entities';
@@ -123,7 +123,9 @@ export async function loadFeed(feedUrl: string): Promise<{
 
 	let parsed: ParsedFeed;
 	try {
-		parsed = parseFeed(await readTextWithLimit(response, MAX_FEED_BYTES), { maxItems: MAX_FEED_ITEMS });
+		parsed = parseFeed(await new Response(limitBody(response, MAX_FEED_BYTES)).text(), {
+			maxItems: MAX_FEED_ITEMS,
+		});
 	} catch {
 		throw new Error('URL did not return a readable feed.');
 	}

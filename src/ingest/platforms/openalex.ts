@@ -1,4 +1,4 @@
-import { readTextWithLimit } from '@core-shared/http';
+import { limitBody } from '@core-shared/http';
 import {
 	normalizeArxivId,
 	normalizeDoi,
@@ -233,7 +233,7 @@ async function fetchOpenAlexJson(path: string, apiKey: string): Promise<unknown 
 	if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 	const response = await fetch(`${OPENALEX_BASE}${path}`, { headers, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
 	if (response.ok) {
-		return JSON.parse(await readTextWithLimit(response, RESPONSE_MAX_BYTES));
+		return JSON.parse(await new Response(limitBody(response, RESPONSE_MAX_BYTES)).text());
 	}
 	const status = response.status;
 	const retryAfter = response.headers.get('retry-after');
@@ -372,5 +372,5 @@ export async function acquireOpenAlexGrobidText(input: {
 		await response.body?.cancel();
 		throw new Error(`OpenAlex content GROBID XML request failed with HTTP ${status}`);
 	}
-	return markdownFromXml(input.env, await readTextWithLimit(response, GROBID_RESPONSE_MAX_BYTES), input.processingId);
+	return markdownFromXml(input.env, await new Response(limitBody(response, GROBID_RESPONSE_MAX_BYTES)).text(), input.processingId);
 }

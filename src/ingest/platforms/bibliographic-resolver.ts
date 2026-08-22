@@ -1,4 +1,4 @@
-import { readTextWithLimit } from '@core-shared/http';
+import { limitBody } from '@core-shared/http';
 import {
 	normalizePaperIdentifiers,
 	PAPER_IDENTIFIER_SCHEMES,
@@ -64,7 +64,7 @@ async function resolveCitoidIdentifiers(url: string): Promise<PaperIdentifier[]>
 		console.warn({ tag: 'CITOID', event: 'translation_unavailable', status });
 		return [];
 	}
-	const items = CitoidResponseSchema.parse(JSON.parse(await readTextWithLimit(response, CITOID_RESPONSE_MAX_BYTES)));
+	const items = CitoidResponseSchema.parse(JSON.parse(await new Response(limitBody(response, CITOID_RESPONSE_MAX_BYTES)).text()));
 	const academicItem = items.find((item) => item.itemType && ACADEMIC_ITEM_TYPES.has(item.itemType));
 	return academicItem ? normalizePaperIdentifiers(citoidItemIdentifiers(academicItem)) : [];
 }

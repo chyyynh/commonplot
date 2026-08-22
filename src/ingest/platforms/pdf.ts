@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { PersistResolvedResourceTarget } from '@app-domain/resource-graph-contracts';
-import { readBytesWithLimit } from '@core-shared/http';
+import { limitBody } from '@core-shared/http';
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
 import type { AcquiredMaterial, AcquiredResource, ResolvedResource, ResourceCreator, ResourceKindMetadata } from '@core-shared/resource';
 import { isPaperIdentifier } from '@core-shared/resource';
@@ -73,7 +73,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfAcquisitionInpu
 }
 
 export async function acquireFetchedPdfResponse(response: Response, finalUrl: string): Promise<AcquiredMaterial<null>> {
-	const markdown = await parsePdfBytes(await readBytesWithLimit(response, MAX_PDF_BYTES), `PDF ${finalUrl}`);
+	const markdown = await parsePdfBytes(await new Response(limitBody(response, MAX_PDF_BYTES)).bytes(), `PDF ${finalUrl}`);
 	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
 	let fileName = encodedName || 'document.pdf';
 	if (encodedName) {

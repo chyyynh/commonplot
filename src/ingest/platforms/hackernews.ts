@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { readTextWithLimit } from '@core-shared/http';
+import { limitBody } from '@core-shared/http';
 import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
 import { type ForumKindMetadata, literalCreator } from '@core-shared/resource';
 import { generateText } from 'ai';
@@ -96,7 +96,7 @@ async function fetchHnItem(itemId: string): Promise<HackerNewsItem> {
 		}
 		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 	}
-	const payload: unknown = JSON.parse(await readTextWithLimit(response, HN_ITEM_MAX_BYTES));
+	const payload: unknown = JSON.parse(await new Response(limitBody(response, HN_ITEM_MAX_BYTES)).text());
 	if (payload === null) throw new NonRetryableError(`Hacker News item ${itemId} was not found`);
 	return HackerNewsItemSchema.parse(payload);
 }

@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
+import { limitBody, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
 import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
 import { literalCreator } from '@core-shared/resource';
@@ -55,7 +55,7 @@ async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<'lesswr
 		await response.body?.cancel();
 		throw new Error(`LessWrong GraphQL failed with HTTP ${response.status}`);
 	}
-	const payload = JSON.parse(await readTextWithLimit(response, LESSWRONG_RESPONSE_MAX_BYTES)) as LessWrongGraphqlResponse;
+	const payload = JSON.parse(await new Response(limitBody(response, LESSWRONG_RESPONSE_MAX_BYTES)).text()) as LessWrongGraphqlResponse;
 	const graphqlError = payload.errors?.map((error) => error.message?.trim()).find(Boolean);
 	if (graphqlError) throw new Error(`LessWrong GraphQL failed: ${graphqlError}`);
 	const post = payload.data?.post?.result;
