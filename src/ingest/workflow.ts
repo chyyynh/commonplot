@@ -258,9 +258,9 @@ function resolveProcessingIdentity(call: ResolvedProcessingCall): {
 	const canonicalUrl = call.acquiredContent.canonicalUrl?.trim() || call.origin.url;
 	const exactPaper = resolveExactPaperInput(call.identityUrl ?? canonicalUrl);
 	const platformIdentity =
-		exactPaper || call.acquiredContent.provider === null
+		exactPaper || call.acquiredContent.resourcePlatform === null
 			? null
-			: { resourcePlatform: call.acquiredContent.provider, platformId: call.acquiredContent.platformId };
+			: { resourcePlatform: call.acquiredContent.resourcePlatform, platformId: call.acquiredContent.platformId };
 	const discoveredIdentifiers = exactPaper
 		? paperIdentifiersFromIdentity(exactPaper.identity)
 		: platformIdentity
@@ -298,7 +298,7 @@ async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, ca
 		publishedDate,
 		resourceIdentifiers: normalizeResourceIdentifiers([...paper.identifiers, ...resourceIdentifiers]),
 	});
-	const extractionStatus = acquiredContent.provider === null ? acquiredContent.extraction?.status : undefined;
+	const extractionStatus = acquiredContent.resourcePlatform === null ? acquiredContent.extraction?.status : undefined;
 	if (extractionStatus === 'needs_ocr') {
 		throw new ResourceProcessingRejectedError(`PDF processing ${processingId} requires OCR`);
 	}

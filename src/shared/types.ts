@@ -96,8 +96,7 @@ export type ResolvedResource =
 	  });
 
 type AcquiredMaterialBase<T extends ResourcePlatform> = {
-	/** Acquisition adapter identity. This is not the Resource product identity. */
-	provider: T;
+	resourcePlatform: T;
 	/** Validated final URL after redirects, when acquisition resolved one. */
 	canonicalUrl?: string;
 	fileType: string | null;

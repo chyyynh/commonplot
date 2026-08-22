@@ -64,7 +64,7 @@ export async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<
 	if (!markdown) throw new NonRetryableError(`LessWrong post ${postId} has no Markdown content`);
 	const author = post.user?.displayName?.trim() || post.user?.username?.trim() || null;
 	return {
-		provider: 'lesswrong',
+		resourcePlatform: 'lesswrong',
 		platformId: postId,
 		fileType: null,
 		title,

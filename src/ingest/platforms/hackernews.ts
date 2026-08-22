@@ -140,7 +140,7 @@ export async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquir
 		subjectUrl: item.url ?? null,
 	});
 	return {
-		provider: 'hackernews',
+		resourcePlatform: 'hackernews',
 		platformId: itemId,
 		fileType: null,
 		title,

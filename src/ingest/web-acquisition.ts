@@ -128,7 +128,7 @@ async function acquirePdfBytes(bytes: Uint8Array, url: string): Promise<Acquired
 	if (!title) throw new Error(`File name has no title: ${fileName}`);
 	const source = urlHost(url);
 	return {
-		provider: null,
+		resourcePlatform: null,
 		fileType: PDF_MIME,
 		title,
 		markdown: parsed.text,
@@ -156,7 +156,7 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, proce
 		throw new NonRetryableError(`Extracted HTML content is too short (${content.length} chars)`);
 	}
 	return {
-		provider: null,
+		resourcePlatform: null,
 		fileType: null,
 		title: article.title,
 		markdown: content,

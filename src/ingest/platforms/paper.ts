@@ -211,7 +211,7 @@ async function acquireOpenAlexGrobidArtifact(
 	if (!sourceName) throw new Error('OpenAlex GROBID acquisition has no source name');
 	return acquiredContentArtifact(
 		await sanitizeAcquiredContent({
-			provider: null,
+			resourcePlatform: null,
 			fileType: null,
 			title: input.title,
 			markdown,
@@ -263,7 +263,7 @@ async function stageOpenAlexContentAcquisition(
 				event: 'pdf_acquired',
 				processing_id: resource.processingId,
 				chars: acquired.markdown.length,
-				pages: acquired.provider === null ? (acquired.extraction?.pages ?? null) : null,
+				pages: acquired.resourcePlatform === null ? (acquired.extraction?.pages ?? null) : null,
 			});
 			return acquired;
 		}

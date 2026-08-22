@@ -257,7 +257,7 @@ export async function scrapeYouTube(
 	console.info({ tag: 'YOUTUBE', msg: 'Video fetched', title: snippet.title });
 
 	return {
-		provider: 'youtube',
+		resourcePlatform: 'youtube',
 		platformId: videoId,
 		fileType: null,
 		title: snippet.title,

@@ -12,7 +12,7 @@ function materialize(input = {}) {
 	const platformIdentity = url ? detectResourceUrl(url) : null;
 	return materializeAcquiredResource(
 		{
-			provider: platformIdentity?.resourcePlatform ?? null,
+			resourcePlatform: platformIdentity?.resourcePlatform ?? null,
 			...(platformIdentity ? { platformId: platformIdentity.platformId } : {}),
 			...(url ? { canonicalUrl: url } : {}),
 			fileType: null,

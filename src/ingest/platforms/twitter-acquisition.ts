@@ -269,7 +269,7 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string): Promise<Twit
 	console.info({ tag: 'TWITTER', msg: 'Longform fetched', title });
 
 	return {
-		provider: 'twitter',
+		resourcePlatform: 'twitter',
 		fileType: null,
 		title,
 		markdown: contentText,
@@ -288,7 +288,7 @@ function buildExternalLinkTweet(tweet: Tweet, externalUrl: string, media: Twitte
 	const title = `@${author.userName}: ${stripTweetUrls(tweetText) || tweetText}`.slice(0, 120);
 	const expandedText = expandTweetUrls(tweetText, tweet);
 	return {
-		provider: 'twitter',
+		resourcePlatform: 'twitter',
 		fileType: null,
 		title,
 		markdown: stripTrailingExternalUrl(expandedText, externalUrl),
@@ -335,7 +335,7 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string): Promise<Resolv
 	return {
 		kind: 'tweet',
 		scraped: {
-			provider: 'twitter' as const,
+			resourcePlatform: 'twitter' as const,
 			fileType: null,
 			title,
 			markdown: expandTweetUrls(tweet.text, tweet),

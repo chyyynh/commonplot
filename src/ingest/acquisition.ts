@@ -2,7 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { sha256Hex } from '@core-shared/hash';
 import { parseResourceCreators, parseStoredResourceKindMetadata } from '@core-shared/resource-metadata';
-import type { ContentResourceKind, ResourcePlatform } from '@core-shared/resource-types';
+import { type ResourcePlatform, resourceIdentityForDetectedPlatform } from '@core-shared/resource-types';
 import type { AcquiredMaterial, MaterializedResource, ResolvedResource } from '@core-shared/types';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { z } from 'zod';
@@ -40,30 +40,27 @@ const acquiredContentShape = {
 	creators: z.unknown().transform((value) => parseResourceCreators(value)),
 	sourceSnapshotHash: z.string().regex(/^[0-9a-f]{64}$/),
 };
-function acquiredMaterialSchema<const T extends ResourcePlatform, Extra extends z.ZodRawShape>(
-	provider: T,
-	kind: ContentResourceKind,
-	extra: Extra,
-) {
+function acquiredMaterialSchema<const T extends ResourcePlatform, Extra extends z.ZodRawShape>(resourcePlatform: T, extra: Extra) {
+	const kind = resourcePlatform === null ? 'blog' : resourceIdentityForDetectedPlatform(resourcePlatform).kind;
 	return z.looseObject({
-		provider: z.literal(provider),
+		resourcePlatform: z.literal(resourcePlatform),
 		...acquiredContentShape,
 		kindMetadata: z.unknown().transform((value) => parseStoredResourceKindMetadata(kind, value)),
 		...extra,
 	});
 }
 
-const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('provider', [
-	acquiredMaterialSchema(null, 'blog', {
+const AcquiredContentSchema: z.ZodType<AcquiredContent> = z.discriminatedUnion('resourcePlatform', [
+	acquiredMaterialSchema(null, {
 		extraction: z.object({ status: z.enum(['ok', 'needs_ocr']), pages: z.number() }).optional(),
 	}),
-	acquiredMaterialSchema('hackernews', 'forum', {
+	acquiredMaterialSchema('hackernews', {
 		hackerNewsItem: HackerNewsItemSchema,
 		platformId: platformIdSchema,
 	}),
-	acquiredMaterialSchema('lesswrong', 'blog', { platformId: platformIdSchema }),
-	acquiredMaterialSchema('twitter', 'post', { platformId: platformIdSchema }),
-	acquiredMaterialSchema('youtube', 'video', {
+	acquiredMaterialSchema('lesswrong', { platformId: platformIdSchema }),
+	acquiredMaterialSchema('twitter', { platformId: platformIdSchema }),
+	acquiredMaterialSchema('youtube', {
 		platformId: platformIdSchema,
 		youtubeTranscript: YouTubeTranscriptSchema,
 	}),
@@ -88,14 +85,14 @@ function validateAcquisitionUrl(url: string): string {
 
 function acquiredSourceSnapshotHash(acquired: RawAcquiredContent, markdown: string): Promise<string> {
 	const providerFacts =
-		acquired.provider !== null || acquired.subjectUrl
+		acquired.resourcePlatform !== null || acquired.subjectUrl
 			? {
-					...(acquired.provider !== null ? { platformId: acquired.platformId } : {}),
+					...(acquired.resourcePlatform !== null ? { platformId: acquired.platformId } : {}),
 					...(acquired.subjectUrl ? { subjectUrl: acquired.subjectUrl } : {}),
 				}
 			: null;
 	const input = JSON.stringify({
-		provider: acquired.provider,
+		resourcePlatform: acquired.resourcePlatform,
 		canonicalUrl: acquired.canonicalUrl,
 		fileType: acquired.fileType,
 		title: acquired.title,
@@ -203,7 +200,7 @@ export async function stagePlatformEnrichment(
 	resource: MaterializedResource,
 	processingId: string,
 ): Promise<ResolvedResource> {
-	switch (acquired.provider) {
+	switch (acquired.resourcePlatform) {
 		case 'hackernews': {
 			if (resource.resourcePlatform !== 'hackernews')
 				throw new Error(`Hacker News processing ${processingId} resolved to another platform`);

@@ -43,7 +43,7 @@ export async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): 
 	if (obj.size > MAX_PDF_BYTES) throw new Error(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
 	const parsed = await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()));
 	return {
-		provider: null,
+		resourcePlatform: null,
 		fileType: PDF_MIME,
 		title: resource.title,
 		markdown: parsed.text,
