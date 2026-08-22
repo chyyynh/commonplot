@@ -4,18 +4,13 @@
 // storing and under WHAT canonical key. Consumed by the ingest
 // pipeline (persistence + prompt exclusion lists).
 
-import {
-	ENTITY_TYPES,
-	type EntityType,
-	RESOURCE_PLATFORM_DISPLAY_LABELS,
-	type ResourceCreator,
-	type ResourcePlatform,
-	resourceCreatorName,
-	type StoredResourceEntity,
-} from '@core-shared/resource';
+import { RESOURCE_PLATFORM_DISPLAY_LABELS, type ResourceCreator, type ResourcePlatform, resourceCreatorName } from '@core-shared/resource';
 
 export type ResourceEntityInput = { name: string; name_cn: string; type: string };
+export const ENTITY_TYPES = ['person', 'organization', 'product', 'technology', 'event', 'location'] as const;
+type EntityType = (typeof ENTITY_TYPES)[number];
 type NormalizedResourceEntity = { name: string; name_cn: string; type: EntityType };
+type StoredResourceEntity = { k: string; n: string; cn: string | null; t: EntityType };
 
 /** Canonical names that are too generic to be useful entity pages (audit 2026-07-02, issue #197). */
 const GENERIC_ENTITY_CANONICALS = new Set(['ai', 'x', 'go', 'us', 'c', 'v4', 'rl', 'pi']);

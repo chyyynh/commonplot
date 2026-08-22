@@ -2,10 +2,10 @@
 
 import type { WorkflowStep } from 'cloudflare:workers';
 import { type PaperIdentifier, paperIdentityFromText, resolveExactPaperInput } from '@core-shared/paper-identity';
-import type { AcquiredMaterial, PaperMetadata } from '@core-shared/resource';
-import { literalCreator, type PaperKindMetadata } from '@core-shared/resource';
+import type { PaperKindMetadata } from '@core-shared/resource';
 import { resolveBibliographicIdentifiers } from './bibliographic-resolver';
-import { acquireOpenAlexGrobidText, acquireOpenAlexPdf, resolveOpenAlexPaper } from './openalex';
+import { type AcquiredMaterial, literalCreator } from './materialize';
+import { acquireOpenAlexGrobidText, acquireOpenAlexPdf, type PaperMetadata, resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME } from './pdf';
 
 const IDENTIFIER_SCAN_CHARS = 3_000;

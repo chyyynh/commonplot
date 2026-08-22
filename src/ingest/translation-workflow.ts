@@ -1,14 +1,6 @@
 // Durable translation execution; resource processing only enqueues this Workflow.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import {
-	canonicalizeResourceLang,
-	parseResourceIdentity,
-	RESOURCE_TRANSLATION_SOURCES,
-	type ResourceIdentity,
-	type ResourceTranslationSource,
-	TRANSLATABLE_RESOURCE_KINDS,
-	ZH_HANT_RESOURCE_LANG,
-} from '@core-shared/resource';
+import { canonicalizeResourceLang, parseResourceIdentity, type ResourceIdentity, ZH_HANT_RESOURCE_LANG } from '@core-shared/resource';
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { generateText, Output } from 'ai';
 import { sql } from 'drizzle-orm';
@@ -17,6 +9,9 @@ import { z } from 'zod';
 import { syncCorpusItem } from '../ai-search';
 
 type ResourceTranslationPayload = { resourceId: string; translationRevision: string };
+const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const;
+const RESOURCE_TRANSLATION_SOURCES = ['original', 'machine', 'human'] as const;
+type ResourceTranslationSource = (typeof RESOURCE_TRANSLATION_SOURCES)[number];
 
 type ResourceTranslationInput = {
 	fileType: string | null;

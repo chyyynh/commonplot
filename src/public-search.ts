@@ -1,4 +1,4 @@
-import { type ContentResourceKind, isContentResourceKind, isResourcePlatform, type ResourcePlatform } from '@core-shared/resource';
+import { type ContentResourceKind, isContentResourceKind, RESOURCE_PLATFORMS, type ResourcePlatform } from '@core-shared/resource';
 import { aiSearchResourcePlatformMetadata, isValidUuid, resourceIdFromAiSearchItemKey } from './ai-search';
 
 export type PublicResourceSearchInput = {
@@ -33,7 +33,13 @@ function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSea
 	const kinds = filters.kinds === undefined ? undefined : [...new Set(filters.kinds)];
 	if (kinds?.some((value) => !isContentResourceKind(value))) throw new Error('Invalid resource kinds');
 	const resourcePlatforms = filters.resourcePlatforms === undefined ? undefined : [...new Set(filters.resourcePlatforms)];
-	if (resourcePlatforms?.some((value) => !isResourcePlatform(value))) throw new Error('Invalid resource platforms');
+	if (
+		resourcePlatforms?.some(
+			(value) => value !== null && (typeof value !== 'string' || !(RESOURCE_PLATFORMS as readonly string[]).includes(value)),
+		)
+	) {
+		throw new Error('Invalid resource platforms');
+	}
 	return {
 		effectiveAfter,
 		excludeAll: sourceIds?.length === 0 || kinds?.length === 0 || resourcePlatforms?.length === 0,

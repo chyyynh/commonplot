@@ -1,9 +1,14 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
-import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource';
+import type { PostKindMetadata, ResourceCreator, ResourceMediaAttachment } from '@core-shared/resource';
 import { extractTweetId } from '@core-shared/url';
-import { materializePlatformResource, type ResourceAcquisitionOrigin } from './materialize';
+import {
+	type AcquiredMaterial,
+	literalCreator,
+	materializePlatformResource,
+	type ResolvedResource,
+	type ResourceAcquisitionOrigin,
+} from './materialize';
 import {
 	assertExpectedTwitterThreadPost,
 	buildTwitterAuthorThread,

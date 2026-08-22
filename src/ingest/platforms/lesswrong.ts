@@ -1,9 +1,13 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
-import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
-import { literalCreator } from '@core-shared/resource';
-import { materializePlatformResource, type ResourceAcquisitionOrigin } from './materialize';
+import {
+	type AcquiredMaterial,
+	literalCreator,
+	materializePlatformResource,
+	type ResolvedResource,
+	type ResourceAcquisitionOrigin,
+} from './materialize';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
 const LESSWRONG_POST_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;

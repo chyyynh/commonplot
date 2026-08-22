@@ -2,10 +2,10 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { PersistResolvedResourceTarget } from '@app-domain/resource-graph-contracts';
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
-import type { AcquiredMaterial, AcquiredResource, ResolvedResource, ResourceCreator, ResourceKindMetadata } from '@core-shared/resource';
-import { isPaperIdentifier } from '@core-shared/resource';
+import { isPaperIdentifier, type ResourceCreator, type ResourceKindMetadata } from '@core-shared/resource';
 import { initSync, LiteParse } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
+import type { AcquiredMaterial, AcquiredResource, ResolvedResource } from './materialize';
 
 export const PDF_MIME = 'application/pdf';
 

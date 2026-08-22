@@ -1,12 +1,17 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import type { AcquiredMaterial, ResolvedResource } from '@core-shared/resource';
-import { type ForumKindMetadata, literalCreator } from '@core-shared/resource';
+import type { ForumKindMetadata } from '@core-shared/resource';
 import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { materializePlatformResource, type ResourceAcquisitionOrigin } from './materialize';
+import {
+	type AcquiredMaterial,
+	literalCreator,
+	materializePlatformResource,
+	type ResolvedResource,
+	type ResourceAcquisitionOrigin,
+} from './materialize';
 
 const HN_ALGOLIA_API = 'https://hn.algolia.com/api/v1/items';
 interface HnComment {

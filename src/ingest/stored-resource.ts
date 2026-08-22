@@ -1,18 +1,20 @@
 // Narrow database projections for the two record-first processing paths.
 
+import { isPaperIdentifierScheme } from '@core-shared/paper-identity';
 import {
 	CONTENT_RESOURCE_KINDS,
 	type ContentResourceIdentity,
 	canonicalizeResourceLang,
 	isContentResourceIdentity,
 	isContentResourceKind,
-	isResourceIdentifierScheme,
 	normalizeResourceIdentifiers,
 	parseResourceCreators,
 	parseResourceIdentity,
 	parseStoredResourceKindMetadata,
+	RESOURCE_PLATFORMS,
 	type ResourceCreator,
 	type ResourceIdentifier,
+	type ResourceIdentifierScheme,
 	type ResourceIdentity,
 	type ResourceKindMetadata,
 } from '@core-shared/resource';
@@ -361,6 +363,10 @@ function resourceIdentifiersValue(value: unknown): ResourceIdentifier[] {
 			return [{ preferred: identifier.preferred !== false, scheme: identifier.scheme, value: identifier.value }];
 		}),
 	);
+}
+
+function isResourceIdentifierScheme(value: unknown): value is ResourceIdentifierScheme {
+	return isPaperIdentifierScheme(value) || (typeof value === 'string' && (RESOURCE_PLATFORMS as readonly string[]).includes(value));
 }
 
 function storedResourceCreatorsValue(value: unknown, resourceId: string): ResourceCreator[] {

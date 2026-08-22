@@ -1,15 +1,94 @@
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '../../shared/paper-identity.ts';
-import type { AcquiredResource, MaterializedResource, ResolvedResource, ResolvedResourceSubject } from '../../shared/resource.ts';
 import {
 	type ContentResourceIdentity,
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
 	isPaperIdentifier,
 	normalizeResourceIdentifiers,
+	type ResourceCreator,
 	type ResourceIdentifier,
-	resourceIdentityForDetectedPlatform,
+	type ResourceKindMetadata,
+	type ResourcePlatform,
+	type YouTubeHighlights,
+	type YouTubeTranscript,
 } from '../../shared/resource.ts';
 import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../../shared/url.ts';
+
+type ResolvedResourceSubject = Readonly<{
+	identifiers: ResourceIdentifier[];
+	normalizedUrl: string;
+}>;
+
+type MaterializedResource = ContentResourceIdentity & {
+	originalLang: string;
+	title: string;
+	summary: string | null;
+	content: string;
+	url: string | null;
+	source: string;
+	publishedDate: string | null;
+	tags: string[];
+	keywords: string[];
+	creators: ResourceCreator[];
+	kindMetadata: ResourceKindMetadata | null;
+	resourceIdentifiers: ResourceIdentifier[];
+	fileType: string | null;
+	normalizedUrl: string | null;
+	previewImageUrl: string | null;
+	subject: ResolvedResourceSubject | null;
+};
+
+export type YouTubeResourceSpecialization = Readonly<{
+	kind: 'youtube';
+	transcript: YouTubeTranscript | null;
+	highlights: YouTubeHighlights | null;
+}>;
+
+export type ResolvedResource =
+	| (Extract<MaterializedResource, { kind: 'video'; resourcePlatform: 'youtube' }> & {
+			specialization: YouTubeResourceSpecialization;
+	  })
+	| (Exclude<MaterializedResource, { kind: 'video'; resourcePlatform: 'youtube' }> & {
+			specialization: null;
+	  });
+
+export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = T extends unknown
+	? {
+			resourcePlatform: T;
+			canonicalUrl?: string;
+			fileType: string | null;
+			title: string;
+			markdown: string;
+			previewImageUrl?: string | null;
+			subjectUrl?: string;
+			source: string;
+			originalLang: string | null;
+			publishedDate: string | null;
+			summary: string | null;
+			creators: ResourceCreator[];
+			kindMetadata: ResourceKindMetadata;
+		} & (T extends Exclude<ResourcePlatform, null> ? { platformId: string } : unknown)
+	: never;
+
+export type AcquiredResource =
+	| (Exclude<AcquiredMaterial, AcquiredMaterial<'youtube'>> & { specialization: null })
+	| (AcquiredMaterial<'youtube'> & { specialization: YouTubeResourceSpecialization });
+
+const DETECTED_PLATFORM_RESOURCE_IDENTITIES = {
+	hackernews: { kind: 'forum', resourcePlatform: 'hackernews' },
+	lesswrong: { kind: 'blog', resourcePlatform: 'lesswrong' },
+	twitter: { kind: 'post', resourcePlatform: 'twitter' },
+	youtube: { kind: 'video', resourcePlatform: 'youtube' },
+} as const satisfies Readonly<Record<Exclude<ResourcePlatform, null>, ContentResourceIdentity>>;
+
+export function literalCreator(
+	role: ResourceCreator['role'],
+	literal: string | null | undefined,
+	extra: Omit<ResourceCreator, 'literal' | 'role'> = {},
+): ResourceCreator[] {
+	const name = literal?.trim();
+	return name ? [{ role, literal: name, ...extra }] : [];
+}
 
 export type ResourceAcquisitionOrigin = Pick<
 	MaterializedResource,
@@ -28,7 +107,7 @@ export function materializeAcquiredResource<const T extends AcquiredResource>(
 		acquired.resourcePlatform === null ? null : { resourcePlatform: acquired.resourcePlatform, platformId: acquired.platformId };
 	const paperIdentifiers = resolution.resourceIdentifiers.filter(isPaperIdentifier);
 	const identity: ContentResourceIdentity = platformIdentity
-		? resourceIdentityForDetectedPlatform(platformIdentity.resourcePlatform)
+		? DETECTED_PLATFORM_RESOURCE_IDENTITIES[platformIdentity.resourcePlatform]
 		: paperIdentifiers.some((identifier) => identifier.scheme === 'openalex')
 			? { kind: 'paper', resourcePlatform: null }
 			: { kind: 'blog', resourcePlatform: null };

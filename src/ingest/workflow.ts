@@ -5,15 +5,10 @@ import type {
 	PersistResolvedResourceTarget,
 } from '@app-domain/resource-graph-contracts';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/image-mapping';
-import {
-	DEFAULT_RESOURCE_LANG,
-	ENTITY_TYPES,
-	RESOURCE_CATEGORIES,
-	type ResolvedResource,
-	type ResourceCategory,
-} from '@core-shared/resource';
+import { DEFAULT_RESOURCE_LANG, RESOURCE_CATEGORIES, type ResourceCategory } from '@core-shared/resource';
 import { connectCoreDb } from '@db/connection';
-import { entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
+import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
+import type { ResolvedResource } from '@ingest/platforms/materialize';
 import { loadResourceReacquisitionInput, loadStoredPdfInput, markStoredBlobProcessingFailed } from '@ingest/stored-resource';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';

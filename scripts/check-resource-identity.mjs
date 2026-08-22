@@ -1,10 +1,5 @@
 import assert from 'node:assert/strict';
-import {
-	parseResourceIdentity,
-	parseResourceProviderSequence,
-	resourceIdentityForDetectedPlatform,
-	VALID_KIND_PLATFORMS,
-} from '../src/shared/resource.ts';
+import { parseResourceIdentity, parseResourceProviderSequence, VALID_KIND_PLATFORMS } from '../src/shared/resource.ts';
 import { detectResourceUrl, normalizeUrl, parseTwitterUsername } from '../src/shared/url.ts';
 
 const canonicalIdentities = Object.entries(VALID_KIND_PLATFORMS).flatMap(([kind, resourcePlatforms]) =>
@@ -56,10 +51,6 @@ const twitterUsernameCases = [
 ];
 for (const [input, expected] of twitterUsernameCases) assert.equal(parseTwitterUsername(input), expected);
 
-assert.deepEqual(resourceIdentityForDetectedPlatform('twitter'), { kind: 'post', resourcePlatform: 'twitter' });
-assert.deepEqual(resourceIdentityForDetectedPlatform('youtube'), { kind: 'video', resourcePlatform: 'youtube' });
-assert.deepEqual(resourceIdentityForDetectedPlatform('hackernews'), { kind: 'forum', resourcePlatform: 'hackernews' });
-assert.deepEqual(resourceIdentityForDetectedPlatform('lesswrong'), { kind: 'blog', resourcePlatform: 'lesswrong' });
 assert.equal(parseResourceProviderSequence('1'), 1n);
 assert.equal(parseResourceProviderSequence('1999999999999999999'), 1_999_999_999_999_999_999n);
 assert.equal(parseResourceProviderSequence('0'), null);
@@ -69,7 +60,6 @@ assert.equal(parseResourceProviderSequence('not-a-sequence'), null);
 console.info({
 	event: 'resource_identity_smoke_passed',
 	canonicalIdentityCases: canonicalIdentities.length,
-	detectedPlatformIdentityCases: 4,
 	invalidIdentityCases: 5,
 	providerSequenceCases: 5,
 	twitterUsernameCases: twitterUsernameCases.length,

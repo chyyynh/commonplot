@@ -10,8 +10,6 @@ export const CONTENT_RESOURCE_KINDS = ['blog', 'forum', 'post', 'video', 'paper'
 
 export type ContentResourceKind = (typeof CONTENT_RESOURCE_KINDS)[number];
 
-export const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const satisfies readonly ResourceKind[];
-
 export const RESOURCE_PLATFORMS = ['hackernews', 'lesswrong', 'twitter', 'youtube'] as const;
 
 export type ResourcePlatform = (typeof RESOURCE_PLATFORMS)[number] | null;
@@ -35,13 +33,6 @@ export type ResourceIdentity = {
 
 export type ContentResourceIdentity = Extract<ResourceIdentity, { kind: ContentResourceKind }>;
 
-const DETECTED_PLATFORM_RESOURCE_IDENTITIES = {
-	hackernews: { kind: 'forum', resourcePlatform: 'hackernews' },
-	lesswrong: { kind: 'blog', resourcePlatform: 'lesswrong' },
-	twitter: { kind: 'post', resourcePlatform: 'twitter' },
-	youtube: { kind: 'video', resourcePlatform: 'youtube' },
-} as const satisfies Readonly<Record<Exclude<ResourcePlatform, null>, ContentResourceIdentity>>;
-
 export const RESOURCE_KIND_DISPLAY_LABELS = {
 	blog: 'Blog',
 	forum: 'Forum',
@@ -63,7 +54,7 @@ export function isContentResourceKind(value: unknown): value is ContentResourceK
 	return typeof value === 'string' && (CONTENT_RESOURCE_KINDS as readonly string[]).includes(value);
 }
 
-export function isResourcePlatform(value: unknown): value is ResourcePlatform {
+function isResourcePlatform(value: unknown): value is ResourcePlatform {
 	return value === null || (typeof value === 'string' && (RESOURCE_PLATFORMS as readonly string[]).includes(value));
 }
 
@@ -84,16 +75,6 @@ export function parseResourceProviderSequence(value: unknown): bigint | null {
 	if (typeof value !== 'string' || !/^[1-9]\d{0,18}$/.test(value)) return null;
 	const sequence = BigInt(value);
 	return sequence <= 9_223_372_036_854_775_807n ? sequence : null;
-}
-
-export function resourceIdentityForDetectedPlatform(resourcePlatform: Exclude<ResourcePlatform, null>): ContentResourceIdentity {
-	return DETECTED_PLATFORM_RESOURCE_IDENTITIES[resourcePlatform];
-}
-
-export type ResourceContentSurface = 'app' | 'ai-tools' | 'export';
-
-export function hasResourceContentAccess(input: { surface: ResourceContentSurface; scope: string; viewerHasOwnership: boolean }): boolean {
-	return (input.scope === 'corpus' && input.surface === 'app') || input.viewerHasOwnership;
 }
 
 export const DEFAULT_RESOURCE_LANG = 'en';
@@ -126,28 +107,9 @@ export function canonicalizeOptionalResourceLang(value: unknown): string | null 
 	}
 }
 
-export function selectPreferredResourceTranslation<T extends { lang: string }>(
-	translations: readonly T[],
-	requestedLocale: string | null | undefined,
-	originalLang: string | null | undefined,
-): T | null {
-	const byLocale = new Map<string, T>();
-	for (const translation of translations) {
-		const locale = canonicalizeOptionalResourceLang(translation.lang);
-		if (locale && !byLocale.has(locale)) byLocale.set(locale, translation);
-	}
-	const requested = canonicalizeOptionalResourceLang(requestedLocale);
-	const original = canonicalizeOptionalResourceLang(originalLang);
-	return (requested ? byLocale.get(requested) : null) ?? (original ? byLocale.get(original) : null) ?? null;
-}
-
 export const RESOURCE_CATEGORIES = ['AI', 'Tech', 'Finance', 'Research', 'Business', 'Other'] as const;
 
 export type ResourceCategory = (typeof RESOURCE_CATEGORIES)[number];
-
-export const RESOURCE_TRANSLATION_SOURCES = ['original', 'machine', 'human'] as const;
-
-export type ResourceTranslationSource = (typeof RESOURCE_TRANSLATION_SOURCES)[number];
 
 const RESOURCE_CREATOR_ROLES = ['author', 'editor', 'submitter', 'channel'] as const;
 const optionalHttpUrl = z.url().refine((value) => parseExternalHttpUrl(value) !== null);
@@ -168,15 +130,6 @@ export type ResourceCreator = Readonly<z.infer<typeof ResourceCreatorSchema>>;
 
 export function resourceCreatorName(creator: ResourceCreator | undefined): string | null {
 	return creator?.literal ?? ([creator?.given, creator?.family].filter(Boolean).join(' ') || null);
-}
-
-export function literalCreator(
-	role: ResourceCreator['role'],
-	literal: string | null | undefined,
-	extra: Omit<ResourceCreator, 'literal' | 'role'> = {},
-): ResourceCreator[] {
-	const name = literal?.trim();
-	return name ? [{ role, literal: name, ...extra }] : [];
 }
 
 const ResourceMediaAttachmentSchema = z.object({
@@ -268,10 +221,6 @@ type PlatformResourceIdentifierScheme = Exclude<ResourcePlatform, null>;
 
 export type ResourceIdentifierScheme = PaperIdentifierScheme | PlatformResourceIdentifierScheme;
 
-export function isResourceIdentifierScheme(value: unknown): value is ResourceIdentifierScheme {
-	return isPaperIdentifierScheme(value) || (typeof value === 'string' && (RESOURCE_PLATFORMS as readonly string[]).includes(value));
-}
-
 export type ResourceIdentifier = Readonly<{
 	preferred: boolean;
 	scheme: ResourceIdentifierScheme;
@@ -321,37 +270,6 @@ export function normalizeResourceIdentifiers(
 	});
 }
 
-export type ResolvedResourceSubject = Readonly<{
-	identifiers: ResourceIdentifier[];
-	normalizedUrl: string;
-}>;
-
-type MaterializedResourceFields = {
-	originalLang: string;
-	title: string;
-	summary: string | null;
-	content: string;
-	url: string | null;
-	source: string;
-	publishedDate: string | null;
-	tags: string[];
-	keywords: string[];
-	creators: ResourceCreator[];
-	kindMetadata: ResourceKindMetadata | null;
-	resourceIdentifiers: ResourceIdentifier[];
-	fileType: string | null;
-	normalizedUrl: string | null;
-	previewImageUrl: string | null;
-	subject: ResolvedResourceSubject | null;
-};
-
-export type MaterializedResource = ContentResourceIdentity & MaterializedResourceFields;
-
-export const ENTITY_TYPES = ['person', 'organization', 'product', 'technology', 'event', 'location'] as const;
-export type EntityType = (typeof ENTITY_TYPES)[number];
-
-export type StoredResourceEntity = { k: string; n: string; cn: string | null; t: EntityType };
-
 export interface TranscriptSegment {
 	startTime: number;
 	endTime: number;
@@ -383,59 +301,4 @@ export interface YouTubeTranscript {
 	language: string | null;
 	chapters: YouTubeChapter[];
 	chaptersFromDescription: boolean;
-}
-
-export type YouTubeResourceSpecialization = Readonly<{
-	kind: 'youtube';
-	transcript: YouTubeTranscript | null;
-	highlights: YouTubeHighlights | null;
-}>;
-
-export type ResolvedResource =
-	| (Extract<MaterializedResource, { kind: 'video'; resourcePlatform: 'youtube' }> & {
-			specialization: YouTubeResourceSpecialization;
-	  })
-	| (Exclude<MaterializedResource, { kind: 'video'; resourcePlatform: 'youtube' }> & {
-			specialization: null;
-	  });
-
-type AcquiredMaterialBase<T extends ResourcePlatform> = {
-	resourcePlatform: T;
-	canonicalUrl?: string;
-	fileType: string | null;
-	title: string;
-	markdown: string;
-	previewImageUrl?: string | null;
-	subjectUrl?: string;
-	source: string;
-	originalLang: string | null;
-	publishedDate: string | null;
-	summary: string | null;
-	creators: ResourceCreator[];
-	kindMetadata: ResourceKindMetadata;
-};
-
-type AcquiredMaterialSpecialization<T extends ResourcePlatform> =
-	T extends Exclude<ResourcePlatform, null> ? { platformId: string } : unknown;
-
-export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = T extends unknown
-	? AcquiredMaterialBase<T> & AcquiredMaterialSpecialization<T>
-	: never;
-
-export type AcquiredResource =
-	| (Exclude<AcquiredMaterial, AcquiredMaterial<'youtube'>> & { specialization: null })
-	| (AcquiredMaterial<'youtube'> & { specialization: YouTubeResourceSpecialization });
-
-export interface PaperMetadata {
-	title?: string;
-	authors: string[];
-	abstract?: string;
-	venue?: string;
-	year?: number;
-	publicationDate?: string;
-	citedByCount?: number;
-	referenceCount?: number;
-	pdfUrl?: string;
-	references?: PaperRelationSnapshot;
-	citations?: PaperRelationSnapshot;
 }

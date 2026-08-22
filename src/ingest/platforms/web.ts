@@ -1,11 +1,10 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
-import type { AcquiredMaterial } from '@core-shared/resource';
-import { literalCreator } from '@core-shared/resource';
 import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { extractFromHtml } from '@extractus/article-extractor';
 import { markdownFromHtml } from '../document-conversion';
+import { type AcquiredMaterial, literalCreator } from './materialize';
 import { acquireFetchedPdfResponse, PDF_MIME } from './pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;

@@ -1,19 +1,17 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import type {
-	AcquiredMaterial,
-	ResolvedResource,
-	TranscriptSegment,
-	YouTubeChapter,
-	YouTubeHighlights,
-	YouTubeResourceSpecialization,
-	YouTubeTranscript,
-} from '@core-shared/resource';
-import { literalCreator } from '@core-shared/resource';
+import type { TranscriptSegment, YouTubeChapter, YouTubeHighlights, YouTubeTranscript } from '@core-shared/resource';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { materializePlatformResource, type ResourceAcquisitionOrigin } from './materialize';
+import {
+	type AcquiredMaterial,
+	literalCreator,
+	materializePlatformResource,
+	type ResolvedResource,
+	type ResourceAcquisitionOrigin,
+	type YouTubeResourceSpecialization,
+} from './materialize';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;

@@ -1,11 +1,15 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
-import type { AcquiredResource, ResolvedResource } from '@core-shared/resource';
 import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource';
 import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
-import { materializeAcquiredResource, type ResourceAcquisitionOrigin } from './platforms/materialize';
+import {
+	type AcquiredResource,
+	materializeAcquiredResource,
+	type ResolvedResource,
+	type ResourceAcquisitionOrigin,
+} from './platforms/materialize';
 import { stagePaperProcessing } from './platforms/paper';
 import {
 	type StoredPdfAcquisitionInput,

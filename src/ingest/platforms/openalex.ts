@@ -7,10 +7,25 @@ import {
 	type PaperIdentity,
 	paperIdentityFromIdentifiers,
 } from '@core-shared/paper-identity';
-import type { AcquiredMaterial, PaperMetadata, PaperRelationItem, PaperRelationSnapshot } from '@core-shared/resource';
+import type { PaperRelationItem, PaperRelationSnapshot } from '@core-shared/resource';
 import { z } from 'zod';
 import { markdownFromXml } from '../document-conversion';
+import type { AcquiredMaterial } from './materialize';
 import { acquireFetchedPdfResponse } from './pdf';
+
+export interface PaperMetadata {
+	title?: string;
+	authors: string[];
+	abstract?: string;
+	venue?: string;
+	year?: number;
+	publicationDate?: string;
+	citedByCount?: number;
+	referenceCount?: number;
+	pdfUrl?: string;
+	references?: PaperRelationSnapshot;
+	citations?: PaperRelationSnapshot;
+}
 
 const OPENALEX_BASE = 'https://api.openalex.org';
 const OPENALEX_CONTENT_HOST = 'content.openalex.org';
