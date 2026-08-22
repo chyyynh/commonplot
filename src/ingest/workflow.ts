@@ -142,25 +142,23 @@ type ResourceMaterializationSeed = Pick<
 	'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'summary' | 'tags' | 'url'
 >;
 
-type ResourcePipeline = {
+type ResolvedProcessingCall = {
 	processingId: string;
 	acquiredContent: AcquiredContent;
 	origin: ResourceMaterializationSeed;
-	identity:
-		| { kind: 'discover'; exactPaperUrl: string }
-		| { kind: 'stored'; resourceIdentifiers: ResourceIdentifier[]; resourcePlatform: ResourcePlatform | null };
-	preferAcquiredPublishedDate: boolean;
+	identityUrl: string | null;
+	resourceIdentifiers: ResourceIdentifier[];
+	resourcePlatform: ResourcePlatform | null;
 	translatePaperUrl: boolean;
-	allowOpenAlexContent: boolean;
 	persistenceTarget: PersistProcessedTarget;
 };
 
-async function createResourcePipeline(
+async function resolveProcessingCall(
 	env: CoreEnv,
 	step: WorkflowStep,
 	target: ResourceProcessingWorkflowPayload['target'],
 	instanceId: string,
-): Promise<ResourcePipeline> {
+): Promise<ResolvedProcessingCall> {
 	if (target.kind === 'draft') {
 		return {
 			processingId: instanceId,
@@ -185,10 +183,10 @@ async function createResourcePipeline(
 				keywords: target.sourceHints?.keywords ?? [],
 				normalizedUrl: target.url,
 			},
-			identity: { kind: 'discover', exactPaperUrl: target.url },
-			preferAcquiredPublishedDate: true,
+			identityUrl: target.url,
+			resourceIdentifiers: [],
+			resourcePlatform: null,
 			translatePaperUrl: target.admission.kind !== 'source',
-			allowOpenAlexContent: true,
 			persistenceTarget: {
 				kind: 'draft',
 				admission: target.admission,
@@ -223,14 +221,10 @@ async function createResourcePipeline(
 				),
 			),
 			origin: storedPdf,
-			identity: {
-				kind: 'stored',
-				resourceIdentifiers: storedPdf.resourceIdentifiers,
-				resourcePlatform: storedPdf.resourcePlatform,
-			},
-			preferAcquiredPublishedDate: false,
+			identityUrl: storedPdf.url,
+			resourceIdentifiers: storedPdf.resourceIdentifiers,
+			resourcePlatform: storedPdf.resourcePlatform,
 			translatePaperUrl: false,
-			allowOpenAlexContent: false,
 			persistenceTarget: {
 				kind: 'storedPdf',
 				resourceId: target.resourceId,
@@ -258,14 +252,10 @@ async function createResourcePipeline(
 			sourceUrl,
 		}),
 		origin: snapshot,
-		identity: {
-			kind: 'stored',
-			resourceIdentifiers: snapshot.resourceIdentifiers,
-			resourcePlatform: snapshot.resourcePlatform,
-		},
-		preferAcquiredPublishedDate: false,
+		identityUrl: sourceUrl,
+		resourceIdentifiers: snapshot.resourceIdentifiers,
+		resourcePlatform: snapshot.resourcePlatform,
 		translatePaperUrl: snapshot.translatePaperUrl,
-		allowOpenAlexContent: true,
 		persistenceTarget: {
 			kind: 'existing',
 			resourceId: target.resourceId,
@@ -275,63 +265,57 @@ async function createResourcePipeline(
 	};
 }
 
-function resolvePipelineIdentity(pipeline: ResourcePipeline): {
+function resolveProcessingIdentity(call: ResolvedProcessingCall): {
 	canonicalUrl: string | null;
 	detected: ReturnType<typeof detectResourceUrl>;
 	resourceIdentifiers: ResourceIdentifier[];
 } {
-	const canonicalUrl = pipeline.acquiredContent.canonicalUrl?.trim() || pipeline.origin.url;
-	const exactPaper = resolveExactPaperInput(pipeline.identity.kind === 'discover' ? pipeline.identity.exactPaperUrl : canonicalUrl);
+	const canonicalUrl = call.acquiredContent.canonicalUrl?.trim() || call.origin.url;
+	const exactPaper = resolveExactPaperInput(call.identityUrl ?? canonicalUrl);
 	const detected = exactPaper || !canonicalUrl ? null : detectResourceUrl(canonicalUrl);
-	if (pipeline.identity.kind === 'stored') {
-		return { canonicalUrl, detected, resourceIdentifiers: pipeline.identity.resourceIdentifiers };
-	}
+	const discoveredIdentifiers = exactPaper
+		? paperIdentifiersFromIdentity(exactPaper.identity)
+		: detected
+			? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId } as const]
+			: [];
 	return {
 		canonicalUrl,
 		detected,
-		resourceIdentifiers: normalizeResourceIdentifiers(
-			exactPaper
-				? paperIdentifiersFromIdentity(exactPaper.identity)
-				: detected
-					? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]
-					: [],
-		),
+		resourceIdentifiers: normalizeResourceIdentifiers([...call.resourceIdentifiers, ...discoveredIdentifiers]),
 	};
 }
 
-async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, pipeline: ResourcePipeline): Promise<PreparedResource> {
-	const { acquiredContent: initialAcquiredContent, identity, origin, processingId } = pipeline;
-	const { canonicalUrl, detected, resourceIdentifiers } = resolvePipelineIdentity(pipeline);
+async function prepareResourceForProcessing(env: CoreEnv, step: WorkflowStep, call: ResolvedProcessingCall): Promise<PreparedResource> {
+	const { acquiredContent: initialAcquiredContent, origin, processingId } = call;
+	const { canonicalUrl, detected, resourceIdentifiers } = resolveProcessingIdentity(call);
 	let publishedDate = origin.publishedDate;
-	if ((pipeline.preferAcquiredPublishedDate || publishedDate === null) && initialAcquiredContent.publishedDate?.trim()) {
+	if (initialAcquiredContent.publishedDate?.trim()) {
 		const parsed = new Date(initialAcquiredContent.publishedDate);
 		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
 	}
 	const paperResolution = await stagePaperEnrichment(env, step, {
 		processingId,
 		url: canonicalUrl,
-		resourcePlatform: detected?.resourcePlatform ?? (identity.kind === 'stored' ? identity.resourcePlatform : null),
+		resourcePlatform: detected?.resourcePlatform ?? call.resourcePlatform,
 		identifierText: initialAcquiredContent.fileType === PDF_MIME ? initialAcquiredContent.markdown : null,
 		identifiers: resourceIdentifiers.filter(isPaperIdentifier),
-		translateUrl: pipeline.translatePaperUrl,
+		translateUrl: call.translatePaperUrl,
 	});
 	let acquiredContent = initialAcquiredContent;
-	if (pipeline.allowOpenAlexContent) {
-		const openAlexContent = await stageOpenAlexContentAcquisition(
-			env,
-			step,
-			{
-				processingId,
-				publishedDate,
-				source: acquiredContent.source,
-				summary: acquiredContent.summary ?? origin.summary,
-				title: acquiredContent.title,
-				url: canonicalUrl,
-			},
-			paperResolution,
-		);
-		if (openAlexContent) acquiredContent = openAlexContent;
-	}
+	const openAlexContent = await stageOpenAlexContentAcquisition(
+		env,
+		step,
+		{
+			processingId,
+			publishedDate,
+			source: acquiredContent.source,
+			summary: acquiredContent.summary ?? origin.summary,
+			title: acquiredContent.title,
+			url: canonicalUrl,
+		},
+		paperResolution,
+	);
+	if (openAlexContent) acquiredContent = openAlexContent;
 	const paperEnrichment = paperResolution.metadata;
 	let resource = materializeAcquiredResource(acquiredContent, origin, {
 		canonicalUrl,
@@ -367,8 +351,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const { target } = parseResourceProcessingWorkflowPayload(event.payload);
 		const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
 		try {
-			const pipeline = await createResourcePipeline(this.env, step, target, event.instanceId);
-			const prepared = await prepareResourceForProcessing(this.env, step, pipeline);
+			const call = await resolveProcessingCall(this.env, step, target, event.instanceId);
+			const prepared = await prepareResourceForProcessing(this.env, step, call);
 			const { previewImageUrl, resource, subject, youtube } = prepared;
 
 			console.info({
@@ -403,7 +387,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				() =>
 					persistProcessedResource(
 						this.env,
-						{ classification, processingId, previewImageUrl, resource, subject, target: pipeline.persistenceTarget, youtube },
+						{ classification, processingId, previewImageUrl, resource, subject, target: call.persistenceTarget, youtube },
 						hostedImages,
 					),
 			);
