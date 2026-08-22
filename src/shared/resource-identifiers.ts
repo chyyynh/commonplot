@@ -1,16 +1,12 @@
 import { isPaperIdentifierScheme, normalizePaperIdentifiers, type PaperIdentifier, type PaperIdentifierScheme } from './paper-identity.ts';
+import { RESOURCE_PLATFORMS, type ResourcePlatform } from './resource-types.ts';
 
-const PLATFORM_RESOURCE_IDENTIFIER_SCHEMES = ['hackernews', 'lesswrong', 'twitter', 'youtube'] as const;
-
-export type PlatformResourceIdentifierScheme = (typeof PLATFORM_RESOURCE_IDENTIFIER_SCHEMES)[number];
+type PlatformResourceIdentifierScheme = Exclude<ResourcePlatform, null>;
 
 export type ResourceIdentifierScheme = PaperIdentifierScheme | PlatformResourceIdentifierScheme;
 
 export function isResourceIdentifierScheme(value: unknown): value is ResourceIdentifierScheme {
-	return (
-		isPaperIdentifierScheme(value) ||
-		(typeof value === 'string' && (PLATFORM_RESOURCE_IDENTIFIER_SCHEMES as readonly string[]).includes(value))
-	);
+	return isPaperIdentifierScheme(value) || (typeof value === 'string' && (RESOURCE_PLATFORMS as readonly string[]).includes(value));
 }
 
 export type ResourceIdentifier = Readonly<{

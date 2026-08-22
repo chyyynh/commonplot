@@ -26,17 +26,8 @@ async function processFeed(env: CoreEnv, db: CoreDb, feed: MonitoredSource): Pro
 	const outcomes = await admitDiscoveredSourceResources(env, drafts);
 	let created = 0;
 	let existing = 0;
-	for (const [index, outcome] of outcomes.entries()) {
-		if (outcome.status === 'rejected') {
-			console.error({
-				tag: 'RSS',
-				msg: 'Resource discovery admission failed',
-				url: drafts[index]?.url,
-				error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
-			});
-			continue;
-		}
-		if (outcome.value === 'created') created++;
+	for (const outcome of outcomes) {
+		if (outcome === 'created') created++;
 		else existing++;
 	}
 	console.info({

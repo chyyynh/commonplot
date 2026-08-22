@@ -9,6 +9,7 @@ import {
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { sql } from 'drizzle-orm';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
+import { enqueueOrRestartWorkflow } from '../workflow-control';
 import {
 	CONTENT_TRANSLATION_MAX_LENGTH,
 	generateZhHantMetadataTranslation,
@@ -118,22 +119,15 @@ async function loadResourceTranslationInput(
 	};
 }
 
-function workflowId(resourceId: string, translationRevision: string): string {
-	return `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
-}
-
 // One stable instance per translation revision dedupes completed translations while
 // allowing a failed attempt to be retried. A changed original gets a new ID.
 export async function enqueueResourceTranslation(env: CoreEnv, resourceId: string, translationRevision: string): Promise<string> {
 	if (!isResourceTranslationRevision(translationRevision)) throw new Error('Invalid resource translation revision');
-	const id = workflowId(resourceId, translationRevision);
-	const [created] = await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([{ id, params: { resourceId, translationRevision } }]);
-	if (created) return created.id;
-	const instance = await env.RESOURCE_TRANSLATION_V2_WORKFLOW.get(id);
-	const { status } = await instance.status();
-	if (status === 'errored') await instance.restart();
-	if (status === 'unknown') throw new Error(`Resource translation Workflow ${id} has unknown status`);
-	return id;
+	return enqueueOrRestartWorkflow(
+		env.RESOURCE_TRANSLATION_V2_WORKFLOW,
+		`rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`,
+		{ resourceId, translationRevision },
+	);
 }
 
 export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceTranslationPayload> {

@@ -114,7 +114,7 @@ const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v9';
 const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v4';
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
 const PENDING_BLOB_RECONCILE_CONCURRENCY = 10;
-const DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY = 5;
+const WORKFLOW_CREATE_BATCH_SIZE = 100;
 
 export async function enqueueProcessing(env: CoreEnv, resourceId: string): Promise<string> {
 	const id = z.uuid().parse(resourceId);
@@ -185,26 +185,22 @@ export async function enqueueSubjectDraft(
 	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `subject-draft-v3-${identity}`, { target });
 }
 
-async function admitDiscoveredSourceResource(env: CoreEnv, draft: SourceResourceDraft): Promise<SourceResourceAdmissionOutcome> {
-	const target = sourceDraftTarget(draft);
-	const identity = await sha256Hex(JSON.stringify(target));
-	const [created] = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
-		{ id: `${SOURCE_DRAFT_WORKFLOW_REVISION}-${identity}`, params: { target } },
-	]);
-	return created ? 'created' : 'existing';
-}
-
 export async function admitDiscoveredSourceResources(
 	env: CoreEnv,
 	drafts: SourceResourceDraft[],
-): Promise<Array<PromiseSettledResult<SourceResourceAdmissionOutcome>>> {
-	if (!drafts.length) return [];
-	const outcomes: Array<PromiseSettledResult<SourceResourceAdmissionOutcome>> = [];
-	for (let offset = 0; offset < drafts.length; offset += DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY) {
-		const batch = drafts.slice(offset, offset + DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY);
-		outcomes.push(...(await Promise.allSettled(batch.map((draft) => admitDiscoveredSourceResource(env, draft)))));
+): Promise<SourceResourceAdmissionOutcome[]> {
+	const instances = await Promise.all(
+		drafts.map(async (draft) => {
+			const target = sourceDraftTarget(draft);
+			return { id: `${SOURCE_DRAFT_WORKFLOW_REVISION}-${await sha256Hex(JSON.stringify(target))}`, params: { target } };
+		}),
+	);
+	const createdIds = new Set<string>();
+	for (let offset = 0; offset < instances.length; offset += WORKFLOW_CREATE_BATCH_SIZE) {
+		const created = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(instances.slice(offset, offset + WORKFLOW_CREATE_BATCH_SIZE));
+		for (const instance of created) createdIds.add(instance.id);
 	}
-	return outcomes;
+	return instances.map(({ id }) => (createdIds.has(id) ? 'created' : 'existing'));
 }
 
 async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limit: number): Promise<Array<{ resourceId: string }>> {

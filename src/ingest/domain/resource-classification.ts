@@ -6,8 +6,8 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 
 export interface ResourceClassificationResult {
-	tags?: string[];
-	keywords?: string[];
+	tags: string[];
+	keywords: string[];
 	entities: ResourceEntityInput[];
 	category: ResourceCategory;
 }
@@ -100,7 +100,7 @@ export async function classifyResource(
 	return {
 		category: classification.category,
 		entities: classification.entities.slice(0, 10),
-		...(!resource.tags.length ? { tags: [...new Set([...tags, classification.category])] } : {}),
-		...(!resource.keywords.length && keywords.length ? { keywords } : {}),
+		tags: resource.tags.length ? resource.tags : [...new Set([...tags, classification.category])],
+		keywords: resource.keywords.length ? resource.keywords : keywords,
 	};
 }

@@ -6,7 +6,6 @@ import type {
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
 import { isPaperIdentifier } from '@core-shared/resource-identifiers';
 import { type HostedResourceImage, hostedResourceImageFields } from '@core-shared/resource-image-mapping';
-import { parseResourceIdentity } from '@core-shared/resource-types';
 import type { ResolvedResource } from '@core-shared/types';
 import type { CoreDb } from '@db/connection';
 import { toStoredResourceEntities } from '@entities/normalize';
@@ -84,8 +83,6 @@ function resolvedResourceMutation(
 	hostedImages: readonly HostedResourceImage[],
 ): Omit<PersistResolvedResourceInput, 'target'> {
 	const resource = input.resource;
-	const identity = parseResourceIdentity(resource.kind, resource.resourcePlatform);
-	if (!identity) throw new Error(`Resource processing ${input.processingId} resolved to an invalid identity`);
 	const ogImageUrl = resource.previewImageUrl;
 	const media = hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kindMetadata, ogImageUrl }, hostedImages);
 	const youtube =
@@ -93,7 +90,7 @@ function resolvedResourceMutation(
 			? { transcript: resource.specialization.transcript, highlights: resource.specialization.highlights }
 			: null;
 	return {
-		identity,
+		identity: resource,
 		identifiers: resource.resourceIdentifiers,
 		creators: media.creators,
 		kindMetadata: media.kindMetadata,
@@ -102,8 +99,8 @@ function resolvedResourceMutation(
 		title: resource.title,
 		summary: resource.summary,
 		content: resource.content,
-		keywords: input.classification.keywords ?? resource.keywords,
-		tags: input.classification.tags ?? resource.tags,
+		keywords: input.classification.keywords,
+		tags: input.classification.tags,
 		category: input.classification.category,
 		entities: toStoredResourceEntities(input.classification.entities, resource.resourcePlatform, resource.source, resource.creators),
 		subjectReference: resource.subject

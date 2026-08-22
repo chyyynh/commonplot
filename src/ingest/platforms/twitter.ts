@@ -280,25 +280,14 @@ async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource
 
 	for (const [index, outcome] of outcomes.entries()) {
 		const draft = pending[index]!;
-		if (outcome.status === 'fulfilled') {
-			counts[outcome.value]++;
-			console.info({
-				tag: 'TWITTER',
-				event: 'twitter_resource_admitted',
-				admission: outcome.value,
-				userName: source.handle,
-				url: draft.url,
-				providerSequence: draft.providerSequence,
-			});
-			continue;
-		}
-		errors.push(outcome.reason);
-		console.error({
+		counts[outcome]++;
+		console.info({
 			tag: 'TWITTER',
-			msg: 'Tweet save failed',
+			event: 'twitter_resource_admitted',
+			admission: outcome,
 			userName: source.handle,
 			url: draft.url,
-			error: outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason),
+			providerSequence: draft.providerSequence,
 		});
 	}
 	return { admittedDrafts: pending.length, counts, errors };
