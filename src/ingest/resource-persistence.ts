@@ -16,12 +16,13 @@ import type { ResolvedSubjectInput } from './resource-resolver';
 
 type PersistProcessedInput = {
 	classification: ResourceClassificationResult;
+	processingId: string;
 	previewImageUrl: string | null;
 	resource: ResolvedResource;
 	subject: ResolvedSubjectInput | null;
 	target:
 		| { kind: 'draft'; admission: ResourceDraftAdmission; providerSequence: string | null }
-		| { kind: 'existing'; resourceId: string; expectedSourceRevision: string | null }
+		| { kind: 'existing'; resourceId: string; expectedSourceRevision: string | null; storageKey: string | null }
 		| { kind: 'privatePaper'; canonicalUrl: string; fileResourceId: string; expectedFileRevision: string | null };
 	youtube: YouTubeSpecializationMutation | null;
 };
@@ -114,7 +115,7 @@ function resolvedResourceMutation(
 ): Omit<PersistResolvedResourceGraphInput, 'resourceId' | 'expectedSourceRevision'> {
 	const resource = input.resource;
 	const identity = parseResourceIdentity(resource.kind, resource.resourcePlatform);
-	if (!identity) throw new Error(`Resource processing ${resource.processingId} resolved to an invalid identity`);
+	if (!identity) throw new Error(`Resource processing ${input.processingId} resolved to an invalid identity`);
 	const ogImageUrl = input.previewImageUrl?.trim() || null;
 	const media = hostedResourceImageFields({ creators: resource.creators, kindMetadata: resource.kindMetadata, ogImageUrl }, hostedImages);
 	return {
@@ -140,7 +141,7 @@ function resolvedResourceMutation(
 			: null,
 		url: resource.url,
 		normalizedUrl: resource.normalizedUrl ?? resource.url,
-		storageKey: resource.scope === 'private' ? (resource.storageKey ?? null) : null,
+		storageKey: input.target.kind === 'existing' ? input.target.storageKey : null,
 		fileType: resource.fileType ?? null,
 		publishedDate: resource.publishedDate,
 		ogImageUrl: media.ogImageUrl,

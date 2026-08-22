@@ -232,9 +232,14 @@ function withoutPreviousDiscussion(content: string): string {
 	return content.split(`\n\n---\n\n${HN_DISCUSSION_HEADING}`, 1)[0].trim();
 }
 
-async function buildHackerNewsAnnotation(resource: ResolvedResource, env: CoreEnv, item: HackerNewsItem): Promise<string> {
+async function buildHackerNewsAnnotation(
+	resource: ResolvedResource,
+	env: CoreEnv,
+	item: HackerNewsItem,
+	processingId: string,
+): Promise<string> {
 	const comments = item.children?.length ? collectAllComments(item.children) : [];
-	const digest = await generateHnDiscussionDigest(env, resource.processingId, resource.title, item.text ?? null, comments);
+	const digest = await generateHnDiscussionDigest(env, processingId, resource.title, item.text ?? null, comments);
 	// Count nodes, not text-bearing comments, so this matches Forum kind metadata.
 	const commentCount = countHnComments(item.children);
 	const stats = [item.points !== undefined ? `${item.points} points` : null, commentCount > 0 ? `${commentCount} comments` : null]
@@ -254,18 +259,19 @@ export async function stageHackerNewsAnnotation(
 	step: WorkflowStep,
 	resource: ResolvedResource,
 	acquiredItem: HackerNewsItem,
+	processingId: string,
 ): Promise<ResolvedResource> {
 	const annotation = await step
 		.do(
 			'build-hacker-news-annotation-v1',
 			{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
-			() => buildHackerNewsAnnotation(resource, env, acquiredItem),
+			() => buildHackerNewsAnnotation(resource, env, acquiredItem, processingId),
 		)
 		.catch((error) => {
 			console.error({
 				tag: 'HN',
 				msg: 'Optional Hacker News discussion annotation failed after retries',
-				processing_id: resource.processingId,
+				processing_id: processingId,
 				error: error instanceof Error ? error.message : String(error),
 			});
 			return null;

@@ -10,14 +10,17 @@ import {
 } from '@core-shared/paper-identity';
 import { isPaperIdentifier } from '@core-shared/resource-identifiers';
 import { literalCreator, type PaperKindMetadata } from '@core-shared/resource-metadata';
-import type { PaperMetadata, ResolvedResource, ResourceForProcessing } from '@core-shared/types';
+import type { PaperMetadata, ResolvedResource } from '@core-shared/types';
 import { resolveBibliographicIdentifiers } from './bibliographic-resolver';
 import { resolveOpenAlexPaper } from './openalex';
 
 const DEFAULT_RATE_LIMIT_DELAY_SECONDS = 15;
 const MAX_RATE_LIMIT_DELAY_SECONDS = 5 * 60;
 const IDENTIFIER_SCAN_CHARS = 3_000;
-type PaperEnrichmentCandidate = Pick<ResourceForProcessing, 'processingId' | 'url' | 'scope' | 'sourceId' | 'resourcePlatform'> & {
+type PaperEnrichmentCandidate = {
+	processingId: string;
+	url: string | null;
+	resourcePlatform: ResolvedResource['resourcePlatform'];
 	identifierText?: string | null;
 	identifiers?: readonly PaperIdentifier[];
 	translateUrl?: boolean;
@@ -71,13 +74,6 @@ function localPaperEvidence(candidate: PaperEnrichmentCandidate): boolean {
 	);
 }
 
-function shouldTranslateSavedUrl(candidate: PaperEnrichmentCandidate): boolean {
-	return (
-		candidate.translateUrl === true ||
-		(candidate.scope === 'corpus' && candidate.sourceId == null && candidate.resourcePlatform == null && !!candidate.url?.trim())
-	);
-}
-
 function paperEnrichmentRetryDelay({ ctx, error }: WorkflowDynamicDelayContext): WorkflowSleepDuration {
 	const requestedDelay = error.message.match(/retry_after_seconds=(\d+)/)?.[1];
 	if (requestedDelay) {
@@ -96,7 +92,7 @@ export async function stagePaperEnrichment(
 	candidate: PaperEnrichmentCandidate,
 ): Promise<PaperEnrichmentResolution> {
 	const hasLocalPaperEvidence = localPaperEvidence(candidate);
-	const translateSavedUrl = !hasLocalPaperEvidence && shouldTranslateSavedUrl(candidate);
+	const translateSavedUrl = !hasLocalPaperEvidence && candidate.translateUrl === true;
 	if (!hasLocalPaperEvidence && !translateSavedUrl) {
 		return { contentGrobidXmlUrl: null, contentPdfUrl: null, identifiers: [], metadata: null };
 	}
@@ -158,9 +154,8 @@ export async function stagePaperEnrichment(
 	}
 }
 
-export function privatePaperAttachment(resource: ResourceForProcessing): { canonicalUrl: string } | null {
-	if (resource.scope !== 'private' || !resource.storageKey) return null;
+export function canonicalPrivatePaperUrl(resource: ResolvedResource, processingId: string): string {
 	const identity = paperIdentityFromIdentifiers(resource.resourceIdentifiers.filter(isPaperIdentifier));
-	if (!identity) throw new Error(`Private paper processing ${resource.processingId} has no canonical identity`);
-	return { canonicalUrl: canonicalPaperUrl(identity) };
+	if (!identity) throw new Error(`Private paper processing ${processingId} has no canonical identity`);
+	return canonicalPaperUrl(identity);
 }

@@ -1,6 +1,6 @@
-import type { ResourceForProcessing } from '@core-shared/types';
 import { initSync, LiteParse } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
+import type { StoredPdfInput } from '../stored-resource';
 import type { AcquiredWebContent } from '../web-acquisition';
 
 export const PDF_MIME = 'application/pdf';
@@ -34,12 +34,10 @@ export async function parsePdfBytes(bytes: Uint8Array): Promise<PdfTextArtifact>
 	return { text, pages, chars, status };
 }
 
-export async function acquireStoredPdf(env: CoreEnv, resource: ResourceForProcessing): Promise<AcquiredWebContent> {
-	if (resource.fileType !== PDF_MIME || !resource.storageKey) {
-		throw new Error(`Stored resource ${resource.processingId} is not an R2 PDF`);
+export async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise<AcquiredWebContent> {
+	if (resource.fileType !== PDF_MIME) {
+		throw new Error(`Stored resource ${resource.resourceId} is not an R2 PDF`);
 	}
-	const source = resource.source?.trim();
-	if (!source) throw new Error(`Stored PDF ${resource.processingId} has no source`);
 	const obj = await env.R2.get(resource.storageKey);
 	if (!obj) throw new Error(`PDF source object missing: ${resource.storageKey}`);
 	if (obj.size > MAX_PDF_BYTES) throw new Error(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
@@ -49,7 +47,7 @@ export async function acquireStoredPdf(env: CoreEnv, resource: ResourceForProces
 		fileType: PDF_MIME,
 		title: resource.title,
 		markdown: parsed.text,
-		source,
+		source: resource.source,
 		originalLang: resource.originalLang,
 		publishedDate: resource.publishedDate,
 		summary: resource.summary,

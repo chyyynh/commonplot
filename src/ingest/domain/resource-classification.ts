@@ -66,7 +66,11 @@ function resourceClassificationPrompt(resource: ResolvedResource): string {
 ${content.substring(0, CLASSIFICATION_CONTENT_MAX_LENGTH)}`;
 }
 
-export async function classifyResource(resource: ResolvedResource, env: CoreEnv): Promise<ResourceClassificationResult> {
+export async function classifyResource(
+	resource: ResolvedResource,
+	env: CoreEnv,
+	processingId: string,
+): Promise<ResourceClassificationResult> {
 	console.info({ tag: 'AI', msg: 'Analyzing', title: resource.title.substring(0, 80) });
 
 	const { finishReason, output: classification } = await generateText({
@@ -78,7 +82,7 @@ export async function classifyResource(resource: ResolvedResource, env: CoreEnv)
 				metadata: {
 					feature: 'resource-classification',
 					environment: env.AI_GATEWAY_ENVIRONMENT,
-					processing_id: resource.processingId,
+					processing_id: processingId,
 				},
 			},
 			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },

@@ -1,32 +1,24 @@
-import type { ContentResourceIdentity, ResourcePlatform, ResourceScope } from '@core-shared/resource-types';
+import type { ContentResourceIdentity, ResourcePlatform } from '@core-shared/resource-types';
 import type { ResourceIdentifier } from './resource-identifiers';
 import type { PaperRelationSnapshot, ResourceCreator, ResourceKindMetadata } from './resource-metadata';
 
-type ResourceForProcessingBase = {
-	/** Workflow/log correlation identity; not necessarily a persisted Resource ID. */
-	processingId: string;
-	sourceId: string | null;
-	scope: ResourceScope;
+export type ResolvedResource = ContentResourceIdentity & {
 	originalLang: string;
 	title: string;
 	summary: string | null;
-	content: string | null;
+	content: string;
 	url: string | null;
-	source: string | null;
+	source: string;
 	publishedDate: string | null;
 	tags: string[];
 	keywords: string[];
 	creators: ResourceCreator[];
 	kindMetadata: ResourceKindMetadata | null;
-	sourceRevision: string | null;
+	sourceRevision: string;
 	resourceIdentifiers: ResourceIdentifier[];
-	storageKey: string | null;
 	fileType: string | null;
 	normalizedUrl: string | null;
 };
-
-export type ResourceForProcessing = ResourceForProcessingBase & ContentResourceIdentity;
-export type ResolvedResource = ResourceForProcessing & { content: string; source: string; sourceRevision: string };
 
 export const ENTITY_TYPES = ['person', 'organization', 'product', 'technology', 'event', 'location'] as const;
 export type EntityType = (typeof ENTITY_TYPES)[number];

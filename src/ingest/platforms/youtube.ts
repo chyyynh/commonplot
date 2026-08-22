@@ -38,21 +38,22 @@ export async function stageYouTubeEnrichment(
 	step: WorkflowStep,
 	resource: ResolvedResource,
 	transcript: YoutubeTranscript,
+	processingId: string,
 ): Promise<YouTubeSpecializationMutation> {
 	const videoId = resource.resourceIdentifiers.find((identifier) => identifier.scheme === 'youtube')?.value;
-	if (!videoId) throw new Error(`YouTube processing ${resource.processingId} has no exact video identifier`);
+	if (!videoId) throw new Error(`YouTube processing ${processingId} has no exact video identifier`);
 	const highlights = transcript.segments.length
 		? await step
 				.do(
 					'prepare-youtube-highlights-v2',
 					{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
-					() => prepareYouTubeHighlightsFromTranscript(env, resource.processingId, videoId, transcript.segments),
+					() => prepareYouTubeHighlightsFromTranscript(env, processingId, videoId, transcript.segments),
 				)
 				.catch((error) => {
 					console.error({
 						tag: 'YOUTUBE',
 						msg: 'Optional YouTube highlights failed after retries',
-						processing_id: resource.processingId,
+						processing_id: processingId,
 						error: error instanceof Error ? error.message : String(error),
 					});
 					return null;

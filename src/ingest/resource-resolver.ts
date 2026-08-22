@@ -11,7 +11,7 @@ import {
 	canonicalizeResourceLang,
 	resourceIdentityForDetectedPlatform,
 } from '../shared/resource-types.ts';
-import type { AcquiredMaterial, ResolvedResource, ResourceForProcessing } from '../shared/types.ts';
+import type { AcquiredMaterial, ResolvedResource } from '../shared/types.ts';
 import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../shared/url.ts';
 
 type ExactPlatformLocator = Readonly<{
@@ -35,20 +35,7 @@ export function exactPlatformLocator(identifiers: readonly ResourceIdentifier[])
 
 export function materializeAcquiredResource(
 	acquired: AcquiredMaterial & { sourceSnapshotHash: string },
-	origin: Pick<
-		ResourceForProcessing,
-		| 'keywords'
-		| 'normalizedUrl'
-		| 'originalLang'
-		| 'processingId'
-		| 'publishedDate'
-		| 'scope'
-		| 'sourceId'
-		| 'storageKey'
-		| 'summary'
-		| 'tags'
-		| 'url'
-	>,
+	origin: Pick<ResolvedResource, 'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'summary' | 'tags' | 'url'>,
 	resolution: {
 		canonicalUrl: string | null;
 		detected: ReturnType<typeof detectResourceUrl>;
@@ -74,9 +61,6 @@ export function materializeAcquiredResource(
 		: resolution.canonicalUrl;
 	return {
 		...identity,
-		processingId: origin.processingId,
-		sourceId: origin.sourceId,
-		scope: origin.scope,
 		originalLang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeResourceLang(origin.originalLang),
 		title: acquired.title.trim(),
 		summary: acquired.summary ?? origin.summary,
@@ -90,7 +74,6 @@ export function materializeAcquiredResource(
 		kindMetadata: acquired.kindMetadata,
 		sourceRevision: acquired.sourceSnapshotHash,
 		resourceIdentifiers: identifiers,
-		storageKey: origin.scope === 'private' ? origin.storageKey : null,
 		fileType: acquired.fileType,
 		normalizedUrl: url ?? origin.normalizedUrl,
 	};
