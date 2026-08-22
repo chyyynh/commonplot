@@ -3,11 +3,9 @@ import {
 	RESOURCE_PLATFORM_DISPLAY_LABELS,
 	type ResourceIdentityFilters,
 	type ResourcePlatform,
-	TRANSLATABLE_RESOURCE_KINDS,
 } from '@core-shared/resource-types';
 import { type SQL, sql } from 'drizzle-orm';
 import { textArraySql } from './client';
-import { resources } from './schema';
 
 type ResourceIdentitySqlFields = {
 	kind: SQL;
@@ -21,16 +19,6 @@ export function contentResourceIdentitySql(fields: ResourceIdentitySqlFields): S
 		OR (${fields.kind} = 'post' AND ${fields.resourcePlatform} = 'twitter')
 		OR (${fields.kind} = 'video' AND ${fields.resourcePlatform} = 'youtube')
 		OR (${fields.kind} = 'paper' AND ${fields.resourcePlatform} IS NULL)
-	)`;
-}
-
-export function resourceTranslationIdentityPredicate(): SQL {
-	return sql`(
-		${resources.kind} = ANY(${textArraySql(TRANSLATABLE_RESOURCE_KINDS)})
-		AND (
-			${resources.fileType} IS DISTINCT FROM 'application/pdf'
-			OR ${resources.resourcePlatform} IS NOT NULL
-		)
 	)`;
 }
 

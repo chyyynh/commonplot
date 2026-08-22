@@ -1,6 +1,5 @@
-import { type CoreDb, withCoreDb } from '@db/client';
-import { sources } from '@db/schema';
-import { and, eq, inArray, isNull, lte, or, sql } from 'drizzle-orm';
+import { uuidArraySql, withCoreDb } from '@db/client';
+import { sql } from 'drizzle-orm';
 
 export type MonitoredSource = {
 	id: string;
@@ -17,31 +16,26 @@ export type MonitoredSource = {
  * monitor. YouTube's slower cadence is intrinsic provider policy, not row data.
  */
 export async function loadMonitoredSources(env: CoreEnv, monitor: 'feed' | 'twitter'): Promise<MonitoredSource[]> {
-	return withCoreDb(env, async (db: CoreDb) =>
-		db
-			.select({
-				id: sources.id,
-				name: sources.name,
-				handle: sources.handle,
-				avatarUrl: sources.avatarUrl,
-				scrapedAt: sources.scrapedAt,
-				createdAt: sources.createdAt,
-			})
-			.from(sources)
-			.where(
-				and(
-					eq(sources.monitoringEnabled, true),
-					monitor === 'twitter' ? eq(sources.platform, 'twitter') : inArray(sources.platform, ['rss', 'lesswrong', 'youtube']),
-					monitor === 'twitter'
-						? undefined
-						: sql`(
-							${sources.platform} <> 'youtube'
-							OR ${sources.scrapedAt} IS NULL
-							OR ${sources.scrapedAt} < NOW() - INTERVAL '30 minutes'
-						)`,
-				),
-			),
-	);
+	return withCoreDb(env, async (db) => {
+		const platformFilter =
+			monitor === 'twitter'
+				? sql`platform = 'twitter'`
+				: sql`platform IN ('rss', 'lesswrong', 'youtube')
+					AND (platform <> 'youtube' OR scraped_at IS NULL OR scraped_at < NOW() - INTERVAL '30 minutes')`;
+		const result = await db.execute<MonitoredSource>(sql`
+			SELECT
+				id::text AS id,
+				name,
+				handle,
+				avatar_url AS "avatarUrl",
+				scraped_at AS "scrapedAt",
+				created_at AS "createdAt"
+			FROM sources
+			WHERE enabled = true
+			  AND ${platformFilter}
+		`);
+		return result.rows;
+	});
 }
 
 export async function markSourcesScraped(env: CoreEnv, sourceIds: string[], scrapedAt: Date = new Date()): Promise<number> {
@@ -51,12 +45,17 @@ export async function markSourcesScraped(env: CoreEnv, sourceIds: string[], scra
 		// Success also settles the #237 lifecycle: pending/failed rows become
 		// active and the scrape_state failure counters reset. The predicate keeps
 		// overlapping cron invocations from regressing a newer watermark.
-		const updated = await db
-			.update(sources)
-			.set({ scrapedAt, updatedAt: new Date(), status: 'active', scrapeState: null })
-			.where(and(inArray(sources.id, sourceIds), or(isNull(sources.scrapedAt), lte(sources.scrapedAt, scrapedAt))))
-			.returning({ id: sources.id });
-		return updated.length;
+		const updated = await db.execute(sql`
+			UPDATE sources
+			SET scraped_at = ${scrapedAt},
+			    updated_at = NOW(),
+			    status = 'active',
+			    scrape_state = NULL
+			WHERE id = ANY(${uuidArraySql(sourceIds)})
+			  AND (scraped_at IS NULL OR scraped_at <= ${scrapedAt})
+			RETURNING id
+		`);
+		return updated.rows.length;
 	});
 }
 

@@ -21,8 +21,7 @@ import {
 import type { ResourceForProcessing } from '@core-shared/types';
 import { type CoreDb, withCoreDb } from '@db/client';
 import { resourceDisplaySourceSql } from '@db/resource-identity-sql';
-import { resources } from '@db/schema';
-import { eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { cleanString, dateValue, requiredString } from './resource-values';
 
 export type StoredResourceProcessingInput = {
@@ -83,21 +82,15 @@ export async function loadStoredResourceForProcessing(env: CoreEnv, resourceId: 
 
 export async function assertResourceProcessable(env: CoreEnv, resourceId: string): Promise<void> {
 	await withCoreDb(env, async (db) => {
-		const row = (
-			await db
-				.select({
-					kind: resources.kind,
-					resourcePlatform: resources.resourcePlatform,
-				})
-				.from(resources)
-				.where(eq(resources.id, resourceId))
-				.limit(1)
-		)[0];
+		const result = await db.execute<StoredResourceIdentityRow>(sql`
+			SELECT kind, resource_platform
+			FROM resources
+			WHERE id = ${resourceId}::uuid
+			LIMIT 1
+		`);
+		const row = result.rows[0];
 		if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
-		const identity = storedResourceIdentity({
-			kind: row.kind,
-			resource_platform: row.resourcePlatform,
-		});
+		const identity = storedResourceIdentity(row);
 		if (!isContentResourceKind(identity.kind)) {
 			throw new Error(`Resource kind is not processable by core: ${identity.kind}`);
 		}
@@ -107,23 +100,23 @@ export async function assertResourceProcessable(env: CoreEnv, resourceId: string
 async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<ResourceStoreRow> {
 	const result = await db.execute<ResourceStoreRow>(sql`
 		SELECT
-			rl.id::text AS id,
-			rl.source_id::text AS source_id,
-			rl.kind AS kind,
-			rl.resource_platform AS resource_platform,
-			rl.title AS title,
-			rl.summary AS summary,
-			rl.scope = 'corpus'
-				AND rl.source_id IS NOT NULL
-				AND NOT EXISTS (SELECT 1 FROM resource_saves save WHERE save.resource_id = rl.id)
-				AND NOT EXISTS (SELECT 1 FROM collection_resources edge WHERE edge.resource_id = rl.id)
-				AND NOT EXISTS (SELECT 1 FROM workspace_resources edge WHERE edge.resource_id = rl.id)
+			resource.id::text AS id,
+			resource.source_id::text AS source_id,
+			resource.kind,
+			resource.resource_platform,
+			original.title,
+			original.summary,
+			resource.scope = 'corpus'
+				AND resource.source_id IS NOT NULL
+				AND NOT EXISTS (SELECT 1 FROM resource_saves save WHERE save.resource_id = resource.id)
+				AND NOT EXISTS (SELECT 1 FROM collection_resources edge WHERE edge.resource_id = resource.id)
+				AND NOT EXISTS (SELECT 1 FROM workspace_resources edge WHERE edge.resource_id = resource.id)
 				AND NOT EXISTS (
 					SELECT 1 FROM user_files file
-					WHERE file.resource_id = rl.id OR file.canonical_resource_id = rl.id
+					WHERE file.resource_id = resource.id OR file.canonical_resource_id = resource.id
 				)
 				AS is_monitored_only,
-			rl.original_lang AS original_lang,
+			resource.original_lang,
 			(
 				SELECT jsonb_agg(
 					jsonb_build_object(
@@ -134,30 +127,32 @@ async function loadStoredResourceRow(db: CoreDb, resourceId: string): Promise<Re
 					ORDER BY identifier.scheme, identifier.is_preferred DESC, identifier.value
 				)
 				FROM resource_identifiers identifier
-				WHERE identifier.resource_id = rl.id
+				WHERE identifier.resource_id = resource.id
 			) AS resource_identifiers,
-			rl.url AS url,
+			resource.url,
 			${resourceDisplaySourceSql({
-				creatorName: sql`COALESCE(rl.creators->0->>'literal', CONCAT_WS(' ', rl.creators->0->>'given', rl.creators->0->>'family'))`,
-				kind: sql`rl.kind`,
+				creatorName: sql`COALESCE(resource.creators->0->>'literal', CONCAT_WS(' ', resource.creators->0->>'given', resource.creators->0->>'family'))`,
+				kind: sql`resource.kind`,
 				monitoredSourceName: sql`monitored_source.name`,
-				resourcePlatform: sql`rl.resource_platform`,
+				resourcePlatform: sql`resource.resource_platform`,
 			})} AS source,
 			CASE WHEN monitored_source.platform = 'youtube' THEN monitored_source.avatar_url END AS source_avatar_url,
-			rl.scope AS scope,
-			rl.published_date AS published_date,
-			rl.tags AS tags,
-			rl.keywords AS keywords,
-			rl.creators AS creators,
-			rl.kind_metadata AS kind_metadata,
-			rl.source_revision AS source_revision,
-			rl.storage_key AS storage_key,
-			rl.file_type AS file_type,
-			rl.normalized_url AS normalized_url
-		FROM resources_localized rl
-		LEFT JOIN sources monitored_source ON monitored_source.id = rl.source_id
-		WHERE rl.id = ${resourceId}::uuid
-		  AND rl.lang = rl.original_lang
+			resource.scope,
+			resource.published_date,
+			resource.tags,
+			original.keywords,
+			resource.creators,
+			resource.kind_metadata,
+			resource.source_revision,
+			resource.storage_key,
+			resource.file_type,
+			resource.normalized_url
+		FROM resources resource
+		JOIN resource_translations original
+		  ON original.resource_id = resource.id
+		 AND original.lang = resource.original_lang
+		LEFT JOIN sources monitored_source ON monitored_source.id = resource.source_id
+		WHERE resource.id = ${resourceId}::uuid
 		LIMIT 1
 	`);
 	const row = result.rows[0];

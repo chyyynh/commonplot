@@ -9,7 +9,6 @@ import {
 	ZH_HANT_RESOURCE_LANG,
 } from '@core-shared/resource-types';
 import { withCoreDb } from '@db/client';
-import { resources, resourceTranslations } from '@db/schema';
 import { sql } from 'drizzle-orm';
 import type { ResourceTranslationInput } from './resource-translation';
 import { cleanString } from './resource-values';
@@ -44,11 +43,11 @@ export function loadResourceTranslationInput(
 	return withCoreDb(env, async (db) => {
 		const result = await db.execute<ResourceTranslationInputRow>(sql`
 			SELECT
-				${resources.fileType} AS file_type,
-				${resources.id}::text AS id,
-				${resources.kind} AS kind,
-				${resources.resourcePlatform} AS resource_platform,
-				${resources.originalLang} AS original_lang,
+				resource.file_type,
+				resource.id::text AS id,
+				resource.kind,
+				resource.resource_platform,
+				resource.original_lang,
 				original.title AS title,
 				original.summary AS summary,
 				original.content AS content,
@@ -56,22 +55,22 @@ export function loadResourceTranslationInput(
 				zh_hant.summary AS zh_hant_summary,
 				zh_hant.content AS zh_hant_content,
 				zh_hant.source AS zh_hant_source,
-				${resources.url} AS url,
+				resource.url,
 				MD5(jsonb_build_array(
 					original.lang,
 					original.title,
 					original.summary,
 					original.content
 				)::text) AS source_revision
-			FROM ${resources}
-			JOIN ${resourceTranslations} original
-			  ON original.resource_id = ${resources.id}
-			 AND original.lang = ${resources.originalLang}
-			LEFT JOIN ${resourceTranslations} zh_hant
-			  ON zh_hant.resource_id = ${resources.id}
+			FROM resources resource
+			JOIN resource_translations original
+			  ON original.resource_id = resource.id
+			 AND original.lang = resource.original_lang
+			LEFT JOIN resource_translations zh_hant
+			  ON zh_hant.resource_id = resource.id
 			 AND zh_hant.lang = ${ZH_HANT_RESOURCE_LANG}
-			WHERE ${resources.id} = ${resourceId}::uuid
-			  AND ${resources.scope} = 'corpus'
+			WHERE resource.id = ${resourceId}::uuid
+			  AND resource.scope = 'corpus'
 			LIMIT 1
 		`);
 		const row = result.rows[0];

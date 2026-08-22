@@ -9,9 +9,8 @@ import { type HostedResourceImage, hostedResourceImageFields } from '@core-share
 import { parseResourceIdentity } from '@core-shared/resource-types';
 import type { ResolvedResource } from '@core-shared/types';
 import { withCoreDb } from '@db/client';
-import { resources } from '@db/schema';
 import { toStoredResourceEntities } from '@entities/normalize';
-import { eq, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import type { ResourceClassificationResult } from './domain/resource-classification';
 import type { ResolvedSubjectInput } from './resource-resolver';
 
@@ -50,18 +49,20 @@ export async function markStoredBlobProcessingFailed(
 			RETURNING resource.id
 		`);
 		if (failed.rows.length) return 'failed';
-		const existing = await db
-			.select({ enrichmentStatus: resources.enrichmentStatus, sourceRevision: resources.sourceRevision })
-			.from(resources)
-			.where(eq(resources.id, resourceId))
-			.limit(1);
+		const existing = await db.execute<{ enrichment_status: string; source_revision: string | null }>(sql`
+			SELECT enrichment_status, source_revision
+			FROM resources
+			WHERE id = ${resourceId}::uuid
+			LIMIT 1
+		`);
+		const current = existing.rows[0];
 		console.info({
 			tag: 'RESOURCE_PERSIST',
 			event: 'stored_blob_failure_mark_skipped',
 			resource_id: resourceId,
 			expected_source_revision: expectedSourceRevision,
-			current_source_revision: existing[0]?.sourceRevision ?? null,
-			current_status: existing[0]?.enrichmentStatus ?? 'deleted',
+			current_source_revision: current?.source_revision ?? null,
+			current_status: current?.enrichment_status ?? 'deleted',
 		});
 		return 'superseded';
 	});

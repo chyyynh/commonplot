@@ -96,7 +96,7 @@ Collection Wiki 產品介面雖已退役，entity extraction 仍刻意保持啟�
 
 需要一個 PostgreSQL。正式環境目前透過 Cloudflare Hyperdrive 連到 PlanetScale Postgres。
 
-Core 使用的 app-owned tables 會同步定義在 `src/db/schema.ts`；canonical schema 位於 `web-tanstack/prisma/schema.prisma`，DB-only constraints 與 indexes 則位於 `web-tanstack/prisma/manual-indexes.sql`。任一 schema 變更後請執行 `pnpm check:db-schema`。
+App-owned canonical schema 位於 `web-tanstack/prisma/schema.prisma`，DB-only constraints 與 indexes 則位於 `web-tanstack/prisma/manual-indexes.sql`。Core 透過 Hyperdrive 使用 Drizzle 的參數化 SQL，不再維護第二份 table schema。schema 或 resource/source domain 變更後請執行 `pnpm check:db-contract`。
 
 ### 2. Hyperdrive binding
 
