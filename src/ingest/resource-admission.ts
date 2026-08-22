@@ -90,8 +90,7 @@ const ResourceProcessingWorkflowPayloadSchema = z
 	.strict();
 
 export type ResourceProcessingWorkflowPayload = z.infer<typeof ResourceProcessingWorkflowPayloadSchema>;
-export type ResourceDraftTarget = Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'draft' }>;
-export type ExistingResourceTarget = Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'storedBlob' | 'reacquire' }>;
+type ResourceDraftTarget = Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'draft' }>;
 
 export function parseResourceProcessingWorkflowPayload(value: unknown): ResourceProcessingWorkflowPayload {
 	return ResourceProcessingWorkflowPayloadSchema.parse(value);
@@ -125,10 +124,11 @@ const PENDING_BLOB_RECONCILE_CONCURRENCY = 10;
 const DISCOVERED_RESOURCE_ADMISSION_CONCURRENCY = 5;
 
 export async function enqueueProcessing(env: CoreEnv, resourceId: string): Promise<string> {
-	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, storedWorkflowId(resourceId), {
+	const id = z.uuid().parse(resourceId);
+	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `${STORED_RESOURCE_WORKFLOW_REVISION}-${id}`, {
 		target: {
 			kind: 'storedBlob',
-			resourceId,
+			resourceId: id,
 		},
 	});
 }
@@ -140,13 +140,12 @@ export async function enqueueAppResourceDraft(env: CoreEnv, input: AppResourceDr
 	const parsed = parseExternalHttpUrl(input.url);
 	if (!parsed) throw new Error('Only http(s) URLs without credentials are allowed');
 	const url = normalizeUrl(parsed.toString());
-	const target: ResourceDraftTarget = {
+	const target = ResourceDraftTargetSchema.parse({
 		kind: 'draft',
 		admission: input.admission,
 		url,
-	};
-	const payload = parseResourceProcessingWorkflowPayload({ target });
-	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, input.instanceId, payload);
+	});
+	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, input.instanceId, { target });
 }
 
 function sourceDraftTarget(base: SourceResourceDraft): ResourceDraftTarget {
@@ -159,21 +158,19 @@ function sourceDraftTarget(base: SourceResourceDraft): ResourceDraftTarget {
 	const summary = base.summary?.trim() || null;
 	const keywords = base.keywords ?? [];
 	const sourceAvatarUrl = validatedExternalMediaUrl(base.sourceAvatarUrl);
-	return parseResourceProcessingWorkflowPayload({
-		target: {
-			kind: 'draft',
-			admission: { kind: 'source', sourceId: base.sourceId.trim() },
-			url,
-			sourceHints: {
-				...(summary ? { summary } : {}),
-				...(originalLang ? { originalLang } : {}),
-				...(publishedDate ? { publishedDate } : {}),
-				...(keywords.length ? { keywords } : {}),
-				...(sourceAvatarUrl ? { sourceAvatarUrl } : {}),
-			},
-			...(base.providerSequence?.trim() ? { providerSequence: base.providerSequence.trim() } : {}),
+	return ResourceDraftTargetSchema.parse({
+		kind: 'draft',
+		admission: { kind: 'source', sourceId: base.sourceId.trim() },
+		url,
+		sourceHints: {
+			...(summary ? { summary } : {}),
+			...(originalLang ? { originalLang } : {}),
+			...(publishedDate ? { publishedDate } : {}),
+			...(keywords.length ? { keywords } : {}),
+			...(sourceAvatarUrl ? { sourceAvatarUrl } : {}),
 		},
-	}).target as ResourceDraftTarget;
+		...(base.providerSequence?.trim() ? { providerSequence: base.providerSequence.trim() } : {}),
+	});
 }
 
 export async function enqueueSubjectDraft(
@@ -184,17 +181,15 @@ export async function enqueueSubjectDraft(
 		url: string;
 	},
 ): Promise<string> {
-	const target = parseResourceProcessingWorkflowPayload({
-		target: {
-			kind: 'draft',
-			admission: {
-				kind: 'subject',
-				parentResourceId: input.parentResourceId,
-				expectedParentRevision: input.parentRevision,
-			},
-			url: normalizeUrl(input.url),
+	const target = ResourceDraftTargetSchema.parse({
+		kind: 'draft',
+		admission: {
+			kind: 'subject',
+			parentResourceId: input.parentResourceId,
+			expectedParentRevision: input.parentRevision,
 		},
-	}).target as ResourceDraftTarget;
+		url: normalizeUrl(input.url),
+	});
 	const identity = await sha256Hex(JSON.stringify(target));
 	return enqueueOrRestartWorkflow(env.RESOURCE_PROCESSING_V2_WORKFLOW, `subject-draft-v3-${identity}`, { target });
 }
@@ -283,17 +278,10 @@ export async function reconcilePendingBlobProcessing(env: CoreEnv, db: CoreDb): 
 }
 
 export async function enqueueResourceResync(env: CoreEnv, resourceId: string): Promise<string> {
+	const id = z.uuid().parse(resourceId);
 	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
-		id: `resource-resync-v3-${workflowIdPart(resourceId)}-${crypto.randomUUID()}`,
-		params: { target: { kind: 'reacquire', resourceId } },
+		id: `resource-resync-v3-${id}-${crypto.randomUUID()}`,
+		params: { target: { kind: 'reacquire', resourceId: id } },
 	});
 	return instance.id;
-}
-
-function workflowIdPart(value: string): string {
-	return value.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 80);
-}
-
-function storedWorkflowId(resourceId: string): string {
-	return [STORED_RESOURCE_WORKFLOW_REVISION, workflowIdPart(resourceId)].join('-');
 }
