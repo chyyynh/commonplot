@@ -3,7 +3,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit, WEB_FETCH_USER_AGENT } from '@core-shared/http';
 import { normalizedResourceImageUrl } from '@core-shared/resource-image-mapping';
 import { literalCreator } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial } from '@core-shared/types';
+import type { AcquiredMaterial, AcquiredResource } from '@core-shared/types';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
 const LESSWRONG_RESPONSE_MAX_BYTES = 5 * 1024 * 1024;
@@ -82,11 +82,14 @@ async function scrapeLessWrong(postId: string): Promise<AcquiredMaterial<'lesswr
 	};
 }
 
-export async function stageLessWrongAcquisition(step: WorkflowStep, input: { postId: string; route: number; url: string }) {
+export async function stageLessWrongAcquisition(
+	step: WorkflowStep,
+	postId: string,
+): Promise<Extract<AcquiredResource, { resourcePlatform: 'lesswrong' }>> {
 	const contentStream = await step.do(
-		`acquire-lesswrong-v1-${input.route}`,
+		'acquire-lesswrong-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json({ ...(await scrapeLessWrong(input.postId)), canonicalUrl: input.url }).body!,
+		async () => Response.json(await scrapeLessWrong(postId)).body!,
 	);
-	return new Response(contentStream).json<AcquiredMaterial<'lesswrong'>>();
+	return { ...(await new Response(contentStream).json<AcquiredMaterial<'lesswrong'>>()), specialization: null };
 }

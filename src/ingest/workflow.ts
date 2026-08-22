@@ -1,11 +1,12 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep, type WorkflowStepConfig } from 'cloudflare:workers';
 import { type HostedResourceImage, resourceImageSourceUrls } from '@core-shared/resource-image-mapping';
 import { DEFAULT_RESOURCE_LANG } from '@core-shared/resource-types';
+import type { AcquiredResource } from '@core-shared/types';
 import { connectCoreDb } from '@db/connection';
 import { loadResourceReacquisitionInput, loadStoredPdfInput } from '@ingest/stored-resource';
 import { AI_SEARCH_SYNC_STEP_CONFIG, syncCorpusItem } from '../ai-search';
 import { DURABLE_WORKFLOW_RETRIES } from '../workflow-control';
-import { type AcquiredContent, type ResourceResolutionOrigin, resolveAcquiredResource, stageSavedUrlAcquisition } from './acquisition';
+import { type ResourceResolutionOrigin, resolveAcquiredResource, stageUrlAcquisition } from './acquisition';
 import { classifyResource } from './domain/resource-classification';
 import { stageStoredPdfAcquisition } from './platforms/pdf';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './resource-admission';
@@ -46,7 +47,7 @@ async function stageResourceImages(
 
 type ResolvedProcessingCall = {
 	processingId: string;
-	acquiredContent: AcquiredContent;
+	acquiredContent: AcquiredResource;
 	origin: ResourceResolutionOrigin;
 	translatePaperUrl: boolean;
 	persistenceTarget: PersistProcessedTarget;
@@ -61,7 +62,7 @@ async function resolveProcessingCall(
 	if (target.kind === 'draft') {
 		return {
 			processingId: instanceId,
-			acquiredContent: await stageSavedUrlAcquisition(
+			acquiredContent: await stageUrlAcquisition(
 				env,
 				step,
 				{
@@ -125,11 +126,10 @@ async function resolveProcessingCall(
 	);
 	return {
 		processingId: target.resourceId,
-		acquiredContent: await stageSavedUrlAcquisition(env, step, {
+		acquiredContent: await stageUrlAcquisition(env, step, {
 			discoverRelatedContent: true,
 			isMonitoredOnly: snapshot.isMonitoredOnly,
 			processingId: target.resourceId,
-			resourceIdentifiers: snapshot.resourceIdentifiers,
 			sourceAvatarUrl: snapshot.sourceAvatarUrl,
 			sourceUrl: snapshot.url,
 		}),

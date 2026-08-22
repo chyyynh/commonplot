@@ -2,7 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { readBytesWithLimit } from '@core-shared/http';
 import type { ResourceCreator, ResourceKindMetadata } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial } from '@core-shared/types';
+import type { AcquiredMaterial, AcquiredResource } from '@core-shared/types';
 import { initSync, LiteParse } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
 
@@ -97,11 +97,11 @@ export async function stageStoredPdfAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	resource: StoredPdfAcquisitionInput,
-): Promise<AcquiredMaterial<null>> {
+): Promise<Extract<AcquiredResource, { resourcePlatform: null }>> {
 	const contentStream = await step.do(
 		'acquire-stored-pdf-v2',
 		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await acquireStoredPdf(env, resource)).body!,
 	);
-	return new Response(contentStream).json<AcquiredMaterial<null>>();
+	return { ...(await new Response(contentStream).json<AcquiredMaterial<null>>()), specialization: null };
 }

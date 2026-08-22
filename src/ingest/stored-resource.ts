@@ -41,16 +41,19 @@ export type StoredPdfInput = StoredResourceBase & {
 	fileType: string;
 };
 
-export type ResourceReacquisitionInput = StoredResourceBase & {
+export type ResourceReacquisitionInput = Omit<StoredResourceBase, 'url'> & {
 	isMonitoredOnly: boolean;
 	sourceAvatarUrl: string | null;
 	translatePaperUrl: boolean;
+	url: string;
 };
 
 type StoredResourceIdentityRow = {
 	kind: string;
 	resource_platform: string | null;
 };
+
+type ResourceProcessableRow = StoredResourceIdentityRow & { url: string | null };
 
 type StoredResourceBaseRow = StoredResourceIdentityRow & {
 	id: string;
@@ -86,8 +89,8 @@ function storedResourceIdentity(row: StoredResourceIdentityRow): ContentResource
 }
 
 export async function assertResourceProcessable(db: CoreDb, resourceId: string): Promise<void> {
-	const result = await db.execute<StoredResourceIdentityRow>(sql`
-		SELECT kind, resource_platform
+	const result = await db.execute<ResourceProcessableRow>(sql`
+		SELECT kind, resource_platform, url
 		FROM resources
 		WHERE id = ${resourceId}::uuid
 		LIMIT 1
@@ -98,6 +101,7 @@ export async function assertResourceProcessable(db: CoreDb, resourceId: string):
 	if (!identity || !isContentResourceKind(identity.kind)) {
 		throw new Error(`Resource kind is not processable by core: ${identity?.kind ?? row.kind}`);
 	}
+	if (!row.url?.trim()) throw new Error(`Resource ${resourceId} is not URL-backed and cannot be reacquired`);
 }
 
 export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promise<StoredPdfInput> {
@@ -216,8 +220,12 @@ export async function loadResourceReacquisitionInput(db: CoreDb, resourceId: str
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
 	storedResourceIdentity(row);
+	const base = storedResourceBase(row);
+	const url = base.url?.trim();
+	if (!url) throw new Error(`Resource ${resourceId} is not URL-backed and cannot be reacquired`);
 	return {
-		...storedResourceBase(row),
+		...base,
+		url,
 		isMonitoredOnly: row.is_monitored_only,
 		sourceAvatarUrl: row.source_avatar_url?.trim() || null,
 		translatePaperUrl: row.translate_paper_url,

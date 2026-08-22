@@ -4,6 +4,7 @@ import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { literalCreator } from '@core-shared/resource-metadata';
 import type {
 	AcquiredMaterial,
+	AcquiredResource,
 	TranscriptSegment,
 	YouTubeChapter,
 	YouTubeHighlights,
@@ -61,6 +62,7 @@ const YouTubeChannelsResponseSchema = z.object({
 });
 type YouTubeThumbnails = z.infer<typeof YouTubeThumbnailsSchema>;
 type YouTubeVideosResponse = z.infer<typeof YouTubeVideosResponseSchema>;
+type YouTubeAcquisition = Omit<AcquiredMaterial<'youtube'>, 'markdown' | 'summary'> & { description: string };
 
 function bestThumbnailUrl(thumbnails: YouTubeThumbnails): string | null {
 	return (
@@ -206,7 +208,7 @@ async function scrapeYouTube(
 	youtubeApiKey: string,
 	monitoredOnly: boolean,
 	sourceAvatarUrl: string | null,
-): Promise<AcquiredMaterial<'youtube'>> {
+): Promise<YouTubeAcquisition> {
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching video', videoId });
 
 	const videoData = await fetchYouTubeVideoData(videoId, youtubeApiKey);
@@ -234,11 +236,6 @@ async function scrapeYouTube(
 		sourceAvatarUrl ?? fetchYouTubeChannelAvatar(snippet.channelId, youtubeApiKey),
 		fetchTranscript(videoId),
 	]);
-	const transcriptMarkdown = transcript
-		.map((segment) => segment.text.trim())
-		.filter(Boolean)
-		.join('\n');
-	const content = transcriptMarkdown || snippet.description.trim();
 	const creators = literalCreator('channel', snippet.channelTitle, {
 		...(channelAvatar?.trim() ? { avatarUrl: channelAvatar.trim() } : {}),
 		...(snippet.channelId.trim() ? { profileUrl: `https://www.youtube.com/channel/${encodeURIComponent(snippet.channelId.trim())}` } : {}),
@@ -251,11 +248,10 @@ async function scrapeYouTube(
 		platformId: videoId,
 		fileType: null,
 		title: snippet.title,
-		markdown: content,
+		description: snippet.description,
 		source: snippet.channelTitle.trim() || 'YouTube',
 		originalLang: snippet.defaultAudioLanguage ?? null,
 		publishedDate: snippet.publishedAt,
-		summary: snippet.description.substring(0, 500) || null,
 		creators,
 		kindMetadata: {
 			...(durationSeconds === null ? {} : { durationSeconds }),
@@ -277,18 +273,25 @@ async function scrapeYouTube(
 export async function stageYouTubeAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { monitoredOnly: boolean; route: number; sourceAvatarUrl: string | null; url: string; videoId: string },
-) {
+	input: { monitoredOnly: boolean; processingId: string; sourceAvatarUrl: string | null; videoId: string },
+): Promise<Extract<AcquiredResource, { resourcePlatform: 'youtube' }>> {
 	const contentStream = await step.do(
-		`acquire-youtube-v1-${input.route}`,
+		'acquire-youtube-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () =>
-			Response.json({
-				...(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY, input.monitoredOnly, input.sourceAvatarUrl)),
-				canonicalUrl: input.url,
-			}).body!,
+		async () => Response.json(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY, input.monitoredOnly, input.sourceAvatarUrl)).body!,
 	);
-	return new Response(contentStream).json<AcquiredMaterial<'youtube'>>();
+	const acquired = await new Response(contentStream).json<YouTubeAcquisition>();
+	const { description, youtubeTranscript, ...material } = acquired;
+	const transcriptMarkdown = youtubeTranscript.segments
+		.map((segment) => segment.text.trim())
+		.filter(Boolean)
+		.join('\n');
+	return {
+		...material,
+		markdown: transcriptMarkdown || description.trim(),
+		summary: description.substring(0, 500) || null,
+		specialization: await stageYouTubeEnrichment(env, step, acquired, input.processingId),
+	};
 }
 
 const YouTubeHighlightSchema = z.object({
@@ -310,10 +313,10 @@ const HIGHLIGHTS_SYSTEM_PROMPT = `你是專業的影片內容分析師。分析 
 
 只回傳符合 schema 的資料。`;
 
-export async function stageYouTubeEnrichment(
+async function stageYouTubeEnrichment(
 	env: CoreEnv,
 	step: WorkflowStep,
-	acquired: AcquiredMaterial<'youtube'>,
+	acquired: YouTubeAcquisition,
 	processingId: string,
 ): Promise<YouTubeResourceSpecialization> {
 	const transcript = acquired.youtubeTranscript;

@@ -2,7 +2,7 @@ import type { WorkflowDelayFunction, WorkflowStep, WorkflowStepConfig } from 'cl
 import { NonRetryableError } from 'cloudflare:workflows';
 import { readTextWithLimit } from '@core-shared/http';
 import { literalCreator, type PostKindMetadata, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial } from '@core-shared/types';
+import type { AcquiredMaterial, AcquiredResource } from '@core-shared/types';
 import { extractTweetId } from '@core-shared/url';
 import {
 	assertExpectedTwitterThreadPost,
@@ -456,28 +456,25 @@ export async function stageTwitterAcquisition(
 		discoverRelatedContent: boolean;
 		processingId: string;
 		providerSequence?: string;
-		route: number;
 		tweetId: string;
-		url: string;
 	},
-) {
+): Promise<Extract<AcquiredResource, { resourcePlatform: 'twitter' }>> {
 	const contentStream = await step.do(
-		`acquire-twitter-v1-${input.route}`,
+		'acquire-twitter-v1',
 		input.providerSequence ? TWITTER_SEQUENCED_ACQUISITION_STEP_CONFIG : TWITTER_ACQUISITION_STEP_CONFIG,
 		async (ctx) => {
 			if (input.providerSequence) {
 				logSequencedTwitterAcquisitionAttempt(input.processingId, input.providerSequence, ctx.attempt);
 			}
-			return Response.json({
-				...(await scrapeTweet(input.tweetId, env.KAITO_API_KEY, {
+			return Response.json(
+				await scrapeTweet(input.tweetId, env.KAITO_API_KEY, {
 					discoverUnsignaledThread: input.discoverRelatedContent,
 					expectedReplyId: input.providerSequence,
-				})),
-				canonicalUrl: input.url,
-			}).body!;
+				}),
+			).body!;
 		},
 	);
-	return new Response(contentStream).json<AcquiredMaterial<'twitter'>>();
+	return { ...(await new Response(contentStream).json<AcquiredMaterial<'twitter'>>()), specialization: null };
 }
 
 type TwitterThreadSearchResult = {

@@ -2,7 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
 import { type ForumKindMetadata, literalCreator } from '@core-shared/resource-metadata';
-import type { AcquiredMaterial } from '@core-shared/types';
+import type { AcquiredMaterial, AcquiredResource } from '@core-shared/types';
 import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
@@ -65,8 +65,17 @@ const HackerNewsItemSchema = z.object({
 		.optional(),
 });
 
-export type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
-export type HackerNewsAcquiredContent = AcquiredMaterial<'hackernews'> & { hackerNewsItem: HackerNewsItem };
+type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
+
+type HackerNewsDiscussionInput = {
+	commentInput: string;
+	commentCount: number;
+	hnText: string | null;
+	points: number | null;
+	totalCommentCount: number;
+};
+
+type HackerNewsAcquisition = AcquiredMaterial<'hackernews'> & { discussion: HackerNewsDiscussionInput };
 
 /** Every node in the tree, deleted ones included — the closest analogue to the count HN itself shows. */
 function countHnComments(children: HnComment[] | undefined): number {
@@ -121,13 +130,14 @@ function hackerNewsItemTitle(item: HackerNewsItem, itemId: string): string {
 	return `Hacker News item #${itemId}`;
 }
 
-async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquiredContent> {
+async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquisition> {
 	console.info({ tag: 'HN', msg: 'Fetching item', itemId });
 	const item = await fetchHnItem(itemId);
 	const title = hackerNewsItemTitle(item, itemId);
 	const hnText = item.text ? htmlToText(item.text) : '';
 	if (item.type === 'comment' && !hnText) throw new Error(`Hacker News comment ${itemId} has no text`);
 	const commentCount = countHnComments(item.children);
+	const comments = item.children?.length ? collectAllComments(item.children) : [];
 	const markdown = buildHnPostMarkdown(item, title, commentCount);
 	const description = hnText.slice(0, 280) || null;
 	const itemType = item.type === 'story' || item.type === 'ask' || item.type === 'show' || item.type === 'job' ? item.type : undefined;
@@ -151,17 +161,51 @@ async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquiredConte
 		...(item.url ? { subjectUrl: item.url } : {}),
 		creators: literalCreator('submitter', item.author),
 		kindMetadata: { points: item.points, commentCount, itemType } satisfies ForumKindMetadata,
-		hackerNewsItem: item,
+		discussion: {
+			commentInput: comments
+				.map((comment) => `${comment.author ? `${comment.author}: ` : ''}${comment.text}`)
+				.join('\n')
+				.slice(0, 30000),
+			commentCount: comments.length,
+			hnText: hnText.slice(0, 1200) || null,
+			points: item.points ?? null,
+			totalCommentCount: commentCount,
+		},
 	};
 }
 
-export async function stageHackerNewsAcquisition(step: WorkflowStep, input: { itemId: string; route: number; url: string }) {
+export async function stageHackerNewsAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: { itemId: string; processingId: string },
+): Promise<Extract<AcquiredResource, { resourcePlatform: 'hackernews' }>> {
 	const contentStream = await step.do(
-		`acquire-hackernews-v1-${input.route}`,
+		'acquire-hackernews-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json({ ...(await scrapeHackerNews(input.itemId)), canonicalUrl: input.url }).body!,
+		async () => Response.json(await scrapeHackerNews(input.itemId)).body!,
 	);
-	return new Response(contentStream).json<HackerNewsAcquiredContent>();
+	const acquired = await new Response(contentStream).json<HackerNewsAcquisition>();
+	const annotation = await step
+		.do(
+			'build-hacker-news-annotation-v1',
+			{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
+			() => buildHackerNewsAnnotation(acquired.title, env, acquired.discussion, input.processingId),
+		)
+		.catch((error) => {
+			console.error({
+				tag: 'HN',
+				msg: 'Optional Hacker News discussion annotation failed after retries',
+				processing_id: input.processingId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return null;
+		});
+	const { discussion: _discussion, ...resource } = acquired;
+	return {
+		...resource,
+		...(annotation ? { markdown: applyHackerNewsAnnotation(resource.markdown, annotation) } : {}),
+		specialization: null,
+	};
 }
 
 function collectAllComments(children: HnComment[]): HnCollectedComment[] {
@@ -204,15 +248,9 @@ async function generateHnDiscussionDigest(
 	env: CoreEnv,
 	resourceId: string,
 	title: string,
-	hnText: string | null,
-	comments: HnCollectedComment[],
+	discussion: HackerNewsDiscussionInput,
 ): Promise<string | null> {
-	if (comments.length < 4) return null;
-
-	const commentInput = comments
-		.map((comment) => `${comment.author ? `${comment.author}: ` : ''}${comment.text}`)
-		.join('\n')
-		.slice(0, 30000);
+	if (discussion.commentCount < 4) return null;
 
 	const { finishReason, text } = await generateText({
 		model: createWorkersAI({ binding: env.AI })('@cf/qwen/qwen3-30b-a3b-fp8', {
@@ -228,7 +266,7 @@ async function generateHnDiscussionDigest(
 			},
 			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
 		}),
-		prompt: buildDiscussionPrompt(title, hnText, commentInput, comments.length),
+		prompt: buildDiscussionPrompt(title, discussion.hnText, discussion.commentInput, discussion.commentCount),
 		system: HN_DISCUSSION_SYSTEM,
 		temperature: 0.3,
 		maxRetries: 0,
@@ -243,12 +281,17 @@ function withoutPreviousDiscussion(content: string): string {
 	return content.split(`\n\n---\n\n${HN_DISCUSSION_HEADING}`, 1)[0].trim();
 }
 
-async function buildHackerNewsAnnotation(title: string, env: CoreEnv, item: HackerNewsItem, processingId: string): Promise<string> {
-	const comments = item.children?.length ? collectAllComments(item.children) : [];
-	const digest = await generateHnDiscussionDigest(env, processingId, title, item.text ?? null, comments);
-	// Count nodes, not text-bearing comments, so this matches Forum kind metadata.
-	const commentCount = countHnComments(item.children);
-	const stats = [item.points !== undefined ? `${item.points} points` : null, commentCount > 0 ? `${commentCount} comments` : null]
+async function buildHackerNewsAnnotation(
+	title: string,
+	env: CoreEnv,
+	discussion: HackerNewsDiscussionInput,
+	processingId: string,
+): Promise<string> {
+	const digest = await generateHnDiscussionDigest(env, processingId, title, discussion);
+	const stats = [
+		discussion.points !== null ? `${discussion.points} points` : null,
+		discussion.totalCommentCount > 0 ? `${discussion.totalCommentCount} comments` : null,
+	]
 		.filter(Boolean)
 		.join(' | ');
 	return [HN_DISCUSSION_HEADING, stats ? `*${stats}*` : null, digest].filter(Boolean).join('\n\n');
@@ -258,28 +301,4 @@ function applyHackerNewsAnnotation(content: string, annotation: string): string 
 	const carrierContent = withoutPreviousDiscussion(content);
 	if (!carrierContent) throw new Error('Hacker News resource has no content to annotate');
 	return [carrierContent, '---', annotation].join('\n\n');
-}
-
-export async function stageHackerNewsEnrichment<const T extends HackerNewsAcquiredContent>(
-	env: CoreEnv,
-	step: WorkflowStep,
-	acquired: T,
-	processingId: string,
-): Promise<T> {
-	const annotation = await step
-		.do(
-			'build-hacker-news-annotation-v1',
-			{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
-			() => buildHackerNewsAnnotation(acquired.title, env, acquired.hackerNewsItem, processingId),
-		)
-		.catch((error) => {
-			console.error({
-				tag: 'HN',
-				msg: 'Optional Hacker News discussion annotation failed after retries',
-				processing_id: processingId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return null;
-		});
-	return annotation ? { ...acquired, markdown: applyHackerNewsAnnotation(acquired.markdown, annotation) } : acquired;
 }

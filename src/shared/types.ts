@@ -124,6 +124,11 @@ export type AcquiredMaterial<T extends ResourcePlatform = ResourcePlatform> = T 
 	? AcquiredMaterialBase<T> & AcquiredMaterialSpecialization<T>
 	: never;
 
+/** Canonical adapter output after provider-specific Workflow steps have completed. */
+export type AcquiredResource =
+	| (Exclude<AcquiredMaterial, AcquiredMaterial<'youtube'>> & { specialization: null })
+	| (Omit<AcquiredMaterial<'youtube'>, 'youtubeTranscript'> & { specialization: YouTubeResourceSpecialization });
+
 export interface PaperMetadata {
 	title?: string;
 	authors: string[];

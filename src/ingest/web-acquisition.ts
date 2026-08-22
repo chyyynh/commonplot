@@ -127,9 +127,9 @@ async function acquireWebResource(url: string, env: CoreEnv, processingId?: stri
 	return { ...(await acquireHtmlArticle(env, html, finalUrl, processingId)), canonicalUrl: finalUrl };
 }
 
-export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { processingId: string; route: number; url: string }) {
+export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { processingId: string; url: string }) {
 	const result = await step.do(
-		`acquire-web-v1-${input.route}`,
+		'acquire-web-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => {
 			const acquired = await acquireWebResource(input.url, env, input.processingId);

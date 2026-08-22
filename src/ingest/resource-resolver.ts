@@ -1,37 +1,13 @@
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '../shared/paper-identity.ts';
-import {
-	isPaperIdentifier,
-	normalizeResourceIdentifiers,
-	type PlatformResourceIdentifierScheme,
-	type ResourceIdentifier,
-} from '../shared/resource-identifiers.ts';
+import { isPaperIdentifier, normalizeResourceIdentifiers, type ResourceIdentifier } from '../shared/resource-identifiers.ts';
 import {
 	type ContentResourceIdentity,
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
 	resourceIdentityForDetectedPlatform,
 } from '../shared/resource-types.ts';
-import type { AcquiredMaterial, MaterializedResource, ResolvedResourceSubject } from '../shared/types.ts';
+import type { AcquiredResource, MaterializedResource, ResolvedResource, ResolvedResourceSubject } from '../shared/types.ts';
 import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../shared/url.ts';
-
-export type ResourcePlatformLocator = Readonly<{
-	resourcePlatform: PlatformResourceIdentifierScheme;
-	platformId: string;
-}>;
-
-export function exactPlatformLocator(identifiers: readonly ResourceIdentifier[]): ResourcePlatformLocator | null {
-	const platformIdentifiers = normalizeResourceIdentifiers(identifiers).filter(
-		(identifier): identifier is ResourceIdentifier & { scheme: PlatformResourceIdentifierScheme } =>
-			identifier.scheme === 'hackernews' ||
-			identifier.scheme === 'lesswrong' ||
-			identifier.scheme === 'twitter' ||
-			identifier.scheme === 'youtube',
-	);
-	const locators = new Map(platformIdentifiers.map((identifier) => [identifier.scheme, identifier.value]));
-	if (locators.size > 1) throw new Error('Resource has conflicting exact platform identifiers');
-	const [locator] = locators;
-	return locator ? { resourcePlatform: locator[0], platformId: locator[1] } : null;
-}
 
 export type ResourceMaterializationOrigin = Pick<
 	MaterializedResource,
@@ -42,9 +18,9 @@ export type ResourceMaterializationResolution = {
 	publishedDate: string | null;
 	resourceIdentifiers: readonly ResourceIdentifier[];
 };
-type MaterializedAcquisition<T extends AcquiredMaterial> = Extract<MaterializedResource, { resourcePlatform: T['resourcePlatform'] }>;
+type MaterializedAcquisition<T extends AcquiredResource> = Extract<ResolvedResource, { resourcePlatform: T['resourcePlatform'] }>;
 
-export function materializeAcquiredResource<const T extends AcquiredMaterial>(
+export function materializeAcquiredResource<const T extends AcquiredResource>(
 	acquired: T,
 	origin: ResourceMaterializationOrigin,
 	resolution: ResourceMaterializationResolution,
@@ -85,6 +61,7 @@ export function materializeAcquiredResource<const T extends AcquiredMaterial>(
 		normalizedUrl: url ?? origin.normalizedUrl,
 		previewImageUrl: acquired.previewImageUrl?.trim() || null,
 		subject: resolvedSubjectInput(acquired.subjectUrl?.trim()),
+		specialization: acquired.specialization,
 	} as MaterializedAcquisition<T>;
 }
 
