@@ -278,6 +278,7 @@ async function translateZhHantContent(
 ): Promise<string> {
 	const { finishReason, text } = await generateText({
 		model: createWorkersAI({ binding: env.AI })('@cf/qwen/qwen3-30b-a3b-fp8', {
+			chat_template_kwargs: { enable_thinking: false },
 			gateway: {
 				id: 'core-ingest',
 				collectLog: true,
@@ -292,9 +293,10 @@ async function translateZhHantContent(
 			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
 		}),
 		prompt: `${chunk ? `原文 Markdown（第 ${chunk.index}/${chunk.total} 段；只翻譯本段，不要補寫前後文）` : '原文 Markdown'}:\n${content.trim()}`,
-		// A 36k-character body produces roughly 11.1k output tokens. Leave enough
-		// room that the finish-reason guard, rather than truncation, owns failure.
-		maxOutputTokens: 16000,
+		// Translation does not benefit from reasoning. A 12k-character chunk
+		// produces roughly 3.5k output tokens; 8k leaves capacity headroom while
+		// the finish-reason guard still owns any unexpected expansion.
+		maxOutputTokens: 8000,
 		temperature: 0.2,
 		system: RESOURCE_CONTENT_TRANSLATION_SYSTEM_PROMPT,
 		maxRetries: 0,
@@ -323,8 +325,8 @@ async function translatePlannedContent(
 	return stagePrivatePdfMarkdownTranslation(step, content, (markdown, chunk) => translateZhHantContent(markdown, env, resourceId, chunk));
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v6';
-const RESOURCE_TRANSLATION_WORKFLOW_RETENTION = { successRetention: '5 minutes', errorRetention: '1 hour' } as const;
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v7';
+const RESOURCE_TRANSLATION_WORKFLOW_RETENTION = { successRetention: '1 day', errorRetention: '7 days' } as const;
 const RESOURCE_TRANSLATION_REVISION_RE = /^[0-9a-f]{32}$/;
 
 function isResourceTranslationRevision(value: unknown): value is string {

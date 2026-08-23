@@ -15,7 +15,7 @@ import type { GenericAcquiredMaterial, ResolvedResource } from './materialize';
 export const PDF_MIME = 'application/pdf';
 
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
-const PDF_TRANSLATION_CHUNK_MAX_LENGTH = 32_000;
+const PDF_TRANSLATION_CHUNK_MAX_LENGTH = 12_000;
 const LETTER_OR_NUMBER = /[\p{L}\p{N}]/u;
 const SYMBOL_OR_PUNCTUATION = /[\p{P}\p{S}]/u;
 const WHITESPACE = /\s/u;
@@ -268,7 +268,7 @@ export async function stagePrivatePdfMarkdownTranslation(
 		const chunk = { index: index + 1, total: chunks.length };
 		translated.push(
 			await step.do(
-				`translate-private-pdf-zh-hant-${String(chunk.index).padStart(4, '0')}-of-${String(chunk.total).padStart(4, '0')}-v1`,
+				`translate-private-pdf-zh-hant-${String(chunk.index).padStart(4, '0')}-of-${String(chunk.total).padStart(4, '0')}-v2`,
 				{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 				() => translate(markdownChunk, chunk),
 			),
