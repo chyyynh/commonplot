@@ -25,7 +25,6 @@ function materialize(input = {}) {
 			summary: null,
 			creators: [],
 			kindMetadata: null,
-			specialization: null,
 		},
 		{
 			keywords: [],
