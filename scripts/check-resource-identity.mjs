@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { TwitterProviderSequenceSchema } from '../../../web-tanstack/src/server/domain/resource-graph-contracts.ts';
-import { RESOURCE_TYPES } from '../src/shared/resource.ts';
+import { RESOURCE_TYPES, ResourceIdentifiersSchema } from '../src/shared/resource.ts';
 import { detectResourceUrl, normalizeUrl, parseTwitterUsername } from '../src/shared/url.ts';
 
 const canonicalIdentities = [
@@ -58,10 +58,27 @@ assert.equal(TwitterProviderSequenceSchema.safeParse('0').success, false);
 assert.equal(TwitterProviderSequenceSchema.safeParse('9223372036854775808').success, false);
 assert.equal(TwitterProviderSequenceSchema.safeParse('not-a-sequence').success, false);
 
+const canonicalIdentifiers = [
+	{ preferred: true, scheme: 'doi', value: '10.1000/example' },
+	{ preferred: true, scheme: 'youtube', value: 'dQw4w9WgXcQ' },
+];
+assert.deepEqual(ResourceIdentifiersSchema.parse(canonicalIdentifiers), canonicalIdentifiers);
+assert.equal(ResourceIdentifiersSchema.safeParse([{ preferred: true, scheme: 'doi', value: ' 10.1000/EXAMPLE ' }]).success, false);
+assert.equal(ResourceIdentifiersSchema.safeParse([{ preferred: false, scheme: 'twitter', value: '123' }]).success, false);
+assert.equal(
+	ResourceIdentifiersSchema.safeParse([
+		{ preferred: true, scheme: 'arxiv', value: '2401.12345' },
+		{ preferred: true, scheme: 'arxiv', value: '2402.12345' },
+	]).success,
+	false,
+);
+assert.equal(ResourceIdentifiersSchema.safeParse([{ preferred: true, scheme: 'youtube', value: 'too-short' }]).success, false);
+
 console.info({
 	event: 'resource_identity_smoke_passed',
 	canonicalIdentityCases: canonicalIdentities.length,
 	invalidIdentityCases: 4,
+	identifierContractCases: 5,
 	providerSequenceCases: 5,
 	twitterUsernameCases: twitterUsernameCases.length,
 	urlCases: 5,

@@ -1,9 +1,7 @@
-import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '../../shared/paper-identity.ts';
+import { paperIdentifiersFromIdentity, resolveExactPaperInput, type PaperIdentifier } from '../../shared/paper-identity.ts';
 import {
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
-	isPaperIdentifier,
-	normalizeResourceIdentifiers,
 	RESOURCE_TYPES,
 	type ResourceCreator,
 	type ResourceIdentifier,
@@ -85,23 +83,20 @@ export type ResourceAcquisitionOrigin = Pick<
 export function materializeAcquiredResource(
 	acquired: AcquiredResource,
 	origin: ResourceAcquisitionOrigin,
-	resolution: { canonicalUrl: string | null; publishedDate: string | null; resourceIdentifiers: readonly ResourceIdentifier[] },
+	resolution: { canonicalUrl: string | null; publishedDate: string | null; resourceIdentifiers: readonly PaperIdentifier[] },
 ): ResolvedResource {
 	const platformIdentity =
 		acquired.resourcePlatform === null ? null : { resourcePlatform: acquired.resourcePlatform, platformId: acquired.platformId };
-	const paperIdentifiers = resolution.resourceIdentifiers.filter(isPaperIdentifier);
 	const identity: Pick<MaterializedResource, 'kind' | 'resourcePlatform'> = platformIdentity
 		? { kind: RESOURCE_TYPES.platformKinds[platformIdentity.resourcePlatform], resourcePlatform: platformIdentity.resourcePlatform }
-		: paperIdentifiers.some((identifier) => identifier.scheme === 'openalex')
+		: resolution.resourceIdentifiers.some((identifier) => identifier.scheme === 'openalex')
 			? { kind: 'paper', resourcePlatform: null }
 			: { kind: 'blog', resourcePlatform: null };
-	const identifiers = normalizeResourceIdentifiers(
-		platformIdentity
-			? [{ preferred: true, scheme: platformIdentity.resourcePlatform, value: platformIdentity.platformId }]
-			: identity.kind === 'paper'
-				? paperIdentifiers
-				: [],
-	);
+	const identifiers: ResourceIdentifier[] = platformIdentity
+		? [{ preferred: true, scheme: platformIdentity.resourcePlatform, value: platformIdentity.platformId }]
+		: identity.kind === 'paper'
+			? [...resolution.resourceIdentifiers]
+			: [];
 	const url = platformIdentity
 		? canonicalResourcePlatformUrl(platformIdentity.resourcePlatform, platformIdentity.platformId)
 		: resolution.canonicalUrl;
@@ -148,7 +143,7 @@ function resolvedSubjectInput(subjectUrl: string | null | undefined): ResolvedRe
 	const normalizedUrl = detected ? canonicalResourcePlatformUrl(detected.resourcePlatform, detected.platformId) : normalizeUrl(subjectUrl);
 	return {
 		identifiers: detected
-			? normalizeResourceIdentifiers([{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }])
+			? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]
 			: [],
 		normalizedUrl,
 	};

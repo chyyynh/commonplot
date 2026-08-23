@@ -1,15 +1,13 @@
 // Narrow database projections for the two record-first processing paths.
 
-import { isPaperIdentifierScheme } from '@core-shared/paper-identity';
 import {
 	canonicalizeResourceLang,
-	normalizeResourceIdentifiers,
 	parseStoredResourceKindMetadata,
 	RESOURCE_TYPES,
 	type ResourceCreator,
 	ResourceCreatorsSchema,
 	type ResourceIdentifier,
-	type ResourceIdentifierScheme,
+	ResourceIdentifiersSchema,
 	type ResourceKindMetadata,
 } from '@core-shared/resource';
 import { parseExternalHttpUrl } from '@core-shared/url';
@@ -333,25 +331,9 @@ function storedResourceBase(row: StoredResourceBaseRow): StoredResourceBase {
 		publishedDate: publishedDate?.toISOString() ?? null,
 		tags: row.tags,
 		keywords: row.keywords,
-		resourceIdentifiers: resourceIdentifiersValue(row.resource_identifiers),
+		resourceIdentifiers: ResourceIdentifiersSchema.parse(row.resource_identifiers ?? []),
 		normalizedUrl: row.normalized_url,
 	};
-}
-
-function resourceIdentifiersValue(value: unknown): ResourceIdentifier[] {
-	if (!Array.isArray(value)) return [];
-	return normalizeResourceIdentifiers(
-		value.flatMap((item) => {
-			if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
-			const identifier = item as Record<string, unknown>;
-			if (!isResourceIdentifierScheme(identifier.scheme) || typeof identifier.value !== 'string') return [];
-			return [{ preferred: identifier.preferred !== false, scheme: identifier.scheme, value: identifier.value }];
-		}),
-	);
-}
-
-function isResourceIdentifierScheme(value: unknown): value is ResourceIdentifierScheme {
-	return isPaperIdentifierScheme(value) || (typeof value === 'string' && Object.hasOwn(RESOURCE_TYPES.platformKinds, value));
 }
 
 function storedResourceCreatorsValue(value: unknown, resourceId: string): ResourceCreator[] {

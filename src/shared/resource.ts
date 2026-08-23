@@ -1,5 +1,12 @@
 import { z } from 'zod';
-import { isPaperIdentifierScheme, normalizePaperIdentifiers, type PaperIdentifier, type PaperIdentifierScheme } from './paper-identity.ts';
+import {
+	isPaperIdentifierScheme,
+	normalizeArxivId,
+	normalizeDoi,
+	normalizeOpenAlexId,
+	PAPER_IDENTIFIER_SCHEMES,
+	type PaperIdentifier,
+} from './paper-identity.ts';
 
 const resourceKinds = z.enum(['blog', 'forum', 'post', 'video', 'paper', 'image', 'file']);
 const platformKinds = {
@@ -139,55 +146,47 @@ export function parseStoredResourceKindMetadata(
 	return ResourceKindMetadataSchemas[kind].parse(value);
 }
 
-type PlatformResourceIdentifierScheme = (typeof RESOURCE_TYPES.platforms.options)[number];
+const ResourceIdentifierSchemeSchema = z.enum([...PAPER_IDENTIFIER_SCHEMES, ...RESOURCE_TYPES.platforms.options]);
 
-export type ResourceIdentifierScheme = PaperIdentifierScheme | PlatformResourceIdentifierScheme;
+export type ResourceIdentifierScheme = z.infer<typeof ResourceIdentifierSchemeSchema>;
 
-export type ResourceIdentifier = Readonly<{
-	preferred: boolean;
-	scheme: ResourceIdentifierScheme;
-	value: string;
-}>;
+function canonicalIdentifierValue(scheme: ResourceIdentifierScheme, value: string): string | null {
+	switch (scheme) {
+		case 'doi':
+			return normalizeDoi(value);
+		case 'arxiv':
+			return normalizeArxivId(value);
+		case 'openalex':
+			return normalizeOpenAlexId(value);
+		case 'hackernews':
+			return /^[1-9]\d*$/.test(value) ? value : null;
+		case 'lesswrong':
+			return /^[A-Za-z0-9_-]{8,64}$/.test(value) ? value : null;
+		case 'twitter':
+			return /^\d+$/.test(value) ? value : null;
+		case 'youtube':
+			return /^[A-Za-z0-9_-]{11}$/.test(value) ? value : null;
+	}
+}
+
+const ResourceIdentifierSchema = z
+	.object({ preferred: z.boolean(), scheme: ResourceIdentifierSchemeSchema, value: z.string() })
+	.strict()
+	.refine((identifier) => canonicalIdentifierValue(identifier.scheme, identifier.value) === identifier.value, 'Identifier is not canonical');
+
+export const ResourceIdentifiersSchema = z.array(ResourceIdentifierSchema).refine((identifiers) => {
+	const values = identifiers.map(({ scheme, value }) => `${scheme}:${value}`);
+	const schemes = identifiers.map(({ scheme }) => scheme);
+	const preferredSchemes = identifiers.filter(({ preferred }) => preferred).map(({ scheme }) => scheme);
+	return (
+		new Set(values).size === values.length &&
+		new Set(preferredSchemes).size === preferredSchemes.length &&
+		new Set(preferredSchemes).size === new Set(schemes).size
+	);
+}, 'Identifiers must be unique with exactly one preferred value per scheme');
+
+export type ResourceIdentifier = Readonly<z.infer<typeof ResourceIdentifierSchema>>;
 
 export function isPaperIdentifier(identifier: ResourceIdentifier): identifier is PaperIdentifier {
 	return isPaperIdentifierScheme(identifier.scheme);
-}
-
-function normalizePlatformIdentifier(
-	identifier: Omit<ResourceIdentifier, 'preferred'> & { preferred?: boolean },
-): ResourceIdentifier | null {
-	const value = identifier.value.trim();
-	if (!value) return null;
-	if (identifier.scheme === 'hackernews' && !/^[1-9]\d*$/.test(value)) return null;
-	if (identifier.scheme === 'lesswrong' && !/^[A-Za-z0-9_-]{8,64}$/.test(value)) return null;
-	if (identifier.scheme === 'twitter' && !/^\d+$/.test(value)) return null;
-	if (identifier.scheme === 'youtube' && !/^[A-Za-z0-9_-]{6,20}$/.test(value)) return null;
-	return { preferred: identifier.preferred !== false, scheme: identifier.scheme, value };
-}
-
-export function normalizeResourceIdentifiers(
-	identifiers: readonly (Omit<ResourceIdentifier, 'preferred'> & { preferred?: boolean })[],
-): ResourceIdentifier[] {
-	const papers = normalizePaperIdentifiers(
-		identifiers.filter((identifier): identifier is Omit<PaperIdentifier, 'preferred'> & { preferred?: boolean } =>
-			isPaperIdentifierScheme(identifier.scheme),
-		),
-	);
-	const platforms = identifiers.flatMap((identifier) => {
-		if (isPaperIdentifierScheme(identifier.scheme)) return [];
-		const normalized = normalizePlatformIdentifier(identifier);
-		return normalized ? [normalized] : [];
-	});
-	const deduplicated = new Map<string, ResourceIdentifier>();
-	for (const identifier of [...papers, ...platforms]) {
-		const key = `${identifier.scheme}:${identifier.value}`;
-		const existing = deduplicated.get(key);
-		deduplicated.set(key, existing ? { ...existing, preferred: existing.preferred || identifier.preferred } : identifier);
-	}
-	const preferredSchemes = new Set<ResourceIdentifierScheme>();
-	return [...deduplicated.values()].map((identifier) => {
-		const preferred = identifier.preferred && !preferredSchemes.has(identifier.scheme);
-		if (preferred) preferredSchemes.add(identifier.scheme);
-		return { ...identifier, preferred };
-	});
 }
