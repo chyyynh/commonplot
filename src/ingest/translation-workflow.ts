@@ -17,6 +17,7 @@ type ResourceTranslationInput = {
 	fileType: string | null;
 	id: string;
 	originalLang: string;
+	scope: 'corpus' | 'private';
 	title: string;
 	summary: string | null;
 	content: string;
@@ -38,6 +39,7 @@ type ResourceTranslationInputRow = {
 	kind: keyof typeof RESOURCE_TYPES;
 	resource_platform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null;
 	original_lang: string;
+	scope: 'corpus' | 'private';
 	title: string | null;
 	summary: string | null;
 	content: string | null;
@@ -119,12 +121,23 @@ function needsMachineContentTranslation(resource: ResourceTranslationInput): boo
 	return translated.length / content.length < PARTIAL_CONTENT_TRANSLATION_RATIO;
 }
 
+function isPrivateUploadedPdf(resource: ResourceTranslationInput): boolean {
+	return (
+		resource.scope === 'private' &&
+		resource.kind === 'blog' &&
+		resource.resourcePlatform === null &&
+		resource.fileType === 'application/pdf' &&
+		resource.url === null
+	);
+}
+
 function planZhHantTranslation(resource: ResourceTranslationInput): ZhHantTranslationPlan {
 	const translation = resource.zhHantTranslation;
+	const privateUploadedPdf = isPrivateUploadedPdf(resource);
 	if (
 		!(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(resource.kind) ||
-		!resource.url ||
-		(resource.fileType === 'application/pdf' && resource.resourcePlatform === null) ||
+		(!resource.url && !privateUploadedPdf) ||
+		(resource.fileType === 'application/pdf' && resource.resourcePlatform === null && !privateUploadedPdf) ||
 		isBlank(resource.title) ||
 		isBlank(resource.content) ||
 		resource.originalLang === 'zh-Hant' ||
@@ -315,6 +328,7 @@ async function loadResourceTranslationInput(
 			resource.kind,
 			resource.resource_platform,
 			resource.original_lang,
+			resource.scope,
 			original.title AS title,
 			original.summary AS summary,
 			original.content AS content,
@@ -337,7 +351,21 @@ async function loadResourceTranslationInput(
 		  ON zh_hant.resource_id = resource.id
 		 AND zh_hant.lang = 'zh-Hant'
 		WHERE resource.id = ${resourceId}::uuid
-		  AND resource.scope = 'corpus'
+		  AND (
+			resource.scope = 'corpus'
+			OR (
+			  resource.scope = 'private'
+			  AND resource.kind = 'blog'
+			  AND resource.resource_platform IS NULL
+			  AND resource.file_type = 'application/pdf'
+			  AND resource.storage_key IS NOT NULL
+			  AND EXISTS (
+				SELECT 1
+				FROM user_files file
+				WHERE file.resource_id = resource.id
+			  )
+			)
+		  )
 		LIMIT 1
 	`);
 	const row = result.rows[0];
@@ -353,6 +381,7 @@ async function loadResourceTranslationInput(
 			fileType: row.file_type,
 			id: row.id,
 			originalLang: canonicalizeResourceLang(row.original_lang),
+			scope: row.scope,
 			title: row.title ?? '',
 			summary: row.summary,
 			content: row.content ?? '',
@@ -383,7 +412,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 	async run(event: WorkflowEvent<ResourceTranslationPayload>, step: WorkflowStep) {
 		const { resourceId, translationRevision } = event.payload;
 		const input = await step.do(
-			'load-resource-translation-input-kind-platform-v2',
+			'load-resource-translation-input-scope-v3',
 			{
 				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 				timeout: '30 seconds',
@@ -462,11 +491,13 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			);
 			if (!persisted) return;
 		}
-		await step.do(
-			'sync-translated-resource-to-ai-search',
-			{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '90 seconds' },
-			async () => syncCorpusItem(this.env, await connectCoreDb(this.env), resourceId),
-		);
-		console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Completed', resource_id: resourceId });
+		if (resource.scope === 'corpus') {
+			await step.do(
+				'sync-translated-resource-to-ai-search',
+				{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '90 seconds' },
+				async () => syncCorpusItem(this.env, await connectCoreDb(this.env), resourceId),
+			);
+		}
+		console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Completed', resource_id: resourceId, scope: resource.scope });
 	}
 }

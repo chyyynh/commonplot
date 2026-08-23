@@ -232,7 +232,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			stageResourceImages(this.env, step, processingId, imageSources),
 		]);
 		const persistence = await step.do<Awaited<ReturnType<ResourceGraphRpc['persistResolvedResource']>>>(
-			'persist-resolved-resource-v1',
+			'persist-resolved-resource-scope-v2',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 			() =>
 				this.env.DOMAIN.persistResolvedResource({
@@ -240,24 +240,29 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					target: call.persistenceTarget,
 				}),
 		);
-		const { resourceId: persistedResourceId, subjectAttached, translationRevision } = persistence;
-		const followUps: Promise<unknown>[] = translationRevision
-			? [
-					step.do(
-						'sync-resolved-ai-search-v1',
-						{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '90 seconds' },
-						async () => {
-							const db = await connectCoreDb(this.env);
-							await syncCorpusItem(this.env, db, persistedResourceId);
-						},
-					),
-					step.do(
-						'enqueue-resource-translation-v2',
-						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision),
-					),
-				]
-			: [];
+		const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision } = persistence;
+		const followUps: Promise<unknown>[] = [];
+		if (scope === 'corpus') {
+			followUps.push(
+				step.do(
+					'sync-resolved-ai-search-v1',
+					{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '90 seconds' },
+					async () => {
+						const db = await connectCoreDb(this.env);
+						await syncCorpusItem(this.env, db, persistedResourceId);
+					},
+				),
+			);
+		}
+		if (translationRevision) {
+			followUps.push(
+				step.do(
+					'enqueue-resource-translation-v2',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision),
+				),
+			);
+		}
 		const subject = resource.subject;
 		if (subject && !subjectAttached) {
 			followUps.push(
