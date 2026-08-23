@@ -12,8 +12,8 @@ importers:
         specifier: ^8.1.0
         version: 8.1.0
       '@llamaindex/liteparse-wasm':
-        specifier: ^2.1.1
-        version: 2.1.1
+        specifier: 2.13.1
+        version: 2.13.1
       ai:
         specifier: 7.0.58
         version: 7.0.58(zod@4.4.3)
@@ -512,8 +512,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.9':
     resolution: {integrity: sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ==}
 
-  '@llamaindex/liteparse-wasm@2.1.1':
-    resolution: {integrity: sha512-vOoBPgD4v0mvvvWZ7zDkr3A8Td2RhmWRD0etl+Jrl13WPvD2tRfeDUbiyU+LxZedpzv3MzCY6dPSJuf++qkbJQ==}
+  '@llamaindex/liteparse-wasm@2.13.1':
+    resolution: {integrity: sha512-TJrL7WYjR7VyNvev7uwxp5xFZOGEwUnsEEYERKI6qZXWdGK/UoTvMX4EzdCc/Pmof/LDUizWVypfU2/7jgEV8g==}
     engines: {node: '>=18.0.0'}
 
   '@mozilla/readability@0.6.0':
@@ -1295,7 +1295,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@llamaindex/liteparse-wasm@2.1.1': {}
+  '@llamaindex/liteparse-wasm@2.13.1': {}
 
   '@mozilla/readability@0.6.0': {}
 

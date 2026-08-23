@@ -3,14 +3,11 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import type { PersistResolvedResourceTarget } from '@app-domain/resource-graph-contracts';
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
 import { isPaperIdentifier, type ResourceCreator, type ResourceKindMetadata } from '@core-shared/resource';
-import { initSync, LiteParse } from '@llamaindex/liteparse-wasm';
-import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
+import { parsePdfWithLiteParse } from './liteparse';
 import type { GenericAcquiredMaterial, ResolvedResource } from './materialize';
 
 export const PDF_MIME = 'application/pdf';
 
-const MIN_PDF_CHARS = 40;
-const MIN_PDF_CHARS_PER_PAGE = 20;
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
 
 export type StoredPdfAcquisitionInput = {
@@ -37,16 +34,15 @@ function extractedTextChars(markdown: string): number {
 }
 
 async function parsePdfBytes(bytes: Uint8Array, source: string): Promise<string> {
-	initSync({ module: wasmModule });
-	const parser = new LiteParse({ ocrEnabled: false, outputFormat: 'markdown', imageMode: 'off' });
-	const raw = (await parser.parse(bytes)) as { text?: unknown; pages?: unknown };
-	if (typeof raw.text !== 'string') throw new Error('LiteParse response is missing text');
-	if (!Array.isArray(raw.pages) || raw.pages.length === 0) throw new Error('LiteParse response is missing pages');
-	const text = raw.text.trim();
-	const pages = raw.pages.length;
-	const chars = extractedTextChars(text);
-	if (chars < MIN_PDF_CHARS || chars / pages < MIN_PDF_CHARS_PER_PAGE) throw new NonRetryableError(`${source} requires OCR`);
-	return text;
+	const result = await parsePdfWithLiteParse(bytes);
+	const markdown = result.pages
+		.filter((page) => !page.complexity.isGarbled)
+		.map((page) => page.markdown.trim())
+		.filter((page) => extractedTextChars(page) > 0)
+		.join('\n\n')
+		.trim();
+	if (!markdown) throw new NonRetryableError(`${source} has no usable text; OCR is required`);
+	return markdown;
 }
 
 async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfAcquisitionInput): Promise<GenericAcquiredMaterial> {
