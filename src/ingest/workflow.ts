@@ -24,7 +24,6 @@ type ResolvedProcessingCall = {
 	resource: ProcessingResource;
 	persistenceTarget: PersistResolvedResourceTarget;
 	processingId: string;
-	complete?(originalTranslationRevision: string | null): Promise<void>;
 };
 
 const CLASSIFICATION_CONTENT_MAX_LENGTH = 10000;
@@ -285,7 +284,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			);
 		}
 		await Promise.all(followUps);
-		await call.complete?.(translationRevision);
 
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
 		return { resourceId: persistedResourceId };

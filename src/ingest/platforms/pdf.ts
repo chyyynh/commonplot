@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import type { PersistResolvedResourceTarget, ResourcePdfParseIdentity } from '@app-domain/resource-graph-contracts';
+import type { PersistResolvedResourceTarget } from '@app-domain/resource-graph-contracts';
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
 import { isPaperIdentifier } from '@core-shared/resource';
 import { connectCoreDb } from '@db/connection';
@@ -83,34 +83,9 @@ export async function stagePrivatePdfMarkdownTranslation(
 export type StoredPdfAcquisition = Readonly<{
 	material: GenericAcquiredMaterial;
 	resource: StoredPdfInput;
-	complete(originalTranslationRevision: string | null): Promise<void>;
 }>;
 
 type StoredPdfTarget = Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'storedBlob' }>;
-
-function parseIdentity(target: StoredPdfTarget): ResourcePdfParseIdentity {
-	return {
-		parseRunId: target.parseAdmission.parseRunId,
-		fileResourceId: target.parseAdmission.fileResourceId,
-		inputContentHash: target.parseAdmission.inputContentHash,
-	};
-}
-
-function localParseSummary(document: PdfWorkingDocumentV1) {
-	const qualityReasons = [
-		...(document.quality.needsOcrPages.length > 0 ? ['needs-ocr'] : []),
-		...(document.quality.garbledPages.length > 0 ? ['garbled-text'] : []),
-		...(document.quality.complexLayoutPages.length > 0 ? ['complex-layout'] : []),
-		...(document.quality.failedPages.length > 0 ? ['parse-failed'] : []),
-		...(document.quality.unparsedPages > 0 ? ['unparsed'] : []),
-	].sort();
-	return {
-		totalPages: document.totalPages,
-		usablePages: document.quality.usablePages,
-		problemPages: document.quality.problemPages,
-		qualityReasons,
-	};
-}
 
 async function parsePdfBytes(bytes: Uint8Array, source: string): Promise<PdfWorkingDocumentV1> {
 	const result = await parsePdfWithLiteParse(bytes);
@@ -118,10 +93,7 @@ async function parsePdfBytes(bytes: Uint8Array, source: string): Promise<PdfWork
 	return result;
 }
 
-async function acquireStoredPdf(
-	env: CoreEnv,
-	resource: StoredPdfInput,
-): Promise<Readonly<{ material: GenericAcquiredMaterial; workingDocument: PdfWorkingDocumentV1 }>> {
+async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise<GenericAcquiredMaterial> {
 	if (resource.fileType !== PDF_MIME) {
 		throw new Error(`Stored resource ${resource.resourceId} is not an R2 PDF`);
 	}
@@ -130,19 +102,16 @@ async function acquireStoredPdf(
 	if (obj.size > MAX_PDF_BYTES) throw new Error(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
 	const workingDocument = await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()), `Stored PDF ${resource.resourceId}`);
 	return {
-		material: {
-			resourcePlatform: null,
-			fileType: PDF_MIME,
-			title: resource.title,
-			markdown: workingDocument.markdown,
-			source: resource.source,
-			originalLang: resource.originalLang,
-			publishedDate: resource.publishedDate,
-			summary: resource.summary,
-			creators: resource.creators,
-			kindMetadata: resource.kindMetadata,
-		},
-		workingDocument,
+		resourcePlatform: null,
+		fileType: PDF_MIME,
+		title: resource.title,
+		markdown: workingDocument.markdown,
+		source: resource.source,
+		originalLang: resource.originalLang,
+		publishedDate: resource.publishedDate,
+		summary: resource.summary,
+		creators: resource.creators,
+		kindMetadata: resource.kindMetadata,
 	};
 }
 
@@ -185,39 +154,12 @@ export async function acquireFetchedPdfResponse(response: Response, finalUrl: st
 }
 
 export async function stageStoredPdfAcquisition(env: CoreEnv, step: WorkflowStep, target: StoredPdfTarget): Promise<StoredPdfAcquisition> {
-	const identity = parseIdentity(target);
 	const resource = await step.do(
 		'load-stored-pdf-input-v1',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 		async () => loadStoredPdfInput(await connectCoreDb(env), target.resourceId),
 		{
-			rollback: async () => {
-				await Promise.all([
-					markStoredBlobProcessingFailed(await connectCoreDb(env), target.resourceId),
-					env.DOMAIN.failResourcePdfParse({ ...identity, errorCode: 'workflow_failed' }),
-				]);
-			},
-			rollbackConfig: {
-				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
-				timeout: '30 seconds',
-			},
-		},
-	);
-	if (resource.resourceId !== identity.fileResourceId || resource.contentHash !== identity.inputContentHash) {
-		throw new NonRetryableError('Stored PDF no longer matches its admitted parse run');
-	}
-	await step.do(
-		'start-stored-pdf-parse-v1',
-		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-		async () => {
-			if (!(await env.DOMAIN.startResourcePdfParse(identity))) {
-				throw new Error('App did not start the admitted PDF parse run');
-			}
-		},
-		{
-			rollback: async () => {
-				await env.DOMAIN.failResourcePdfParse({ ...identity, errorCode: 'workflow_failed' });
-			},
+			rollback: async () => markStoredBlobProcessingFailed(await connectCoreDb(env), target.resourceId),
 			rollbackConfig: {
 				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 				timeout: '30 seconds',
@@ -225,36 +167,13 @@ export async function stageStoredPdfAcquisition(env: CoreEnv, step: WorkflowStep
 		},
 	);
 	const contentStream = await step.do(
-		'acquire-stored-pdf-v2',
+		'acquire-stored-pdf-v3',
 		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await acquireStoredPdf(env, resource)).body!,
 	);
-	const acquired = await new Response(contentStream).json<
-		Readonly<{ material: GenericAcquiredMaterial; workingDocument: PdfWorkingDocumentV1 }>
-	>();
-	await step.do(
-		'record-local-pdf-parse-v1',
-		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-		async () => {
-			if (!(await env.DOMAIN.recordLocalResourcePdfParse({ ...identity, ...localParseSummary(acquired.workingDocument) }))) {
-				throw new Error('App did not record the local PDF parse result');
-			}
-		},
-	);
 	return {
-		material: acquired.material,
+		material: await new Response(contentStream).json<GenericAcquiredMaterial>(),
 		resource,
-		complete: async (originalTranslationRevision) => {
-			await step.do(
-				'complete-pdf-parse-v1',
-				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				async () => {
-					if (!(await env.DOMAIN.completeResourcePdfParse({ ...identity, originalTranslationRevision }))) {
-						throw new Error('App did not complete the PDF parse run');
-					}
-				},
-			);
-		},
 	};
 }
 

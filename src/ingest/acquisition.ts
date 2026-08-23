@@ -140,7 +140,6 @@ export async function stageStoredResource(
 	resource: ProcessingResource;
 	persistenceTarget: ReturnType<typeof storedPdfProcessingResult>['persistenceTarget'];
 	processingId: string;
-	complete(originalTranslationRevision: string | null): Promise<void>;
 }> {
 	const acquired = await stageStoredPdfAcquisition(env, step, target);
 	return {
@@ -159,7 +158,6 @@ export async function stageStoredResource(
 			acquired.resource,
 		),
 		keywordHints: [],
-		processingId: target.parseAdmission.parseRunId,
-		complete: acquired.complete,
+		processingId: target.resourceId,
 	};
 }

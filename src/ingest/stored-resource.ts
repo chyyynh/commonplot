@@ -1,7 +1,6 @@
 // Narrow database projections for the two record-first processing paths.
 
 import { normalizePaperIdentifiers, type PaperIdentifier } from '@core-shared/paper-identity';
-import type { PdfParseAdmissionSnapshot } from '@core-shared/pdf-parse-contract';
 import {
 	canonicalizeResourceLang,
 	isPaperIdentifier,
@@ -16,20 +15,17 @@ import type { CoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/display-source-sql';
 import { sql } from 'drizzle-orm';
 import { z } from 'zod';
-import { parsePdfParseAdmission } from '../shared/pdf-parse-contract.ts';
 import { parseResourceProcessingWorkflowPayload } from './processing-jobs';
 
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
-const PENDING_BLOB_RECONCILE_CONCURRENCY = 10;
-const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v10';
+const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v11';
 const STORED_PDF_WORKFLOW_RETENTION = {
 	successRetention: '5 minutes',
 	errorRetention: '1 hour',
 } as const;
 
 export type StoredPdfInput = {
-	contentHash: string;
 	creators: ResourceCreator[];
 	fileType: string;
 	kindMetadata: ResourceKindMetadata | null;
@@ -51,7 +47,6 @@ export type ResourceReacquisitionInput = {
 };
 
 type StoredPdfRow = {
-	content_hash: string | null;
 	creators: unknown;
 	file_type: string | null;
 	id: string;
@@ -73,23 +68,31 @@ type ResourceReacquisitionRow = {
 	url: string | null;
 };
 
-export type StoredPdfProcessingAdmissionInput = Readonly<{
+export type StoredPdfProcessingInput = Readonly<{
 	resourceId: string;
-	parseAdmission: PdfParseAdmissionSnapshot;
+	/** Accepted only while an older app deployment may still send it. */
+	parseAdmission?: unknown;
 }>;
 
-export async function enqueueProcessing(env: CoreEnv, input: StoredPdfProcessingAdmissionInput): Promise<string> {
+function storedPdfWorkflowInstance(resourceId: string) {
 	const payload = parseResourceProcessingWorkflowPayload({
 		target: {
 			kind: 'storedBlob',
-			resourceId: z.uuid().parse(input.resourceId),
-			parseAdmission: input.parseAdmission,
+			resourceId: z.uuid().parse(resourceId),
 		},
 	});
 	if (payload.target.kind !== 'storedBlob') throw new Error('Stored PDF processing payload was not preserved');
-	const id = `${STORED_RESOURCE_WORKFLOW_REVISION}-${payload.target.parseAdmission.parseRunId}`;
-	await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: payload, retention: STORED_PDF_WORKFLOW_RETENTION }]);
-	return id;
+	return {
+		id: `${STORED_RESOURCE_WORKFLOW_REVISION}-${payload.target.resourceId}`,
+		params: payload,
+		retention: STORED_PDF_WORKFLOW_RETENTION,
+	};
+}
+
+export async function enqueueProcessing(env: CoreEnv, input: StoredPdfProcessingInput): Promise<string> {
+	const instance = storedPdfWorkflowInstance(input.resourceId);
+	await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([instance]);
+	return instance.id;
 }
 
 export async function enqueueResourceResync(env: CoreEnv, resourceId: string): Promise<string> {
@@ -118,133 +121,43 @@ export async function markStoredBlobProcessingFailed(db: CoreDb, resourceId: str
 	`);
 }
 
-type QueuedPdfParseAdmissionRow = {
+type PendingBlobRow = {
 	resource_id: string;
-	parse_run_id: string;
-	revision: number;
-	input_content_hash: string;
-	working_schema_version: number;
-	parser_version: string;
-	policy_revision: string;
-	processing_policy: string;
-	entitlement_feature: string | null;
-	max_enhanced_pages: number | null;
-	max_provider_credits: string | number | null;
-	provider_tier: string | null;
-	provider_version: string | null;
 };
 
-async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limit: number): Promise<StoredPdfProcessingAdmissionInput[]> {
-	const claimed = await db.execute<QueuedPdfParseAdmissionRow>(sql`
-		WITH candidates AS (
-			SELECT
-			  resource.id,
-			  parse_run.id AS parse_run_id,
-			  parse_run.revision,
-			  parse_run.input_content_hash,
-			  parse_run.working_schema_version,
-			  parse_run.parser_version,
-			  parse_run.policy_revision,
-			  parse_run.processing_policy,
-			  parse_run.entitlement_feature,
-			  parse_run.max_enhanced_pages,
-			  parse_run.max_provider_credits,
-			  parse_run.provider_tier,
-			  parse_run.provider_version
-			FROM resources resource
-			JOIN LATERAL (
-			  SELECT run.*
-			  FROM resource_parse_runs run
-			  WHERE run.file_resource_id = resource.id
-			    AND run.user_file_id IS NOT NULL
-			    AND run.retired_at IS NULL
-			    AND run.status = 'queued'
-			  ORDER BY run.revision DESC
-			  LIMIT 1
-			) parse_run ON TRUE
-			WHERE resource.enrichment_status = 'pending'
-			  AND resource.scope = 'private'
-			  AND resource.storage_key IS NOT NULL
-			  AND EXISTS (
-			    SELECT 1
-			    FROM user_files
-			    WHERE user_files.resource_id = resource.id
-			  )
-			  AND resource.updated_at < ${olderThan}
-			  AND resource.kind NOT IN ('image', 'file')
-			ORDER BY resource.updated_at ASC, resource.id ASC
-			FOR UPDATE OF resource SKIP LOCKED
-			LIMIT ${limit}
-		)
-		UPDATE resources AS resource
-		SET updated_at = NOW()
-		FROM candidates
-		WHERE resource.id = candidates.id
-		RETURNING
-		  resource.id::text AS resource_id,
-		  candidates.parse_run_id::text AS parse_run_id,
-		  candidates.revision,
-		  candidates.input_content_hash,
-		  candidates.working_schema_version,
-		  candidates.parser_version,
-		  candidates.policy_revision,
-		  candidates.processing_policy,
-		  candidates.entitlement_feature,
-		  candidates.max_enhanced_pages,
-		  candidates.max_provider_credits,
-		  candidates.provider_tier,
-		  candidates.provider_version
+async function stalePendingBlobResourceIds(db: CoreDb, olderThan: Date, limit: number): Promise<string[]> {
+	const result = await db.execute<PendingBlobRow>(sql`
+		SELECT resource.id::text AS resource_id
+		FROM resources resource
+		WHERE resource.enrichment_status = 'pending'
+		  AND resource.scope = 'private'
+		  AND resource.kind = 'blog'
+		  AND resource.resource_platform IS NULL
+		  AND resource.file_type = 'application/pdf'
+		  AND resource.storage_key IS NOT NULL
+		  AND EXISTS (
+		    SELECT 1
+		    FROM user_files
+		    WHERE user_files.resource_id = resource.id
+		  )
+		  AND resource.updated_at < ${olderThan}
+		ORDER BY resource.updated_at ASC, resource.id ASC
+		LIMIT ${limit}
 	`);
-	return claimed.rows.map((row) => ({
-		resourceId: row.resource_id,
-		parseAdmission: parsePdfParseAdmission({
-			parseRunId: row.parse_run_id,
-			fileResourceId: row.resource_id,
-			revision: row.revision,
-			inputContentHash: row.input_content_hash,
-			workingSchemaVersion: row.working_schema_version,
-			parserVersion: row.parser_version,
-			policyRevision: row.policy_revision,
-			processingPolicy: row.processing_policy,
-			entitlementFeature: row.entitlement_feature,
-			maxEnhancedPages: row.max_enhanced_pages,
-			maxProviderCredits: row.max_provider_credits === null ? null : String(row.max_provider_credits),
-			providerTier: row.provider_tier,
-			providerVersion: row.provider_version,
-		}),
-	}));
+	return result.rows.map((row) => row.resource_id);
 }
 
 /** Repairs only interrupted DB-to-Workflow handoffs for record-first app-owned blobs. */
 export async function reconcilePendingBlobProcessing(env: CoreEnv, db: CoreDb): Promise<void> {
-	const admissions = await claimStalePendingBlobAdmissions(db, new Date(Date.now() - PENDING_BLOB_GRACE_MS), PENDING_BLOB_RECONCILE_LIMIT);
-	if (!admissions.length) return;
-
-	let reconciled = 0;
-	let failed = 0;
-	for (let offset = 0; offset < admissions.length; offset += PENDING_BLOB_RECONCILE_CONCURRENCY) {
-		const batch = admissions.slice(offset, offset + PENDING_BLOB_RECONCILE_CONCURRENCY);
-		const results = await Promise.allSettled(batch.map((admission) => enqueueProcessing(env, admission)));
-		for (const [index, result] of results.entries()) {
-			if (result.status === 'fulfilled') {
-				reconciled++;
-				continue;
-			}
-			failed++;
-			console.error({
-				tag: 'RESOURCE_WORKFLOW',
-				event: 'pending_blob_reconciliation_failed',
-				resource_id: batch[index]?.resourceId,
-				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-			});
-		}
-	}
+	const resourceIds = await stalePendingBlobResourceIds(db, new Date(Date.now() - PENDING_BLOB_GRACE_MS), PENDING_BLOB_RECONCILE_LIMIT);
+	if (!resourceIds.length) return;
+	const created = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(resourceIds.map(storedPdfWorkflowInstance));
 	console.info({
 		tag: 'RESOURCE_WORKFLOW',
 		event: 'pending_blob_reconciliation_completed',
-		attempted: admissions.length,
-		reconciled,
-		failed,
+		attempted: resourceIds.length,
+		created: created.length,
+		existing: resourceIds.length - created.length,
 	});
 }
 
@@ -252,7 +165,6 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 	const result = await db.execute<StoredPdfRow>(sql`
 		SELECT
 			resource.id::text AS id,
-			resource.content_hash,
 			resource.kind,
 			original.title,
 			original.summary,
@@ -286,12 +198,7 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 	if (!title) throw new Error(`Stored PDF ${resourceId} has no title`);
 	if (!source) throw new Error(`Stored PDF ${resourceId} has no source`);
 	if (!row.storage_key || !row.file_type) throw new Error(`Stored PDF ${resourceId} has no blob representation`);
-	const contentHash = z
-		.string()
-		.regex(/^[0-9a-f]{64}$/)
-		.parse(row.content_hash);
 	return {
-		contentHash,
 		creators: storedResourceCreatorsValue(row.creators, resourceId),
 		fileType: row.file_type,
 		kindMetadata: RESOURCE_TYPES[row.kind].metadata.parse(row.kind_metadata),

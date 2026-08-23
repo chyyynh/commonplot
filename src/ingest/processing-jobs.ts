@@ -8,7 +8,6 @@ import { sha256Hex } from '@core-shared/hash';
 import { canonicalizeOptionalResourceLang } from '@core-shared/resource';
 import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
 import { z } from 'zod';
-import { PdfParseAdmissionSchema } from '../shared/pdf-parse-contract.ts';
 
 const ResourceDraftTargetSchema = z
 	.object({
@@ -39,17 +38,11 @@ const ResourceProcessingWorkflowPayloadSchema = z
 				.object({
 					kind: z.literal('storedBlob'),
 					resourceId: z.string().uuid(),
-					parseAdmission: PdfParseAdmissionSchema,
+					// Transitional compatibility for already-deployed app callers and
+					// Workflow instances. Core deliberately ignores the retired ledger.
+					parseAdmission: z.unknown().optional(),
 				})
-				.strict()
-				.superRefine((target, context) => {
-					if (target.resourceId !== target.parseAdmission.fileResourceId) {
-						context.addIssue({
-							code: 'custom',
-							message: 'Stored PDF admission Resource id does not match its target',
-						});
-					}
-				}),
+				.strict(),
 			z
 				.object({
 					kind: z.literal('reacquire'),
