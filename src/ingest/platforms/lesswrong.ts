@@ -95,8 +95,5 @@ export async function stageLessWrongAcquisition(
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await scrapeLessWrong(postId)).body!,
 	);
-	return materializePlatformResource(
-		await new Response(contentStream).json<PlatformAcquiredMaterial<'lesswrong'>>(),
-		origin,
-	);
+	return materializePlatformResource(await new Response(contentStream).json<PlatformAcquiredMaterial<'lesswrong'>>(), origin);
 }

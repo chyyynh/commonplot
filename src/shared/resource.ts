@@ -172,7 +172,10 @@ function canonicalIdentifierValue(scheme: ResourceIdentifierScheme, value: strin
 const ResourceIdentifierSchema = z
 	.object({ preferred: z.boolean(), scheme: ResourceIdentifierSchemeSchema, value: z.string() })
 	.strict()
-	.refine((identifier) => canonicalIdentifierValue(identifier.scheme, identifier.value) === identifier.value, 'Identifier is not canonical');
+	.refine(
+		(identifier) => canonicalIdentifierValue(identifier.scheme, identifier.value) === identifier.value,
+		'Identifier is not canonical',
+	);
 
 export const ResourceIdentifiersSchema = z.array(ResourceIdentifierSchema).refine((identifiers) => {
 	const values = identifiers.map(({ scheme, value }) => `${scheme}:${value}`);

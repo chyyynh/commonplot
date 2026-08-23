@@ -484,10 +484,7 @@ export async function stageTwitterAcquisition(
 			).body!;
 		},
 	);
-	return materializePlatformResource(
-		await new Response(contentStream).json<PlatformAcquiredMaterial<'twitter'>>(),
-		input.origin,
-	);
+	return materializePlatformResource(await new Response(contentStream).json<PlatformAcquiredMaterial<'twitter'>>(), input.origin);
 }
 
 type TwitterThreadSearchResult = {

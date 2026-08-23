@@ -1,4 +1,4 @@
-import { paperIdentifiersFromIdentity, resolveExactPaperInput, type PaperIdentifier } from '../../shared/paper-identity.ts';
+import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '../../shared/paper-identity.ts';
 import {
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
@@ -142,9 +142,7 @@ function resolvedSubjectInput(subjectUrl: string | null | undefined): ResolvedRe
 	const detected = detectResourceUrl(subjectUrl);
 	const normalizedUrl = detected ? canonicalResourcePlatformUrl(detected.resourcePlatform, detected.platformId) : normalizeUrl(subjectUrl);
 	return {
-		identifiers: detected
-			? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }]
-			: [],
+		identifiers: detected ? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }] : [],
 		normalizedUrl,
 	};
 }

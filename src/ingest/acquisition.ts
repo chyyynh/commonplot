@@ -82,14 +82,7 @@ export async function stageUrlAcquisition(
 	if (!detected) {
 		const web = await stageWebAcquisition(env, step, { processingId: input.processingId, url: acquisitionUrl });
 		if (!('redirectUrl' in web)) {
-			return resolveGenericAcquiredResource(
-				env,
-				step,
-				web,
-				input.origin,
-				input.processingId,
-				input.translatePaperUrl,
-			);
+			return resolveGenericAcquiredResource(env, step, web, input.origin, input.processingId, input.translatePaperUrl);
 		}
 		acquisitionUrl = web.redirectUrl;
 		detected = detectResourceUrl(acquisitionUrl);

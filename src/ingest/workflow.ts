@@ -1,9 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import type {
-	PersistResolvedResourceInput,
-	PersistResolvedResourceTarget,
-	ResourceGraphRpc,
-} from '@app-domain/resource-graph-contracts';
+import type { PersistResolvedResourceInput, PersistResolvedResourceTarget, ResourceGraphRpc } from '@app-domain/resource-graph-contracts';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/image-mapping';
 import { connectCoreDb } from '@db/connection';
 import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
