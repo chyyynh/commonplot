@@ -175,11 +175,36 @@ const liteAdmission = {
 	entitlementFeature: null,
 	maxEnhancedPages: null,
 	maxProviderCredits: null,
+	providerTier: null,
+	providerVersion: null,
 };
 assert.deepEqual(parsePdfParseAdmission(liteAdmission), liteAdmission);
 assert.throws(
 	() => parsePdfParseAdmission({ ...liteAdmission, processingPolicy: 'selective-enhancement' }),
 	/Enhanced PDF admission is incomplete/,
+);
+const closedEnhancedAdmission = {
+	...liteAdmission,
+	policyRevision: PDF_PARSE_CONTRACT.enhancementPolicyRevision,
+	processingPolicy: 'selective-enhancement',
+	entitlementFeature: 'enhanced_pdf_parsing',
+	maxEnhancedPages: PDF_PARSE_CONTRACT.maxEnhancedPages,
+};
+assert.deepEqual(parsePdfParseAdmission(closedEnhancedAdmission), closedEnhancedAdmission);
+assert.throws(
+	() => parsePdfParseAdmission({ ...closedEnhancedAdmission, maxProviderCredits: '6' }),
+	/Enhanced PDF provider policy is incomplete/,
+);
+const admittedEnhancedPolicy = {
+	...closedEnhancedAdmission,
+	maxProviderCredits: '6',
+	providerTier: 'cost_effective',
+	providerVersion: PDF_PARSE_CONTRACT.llamaParseVersions.cost_effective,
+};
+assert.deepEqual(parsePdfParseAdmission(admittedEnhancedPolicy), admittedEnhancedPolicy);
+assert.throws(
+	() => parsePdfParseAdmission({ ...admittedEnhancedPolicy, providerVersion: PDF_PARSE_CONTRACT.llamaParseVersions.agentic }),
+	/Enhanced PDF provider policy is incomplete/,
 );
 console.info({
 	event: 'pdf_working_document_contract_passed',

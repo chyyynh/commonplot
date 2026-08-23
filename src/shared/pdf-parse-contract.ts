@@ -7,9 +7,15 @@ export const PDF_PARSE_CONTRACT = {
 	litePolicyRevision: 'liteparse-pages-v3',
 	enhancementPolicyRevision: 'selective-llamaparse-v2',
 	maxEnhancedPages: 25,
+	llamaParseVersions: {
+		cost_effective: '2026-06-26',
+		agentic: '2026-07-15',
+	},
 } as const;
 
 export type PdfParseProcessingPolicy = 'lite' | 'selective-enhancement';
+export type PdfParseProviderTier = keyof typeof PDF_PARSE_CONTRACT.llamaParseVersions;
+export type PdfParseProviderVersion = (typeof PDF_PARSE_CONTRACT.llamaParseVersions)[PdfParseProviderTier];
 
 /** App-authorized snapshot passed to Core; Core never re-derives entitlement. */
 export type PdfParseAdmissionSnapshot = Readonly<{
@@ -24,6 +30,8 @@ export type PdfParseAdmissionSnapshot = Readonly<{
 	entitlementFeature: string | null;
 	maxEnhancedPages: number | null;
 	maxProviderCredits: string | null;
+	providerTier: PdfParseProviderTier | null;
+	providerVersion: PdfParseProviderVersion | null;
 }>;
 
 export const PdfParseAdmissionSchema = z
@@ -42,6 +50,8 @@ export const PdfParseAdmissionSchema = z
 			.string()
 			.regex(/^(?:0|[1-9]\d{0,7})(?:\.\d{1,4})?$/)
 			.nullable(),
+		providerTier: z.enum(['cost_effective', 'agentic']).nullable(),
+		providerVersion: z.enum(['2026-06-26', '2026-07-15']).nullable(),
 	})
 	.strict()
 	.superRefine((admission, context) => {
@@ -50,7 +60,9 @@ export const PdfParseAdmissionSchema = z
 				admission.policyRevision !== PDF_PARSE_CONTRACT.litePolicyRevision ||
 				admission.entitlementFeature !== null ||
 				admission.maxEnhancedPages !== null ||
-				admission.maxProviderCredits !== null
+				admission.maxProviderCredits !== null ||
+				admission.providerTier !== null ||
+				admission.providerVersion !== null
 			) {
 				context.addIssue({
 					code: 'custom',
@@ -67,6 +79,17 @@ export const PdfParseAdmissionSchema = z
 			context.addIssue({
 				code: 'custom',
 				message: 'Enhanced PDF admission is incomplete',
+			});
+		}
+		const providerPolicyClosed = admission.maxProviderCredits === null;
+		if (
+			providerPolicyClosed !== (admission.providerTier === null) ||
+			providerPolicyClosed !== (admission.providerVersion === null) ||
+			(admission.providerTier !== null && admission.providerVersion !== PDF_PARSE_CONTRACT.llamaParseVersions[admission.providerTier])
+		) {
+			context.addIssue({
+				code: 'custom',
+				message: 'Enhanced PDF provider policy is incomplete',
 			});
 		}
 	});

@@ -8,10 +8,7 @@ import {
 } from './pdf-working-document.ts';
 
 export const PDF_ENHANCEMENT_POLICY_REVISION = PDF_PARSE_CONTRACT.enhancementPolicyRevision;
-export const LLAMAPARSE_V2_VERSION_BY_TIER = {
-	cost_effective: '2026-06-26',
-	agentic: '2026-07-15',
-} as const;
+export const LLAMAPARSE_V2_VERSION_BY_TIER = PDF_PARSE_CONTRACT.llamaParseVersions;
 
 export type SelectiveLlamaParseV2Tier = keyof typeof LLAMAPARSE_V2_VERSION_BY_TIER;
 

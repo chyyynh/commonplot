@@ -151,6 +151,8 @@ type QueuedPdfParseAdmissionRow = {
 	entitlement_feature: string | null;
 	max_enhanced_pages: number | null;
 	max_provider_credits: string | number | null;
+	provider_tier: string | null;
+	provider_version: string | null;
 };
 
 async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limit: number): Promise<StoredPdfProcessingAdmissionInput[]> {
@@ -167,7 +169,9 @@ async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limi
 			  parse_run.processing_policy,
 			  parse_run.entitlement_feature,
 			  parse_run.max_enhanced_pages,
-			  parse_run.max_provider_credits
+			  parse_run.max_provider_credits,
+			  parse_run.provider_tier,
+			  parse_run.provider_version
 			FROM resources resource
 			JOIN LATERAL (
 			  SELECT run.*
@@ -208,7 +212,9 @@ async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limi
 		  candidates.processing_policy,
 		  candidates.entitlement_feature,
 		  candidates.max_enhanced_pages,
-		  candidates.max_provider_credits
+		  candidates.max_provider_credits,
+		  candidates.provider_tier,
+		  candidates.provider_version
 	`);
 	return claimed.rows.map((row) => ({
 		resourceId: row.resource_id,
@@ -224,6 +230,8 @@ async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limi
 			entitlementFeature: row.entitlement_feature,
 			maxEnhancedPages: row.max_enhanced_pages,
 			maxProviderCredits: row.max_provider_credits === null ? null : String(row.max_provider_credits),
+			providerTier: row.provider_tier,
+			providerVersion: row.provider_version,
 		}),
 	}));
 }
