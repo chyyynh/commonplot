@@ -3,6 +3,7 @@ import { assessPdfTexts, type PdfTextSanitationSummary, stripUnsafePdfText } fro
 
 export const PDF_WORKING_DOCUMENT_SCHEMA_VERSION = PDF_PARSE_CONTRACT.workingSchemaVersion;
 export const LITEPARSE_POLICY_REVISION = PDF_PARSE_CONTRACT.litePolicyRevision;
+export const PDF_TRANSLATION_CHUNK_MAX_LENGTH = 32_000;
 
 export type PdfPageQualityV1 = Readonly<{
 	needsOcr: boolean;
@@ -331,4 +332,37 @@ export function normalizeLiteParseWorkingDocument(value: unknown, parserVersion:
 
 export function serializePdfWorkingDocument(document: PdfWorkingDocumentV1): string {
 	return JSON.stringify(document);
+}
+
+/**
+ * Deterministically bounds private-PDF Markdown for durable translation steps.
+ * Prefer a late Markdown/text boundary so ordinary paragraphs stay together;
+ * the hard limit is only used for an unusually long unbroken block.
+ */
+export function splitPdfMarkdownForTranslation(markdown: string, maxLength = PDF_TRANSLATION_CHUNK_MAX_LENGTH): string[] {
+	if (!Number.isInteger(maxLength) || maxLength < 16) {
+		throw new TypeError('PDF translation chunk length must be an integer of at least 16 characters');
+	}
+	let remaining = markdown.trim();
+	if (!remaining) return [];
+	const chunks: string[] = [];
+	const minimumBoundary = Math.floor(maxLength * 0.9);
+	const separators = ['\n\n', '\n', '. ', '。', '！', '？', '; ', '；', ', ', '，', ' '] as const;
+	while (remaining.length > maxLength) {
+		let end = maxLength;
+		let consumedSeparator = 0;
+		for (const separator of separators) {
+			const boundary = remaining.lastIndexOf(separator, maxLength - separator.length);
+			if (boundary < minimumBoundary) continue;
+			end = boundary + (separator.trim() ? separator.length : 0);
+			consumedSeparator = separator.trim() ? 0 : separator.length;
+			break;
+		}
+		const chunk = remaining.slice(0, end).trim();
+		if (!chunk) throw new Error('PDF translation chunking made no progress');
+		chunks.push(chunk);
+		remaining = remaining.slice(end + consumedSeparator).trimStart();
+	}
+	if (remaining) chunks.push(remaining.trimEnd());
+	return chunks;
 }

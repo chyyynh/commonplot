@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { sanitizePdfText } from '../src/ingest/platforms/pdf-text-quality.ts';
-import { normalizeLiteParseWorkingDocument, serializePdfWorkingDocument } from '../src/ingest/platforms/pdf-working-document.ts';
+import {
+	normalizeLiteParseWorkingDocument,
+	serializePdfWorkingDocument,
+	splitPdfMarkdownForTranslation,
+} from '../src/ingest/platforms/pdf-working-document.ts';
 import { PDF_PARSE_CONTRACT, parsePdfParseAdmission } from '../src/shared/pdf-parse-contract.ts';
 
 const strayControl = sanitizePdfText('Revenue\u0001 increased by 12%.');
@@ -116,7 +120,7 @@ assert.equal(Object.hasOwn(document.pages[0], 'blocks'), false, 'working pages d
 
 const serialized = serializePdfWorkingDocument(document);
 assert.equal(serialized, serializePdfWorkingDocument(document), 'serialization is deterministic');
-assert.deepEqual(JSON.parse(serialized), document, 'temporary R2 working state is plain JSON without runtime-only values');
+assert.deepEqual(JSON.parse(serialized), document, 'Workflow streamed working state is plain JSON without runtime-only values');
 
 function workingDocumentHasUnsafeText(value) {
 	if (typeof value === 'string') return sanitizePdfText(value).text !== value;
@@ -140,6 +144,23 @@ assert.throws(
 	/pages\[0\]\.complexity must be an object/,
 );
 assert.throws(() => normalizeLiteParseWorkingDocument(liteParseResult, '../latest'), /safe working revision/);
+
+const longMarkdown = ['A'.repeat(60), 'B'.repeat(60), 'C'.repeat(60), 'D'.repeat(60)].join('\n\n');
+const translationChunks = splitPdfMarkdownForTranslation(longMarkdown, 64);
+assert.deepEqual(translationChunks, ['A'.repeat(60), 'B'.repeat(60), 'C'.repeat(60), 'D'.repeat(60)]);
+assert.equal(translationChunks.join('\n\n'), longMarkdown, 'stable Markdown paragraph boundaries preserve the source projection');
+assert.deepEqual(translationChunks, splitPdfMarkdownForTranslation(longMarkdown, 64), 'PDF translation chunk boundaries are deterministic');
+assert.equal(
+	translationChunks.every((chunk) => chunk.length <= 64),
+	true,
+	'PDF translation chunks respect the per-step character limit when stable boundaries exist',
+);
+assert.deepEqual(
+	splitPdfMarkdownForTranslation('X'.repeat(130), 64).map((chunk) => chunk.length),
+	[64, 64, 2],
+	'an unbroken PDF Markdown block makes bounded forward progress',
+);
+assert.throws(() => splitPdfMarkdownForTranslation('content', 15), /at least 16 characters/);
 
 const fileResourceId = '8d2e4a53-23e1-4dab-a26b-6c762f427114';
 const liteAdmission = {
@@ -165,4 +186,5 @@ console.info({
 	pages: document.parsedPages,
 	problemPages: document.quality.problemPages.length,
 	serializedBytes: new TextEncoder().encode(serialized).byteLength,
+	translationChunks: translationChunks.length,
 });

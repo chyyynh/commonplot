@@ -7,6 +7,7 @@ import { sql } from 'drizzle-orm';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { syncCorpusItem } from '../ai-search';
+import { splitPdfMarkdownForTranslation } from './platforms/pdf-working-document';
 
 type ResourceTranslationPayload = { resourceId: string; translationRevision: string };
 const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const;
@@ -56,8 +57,9 @@ const METADATA_CONTENT_MAX_LENGTH = 10000;
  * Ceiling for translating a body in one call. Measured on qwen3-30b: ~0.165
  * input and ~0.29 output tokens per source character at ~108 output tokens/s,
  * so 36k characters is ~18k of the 32k context and ~97s against the 180s step
- * timeout. It covers 98% of the corpus; longer bodies (overwhelmingly Hacker
- * News comment dumps) keep their original text instead of being split up.
+ * timeout. It covers 98% of the corpus; longer corpus bodies (overwhelmingly
+ * Hacker News comment dumps) keep their original text, while private uploaded
+ * PDFs use deterministic platform-owned chunks.
  */
 const CONTENT_TRANSLATION_MAX_LENGTH = 36000;
 const PARTIAL_CONTENT_TRANSLATION_RATIO = 0.2;
@@ -82,7 +84,7 @@ type ZhHantMetadataTranslationTask = 'article-title-summary' | 'paper-title' | '
 
 type ZhHantTranslationPlan = {
 	metadata: ZhHantMetadataTranslationTask | null;
-	content: 'translate' | 'skip-too-long' | null;
+	content: 'translate' | 'translate-pdf-chunks' | 'skip-too-long' | null;
 };
 
 function isBlank(value: string | null | undefined): boolean {
@@ -152,7 +154,10 @@ function planZhHantTranslation(resource: ResourceTranslationInput): ZhHantTransl
 		return { metadata, content: null };
 	}
 	if (metadata === 'post-title-content') return { metadata, content: null };
-	return { metadata, content: content.length > CONTENT_TRANSLATION_MAX_LENGTH ? 'skip-too-long' : 'translate' };
+	return {
+		metadata,
+		content: content.length <= CONTENT_TRANSLATION_MAX_LENGTH ? 'translate' : privateUploadedPdf ? 'translate-pdf-chunks' : 'skip-too-long',
+	};
 }
 
 function metadataTranslationRequest(task: ZhHantMetadataTranslationTask) {
@@ -273,7 +278,12 @@ const RESOURCE_CONTENT_TRANSLATION_SYSTEM_PROMPT = `你是專業的新聞全文�
 - 若原文已是繁體中文，直接保留原文；若是簡體中文，轉為自然繁體中文
 - 直接輸出翻譯後的 Markdown，不要包 code block。`;
 
-async function translateZhHantContent(content: string, env: CoreEnv, resourceId: string): Promise<string> {
+async function translateZhHantContent(
+	content: string,
+	env: CoreEnv,
+	resourceId: string,
+	chunk: Readonly<{ index: number; total: number }> | null = null,
+): Promise<string> {
 	const { finishReason, text } = await generateText({
 		model: createWorkersAI({ binding: env.AI })('@cf/qwen/qwen3-30b-a3b-fp8', {
 			gateway: {
@@ -281,6 +291,7 @@ async function translateZhHantContent(content: string, env: CoreEnv, resourceId:
 				collectLog: true,
 				retries: { maxAttempts: 1 },
 				metadata: {
+					...(chunk ? { chunk_count: chunk.total, chunk_index: chunk.index } : {}),
 					feature: 'resource-content-translation',
 					environment: env.AI_GATEWAY_ENVIRONMENT,
 					resource_id: resourceId,
@@ -288,7 +299,7 @@ async function translateZhHantContent(content: string, env: CoreEnv, resourceId:
 			},
 			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
 		}),
-		prompt: `原文 Markdown:\n${content.trim()}`,
+		prompt: `${chunk ? `原文 Markdown（第 ${chunk.index}/${chunk.total} 段；只翻譯本段，不要補寫前後文）` : '原文 Markdown'}:\n${content.trim()}`,
 		// A 36k-character body produces roughly 11.1k output tokens. Leave enough
 		// room that the finish-reason guard, rather than truncation, owns failure.
 		maxOutputTokens: 16000,
@@ -302,7 +313,38 @@ async function translateZhHantContent(content: string, env: CoreEnv, resourceId:
 	return output;
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v5';
+async function translatePlannedContent(
+	content: string,
+	plan: ZhHantTranslationPlan['content'],
+	env: CoreEnv,
+	resourceId: string,
+	step: WorkflowStep,
+): Promise<string | null> {
+	if (plan === 'translate') {
+		return step.do(
+			'translate-zh-hant-content',
+			{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
+			() => translateZhHantContent(content, env, resourceId),
+		);
+	}
+	if (plan !== 'translate-pdf-chunks') return null;
+	const chunks = splitPdfMarkdownForTranslation(content);
+	const translated: string[] = [];
+	for (const [index, markdown] of chunks.entries()) {
+		const chunkNumber = index + 1;
+		translated.push(
+			await step.do(
+				`translate-private-pdf-zh-hant-${String(chunkNumber).padStart(4, '0')}-of-${String(chunks.length).padStart(4, '0')}-v1`,
+				{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
+				() => translateZhHantContent(markdown, env, resourceId, { index: chunkNumber, total: chunks.length }),
+			),
+		);
+	}
+	return translated.join('\n\n');
+}
+
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v6';
+const RESOURCE_TRANSLATION_WORKFLOW_RETENTION = { successRetention: '5 minutes', errorRetention: '1 hour' } as const;
 const RESOURCE_TRANSLATION_REVISION_RE = /^[0-9a-f]{32}$/;
 
 function isResourceTranslationRevision(value: unknown): value is string {
@@ -404,21 +446,27 @@ async function loadResourceTranslationInput(
 export async function enqueueResourceTranslation(env: CoreEnv, resourceId: string, translationRevision: string): Promise<string> {
 	if (!isResourceTranslationRevision(translationRevision)) throw new Error('Invalid resource translation revision');
 	const id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
-	await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([{ id, params: { resourceId, translationRevision } }]);
+	await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([
+		{ id, params: { resourceId, translationRevision }, retention: RESOURCE_TRANSLATION_WORKFLOW_RETENTION },
+	]);
 	return id;
 }
 
 export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceTranslationPayload> {
 	async run(event: WorkflowEvent<ResourceTranslationPayload>, step: WorkflowStep) {
 		const { resourceId, translationRevision } = event.payload;
-		const input = await step.do(
-			'load-resource-translation-input-scope-v3',
+		const inputStream = await step.do<ReadableStream<Uint8Array> | null>(
+			'load-resource-translation-input-stream-v4',
 			{
 				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 				timeout: '30 seconds',
 			},
-			async () => loadResourceTranslationInput(await connectCoreDb(this.env), resourceId),
+			async () => {
+				const input = await loadResourceTranslationInput(await connectCoreDb(this.env), resourceId);
+				return input ? Response.json(input).body! : null;
+			},
 		);
+		const input = inputStream ? await new Response(inputStream).json<Awaited<ReturnType<typeof loadResourceTranslationInput>>>() : null;
 		if (!input) {
 			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Resource original is unavailable; skipping', resource_id: resourceId });
 			return;
@@ -440,7 +488,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			});
 		}
 		const metadataTask = translationPlan.metadata;
-		if (!metadataTask && translationPlan.content !== 'translate') {
+		if (!metadataTask && translationPlan.content !== 'translate' && translationPlan.content !== 'translate-pdf-chunks') {
 			return;
 		}
 		const initialContent = resource.content.trim();
@@ -468,14 +516,8 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			if (!persisted) return;
 		}
 
-		if (translationPlan.content === 'translate') {
-			const translated = await step.do(
-				'translate-zh-hant-content',
-				// A body at the 36k-character ceiling emits ~11.1k tokens at a
-				// measured ~90 tokens/s, so 180s left almost no margin.
-				{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
-				() => translateZhHantContent(initialContent, this.env, resourceId),
-			);
+		const translated = await translatePlannedContent(initialContent, translationPlan.content, this.env, resourceId, step);
+		if (translated !== null) {
 			const persisted = await step.do(
 				'persist-zh-hant-content',
 				{
