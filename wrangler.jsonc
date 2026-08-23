@@ -48,6 +48,19 @@
 			"0 */6 * * *" // Twitter monitor (every 6 hours)
 		]
 	},
+	/** Workflow lifecycle events are delivered here by account-level event subscriptions. */
+	"queues": {
+		"consumers": [
+			{
+				"queue": "workflow-errors-core",
+				"max_batch_size": 10,
+				"max_batch_timeout": 5,
+				"max_retries": 3,
+				"retry_delay": 60,
+				"dead_letter_queue": "workflow-errors-dlq-core"
+			}
+		]
+	},
 	/**
 	 * Workflows
 	 * https://developers.cloudflare.com/workflows/
@@ -57,6 +70,11 @@
 			"binding": "RESOURCE_PROCESSING_V2_WORKFLOW",
 			"name": "newsence-resource-processing-v2",
 			"class_name": "ResourceProcessingV2Workflow"
+		},
+		{
+			"binding": "SOURCE_RESOURCE_RECOVERY_WORKFLOW",
+			"name": "newsence-source-resource-recovery-v1",
+			"class_name": "SourceResourceRecoveryWorkflow"
 		},
 		{
 			"binding": "RESOURCE_TRANSLATION_V2_WORKFLOW",

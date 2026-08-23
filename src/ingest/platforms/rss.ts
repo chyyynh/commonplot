@@ -25,17 +25,17 @@ async function processFeed(env: CoreEnv, db: CoreDb, feed: MonitoredSource): Pro
 	}));
 	const outcomes = await admitDiscoveredSourceResources(env, drafts);
 	let created = 0;
-	let existing = 0;
+	let deduplicated = 0;
 	for (const outcome of outcomes) {
 		if (outcome === 'created') created++;
-		else existing++;
+		else deduplicated++;
 	}
 	console.info({
 		tag: 'RSS',
 		msg: 'Feed processed',
 		feed: feed.name,
 		created,
-		existing,
+		deduplicated,
 		totalCount: itemCount,
 	});
 	await markSourcesScraped(db, [feed.id]);

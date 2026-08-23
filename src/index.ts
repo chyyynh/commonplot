@@ -3,7 +3,7 @@ import { connectCoreDb } from '@db/connection';
 import { resolveMonitoredSource } from '@ingest/monitored-source';
 import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';
-import { type AppResourceDraftInput, enqueueAppResourceDraft } from '@ingest/processing-jobs';
+import { type AppResourceDraftInput, enqueueAppResourceDraft, SourceResourceRecoveryWorkflow } from '@ingest/processing-jobs';
 import {
 	enqueueProcessing,
 	enqueueResourceResync,
@@ -12,10 +12,28 @@ import {
 } from '@ingest/stored-resource';
 import { ResourceTranslationV2Workflow } from '@ingest/translation-workflow';
 import { ResourceProcessingV2Workflow } from '@ingest/workflow';
+import { z } from 'zod';
 import { SearchIndexGeneration5RebuildWorkflow } from './ai-search';
 import { type PublicResourceSearchInput, searchPublicResourceIds } from './public-search';
 
-export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexGeneration5RebuildWorkflow };
+export {
+	ResourceProcessingV2Workflow,
+	ResourceTranslationV2Workflow,
+	SearchIndexGeneration5RebuildWorkflow,
+	SourceResourceRecoveryWorkflow,
+};
+
+const ResourceWorkflowErroredEventSchema = z.object({
+	type: z.literal('cf.workflows.workflow.instance.errored'),
+	source: z.object({
+		type: z.literal('workflows.workflow'),
+		workflowName: z.string().min(1),
+	}),
+	payload: z.object({
+		instanceId: z.string().min(1).max(100),
+		versionId: z.string().min(1),
+	}),
+});
 
 async function runFiveMinuteCycle(env: CoreEnv): Promise<void> {
 	const db = await connectCoreDb(env);
@@ -44,6 +62,40 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		} else if (event.cron === '0 */6 * * *') {
 			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
 		}
+	}
+
+	override async queue(batch: MessageBatch<unknown>): Promise<void> {
+		const sourceInstanceIds = new Set<string>();
+		for (const message of batch.messages) {
+			const event = ResourceWorkflowErroredEventSchema.safeParse(message.body);
+			if (!event.success) {
+				console.warn({ tag: 'WORKFLOW', event: 'workflow_error_event_invalid', message_id: message.id });
+				continue;
+			}
+			const { instanceId, versionId } = event.data.payload;
+			console.error({
+				tag: 'WORKFLOW',
+				event: 'workflow_instance_errored',
+				workflow: event.data.source.workflowName,
+				instance_id: instanceId,
+				version_id: versionId,
+			});
+			if (/^source-draft-v[1-9]\d*-[0-9a-f]{64}$/.test(instanceId)) sourceInstanceIds.add(instanceId);
+		}
+		if (!sourceInstanceIds.size) return;
+
+		const recoveries = [...sourceInstanceIds].map((instanceId) => ({
+			id: `source-recovery-v1-${instanceId.slice('source-draft-'.length)}`,
+			params: { instanceId },
+		}));
+		const created = await this.env.SOURCE_RESOURCE_RECOVERY_WORKFLOW.createBatch(recoveries);
+		console.info({
+			tag: 'SOURCE_RECOVERY',
+			event: 'source_resource_recoveries_admitted',
+			received: recoveries.length,
+			created: created.length,
+			deduplicated: recoveries.length - created.length,
+		});
 	}
 
 	// Service-binding RPC for engine capabilities. Product-domain writes live on

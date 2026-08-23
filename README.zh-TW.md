@@ -90,7 +90,7 @@ Collection Wiki 產品介面雖已退役，entity extraction 仍刻意保持啟�
 
 ## 自行部署
 
-上方的一鍵 Deploy 按鈕會幫你建好 Worker + Workflows，**但 Hyperdrive、資料庫、secrets 需要手動設定**。完整步驟：
+上方的一鍵 Deploy 按鈕會幫你建好 Worker + Workflows，**但 Queues、Hyperdrive、資料庫、secrets 需要手動設定**。完整步驟：
 
 ### 1. 資料庫
 
@@ -112,6 +112,20 @@ wrangler hyperdrive create newsence-db \
 ### 3. Cloudflare Workflows
 
 Workflows 會在第一次 deploy 時透過 `wrangler.jsonc` 裡的 `workflows` bindings 自動建立。
+
+Workflow lifecycle errors 共用一條 event queue。先建立 queue 與 dead-letter queue，再訂閱 resource Workflow 的 error event：
+
+```bash
+pnpm exec wrangler queues create workflow-errors-core
+pnpm exec wrangler queues create workflow-errors-dlq-core
+pnpm exec wrangler queues subscription create workflow-errors-core \
+  --source workflows.workflow \
+  --workflow-name newsence-resource-processing-v2 \
+  --events instance.errored \
+  --name newsence-resource-processing-errors
+```
+
+consumer 會記錄所有已訂閱的 Workflow errors。失敗的 monitored-source draft 只會得到一次延遲且 deduplicated 的 recovery；platform detection 與 acquisition 仍留在原本的 resource Workflow 內。
 
 ### 4. Secrets
 
@@ -177,8 +191,10 @@ Bindings（在 `wrangler.jsonc` 裡設定）：
 | ------------------ | ------------------------------------------- |
 | `HYPERDRIVE`       | 連線到你的 Postgres                         |
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | 抓取、解析、分類並寫回 canonical resource |
+| `SOURCE_RESOURCE_RECOVERY_WORKFLOW` | 對失敗的 monitored-source draft 執行一次有界的延遲 restart |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | 將已持久化的 resource 翻譯成繁體中文 |
 | `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` | 全量重建並驗證 generation-5 搜尋索引 |
+| `workflow-errors-core` | 接收已訂閱 Workflow lifecycle errors 的 Queue consumer |
 | `R2`               | 讀取 app-owned uploaded blob，供 PDF extraction 使用 |
 | `IMAGES`           | 將遠端 resource 圖片串流上傳至 Cloudflare Images |
 | `AI`               | Workers AI binding（AI Gateway 文字呼叫）   |

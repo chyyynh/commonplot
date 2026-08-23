@@ -1,4 +1,5 @@
 // Validated Workflow payloads and enqueue entrypoints for app, monitor, and derived-resource jobs.
+import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { type ResourceDraftAdmission, ResourceDraftAdmissionSchema } from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
 import { canonicalizeOptionalResourceLang } from '@core-shared/resource';
@@ -72,10 +73,15 @@ export type AppResourceDraftInput = Readonly<{
 	admission: Extract<ResourceDraftAdmission, { kind: 'profileSave' | 'container' }>;
 }>;
 
-type SourceResourceAdmissionOutcome = 'created' | 'existing';
+type SourceResourceAdmissionOutcome = 'created' | 'deduplicated';
 
 const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v5';
 const WORKFLOW_CREATE_BATCH_SIZE = 100;
+const SourceResourceRecoveryPayloadSchema = z
+	.object({
+		instanceId: z.string().regex(/^source-draft-v[1-9]\d*-[0-9a-f]{64}$/),
+	})
+	.strict();
 
 export async function enqueueAppResourceDraft(env: CoreEnv, input: AppResourceDraftInput): Promise<string> {
 	if (!/^app-draft-v1-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.instanceId)) {
@@ -148,7 +154,6 @@ export async function admitDiscoveredSourceResources(
 			return {
 				id: `${SOURCE_DRAFT_WORKFLOW_REVISION}-${await sha256Hex(JSON.stringify(target))}`,
 				params: { target },
-				retention: { errorRetention: '5 hours' as const },
 			};
 		}),
 	);
@@ -157,5 +162,27 @@ export async function admitDiscoveredSourceResources(
 		const created = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(instances.slice(offset, offset + WORKFLOW_CREATE_BATCH_SIZE));
 		for (const instance of created) createdIds.add(instance.id);
 	}
-	return instances.map(({ id }) => (createdIds.has(id) ? 'created' : 'existing'));
+	return instances.map(({ id }) => (createdIds.has(id) ? 'created' : 'deduplicated'));
+}
+
+/** Gives a failed monitored-source draft one delayed whole-Workflow retry. */
+export class SourceResourceRecoveryWorkflow extends WorkflowEntrypoint<CoreEnv, z.infer<typeof SourceResourceRecoveryPayloadSchema>> {
+	async run(event: WorkflowEvent<z.infer<typeof SourceResourceRecoveryPayloadSchema>>, step: WorkflowStep) {
+		const { instanceId } = SourceResourceRecoveryPayloadSchema.parse(event.payload);
+		await step.sleep('source-resource-recovery-delay-v1', '15 minutes');
+		const outcome = await step.do(
+			'source-resource-restart-once-v1',
+			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+			async () => {
+				const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.get(instanceId);
+				const state = await instance.status();
+				if (state.status === 'unknown') throw new Error(`Source Workflow ${instanceId} has unknown status`);
+				if (state.status !== 'errored') return state.status;
+				await instance.restart();
+				return 'restarted' as const;
+			},
+		);
+		console.info({ tag: 'SOURCE_RECOVERY', event: 'source_resource_recovery_completed', instance_id: instanceId, outcome });
+		return { outcome };
+	}
 }

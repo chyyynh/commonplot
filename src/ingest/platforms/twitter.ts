@@ -17,9 +17,7 @@ import {
 const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
 
 const TWITTER_SOURCE_CONCURRENCY = 5;
-// Keep two prior cron windows discoverable so a source Workflow whose five-hour
-// error retention expires can be recreated without unbounded rapid retries.
-const TWITTER_WATERMARK_OVERLAP_MS = 13 * 60 * 60 * 1000;
+const TWITTER_WATERMARK_OVERLAP_MS = 60 * 60 * 1000;
 const TWITTER_SEARCH_MAX_PAGES = 4;
 
 function monitoredAuthorUserName(tweet: Tweet): string | null {
@@ -146,7 +144,7 @@ async function fetchTweetsForSource(apiKey: string, userName: string, window: Tw
 	return { tweets: normalized.tweets, providerTweets, pages, skippedItems };
 }
 
-const TWITTER_ADMISSION_STATUSES = ['created', 'existing'] as const;
+const TWITTER_ADMISSION_STATUSES = ['created', 'deduplicated'] as const;
 type TwitterAdmissionStatus = (typeof TWITTER_ADMISSION_STATUSES)[number];
 
 type TwitterAdmissionCounts = Record<TwitterAdmissionStatus, number>;
@@ -202,7 +200,7 @@ function twitterResourceDrafts(
 }
 
 function emptyTwitterAdmissionCounts(): TwitterAdmissionCounts {
-	return { created: 0, existing: 0 };
+	return { created: 0, deduplicated: 0 };
 }
 
 async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource): Promise<TweetSaveResult> {

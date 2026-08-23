@@ -94,7 +94,7 @@ Add normalized entity tables only when a real product consumer needs cross-resou
 
 ## Self-Hosting
 
-The one-click Deploy button above handles Worker + Workflows, but **Hyperdrive, the database, and secrets need manual setup**. Full walkthrough:
+The one-click Deploy button above handles Worker + Workflows, but **Queues, Hyperdrive, the database, and secrets need manual setup**. Full walkthrough:
 
 ### 1. Database
 
@@ -116,6 +116,20 @@ Copy the returned ID into `wrangler.jsonc` under the `hyperdrive[].id` field.
 ### 3. Cloudflare Workflows
 
 Workflows are provisioned automatically on first deploy via the `workflows` bindings in `wrangler.jsonc`.
+
+Workflow lifecycle errors use one shared event queue. Create it and its dead-letter queue, then subscribe the resource Workflow's error event:
+
+```bash
+pnpm exec wrangler queues create workflow-errors-core
+pnpm exec wrangler queues create workflow-errors-dlq-core
+pnpm exec wrangler queues subscription create workflow-errors-core \
+  --source workflows.workflow \
+  --workflow-name newsence-resource-processing-v2 \
+  --events instance.errored \
+  --name newsence-resource-processing-errors
+```
+
+The consumer logs every subscribed Workflow error. Failed monitored-source drafts receive one delayed, deduplicated recovery attempt; platform detection and acquisition remain inside the original resource Workflow.
 
 ### 4. Secrets
 
@@ -183,8 +197,10 @@ Bindings (in `wrangler.jsonc`):
 | ------------------ | -------------------------------------------- |
 | `HYPERDRIVE`       | Hyperdrive connection to your Postgres       |
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | Fetch, parse, classify, and persist a canonical resource |
+| `SOURCE_RESOURCE_RECOVERY_WORKFLOW` | Give an errored monitored-source draft one bounded delayed restart |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | Translate a persisted resource into zh-Hant |
 | `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` | Rebuild and verify the generation-5 canonical search index |
+| `workflow-errors-core` | Queue consumer for subscribed Workflow lifecycle errors |
 | `R2`               | App-owned uploaded PDF reads              |
 | `IMAGES`           | Stream remote resource images to Cloudflare Images |
 | `AI`               | Workers AI binding for AI Gateway text calls |
