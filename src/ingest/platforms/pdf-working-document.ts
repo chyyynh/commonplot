@@ -1,47 +1,15 @@
 import { assessPdfTexts, type PdfTextSanitationSummary, stripUnsafePdfText } from './pdf-text-quality.ts';
 
-export const PARSED_DOCUMENT_SCHEMA_VERSION = 1 as const;
-export const LITEPARSE_POLICY_REVISION = 'liteparse-blocks-v2' as const;
+export const PDF_WORKING_DOCUMENT_SCHEMA_VERSION = 1 as const;
+export const LITEPARSE_POLICY_REVISION = 'liteparse-pages-v3' as const;
 
-export type ParsedDocumentBboxV1 = Readonly<{
-	x: number;
-	y: number;
-	width: number;
-	height: number;
-}>;
-
-export type ParsedDocumentCellV1 = Readonly<{
-	text: string;
-	bbox: ParsedDocumentBboxV1 | null;
-}>;
-
-export type ParsedDocumentBlockTypeV1 = 'heading' | 'paragraph' | 'list' | 'code' | 'table' | 'figure' | 'equation' | 'rule' | 'unknown';
-
-export type ParsedDocumentBlockV1 = Readonly<{
-	id: string;
-	type: ParsedDocumentBlockTypeV1;
-	sourceKind: string;
-	bbox: ParsedDocumentBboxV1 | null;
-	text: string | null;
-	style: Readonly<{ bold: boolean; italic: boolean }>;
-	heading: Readonly<{ level: number | null }> | null;
-	list: Readonly<{ level: number | null; marker: string | null; ordered: boolean }> | null;
-	code: Readonly<{ language: string | null; lines: string[] }> | null;
-	table: Readonly<{
-		header: ParsedDocumentCellV1[];
-		rows: ParsedDocumentCellV1[][];
-		fallbackLines: string[];
-	}> | null;
-	figure: Readonly<{ id: string | null; format: string | null }> | null;
-}>;
-
-export type ParsedPageQualityV1 = Readonly<{
+export type PdfPageQualityV1 = Readonly<{
 	needsOcr: boolean;
 	isGarbled: boolean;
 	reasons: string[];
 	textLength: number;
 	textCoverage: number;
-	pageArea: number;
+	pageArea: number | null;
 	images: Readonly<{
 		hasSubstantialImages: boolean;
 		blockCount: number;
@@ -63,19 +31,18 @@ export type ParsedPageQualityV1 = Readonly<{
 	sanitation: PdfTextSanitationSummary;
 }>;
 
-export type ParsedDocumentPageV1 = Readonly<{
+export type PdfWorkingPageV1 = Readonly<{
 	pageNumber: number;
-	width: number;
-	height: number;
+	width: number | null;
+	height: number | null;
 	source: 'liteparse' | 'llamaparse';
 	text: string;
 	markdown: string;
 	usable: boolean;
-	quality: ParsedPageQualityV1;
-	blocks: ParsedDocumentBlockV1[];
+	quality: PdfPageQualityV1;
 }>;
 
-export type ParsedDocumentEnhancementV1 = Readonly<{
+export type PdfWorkingEnhancementV1 = Readonly<{
 	provider: 'llamaparse';
 	apiVersion: 'v2';
 	version: string;
@@ -86,21 +53,22 @@ export type ParsedDocumentEnhancementV1 = Readonly<{
 	usageCredits: number | null;
 }>;
 
-export type ParsedDocumentV1 = Readonly<{
-	schemaVersion: typeof PARSED_DOCUMENT_SCHEMA_VERSION;
+/**
+ * Processing-only page state. It may be serialized to a temporary R2 object
+ * between durable Workflow steps, but is never the product's stored document.
+ * The published projection is `markdown` in the original ResourceTranslation;
+ * localized ResourceTranslation rows are derived separately.
+ */
+export type PdfWorkingDocumentV1 = Readonly<{
+	schemaVersion: typeof PDF_WORKING_DOCUMENT_SCHEMA_VERSION;
 	parser: Readonly<{
 		name: 'liteparse';
 		version: string;
 		policyRevision: typeof LITEPARSE_POLICY_REVISION;
 	}>;
-	coordinateSystem: Readonly<{
-		origin: 'top-left';
-		unit: 'pdf-point';
-		pointsPerInch: 72;
-	}>;
 	totalPages: number;
 	parsedPages: number;
-	pages: ParsedDocumentPageV1[];
+	pages: PdfWorkingPageV1[];
 	pageErrors: ReadonlyArray<Readonly<{ pageNumber: number; message: string }>>;
 	quality: Readonly<{
 		complete: boolean;
@@ -113,27 +81,14 @@ export type ParsedDocumentV1 = Readonly<{
 		problemPages: number[];
 	}>;
 	markdown: string;
-	/** Additive provider provenance; absent on local-only v1 artifacts. */
-	enhancement?: ParsedDocumentEnhancementV1;
+	enhancement?: PdfWorkingEnhancementV1;
 }>;
 
-type LiteParseResultRecord = Readonly<{
+type LiteParseWorkingResult = Readonly<{
 	totalPages: number;
-	pages: ParsedDocumentPageV1[];
+	pages: PdfWorkingPageV1[];
 	pageErrors: Array<{ pageNumber: number; message: string }>;
 }>;
-
-const BLOCK_TYPES: Readonly<Record<string, ParsedDocumentBlockTypeV1>> = {
-	heading: 'heading',
-	paragraph: 'paragraph',
-	list_item: 'list',
-	code: 'code',
-	table: 'table',
-	grid_fallback: 'table',
-	figure: 'figure',
-	equation: 'equation',
-	rule: 'rule',
-};
 
 function invalidLiteParseResponse(path: string, expectation: string): never {
 	throw new Error(`Invalid LiteParse response: ${path} must be ${expectation}`);
@@ -177,18 +132,6 @@ function responseRatio(value: unknown, path: string): number {
 	return number;
 }
 
-function optionalString(value: unknown, path: string): string | null {
-	return value === undefined ? null : stripUnsafePdfText(responseString(value, path));
-}
-
-function optionalInteger(value: unknown, path: string): number | null {
-	return value === undefined ? null : responseInteger(value, path, 0);
-}
-
-function optionalBoolean(value: unknown, path: string): boolean {
-	return value === undefined ? false : responseBoolean(value, path);
-}
-
 function responseStrings(value: unknown, path: string): string[] {
 	if (!Array.isArray(value)) return invalidLiteParseResponse(path, 'an array');
 	return value.map((item, index) => stripUnsafePdfText(responseString(item, `${path}[${index}]`)));
@@ -204,121 +147,7 @@ function canonicalReasonCodes(value: unknown, path: string): string[] {
 	].sort();
 }
 
-function optionalBbox(value: unknown, path: string): ParsedDocumentBboxV1 | null {
-	if (value === undefined) return null;
-	const bbox = responseRecord(value, path);
-	const width = responseFiniteNumber(bbox.width, `${path}.width`);
-	const height = responseFiniteNumber(bbox.height, `${path}.height`);
-	if (width < 0 || height < 0) return invalidLiteParseResponse(path, 'a non-negative rectangle');
-	return {
-		x: responseFiniteNumber(bbox.x, `${path}.x`),
-		y: responseFiniteNumber(bbox.y, `${path}.y`),
-		width,
-		height,
-	};
-}
-
-function canonicalCell(value: unknown, path: string): ParsedDocumentCellV1 {
-	const cell = responseRecord(value, path);
-	return {
-		text: stripUnsafePdfText(responseString(cell.text, `${path}.text`)).trim(),
-		bbox: optionalBbox(cell.bbox, `${path}.bbox`),
-	};
-}
-
-function canonicalCells(value: unknown, path: string): ParsedDocumentCellV1[] {
-	if (value === undefined) return [];
-	if (!Array.isArray(value)) return invalidLiteParseResponse(path, 'an array');
-	return value.map((cell, index) => canonicalCell(cell, `${path}[${index}]`));
-}
-
-function canonicalCellRows(value: unknown, path: string): ParsedDocumentCellV1[][] {
-	if (value === undefined) return [];
-	if (!Array.isArray(value)) return invalidLiteParseResponse(path, 'an array');
-	return value.map((row, index) => canonicalCells(row, `${path}[${index}]`));
-}
-
-function canonicalBlockText(
-	text: string | null,
-	sourceKind: string,
-	lines: readonly string[],
-	header: readonly ParsedDocumentCellV1[],
-	rows: readonly ParsedDocumentCellV1[][],
-): string | null {
-	const directText = text ? stripUnsafePdfText(text).trim() || null : null;
-	if (directText) return directText;
-	if (sourceKind === 'code' || sourceKind === 'grid_fallback') {
-		return lines.join('\n').trim() || null;
-	}
-	if (sourceKind === 'table') {
-		return (
-			[header, ...rows]
-				.map((cells) =>
-					cells
-						.map((cell) => cell.text)
-						.filter(Boolean)
-						.join('\t'),
-				)
-				.filter(Boolean)
-				.join('\n') || null
-		);
-	}
-	return null;
-}
-
-function canonicalBlock(value: unknown, pageNumber: number, index: number): ParsedDocumentBlockV1 {
-	const path = `pages[${pageNumber - 1}].blocks[${index}]`;
-	const block = responseRecord(value, path);
-	const sourceKind = responseString(block.kind, `${path}.kind`).trim();
-	if (!sourceKind) return invalidLiteParseResponse(`${path}.kind`, 'a non-empty string');
-	const lines = sourceKind === 'code' || sourceKind === 'grid_fallback' ? responseStrings(block.lines ?? [], `${path}.lines`) : [];
-	const header = sourceKind === 'table' ? canonicalCells(block.header, `${path}.header`) : [];
-	const rows = sourceKind === 'table' ? canonicalCellRows(block.rows, `${path}.rows`) : [];
-	return {
-		id: `p${pageNumber}-b${index + 1}`,
-		type: BLOCK_TYPES[sourceKind] ?? 'unknown',
-		sourceKind,
-		bbox: optionalBbox(block.bbox, `${path}.bbox`),
-		text: canonicalBlockText(optionalString(block.text, `${path}.text`), sourceKind, lines, header, rows),
-		style: {
-			bold: optionalBoolean(block.bold, `${path}.bold`),
-			italic: optionalBoolean(block.italic, `${path}.italic`),
-		},
-		heading: sourceKind === 'heading' ? { level: optionalInteger(block.level, `${path}.level`) } : null,
-		list:
-			sourceKind === 'list_item'
-				? {
-						level: optionalInteger(block.level, `${path}.level`),
-						marker: optionalString(block.marker, `${path}.marker`),
-						ordered: optionalBoolean(block.ordered, `${path}.ordered`),
-					}
-				: null,
-		code:
-			sourceKind === 'code'
-				? {
-						language: optionalString(block.lang, `${path}.lang`),
-						lines,
-					}
-				: null,
-		table:
-			sourceKind === 'table' || sourceKind === 'grid_fallback'
-				? {
-						header,
-						rows,
-						fallbackLines: sourceKind === 'grid_fallback' ? lines : [],
-					}
-				: null,
-		figure:
-			sourceKind === 'figure'
-				? {
-						id: optionalString(block.id, `${path}.id`),
-						format: optionalString(block.format, `${path}.format`),
-					}
-				: null,
-	};
-}
-
-function canonicalLayout(value: unknown, path: string): ParsedPageQualityV1['layout'] {
+function canonicalLayout(value: unknown, path: string): PdfPageQualityV1['layout'] {
 	if (value === undefined) return null;
 	const layout = responseRecord(value, path);
 	return {
@@ -333,7 +162,7 @@ function canonicalLayout(value: unknown, path: string): ParsedPageQualityV1['lay
 	};
 }
 
-function canonicalQuality(value: unknown, pageNumber: number, path: string, sanitation: PdfTextSanitationSummary): ParsedPageQualityV1 {
+function canonicalQuality(value: unknown, pageNumber: number, path: string, sanitation: PdfTextSanitationSummary): PdfPageQualityV1 {
 	const quality = responseRecord(value, path);
 	if (responseInteger(quality.pageNumber, `${path}.pageNumber`, 1) !== pageNumber) {
 		return invalidLiteParseResponse(`${path}.pageNumber`, `equal to page ${pageNumber}`);
@@ -374,7 +203,7 @@ function extractedTextChars(markdown: string): number {
 	return content.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
 }
 
-function canonicalPage(value: unknown, index: number, totalPages: number): ParsedDocumentPageV1 {
+function canonicalPage(value: unknown, index: number, totalPages: number): PdfWorkingPageV1 {
 	const path = `pages[${index}]`;
 	const page = responseRecord(value, path);
 	const pageNumber = responseInteger(page.pageNum, `${path}.pageNum`, 1);
@@ -388,7 +217,6 @@ function canonicalPage(value: unknown, index: number, totalPages: number): Parse
 	const text = stripUnsafePdfText(rawText).trim();
 	const markdown = stripUnsafePdfText(rawMarkdown).trim();
 	const quality = canonicalQuality(page.complexity, pageNumber, `${path}.complexity`, sanitation);
-	if (!Array.isArray(page.blocks)) return invalidLiteParseResponse(`${path}.blocks`, 'an array');
 	return {
 		pageNumber,
 		width,
@@ -398,7 +226,6 @@ function canonicalPage(value: unknown, index: number, totalPages: number): Parse
 		markdown,
 		usable: !quality.isGarbled && extractedTextChars(markdown) > 0,
 		quality,
-		blocks: page.blocks.map((block, blockIndex) => canonicalBlock(block, pageNumber, blockIndex)),
 	};
 }
 
@@ -419,7 +246,7 @@ function canonicalPageErrors(value: unknown, totalPages: number): Array<{ pageNu
 		);
 }
 
-function canonicalLiteParseResult(value: unknown): LiteParseResultRecord {
+function canonicalLiteParseResult(value: unknown): LiteParseWorkingResult {
 	const result = responseRecord(value, 'result');
 	const totalPages = responseInteger(result.totalPages, 'result.totalPages', 1);
 	if (!Array.isArray(result.pages) || result.pages.length === 0) {
@@ -429,11 +256,7 @@ function canonicalLiteParseResult(value: unknown): LiteParseResultRecord {
 	if (pages.some((page, index) => index > 0 && page.pageNumber <= (pages[index - 1]?.pageNumber ?? 0))) {
 		return invalidLiteParseResponse('result.pages', 'in strictly increasing source-page order');
 	}
-	return {
-		totalPages,
-		pages,
-		pageErrors: canonicalPageErrors(result.pageErrors, totalPages),
-	};
+	return { totalPages, pages, pageErrors: canonicalPageErrors(result.pageErrors, totalPages) };
 }
 
 function sortedPageUnion(...lists: readonly number[][]): number[] {
@@ -442,14 +265,14 @@ function sortedPageUnion(...lists: readonly number[][]): number[] {
 
 function assertParserVersion(parserVersion: string): void {
 	if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(parserVersion)) {
-		throw new TypeError('LiteParse parser version is not a safe artifact revision');
+		throw new TypeError('LiteParse parser version is not a safe working revision');
 	}
 }
 
-export function assembleLiteParseDocument(result: LiteParseResultRecord, parserVersion: string): ParsedDocumentV1 {
+export function assemblePdfWorkingDocument(result: LiteParseWorkingResult, parserVersion: string): PdfWorkingDocumentV1 {
 	assertParserVersion(parserVersion);
 	if (!Number.isInteger(result.totalPages) || result.totalPages < 1) {
-		throw new TypeError('LiteParse artifact totalPages must be a positive integer');
+		throw new TypeError('LiteParse working document totalPages must be a positive integer');
 	}
 	if (
 		result.pages.length === 0 ||
@@ -457,7 +280,7 @@ export function assembleLiteParseDocument(result: LiteParseResultRecord, parserV
 			(page, index) => page.pageNumber > result.totalPages || (index > 0 && page.pageNumber <= (result.pages[index - 1]?.pageNumber ?? 0)),
 		)
 	) {
-		throw new TypeError('LiteParse artifact pages must be in strictly increasing source-page order');
+		throw new TypeError('LiteParse working-document pages must be in strictly increasing source-page order');
 	}
 	const usablePages = result.pages.filter((page) => page.usable);
 	const needsOcrPages = result.pages.filter((page) => page.quality.needsOcr).map((page) => page.pageNumber);
@@ -465,29 +288,25 @@ export function assembleLiteParseDocument(result: LiteParseResultRecord, parserV
 	const complexLayoutPages = result.pages.filter((page) => page.quality.layout?.isComplex).map((page) => page.pageNumber);
 	const failedPages = sortedPageUnion(result.pageErrors.map((error) => error.pageNumber));
 	const coveredPages = new Set([...result.pages.map((page) => page.pageNumber), ...failedPages]);
-	const unparsedPages = Math.max(0, result.totalPages - coveredPages.size);
 	const unparsedPageNumbers: number[] = [];
-	if (unparsedPages > 0) {
-		for (let pageNumber = 1; pageNumber <= result.totalPages; pageNumber += 1) {
-			if (!coveredPages.has(pageNumber)) unparsedPageNumbers.push(pageNumber);
-		}
+	for (let pageNumber = 1; pageNumber <= result.totalPages; pageNumber += 1) {
+		if (!coveredPages.has(pageNumber)) unparsedPageNumbers.push(pageNumber);
 	}
 	return {
-		schemaVersion: PARSED_DOCUMENT_SCHEMA_VERSION,
+		schemaVersion: PDF_WORKING_DOCUMENT_SCHEMA_VERSION,
 		parser: { name: 'liteparse', version: parserVersion, policyRevision: LITEPARSE_POLICY_REVISION },
-		coordinateSystem: { origin: 'top-left', unit: 'pdf-point', pointsPerInch: 72 },
 		totalPages: result.totalPages,
 		parsedPages: result.pages.length,
 		pages: result.pages,
 		pageErrors: result.pageErrors,
 		quality: {
-			complete: failedPages.length === 0 && unparsedPages === 0,
+			complete: failedPages.length === 0 && unparsedPageNumbers.length === 0,
 			usablePages: usablePages.length,
 			needsOcrPages,
 			garbledPages,
 			complexLayoutPages,
 			failedPages,
-			unparsedPages,
+			unparsedPages: unparsedPageNumbers.length,
 			problemPages: sortedPageUnion(needsOcrPages, garbledPages, complexLayoutPages, failedPages, unparsedPageNumbers),
 		},
 		markdown: usablePages
@@ -497,10 +316,10 @@ export function assembleLiteParseDocument(result: LiteParseResultRecord, parserV
 	};
 }
 
-export function normalizeLiteParseDocument(value: unknown, parserVersion: string): ParsedDocumentV1 {
-	return assembleLiteParseDocument(canonicalLiteParseResult(value), parserVersion);
+export function normalizeLiteParseWorkingDocument(value: unknown, parserVersion: string): PdfWorkingDocumentV1 {
+	return assemblePdfWorkingDocument(canonicalLiteParseResult(value), parserVersion);
 }
 
-export function serializeParsedDocument(document: ParsedDocumentV1): string {
+export function serializePdfWorkingDocument(document: PdfWorkingDocumentV1): string {
 	return JSON.stringify(document);
 }

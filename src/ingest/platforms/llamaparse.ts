@@ -220,7 +220,7 @@ export function createLlamaParseClient(options: LlamaParseClientOptions): LlamaP
 		const url = new URL(path, LLAMACLOUD_API_ORIGIN);
 		if (projectId) url.searchParams.set('project_id', projectId);
 		if (organizationId) url.searchParams.set('organization_id', organizationId);
-		for (const field of expand) url.searchParams.append('expand', field);
+		if (expand.length > 0) url.searchParams.set('expand', expand.join(','));
 		return url;
 	};
 

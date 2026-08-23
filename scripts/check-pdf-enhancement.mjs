@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { createLlamaParseClient, LlamaParseClientError } from '../src/ingest/platforms/llamaparse.ts';
-import { normalizeLiteParseDocument } from '../src/ingest/platforms/parsed-document.ts';
 import {
 	buildSelectiveLlamaParseV2Configuration,
 	detectPdfEnhancementPages,
@@ -10,6 +9,7 @@ import {
 	normalizeSelectiveLlamaParseV2Result,
 	planSelectivePdfEnhancement,
 } from '../src/ingest/platforms/pdf-enhancement.ts';
+import { normalizeLiteParseWorkingDocument } from '../src/ingest/platforms/pdf-working-document.ts';
 
 function quality(pageNumber, overrides = {}) {
 	return {
@@ -37,12 +37,11 @@ function page(pageNumber, complexity = quality(pageNumber)) {
 		height: 792,
 		text: `Page ${pageNumber}`,
 		markdown: `Page ${pageNumber}`,
-		blocks: [{ kind: 'paragraph', text: `Page ${pageNumber}` }],
 		complexity,
 	};
 }
 
-const document = normalizeLiteParseDocument(
+const document = normalizeLiteParseWorkingDocument(
 	{
 		totalPages: 7,
 		pages: [
@@ -108,11 +107,7 @@ assert.deepEqual(plan.usageAccounting, {
 	settlement: 'provider-reported-credits',
 	targetPageBilling: 'unverified',
 });
-assert.deepEqual(LLAMAPARSE_V2_RESULT_EXPAND, ['text', 'markdown', 'items', 'usage']);
-
-function providerTextItem(pageNumber, value = `Enhanced page ${pageNumber}`) {
-	return { type: 'text', md: value, value, bbox: [{ x: 72, y: 72, w: 200, h: 20 }] };
-}
+assert.deepEqual(LLAMAPARSE_V2_RESULT_EXPAND, ['text', 'markdown', 'usage']);
 
 const binaryProviderText = '\u0001\u0002g~|{u>Ty`5Pt;cQkZ;xJ#E$ntZ:U4/F62Z'.repeat(40);
 const providerResult = {
@@ -139,44 +134,6 @@ const providerResult = {
 			{ page_number: 7, error: 'OCR timed out', success: false },
 		],
 	},
-	items: {
-		pages: [
-			{
-				page_number: 2,
-				page_width: 612,
-				page_height: 792,
-				success: true,
-				items: [
-					providerTextItem(2),
-					{ type: 'heading', md: '## Findings', level: 2, value: 'Findings' },
-					{ type: 'list', md: '- Alpha\n- Beta', items: [], ordered: false },
-					{ type: 'code', md: '```ts\nconst answer = 42;\n```', value: 'const answer = 42;', language: 'ts' },
-					{
-						type: 'table',
-						md: '| Model | Accuracy |\n| --- | --- |\n| A | 95 |',
-						rows: [
-							['Model', 'Accuracy'],
-							['A\u0001', 95],
-						],
-						html: '<table></table>',
-						csv: 'Model,Accuracy\nA,95',
-					},
-					{ type: 'image', md: '![Chart](provider-url)', caption: 'Accuracy chart', url: 'https://provider.example/chart.png' },
-					{ type: 'link', md: '[Source](https://example.com)', url: 'https://example.com', text: 'Source' },
-					{ type: 'header', md: 'Quarterly report', items: [] },
-					{ type: 'footer', md: 'Confidential', items: [] },
-				],
-			},
-			...[3, 4, 5, 6].map((pageNumber) => ({
-				page_number: pageNumber,
-				page_width: 612,
-				page_height: 792,
-				success: true,
-				items: [providerTextItem(pageNumber, pageNumber === 4 ? binaryProviderText : `Enhanced page ${pageNumber}`)],
-			})),
-			{ page_number: 7, error: 'Structured OCR timed out', success: false },
-		],
-	},
 };
 
 const normalizedProviderResult = normalizeSelectiveLlamaParseV2Result(providerResult, plan);
@@ -189,13 +146,9 @@ assert.deepEqual(
 	[4, 7],
 );
 assert.equal(normalizedProviderResult.usageCredits, 40);
-assert.deepEqual(
-	normalizedProviderResult.pages[0].blocks.map((block) => block.type),
-	['paragraph', 'heading', 'list', 'code', 'table', 'figure', 'paragraph', 'paragraph', 'paragraph'],
-);
-assert.equal(normalizedProviderResult.pages[0].blocks[0].bbox, null, 'provider bbox origin is not assumed');
-assert.deepEqual(normalizedProviderResult.pages[0].blocks[4].table.rows[1][0], { text: 'A', bbox: null });
-assert.equal(JSON.stringify(normalizedProviderResult).includes('provider.example'), false, 'provider asset URLs are not persisted');
+assert.equal(normalizedProviderResult.pages[0].markdown, '# Enhanced page 2');
+assert.equal(normalizedProviderResult.pages[0].text, 'Enhanced page 2');
+assert.equal(Object.hasOwn(normalizedProviderResult.pages[0], 'blocks'), false, 'provider geometry is not retained');
 
 const merged = mergeSelectivePdfEnhancement(document, plan, normalizedProviderResult);
 assert.deepEqual(
@@ -215,7 +168,7 @@ assert.deepEqual(merged.enhancement, {
 	provider: 'llamaparse',
 	apiVersion: 'v2',
 	version: '2026-08-19',
-	policyRevision: 'selective-llamaparse-v1',
+	policyRevision: 'selective-llamaparse-v2',
 	requestedPages: [2, 3, 4, 5, 6, 7],
 	appliedPages: [2, 3, 5, 6],
 	failedPages: normalizedProviderResult.failedPages,
@@ -343,7 +296,7 @@ assert.deepEqual(clientRequests[1].body, {
 	},
 });
 assert.equal(Object.hasOwn(clientRequests[1].body, 'product_type'), false);
-assert.deepEqual(clientRequests[3].query.getAll('expand'), ['text', 'markdown', 'items', 'usage']);
+assert.equal(clientRequests[3].query.get('expand'), 'text,markdown,usage');
 
 const retryClient = createLlamaParseClient({
 	apiKey: 'llx-contract-secret',
@@ -386,7 +339,7 @@ await absentDeleteClient.deleteFile(uploaded.id);
 await assert.rejects(() => client.uploadPdf(new Blob([])), /must contain between 1 and 26214400 bytes/);
 assert.throws(() => createLlamaParseClient({ apiKey: 'secret\nheader' }), /API key is invalid/);
 
-const cleanDocument = normalizeLiteParseDocument({ totalPages: 1, pages: [page(1)], pageErrors: [] }, '2.13.1');
+const cleanDocument = normalizeLiteParseWorkingDocument({ totalPages: 1, pages: [page(1)], pageErrors: [] }, '2.13.1');
 assert.equal(planSelectivePdfEnhancement(cleanDocument), null, 'clean PDFs never create paid-provider work');
 
 console.info({

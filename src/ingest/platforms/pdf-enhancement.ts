@@ -1,13 +1,12 @@
+import { assessPdfTexts, type PdfTextSanitationSummary, stripUnsafePdfText } from './pdf-text-quality.ts';
 import {
-	assembleLiteParseDocument,
-	type ParsedDocumentBlockV1,
-	type ParsedDocumentCellV1,
-	type ParsedDocumentPageV1,
-	type ParsedDocumentV1,
-} from './parsed-document.ts';
-import { assessPdfTexts, stripUnsafePdfText } from './pdf-text-quality.ts';
+	assemblePdfWorkingDocument,
+	type PdfPageQualityV1,
+	type PdfWorkingDocumentV1,
+	type PdfWorkingPageV1,
+} from './pdf-working-document.ts';
 
-export const PDF_ENHANCEMENT_POLICY_REVISION = 'selective-llamaparse-v1' as const;
+export const PDF_ENHANCEMENT_POLICY_REVISION = 'selective-llamaparse-v2' as const;
 export const LLAMAPARSE_V2_AGENTIC_VERSION = '2026-08-19' as const;
 
 export type PdfEnhancementReason = 'complex-layout' | 'garbled-text' | 'needs-ocr' | 'parse-failed' | 'unparsed';
@@ -48,6 +47,36 @@ export type SelectivePdfEnhancementPlan = Readonly<{
 	}>;
 }>;
 
+export type SelectiveLlamaParseV2Page = Readonly<{
+	pageNumber: number;
+	text: string;
+	markdown: string;
+	sanitation: PdfTextSanitationSummary;
+}>;
+
+export type SelectiveLlamaParseV2Result = Readonly<{
+	provider: 'llamaparse';
+	apiVersion: 'v2';
+	version: string;
+	pages: SelectiveLlamaParseV2Page[];
+	failedPages: ReadonlyArray<Readonly<{ pageNumber: number; message: string }>>;
+	usageCredits: number | null;
+}>;
+
+type ProviderPageState = {
+	markdown?: string;
+	markdownFailure?: string;
+	text?: string;
+};
+
+const EMPTY_IMAGE_QUALITY: PdfPageQualityV1['images'] = {
+	hasSubstantialImages: false,
+	blockCount: 0,
+	coverage: 0,
+	largestCoverage: 0,
+	fullPage: false,
+};
+
 function assertTotalPages(totalPages: number): void {
 	if (!Number.isInteger(totalPages) || totalPages < 1) {
 		throw new TypeError('PDF total page count must be a positive integer');
@@ -84,7 +113,7 @@ export function formatLlamaParseTargetPages(pageNumbers: readonly number[], tota
 	return ranges.join(',');
 }
 
-export function detectPdfEnhancementPages(document: ParsedDocumentV1): PdfEnhancementPage[] {
+export function detectPdfEnhancementPages(document: PdfWorkingDocumentV1): PdfEnhancementPage[] {
 	assertTotalPages(document.totalPages);
 	const reasonsByPage = new Map<number, Set<PdfEnhancementReason>>();
 	const addReason = (pageNumber: number, reason: PdfEnhancementReason) => {
@@ -129,7 +158,7 @@ export function buildSelectiveLlamaParseV2Configuration(
 	};
 }
 
-export function planSelectivePdfEnhancement(document: ParsedDocumentV1): SelectivePdfEnhancementPlan | null {
+export function planSelectivePdfEnhancement(document: PdfWorkingDocumentV1): SelectivePdfEnhancementPlan | null {
 	const targetPages = detectPdfEnhancementPages(document);
 	if (targetPages.length === 0) return null;
 	return {
@@ -142,43 +171,13 @@ export function planSelectivePdfEnhancement(document: ParsedDocumentV1): Selecti
 			targetPages.map((page) => page.pageNumber),
 			document.totalPages,
 		),
-		providerFile: {
-			purpose: 'parse',
-			cleanup: 'delete-after-terminal-job',
-		},
-		usageAccounting: {
-			settlement: 'provider-reported-credits',
-			targetPageBilling: 'unverified',
-		},
+		providerFile: { purpose: 'parse', cleanup: 'delete-after-terminal-job' },
+		usageAccounting: { settlement: 'provider-reported-credits', targetPageBilling: 'unverified' },
 	};
 }
 
-export const LLAMAPARSE_V2_RESULT_EXPAND = ['text', 'markdown', 'items', 'usage'] as const;
-
-export type SelectiveLlamaParseV2Result = Readonly<{
-	provider: 'llamaparse';
-	apiVersion: 'v2';
-	version: string;
-	pages: ParsedDocumentPageV1[];
-	failedPages: ReadonlyArray<Readonly<{ pageNumber: number; message: string }>>;
-	usageCredits: number | null;
-}>;
-
-type ProviderPageState = {
-	markdown?: string;
-	markdownFailure?: string;
-	text?: string;
-	structured?: Readonly<{ width: number; height: number; items: unknown[] }>;
-	structuredFailure?: string;
-};
-
-type NormalizedProviderBlock = Readonly<{
-	block: ParsedDocumentBlockV1;
-	rawTexts: string[];
-}>;
-
-const MAX_PROVIDER_ITEMS_PER_PAGE = 10_000;
-const MAX_PROVIDER_TABLE_CELLS = 100_000;
+// The durable result is Markdown, so request only channels used to validate and publish it.
+export const LLAMAPARSE_V2_RESULT_EXPAND = ['text', 'markdown', 'usage'] as const;
 
 function invalidProviderResponse(path: string, expectation: string): never {
 	throw new Error(`Invalid LlamaParse v2 response: ${path} must be ${expectation}`);
@@ -189,9 +188,8 @@ function providerRecord(value: unknown, path: string): Record<string, unknown> {
 	return value as Record<string, unknown>;
 }
 
-function providerArray(value: unknown, path: string, maximum = Number.POSITIVE_INFINITY): unknown[] {
+function providerArray(value: unknown, path: string): unknown[] {
 	if (!Array.isArray(value)) return invalidProviderResponse(path, 'an array');
-	if (value.length > maximum) return invalidProviderResponse(path, `an array with at most ${maximum} entries`);
 	return value;
 }
 
@@ -210,10 +208,10 @@ function providerFiniteNumber(value: unknown, path: string): number {
 	return Object.is(value, -0) ? 0 : value;
 }
 
-function providerInteger(value: unknown, path: string, minimum: number, maximum = Number.POSITIVE_INFINITY): number {
+function providerInteger(value: unknown, path: string, minimum: number): number {
 	const number = providerFiniteNumber(value, path);
-	if (!Number.isInteger(number) || number < minimum || number > maximum) {
-		return invalidProviderResponse(path, `an integer between ${minimum} and ${maximum}`);
+	if (!Number.isInteger(number) || number < minimum) {
+		return invalidProviderResponse(path, `an integer greater than or equal to ${minimum}`);
 	}
 	return number;
 }
@@ -223,198 +221,19 @@ function cleanProviderText(value: unknown, path: string): string {
 }
 
 function providerFailureMessage(value: unknown, path: string): string {
-	const message = cleanProviderText(value, path).slice(0, 500);
-	return message || 'Provider page processing failed';
-}
-
-function tableCell(value: unknown, path: string): Readonly<{ cell: ParsedDocumentCellV1; rawText: string | null }> {
-	if (value === null) return { cell: { text: '', bbox: null }, rawText: null };
-	if (typeof value === 'number') return { cell: { text: `${providerFiniteNumber(value, path)}`, bbox: null }, rawText: null };
-	const rawText = providerString(value, path);
-	return { cell: { text: stripUnsafePdfText(rawText).trim(), bbox: null }, rawText };
-}
-
-function providerTableRows(value: unknown, path: string): Readonly<{ rows: ParsedDocumentCellV1[][]; rawTexts: string[] }> {
-	const rawRows = providerArray(value, path);
-	let cellCount = 0;
-	const rawTexts: string[] = [];
-	const rows = rawRows.map((rawRow, rowIndex) => {
-		const rawCells = providerArray(rawRow, `${path}[${rowIndex}]`);
-		cellCount += rawCells.length;
-		if (cellCount > MAX_PROVIDER_TABLE_CELLS) {
-			return invalidProviderResponse(path, `a table with at most ${MAX_PROVIDER_TABLE_CELLS} cells`);
+	if (typeof value === 'string') return stripUnsafePdfText(value).trim().slice(0, 500) || 'Provider processing failed';
+	if (value && typeof value === 'object' && !Array.isArray(value)) {
+		const record = value as Record<string, unknown>;
+		if (typeof record.message === 'string') {
+			return stripUnsafePdfText(record.message).trim().slice(0, 500) || 'Provider processing failed';
 		}
-		return rawCells.map((value, cellIndex) => {
-			const normalized = tableCell(value, `${path}[${rowIndex}][${cellIndex}]`);
-			if (normalized.rawText !== null) rawTexts.push(normalized.rawText);
-			return normalized.cell;
-		});
-	});
-	return { rows, rawTexts };
-}
-
-function commonBlock(
-	pageNumber: number,
-	index: number,
-	sourceKind: string,
-	type: ParsedDocumentBlockV1['type'],
-	text: string | null,
-): ParsedDocumentBlockV1 {
-	return {
-		id: `p${pageNumber}-b${index + 1}`,
-		type,
-		sourceKind,
-		// The v2 schema does not define bbox origin. Do not mix unverified
-		// provider coordinates into the canonical top-left PDF-point system.
-		bbox: null,
-		text,
-		style: { bold: false, italic: false },
-		heading: null,
-		list: null,
-		code: null,
-		table: null,
-		figure: null,
-	};
-}
-
-function normalizedProviderBlock(value: unknown, pageNumber: number, index: number): NormalizedProviderBlock {
-	const path = `items.pages[${pageNumber}].items[${index}]`;
-	const item = providerRecord(value, path);
-	const sourceKind = providerString(item.type, `${path}.type`);
-	const rawMarkdown = providerString(item.md, `${path}.md`);
-	const markdown = stripUnsafePdfText(rawMarkdown).trim();
-	const rawTexts = [rawMarkdown];
-
-	if (sourceKind === 'text') {
-		const rawText = providerString(item.value, `${path}.value`);
-		rawTexts.push(rawText);
-		return { block: commonBlock(pageNumber, index, sourceKind, 'paragraph', stripUnsafePdfText(rawText).trim() || null), rawTexts };
 	}
-	if (sourceKind === 'heading') {
-		const rawText = providerString(item.value, `${path}.value`);
-		rawTexts.push(rawText);
-		const block = commonBlock(pageNumber, index, sourceKind, 'heading', stripUnsafePdfText(rawText).trim() || null);
-		return { block: { ...block, heading: { level: providerInteger(item.level, `${path}.level`, 1, 6) } }, rawTexts };
-	}
-	if (sourceKind === 'list') {
-		providerArray(item.items, `${path}.items`, MAX_PROVIDER_ITEMS_PER_PAGE);
-		const block = commonBlock(pageNumber, index, sourceKind, 'list', markdown || null);
-		return {
-			block: { ...block, list: { level: null, marker: null, ordered: providerBoolean(item.ordered, `${path}.ordered`) } },
-			rawTexts,
-		};
-	}
-	if (sourceKind === 'code') {
-		const rawText = providerString(item.value, `${path}.value`);
-		rawTexts.push(rawText);
-		const text = stripUnsafePdfText(rawText).trim();
-		const rawLanguage = item.language === undefined || item.language === null ? null : providerString(item.language, `${path}.language`);
-		if (rawLanguage !== null) rawTexts.push(rawLanguage);
-		const block = commonBlock(pageNumber, index, sourceKind, 'code', text || null);
-		return {
-			block: { ...block, code: { language: rawLanguage ? stripUnsafePdfText(rawLanguage).trim() || null : null, lines: text.split('\n') } },
-			rawTexts,
-		};
-	}
-	if (sourceKind === 'table') {
-		providerString(item.html, `${path}.html`);
-		providerString(item.csv, `${path}.csv`);
-		const table = providerTableRows(item.rows, `${path}.rows`);
-		rawTexts.push(...table.rawTexts);
-		const rows = table.rows;
-		const text = rows
-			.map((row) => row.map((cell) => cell.text).join('\t'))
-			.join('\n')
-			.trim();
-		return {
-			block: {
-				...commonBlock(pageNumber, index, sourceKind, 'table', text || markdown || null),
-				table: { header: [], rows, fallbackLines: [] },
-			},
-			rawTexts,
-		};
-	}
-	if (sourceKind === 'image') {
-		const rawCaption = providerString(item.caption, `${path}.caption`);
-		providerString(item.url, `${path}.url`);
-		rawTexts.push(rawCaption);
-		const block = commonBlock(pageNumber, index, sourceKind, 'figure', stripUnsafePdfText(rawCaption).trim() || markdown || null);
-		return { block: { ...block, figure: { id: null, format: null } }, rawTexts };
-	}
-	if (sourceKind === 'link') {
-		const rawText = providerString(item.text, `${path}.text`);
-		providerString(item.url, `${path}.url`);
-		rawTexts.push(rawText);
-		return { block: commonBlock(pageNumber, index, sourceKind, 'paragraph', stripUnsafePdfText(rawText).trim() || null), rawTexts };
-	}
-	if (sourceKind === 'header' || sourceKind === 'footer') {
-		providerArray(item.items, `${path}.items`, MAX_PROVIDER_ITEMS_PER_PAGE);
-		return { block: commonBlock(pageNumber, index, sourceKind, 'paragraph', markdown || null), rawTexts };
-	}
-	return invalidProviderResponse(`${path}.type`, 'a supported structured item discriminator');
+	if (value !== undefined && value !== null) providerRecord(value, path);
+	return 'Provider processing failed';
 }
 
 function extractedTextChars(value: string): number {
 	return value.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
-}
-
-function buildProviderPage(pageNumber: number, state: ProviderPageState): Readonly<{ page: ParsedDocumentPageV1 } | { failure: string }> {
-	const missing: string[] = [];
-	if (state.markdownFailure) missing.push(`markdown: ${state.markdownFailure}`);
-	else if (state.markdown === undefined) missing.push('markdown result missing');
-	if (state.structuredFailure) missing.push(`items: ${state.structuredFailure}`);
-	else if (!state.structured) missing.push('structured result missing');
-	if (state.text === undefined) missing.push('text result missing');
-	if (missing.length > 0) return { failure: missing.join('; ').slice(0, 500) };
-
-	const structured = state.structured;
-	const rawText = state.text;
-	const rawMarkdown = state.markdown;
-	if (!structured || rawText === undefined || rawMarkdown === undefined) {
-		return { failure: 'Provider result channels were incomplete' };
-	}
-	const normalizedBlocks = structured.items.map((item, index) => normalizedProviderBlock(item, pageNumber, index));
-	const sanitation = assessPdfTexts([rawText, rawMarkdown, ...normalizedBlocks.flatMap((entry) => entry.rawTexts)]);
-	const text = stripUnsafePdfText(rawText).trim();
-	const markdown = stripUnsafePdfText(rawMarkdown).trim();
-	if (sanitation.isGarbled) return { failure: 'Provider page output failed binary-text sanitation' };
-	if (extractedTextChars(markdown) === 0 && extractedTextChars(text) === 0) {
-		return { failure: 'Provider page output contained no usable text' };
-	}
-	const pageArea = structured.width * structured.height;
-	if (!Number.isFinite(pageArea) || pageArea <= 0) {
-		return invalidProviderResponse(`items.pages[${pageNumber}]`, 'a page with finite positive area');
-	}
-	return {
-		page: {
-			pageNumber,
-			width: structured.width,
-			height: structured.height,
-			source: 'llamaparse',
-			text,
-			markdown,
-			usable: true,
-			quality: {
-				needsOcr: false,
-				isGarbled: false,
-				reasons: [],
-				textLength: text.length,
-				textCoverage: 0,
-				pageArea,
-				images: {
-					hasSubstantialImages: normalizedBlocks.some((entry) => entry.block.type === 'figure'),
-					blockCount: normalizedBlocks.filter((entry) => entry.block.type === 'figure').length,
-					coverage: 0,
-					largestCoverage: 0,
-					fullPage: false,
-				},
-				uncoveredVectorArea: null,
-				layout: null,
-				sanitation,
-			},
-			blocks: normalizedBlocks.map((entry) => entry.block),
-		},
-	};
 }
 
 function targetPageNumber(value: unknown, path: string, targets: ReadonlySet<number>, seen: Set<number>): number {
@@ -452,30 +271,6 @@ function collectTextPages(value: unknown, states: Map<number, ProviderPageState>
 	}
 }
 
-function collectStructuredPages(value: unknown, states: Map<number, ProviderPageState>, targets: ReadonlySet<number>): void {
-	const result = providerRecord(value, 'items');
-	const seen = new Set<number>();
-	for (const [index, valuePage] of providerArray(result.pages, 'items.pages').entries()) {
-		const path = `items.pages[${index}]`;
-		const page = providerRecord(valuePage, path);
-		const pageNumber = targetPageNumber(page.page_number, `${path}.page_number`, targets, seen);
-		const state = states.get(pageNumber);
-		if (!state) throw new Error(`Missing target-page state for ${pageNumber}`);
-		if (!providerBoolean(page.success, `${path}.success`)) {
-			state.structuredFailure = providerFailureMessage(page.error, `${path}.error`);
-			continue;
-		}
-		const width = providerFiniteNumber(page.page_width, `${path}.page_width`);
-		const height = providerFiniteNumber(page.page_height, `${path}.page_height`);
-		if (width <= 0 || height <= 0) invalidProviderResponse(path, 'a page with positive dimensions');
-		state.structured = {
-			width,
-			height,
-			items: providerArray(page.items, `${path}.items`, MAX_PROVIDER_ITEMS_PER_PAGE),
-		};
-	}
-}
-
 function providerUsageCredits(job: Record<string, unknown>): number | null {
 	if (job.usage === undefined || job.usage === null) return null;
 	const usage = providerRecord(job.usage, 'job.usage');
@@ -483,6 +278,26 @@ function providerUsageCredits(job: Record<string, unknown>): number | null {
 	const credits = providerFiniteNumber(usage.credits, 'job.usage.credits');
 	if (credits < 0) return invalidProviderResponse('job.usage.credits', 'non-negative');
 	return credits;
+}
+
+function normalizedProviderPage(pageNumber: number, state: ProviderPageState): SelectiveLlamaParseV2Page | string {
+	const missing: string[] = [];
+	if (state.markdownFailure) missing.push(`markdown: ${state.markdownFailure}`);
+	else if (state.markdown === undefined) missing.push('markdown result missing');
+	if (state.text === undefined) missing.push('text result missing');
+	if (missing.length > 0) return missing.join('; ').slice(0, 500);
+
+	const rawText = state.text;
+	const rawMarkdown = state.markdown;
+	if (rawText === undefined || rawMarkdown === undefined) return 'Provider result channels were incomplete';
+	const sanitation = assessPdfTexts([rawText, rawMarkdown]);
+	const text = stripUnsafePdfText(rawText).trim();
+	const markdown = stripUnsafePdfText(rawMarkdown).trim();
+	if (sanitation.isGarbled) return 'Provider page output failed binary-text sanitation';
+	if (extractedTextChars(markdown) === 0 && extractedTextChars(text) === 0) {
+		return 'Provider page output contained no usable text';
+	}
+	return { pageNumber, text, markdown, sanitation };
 }
 
 export function normalizeSelectiveLlamaParseV2Result(value: unknown, plan: SelectivePdfEnhancementPlan): SelectiveLlamaParseV2Result {
@@ -503,16 +318,15 @@ export function normalizeSelectiveLlamaParseV2Result(value: unknown, plan: Selec
 	const states = new Map(targetNumbers.map((pageNumber) => [pageNumber, {}]));
 	collectMarkdownPages(response.markdown, states, targets);
 	collectTextPages(response.text, states, targets);
-	collectStructuredPages(response.items, states, targets);
 
-	const pages: ParsedDocumentPageV1[] = [];
+	const pages: SelectiveLlamaParseV2Page[] = [];
 	const failedPages: Array<{ pageNumber: number; message: string }> = [];
 	for (const pageNumber of targetNumbers) {
 		const state = states.get(pageNumber);
 		if (!state) throw new Error(`Missing target-page state for ${pageNumber}`);
-		const normalized = buildProviderPage(pageNumber, state);
-		if ('page' in normalized) pages.push(normalized.page);
-		else failedPages.push({ pageNumber, message: normalized.failure });
+		const normalized = normalizedProviderPage(pageNumber, state);
+		if (typeof normalized === 'string') failedPages.push({ pageNumber, message: normalized });
+		else pages.push(normalized);
 	}
 	return {
 		provider: 'llamaparse',
@@ -524,11 +338,35 @@ export function normalizeSelectiveLlamaParseV2Result(value: unknown, plan: Selec
 	};
 }
 
+function enhancedWorkingPage(providerPage: SelectiveLlamaParseV2Page, localPage: PdfWorkingPageV1 | undefined): PdfWorkingPageV1 {
+	return {
+		pageNumber: providerPage.pageNumber,
+		width: localPage?.width ?? null,
+		height: localPage?.height ?? null,
+		source: 'llamaparse',
+		text: providerPage.text,
+		markdown: providerPage.markdown,
+		usable: true,
+		quality: {
+			needsOcr: false,
+			isGarbled: false,
+			reasons: [],
+			textLength: providerPage.text.length,
+			textCoverage: localPage?.quality.textCoverage ?? 0,
+			pageArea: localPage?.quality.pageArea ?? null,
+			images: localPage?.quality.images ?? EMPTY_IMAGE_QUALITY,
+			uncoveredVectorArea: localPage?.quality.uncoveredVectorArea ?? null,
+			layout: null,
+			sanitation: providerPage.sanitation,
+		},
+	};
+}
+
 export function mergeSelectivePdfEnhancement(
-	document: ParsedDocumentV1,
+	document: PdfWorkingDocumentV1,
 	plan: SelectivePdfEnhancementPlan,
 	result: SelectiveLlamaParseV2Result,
-): ParsedDocumentV1 {
+): PdfWorkingDocumentV1 {
 	if (plan.totalPages !== document.totalPages) throw new TypeError('PDF enhancement plan does not match the source document');
 	if (result.provider !== plan.provider || result.apiVersion !== plan.apiVersion) {
 		throw new TypeError('PDF enhancement result provider does not match its plan');
@@ -552,14 +390,13 @@ export function mergeSelectivePdfEnhancement(
 	) {
 		throw new TypeError('PDF enhancement result must contain exactly one outcome for every requested page');
 	}
-	for (const page of result.pages) {
-		if (page.source !== 'llamaparse') throw new TypeError('PDF enhancement result pages must identify their provider source');
-	}
 
 	const applied = new Set(appliedPages);
 	const pageByNumber = new Map(document.pages.map((page) => [page.pageNumber, page]));
-	for (const page of result.pages) pageByNumber.set(page.pageNumber, page);
-	const assembled = assembleLiteParseDocument(
+	for (const page of result.pages) {
+		pageByNumber.set(page.pageNumber, enhancedWorkingPage(page, pageByNumber.get(page.pageNumber)));
+	}
+	const assembled = assemblePdfWorkingDocument(
 		{
 			totalPages: document.totalPages,
 			pages: [...pageByNumber.values()].sort((left, right) => left.pageNumber - right.pageNumber),

@@ -1,5 +1,5 @@
 import { liteParseLinearMemoryBytes, parsePdfWithLiteParse, parsePdfWithLiteParseBatches } from '../../src/ingest/platforms/liteparse';
-import { serializeParsedDocument } from '../../src/ingest/platforms/parsed-document';
+import { serializePdfWorkingDocument } from '../../src/ingest/platforms/pdf-working-document';
 import { sha256Hex } from '../../src/shared/hash';
 
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
@@ -45,20 +45,19 @@ async function runBenchmark(request: Request): Promise<Response> {
 	const wasmMemoryBeforeBytes = liteParseLinearMemoryBytes();
 	const document = mode === 'whole' ? await parsePdfWithLiteParse(bytes) : await parsePdfWithLiteParseBatches(bytes, batchSize);
 	const wasmMemoryAfterBytes = liteParseLinearMemoryBytes();
-	const artifact = serializeParsedDocument(document);
-	const [artifactSha256, markdownSha256] = await Promise.all([sha256Hex(artifact), sha256Hex(document.markdown)]);
+	const workingDocument = serializePdfWorkingDocument(document);
+	const [workingDocumentSha256, markdownSha256] = await Promise.all([sha256Hex(workingDocument), sha256Hex(document.markdown)]);
 	return Response.json({
 		mode,
 		...(mode === 'batch' ? { batchSize } : {}),
 		inputBytes: bytes.byteLength,
 		wasmMemoryBeforeBytes,
 		wasmMemoryAfterBytes,
-		artifactBytes: new TextEncoder().encode(artifact).byteLength,
-		artifactSha256,
+		workingDocumentBytes: new TextEncoder().encode(workingDocument).byteLength,
+		workingDocumentSha256,
 		markdownSha256,
 		totalPages: document.totalPages,
 		parsedPages: document.parsedPages,
-		blocks: document.pages.reduce((count, page) => count + page.blocks.length, 0),
 		usablePages: document.quality.usablePages,
 		problemPages: document.quality.problemPages,
 		failedPages: document.quality.failedPages,

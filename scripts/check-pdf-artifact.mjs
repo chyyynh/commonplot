@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { normalizeLiteParseDocument, serializeParsedDocument } from '../src/ingest/platforms/parsed-document.ts';
 import { sanitizePdfText } from '../src/ingest/platforms/pdf-text-quality.ts';
+import { normalizeLiteParseWorkingDocument, serializePdfWorkingDocument } from '../src/ingest/platforms/pdf-working-document.ts';
 
 const strayControl = sanitizePdfText('Revenue\u0001 increased by 12%.');
 assert.equal(strayControl.text, 'Revenue increased by 12%.');
@@ -46,35 +46,6 @@ const liteParseResult = {
 			height: 792,
 			text: 'Study results  Model Accuracy A 95%',
 			markdown: '# Study results\n\n| Model | Accuracy |\n| --- | --- |\n| A | 95% |',
-			blocks: [
-				{
-					kind: 'heading',
-					text: 'Study results',
-					level: 1,
-					bbox: { x: 72, y: 64, width: 180, height: 24 },
-				},
-				{
-					kind: 'table',
-					bold: false,
-					italic: false,
-					bbox: { x: 72, y: 120, width: 300, height: 72 },
-					header: [
-						{ text: 'Model', bbox: { x: 72, y: 120, width: 150, height: 24 } },
-						{ text: 'Accuracy', bbox: { x: 222, y: 120, width: 150, height: 24 } },
-					],
-					rows: [
-						[
-							{ text: 'A', bbox: { x: 72, y: 144, width: 150, height: 24 } },
-							{ text: '95%', bbox: { x: 222, y: 144, width: 150, height: 24 } },
-						],
-					],
-				},
-				{
-					kind: 'equation',
-					text: 'E = mc²',
-					bbox: { x: 72, y: 220, width: 90, height: 18 },
-				},
-			],
 			complexity: quality(1, {
 				layout: {
 					columnCount: 1,
@@ -94,7 +65,6 @@ const liteParseResult = {
 			height: 792,
 			text: '����',
 			markdown: '����',
-			blocks: [{ kind: 'grid_fallback', lines: ['����'] }],
 			complexity: quality(2, {
 				textLength: 4,
 				textCoverage: 0,
@@ -108,28 +78,15 @@ const liteParseResult = {
 	pageErrors: [{ pageNum: 3, message: 'Malformed page content' }],
 };
 
-const document = normalizeLiteParseDocument(liteParseResult, '2.13.1');
+const document = normalizeLiteParseWorkingDocument(liteParseResult, '2.13.1');
 assert.deepEqual(document.parser, {
 	name: 'liteparse',
 	version: '2.13.1',
-	policyRevision: 'liteparse-blocks-v2',
+	policyRevision: 'liteparse-pages-v3',
 });
-assert.deepEqual(document.coordinateSystem, { origin: 'top-left', unit: 'pdf-point', pointsPerInch: 72 });
-assert.deepEqual(
-	document.pages[0].blocks.map((block) => ({ id: block.id, sourceKind: block.sourceKind, type: block.type })),
-	[
-		{ id: 'p1-b1', sourceKind: 'heading', type: 'heading' },
-		{ id: 'p1-b2', sourceKind: 'table', type: 'table' },
-		{ id: 'p1-b3', sourceKind: 'equation', type: 'equation' },
-	],
-);
-assert.deepEqual(document.pages[0].blocks[1].table.header[1], {
-	text: 'Accuracy',
-	bbox: { x: 222, y: 120, width: 150, height: 24 },
-});
-assert.equal(document.pages[0].blocks[2].text, 'E = mc²');
-assert.equal(document.pages[0].blocks[2].style.bold, false, 'omitted false style flags normalize explicitly');
-assert.deepEqual(document.pages[1].blocks[0].table.fallbackLines, ['']);
+assert.equal(document.pages[0].source, 'liteparse');
+assert.equal(document.pages[0].width, 612);
+assert.equal(document.pages[0].height, 792);
 assert.equal(document.pages[1].text, '');
 assert.equal(document.pages[1].markdown, '');
 assert.deepEqual(document.pages[1].quality.sanitation, {
@@ -154,36 +111,37 @@ assert.deepEqual(document.quality, {
 	problemPages: [1, 2, 3, 4],
 });
 assert.equal(document.markdown, liteParseResult.pages[0].markdown);
+assert.equal(Object.hasOwn(document.pages[0], 'blocks'), false, 'working pages do not retain block geometry');
 
-const serialized = serializeParsedDocument(document);
-assert.equal(serialized, serializeParsedDocument(document), 'serialization is deterministic');
-assert.deepEqual(JSON.parse(serialized), document, 'artifact is plain JSON without runtime-only values');
+const serialized = serializePdfWorkingDocument(document);
+assert.equal(serialized, serializePdfWorkingDocument(document), 'serialization is deterministic');
+assert.deepEqual(JSON.parse(serialized), document, 'temporary R2 working state is plain JSON without runtime-only values');
 
-function artifactHasUnsafeText(value) {
+function workingDocumentHasUnsafeText(value) {
 	if (typeof value === 'string') return sanitizePdfText(value).text !== value;
-	if (Array.isArray(value)) return value.some(artifactHasUnsafeText);
-	return value !== null && typeof value === 'object' && Object.values(value).some(artifactHasUnsafeText);
+	if (Array.isArray(value)) return value.some(workingDocumentHasUnsafeText);
+	return value !== null && typeof value === 'object' && Object.values(value).some(workingDocumentHasUnsafeText);
 }
 
-assert.equal(artifactHasUnsafeText(document), false, 'unsafe parser text never reaches the artifact');
+assert.equal(workingDocumentHasUnsafeText(document), false, 'unsafe parser text never reaches Workflow working state');
 
-const failedDocument = normalizeLiteParseDocument({ ...liteParseResult, totalPages: 3 }, '2.13.1');
+const failedDocument = normalizeLiteParseWorkingDocument({ ...liteParseResult, totalPages: 3 }, '2.13.1');
 assert.equal(failedDocument.quality.unparsedPages, 0);
-assert.equal(failedDocument.quality.complete, false, 'a covered but failed page does not make the artifact complete');
+assert.equal(failedDocument.quality.complete, false, 'a covered but failed page does not make the working document complete');
 
 assert.throws(
-	() => normalizeLiteParseDocument({ ...liteParseResult, pages: [...liteParseResult.pages].reverse() }, '2.13.1'),
+	() => normalizeLiteParseWorkingDocument({ ...liteParseResult, pages: [...liteParseResult.pages].reverse() }, '2.13.1'),
 	/strictly increasing source-page order/,
 );
 assert.throws(
-	() => normalizeLiteParseDocument({ ...liteParseResult, pages: [{ ...liteParseResult.pages[0], blocks: undefined }] }, '2.13.1'),
-	/pages\[0\]\.blocks must be an array/,
+	() =>
+		normalizeLiteParseWorkingDocument({ ...liteParseResult, pages: [{ ...liteParseResult.pages[0], complexity: undefined }] }, '2.13.1'),
+	/pages\[0\]\.complexity must be an object/,
 );
-assert.throws(() => normalizeLiteParseDocument(liteParseResult, '../latest'), /safe artifact revision/);
+assert.throws(() => normalizeLiteParseWorkingDocument(liteParseResult, '../latest'), /safe working revision/);
 
 console.info({
-	event: 'pdf_artifact_contract_passed',
-	blocks: document.pages.reduce((count, page) => count + page.blocks.length, 0),
+	event: 'pdf_working_document_contract_passed',
 	pages: document.parsedPages,
 	problemPages: document.quality.problemPages.length,
 	serializedBytes: new TextEncoder().encode(serialized).byteLength,
