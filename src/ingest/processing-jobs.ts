@@ -1,50 +1,19 @@
 // Validated Workflow payloads and enqueue entrypoints for app, monitor, and derived-resource jobs.
-import { type ResourceDraftAdmission, TwitterProviderSequenceSchema } from '@app-domain/resource-graph-contracts';
+import {
+	type ResourceDraftAdmission,
+	ResourceDraftAdmissionSchema,
+	TwitterProviderSequenceSchema,
+} from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
 import { canonicalizeOptionalResourceLang } from '@core-shared/resource';
 import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
 import { z } from 'zod';
 import { PdfParseAdmissionSchema } from '../shared/pdf-parse-contract.ts';
 
-const DraftAdmissionSchema = z.discriminatedUnion('kind', [
-	z
-		.object({
-			kind: z.literal('profileSave'),
-			userId: z.string().trim().min(1).max(255),
-			visibility: z.enum(['public', 'private']),
-		})
-		.strict(),
-	z
-		.object({
-			kind: z.literal('container'),
-			userId: z.string().trim().min(1).max(255),
-			container: z
-				.object({
-					kind: z.enum(['collection', 'workspace']),
-					id: z.string().uuid(),
-				})
-				.strict(),
-		})
-		.strict(),
-	z.object({ kind: z.literal('source'), sourceId: z.string().uuid() }).strict(),
-	z
-		.object({
-			kind: z.literal('subject'),
-			parentResourceId: z.string().uuid(),
-		})
-		.strict(),
-	z
-		.object({
-			kind: z.literal('userFilePaper'),
-			fileResourceId: z.string().uuid(),
-		})
-		.strict(),
-]);
-
 const ResourceDraftTargetSchema = z
 	.object({
 		kind: z.literal('draft'),
-		admission: DraftAdmissionSchema,
+		admission: ResourceDraftAdmissionSchema,
 		url: z
 			.url({ protocol: /^https?$/ })
 			.max(2_048)
