@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { sanitizePdfText } from '../src/ingest/platforms/pdf-text-quality.ts';
 import { normalizeLiteParseWorkingDocument, serializePdfWorkingDocument } from '../src/ingest/platforms/pdf-working-document.ts';
+import { PDF_PARSE_CONTRACT, parsePdfParseAdmission } from '../src/shared/pdf-parse-contract.ts';
 
 const strayControl = sanitizePdfText('Revenue\u0001 increased by 12%.');
 assert.equal(strayControl.text, 'Revenue increased by 12%.');
@@ -140,6 +141,25 @@ assert.throws(
 );
 assert.throws(() => normalizeLiteParseWorkingDocument(liteParseResult, '../latest'), /safe working revision/);
 
+const fileResourceId = '8d2e4a53-23e1-4dab-a26b-6c762f427114';
+const liteAdmission = {
+	parseRunId: '532dc42f-8920-4022-b467-c64682c60923',
+	fileResourceId,
+	revision: 1,
+	inputContentHash: 'a'.repeat(64),
+	workingSchemaVersion: PDF_PARSE_CONTRACT.workingSchemaVersion,
+	parserVersion: PDF_PARSE_CONTRACT.parserVersion,
+	policyRevision: PDF_PARSE_CONTRACT.litePolicyRevision,
+	processingPolicy: 'lite',
+	entitlementFeature: null,
+	maxEnhancedPages: null,
+	maxProviderCredits: null,
+};
+assert.deepEqual(parsePdfParseAdmission(liteAdmission), liteAdmission);
+assert.throws(
+	() => parsePdfParseAdmission({ ...liteAdmission, processingPolicy: 'selective-enhancement' }),
+	/Enhanced PDF admission is incomplete/,
+);
 console.info({
 	event: 'pdf_working_document_contract_passed',
 	pages: document.parsedPages,

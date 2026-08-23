@@ -1,3 +1,4 @@
+import { PDF_PARSE_CONTRACT } from '../../shared/pdf-parse-contract.ts';
 import { assessPdfTexts, type PdfTextSanitationSummary, stripUnsafePdfText } from './pdf-text-quality.ts';
 import {
 	assemblePdfWorkingDocument,
@@ -6,7 +7,7 @@ import {
 	type PdfWorkingPageV1,
 } from './pdf-working-document.ts';
 
-export const PDF_ENHANCEMENT_POLICY_REVISION = 'selective-llamaparse-v2' as const;
+export const PDF_ENHANCEMENT_POLICY_REVISION = PDF_PARSE_CONTRACT.enhancementPolicyRevision;
 export const LLAMAPARSE_V2_AGENTIC_VERSION = '2026-08-19' as const;
 
 export type PdfEnhancementReason = 'complex-layout' | 'garbled-text' | 'needs-ocr' | 'parse-failed' | 'unparsed';
@@ -137,7 +138,10 @@ export function detectPdfEnhancementPages(document: PdfWorkingDocumentV1): PdfEn
 	}
 	return [...reasonsByPage]
 		.sort(([left], [right]) => left - right)
-		.map(([pageNumber, reasons]) => ({ pageNumber, reasons: [...reasons].sort() }));
+		.map(([pageNumber, reasons]) => ({
+			pageNumber,
+			reasons: [...reasons].sort(),
+		}));
 }
 
 export function buildSelectiveLlamaParseV2Configuration(
@@ -148,7 +152,9 @@ export function buildSelectiveLlamaParseV2Configuration(
 		tier: 'agentic',
 		version: LLAMAPARSE_V2_AGENTIC_VERSION,
 		client_name: 'newsence-core',
-		page_ranges: { target_pages: formatLlamaParseTargetPages(targetPages, totalPages) },
+		page_ranges: {
+			target_pages: formatLlamaParseTargetPages(targetPages, totalPages),
+		},
 		output_options: {
 			additional_outputs: [],
 			granular_bboxes: [],
@@ -172,7 +178,10 @@ export function planSelectivePdfEnhancement(document: PdfWorkingDocumentV1): Sel
 			document.totalPages,
 		),
 		providerFile: { purpose: 'parse', cleanup: 'delete-after-terminal-job' },
-		usageAccounting: { settlement: 'provider-reported-credits', targetPageBilling: 'unverified' },
+		usageAccounting: {
+			settlement: 'provider-reported-credits',
+			targetPageBilling: 'unverified',
+		},
 	};
 }
 

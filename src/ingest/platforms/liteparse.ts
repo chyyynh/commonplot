@@ -1,6 +1,7 @@
 import { initSync, LiteParse, type LiteParseInit } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
 import liteParsePackage from '@llamaindex/liteparse-wasm/package.json';
+import { PDF_PARSE_CONTRACT } from '../../shared/pdf-parse-contract.ts';
 import {
 	assemblePdfWorkingDocument,
 	normalizeLiteParseWorkingDocument,
@@ -17,6 +18,12 @@ const LITEPARSE_CONFIG = {
 	outputFormat: 'markdown',
 	quiet: true,
 } satisfies LiteParseInit;
+
+if (liteParsePackage.version !== PDF_PARSE_CONTRACT.parserVersion) {
+	throw new Error(
+		`LiteParse package ${liteParsePackage.version} does not match PDF admission contract ${PDF_PARSE_CONTRACT.parserVersion}`,
+	);
+}
 
 const liteParseRuntime = initSync({ module: wasmModule });
 

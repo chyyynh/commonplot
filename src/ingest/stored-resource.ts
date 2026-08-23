@@ -1,5 +1,6 @@
 // Narrow database projections for the two record-first processing paths.
 
+import type { PdfParseAdmissionSnapshot } from '@core-shared/pdf-parse-contract';
 import {
 	canonicalizeResourceLang,
 	parseStoredResourceKindMetadata,
@@ -15,11 +16,13 @@ import type { CoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/display-source-sql';
 import { inArray, sql } from 'drizzle-orm';
 import { z } from 'zod';
+import { parsePdfParseAdmission } from '../shared/pdf-parse-contract.ts';
+import { parseResourceProcessingWorkflowPayload } from './processing-jobs';
 
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
 const PENDING_BLOB_RECONCILE_CONCURRENCY = 10;
-const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v9';
+const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v10';
 
 type StoredResourceBase = {
 	resourceId: string;
@@ -54,7 +57,9 @@ type StoredResourceIdentityRow = {
 	resource_platform: string | null;
 };
 
-type ResourceProcessableRow = StoredResourceIdentityRow & { url: string | null };
+type ResourceProcessableRow = StoredResourceIdentityRow & {
+	url: string | null;
+};
 
 type StoredResourceBaseRow = StoredResourceIdentityRow & {
 	id: string;
@@ -83,10 +88,22 @@ type ResourceReacquisitionRow = StoredResourceBaseRow & {
 	translate_paper_url: boolean;
 };
 
-export async function enqueueProcessing(env: CoreEnv, resourceId: string): Promise<string> {
-	const resourceIdValue = z.uuid().parse(resourceId);
-	const id = `${STORED_RESOURCE_WORKFLOW_REVISION}-${resourceIdValue}`;
-	await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { target: { kind: 'storedBlob', resourceId: resourceIdValue } } }]);
+export type StoredPdfProcessingAdmissionInput = Readonly<{
+	resourceId: string;
+	parseAdmission: PdfParseAdmissionSnapshot;
+}>;
+
+export async function enqueueProcessing(env: CoreEnv, input: StoredPdfProcessingAdmissionInput): Promise<string> {
+	const payload = parseResourceProcessingWorkflowPayload({
+		target: {
+			kind: 'storedBlob',
+			resourceId: z.uuid().parse(input.resourceId),
+			parseAdmission: input.parseAdmission,
+		},
+	});
+	if (payload.target.kind !== 'storedBlob') throw new Error('Stored PDF processing payload was not preserved');
+	const id = `${STORED_RESOURCE_WORKFLOW_REVISION}-${payload.target.parseAdmission.parseRunId}`;
+	await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: payload }]);
 	return id;
 }
 
@@ -116,32 +133,93 @@ export async function markStoredBlobProcessingFailed(db: CoreDb, resourceId: str
 	`);
 }
 
-async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limit: number): Promise<Array<{ resourceId: string }>> {
-	const claimed = await db.execute<{ resource_id: string }>(sql`
+type QueuedPdfParseAdmissionRow = {
+	resource_id: string;
+	parse_run_id: string;
+	revision: number;
+	input_content_hash: string;
+	working_schema_version: number;
+	parser_version: string;
+	policy_revision: string;
+	processing_policy: string;
+	entitlement_feature: string | null;
+	max_enhanced_pages: number | null;
+	max_provider_credits: string | number | null;
+};
+
+async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limit: number): Promise<StoredPdfProcessingAdmissionInput[]> {
+	const claimed = await db.execute<QueuedPdfParseAdmissionRow>(sql`
 		WITH candidates AS (
-			SELECT id
-			FROM resources
-			WHERE enrichment_status = 'pending'
-			  AND scope = 'private'
-			  AND storage_key IS NOT NULL
+			SELECT
+			  resource.id,
+			  parse_run.id AS parse_run_id,
+			  parse_run.revision,
+			  parse_run.input_content_hash,
+			  parse_run.working_schema_version,
+			  parse_run.parser_version,
+			  parse_run.policy_revision,
+			  parse_run.processing_policy,
+			  parse_run.entitlement_feature,
+			  parse_run.max_enhanced_pages,
+			  parse_run.max_provider_credits
+			FROM resources resource
+			JOIN LATERAL (
+			  SELECT run.*
+			  FROM resource_parse_runs run
+			  WHERE run.file_resource_id = resource.id
+			    AND run.user_file_id IS NOT NULL
+			    AND run.retired_at IS NULL
+			    AND run.status = 'queued'
+			  ORDER BY run.revision DESC
+			  LIMIT 1
+			) parse_run ON TRUE
+			WHERE resource.enrichment_status = 'pending'
+			  AND resource.scope = 'private'
+			  AND resource.storage_key IS NOT NULL
 			  AND EXISTS (
 			    SELECT 1
 			    FROM user_files
-			    WHERE user_files.resource_id = resources.id
+			    WHERE user_files.resource_id = resource.id
 			  )
-			  AND updated_at < ${olderThan}
-			  AND ${inArray(sql`kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
-			ORDER BY updated_at ASC, id ASC
-			FOR UPDATE SKIP LOCKED
+			  AND resource.updated_at < ${olderThan}
+			  AND ${inArray(sql`resource.kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
+			ORDER BY resource.updated_at ASC, resource.id ASC
+			FOR UPDATE OF resource SKIP LOCKED
 			LIMIT ${limit}
 		)
 		UPDATE resources AS resource
 		SET updated_at = NOW()
 		FROM candidates
 		WHERE resource.id = candidates.id
-		RETURNING resource.id::text AS resource_id
+		RETURNING
+		  resource.id::text AS resource_id,
+		  candidates.parse_run_id::text AS parse_run_id,
+		  candidates.revision,
+		  candidates.input_content_hash,
+		  candidates.working_schema_version,
+		  candidates.parser_version,
+		  candidates.policy_revision,
+		  candidates.processing_policy,
+		  candidates.entitlement_feature,
+		  candidates.max_enhanced_pages,
+		  candidates.max_provider_credits
 	`);
-	return claimed.rows.map(({ resource_id }) => ({ resourceId: resource_id }));
+	return claimed.rows.map((row) => ({
+		resourceId: row.resource_id,
+		parseAdmission: parsePdfParseAdmission({
+			parseRunId: row.parse_run_id,
+			fileResourceId: row.resource_id,
+			revision: row.revision,
+			inputContentHash: row.input_content_hash,
+			workingSchemaVersion: row.working_schema_version,
+			parserVersion: row.parser_version,
+			policyRevision: row.policy_revision,
+			processingPolicy: row.processing_policy,
+			entitlementFeature: row.entitlement_feature,
+			maxEnhancedPages: row.max_enhanced_pages,
+			maxProviderCredits: row.max_provider_credits === null ? null : String(row.max_provider_credits),
+		}),
+	}));
 }
 
 /** Repairs only interrupted DB-to-Workflow handoffs for record-first app-owned blobs. */
@@ -153,7 +231,7 @@ export async function reconcilePendingBlobProcessing(env: CoreEnv, db: CoreDb): 
 	let failed = 0;
 	for (let offset = 0; offset < admissions.length; offset += PENDING_BLOB_RECONCILE_CONCURRENCY) {
 		const batch = admissions.slice(offset, offset + PENDING_BLOB_RECONCILE_CONCURRENCY);
-		const results = await Promise.allSettled(batch.map(({ resourceId }) => enqueueProcessing(env, resourceId)));
+		const results = await Promise.allSettled(batch.map((admission) => enqueueProcessing(env, admission)));
 		for (const [index, result] of results.entries()) {
 			if (result.status === 'fulfilled') {
 				reconciled++;
@@ -186,7 +264,10 @@ export async function assertResourceProcessable(db: CoreDb, resourceId: string):
 	`);
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
-	const identity = RESOURCE_TYPES.identity.safeParse({ kind: row.kind, resourcePlatform: row.resource_platform });
+	const identity = RESOURCE_TYPES.identity.safeParse({
+		kind: row.kind,
+		resourcePlatform: row.resource_platform,
+	});
 	if (!identity.success || !RESOURCE_TYPES.kinds.exclude(['image', 'file']).safeParse(identity.data.kind).success) {
 		throw new Error(`Resource kind is not processable by core: ${identity.success ? identity.data.kind : row.kind}`);
 	}
@@ -242,7 +323,10 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 	`);
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch stored PDF ${resourceId}: not found or not an owned private blob`);
-	const identity = RESOURCE_TYPES.identity.parse({ kind: row.kind, resourcePlatform: row.resource_platform });
+	const identity = RESOURCE_TYPES.identity.parse({
+		kind: row.kind,
+		resourcePlatform: row.resource_platform,
+	});
 	const base = storedResourceBase(row);
 	const title = row.title?.trim();
 	const source = row.source?.trim();
@@ -307,7 +391,10 @@ export async function loadResourceReacquisitionInput(db: CoreDb, resourceId: str
 	`);
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
-	RESOURCE_TYPES.identity.parse({ kind: row.kind, resourcePlatform: row.resource_platform });
+	RESOURCE_TYPES.identity.parse({
+		kind: row.kind,
+		resourcePlatform: row.resource_platform,
+	});
 	const base = storedResourceBase(row);
 	const url = parseExternalHttpUrl(base.url);
 	if (!url) throw new Error(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);

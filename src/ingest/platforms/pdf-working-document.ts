@@ -1,7 +1,8 @@
+import { PDF_PARSE_CONTRACT } from '../../shared/pdf-parse-contract.ts';
 import { assessPdfTexts, type PdfTextSanitationSummary, stripUnsafePdfText } from './pdf-text-quality.ts';
 
-export const PDF_WORKING_DOCUMENT_SCHEMA_VERSION = 1 as const;
-export const LITEPARSE_POLICY_REVISION = 'liteparse-pages-v3' as const;
+export const PDF_WORKING_DOCUMENT_SCHEMA_VERSION = PDF_PARSE_CONTRACT.workingSchemaVersion;
+export const LITEPARSE_POLICY_REVISION = PDF_PARSE_CONTRACT.litePolicyRevision;
 
 export type PdfPageQualityV1 = Readonly<{
 	needsOcr: boolean;
@@ -256,7 +257,11 @@ function canonicalLiteParseResult(value: unknown): LiteParseWorkingResult {
 	if (pages.some((page, index) => index > 0 && page.pageNumber <= (pages[index - 1]?.pageNumber ?? 0))) {
 		return invalidLiteParseResponse('result.pages', 'in strictly increasing source-page order');
 	}
-	return { totalPages, pages, pageErrors: canonicalPageErrors(result.pageErrors, totalPages) };
+	return {
+		totalPages,
+		pages,
+		pageErrors: canonicalPageErrors(result.pageErrors, totalPages),
+	};
 }
 
 function sortedPageUnion(...lists: readonly number[][]): number[] {
@@ -294,7 +299,11 @@ export function assemblePdfWorkingDocument(result: LiteParseWorkingResult, parse
 	}
 	return {
 		schemaVersion: PDF_WORKING_DOCUMENT_SCHEMA_VERSION,
-		parser: { name: 'liteparse', version: parserVersion, policyRevision: LITEPARSE_POLICY_REVISION },
+		parser: {
+			name: 'liteparse',
+			version: parserVersion,
+			policyRevision: LITEPARSE_POLICY_REVISION,
+		},
 		totalPages: result.totalPages,
 		parsedPages: result.pages.length,
 		pages: result.pages,

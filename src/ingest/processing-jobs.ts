@@ -4,16 +4,26 @@ import { sha256Hex } from '@core-shared/hash';
 import { canonicalizeOptionalResourceLang } from '@core-shared/resource';
 import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
 import { z } from 'zod';
+import { PdfParseAdmissionSchema } from '../shared/pdf-parse-contract.ts';
 
 const DraftAdmissionSchema = z.discriminatedUnion('kind', [
 	z
-		.object({ kind: z.literal('profileSave'), userId: z.string().trim().min(1).max(255), visibility: z.enum(['public', 'private']) })
+		.object({
+			kind: z.literal('profileSave'),
+			userId: z.string().trim().min(1).max(255),
+			visibility: z.enum(['public', 'private']),
+		})
 		.strict(),
 	z
 		.object({
 			kind: z.literal('container'),
 			userId: z.string().trim().min(1).max(255),
-			container: z.object({ kind: z.enum(['collection', 'workspace']), id: z.string().uuid() }).strict(),
+			container: z
+				.object({
+					kind: z.enum(['collection', 'workspace']),
+					id: z.string().uuid(),
+				})
+				.strict(),
 		})
 		.strict(),
 	z.object({ kind: z.literal('source'), sourceId: z.string().uuid() }).strict(),
@@ -60,8 +70,17 @@ const ResourceProcessingWorkflowPayloadSchema = z
 				.object({
 					kind: z.literal('storedBlob'),
 					resourceId: z.string().uuid(),
+					parseAdmission: PdfParseAdmissionSchema,
 				})
-				.strict(),
+				.strict()
+				.superRefine((target, context) => {
+					if (target.resourceId !== target.parseAdmission.fileResourceId) {
+						context.addIssue({
+							code: 'custom',
+							message: 'Stored PDF admission Resource id does not match its target',
+						});
+					}
+				}),
 			z
 				.object({
 					kind: z.literal('reacquire'),
@@ -172,7 +191,10 @@ export async function admitDiscoveredSourceResources(
 	const instances = await Promise.all(
 		drafts.map(async (draft) => {
 			const target = sourceDraftTarget(draft);
-			return { id: `${SOURCE_DRAFT_WORKFLOW_REVISION}-${await sha256Hex(JSON.stringify(target))}`, params: { target } };
+			return {
+				id: `${SOURCE_DRAFT_WORKFLOW_REVISION}-${await sha256Hex(JSON.stringify(target))}`,
+				params: { target },
+			};
 		}),
 	);
 	const createdIds = new Set<string>();

@@ -9,6 +9,7 @@ import {
 	enqueueProcessing,
 	enqueueResourceResync,
 	reconcilePendingBlobProcessing,
+	type StoredPdfProcessingAdmissionInput,
 } from '@ingest/stored-resource';
 import { ResourceTranslationV2Workflow } from '@ingest/translation-workflow';
 import { ResourceProcessingV2Workflow } from '@ingest/workflow';
@@ -50,8 +51,8 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	// the app Worker's DomainRpc binding.
 
 	/** Enqueue an app-owned blob after its R2 object and private ownership row exist. */
-	async enqueueResourceProcessing(resourceId: string) {
-		return enqueueProcessing(this.env, resourceId);
+	async enqueueResourceProcessing(input: StoredPdfProcessingAdmissionInput) {
+		return enqueueProcessing(this.env, input);
 	}
 
 	/** Process an external URL before its canonical Resource and user relation become visible. */
