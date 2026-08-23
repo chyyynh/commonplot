@@ -1,13 +1,14 @@
 // Narrow database projections for the two record-first processing paths.
 
+import { normalizePaperIdentifiers, type PaperIdentifier } from '@core-shared/paper-identity';
 import type { PdfParseAdmissionSnapshot } from '@core-shared/pdf-parse-contract';
 import {
 	canonicalizeResourceLang,
+	isPaperIdentifier,
 	parseStoredResourceKindMetadata,
 	type RESOURCE_TYPES,
 	type ResourceCreator,
 	ResourceCreatorsSchema,
-	type ResourceIdentifier,
 	ResourceIdentifiersSchema,
 	type ResourceKindMetadata,
 } from '@core-shared/resource';
@@ -36,7 +37,7 @@ type StoredResourceBase = {
 	publishedDate: string | null;
 	tags: string[];
 	keywords: string[];
-	resourceIdentifiers: ResourceIdentifier[];
+	resourceIdentifiers: PaperIdentifier[];
 	normalizedUrl: string | null;
 };
 
@@ -295,6 +296,7 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 				)
 				FROM resource_identifiers identifier
 				WHERE identifier.resource_id = resource.id
+				  AND identifier.scheme IN ('doi', 'arxiv', 'openalex')
 			) AS resource_identifiers,
 			resource.url,
 			${resourceDisplaySourceSql({
@@ -365,6 +367,7 @@ export async function loadResourceReacquisitionInput(db: CoreDb, resourceId: str
 				)
 				FROM resource_identifiers identifier
 				WHERE identifier.resource_id = resource.id
+				  AND identifier.scheme IN ('doi', 'arxiv', 'openalex')
 			) AS resource_identifiers,
 			resource.url,
 			monitored_source.avatar_url AS source_avatar_url,
@@ -416,7 +419,9 @@ function storedResourceBase(row: StoredResourceBaseRow): StoredResourceBase {
 		publishedDate: publishedDate?.toISOString() ?? null,
 		tags: row.tags,
 		keywords: row.keywords,
-		resourceIdentifiers: ResourceIdentifiersSchema.parse(row.resource_identifiers ?? []),
+		resourceIdentifiers: normalizePaperIdentifiers(
+			ResourceIdentifiersSchema.parse(row.resource_identifiers ?? []).filter(isPaperIdentifier),
+		),
 		normalizedUrl: row.normalized_url,
 	};
 }

@@ -1,7 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import type { YouTubeResourceMutation } from '@app-domain/resource-graph-contracts';
 import { normalizePaperIdentifiers, paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
-import { isPaperIdentifier } from '@core-shared/resource';
 import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
@@ -37,13 +36,13 @@ async function resolveGenericAcquiredResource(
 	const canonicalUrl = acquired.canonicalUrl?.trim() || origin.url;
 	const exactPaper = resolveExactPaperInput(origin.url) ?? resolveExactPaperInput(canonicalUrl);
 	const resourceIdentifiers = normalizePaperIdentifiers([
-		...origin.resourceIdentifiers.filter(isPaperIdentifier),
+		...origin.resourceIdentifiers,
 		...(exactPaper ? paperIdentifiersFromIdentity(exactPaper.identity) : []),
 	]);
 	const paper = await stagePaperProcessing(env, step, {
 		acquiredContent: acquired,
 		canonicalUrl,
-		identifiers: resourceIdentifiers.filter(isPaperIdentifier),
+		identifiers: resourceIdentifiers,
 		originSummary: origin.summary,
 		processingId,
 		publishedDate,

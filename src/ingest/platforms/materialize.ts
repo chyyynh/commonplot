@@ -78,8 +78,8 @@ export function literalCreator(
 
 export type ResourceAcquisitionOrigin = Pick<
 	MaterializedResource,
-	'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'resourceIdentifiers' | 'summary' | 'tags' | 'url'
->;
+	'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'summary' | 'tags' | 'url'
+> & { resourceIdentifiers: PaperIdentifier[] };
 
 export function materializeAcquiredResource(
 	acquired: AcquiredResource,
