@@ -75,6 +75,17 @@ export type ParsedDocumentPageV1 = Readonly<{
 	blocks: ParsedDocumentBlockV1[];
 }>;
 
+export type ParsedDocumentEnhancementV1 = Readonly<{
+	provider: 'llamaparse';
+	apiVersion: 'v2';
+	version: string;
+	policyRevision: string;
+	requestedPages: number[];
+	appliedPages: number[];
+	failedPages: ReadonlyArray<Readonly<{ pageNumber: number; message: string }>>;
+	usageCredits: number | null;
+}>;
+
 export type ParsedDocumentV1 = Readonly<{
 	schemaVersion: typeof PARSED_DOCUMENT_SCHEMA_VERSION;
 	parser: Readonly<{
@@ -102,6 +113,8 @@ export type ParsedDocumentV1 = Readonly<{
 		problemPages: number[];
 	}>;
 	markdown: string;
+	/** Additive provider provenance; absent on local-only v1 artifacts. */
+	enhancement?: ParsedDocumentEnhancementV1;
 }>;
 
 type LiteParseResultRecord = Readonly<{
@@ -453,6 +466,12 @@ export function assembleLiteParseDocument(result: LiteParseResultRecord, parserV
 	const failedPages = sortedPageUnion(result.pageErrors.map((error) => error.pageNumber));
 	const coveredPages = new Set([...result.pages.map((page) => page.pageNumber), ...failedPages]);
 	const unparsedPages = Math.max(0, result.totalPages - coveredPages.size);
+	const unparsedPageNumbers: number[] = [];
+	if (unparsedPages > 0) {
+		for (let pageNumber = 1; pageNumber <= result.totalPages; pageNumber += 1) {
+			if (!coveredPages.has(pageNumber)) unparsedPageNumbers.push(pageNumber);
+		}
+	}
 	return {
 		schemaVersion: PARSED_DOCUMENT_SCHEMA_VERSION,
 		parser: { name: 'liteparse', version: parserVersion, policyRevision: LITEPARSE_POLICY_REVISION },
@@ -469,7 +488,7 @@ export function assembleLiteParseDocument(result: LiteParseResultRecord, parserV
 			complexLayoutPages,
 			failedPages,
 			unparsedPages,
-			problemPages: sortedPageUnion(needsOcrPages, garbledPages, complexLayoutPages, failedPages),
+			problemPages: sortedPageUnion(needsOcrPages, garbledPages, complexLayoutPages, failedPages, unparsedPageNumbers),
 		},
 		markdown: usablePages
 			.map((page) => page.markdown)

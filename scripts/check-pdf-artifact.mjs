@@ -151,7 +151,7 @@ assert.deepEqual(document.quality, {
 	complexLayoutPages: [1],
 	failedPages: [3],
 	unparsedPages: 1,
-	problemPages: [1, 2, 3],
+	problemPages: [1, 2, 3, 4],
 });
 assert.equal(document.markdown, liteParseResult.pages[0].markdown);
 
