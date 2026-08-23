@@ -121,10 +121,7 @@ function resolvedResourceMutation(
 		identifiers: resource.resourceIdentifiers,
 		creators: media.creators,
 		kindMetadata: media.kindMetadata,
-		youtube:
-			resource.specialization?.kind === 'youtube'
-				? { transcript: resource.specialization.transcript, highlights: resource.specialization.highlights }
-				: null,
+		specialization: resource.specialization,
 		originalLang: resource.originalLang,
 		title: resource.title,
 		summary: resource.summary,
@@ -256,7 +253,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					target: call.persistenceTarget,
 				}),
 		);
-		if (!persistence.persisted) {
+		if (persistence.status === 'stale') {
 			return { resourceId: persistence.resourceId };
 		}
 		const persistedResourceId = persistence.resourceId;
@@ -267,9 +264,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '90 seconds' },
 				async () => {
 					const db = await connectCoreDb(this.env);
-					await Promise.all(
-						[persistedResourceId, ...persistence.retiredResourceIds].map((resourceId) => syncCorpusItem(this.env, db, resourceId)),
-					);
+					await syncCorpusItem(this.env, db, persistedResourceId);
 				},
 			),
 		];

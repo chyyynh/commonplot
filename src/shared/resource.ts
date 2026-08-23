@@ -228,3 +228,11 @@ export interface YouTubeTranscript {
 	chapters: YouTubeChapter[];
 	chaptersFromDescription: boolean;
 }
+
+export type YouTubeResourceSpecialization = Readonly<{
+	kind: 'youtube';
+	transcript: YouTubeTranscript | null;
+	highlights: YouTubeHighlights | null;
+}>;
+
+export type ResourceSpecialization = YouTubeResourceSpecialization | null;

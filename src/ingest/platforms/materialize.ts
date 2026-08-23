@@ -8,8 +8,7 @@ import {
 	type ResourceCreator,
 	type ResourceIdentifier,
 	type ResourceKindMetadata,
-	type YouTubeHighlights,
-	type YouTubeTranscript,
+	type ResourceSpecialization,
 } from '../../shared/resource.ts';
 import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../../shared/url.ts';
 
@@ -40,14 +39,8 @@ type MaterializedResource = Readonly<{
 	subject: ResolvedResourceSubject | null;
 };
 
-export type YouTubeResourceSpecialization = Readonly<{
-	kind: 'youtube';
-	transcript: YouTubeTranscript | null;
-	highlights: YouTubeHighlights | null;
-}>;
-
 export type ResolvedResource = MaterializedResource & {
-	specialization: YouTubeResourceSpecialization | null;
+	specialization: ResourceSpecialization;
 };
 
 type AcquiredMaterialFields = {
@@ -77,7 +70,7 @@ export type PlatformAcquiredMaterial<
 };
 
 export type AcquiredResource = (GenericAcquiredMaterial | PlatformAcquiredMaterial) & {
-	specialization: YouTubeResourceSpecialization | null;
+	specialization: ResourceSpecialization;
 };
 
 export function literalCreator(
