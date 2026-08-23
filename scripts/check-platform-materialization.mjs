@@ -1,46 +1,43 @@
 import assert from 'node:assert/strict';
-import { materializeAcquiredResource } from '../src/ingest/platforms/materialize.ts';
+import { materializeGenericResource, materializePlatformResource } from '../src/ingest/platforms/materialize.ts';
 import { detectResourceUrl } from '../src/shared/url.ts';
 
 const base = {
 	url: 'https://example.com/article',
-	resourceIdentifiers: [],
 };
 
 function materialize(input = {}) {
 	const url = input.url === undefined ? base.url : input.url;
 	const platformIdentity = url ? detectResourceUrl(url) : null;
-	return materializeAcquiredResource(
-		{
-			resourcePlatform: platformIdentity?.resourcePlatform ?? null,
-			...(platformIdentity ? { platformId: platformIdentity.platformId } : {}),
-			...(url ? { canonicalUrl: url } : {}),
-			...(input.subjectUrl ? { subjectUrl: input.subjectUrl } : {}),
-			fileType: null,
-			title: 'Example',
-			markdown: 'Example content',
-			source: 'Example',
-			originalLang: 'en',
-			publishedDate: null,
-			summary: null,
-			creators: [],
-			kindMetadata: null,
-		},
-		{
-			keywords: [],
-			normalizedUrl: url,
-			originalLang: 'en',
-			publishedDate: null,
-			summary: null,
-			tags: [],
-			url: url ?? 'https://openalex.org/W2',
-		},
-		{
-			canonicalUrl: url,
-			publishedDate: null,
-			resourceIdentifiers: input.resourceIdentifiers ?? [],
-		},
-	);
+	const acquired = {
+		...(url ? { canonicalUrl: url } : {}),
+		...(input.subjectUrl ? { subjectUrl: input.subjectUrl } : {}),
+		fileType: null,
+		title: 'Example',
+		markdown: 'Example content',
+		source: 'Example',
+		originalLang: 'en',
+		publishedDate: null,
+		summary: null,
+		creators: [],
+		kindMetadata: null,
+	};
+	const hints = { originalLang: 'en', publishedDate: null, summary: null };
+	if (platformIdentity) {
+		return materializePlatformResource(
+			{ ...acquired, platformId: platformIdentity.platformId, resourcePlatform: platformIdentity.resourcePlatform },
+			hints,
+		);
+	}
+	const identity =
+		input.kind === 'paper'
+			? { kind: 'paper', resourceIdentifiers: input.resourceIdentifiers ?? [] }
+			: { kind: 'blog', resourceIdentifiers: [] };
+	return materializeGenericResource({ ...acquired, resourcePlatform: null }, hints, {
+		canonicalUrl: url,
+		identity,
+		publishedDate: null,
+	});
 }
 
 const cases = [
@@ -50,8 +47,9 @@ const cases = [
 		expected: { kind: 'blog', resourcePlatform: null, resourceIdentifiers: [] },
 	},
 	{
-		name: 'exact DOI URL',
+		name: 'resolved paper keeps its DOI URL',
 		input: {
+			kind: 'paper',
 			url: 'https://doi.org/10.1000/example',
 			resourceIdentifiers: [
 				{ preferred: true, scheme: 'doi', value: '10.1000/example' },
@@ -68,8 +66,9 @@ const cases = [
 		},
 	},
 	{
-		name: 'Citoid academic URL',
+		name: 'resolved paper keeps provider identifiers',
 		input: {
+			kind: 'paper',
 			resourceIdentifiers: [
 				{ preferred: true, scheme: 'doi', value: '10.1000/example' },
 				{ preferred: true, scheme: 'openalex', value: 'W1' },
@@ -143,6 +142,7 @@ const cases = [
 	{
 		name: 'OpenAlex-resolved paper',
 		input: {
+			kind: 'paper',
 			url: null,
 			resourceIdentifiers: [{ preferred: true, scheme: 'openalex', value: 'W2' }],
 		},

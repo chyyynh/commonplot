@@ -1,17 +1,12 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import type { YouTubeResourceMutation } from '@app-domain/resource-graph-contracts';
-import {
-	normalizePaperIdentifiers,
-	type PaperIdentifier,
-	paperIdentifiersFromIdentity,
-	resolveExactPaperInput,
-} from '@core-shared/paper-identity';
+import type { PaperIdentifier } from '@core-shared/paper-identity';
 import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
 import {
 	type GenericAcquiredMaterial,
-	materializeAcquiredResource,
+	materializeGenericResource,
 	type ResolvedResource,
 	type ResourceAcquisitionHints,
 } from './platforms/materialize';
@@ -48,27 +43,23 @@ async function resolveGenericAcquiredResource(
 	}
 
 	const canonicalUrl = acquired.canonicalUrl?.trim() || input.sourceUrl;
-	const exactPaper = resolveExactPaperInput(input.sourceUrl) ?? resolveExactPaperInput(canonicalUrl);
-	const resourceIdentifiers = normalizePaperIdentifiers([
-		...input.paperIdentifiers,
-		...(exactPaper ? paperIdentifiersFromIdentity(exactPaper.identity) : []),
-	]);
 	const paper = await stagePaperProcessing(env, step, {
 		acquiredContent: acquired,
 		canonicalUrl,
-		identifiers: resourceIdentifiers,
 		originSummary: input.hints.summary,
 		processingId: input.processingId,
 		publishedDate,
+		seedIdentifiers: input.paperIdentifiers,
+		sourceUrl: input.sourceUrl,
 		translateUrl: input.translateUrl,
 	});
 	if (!paper.acquiredContent.markdown.trim()) {
 		throw new Error(`Processing ${input.processingId} has no extractable content`);
 	}
-	return materializeAcquiredResource(paper.acquiredContent, input.hints, {
+	return materializeGenericResource(paper.acquiredContent, input.hints, {
 		canonicalUrl,
+		identity: paper.identity,
 		publishedDate: paper.publishedDate,
-		resourceIdentifiers: normalizePaperIdentifiers([...paper.identifiers, ...resourceIdentifiers]),
 	});
 }
 

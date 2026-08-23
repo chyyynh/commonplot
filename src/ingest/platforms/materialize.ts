@@ -62,8 +62,6 @@ export type PlatformAcquiredMaterial<
 	resourcePlatform: T;
 };
 
-export type AcquiredResource = GenericAcquiredMaterial | PlatformAcquiredMaterial;
-
 export function literalCreator(
 	role: ResourceCreator['role'],
 	literal: string | null | undefined,
@@ -79,59 +77,78 @@ export type ResourceAcquisitionHints = Readonly<{
 	summary: string | null;
 }>;
 
-export function materializeAcquiredResource(
-	acquired: AcquiredResource,
+function materializeResource(
+	acquired: AcquiredMaterialFields,
 	hints: ResourceAcquisitionHints,
-	resolution: { canonicalUrl: string | null; publishedDate: string | null; resourceIdentifiers: readonly PaperIdentifier[] },
+	identity: Pick<MaterializedResource, 'kind' | 'resourcePlatform' | 'url'> & {
+		resourceIdentifiers: readonly ResourceIdentifier[];
+	},
+	publishedDate: string | null,
 ): ResolvedResource {
-	const platformIdentity =
-		acquired.resourcePlatform === null ? null : { resourcePlatform: acquired.resourcePlatform, platformId: acquired.platformId };
-	let identity: Pick<MaterializedResource, 'kind' | 'resourcePlatform'>;
-	if (platformIdentity) {
-		const kind = Object.entries(RESOURCE_TYPES).find(([, { platforms }]) =>
-			platforms.some(({ name }) => name === platformIdentity.resourcePlatform),
-		)?.[0] as Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'> | undefined;
-		if (!kind) throw new Error(`Unknown Resource platform: ${platformIdentity.resourcePlatform}`);
-		identity = { kind, resourcePlatform: platformIdentity.resourcePlatform };
-	} else {
-		identity = resolution.resourceIdentifiers.some((identifier) => identifier.scheme === 'openalex')
-			? { kind: 'paper', resourcePlatform: null }
-			: { kind: 'blog', resourcePlatform: null };
-	}
-	const identifiers: ResourceIdentifier[] = platformIdentity
-		? [{ preferred: true, scheme: platformIdentity.resourcePlatform, value: platformIdentity.platformId }]
-		: identity.kind === 'paper'
-			? [...resolution.resourceIdentifiers]
-			: [];
-	const url = platformIdentity
-		? canonicalResourcePlatformUrl(platformIdentity.resourcePlatform, platformIdentity.platformId)
-		: resolution.canonicalUrl;
 	return {
 		...identity,
 		originalLang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeOptionalResourceLang(hints.originalLang) ?? 'en',
 		title: acquired.title.trim(),
 		summary: acquired.summary ?? hints.summary,
 		content: acquired.markdown,
-		url,
 		source: acquired.source,
-		publishedDate: resolution.publishedDate,
+		publishedDate,
 		creators: acquired.creators,
 		kindMetadata: acquired.kindMetadata,
-		resourceIdentifiers: identifiers,
+		resourceIdentifiers: [...identity.resourceIdentifiers],
 		fileType: acquired.fileType,
-		normalizedUrl: url,
+		normalizedUrl: identity.url,
 		previewImageUrl: acquired.previewImageUrl?.trim() || null,
 		subject: resolvedSubjectInput(acquired.subjectUrl?.trim()),
 	};
 }
 
+export function materializeGenericResource(
+	acquired: GenericAcquiredMaterial,
+	hints: ResourceAcquisitionHints,
+	resolution: {
+		canonicalUrl: string | null;
+		identity:
+			| Readonly<{ kind: 'blog'; resourceIdentifiers: readonly [] }>
+			| Readonly<{ kind: 'paper'; resourceIdentifiers: readonly PaperIdentifier[] }>;
+		publishedDate: string | null;
+	},
+): ResolvedResource {
+	return materializeResource(
+		acquired,
+		hints,
+		{
+			kind: resolution.identity.kind,
+			resourceIdentifiers: resolution.identity.resourceIdentifiers,
+			resourcePlatform: null,
+			url: resolution.canonicalUrl,
+		},
+		resolution.publishedDate,
+	);
+}
+
 export function materializePlatformResource(acquired: PlatformAcquiredMaterial, hints: ResourceAcquisitionHints): ResolvedResource {
+	const kind = Object.entries(RESOURCE_TYPES).find(([, { platforms }]) =>
+		platforms.some(({ name }) => name === acquired.resourcePlatform),
+	)?.[0] as Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'> | undefined;
+	if (!kind) throw new Error(`Unknown Resource platform: ${acquired.resourcePlatform}`);
 	let publishedDate = hints.publishedDate;
 	if (acquired.publishedDate?.trim()) {
 		const parsed = new Date(acquired.publishedDate);
 		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
 	}
-	return materializeAcquiredResource(acquired, hints, { canonicalUrl: null, publishedDate, resourceIdentifiers: [] });
+	const url = canonicalResourcePlatformUrl(acquired.resourcePlatform, acquired.platformId);
+	return materializeResource(
+		acquired,
+		hints,
+		{
+			kind,
+			resourceIdentifiers: [{ preferred: true, scheme: acquired.resourcePlatform, value: acquired.platformId }],
+			resourcePlatform: acquired.resourcePlatform,
+			url,
+		},
+		publishedDate,
+	);
 }
 
 function resolvedSubjectInput(subjectUrl: string | null | undefined): ResolvedResourceSubject | null {
