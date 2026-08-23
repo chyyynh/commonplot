@@ -4,7 +4,7 @@
 // storing and under WHAT canonical key. Consumed by the ingest
 // pipeline (persistence + prompt exclusion lists).
 
-import { type RESOURCE_TYPES, type ResourceCreator, resourceCreatorName } from '@core-shared/resource';
+import type { RESOURCE_TYPES, ResourceCreator } from '@core-shared/resource';
 
 export type ResourceEntityInput = { name: string; name_cn: string; type: string };
 export const ENTITY_TYPES = ['person', 'organization', 'product', 'technology', 'event', 'location'] as const;
@@ -107,7 +107,7 @@ function hostFromSource(value: string): string | null {
 
 function creatorAliases(creators: readonly ResourceCreator[]): string[] {
 	return creators.flatMap((creator) => {
-		const name = resourceCreatorName(creator);
+		const name = creator.literal ?? ([creator.given, creator.family].filter(Boolean).join(' ') || null);
 		if (!name) return [];
 		const profileHandle = creator.profileUrl?.match(/\/([^/]+)\/?$/)?.[1];
 		return profileHandle ? [name, profileHandle, `@${profileHandle}`] : [name];
@@ -115,7 +115,7 @@ function creatorAliases(creators: readonly ResourceCreator[]): string[] {
 }
 
 function excludedEntityCanonicalNames(
-	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null,
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null,
 	source: string | null | undefined,
 	creators: readonly ResourceCreator[],
 ): Set<string> {
@@ -124,7 +124,7 @@ function excludedEntityCanonicalNames(
 }
 
 export function entityExtractionExclusionNames(
-	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null,
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null,
 	source?: string | null,
 	creators: readonly ResourceCreator[] = [],
 ): string[] {
@@ -143,7 +143,7 @@ export function entityExtractionExclusionNames(
 
 export function toStoredResourceEntities(
 	entities: ResourceEntityInput[],
-	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null,
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null,
 	source?: string | null,
 	creators: readonly ResourceCreator[] = [],
 ): StoredResourceEntity[] {

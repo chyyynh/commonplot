@@ -7,7 +7,7 @@ export type PublicResourceSearchInput = {
 	filters?: {
 		effectiveAfter?: Date;
 		kinds?: Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'>[];
-		resourcePlatforms?: ((typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null)[];
+		resourcePlatforms?: ((typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null)[];
 		sourceIds?: string[];
 	};
 };
@@ -34,7 +34,7 @@ function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSea
 	const resourcePlatforms = filters.resourcePlatforms === undefined ? undefined : [...new Set(filters.resourcePlatforms)];
 	if (
 		resourcePlatforms?.some(
-			(value) => value !== null && !Object.values(RESOURCE_TYPES).some(({ platforms }) => platforms.some((platform) => platform === value)),
+			(value) => value !== null && !Object.values(RESOURCE_TYPES).some(({ platforms }) => platforms.some(({ name }) => name === value)),
 		)
 	) {
 		throw new Error('Invalid resource platforms');

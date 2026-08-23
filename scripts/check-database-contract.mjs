@@ -60,9 +60,11 @@ for (const retiredConstraint of ['resources_kind_check', 'resources_resource_pla
 }
 
 const resourceKinds = Object.keys(RESOURCE_TYPES);
-const platformKinds = new Map(
-	Object.entries(RESOURCE_TYPES).flatMap(([kind, { platforms }]) => platforms.map((platform) => [platform, kind])),
-);
+const platformKindEntries = Object.entries(RESOURCE_TYPES).flatMap(([kind, { platforms }]) => platforms.map(({ name }) => [name, kind]));
+const platformKinds = new Map(platformKindEntries);
+if (platformKinds.size !== platformKindEntries.length) {
+	errors.push('RESOURCE_TYPES platform names must be globally unique');
+}
 
 const resourceModelBody = prismaSource.match(/model Resource \{([\s\S]*?)\n\}/)?.[1] ?? '';
 if (!/^\s*kind\s+String\s*$/m.test(resourceModelBody)) {

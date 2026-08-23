@@ -1,4 +1,4 @@
-import type { RESOURCE_TYPES } from './resource.ts';
+import { RESOURCE_TYPES } from './resource.ts';
 
 const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
 
@@ -11,7 +11,6 @@ const DOMAIN_ALIASES: Record<string, string> = {
 const YOUTUBE_HOST = 'youtube.com';
 const YOUTUBE_SHORT_HOST = 'youtu.be';
 const LESSWRONG_HOST = 'lesswrong.com';
-const YOUTUBE_VIDEO_ID_RE = /^[a-zA-Z0-9_-]{11}$/;
 const TWITTER_USERNAME_RE = /^[A-Za-z0-9_]{1,15}$/;
 const TWITTER_NON_PROFILE_PATHS = new Set(['home', 'i', 'intent', 'search', 'share']);
 
@@ -72,7 +71,7 @@ export function normalizeUrl(url: string): string {
 }
 
 export function canonicalResourcePlatformUrl(
-	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number],
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'],
 	platformId: string,
 ): string {
 	switch (resourcePlatform) {
@@ -92,35 +91,47 @@ function extractYouTubeId(url: string): string | null {
 	if (!parsed) return null;
 	const hostname = canonicalHost(parsed.hostname);
 	if (!isYouTubeHost(hostname)) return null;
+	const identifier = RESOURCE_TYPES.video.platforms.find(({ name }) => name === 'youtube')?.identifier;
+	if (!identifier) return null;
 
 	const watchId = parsed.searchParams.get('v');
-	if (watchId?.match(YOUTUBE_VIDEO_ID_RE)) return watchId;
+	const parsedWatchId = identifier.safeParse(watchId);
+	if (parsedWatchId.success) return parsedWatchId.data;
 
 	const [kind, maybeId] = parsed.pathname.split('/').filter(Boolean);
 	const pathId = hostMatches(hostname, YOUTUBE_SHORT_HOST) ? kind : ['embed', 'shorts', 'live', 'v'].includes(kind ?? '') ? maybeId : null;
-	return pathId?.match(YOUTUBE_VIDEO_ID_RE)?.[0] ?? null;
+	const parsedPathId = identifier.safeParse(pathId);
+	return parsedPathId.success ? parsedPathId.data : null;
 }
 
 export function extractTweetId(url: string): string | null {
 	const parsed = URL.parse(url);
 	if (!parsed || !isTwitterHost(parsed.hostname)) return null;
-	return parsed.pathname.match(/^\/[^/]+\/status\/(\d+)/)?.[1] ?? parsed.pathname.match(/^\/i\/article\/(\d+)/)?.[1] ?? null;
+	const candidate =
+		parsed.pathname.match(/^\/[^/]+\/status\/(\d+)(?:\/|$)/)?.[1] ?? parsed.pathname.match(/^\/i\/article\/(\d+)(?:\/|$)/)?.[1];
+	const identifier = RESOURCE_TYPES.post.platforms.find(({ name }) => name === 'twitter')?.identifier.safeParse(candidate);
+	return identifier?.success ? identifier.data : null;
 }
 
 export function extractHackerNewsId(url: string): string | null {
 	const parsed = URL.parse(url);
 	if (!parsed || !hostMatches(parsed.hostname.toLowerCase(), 'ycombinator.com')) return null;
-	return parsed.searchParams.get('id')?.match(/^\d+$/)?.[0] ?? null;
+	const identifier = RESOURCE_TYPES.forum.platforms
+		.find(({ name }) => name === 'hackernews')
+		?.identifier.safeParse(parsed.searchParams.get('id'));
+	return identifier?.success ? identifier.data : null;
 }
 
 function extractLessWrongPostId(url: string): string | null {
 	const parsed = URL.parse(url);
 	if (!parsed || !hostMatches(parsed.hostname.toLowerCase(), LESSWRONG_HOST)) return null;
-	return parsed.pathname.match(/^\/posts\/([A-Za-z0-9_-]{8,64})(?:\/|$)/)?.[1] ?? null;
+	const candidate = parsed.pathname.match(/^\/posts\/([^/]+)(?:\/|$)/)?.[1];
+	const identifier = RESOURCE_TYPES.blog.platforms.find(({ name }) => name === 'lesswrong')?.identifier.safeParse(candidate);
+	return identifier?.success ? identifier.data : null;
 }
 
 type DetectedResourceUrl = Readonly<{
-	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number];
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'];
 	platformId: string;
 }>;
 

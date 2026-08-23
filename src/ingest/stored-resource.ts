@@ -5,8 +5,7 @@ import type { PdfParseAdmissionSnapshot } from '@core-shared/pdf-parse-contract'
 import {
 	canonicalizeResourceLang,
 	isPaperIdentifier,
-	parseStoredResourceKindMetadata,
-	type RESOURCE_TYPES,
+	RESOURCE_TYPES,
 	type ResourceCreator,
 	ResourceCreatorsSchema,
 	ResourceIdentifiersSchema,
@@ -60,7 +59,7 @@ export type ResourceReacquisitionInput = Omit<StoredResourceBase, 'url'> & {
 
 type StoredResourceIdentityRow = {
 	kind: keyof typeof RESOURCE_TYPES;
-	resource_platform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null;
+	resource_platform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null;
 };
 
 type ResourceProcessableRow = StoredResourceIdentityRow & {
@@ -342,7 +341,7 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 		title,
 		source,
 		creators: storedResourceCreatorsValue(row.creators, resourceId),
-		kindMetadata: parseStoredResourceKindMetadata(row.kind, row.kind_metadata),
+		kindMetadata: RESOURCE_TYPES[row.kind].metadata.parse(row.kind_metadata),
 		storageKey: row.storage_key,
 		fileType: row.file_type,
 	};

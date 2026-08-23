@@ -24,7 +24,7 @@ export function resourceIdFromAiSearchItemKey(key: string): string | null {
 }
 
 export function aiSearchResourcePlatformMetadata(
-	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null,
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null,
 ): string {
 	return resourcePlatform ?? NULL_RESOURCE_PLATFORM_METADATA;
 }
@@ -52,7 +52,7 @@ type CorpusDocument = {
 	id: string;
 	source_id: string | null;
 	kind: Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'>;
-	resource_platform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null;
+	resource_platform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null;
 	original_lang: string;
 	effective_at: Date | string | null;
 	tags: string[] | null;

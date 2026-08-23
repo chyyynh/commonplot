@@ -10,7 +10,6 @@ import {
 } from './materialize';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
-const LESSWRONG_POST_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
 const POST_QUERY = `query PostForIngest($id: String!) {
   post(selector: { documentId: $id }) {
     result {
@@ -43,7 +42,6 @@ type LessWrongGraphqlResponse = {
 };
 
 async function scrapeLessWrong(postId: string): Promise<PlatformAcquiredMaterial<'lesswrong'>> {
-	if (!LESSWRONG_POST_ID_RE.test(postId)) throw new NonRetryableError(`Invalid LessWrong post id: ${postId}`);
 	const response = await fetch(LESSWRONG_GRAPHQL_URL, {
 		method: 'POST',
 		headers: {

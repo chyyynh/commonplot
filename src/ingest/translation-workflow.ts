@@ -31,14 +31,14 @@ type ResourceTranslationInput = {
 	} | null;
 } & {
 	kind: keyof typeof RESOURCE_TYPES;
-	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null;
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null;
 };
 
 type ResourceTranslationInputRow = {
 	file_type: string | null;
 	id: string;
 	kind: keyof typeof RESOURCE_TYPES;
-	resource_platform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null;
+	resource_platform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null;
 	original_lang: string;
 	scope: 'corpus' | 'private';
 	title: string | null;

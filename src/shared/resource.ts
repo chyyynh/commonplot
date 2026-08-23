@@ -54,10 +54,6 @@ const ResourceCreatorSchema = z
 
 export type ResourceCreator = Readonly<z.infer<typeof ResourceCreatorSchema>>;
 
-export function resourceCreatorName(creator: ResourceCreator | undefined): string | null {
-	return creator?.literal ?? ([creator?.given, creator?.family].filter(Boolean).join(' ') || null);
-}
-
 const ResourceMediaAttachmentSchema = z.object({
 	kind: z.enum(['image', 'video', 'animated']),
 	url: optionalHttpUrl,
@@ -84,11 +80,11 @@ export type PaperRelationSnapshot = Readonly<z.infer<typeof PaperRelationSnapsho
 
 export const RESOURCE_TYPES = {
 	blog: {
-		platforms: ['lesswrong'],
+		platforms: [{ name: 'lesswrong', identifier: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/) }],
 		metadata: z.object({ siteName: z.string().trim().min(1).optional() }).nullable(),
 	},
 	forum: {
-		platforms: ['hackernews'],
+		platforms: [{ name: 'hackernews', identifier: z.string().regex(/^[1-9]\d*$/) }],
 		metadata: z.object({
 			itemType: z.enum(['story', 'ask', 'show', 'job']).optional(),
 			points: z.number().int().nonnegative().optional(),
@@ -96,11 +92,11 @@ export const RESOURCE_TYPES = {
 		}),
 	},
 	post: {
-		platforms: ['twitter'],
+		platforms: [{ name: 'twitter', identifier: z.string().regex(/^\d+$/) }],
 		metadata: z.object({ attachments: z.array(ResourceMediaAttachmentSchema).max(16), quote: PostQuoteSchema.optional() }),
 	},
 	video: {
-		platforms: ['youtube'],
+		platforms: [{ name: 'youtube', identifier: z.string().regex(/^[A-Za-z0-9_-]{11}$/) }],
 		metadata: z.object({
 			durationSeconds: z.number().int().positive().optional(),
 			viewCount: z.number().int().nonnegative().optional(),
@@ -122,7 +118,7 @@ export const RESOURCE_TYPES = {
 	},
 	image: { platforms: [], metadata: z.null() },
 	file: { platforms: [], metadata: z.null() },
-} as const satisfies Readonly<Record<string, { platforms: readonly string[]; metadata: z.ZodType }>>;
+} as const satisfies Readonly<Record<string, { platforms: readonly { name: string; identifier: z.ZodString }[]; metadata: z.ZodType }>>;
 
 export type ResourceKindMetadataByKind = Readonly<{
 	[K in keyof typeof RESOURCE_TYPES]: z.infer<(typeof RESOURCE_TYPES)[K]['metadata']>;
@@ -136,34 +132,30 @@ export type ResourceKindMetadata = ResourceKindMetadataByKind[keyof ResourceKind
 
 export const ResourceCreatorsSchema = z.array(ResourceCreatorSchema);
 
-export function parseStoredResourceKindMetadata(kind: keyof typeof RESOURCE_TYPES, value: unknown): ResourceKindMetadata | null {
-	return RESOURCE_TYPES[kind].metadata.parse(value);
-}
-
 const ResourceIdentifierSchemeSchema = z.enum([
 	...PAPER_IDENTIFIER_SCHEMES,
-	...Object.values(RESOURCE_TYPES).flatMap(({ platforms }) => platforms),
+	...Object.values(RESOURCE_TYPES).flatMap(({ platforms }) => platforms.map(({ name }) => name)),
 ]);
 
-export type ResourceIdentifierScheme = z.infer<typeof ResourceIdentifierSchemeSchema>;
-
-function canonicalIdentifierValue(scheme: ResourceIdentifierScheme, value: string): string | null {
-	switch (scheme) {
-		case 'doi':
-			return normalizeDoi(value);
-		case 'arxiv':
-			return normalizeArxivId(value);
-		case 'openalex':
-			return normalizeOpenAlexId(value);
-		case 'hackernews':
-			return /^[1-9]\d*$/.test(value) ? value : null;
-		case 'lesswrong':
-			return /^[A-Za-z0-9_-]{8,64}$/.test(value) ? value : null;
-		case 'twitter':
-			return /^\d+$/.test(value) ? value : null;
-		case 'youtube':
-			return /^[A-Za-z0-9_-]{11}$/.test(value) ? value : null;
+function canonicalIdentifierValue(scheme: z.infer<typeof ResourceIdentifierSchemeSchema>, value: string): string | null {
+	if (isPaperIdentifierScheme(scheme)) {
+		switch (scheme) {
+			case 'doi':
+				return normalizeDoi(value);
+			case 'arxiv':
+				return normalizeArxivId(value);
+			case 'openalex':
+				return normalizeOpenAlexId(value);
+		}
 	}
+	for (const { platforms } of Object.values(RESOURCE_TYPES)) {
+		for (const platform of platforms) {
+			if (platform.name !== scheme) continue;
+			const identifier = platform.identifier.safeParse(value);
+			return identifier.success ? identifier.data : null;
+		}
+	}
+	return null;
 }
 
 const ResourceIdentifierSchema = z

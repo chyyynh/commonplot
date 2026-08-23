@@ -16,7 +16,7 @@ type ResolvedResourceSubject = Readonly<{
 
 type MaterializedResource = Readonly<{
 	kind: Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'>;
-	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null;
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null;
 }> & {
 	originalLang: string;
 	title: string;
@@ -59,7 +59,7 @@ export type GenericAcquiredMaterial = AcquiredMaterialFields & {
 
 export type PlatformAcquiredMaterial<
 	T extends
-		(typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] = (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number],
+		(typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] = (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'],
 > = AcquiredMaterialFields & {
 	platformId: string;
 	resourcePlatform: T;
@@ -91,7 +91,7 @@ export function materializeAcquiredResource(
 	let identity: Pick<MaterializedResource, 'kind' | 'resourcePlatform'>;
 	if (platformIdentity) {
 		const kind = Object.entries(RESOURCE_TYPES).find(([, { platforms }]) =>
-			platforms.some((platform) => platform === platformIdentity.resourcePlatform),
+			platforms.some(({ name }) => name === platformIdentity.resourcePlatform),
 		)?.[0] as Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'> | undefined;
 		if (!kind) throw new Error(`Unknown Resource platform: ${platformIdentity.resourcePlatform}`);
 		identity = { kind, resourcePlatform: platformIdentity.resourcePlatform };

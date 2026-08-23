@@ -20,6 +20,14 @@ assert.deepEqual(detectResourceUrl('https://www.lesswrong.com/posts/A2kJKqnHhh5H
 	platformId: 'A2kJKqnHhh5Hq4p2S',
 });
 assert.equal(detectResourceUrl('https://example.com/article'), null);
+const invalidPlatformUrls = [
+	'https://news.ycombinator.com/item?id=0',
+	'https://x.com/openai/status/not-a-tweet',
+	'https://x.com/openai/status/123abc',
+	'https://youtu.be/too-short',
+	'https://lesswrong.com/posts/short',
+];
+for (const url of invalidPlatformUrls) assert.equal(detectResourceUrl(url), null);
 
 const canonicalPlatformUrlCases = [
 	['https://twitter.com/openai/status/1234567890?s=20', 'https://x.com/i/status/1234567890'],
@@ -67,6 +75,6 @@ console.info({
 	identifierContractCases: 5,
 	providerSequenceCases: 5,
 	twitterUsernameCases: twitterUsernameCases.length,
-	urlCases: 5,
+	urlCases: 5 + invalidPlatformUrls.length,
 	canonicalPlatformUrlCases: canonicalPlatformUrlCases.length,
 });
