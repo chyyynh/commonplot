@@ -1,12 +1,12 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type {
-	TranscriptSegment,
 	YouTubeChapter,
 	YouTubeHighlights,
-	YouTubeResourceSpecialization,
+	YouTubeResourceMutation,
 	YouTubeTranscript,
-} from '@core-shared/resource';
+	YouTubeTranscriptSegment,
+} from '@app-domain/resource-graph-contracts';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
@@ -69,6 +69,7 @@ type YouTubeAcquisition = Omit<PlatformAcquiredMaterial<'youtube'>, 'markdown' |
 	description: string;
 	transcript: YouTubeTranscript;
 };
+type YouTubeResolvedResource = ResolvedResource & { youtube: YouTubeResourceMutation };
 
 function bestThumbnailUrl(thumbnails: YouTubeThumbnails): string | null {
 	return (
@@ -176,7 +177,7 @@ async function fetchYouTubeChannelAvatar(channelId: string, youtubeApiKey: strin
 	}
 }
 
-async function fetchTranscript(videoId: string): Promise<TranscriptSegment[]> {
+async function fetchTranscript(videoId: string): Promise<YouTubeTranscriptSegment[]> {
 	const { YoutubeTranscript } = await import('youtube-transcript');
 	let items: Array<{ offset: number; duration: number; text: string }>;
 	try {
@@ -196,7 +197,7 @@ async function fetchTranscript(videoId: string): Promise<TranscriptSegment[]> {
 		return [];
 	}
 
-	const segments: TranscriptSegment[] = items.map((item: { offset: number; duration: number; text: string }) => {
+	const segments: YouTubeTranscriptSegment[] = items.map((item: { offset: number; duration: number; text: string }) => {
 		const startTime = toSeconds(item.offset, 'offset', videoId) / 1000;
 		return {
 			startTime,
@@ -285,7 +286,7 @@ export async function stageYouTubeAcquisition(
 		sourceAvatarUrl: string | null;
 		videoId: string;
 	},
-): Promise<ResolvedResource> {
+): Promise<YouTubeResolvedResource> {
 	const contentStream = await step.do(
 		'acquire-youtube-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
@@ -297,15 +298,18 @@ export async function stageYouTubeAcquisition(
 		.map((segment) => segment.text.trim())
 		.filter(Boolean)
 		.join('\n');
-	return materializePlatformResource(
+	const resource = materializePlatformResource(
 		{
 			...material,
 			markdown: transcriptMarkdown || description.trim(),
 			summary: description.substring(0, 500) || null,
-			specialization: await stageYouTubeEnrichment(env, step, transcript, input.videoId, input.processingId),
 		},
 		input.origin,
 	);
+	return {
+		...resource,
+		youtube: await stageYouTubeEnrichment(env, step, transcript, input.videoId, input.processingId),
+	};
 }
 
 const YouTubeHighlightSchema = z.object({
@@ -333,7 +337,7 @@ async function stageYouTubeEnrichment(
 	transcript: YouTubeTranscript,
 	videoId: string,
 	processingId: string,
-): Promise<YouTubeResourceSpecialization> {
+): Promise<YouTubeResourceMutation> {
 	const highlights = transcript.segments.length
 		? await step
 				.do(
@@ -352,7 +356,6 @@ async function stageYouTubeEnrichment(
 				})
 		: null;
 	return {
-		kind: 'youtube',
 		transcript,
 		highlights,
 	};
@@ -362,7 +365,7 @@ async function prepareYouTubeHighlightsFromTranscript(
 	env: CoreEnv,
 	resourceId: string,
 	videoId: string,
-	transcript: TranscriptSegment[],
+	transcript: YouTubeTranscriptSegment[],
 ): Promise<YouTubeHighlights> {
 	console.info({ tag: 'AI', msg: 'Generating YouTube highlights', videoId });
 

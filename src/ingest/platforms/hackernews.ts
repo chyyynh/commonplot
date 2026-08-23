@@ -208,7 +208,6 @@ export async function stageHackerNewsAcquisition(
 		{
 			...resource,
 			...(annotation ? { markdown: applyHackerNewsAnnotation(resource.markdown, annotation) } : {}),
-			specialization: null,
 		},
 		input.origin,
 	);

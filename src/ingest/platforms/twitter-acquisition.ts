@@ -485,7 +485,7 @@ export async function stageTwitterAcquisition(
 		},
 	);
 	return materializePlatformResource(
-		{ ...(await new Response(contentStream).json<PlatformAcquiredMaterial<'twitter'>>()), specialization: null },
+		await new Response(contentStream).json<PlatformAcquiredMaterial<'twitter'>>(),
 		input.origin,
 	);
 }

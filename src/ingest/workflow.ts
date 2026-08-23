@@ -1,15 +1,18 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import type { PersistResolvedResourceInput, PersistResolvedResourceTarget, ResourceGraphRpc } from '@app-domain/resource-graph-contracts';
+import type {
+	PersistResolvedResourceInput,
+	PersistResolvedResourceTarget,
+	ResourceGraphRpc,
+} from '@app-domain/resource-graph-contracts';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/image-mapping';
 import { connectCoreDb } from '@db/connection';
 import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
-import type { ResolvedResource } from '@ingest/platforms/materialize';
 import { loadResourceReacquisitionInput, loadStoredPdfInput, markStoredBlobProcessingFailed } from '@ingest/stored-resource';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { syncCorpusItem } from '../ai-search';
-import { stageStoredPdfResource, stageUrlAcquisition } from './acquisition';
+import { type ProcessingResource, stageStoredPdfResource, stageUrlAcquisition } from './acquisition';
 import { stageResourceImages } from './image-rehosting';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './processing-jobs';
 import { enqueueResourceTranslation } from './translation-workflow';
@@ -21,7 +24,7 @@ type ResourceClassification = {
 };
 
 type ResolvedProcessingCall = {
-	resource: ResolvedResource;
+	resource: ProcessingResource;
 	persistenceTarget: PersistResolvedResourceTarget;
 };
 
@@ -61,7 +64,7 @@ const RESOURCE_CLASSIFICATION_SYSTEM_PROMPT = `你是專業的新聞分類和實
 - 模型、產品、活動請使用完整慣用名稱，例如 Claude Opus 4.7、DeepSeek V4、TechCrunch Disrupt 2026
 - 如果只能判斷出泛詞、版本碎片或來源名稱，寧可少提取`;
 
-async function classifyResource(resource: ResolvedResource, env: CoreEnv, processingId: string): Promise<ResourceClassification> {
+async function classifyResource(resource: ProcessingResource, env: CoreEnv, processingId: string): Promise<ResourceClassification> {
 	console.info({ tag: 'AI', msg: 'Analyzing', title: resource.title.substring(0, 80) });
 	const excludedEntities = entityExtractionExclusionNames(resource.resourcePlatform, resource.source, resource.creators);
 	const excludedLine = excludedEntities.length ? `\n實體排除名單: ${excludedEntities.join(', ')}` : '';
@@ -104,7 +107,7 @@ ${resource.content.trim().substring(0, CLASSIFICATION_CONTENT_MAX_LENGTH)}`;
 }
 
 function resolvedResourceMutation(
-	resource: ResolvedResource,
+	resource: ProcessingResource,
 	classification: ResourceClassification,
 	hostedImages: readonly HostedResourceImage[],
 ): Omit<PersistResolvedResourceInput, 'target'> {
@@ -118,7 +121,7 @@ function resolvedResourceMutation(
 		identifiers: resource.resourceIdentifiers,
 		creators: media.creators,
 		kindMetadata: media.kindMetadata,
-		specialization: resource.specialization,
+		...(resource.youtube ? { youtube: resource.youtube } : {}),
 		originalLang: resource.originalLang,
 		title: resource.title,
 		summary: resource.summary,

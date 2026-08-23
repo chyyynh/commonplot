@@ -1,4 +1,5 @@
 import type { WorkflowStep } from 'cloudflare:workers';
+import type { YouTubeResourceMutation } from '@app-domain/resource-graph-contracts';
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { isPaperIdentifier, normalizeResourceIdentifiers } from '@core-shared/resource';
 import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
@@ -21,12 +22,12 @@ import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
 import { stageYouTubeAcquisition } from './platforms/youtube-acquisition';
 
-type GenericAcquiredResource = GenericAcquiredMaterial & { specialization: null };
+export type ProcessingResource = ResolvedResource & { youtube?: YouTubeResourceMutation };
 
 async function resolveGenericAcquiredResource(
 	env: CoreEnv,
 	step: WorkflowStep,
-	acquired: GenericAcquiredResource,
+	acquired: GenericAcquiredMaterial,
 	origin: ResourceAcquisitionOrigin,
 	processingId: string,
 	translatePaperUrl: boolean,
@@ -55,7 +56,7 @@ async function resolveGenericAcquiredResource(
 	if (!paper.acquiredContent.markdown.trim()) {
 		throw new Error(`Processing ${processingId} has no extractable content`);
 	}
-	return materializeAcquiredResource({ ...paper.acquiredContent, specialization: null }, origin, {
+	return materializeAcquiredResource(paper.acquiredContent, origin, {
 		canonicalUrl,
 		publishedDate: paper.publishedDate,
 		resourceIdentifiers: normalizeResourceIdentifiers([...paper.identifiers, ...resourceIdentifiers]),
@@ -75,7 +76,7 @@ export async function stageUrlAcquisition(
 		sourceUrl: string;
 		translatePaperUrl: boolean;
 	},
-): Promise<ResolvedResource> {
+): Promise<ProcessingResource> {
 	let acquisitionUrl = normalizeUrl(input.sourceUrl);
 	let detected = detectResourceUrl(acquisitionUrl);
 	if (!detected) {
@@ -84,7 +85,7 @@ export async function stageUrlAcquisition(
 			return resolveGenericAcquiredResource(
 				env,
 				step,
-				{ ...web, specialization: null },
+				web,
 				input.origin,
 				input.processingId,
 				input.translatePaperUrl,

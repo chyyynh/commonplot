@@ -99,13 +99,13 @@ export async function stageStoredPdfAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	resource: StoredPdfAcquisitionInput,
-): Promise<GenericAcquiredMaterial & { specialization: null }> {
+): Promise<GenericAcquiredMaterial> {
 	const contentStream = await step.do(
 		'acquire-stored-pdf-v2',
 		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await acquireStoredPdf(env, resource)).body!,
 	);
-	return { ...(await new Response(contentStream).json<GenericAcquiredMaterial>()), specialization: null };
+	return new Response(contentStream).json<GenericAcquiredMaterial>();
 }
 
 export function storedPdfProcessingResult(resource: ResolvedResource, input: { resourceId: string }): StoredPdfProcessingResult {

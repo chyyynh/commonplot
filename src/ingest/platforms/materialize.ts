@@ -8,7 +8,6 @@ import {
 	type ResourceCreator,
 	type ResourceIdentifier,
 	type ResourceKindMetadata,
-	type ResourceSpecialization,
 } from '../../shared/resource.ts';
 import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../../shared/url.ts';
 
@@ -39,9 +38,7 @@ type MaterializedResource = Readonly<{
 	subject: ResolvedResourceSubject | null;
 };
 
-export type ResolvedResource = MaterializedResource & {
-	specialization: ResourceSpecialization;
-};
+export type ResolvedResource = MaterializedResource;
 
 type AcquiredMaterialFields = {
 	canonicalUrl?: string;
@@ -69,9 +66,7 @@ export type PlatformAcquiredMaterial<
 	resourcePlatform: T;
 };
 
-export type AcquiredResource = (GenericAcquiredMaterial | PlatformAcquiredMaterial) & {
-	specialization: ResourceSpecialization;
-};
+export type AcquiredResource = GenericAcquiredMaterial | PlatformAcquiredMaterial;
 
 export function literalCreator(
 	role: ResourceCreator['role'],
@@ -86,8 +81,6 @@ export type ResourceAcquisitionOrigin = Pick<
 	MaterializedResource,
 	'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'resourceIdentifiers' | 'summary' | 'tags' | 'url'
 >;
-
-type PlatformAcquiredResource = PlatformAcquiredMaterial & Pick<AcquiredResource, 'specialization'>;
 
 export function materializeAcquiredResource(
 	acquired: AcquiredResource,
@@ -130,11 +123,10 @@ export function materializeAcquiredResource(
 		normalizedUrl: url ?? origin.normalizedUrl,
 		previewImageUrl: acquired.previewImageUrl?.trim() || null,
 		subject: resolvedSubjectInput(acquired.subjectUrl?.trim()),
-		specialization: acquired.specialization,
 	};
 }
 
-export function materializePlatformResource(acquired: PlatformAcquiredResource, origin: ResourceAcquisitionOrigin): ResolvedResource {
+export function materializePlatformResource(acquired: PlatformAcquiredMaterial, origin: ResourceAcquisitionOrigin): ResolvedResource {
 	let publishedDate = origin.publishedDate;
 	if (acquired.publishedDate?.trim()) {
 		const parsed = new Date(acquired.publishedDate);

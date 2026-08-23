@@ -96,7 +96,7 @@ export async function stageLessWrongAcquisition(
 		async () => Response.json(await scrapeLessWrong(postId)).body!,
 	);
 	return materializePlatformResource(
-		{ ...(await new Response(contentStream).json<PlatformAcquiredMaterial<'lesswrong'>>()), specialization: null },
+		await new Response(contentStream).json<PlatformAcquiredMaterial<'lesswrong'>>(),
 		origin,
 	);
 }
