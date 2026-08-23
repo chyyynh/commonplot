@@ -28,19 +28,9 @@ export type StoredPdfProcessingResult = {
 	persistenceTarget: PersistResolvedResourceTarget;
 };
 
-function extractedTextChars(markdown: string): number {
-	const content = markdown.replace(/^```[^\n]*$/gm, '').replace(/^[-_*]{3,}$/gm, '');
-	return content.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
-}
-
 async function parsePdfBytes(bytes: Uint8Array, source: string): Promise<string> {
 	const result = await parsePdfWithLiteParse(bytes);
-	const markdown = result.pages
-		.filter((page) => !page.complexity.isGarbled)
-		.map((page) => page.markdown.trim())
-		.filter((page) => extractedTextChars(page) > 0)
-		.join('\n\n')
-		.trim();
+	const markdown = result.markdown;
 	if (!markdown) throw new NonRetryableError(`${source} has no usable text; OCR is required`);
 	return markdown;
 }
