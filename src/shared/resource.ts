@@ -17,10 +17,6 @@ export const RESOURCE_TYPES = {
 	identity: z
 		.object({ kind: resourceKinds, resourcePlatform: resourcePlatforms.nullable() })
 		.refine(({ kind, resourcePlatform }) => resourcePlatform === null || platformKinds[resourcePlatform] === kind),
-	providerSequence: z
-		.string()
-		.trim()
-		.refine((value) => /^[1-9]\d{0,18}$/.test(value) && BigInt(value) <= 9_223_372_036_854_775_807n),
 } as const;
 
 const RESOURCE_LANG_MAX_LENGTH = 35;

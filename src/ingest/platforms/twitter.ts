@@ -1,4 +1,4 @@
-import { RESOURCE_TYPES } from '@core-shared/resource';
+import { TwitterProviderSequenceSchema } from '@app-domain/resource-graph-contracts';
 import { canonicalResourcePlatformUrl, normalizeUrl } from '@core-shared/url';
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/monitored-source';
@@ -178,9 +178,9 @@ function latestTwitterDraft(left: TwitterResourceDraft, right: TwitterResourceDr
 	const canonical = leftIsReply && !rightIsReply ? right : left;
 	const sequenced = [left, right].filter((draft): draft is TwitterResourceDraft & { providerSequence: string } => !!draft.providerSequence);
 	const latest = sequenced.reduce<(TwitterResourceDraft & { providerSequence: string }) | null>((current, draft) => {
-		const candidate = BigInt(RESOURCE_TYPES.providerSequence.parse(draft.providerSequence));
+		const candidate = BigInt(TwitterProviderSequenceSchema.parse(draft.providerSequence));
 		if (!current) return draft;
-		const previous = BigInt(RESOURCE_TYPES.providerSequence.parse(current.providerSequence));
+		const previous = BigInt(TwitterProviderSequenceSchema.parse(current.providerSequence));
 		return candidate > previous ? draft : current;
 	}, null);
 	return latest ? { ...canonical, providerSequence: latest.providerSequence } : canonical;
@@ -211,7 +211,7 @@ function twitterResourceDraft(tweet: Tweet, source: MonitoredSource): TwitterRes
 
 	const url = normalizeUrl(tweet.url);
 	const providerSequence = tweet.id?.trim();
-	if (!RESOURCE_TYPES.providerSequence.safeParse(providerSequence).success)
+	if (!TwitterProviderSequenceSchema.safeParse(providerSequence).success)
 		throw new Error(`Tweet ${tweet.url} has an invalid provider sequence`);
 	const publishedDate = new Date(tweet.createdAt);
 	if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id ?? url} has invalid publishedDate`);

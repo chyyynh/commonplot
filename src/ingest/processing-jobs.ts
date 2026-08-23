@@ -1,7 +1,7 @@
 // Validated Workflow payloads and enqueue entrypoints for app, monitor, and derived-resource jobs.
-import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
+import { type ResourceDraftAdmission, TwitterProviderSequenceSchema } from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
-import { canonicalizeOptionalResourceLang, RESOURCE_TYPES } from '@core-shared/resource';
+import { canonicalizeOptionalResourceLang } from '@core-shared/resource';
 import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
 import { z } from 'zod';
 
@@ -49,7 +49,7 @@ const ResourceDraftTargetSchema = z
 			})
 			.strict()
 			.optional(),
-		providerSequence: RESOURCE_TYPES.providerSequence.optional(),
+		providerSequence: TwitterProviderSequenceSchema.optional(),
 	})
 	.strict();
 

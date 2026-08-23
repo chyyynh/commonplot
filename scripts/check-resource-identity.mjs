@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { TwitterProviderSequenceSchema } from '../../../web-tanstack/src/server/domain/resource-graph-contracts.ts';
 import { RESOURCE_TYPES } from '../src/shared/resource.ts';
 import { detectResourceUrl, normalizeUrl, parseTwitterUsername } from '../src/shared/url.ts';
 
@@ -51,11 +52,11 @@ const twitterUsernameCases = [
 ];
 for (const [input, expected] of twitterUsernameCases) assert.equal(parseTwitterUsername(input), expected);
 
-assert.equal(RESOURCE_TYPES.providerSequence.safeParse('1').success, true);
-assert.equal(RESOURCE_TYPES.providerSequence.safeParse('1999999999999999999').success, true);
-assert.equal(RESOURCE_TYPES.providerSequence.safeParse('0').success, false);
-assert.equal(RESOURCE_TYPES.providerSequence.safeParse('9223372036854775808').success, false);
-assert.equal(RESOURCE_TYPES.providerSequence.safeParse('not-a-sequence').success, false);
+assert.equal(TwitterProviderSequenceSchema.safeParse('1').success, true);
+assert.equal(TwitterProviderSequenceSchema.safeParse('1999999999999999999').success, true);
+assert.equal(TwitterProviderSequenceSchema.safeParse('0').success, false);
+assert.equal(TwitterProviderSequenceSchema.safeParse('9223372036854775808').success, false);
+assert.equal(TwitterProviderSequenceSchema.safeParse('not-a-sequence').success, false);
 
 console.info({
 	event: 'resource_identity_smoke_passed',

@@ -256,7 +256,7 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 		title,
 		source,
 		creators: storedResourceCreatorsValue(row.creators, resourceId),
-		kindMetadata: storedResourceKindMetadataValue(identity, row.kind_metadata, resourceId),
+		kindMetadata: parseStoredResourceKindMetadata(identity.kind, row.kind_metadata),
 		storageKey: row.storage_key,
 		fileType: row.file_type,
 	};
@@ -359,33 +359,5 @@ function storedResourceCreatorsValue(value: unknown, resourceId: string): Resour
 		return ResourceCreatorsSchema.parse(value);
 	} catch (error) {
 		throw new Error(`Invalid creators for ${resourceId}: ${error instanceof Error ? error.message : String(error)}`);
-	}
-}
-
-function emptyStoredResourceKindMetadata(identity: z.infer<typeof RESOURCE_TYPES.identity>): ResourceKindMetadata | null {
-	switch (identity.kind) {
-		case 'blog':
-		case 'image':
-		case 'file':
-			return null;
-		case 'forum':
-		case 'video':
-		case 'paper':
-			return {};
-		case 'post':
-			return { attachments: [] };
-	}
-}
-
-function storedResourceKindMetadataValue(
-	identity: z.infer<typeof RESOURCE_TYPES.identity>,
-	value: unknown,
-	resourceId: string,
-): ResourceKindMetadata | null {
-	if (value === null || value === undefined) return emptyStoredResourceKindMetadata(identity);
-	try {
-		return parseStoredResourceKindMetadata(identity.kind, value);
-	} catch (error) {
-		throw new Error(`Invalid kind_metadata for ${resourceId}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
