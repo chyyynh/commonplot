@@ -157,7 +157,6 @@ async function resolveProcessingCall(
 			target.admission.kind === 'source'
 				? {
 						avatarUrl: target.sourceHints?.sourceAvatarUrl ?? null,
-						...(target.providerSequence ? { providerSequence: target.providerSequence } : {}),
 					}
 				: null;
 		return {
@@ -176,7 +175,6 @@ async function resolveProcessingCall(
 			persistenceTarget: {
 				kind: 'draft',
 				admission: target.admission,
-				providerSequence: target.providerSequence ?? null,
 			},
 		};
 	}

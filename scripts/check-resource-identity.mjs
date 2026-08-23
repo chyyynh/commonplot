@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { TwitterProviderSequenceSchema } from '../../../web-tanstack/src/server/domain/resource-graph-contracts.ts';
 import { ResourceIdentifiersSchema } from '../src/shared/resource.ts';
 import { detectResourceUrl, normalizeUrl, parseTwitterUsername } from '../src/shared/url.ts';
 
@@ -48,12 +47,6 @@ const twitterUsernameCases = [
 ];
 for (const [input, expected] of twitterUsernameCases) assert.equal(parseTwitterUsername(input), expected);
 
-assert.equal(TwitterProviderSequenceSchema.safeParse('1').success, true);
-assert.equal(TwitterProviderSequenceSchema.safeParse('1999999999999999999').success, true);
-assert.equal(TwitterProviderSequenceSchema.safeParse('0').success, false);
-assert.equal(TwitterProviderSequenceSchema.safeParse('9223372036854775808').success, false);
-assert.equal(TwitterProviderSequenceSchema.safeParse('not-a-sequence').success, false);
-
 const canonicalIdentifiers = [
 	{ preferred: true, scheme: 'doi', value: '10.1000/example' },
 	{ preferred: true, scheme: 'youtube', value: 'dQw4w9WgXcQ' },
@@ -73,7 +66,6 @@ assert.equal(ResourceIdentifiersSchema.safeParse([{ preferred: true, scheme: 'yo
 console.info({
 	event: 'resource_contract_smoke_passed',
 	identifierContractCases: 5,
-	providerSequenceCases: 5,
 	twitterUsernameCases: twitterUsernameCases.length,
 	urlCases: 5 + invalidPlatformUrls.length,
 	canonicalPlatformUrlCases: canonicalPlatformUrlCases.length,

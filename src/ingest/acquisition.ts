@@ -21,7 +21,6 @@ export type ProcessingResource = ResolvedResource & { youtube?: YouTubeResourceM
 
 type MonitoredAcquisitionContext = Readonly<{
 	avatarUrl: string | null;
-	providerSequence?: string;
 }>;
 
 async function resolveGenericAcquiredResource(
@@ -102,10 +101,8 @@ export async function stageUrlAcquisition(
 			return stageLessWrongAcquisition(step, detected.platformId, input.hints);
 		case 'twitter':
 			return stageTwitterAcquisition(env, step, {
-				discoverRelatedContent: input.monitor === null,
 				hints: input.hints,
 				processingId: input.processingId,
-				...(input.monitor?.providerSequence ? { providerSequence: input.monitor.providerSequence } : {}),
 				tweetId: detected.platformId,
 			});
 		case 'youtube':

@@ -386,7 +386,6 @@ export function storedPdfProcessingResult(
 		persistenceTarget: {
 			kind: 'draft',
 			admission: { kind: 'userFilePaper', fileResourceId: input.resourceId },
-			providerSequence: null,
 		},
 	};
 }

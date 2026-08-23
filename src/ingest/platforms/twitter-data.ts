@@ -51,7 +51,6 @@ export interface Tweet {
 		isBlueVerified?: boolean;
 	};
 	text: string;
-	replyCount?: number;
 	extendedEntities?: {
 		media?: Array<{
 			media_url_https: string;
@@ -64,10 +63,6 @@ export interface Tweet {
 	urls?: Array<{ expanded_url?: string; url?: string }>;
 	entities?: { urls?: Array<{ expanded_url?: string; url?: string }> };
 	lang?: string;
-	conversationId?: string;
-	isReply?: boolean;
-	inReplyToId?: string | null;
-	inReplyToUsername?: string | null;
 	quoted_tweet?: Tweet | null;
 	retweeted_tweet?: Tweet | null;
 	retweetedBy?: RetweetedByData;
@@ -84,16 +79,11 @@ const TweetSchema: z.ZodType<Tweet> = z.lazy(() =>
 		createdAt: z.string().min(1),
 		author: TwitterAuthorSchema.optional(),
 		text: z.string(),
-		replyCount: z.number().optional(),
 		extendedEntities: z.object({ media: z.array(TwitterMediaEntitySchema).optional() }).optional(),
 		hashTags: z.array(z.string()).optional(),
 		urls: z.array(TwitterUrlEntitySchema).optional(),
 		entities: z.object({ urls: z.array(TwitterUrlEntitySchema).optional() }).optional(),
 		lang: z.string().optional(),
-		conversationId: z.string().optional(),
-		isReply: z.boolean().optional(),
-		inReplyToId: z.string().nullable().optional(),
-		inReplyToUsername: z.string().nullable().optional(),
 		quoted_tweet: TweetSchema.nullish(),
 		retweeted_tweet: TweetSchema.nullish(),
 		retweetedBy: RetweetedByDataSchema.optional(),
@@ -148,43 +138,20 @@ type TwitterArticleContent = NonNullable<TwitterArticle['contents']>[number];
 const TwitterAdvancedSearchEnvelopeSchema = z.object({
 	tweets: z.array(z.unknown()),
 	has_next_page: z.boolean(),
-	next_cursor: z.string().optional(),
 	status: z.string().optional(),
 	message: z.string().optional(),
 	msg: z.string().optional(),
 });
-
-const TwitterThreadContextPageSchema = z.object({
-	tweets: z.array(TweetSchema).optional(),
-	replies: z.array(TweetSchema).optional(),
-	has_next_page: z.boolean(),
-	next_cursor: z.string().optional(),
-	status: z.string().optional(),
-	message: z.string().optional(),
-	msg: z.string().optional(),
-});
-
-export type TwitterListPage = {
+export type TwitterAdvancedSearchPage = {
 	tweets: Tweet[];
 	hasNextPage: boolean;
-	nextCursor?: string;
-};
-
-export type TwitterAdvancedSearchPage = TwitterListPage & {
 	rawTweetCount: number;
 	invalidItems: Array<{ index: number; message: string }>;
 };
 
-export type TwitterThreadContextPageDecision = { kind: 'complete' | 'empty-page' } | { kind: 'next'; cursor: string };
-
 export type TwitterSearchWindow = {
 	sinceTime: number;
 	untilTime: number;
-};
-
-export type TwitterMonitorSearch = {
-	kind: 'posts' | 'self-replies';
-	query: string;
 };
 
 const TWITTER_ADVANCED_SEARCH_PAGE_LIMIT = 20;
@@ -215,36 +182,6 @@ function assertTwitterSearchWindow(window: TwitterSearchWindow): void {
 export function withTwitterSearchWindow(query: string, window: TwitterSearchWindow): string {
 	assertTwitterSearchWindow(window);
 	return `${query} since_time:${window.sinceTime} until_time:${window.untilTime}`;
-}
-
-export function buildTwitterMonitorSearchQueries(userName: string): TwitterMonitorSearch[] {
-	const normalized = userName.replace(/^@/, '').trim().toLowerCase();
-	if (!/^[a-z0-9_]{1,15}$/.test(normalized)) throw new Error('Twitter source has an invalid handle');
-	return [
-		{ kind: 'posts', query: `from:${normalized} -filter:replies` },
-		{ kind: 'self-replies', query: `from:${normalized} to:${normalized} filter:replies` },
-	];
-}
-
-export function buildTwitterThreadSearchQuery(root: Tweet, tweetId: string): string {
-	const conversationId = normalizedTweetId(root.conversationId) ?? normalizedTweetId(root.id) ?? normalizedTweetId(tweetId);
-	if (!conversationId || !/^\d+$/.test(conversationId)) throw new Error(`Twitter thread ${tweetId} has an invalid conversation ID`);
-	const author = normalizedTwitterUserName(root.author?.userName);
-	if (!author || !/^[a-z0-9_]{1,15}$/.test(author)) throw new Error(`Twitter thread ${tweetId} has an invalid author handle`);
-	return `conversation_id:${conversationId} from:${author} filter:replies`;
-}
-
-export function twitterThreadSearchWindow(root: Tweet, tweetId: string, windowEnd = new Date()): TwitterSearchWindow {
-	const rootTime = new Date(root.createdAt).getTime();
-	const windowEndTime = windowEnd.getTime();
-	if (!Number.isFinite(rootTime)) throw new Error(`Twitter thread ${tweetId} has an invalid creation time`);
-	if (!Number.isFinite(windowEndTime)) throw new Error(`Twitter thread ${tweetId} has an invalid search window end`);
-	const window = {
-		sinceTime: Math.max(0, Math.floor(rootTime / 1000) - 1),
-		untilTime: Math.floor(windowEndTime / 1000) + 1,
-	};
-	assertTwitterSearchWindow(window);
-	return window;
 }
 
 /**
@@ -376,10 +313,6 @@ export function renderTwitterArticleMarkdown(article: TwitterArticle): string {
 	return markdown;
 }
 
-export function combineTwitterThreadMarkdown(rootMarkdown: string, continuationMarkdown: string[]): string {
-	return [rootMarkdown.trim(), ...continuationMarkdown.map((part) => part.trim())].filter(Boolean).join('\n\n');
-}
-
 export function parseTwitterAdvancedSearchPage(value: unknown): TwitterAdvancedSearchPage {
 	const response = TwitterAdvancedSearchEnvelopeSchema.parse(value);
 	const error = semanticTwitterError(response.status, response.message ?? response.msg);
@@ -403,144 +336,5 @@ export function parseTwitterAdvancedSearchPage(value: unknown): TwitterAdvancedS
 		rawTweetCount: response.tweets.length,
 		invalidItems,
 		hasNextPage: response.has_next_page,
-		...(response.next_cursor === undefined ? {} : { nextCursor: response.next_cursor }),
 	};
-}
-
-export function parseTwitterThreadContextPage(value: unknown, tweetId: string): TwitterListPage {
-	const response = TwitterThreadContextPageSchema.parse(value);
-	const error = semanticTwitterError(response.status, response.message ?? response.msg);
-	if (error) throw new Error(`Twitter thread context ${tweetId} failed: ${error}`);
-	const tweets = response.tweets ?? response.replies;
-	if (!tweets) throw new Error(`Twitter thread context ${tweetId} omitted tweets and replies`);
-	return {
-		tweets,
-		hasNextPage: response.has_next_page,
-		...(response.next_cursor === undefined ? {} : { nextCursor: response.next_cursor }),
-	};
-}
-
-/**
- * Thread Context can report another page immediately before returning an empty
- * page. Treat that documented provider edge case as completion; every other
- * `hasNextPage` response must supply a fresh cursor so partial threads fail
- * loudly instead of being persisted.
- */
-export function decideTwitterThreadContextNextPage(
-	page: TwitterListPage,
-	seenCursors: ReadonlySet<string>,
-	tweetId: string,
-): TwitterThreadContextPageDecision {
-	if (!page.hasNextPage) return { kind: 'complete' };
-	if (!page.tweets.length) return { kind: 'empty-page' };
-	const cursor = page.nextCursor?.trim();
-	if (!cursor) throw new Error(`Twitter thread context ${tweetId} omitted the next cursor`);
-	if (seenCursors.has(cursor)) throw new Error(`Twitter thread context ${tweetId} returned a repeated cursor`);
-	return { kind: 'next', cursor };
-}
-
-function normalizedTweetId(value: string | null | undefined): string | null {
-	return value?.trim() || null;
-}
-
-function normalizedTwitterUserName(value: string | null | undefined): string | null {
-	return value?.replace(/^@/, '').trim().toLowerCase() || null;
-}
-
-export function isTwitterReply(tweet: Tweet): boolean {
-	if (tweet.isReply === true) return true;
-	if (normalizedTweetId(tweet.inReplyToId) || normalizedTwitterUserName(tweet.inReplyToUsername)) return true;
-	const tweetId = normalizedTweetId(tweet.id);
-	const conversationId = normalizedTweetId(tweet.conversationId);
-	return tweetId !== null && conversationId !== null && tweetId !== conversationId;
-}
-
-export function shouldSearchTwitterThread(tweet: Tweet, expectedReplyId?: string, discoverUnsignaledThread = true): boolean {
-	if (expectedReplyId?.trim()) return true;
-	return discoverUnsignaledThread && tweet.replyCount !== 0;
-}
-
-export function assertExpectedTwitterThreadPost(thread: Tweet[], expectedReplyId: string | undefined, tweetId: string): void {
-	const expected = expectedReplyId?.trim();
-	if (!expected) return;
-	if (!/^\d+$/.test(expected)) throw new Error(`Twitter thread ${tweetId} has an invalid expected reply ID`);
-	if (!thread.some((tweet) => normalizedTweetId(tweet.id) === expected)) {
-		throw new Error(`Twitter thread ${tweetId} does not yet include expected reply ${expected}`);
-	}
-}
-
-export function qualifiesTwitterAuthorThread(thread: readonly Tweet[]): boolean {
-	return thread.length > 3;
-}
-
-/** Return the canonical root ID only when this is an authored self-reply, never a retweeted reply or comment reply. */
-export function twitterSelfReplyRootId(tweet: Tweet): string | null {
-	if (tweet.retweetedBy || !isTwitterReply(tweet)) return null;
-	const author = normalizedTwitterUserName(tweet.author?.userName);
-	const parentAuthor = normalizedTwitterUserName(tweet.inReplyToUsername);
-	if (!author || author !== parentAuthor) return null;
-	const tweetId = normalizedTweetId(tweet.id);
-	const conversationId = normalizedTweetId(tweet.conversationId);
-	if (!tweetId || !conversationId || tweetId === conversationId || !/^\d+$/.test(conversationId)) return null;
-	return conversationId;
-}
-
-function tweetTimestamp(tweet: Tweet): number {
-	const timestamp = new Date(tweet.createdAt).getTime();
-	return Number.isFinite(timestamp) ? timestamp : Number.POSITIVE_INFINITY;
-}
-
-/**
- * Retain only tweets that could belong to the root author's reply graph. This
- * is safe before all pages arrive: a child may precede its parent, so graph
- * connectivity is deliberately resolved only after pagination completes.
- */
-export function twitterAuthorThreadCandidates(root: Tweet, contextTweets: Tweet[]): Tweet[] {
-	const rootId = normalizedTweetId(root.id);
-	const rootAuthor = normalizedTwitterUserName(root.author?.userName);
-	if (!rootId || !rootAuthor) return [];
-
-	const rootConversationId = normalizedTweetId(root.conversationId) ?? rootId;
-	const candidates = new Map<string, Tweet>();
-	const seenUrls = new Set([root.url]);
-	for (const candidate of contextTweets) {
-		const candidateId = normalizedTweetId(candidate.id);
-		if (!candidateId || candidateId === rootId || candidates.has(candidateId) || seenUrls.has(candidate.url)) continue;
-		if (normalizedTwitterUserName(candidate.author?.userName) !== rootAuthor) continue;
-		const candidateConversationId = normalizedTweetId(candidate.conversationId);
-		if (candidateConversationId && candidateConversationId !== rootConversationId) continue;
-		candidates.set(candidateId, candidate);
-		seenUrls.add(candidate.url);
-	}
-	return [...candidates.values()];
-}
-
-/** Build only the root's same-author reply graph; author replies to outside comments are excluded. */
-export function buildTwitterAuthorThread(root: Tweet, contextTweets: Tweet[]): Tweet[] {
-	const rootId = normalizedTweetId(root.id);
-	if (!rootId || !normalizedTwitterUserName(root.author?.userName)) return [root];
-
-	const remaining = new Map<string, Tweet>();
-	for (const candidate of twitterAuthorThreadCandidates(root, contextTweets)) {
-		const candidateId = normalizedTweetId(candidate.id);
-		if (candidateId) remaining.set(candidateId, candidate);
-	}
-
-	const ordered = [root];
-	const includedIds = new Set([rootId]);
-	while (remaining.size) {
-		const next = [...remaining.entries()]
-			.filter(([, candidate]) => {
-				const parentId = normalizedTweetId(candidate.inReplyToId);
-				return parentId !== null && includedIds.has(parentId);
-			})
-			.sort(([, left], [, right]) => tweetTimestamp(left) - tweetTimestamp(right) || (left.id ?? '').localeCompare(right.id ?? ''));
-		if (!next.length) break;
-		for (const [candidateId, candidate] of next) {
-			ordered.push(candidate);
-			includedIds.add(candidateId);
-			remaining.delete(candidateId);
-		}
-	}
-	return ordered;
 }

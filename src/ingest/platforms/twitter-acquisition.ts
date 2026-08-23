@@ -9,27 +9,7 @@ import {
 	type ResolvedResource,
 	type ResourceAcquisitionHints,
 } from './materialize';
-import {
-	assertExpectedTwitterThreadPost,
-	buildTwitterAuthorThread,
-	buildTwitterThreadSearchQuery,
-	combineTwitterThreadMarkdown,
-	nextTwitterSearchWindow,
-	parseTwitterAdvancedSearchPage,
-	parseTwitterArticleResponse,
-	parseTwitterTweetsResponse,
-	qualifiesTwitterAuthorThread,
-	renderTwitterArticleMarkdown,
-	shouldSearchTwitterThread,
-	type Tweet,
-	twitterAuthorThreadCandidates,
-	twitterSearchNeedsOlderWindow,
-	twitterThreadSearchWindow,
-	withTwitterSearchWindow,
-} from './twitter-data';
-
-const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
-const TWITTER_THREAD_SEARCH_MAX_PAGES = 4;
+import { parseTwitterArticleResponse, parseTwitterTweetsResponse, renderTwitterArticleMarkdown, type Tweet } from './twitter-data';
 
 interface TwitterMedia {
 	url: string;
@@ -58,7 +38,6 @@ interface TwitterMetadata extends TwitterAuthorFields {
 	quotedTweet?: QuotedTweetData;
 }
 
-type AuthoredTweet = Tweet & { author: NonNullable<Tweet['author']> };
 type TwitterAcquiredMaterial = Omit<PlatformAcquiredMaterial<'twitter'>, 'kindMetadata' | 'platformId'> & {
 	kindMetadata: PostKindMetadata;
 };
@@ -199,15 +178,6 @@ export function buildTweetTitle(tweet: Tweet, maxLength = 100): string {
 	return `@${author.userName}: ${text.substring(0, maxLength)}${suffix}`;
 }
 
-function buildThreadResourceFields(tweets: Tweet[]): TwitterResourceFields {
-	const firstTweet = tweets[0];
-	if (!firstTweet) throw new Error('Cannot build twitter thread resource from empty tweets');
-	const first: AuthoredTweet = { ...firstTweet, author: requiredTweetAuthor(firstTweet) };
-	const media = tweets.flatMap(extractTweetMedia);
-	const quotedTweet = tweets.map(extractQuotedTweet).find(Boolean);
-	return buildTweetFields(first, { media, quotedTweet });
-}
-
 function buildTweetFields(
 	tweet: Tweet,
 	options: {
@@ -314,12 +284,7 @@ function buildExternalLinkTweet(tweet: Tweet, externalUrl: string, media: Twitte
 	};
 }
 
-type ResolvedTweetContent = {
-	kind: 'longform' | 'share' | 'tweet';
-	scraped: TwitterAcquiredMaterial;
-};
-
-async function resolveTweetContent(tweet: Tweet, apiKey: string): Promise<ResolvedTweetContent> {
+async function resolveTweetContent(tweet: Tweet, apiKey: string): Promise<TwitterAcquiredMaterial> {
 	const media = extractTweetMedia(tweet);
 	const expandedUrls = tweetUrlEntities(tweet).flatMap((url) => {
 		const expandedUrl = url.expanded_url?.trim();
@@ -330,12 +295,11 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string): Promise<Resolv
 
 	if (longformUrl) {
 		console.info({ tag: 'TWITTER', msg: 'Detected Twitter longform', longformUrl });
-		return { kind: 'longform', scraped: await scrapeTwitterLongform(tweet, apiKey) };
+		return scrapeTwitterLongform(tweet, apiKey);
 	}
 
 	if (linkedContentUrl) {
-		const scraped = buildExternalLinkTweet(tweet, linkedContentUrl, media);
-		return { kind: 'share', scraped };
+		return buildExternalLinkTweet(tweet, linkedContentUrl, media);
 	}
 
 	const author = requiredTweetAuthor(tweet);
@@ -344,64 +308,19 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string): Promise<Resolv
 	console.info({ tag: 'TWITTER', msg: 'Tweet fetched', userName: author.userName });
 
 	return {
-		kind: 'tweet',
-		scraped: {
-			resourcePlatform: 'twitter' as const,
-			fileType: null,
-			title,
-			markdown: expandTweetUrls(tweet.text, tweet),
-			source: 'Twitter',
-			originalLang: tweet.lang ?? null,
-			publishedDate: tweet.createdAt,
-			summary: null,
-			...buildTweetFields(tweet),
-		},
+		resourcePlatform: 'twitter',
+		fileType: null,
+		title,
+		markdown: expandTweetUrls(tweet.text, tweet),
+		source: 'Twitter',
+		originalLang: tweet.lang ?? null,
+		publishedDate: tweet.createdAt,
+		summary: null,
+		...buildTweetFields(tweet),
 	};
 }
 
-function mergePostMetadata(base: PostKindMetadata, thread: PostKindMetadata, tweetId: string): PostKindMetadata {
-	const attachments: ResourceMediaAttachment[] = [];
-	const seen = new Set<string>();
-	for (const attachment of [...base.attachments, ...thread.attachments]) {
-		const key = `${attachment.kind}\0${attachment.url}\0${attachment.videoUrl ?? ''}`;
-		if (seen.has(key)) continue;
-		seen.add(key);
-		attachments.push(attachment);
-	}
-	if (attachments.length > 16) {
-		console.warn({
-			tag: 'TWITTER',
-			event: 'thread_attachments_truncated',
-			tweet_id: tweetId,
-			attachment_count: attachments.length,
-			retained: 16,
-		});
-	}
-	return {
-		attachments: attachments.slice(0, 16),
-		...((base.quote ?? thread.quote) ? { quote: base.quote ?? thread.quote } : {}),
-	};
-}
-
-function mergeResolvedTwitterThread(resolved: ResolvedTweetContent, thread: Tweet[], tweetId: string): TwitterAcquiredMaterial {
-	if (!qualifiesTwitterAuthorThread(thread)) return resolved.scraped;
-	const continuation = thread.slice(1).flatMap((tweet) => {
-		const text = expandTweetUrls(tweet.text, tweet);
-		return text ? [text] : [];
-	});
-	const fields = buildThreadResourceFields(thread);
-	return {
-		...resolved.scraped,
-		markdown: combineTwitterThreadMarkdown(resolved.scraped.markdown, continuation),
-		kindMetadata: mergePostMetadata(resolved.scraped.kindMetadata, fields.kindMetadata, tweetId),
-	};
-}
-
-async function scrapeTweet(
-	tweetId: string,
-	apiKey: string,
-	options: { discoverUnsignaledThread?: boolean; expectedReplyId?: string } = {},
-): Promise<PlatformAcquiredMaterial<'twitter'>> {
+async function scrapeTweet(tweetId: string, apiKey: string): Promise<PlatformAcquiredMaterial<'twitter'>> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
 	const response = await fetch(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, {
 		headers: { 'x-api-key': apiKey },
@@ -421,48 +340,15 @@ async function scrapeTweet(
 	const tweets = parseTwitterTweetsResponse(await response.json());
 	const tweet = tweets[0];
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
-	const expectedReplyId = options.expectedReplyId === tweetId ? undefined : options.expectedReplyId;
-	const searchThread = shouldSearchTwitterThread(tweet, expectedReplyId, options.discoverUnsignaledThread);
-	let context: TwitterThreadSearchResult = { candidates: [], pages: 0, providerPosts: 0, skippedItems: 0 };
-	if (searchThread) {
-		try {
-			context = await fetchTwitterAuthorReplies(tweet, tweetId, apiKey);
-		} catch (error) {
-			if (expectedReplyId) throw error;
-			console.warn({
-				tag: 'TWITTER',
-				event: 'optional_thread_search_failed',
-				tweet_id: tweetId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-	}
-	const thread = buildTwitterAuthorThread(tweet, context.candidates);
-	assertExpectedTwitterThreadPost(thread, expectedReplyId, tweetId);
-	const resolved = await resolveTweetContent(tweet, apiKey);
-	console.info({
-		tag: 'TWITTER',
-		event: 'thread_search_resolved',
-		tweet_id: tweetId,
-		search_pages: context.pages,
-		search_posts: context.providerPosts,
-		search_skipped_items: context.skippedItems,
-		search_skipped: !searchThread,
-		thread_candidates: context.candidates.length,
-		thread_posts: thread.length,
-		content_kind: resolved.kind,
-	});
-	return { ...mergeResolvedTwitterThread(resolved, thread, tweetId), platformId: tweetId };
+	return { ...(await resolveTweetContent(tweet, apiKey)), platformId: tweetId };
 }
 
 export async function stageTwitterAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		discoverRelatedContent: boolean;
 		hints: ResourceAcquisitionHints;
 		processingId: string;
-		providerSequence?: string;
 		tweetId: string;
 	},
 ): Promise<ResolvedResource> {
@@ -474,79 +360,12 @@ export async function stageTwitterAcquisition(
 				tag: 'TWITTER',
 				event: 'acquisition_attempt',
 				processing_id: input.processingId,
-				provider_sequence: input.providerSequence,
 				attempt: ctx.attempt,
 			});
-			return Response.json(
-				await scrapeTweet(input.tweetId, env.KAITO_API_KEY, {
-					discoverUnsignaledThread: input.discoverRelatedContent,
-					expectedReplyId: input.providerSequence,
-				}),
-			).body!;
+			return Response.json(await scrapeTweet(input.tweetId, env.KAITO_API_KEY)).body!;
 		},
 	);
 	return materializePlatformResource(await new Response(contentStream).json<PlatformAcquiredMaterial<'twitter'>>(), input.hints);
-}
-
-type TwitterThreadSearchResult = {
-	candidates: Tweet[];
-	pages: number;
-	providerPosts: number;
-	skippedItems: number;
-};
-
-async function fetchTwitterAuthorReplies(root: Tweet, tweetId: string, apiKey: string): Promise<TwitterThreadSearchResult> {
-	const candidates = new Map<string, Tweet>();
-	const candidateUrls = new Set<string>();
-	const query = buildTwitterThreadSearchQuery(root, tweetId);
-	let currentWindow = twitterThreadSearchWindow(root, tweetId);
-	let pages = 0;
-	let providerPosts = 0;
-	let skippedItems = 0;
-	while (true) {
-		if (pages >= TWITTER_THREAD_SEARCH_MAX_PAGES) {
-			throw new Error(`Twitter thread search ${tweetId} exceeded ${TWITTER_THREAD_SEARCH_MAX_PAGES} time-slice pages`);
-		}
-		const params = new URLSearchParams({ query: withTwitterSearchWindow(query, currentWindow), queryType: 'Latest' });
-		const response = await fetch(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, {
-			headers: { 'x-api-key': apiKey },
-			signal: AbortSignal.timeout(20_000),
-		});
-		if (!response.ok) {
-			await response.body?.cancel();
-			const message = `HTTP ${response.status}: ${response.statusText}`;
-			if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
-				throw new NonRetryableError(message);
-			}
-			throw new Error(message);
-		}
-		const data = parseTwitterAdvancedSearchPage(await response.json());
-		pages++;
-		providerPosts += data.rawTweetCount;
-		skippedItems += data.invalidItems.length;
-		for (const item of data.invalidItems) {
-			console.error({
-				tag: 'TWITTER',
-				event: 'twitter_provider_item_skipped',
-				stage: 'thread-search',
-				tweet_id: tweetId,
-				page: pages,
-				item_index: item.index,
-				error: item.message,
-			});
-		}
-		for (const candidate of twitterAuthorThreadCandidates(root, data.tweets)) {
-			const candidateId = candidate.id?.trim();
-			if (!candidateId) continue;
-			if (candidates.has(candidateId) || candidateUrls.has(candidate.url)) continue;
-			candidates.set(candidateId, candidate);
-			candidateUrls.add(candidate.url);
-		}
-		if (!twitterSearchNeedsOlderWindow(data)) break;
-		currentWindow = nextTwitterSearchWindow(currentWindow, data.tweets, `Twitter thread search ${tweetId}`);
-		await scheduler.wait(250);
-	}
-	return { candidates: [...candidates.values()], pages, providerPosts, skippedItems };
 }
 
 function twitterCreator(data: TwitterMetadata): ResourceCreator[] {

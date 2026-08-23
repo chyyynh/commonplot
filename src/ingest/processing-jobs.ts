@@ -1,9 +1,5 @@
 // Validated Workflow payloads and enqueue entrypoints for app, monitor, and derived-resource jobs.
-import {
-	type ResourceDraftAdmission,
-	ResourceDraftAdmissionSchema,
-	TwitterProviderSequenceSchema,
-} from '@app-domain/resource-graph-contracts';
+import { type ResourceDraftAdmission, ResourceDraftAdmissionSchema } from '@app-domain/resource-graph-contracts';
 import { sha256Hex } from '@core-shared/hash';
 import { canonicalizeOptionalResourceLang } from '@core-shared/resource';
 import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
@@ -27,7 +23,6 @@ const ResourceDraftTargetSchema = z
 			})
 			.strict()
 			.optional(),
-		providerSequence: TwitterProviderSequenceSchema.optional(),
 	})
 	.strict();
 
@@ -69,8 +64,6 @@ export type SourceResourceDraft = {
 	originalLang?: string;
 	keywords?: string[];
 	sourceAvatarUrl?: string | null;
-	/** Monotonic provider event sequence used to reject stale draft commits. */
-	providerSequence?: string;
 };
 
 export type AppResourceDraftInput = Readonly<{
@@ -81,7 +74,7 @@ export type AppResourceDraftInput = Readonly<{
 
 type SourceResourceAdmissionOutcome = 'created' | 'existing';
 
-const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v4';
+const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v5';
 const WORKFLOW_CREATE_BATCH_SIZE = 100;
 
 export async function enqueueAppResourceDraft(env: CoreEnv, input: AppResourceDraftInput): Promise<string> {
@@ -121,7 +114,6 @@ function sourceDraftTarget(base: SourceResourceDraft): ResourceDraftTarget {
 			...(keywords.length ? { keywords } : {}),
 			...(sourceAvatarUrl ? { sourceAvatarUrl } : {}),
 		},
-		...(base.providerSequence?.trim() ? { providerSequence: base.providerSequence.trim() } : {}),
 	});
 }
 
@@ -156,6 +148,7 @@ export async function admitDiscoveredSourceResources(
 			return {
 				id: `${SOURCE_DRAFT_WORKFLOW_REVISION}-${await sha256Hex(JSON.stringify(target))}`,
 				params: { target },
+				retention: { errorRetention: '5 hours' as const },
 			};
 		}),
 	);

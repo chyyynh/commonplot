@@ -1,19 +1,14 @@
-import { TwitterProviderSequenceSchema } from '@app-domain/resource-graph-contracts';
-import { canonicalResourcePlatformUrl, normalizeUrl } from '@core-shared/url';
+import { normalizeUrl } from '@core-shared/url';
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/monitored-source';
 import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/processing-jobs';
 import {
-	buildTwitterMonitorSearchQueries,
-	isTwitterReply,
 	nextTwitterSearchWindow,
 	parseTwitterAdvancedSearchPage,
 	type Tweet,
-	type TwitterMonitorSearch,
 	type TwitterSearchWindow,
 	twitterSearchNeedsOlderWindow,
 	twitterSearchWindow,
-	twitterSelfReplyRootId,
 	withTwitterSearchWindow,
 } from './twitter-data';
 
@@ -22,7 +17,9 @@ import {
 const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
 
 const TWITTER_SOURCE_CONCURRENCY = 5;
-const TWITTER_WATERMARK_OVERLAP_MS = 60 * 60 * 1000;
+// Keep two prior cron windows discoverable so a source Workflow whose five-hour
+// error retention expires can be recreated without unbounded rapid retries.
+const TWITTER_WATERMARK_OVERLAP_MS = 13 * 60 * 60 * 1000;
 const TWITTER_SEARCH_MAX_PAGES = 4;
 
 function monitoredAuthorUserName(tweet: Tweet): string | null {
@@ -58,7 +55,6 @@ type TwitterSourceFetch = {
 	tweets: Tweet[];
 	providerTweets: number;
 	pages: number;
-	searches: number;
 	skippedItems: number;
 };
 
@@ -91,13 +87,11 @@ function normalizeFetchedTweets(tweets: Tweet[], monitoredUserName: string): Pic
 	return { tweets: normalizedTweets, skippedItems };
 }
 
-/** Fetch one filtered search stream through complete, cursor-free time slices. */
-async function fetchTweetsForSearch(
-	apiKey: string,
-	userName: string,
-	search: TwitterMonitorSearch,
-	window: TwitterSearchWindow,
-): Promise<Omit<TwitterSourceFetch, 'searches'>> {
+/** Fetch authored top-level posts through complete, cursor-free time slices. */
+async function fetchTweetsForSource(apiKey: string, userName: string, window: TwitterSearchWindow): Promise<TwitterSourceFetch> {
+	const normalizedUserName = userName.replace(/^@/, '').trim().toLowerCase();
+	if (!/^[a-z0-9_]{1,15}$/.test(normalizedUserName)) throw new Error('Twitter source has an invalid handle');
+	const query = `from:${normalizedUserName} -filter:replies`;
 	const terminalTweets = new Map<string, Tweet>();
 	let providerTweets = 0;
 	let pages = 0;
@@ -108,7 +102,7 @@ async function fetchTweetsForSearch(
 		if (pages >= TWITTER_SEARCH_MAX_PAGES) {
 			throw new Error(`Twitter Advanced Search exceeded ${TWITTER_SEARCH_MAX_PAGES} time-slice pages`);
 		}
-		const params = new URLSearchParams({ query: withTwitterSearchWindow(search.query, currentWindow), queryType: 'Latest' });
+		const params = new URLSearchParams({ query: withTwitterSearchWindow(query, currentWindow), queryType: 'Latest' });
 
 		const response = await fetch(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, {
 			headers: { 'x-api-key': apiKey },
@@ -127,7 +121,6 @@ async function fetchTweetsForSearch(
 				tag: 'TWITTER',
 				event: 'twitter_provider_item_skipped',
 				userName,
-				search_kind: search.kind,
 				page: pages,
 				item_index: item.index,
 				error: item.message,
@@ -145,30 +138,12 @@ async function fetchTweetsForSearch(
 		tag: 'TWITTER',
 		event: 'twitter_search_stream_completed',
 		userName,
-		search_kind: search.kind,
 		pages,
 		provider_tweets: providerTweets,
 		normalized_tweets: normalized.tweets.length,
 		skipped_items: skippedItems,
 	});
 	return { tweets: normalized.tweets, providerTweets, pages, skippedItems };
-}
-
-/** Fetch only authored posts and authored self-replies; discard duplicate results across the two streams. */
-async function fetchTweetsForSource(apiKey: string, userName: string, window: TwitterSearchWindow): Promise<TwitterSourceFetch> {
-	const searches = buildTwitterMonitorSearchQueries(userName);
-	const results = await Promise.all(searches.map((search) => fetchTweetsForSearch(apiKey, userName, search, window)));
-	const tweets = new Map<string, Tweet>();
-	for (const result of results) {
-		for (const tweet of result.tweets) tweets.set(tweet.id?.trim() || tweet.url, tweet);
-	}
-	return {
-		tweets: [...tweets.values()],
-		providerTweets: results.reduce((total, result) => total + result.providerTweets, 0),
-		pages: results.reduce((total, result) => total + result.pages, 0),
-		searches: searches.length,
-		skippedItems: results.reduce((total, result) => total + result.skippedItems, 0),
-	};
 }
 
 const TWITTER_ADMISSION_STATUSES = ['created', 'existing'] as const;
@@ -182,79 +157,34 @@ type TweetSaveResult = {
 	skippedItems: number;
 };
 
-type TwitterResourceDraft = SourceResourceDraft & {
-	tweet: Tweet;
-	source: MonitoredSource;
-};
-
-function latestTwitterDraft(left: TwitterResourceDraft, right: TwitterResourceDraft): TwitterResourceDraft {
-	const leftIsReply = isTwitterReply(left.tweet);
-	const rightIsReply = isTwitterReply(right.tweet);
-	const canonical = leftIsReply && !rightIsReply ? right : left;
-	const sequenced = [left, right].filter((draft): draft is TwitterResourceDraft & { providerSequence: string } => !!draft.providerSequence);
-	const latest = sequenced.reduce<(TwitterResourceDraft & { providerSequence: string }) | null>((current, draft) => {
-		const candidate = BigInt(TwitterProviderSequenceSchema.parse(draft.providerSequence));
-		if (!current) return draft;
-		const previous = BigInt(TwitterProviderSequenceSchema.parse(current.providerSequence));
-		return candidate > previous ? draft : current;
-	}, null);
-	return latest ? { ...canonical, providerSequence: latest.providerSequence } : canonical;
-}
-
-function twitterSelfReplyRootDraft(tweet: Tweet, source: MonitoredSource): TwitterResourceDraft | null {
-	const rootId = twitterSelfReplyRootId(tweet);
-	const providerSequence = tweet.id?.trim();
-	if (!rootId || !providerSequence) return null;
-	return {
-		tweet,
-		source,
-		sourceId: source.id,
-		url: canonicalResourcePlatformUrl('twitter', rootId),
-		publishedDate: null,
-		summary: null,
-		originalLang: tweet.lang,
-		keywords: [],
-		providerSequence,
-	};
-}
-
-function twitterResourceDraft(tweet: Tweet, source: MonitoredSource): TwitterResourceDraft | null {
+function twitterResourceDraft(tweet: Tweet, source: MonitoredSource): SourceResourceDraft {
 	const userName = monitoredAuthorUserName(tweet);
 	if (!userName) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no monitored author identity`);
 	if (userName !== source.handle) throw new Error(`Tweet ${tweet.id ?? tweet.url} is not attributed to @${source.handle}`);
-	if (isTwitterReply(tweet)) return twitterSelfReplyRootDraft(tweet, source);
 
 	const url = normalizeUrl(tweet.url);
-	const providerSequence = tweet.id?.trim();
-	if (!TwitterProviderSequenceSchema.safeParse(providerSequence).success)
-		throw new Error(`Tweet ${tweet.url} has an invalid provider sequence`);
 	const publishedDate = new Date(tweet.createdAt);
 	if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id ?? url} has invalid publishedDate`);
 	return {
-		tweet,
-		source,
 		sourceId: source.id,
 		url,
 		publishedDate,
 		summary: null,
 		originalLang: tweet.lang,
 		keywords: tweet.hashTags,
-		providerSequence,
 	};
 }
 
 function twitterResourceDrafts(
 	tweets: Tweet[],
 	source: MonitoredSource,
-): { drafts: Map<string, TwitterResourceDraft>; skippedItems: number } {
-	const drafts = new Map<string, TwitterResourceDraft>();
+): { drafts: Map<string, SourceResourceDraft>; skippedItems: number } {
+	const drafts = new Map<string, SourceResourceDraft>();
 	let skippedItems = 0;
 	for (const tweet of tweets) {
 		try {
 			const draft = twitterResourceDraft(tweet, source);
-			if (!draft) continue;
-			const existing = drafts.get(draft.url);
-			drafts.set(draft.url, existing ? latestTwitterDraft(existing, draft) : draft);
+			drafts.set(draft.url, draft);
 		} catch (error) {
 			skippedItems++;
 			console.error({
@@ -291,7 +221,6 @@ async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource
 			admission: outcome,
 			userName: source.handle,
 			url: draft.url,
-			providerSequence: draft.providerSequence,
 		});
 	}
 	return { admittedDrafts: pending.length, counts, skippedItems };
@@ -303,7 +232,6 @@ type TwitterSourceMetrics = {
 	normalizedTweets: number;
 	pages: number;
 	providerTweets: number;
-	searches: number;
 	skippedItems: number;
 	sourceId: string;
 };
@@ -322,7 +250,6 @@ async function processTwitterSource(env: CoreEnv, db: CoreDb, source: MonitoredS
 			normalizedTweets: fetched.tweets.length,
 			pages: fetched.pages,
 			providerTweets: fetched.providerTweets,
-			searches: fetched.searches,
 			skippedItems: fetched.skippedItems + saved.skippedItems,
 			sourceId: source.id,
 			status: 'completed',
@@ -334,7 +261,6 @@ async function processTwitterSource(env: CoreEnv, db: CoreDb, source: MonitoredS
 			since_time: window.sinceTime,
 			until_time: window.untilTime,
 			pages: outcome.pages,
-			searches: outcome.searches,
 			provider_tweets: outcome.providerTweets,
 			normalized_tweets: outcome.normalizedTweets,
 			admitted_drafts: outcome.admittedDrafts,
@@ -367,7 +293,6 @@ async function processTwitterSource(env: CoreEnv, db: CoreDb, source: MonitoredS
 			normalizedTweets: 0,
 			pages: 0,
 			providerTweets: 0,
-			searches: 0,
 			skippedItems: 0,
 			sourceId: source.id,
 			status: 'failed',
@@ -383,7 +308,6 @@ type TwitterMonitorOutcome = {
 	normalizedTweets: number;
 	pages: number;
 	providerTweets: number;
-	searches: number;
 	skippedItems: number;
 	supersededSources: number;
 	systemFailures: unknown[];
@@ -435,7 +359,6 @@ async function processTwitterSources(
 		normalizedTweets: outcomes.reduce((total, outcome) => total + outcome.normalizedTweets, 0),
 		pages: outcomes.reduce((total, outcome) => total + outcome.pages, 0),
 		providerTweets: outcomes.reduce((total, outcome) => total + outcome.providerTweets, 0),
-		searches: outcomes.reduce((total, outcome) => total + outcome.searches, 0),
 		skippedItems: outcomes.reduce((total, outcome) => total + outcome.skippedItems, 0),
 		supersededSources: completedSourceIds.length - advancedSources - watermarkFailures,
 		systemFailures,
@@ -466,7 +389,6 @@ export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date
 		normalized_tweets: outcome.normalizedTweets,
 		skipped_items: outcome.skippedItems,
 		pages: outcome.pages,
-		searches: outcome.searches,
 		admitted_drafts: outcome.admittedDrafts,
 		...outcome.counts,
 		advanced_sources: outcome.advancedSources,

@@ -32,7 +32,7 @@ Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content
 | Platform             | Type      | Schedule      | What it does                                                                |
 | -------------------- | --------- | ------------- | --------------------------------------------------------------------------- |
 | **RSS Feeds**        | Monitor   | Every 5 min   | Fetches feeds, deduplicates by URL, detects HN links                        |
-| **Twitter/X**        | Monitor   | Every 6 hours | Tracks users via Kaito API — tweets, threads, longform posts, media         |
+| **Twitter/X**        | Monitor   | Every 6 hours | Tracks users via Kaito API — posts, longform posts, and media               |
 | **YouTube**          | Monitor   | Every 30 min  | Atom feed → video metadata, transcripts, chapters, AI highlights            |
 | **Hacker News**      | Processor | Via RSS       | Detects HN links → fetches comments via Algolia → generates editorial notes |
 | **Web**              | Scraper   | Saved URL     | Full content extraction (Readability + Cheerio), OG metadata                |
