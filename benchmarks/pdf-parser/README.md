@@ -31,6 +31,14 @@ node benchmarks/pdf-parser/run.mjs http://127.0.0.1:8799 /absolute/path/to/publi
 node benchmarks/pdf-parser/run.mjs http://127.0.0.1:8799 /absolute/path/to/public.pdf 2 batch 10
 ```
 
+Verify that a synthetic 50+ MiB request and an invalid signature fail before parser initialization:
+
+```sh
+node benchmarks/pdf-parser/reject.mjs http://127.0.0.1:8799
+```
+
+`corpus.json` records the canonical public URLs, exact byte counts, page counts, profiles, and SHA-256 hashes used for repeatable envelope runs. PDFs stay outside the repository.
+
 Compare output semantics outside the Worker:
 
 ```sh

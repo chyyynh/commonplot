@@ -1,0 +1,46 @@
+{
+	"schemaVersion": 1,
+	"cases": [
+		{
+			"id": "arxiv-1706.03762",
+			"profile": ["digital", "multi-column", "figures", "tables"],
+			"sourceUrl": "https://arxiv.org/pdf/1706.03762",
+			"sha256": "bdfaa68d8984f0dc02beaca527b76f207d99b666d31d1da728ee0728182df697",
+			"inputBytes": 2215244,
+			"pages": 15
+		},
+		{
+			"id": "arxiv-2405.16755",
+			"profile": ["digital", "multi-column", "table-heavy", "figures"],
+			"sourceUrl": "https://arxiv.org/pdf/2405.16755",
+			"sha256": "6013e706475b22826b1793e5471fcd5af4c33097f2e885f5e1db38d0300a1a79",
+			"inputBytes": 21636974,
+			"pages": 41
+		},
+		{
+			"id": "osce-425429",
+			"profile": ["scanned", "graphics-heavy", "single-page", "large-page"],
+			"sourceUrl": "https://www.osce.org/files/f/documents/f/5/425429.pdf",
+			"sha256": "f99b2fdcb198168448ed690ef822d70e4ef9b3c8101686323170d83283bdf998",
+			"inputBytes": 24583289,
+			"pages": 1
+		},
+		{
+			"id": "nasa-20150014000",
+			"profile": ["technical-report", "many-pages", "forms", "near-cap"],
+			"sourceUrl": "https://ntrs.nasa.gov/api/citations/20150014000/downloads/20150014000.pdf",
+			"sha256": "9761a8d6d655171ee792a9ac91b341ffbc249256ca3dc862e88aa6024c310a49",
+			"inputBytes": 25633730,
+			"pages": 117
+		}
+	],
+	"syntheticRejections": [
+		{
+			"id": "over-cap",
+			"profile": ["50-plus-mib", "pre-buffer-rejection"],
+			"inputBytes": 52428801,
+			"expectedStatus": 413,
+			"expectedError": "PDF exceeds 26214400 bytes"
+		}
+	]
+}
