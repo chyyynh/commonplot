@@ -32,7 +32,6 @@ type StoredResourceBase = {
 	tags: string[];
 	keywords: string[];
 	resourceIdentifiers: ResourceIdentifier[];
-	storageKey: string | null;
 	normalizedUrl: string | null;
 };
 
@@ -68,7 +67,6 @@ type StoredResourceBaseRow = StoredResourceIdentityRow & {
 	tags: string[];
 	keywords: string[];
 	resource_identifiers: unknown;
-	storage_key: string | null;
 	normalized_url: string | null;
 };
 
@@ -78,6 +76,7 @@ type StoredPdfRow = StoredResourceBaseRow & {
 	creators: unknown;
 	kind_metadata: unknown;
 	file_type: string | null;
+	storage_key: string | null;
 };
 
 type ResourceReacquisitionRow = StoredResourceBaseRow & {
@@ -299,7 +298,6 @@ export async function loadResourceReacquisitionInput(db: CoreDb, resourceId: str
 			resource.published_date,
 			resource.tags,
 			original.keywords,
-			resource.storage_key,
 			resource.normalized_url
 		FROM resources resource
 		JOIN resource_translations original
@@ -336,7 +334,6 @@ function storedResourceBase(row: StoredResourceBaseRow): StoredResourceBase {
 		tags: row.tags,
 		keywords: row.keywords,
 		resourceIdentifiers: resourceIdentifiersValue(row.resource_identifiers),
-		storageKey: row.storage_key,
 		normalizedUrl: row.normalized_url,
 	};
 }

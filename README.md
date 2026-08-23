@@ -53,8 +53,8 @@ Content arrives (source monitor / saved URL / uploaded blob / resync)
   ├─ 2. Resolve ─────────────── Finalize kind/platform identity, paper metadata, and subject intent
   ├─ 3. AI Analysis ─────────── AI Gateway calls → bilingual title, summary, tags, keywords, entities
   ├─ 4. Host Images ─────────── Stream canonical remote images to Cloudflare Images
-  ├─ 5. Finalize DB ─────────── Create/merge a URL draft only now; update an existing stored blob
-  └─ 6. Follow-ups ──────────── Attach/enqueue subjects, translation, and AI Search synchronization
+  ├─ 5. Finalize DB ─────────── Create or update a canonical URL resource; enrich an existing stored blob
+  └─ 6. Follow-ups ──────────── For corpus results, attach/enqueue subjects, translation, and AI Search sync
 ```
 
 URL, source, and derived-subject attempts carry immutable Workflow drafts and create no
@@ -65,7 +65,7 @@ their ownership, quota, and blob locator already exist. Each durable step retrie
 
 | Stage                   | Model             | What it does                                                                                      |
 | ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------- |
-| **Analysis**          | AI Gateway text model | Resource → bilingual title, summary, tags, keywords, category                                      |
+| **Analysis**          | AI Gateway text model | Resource → bilingual title, summary, tags, and keywords                                             |
 | **Entity Extraction** | AI Gateway JSON model | Resource → named entities (person, organization, product, technology, event, location) with EN + zh-TW names |
 | **Retrieval Index**   | Cloudflare AI Search  | Hybrid keyword and semantic retrieval over enriched corpus documents                              |
 
@@ -140,7 +140,7 @@ Or run locally with `pnpm dev` (uses `wrangler dev --test-scheduled`, so you can
 
 Core exposes no product HTTP API; its default fetch handler only returns 404. App URL imports call a Cloudflare service-binding RPC with a Workflow instance ID, URL, and admission intent; monitors and derived subjects enqueue the same draft target internally. Uploaded blobs and explicit resyncs use persisted resource IDs. URL acquisition is an internal stage of the canonical resource Workflow.
 
-URL/platform acquisition and app-owned R2 PDF reads all emit the same revisioned, stream-backed acquired-content artifact. Core selects any academic replacement content first, materializes one canonical processing aggregate, commits it through the app Domain transaction, then runs independent subject, translation, and AI Search follow-ups in parallel durable steps.
+URL/platform acquisition and app-owned R2 PDF reads both materialize one canonical processing aggregate. Core selects any academic replacement content first, commits the aggregate through the app Domain transaction, and runs subject, translation, and AI Search follow-ups only for corpus results.
 
 ## Hosted MCP
 
@@ -157,13 +157,13 @@ src/
 ├── index.ts              # Cloudflare WorkerEntrypoint class only
 ├── entities/             # resource-local entity normalization
 ├── shared/               # small cross-subsystem primitives
-│   ├── types.ts          # Resource processing, acquisition, and transcript contracts
-│   ├── resource-*.ts     # identity, identifiers, and canonical metadata contracts
-│   ├── http.ts           # bounded HTTP primitives
+│   ├── resource.ts       # identity, identifiers, and canonical metadata contracts
+│   ├── image-mapping.ts  # canonical Hosted Images field mapping
 │   └── url.ts            # URL normalization and exact platform locators
 ├── ingest/               # ── resource ingestion pipeline (the open-source core) ──
-│   ├── workflow.ts       # Workflow class + enqueueProcessing
-│   ├── domain/           # translation/classification policy and persistence
+│   ├── workflow.ts       # acquisition-to-persistence Workflow
+│   ├── processing-jobs.ts # immutable draft and stored-target payloads
+│   ├── stored-resource.ts # narrow record-first blob and resync projections
 │   └── platforms/        # one file per source/stage
 │       ├── rss.ts        # feed polling
 │       ├── twitter.ts    # monitor + scraper + processor

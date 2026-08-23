@@ -53,8 +53,8 @@ graph-persistence tail。
   ├─ 2. 決定 identity ─────── 完成 kind/platform、paper metadata 與 subject intent
   ├─ 3. AI 分析 ───────────── AI Gateway calls → 中英標題、摘要、標籤、關鍵字、實體
   ├─ 4. 託管圖片 ──────────── 將 canonical 遠端圖片串流到 Cloudflare Images
-  ├─ 5. 最終寫入 DB ───────── URL draft 到此才建立／合併；stored blob 則更新既有 row
-  └─ 6. 後續工作 ──────────── attach／enqueue subject、翻譯與同步 AI Search
+  ├─ 5. 最終寫入 DB ───────── 建立或更新 canonical URL resource；enrich 既有 stored blob
+  └─ 6. 後續工作 ──────────── corpus 結果才 attach／enqueue subject、翻譯與同步 AI Search
 ```
 
 URL、source 與 derived-subject 都以 immutable Workflow draft 傳遞，只有第 5
@@ -65,7 +65,7 @@ URL、source 與 derived-subject 都以 immutable Workflow draft 傳遞，只有
 
 | 階段         | 模型              | 說明                                                        |
 | ------------ | ----------------- | ----------------------------------------------------------- |
-| **分析**     | AI Gateway text model | Resource → 中英標題、摘要、標籤、關鍵字、分類               |
+| **分析**     | AI Gateway text model | Resource → 中英標題、摘要、標籤與關鍵字                     |
 | **實體提取** | AI Gateway JSON model | Resource → 具名實體（人物、組織、產品、技術、事件），含中英名稱 |
 | **搜尋索引** | Cloudflare AI Search  | 對完成 enrichment 的 corpus 文件提供 hybrid retrieval       |
 
@@ -136,7 +136,7 @@ pnpm run deploy
 
 Core 沒有產品 HTTP API；default fetch handler 只回傳 404。App URL import 透過 Cloudflare service-binding RPC 傳入 Workflow instance ID、URL 與 admission intent；monitor 與 derived subject 在 Core 內排入相同 draft target。只有 uploaded blob 與 explicit resync 傳入已持久化的 resource ID。URL acquisition 只存在於 canonical resource Workflow 內部。
 
-URL／platform acquisition 與 app-owned R2 PDF 讀取都輸出相同、帶 revision、以 stream 持久化的 acquired-content artifact。Core 先選定可能的學術替代正文，再只 materialize 一次 canonical processing aggregate，透過 app Domain transaction commit，最後以並行 durable steps 執行彼此獨立的 subject、translation 與 AI Search follow-up。
+URL／platform acquisition 與 app-owned R2 PDF 讀取都只 materialize 一個 canonical processing aggregate。Core 先選定可能的學術替代正文，再透過 app Domain transaction commit；只有 corpus 結果會執行 subject、translation 與 AI Search follow-up。
 
 ## Hosted MCP
 
@@ -151,13 +151,13 @@ src/
 ├── index.ts              # 只保留 Cloudflare WorkerEntrypoint class
 ├── entities/             # resource-local entity normalization
 ├── shared/               # 小型跨子系統 primitives
-│   ├── types.ts          # resource processing、acquisition、transcript contracts
-│   ├── resource-*.ts     # identity、identifier、canonical metadata contracts
-│   ├── http.ts           # 有界 HTTP primitives
+│   ├── resource.ts       # identity、identifier、canonical metadata contracts
+│   ├── image-mapping.ts  # canonical Hosted Images 欄位 mapping
 │   └── url.ts            # URL normalization 與精確 platform locator
 ├── ingest/               # ── resource 入庫 pipeline（開源核心）──
-│   ├── workflow.ts       # Workflow class + enqueueProcessing
-│   ├── domain/           # translation/classification policy 與 Core-owned stores
+│   ├── workflow.ts       # acquisition 到 persistence 的 Workflow
+│   ├── processing-jobs.ts # immutable draft 與 stored-target payload
+│   ├── stored-resource.ts # record-first blob 與 resync 的窄 projection
 │   └── platforms/        # 每個來源或 stage 一個檔案
 │       ├── rss.ts        # feed polling
 │       ├── twitter.ts    # monitor + scraper + processor

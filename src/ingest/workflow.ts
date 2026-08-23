@@ -117,7 +117,8 @@ function resolvedResourceMutation(
 		hostedImages,
 	);
 	return {
-		identity: resource,
+		kind: resource.kind,
+		resourcePlatform: resource.resourcePlatform,
 		identifiers: resource.resourceIdentifiers,
 		creators: media.creators,
 		kindMetadata: media.kindMetadata,
@@ -213,7 +214,6 @@ async function resolveProcessingCall(
 		persistenceTarget: {
 			kind: 'existing',
 			resourceId: target.resourceId,
-			storageKey: snapshot.storageKey,
 		},
 	};
 }
@@ -253,11 +253,10 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					target: call.persistenceTarget,
 				}),
 		);
-		if (persistence.status === 'stale') {
+		if (persistence.status !== 'corpus') {
 			return { resourceId: persistence.resourceId };
 		}
 		const persistedResourceId = persistence.resourceId;
-		const translationRevision = persistence.translationRevision;
 		const followUps: Promise<unknown>[] = [
 			step.do(
 				'sync-resolved-ai-search-v1',
@@ -267,16 +266,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					await syncCorpusItem(this.env, db, persistedResourceId);
 				},
 			),
+			step.do(
+				'enqueue-resource-translation-v2',
+				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+				() => enqueueResourceTranslation(this.env, persistedResourceId, persistence.translationRevision),
+			),
 		];
-		if (translationRevision) {
-			followUps.push(
-				step.do(
-					'enqueue-resource-translation-v2',
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision),
-				),
-			);
-		}
 		const subject = resource.subject;
 		if (subject && !persistence.subjectAttached) {
 			followUps.push(

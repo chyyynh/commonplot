@@ -108,14 +108,11 @@ export async function stageStoredPdfAcquisition(
 	return { ...(await new Response(contentStream).json<GenericAcquiredMaterial>()), specialization: null };
 }
 
-export function storedPdfProcessingResult(
-	resource: ResolvedResource,
-	input: { resourceId: string; storageKey: string },
-): StoredPdfProcessingResult {
+export function storedPdfProcessingResult(resource: ResolvedResource, input: { resourceId: string }): StoredPdfProcessingResult {
 	if (resource.kind !== 'paper') {
 		return {
 			resource,
-			persistenceTarget: { kind: 'existing', resourceId: input.resourceId, storageKey: input.storageKey },
+			persistenceTarget: { kind: 'existing', resourceId: input.resourceId },
 		};
 	}
 	const identity = paperIdentityFromIdentifiers(resource.resourceIdentifiers.filter(isPaperIdentifier));
