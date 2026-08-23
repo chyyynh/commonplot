@@ -7,7 +7,7 @@ import { sql } from 'drizzle-orm';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { syncCorpusItem } from '../ai-search';
-import { splitPdfMarkdownForTranslation } from './platforms/pdf-working-document';
+import { pdfTranslationAdmission, privateUploadedPdfTranslationSqlAdmission, stagePrivatePdfMarkdownTranslation } from './platforms/pdf';
 
 type ResourceTranslationPayload = { resourceId: string; translationRevision: string };
 const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const;
@@ -84,7 +84,7 @@ type ZhHantMetadataTranslationTask = 'article-title-summary' | 'paper-title' | '
 
 type ZhHantTranslationPlan = {
 	metadata: ZhHantMetadataTranslationTask | null;
-	content: 'translate' | 'translate-pdf-chunks' | 'skip-too-long' | null;
+	content: 'translate' | 'translate-private-file' | 'skip-too-long' | null;
 };
 
 function isBlank(value: string | null | undefined): boolean {
@@ -123,23 +123,14 @@ function needsMachineContentTranslation(resource: ResourceTranslationInput): boo
 	return translated.length / content.length < PARTIAL_CONTENT_TRANSLATION_RATIO;
 }
 
-function isPrivateUploadedPdf(resource: ResourceTranslationInput): boolean {
-	return (
-		resource.scope === 'private' &&
-		resource.kind === 'blog' &&
-		resource.resourcePlatform === null &&
-		resource.fileType === 'application/pdf' &&
-		resource.url === null
-	);
-}
-
 function planZhHantTranslation(resource: ResourceTranslationInput): ZhHantTranslationPlan {
 	const translation = resource.zhHantTranslation;
-	const privateUploadedPdf = isPrivateUploadedPdf(resource);
+	const pdfAdmission = pdfTranslationAdmission(resource);
+	const privateUploadedPdf = pdfAdmission === 'private-upload';
 	if (
 		!(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(resource.kind) ||
 		(!resource.url && !privateUploadedPdf) ||
-		(resource.fileType === 'application/pdf' && resource.resourcePlatform === null && !privateUploadedPdf) ||
+		pdfAdmission === 'unsupported' ||
 		isBlank(resource.title) ||
 		isBlank(resource.content) ||
 		resource.originalLang === 'zh-Hant' ||
@@ -156,7 +147,8 @@ function planZhHantTranslation(resource: ResourceTranslationInput): ZhHantTransl
 	if (metadata === 'post-title-content') return { metadata, content: null };
 	return {
 		metadata,
-		content: content.length <= CONTENT_TRANSLATION_MAX_LENGTH ? 'translate' : privateUploadedPdf ? 'translate-pdf-chunks' : 'skip-too-long',
+		content:
+			content.length <= CONTENT_TRANSLATION_MAX_LENGTH ? 'translate' : privateUploadedPdf ? 'translate-private-file' : 'skip-too-long',
 	};
 }
 
@@ -327,20 +319,8 @@ async function translatePlannedContent(
 			() => translateZhHantContent(content, env, resourceId),
 		);
 	}
-	if (plan !== 'translate-pdf-chunks') return null;
-	const chunks = splitPdfMarkdownForTranslation(content);
-	const translated: string[] = [];
-	for (const [index, markdown] of chunks.entries()) {
-		const chunkNumber = index + 1;
-		translated.push(
-			await step.do(
-				`translate-private-pdf-zh-hant-${String(chunkNumber).padStart(4, '0')}-of-${String(chunks.length).padStart(4, '0')}-v1`,
-				{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
-				() => translateZhHantContent(markdown, env, resourceId, { index: chunkNumber, total: chunks.length }),
-			),
-		);
-	}
-	return translated.join('\n\n');
+	if (plan !== 'translate-private-file') return null;
+	return stagePrivatePdfMarkdownTranslation(step, content, (markdown, chunk) => translateZhHantContent(markdown, env, resourceId, chunk));
 }
 
 const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v6';
@@ -395,18 +375,7 @@ async function loadResourceTranslationInput(
 		WHERE resource.id = ${resourceId}::uuid
 		  AND (
 			resource.scope = 'corpus'
-			OR (
-			  resource.scope = 'private'
-			  AND resource.kind = 'blog'
-			  AND resource.resource_platform IS NULL
-			  AND resource.file_type = 'application/pdf'
-			  AND resource.storage_key IS NOT NULL
-			  AND EXISTS (
-				SELECT 1
-				FROM user_files file
-				WHERE file.resource_id = resource.id
-			  )
-			)
+			OR ${privateUploadedPdfTranslationSqlAdmission()}
 		  )
 		LIMIT 1
 	`);
@@ -488,7 +457,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			});
 		}
 		const metadataTask = translationPlan.metadata;
-		if (!metadataTask && translationPlan.content !== 'translate' && translationPlan.content !== 'translate-pdf-chunks') {
+		if (!metadataTask && translationPlan.content !== 'translate' && translationPlan.content !== 'translate-private-file') {
 			return;
 		}
 		const initialContent = resource.content.trim();

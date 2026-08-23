@@ -4,16 +4,82 @@ import type { PersistResolvedResourceTarget, ResourcePdfParseIdentity } from '@a
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
 import { isPaperIdentifier, type ResourceCreator, type ResourceKindMetadata } from '@core-shared/resource';
 import { connectCoreDb } from '@db/connection';
+import { sql } from 'drizzle-orm';
 import type { ResourceProcessingWorkflowPayload } from '../processing-jobs';
 import { loadStoredPdfInput, markStoredBlobProcessingFailed, type StoredPdfInput } from '../stored-resource';
 import { parsePdfWithLiteParse } from './liteparse';
 import type { GenericAcquiredMaterial, ResolvedResource } from './materialize';
 import { detectPdfEnhancementPages } from './pdf-enhancement';
-import type { PdfWorkingDocumentV1 } from './pdf-working-document';
+import { type PdfWorkingDocumentV1, splitPdfMarkdownForTranslation } from './pdf-working-document';
 
 export const PDF_MIME = 'application/pdf';
 
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
+
+type PrivatePdfTranslationCandidate = Readonly<{
+	fileType: string | null;
+	kind: string;
+	resourcePlatform: string | null;
+	scope: 'corpus' | 'private';
+	url: string | null;
+}>;
+
+export type PdfTranslationChunk = Readonly<{ index: number; total: number }>;
+export type PdfTranslationAdmission = 'not-pdf' | 'private-upload' | 'unsupported';
+
+export function isPrivateUploadedPdfTranslation(candidate: PrivatePdfTranslationCandidate): boolean {
+	return (
+		candidate.scope === 'private' &&
+		candidate.kind === 'blog' &&
+		candidate.resourcePlatform === null &&
+		candidate.fileType === PDF_MIME &&
+		candidate.url === null
+	);
+}
+
+export function pdfTranslationAdmission(candidate: PrivatePdfTranslationCandidate): PdfTranslationAdmission {
+	if (candidate.fileType !== PDF_MIME || candidate.resourcePlatform !== null) return 'not-pdf';
+	return isPrivateUploadedPdfTranslation(candidate) ? 'private-upload' : 'unsupported';
+}
+
+export function privateUploadedPdfTranslationSqlAdmission() {
+	return sql`(
+		resource.scope = 'private'
+		AND resource.kind = 'blog'
+		AND resource.resource_platform IS NULL
+		AND resource.file_type = ${PDF_MIME}
+		AND resource.storage_key IS NOT NULL
+		AND EXISTS (
+			SELECT 1
+			FROM user_files file
+			WHERE file.resource_id = resource.id
+		)
+	)`;
+}
+
+/**
+ * PDF owns its page-derived Markdown chunk boundaries and durable step names.
+ * The generic translation Workflow supplies only the language-model operation.
+ */
+export async function stagePrivatePdfMarkdownTranslation(
+	step: WorkflowStep,
+	markdown: string,
+	translate: (markdownChunk: string, chunk: PdfTranslationChunk) => Promise<string>,
+): Promise<string> {
+	const chunks = splitPdfMarkdownForTranslation(markdown);
+	const translated: string[] = [];
+	for (const [index, markdownChunk] of chunks.entries()) {
+		const chunk = { index: index + 1, total: chunks.length };
+		translated.push(
+			await step.do(
+				`translate-private-pdf-zh-hant-${String(chunk.index).padStart(4, '0')}-of-${String(chunk.total).padStart(4, '0')}-v1`,
+				{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
+				() => translate(markdownChunk, chunk),
+			),
+		);
+	}
+	return translated.join('\n\n');
+}
 
 export type StoredPdfAcquisitionInput = {
 	creators: ResourceCreator[];
