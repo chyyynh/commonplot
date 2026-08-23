@@ -8,7 +8,12 @@ import {
 } from './pdf-working-document.ts';
 
 export const PDF_ENHANCEMENT_POLICY_REVISION = PDF_PARSE_CONTRACT.enhancementPolicyRevision;
-export const LLAMAPARSE_V2_AGENTIC_VERSION = '2026-08-19' as const;
+export const LLAMAPARSE_V2_VERSION_BY_TIER = {
+	cost_effective: '2026-06-26',
+	agentic: '2026-07-15',
+} as const;
+
+export type SelectiveLlamaParseV2Tier = keyof typeof LLAMAPARSE_V2_VERSION_BY_TIER;
 
 export type PdfEnhancementReason = 'complex-layout' | 'garbled-text' | 'needs-ocr' | 'parse-failed' | 'unparsed';
 
@@ -19,8 +24,8 @@ export type PdfEnhancementPage = Readonly<{
 
 /** ParseRequestConfiguration fragment; the provider client adds file_id after upload. */
 export type SelectiveLlamaParseV2Configuration = Readonly<{
-	tier: 'agentic';
-	version: typeof LLAMAPARSE_V2_AGENTIC_VERSION;
+	tier: SelectiveLlamaParseV2Tier;
+	version: (typeof LLAMAPARSE_V2_VERSION_BY_TIER)[SelectiveLlamaParseV2Tier];
 	client_name: 'newsence-core';
 	page_ranges: Readonly<{ target_pages: string }>;
 	output_options: Readonly<{
@@ -43,8 +48,9 @@ export type SelectivePdfEnhancementPlan = Readonly<{
 		cleanup: 'delete-after-terminal-job';
 	}>;
 	usageAccounting: Readonly<{
+		activationGate: 'real-document-contract-probe-required';
 		settlement: 'provider-reported-credits';
-		targetPageBilling: 'unverified';
+		targetPageBilling: 'documented-selected-pages';
 	}>;
 }>;
 
@@ -147,10 +153,13 @@ export function detectPdfEnhancementPages(document: PdfWorkingDocumentV1): PdfEn
 export function buildSelectiveLlamaParseV2Configuration(
 	targetPages: readonly number[],
 	totalPages: number,
+	tier: SelectiveLlamaParseV2Tier,
 ): SelectiveLlamaParseV2Configuration {
+	const version = LLAMAPARSE_V2_VERSION_BY_TIER[tier];
+	if (!version) throw new TypeError(`Unsupported LlamaParse v2 tier: ${String(tier)}`);
 	return {
-		tier: 'agentic',
-		version: LLAMAPARSE_V2_AGENTIC_VERSION,
+		tier,
+		version,
 		client_name: 'newsence-core',
 		page_ranges: {
 			target_pages: formatLlamaParseTargetPages(targetPages, totalPages),
@@ -164,7 +173,10 @@ export function buildSelectiveLlamaParseV2Configuration(
 	};
 }
 
-export function planSelectivePdfEnhancement(document: PdfWorkingDocumentV1): SelectivePdfEnhancementPlan | null {
+export function planSelectivePdfEnhancement(
+	document: PdfWorkingDocumentV1,
+	tier: SelectiveLlamaParseV2Tier,
+): SelectivePdfEnhancementPlan | null {
 	const targetPages = detectPdfEnhancementPages(document);
 	if (targetPages.length === 0) return null;
 	return {
@@ -176,11 +188,13 @@ export function planSelectivePdfEnhancement(document: PdfWorkingDocumentV1): Sel
 		parseConfiguration: buildSelectiveLlamaParseV2Configuration(
 			targetPages.map((page) => page.pageNumber),
 			document.totalPages,
+			tier,
 		),
 		providerFile: { purpose: 'parse', cleanup: 'delete-after-terminal-job' },
 		usageAccounting: {
+			activationGate: 'real-document-contract-probe-required',
 			settlement: 'provider-reported-credits',
-			targetPageBilling: 'unverified',
+			targetPageBilling: 'documented-selected-pages',
 		},
 	};
 }

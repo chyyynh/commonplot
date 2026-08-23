@@ -85,10 +85,10 @@ assert.throws(() => formatLlamaParseTargetPages([0], 7), /outside the 1-7 source
 assert.throws(() => formatLlamaParseTargetPages([8], 7), /outside the 1-7 source page range/);
 assert.throws(() => formatLlamaParseTargetPages([1.5], 7), /outside the 1-7 source page range/);
 
-const parseConfiguration = buildSelectiveLlamaParseV2Configuration([2, 3, 4, 5, 6, 7], 7);
+const parseConfiguration = buildSelectiveLlamaParseV2Configuration([2, 3, 4, 5, 6, 7], 7, 'agentic');
 assert.deepEqual(parseConfiguration, {
 	tier: 'agentic',
-	version: '2026-08-19',
+	version: '2026-07-15',
 	client_name: 'newsence-core',
 	page_ranges: { target_pages: '2-7' },
 	output_options: {
@@ -98,14 +98,17 @@ assert.deepEqual(parseConfiguration, {
 		save_output_pdf: false,
 	},
 });
+assert.equal(buildSelectiveLlamaParseV2Configuration([3, 7], 10, 'cost_effective').version, '2026-06-26');
+assert.throws(() => buildSelectiveLlamaParseV2Configuration([3, 7], 10, 'fast'), /Unsupported LlamaParse v2 tier/);
 
-const plan = planSelectivePdfEnhancement(document);
+const plan = planSelectivePdfEnhancement(document, 'agentic');
 assert(plan);
 assert.equal(plan.parseConfiguration.page_ranges.target_pages, '2-7');
 assert.deepEqual(plan.providerFile, { purpose: 'parse', cleanup: 'delete-after-terminal-job' });
 assert.deepEqual(plan.usageAccounting, {
+	activationGate: 'real-document-contract-probe-required',
 	settlement: 'provider-reported-credits',
-	targetPageBilling: 'unverified',
+	targetPageBilling: 'documented-selected-pages',
 });
 assert.deepEqual(LLAMAPARSE_V2_RESULT_EXPAND, ['text', 'markdown', 'usage']);
 
@@ -167,7 +170,7 @@ assert.deepEqual(merged.quality.problemPages, [4, 7], 'failed provider pages ret
 assert.deepEqual(merged.enhancement, {
 	provider: 'llamaparse',
 	apiVersion: 'v2',
-	version: '2026-08-19',
+	version: '2026-07-15',
 	policyRevision: 'selective-llamaparse-v2',
 	requestedPages: [2, 3, 4, 5, 6, 7],
 	appliedPages: [2, 3, 5, 6],
@@ -285,7 +288,7 @@ assert.deepEqual(clientRequests[0].body, {
 assert.deepEqual(clientRequests[1].body, {
 	file_id: uploaded.id,
 	tier: 'agentic',
-	version: '2026-08-19',
+	version: '2026-07-15',
 	client_name: 'newsence-core',
 	page_ranges: { target_pages: '2-7' },
 	output_options: {
@@ -340,7 +343,7 @@ await assert.rejects(() => client.uploadPdf(new Blob([])), /must contain between
 assert.throws(() => createLlamaParseClient({ apiKey: 'secret\nheader' }), /API key is invalid/);
 
 const cleanDocument = normalizeLiteParseWorkingDocument({ totalPages: 1, pages: [page(1)], pageErrors: [] }, '2.13.1');
-assert.equal(planSelectivePdfEnhancement(cleanDocument), null, 'clean PDFs never create paid-provider work');
+assert.equal(planSelectivePdfEnhancement(cleanDocument, 'agentic'), null, 'clean PDFs never create paid-provider work');
 
 console.info({
 	event: 'pdf_enhancement_contract_passed',
