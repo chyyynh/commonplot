@@ -85,6 +85,7 @@ export const PdfParseAdmissionSchema = z
 		if (
 			providerPolicyClosed !== (admission.providerTier === null) ||
 			providerPolicyClosed !== (admission.providerVersion === null) ||
+			(admission.maxProviderCredits !== null && Number(admission.maxProviderCredits) <= 0) ||
 			(admission.providerTier !== null && admission.providerVersion !== PDF_PARSE_CONTRACT.llamaParseVersions[admission.providerTier])
 		) {
 			context.addIssue({

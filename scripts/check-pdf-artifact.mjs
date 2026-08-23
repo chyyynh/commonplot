@@ -195,6 +195,16 @@ assert.throws(
 	() => parsePdfParseAdmission({ ...closedEnhancedAdmission, maxProviderCredits: '6' }),
 	/Enhanced PDF provider policy is incomplete/,
 );
+assert.throws(
+	() =>
+		parsePdfParseAdmission({
+			...closedEnhancedAdmission,
+			maxProviderCredits: '0',
+			providerTier: 'cost_effective',
+			providerVersion: PDF_PARSE_CONTRACT.llamaParseVersions.cost_effective,
+		}),
+	/Enhanced PDF provider policy is incomplete/,
+);
 const admittedEnhancedPolicy = {
 	...closedEnhancedAdmission,
 	maxProviderCredits: '6',
