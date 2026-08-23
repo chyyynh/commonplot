@@ -1,7 +1,6 @@
 import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '../../shared/paper-identity.ts';
 import {
 	canonicalizeOptionalResourceLang,
-	canonicalizeResourceLang,
 	RESOURCE_TYPES,
 	type ResourceCreator,
 	type ResourceIdentifier,
@@ -25,8 +24,6 @@ type MaterializedResource = Readonly<{
 	url: string | null;
 	source: string;
 	publishedDate: string | null;
-	tags: string[];
-	keywords: string[];
 	creators: ResourceCreator[];
 	kindMetadata: ResourceKindMetadata | null;
 	resourceIdentifiers: ResourceIdentifier[];
@@ -76,14 +73,15 @@ export function literalCreator(
 	return name ? [{ role, literal: name, ...extra }] : [];
 }
 
-export type ResourceAcquisitionOrigin = Pick<
-	MaterializedResource,
-	'keywords' | 'normalizedUrl' | 'originalLang' | 'publishedDate' | 'summary' | 'tags' | 'url'
-> & { resourceIdentifiers: PaperIdentifier[] };
+export type ResourceAcquisitionHints = Readonly<{
+	originalLang: string | null;
+	publishedDate: string | null;
+	summary: string | null;
+}>;
 
 export function materializeAcquiredResource(
 	acquired: AcquiredResource,
-	origin: ResourceAcquisitionOrigin,
+	hints: ResourceAcquisitionHints,
 	resolution: { canonicalUrl: string | null; publishedDate: string | null; resourceIdentifiers: readonly PaperIdentifier[] },
 ): ResolvedResource {
 	const platformIdentity =
@@ -110,32 +108,30 @@ export function materializeAcquiredResource(
 		: resolution.canonicalUrl;
 	return {
 		...identity,
-		originalLang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeResourceLang(origin.originalLang),
+		originalLang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeOptionalResourceLang(hints.originalLang) ?? 'en',
 		title: acquired.title.trim(),
-		summary: acquired.summary ?? origin.summary,
+		summary: acquired.summary ?? hints.summary,
 		content: acquired.markdown,
 		url,
 		source: acquired.source,
 		publishedDate: resolution.publishedDate,
-		tags: origin.tags,
-		keywords: origin.keywords,
 		creators: acquired.creators,
 		kindMetadata: acquired.kindMetadata,
 		resourceIdentifiers: identifiers,
 		fileType: acquired.fileType,
-		normalizedUrl: url ?? origin.normalizedUrl,
+		normalizedUrl: url,
 		previewImageUrl: acquired.previewImageUrl?.trim() || null,
 		subject: resolvedSubjectInput(acquired.subjectUrl?.trim()),
 	};
 }
 
-export function materializePlatformResource(acquired: PlatformAcquiredMaterial, origin: ResourceAcquisitionOrigin): ResolvedResource {
-	let publishedDate = origin.publishedDate;
+export function materializePlatformResource(acquired: PlatformAcquiredMaterial, hints: ResourceAcquisitionHints): ResolvedResource {
+	let publishedDate = hints.publishedDate;
 	if (acquired.publishedDate?.trim()) {
 		const parsed = new Date(acquired.publishedDate);
 		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
 	}
-	return materializeAcquiredResource(acquired, origin, { canonicalUrl: null, publishedDate, resourceIdentifiers: [] });
+	return materializeAcquiredResource(acquired, hints, { canonicalUrl: null, publishedDate, resourceIdentifiers: [] });
 }
 
 function resolvedSubjectInput(subjectUrl: string | null | undefined): ResolvedResourceSubject | null {

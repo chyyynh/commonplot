@@ -15,7 +15,7 @@ import {
 	materializePlatformResource,
 	type PlatformAcquiredMaterial,
 	type ResolvedResource,
-	type ResourceAcquisitionOrigin,
+	type ResourceAcquisitionHints,
 } from './materialize';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
@@ -281,7 +281,7 @@ export async function stageYouTubeAcquisition(
 	step: WorkflowStep,
 	input: {
 		monitoredOnly: boolean;
-		origin: ResourceAcquisitionOrigin;
+		hints: ResourceAcquisitionHints;
 		processingId: string;
 		sourceAvatarUrl: string | null;
 		videoId: string;
@@ -304,7 +304,7 @@ export async function stageYouTubeAcquisition(
 			markdown: transcriptMarkdown || description.trim(),
 			summary: description.substring(0, 500) || null,
 		},
-		input.origin,
+		input.hints,
 	);
 	return {
 		...resource,

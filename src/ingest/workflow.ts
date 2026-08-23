@@ -20,6 +20,7 @@ type ResourceClassification = {
 };
 
 type ResolvedProcessingCall = {
+	keywordHints: readonly string[];
 	resource: ProcessingResource;
 	persistenceTarget: PersistResolvedResourceTarget;
 	processingId: string;
@@ -62,7 +63,12 @@ const RESOURCE_CLASSIFICATION_SYSTEM_PROMPT = `你是專業的新聞分類和實
 - 模型、產品、活動請使用完整慣用名稱，例如 Claude Opus 4.7、DeepSeek V4、TechCrunch Disrupt 2026
 - 如果只能判斷出泛詞、版本碎片或來源名稱，寧可少提取`;
 
-async function classifyResource(resource: ProcessingResource, env: CoreEnv, processingId: string): Promise<ResourceClassification> {
+async function classifyResource(
+	resource: ProcessingResource,
+	keywordHints: readonly string[],
+	env: CoreEnv,
+	processingId: string,
+): Promise<ResourceClassification> {
 	console.info({ tag: 'AI', msg: 'Analyzing', title: resource.title.substring(0, 80) });
 	const excludedEntities = entityExtractionExclusionNames(resource.resourcePlatform, resource.source, resource.creators);
 	const excludedLine = excludedEntities.length ? `\n實體排除名單: ${excludedEntities.join(', ')}` : '';
@@ -99,8 +105,8 @@ ${resource.content.trim().substring(0, CLASSIFICATION_CONTENT_MAX_LENGTH)}`;
 	const tags = classification.tags.slice(0, 5);
 	return {
 		entities: classification.entities.slice(0, 10),
-		tags: resource.tags.length ? resource.tags : tags,
-		keywords: resource.keywords.length ? resource.keywords : classification.keywords.slice(0, 8),
+		tags,
+		keywords: keywordHints.length ? [...keywordHints] : classification.keywords.slice(0, 8),
 	};
 }
 
@@ -148,27 +154,25 @@ async function resolveProcessingCall(
 	instanceId: string,
 ): Promise<ResolvedProcessingCall> {
 	if (target.kind === 'draft') {
-		const origin = {
-			originalLang: target.sourceHints?.originalLang ?? 'en',
-			summary: target.sourceHints?.summary ?? null,
-			url: target.url,
-			publishedDate: target.sourceHints?.publishedDate ?? null,
-			tags: [],
-			keywords: target.sourceHints?.keywords ?? [],
-			normalizedUrl: target.url,
-			resourceIdentifiers: [],
-		};
+		const monitor =
+			target.admission.kind === 'source'
+				? {
+						avatarUrl: target.sourceHints?.sourceAvatarUrl ?? null,
+						...(target.providerSequence ? { providerSequence: target.providerSequence } : {}),
+					}
+				: null;
 		return {
+			keywordHints: target.sourceHints?.keywords ?? [],
 			processingId: instanceId,
 			resource: await stageUrlAcquisition(env, step, {
-				discoverRelatedContent: target.admission.kind !== 'source',
-				isMonitoredOnly: target.admission.kind === 'source',
-				origin,
+				hints: {
+					originalLang: target.sourceHints?.originalLang ?? null,
+					publishedDate: target.sourceHints?.publishedDate ?? null,
+					summary: target.sourceHints?.summary ?? null,
+				},
+				monitor,
 				processingId: instanceId,
-				...(target.providerSequence ? { providerSequence: target.providerSequence } : {}),
-				sourceAvatarUrl: target.sourceHints?.sourceAvatarUrl ?? null,
-				sourceUrl: target.url,
-				translatePaperUrl: target.admission.kind !== 'source',
+				url: target.url,
 			}),
 			persistenceTarget: {
 				kind: 'draft',
@@ -188,15 +192,18 @@ async function resolveProcessingCall(
 		async () => loadResourceReacquisitionInput(await connectCoreDb(env), target.resourceId),
 	);
 	return {
+		keywordHints: [],
 		processingId: target.resourceId,
 		resource: await stageUrlAcquisition(env, step, {
-			discoverRelatedContent: true,
-			isMonitoredOnly: snapshot.isMonitoredOnly,
-			origin: snapshot,
+			hints: {
+				originalLang: snapshot.originalLang,
+				publishedDate: snapshot.publishedDate,
+				summary: snapshot.summary,
+			},
+			monitor: null,
+			paperIdentifiers: snapshot.paperIdentifiers,
 			processingId: target.resourceId,
-			sourceAvatarUrl: snapshot.sourceAvatarUrl,
-			sourceUrl: snapshot.url,
-			translatePaperUrl: snapshot.translatePaperUrl,
+			url: snapshot.url,
 		}),
 		persistenceTarget: {
 			kind: 'existing',
@@ -227,7 +234,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		});
 		const [classification, hostedImages] = await Promise.all([
 			step.do('classify-resource', { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' }, () =>
-				classifyResource(resource, this.env, processingId),
+				classifyResource(resource, call.keywordHints, this.env, processingId),
 			),
 			stageResourceImages(this.env, step, processingId, imageSources),
 		]);

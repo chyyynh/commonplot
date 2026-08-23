@@ -6,7 +6,7 @@ import {
 	materializePlatformResource,
 	type PlatformAcquiredMaterial,
 	type ResolvedResource,
-	type ResourceAcquisitionOrigin,
+	type ResourceAcquisitionHints,
 } from './materialize';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
@@ -86,12 +86,12 @@ async function scrapeLessWrong(postId: string): Promise<PlatformAcquiredMaterial
 export async function stageLessWrongAcquisition(
 	step: WorkflowStep,
 	postId: string,
-	origin: ResourceAcquisitionOrigin,
+	hints: ResourceAcquisitionHints,
 ): Promise<ResolvedResource> {
 	const contentStream = await step.do(
 		'acquire-lesswrong-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await scrapeLessWrong(postId)).body!,
 	);
-	return materializePlatformResource(await new Response(contentStream).json<PlatformAcquiredMaterial<'lesswrong'>>(), origin);
+	return materializePlatformResource(await new Response(contentStream).json<PlatformAcquiredMaterial<'lesswrong'>>(), hints);
 }

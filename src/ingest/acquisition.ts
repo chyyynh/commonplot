@@ -1,6 +1,11 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import type { YouTubeResourceMutation } from '@app-domain/resource-graph-contracts';
-import { normalizePaperIdentifiers, paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
+import {
+	normalizePaperIdentifiers,
+	type PaperIdentifier,
+	paperIdentifiersFromIdentity,
+	resolveExactPaperInput,
+} from '@core-shared/paper-identity';
 import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
@@ -8,7 +13,7 @@ import {
 	type GenericAcquiredMaterial,
 	materializeAcquiredResource,
 	type ResolvedResource,
-	type ResourceAcquisitionOrigin,
+	type ResourceAcquisitionHints,
 } from './platforms/materialize';
 import { stagePaperProcessing } from './platforms/paper';
 import { stageStoredPdfAcquisition, storedPdfProcessingResult } from './platforms/pdf';
@@ -19,39 +24,48 @@ import type { ResourceProcessingWorkflowPayload } from './processing-jobs';
 
 export type ProcessingResource = ResolvedResource & { youtube?: YouTubeResourceMutation };
 
+type MonitoredAcquisitionContext = Readonly<{
+	avatarUrl: string | null;
+	providerSequence?: string;
+}>;
+
 async function resolveGenericAcquiredResource(
 	env: CoreEnv,
 	step: WorkflowStep,
 	acquired: GenericAcquiredMaterial,
-	origin: ResourceAcquisitionOrigin,
-	processingId: string,
-	translatePaperUrl: boolean,
+	input: {
+		hints: ResourceAcquisitionHints;
+		paperIdentifiers: readonly PaperIdentifier[];
+		processingId: string;
+		sourceUrl: string | null;
+		translateUrl: boolean;
+	},
 ): Promise<ResolvedResource> {
-	let publishedDate = origin.publishedDate;
+	let publishedDate = input.hints.publishedDate;
 	if (acquired.publishedDate?.trim()) {
 		const parsed = new Date(acquired.publishedDate);
 		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
 	}
 
-	const canonicalUrl = acquired.canonicalUrl?.trim() || origin.url;
-	const exactPaper = resolveExactPaperInput(origin.url) ?? resolveExactPaperInput(canonicalUrl);
+	const canonicalUrl = acquired.canonicalUrl?.trim() || input.sourceUrl;
+	const exactPaper = resolveExactPaperInput(input.sourceUrl) ?? resolveExactPaperInput(canonicalUrl);
 	const resourceIdentifiers = normalizePaperIdentifiers([
-		...origin.resourceIdentifiers,
+		...input.paperIdentifiers,
 		...(exactPaper ? paperIdentifiersFromIdentity(exactPaper.identity) : []),
 	]);
 	const paper = await stagePaperProcessing(env, step, {
 		acquiredContent: acquired,
 		canonicalUrl,
 		identifiers: resourceIdentifiers,
-		originSummary: origin.summary,
-		processingId,
+		originSummary: input.hints.summary,
+		processingId: input.processingId,
 		publishedDate,
-		translateUrl: translatePaperUrl,
+		translateUrl: input.translateUrl,
 	});
 	if (!paper.acquiredContent.markdown.trim()) {
-		throw new Error(`Processing ${processingId} has no extractable content`);
+		throw new Error(`Processing ${input.processingId} has no extractable content`);
 	}
-	return materializeAcquiredResource(paper.acquiredContent, origin, {
+	return materializeAcquiredResource(paper.acquiredContent, input.hints, {
 		canonicalUrl,
 		publishedDate: paper.publishedDate,
 		resourceIdentifiers: normalizePaperIdentifiers([...paper.identifiers, ...resourceIdentifiers]),
@@ -62,22 +76,25 @@ export async function stageUrlAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		discoverRelatedContent: boolean;
-		isMonitoredOnly: boolean;
-		origin: ResourceAcquisitionOrigin;
+		hints: ResourceAcquisitionHints;
+		monitor: MonitoredAcquisitionContext | null;
+		paperIdentifiers?: readonly PaperIdentifier[];
 		processingId: string;
-		providerSequence?: string;
-		sourceAvatarUrl: string | null;
-		sourceUrl: string;
-		translatePaperUrl: boolean;
+		url: string;
 	},
 ): Promise<ProcessingResource> {
-	let acquisitionUrl = normalizeUrl(input.sourceUrl);
+	let acquisitionUrl = normalizeUrl(input.url);
 	let detected = detectResourceUrl(acquisitionUrl);
 	if (!detected) {
 		const web = await stageWebAcquisition(env, step, { processingId: input.processingId, url: acquisitionUrl });
 		if (!('redirectUrl' in web)) {
-			return resolveGenericAcquiredResource(env, step, web, input.origin, input.processingId, input.translatePaperUrl);
+			return resolveGenericAcquiredResource(env, step, web, {
+				hints: input.hints,
+				paperIdentifiers: input.paperIdentifiers ?? [],
+				processingId: input.processingId,
+				sourceUrl: input.url,
+				translateUrl: input.monitor === null,
+			});
 		}
 		acquisitionUrl = web.redirectUrl;
 		detected = detectResourceUrl(acquisitionUrl);
@@ -86,26 +103,26 @@ export async function stageUrlAcquisition(
 	switch (detected.resourcePlatform) {
 		case 'hackernews':
 			return stageHackerNewsAcquisition(env, step, {
+				hints: input.hints,
 				itemId: detected.platformId,
-				origin: input.origin,
 				processingId: input.processingId,
 			});
 		case 'lesswrong':
-			return stageLessWrongAcquisition(step, detected.platformId, input.origin);
+			return stageLessWrongAcquisition(step, detected.platformId, input.hints);
 		case 'twitter':
 			return stageTwitterAcquisition(env, step, {
-				discoverRelatedContent: input.discoverRelatedContent,
-				origin: input.origin,
+				discoverRelatedContent: input.monitor === null,
+				hints: input.hints,
 				processingId: input.processingId,
-				...(input.providerSequence ? { providerSequence: input.providerSequence } : {}),
+				...(input.monitor?.providerSequence ? { providerSequence: input.monitor.providerSequence } : {}),
 				tweetId: detected.platformId,
 			});
 		case 'youtube':
 			return stageYouTubeAcquisition(env, step, {
-				monitoredOnly: input.isMonitoredOnly,
-				origin: input.origin,
+				hints: input.hints,
+				monitoredOnly: input.monitor !== null,
 				processingId: input.processingId,
-				sourceAvatarUrl: input.sourceAvatarUrl,
+				sourceAvatarUrl: input.monitor?.avatarUrl ?? null,
 				videoId: detected.platformId,
 			});
 		default:
@@ -119,6 +136,7 @@ export async function stageStoredResource(
 	step: WorkflowStep,
 	target: Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'storedBlob' }>,
 ): Promise<{
+	keywordHints: readonly string[];
 	resource: ProcessingResource;
 	persistenceTarget: ReturnType<typeof storedPdfProcessingResult>['persistenceTarget'];
 	processingId: string;
@@ -127,9 +145,20 @@ export async function stageStoredResource(
 	const acquired = await stageStoredPdfAcquisition(env, step, target);
 	return {
 		...storedPdfProcessingResult(
-			await resolveGenericAcquiredResource(env, step, acquired.material, acquired.resource, acquired.resource.resourceId, false),
+			await resolveGenericAcquiredResource(env, step, acquired.material, {
+				hints: {
+					originalLang: acquired.resource.originalLang,
+					publishedDate: acquired.resource.publishedDate,
+					summary: acquired.resource.summary,
+				},
+				paperIdentifiers: [],
+				processingId: acquired.resource.resourceId,
+				sourceUrl: null,
+				translateUrl: false,
+			}),
 			acquired.resource,
 		),
+		keywordHints: [],
 		processingId: target.parseAdmission.parseRunId,
 		complete: acquired.complete,
 	};

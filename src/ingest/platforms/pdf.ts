@@ -2,7 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { PersistResolvedResourceTarget, ResourcePdfParseIdentity } from '@app-domain/resource-graph-contracts';
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
-import { isPaperIdentifier, type ResourceCreator, type ResourceKindMetadata } from '@core-shared/resource';
+import { isPaperIdentifier } from '@core-shared/resource';
 import { connectCoreDb } from '@db/connection';
 import { sql } from 'drizzle-orm';
 import type { ResourceProcessingWorkflowPayload } from '../processing-jobs';
@@ -80,19 +80,6 @@ export async function stagePrivatePdfMarkdownTranslation(
 	return translated.join('\n\n');
 }
 
-export type StoredPdfAcquisitionInput = {
-	creators: ResourceCreator[];
-	fileType: string;
-	kindMetadata: ResourceKindMetadata | null;
-	originalLang: string;
-	publishedDate: string | null;
-	resourceId: string;
-	source: string;
-	storageKey: string;
-	summary: string | null;
-	title: string;
-};
-
 export type StoredPdfAcquisition = Readonly<{
 	material: GenericAcquiredMaterial;
 	resource: StoredPdfInput;
@@ -133,7 +120,7 @@ async function parsePdfBytes(bytes: Uint8Array, source: string): Promise<PdfWork
 
 async function acquireStoredPdf(
 	env: CoreEnv,
-	resource: StoredPdfAcquisitionInput,
+	resource: StoredPdfInput,
 ): Promise<Readonly<{ material: GenericAcquiredMaterial; workingDocument: PdfWorkingDocumentV1 }>> {
 	if (resource.fileType !== PDF_MIME) {
 		throw new Error(`Stored resource ${resource.resourceId} is not an R2 PDF`);

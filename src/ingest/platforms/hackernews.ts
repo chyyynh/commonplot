@@ -10,7 +10,7 @@ import {
 	materializePlatformResource,
 	type PlatformAcquiredMaterial,
 	type ResolvedResource,
-	type ResourceAcquisitionOrigin,
+	type ResourceAcquisitionHints,
 } from './materialize';
 
 const HN_ALGOLIA_API = 'https://hn.algolia.com/api/v1/items';
@@ -180,7 +180,7 @@ async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquisition> 
 export async function stageHackerNewsAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { itemId: string; origin: ResourceAcquisitionOrigin; processingId: string },
+	input: { hints: ResourceAcquisitionHints; itemId: string; processingId: string },
 ): Promise<ResolvedResource> {
 	const contentStream = await step.do(
 		'acquire-hackernews-v1',
@@ -209,7 +209,7 @@ export async function stageHackerNewsAcquisition(
 			...resource,
 			...(annotation ? { markdown: applyHackerNewsAnnotation(resource.markdown, annotation) } : {}),
 		},
-		input.origin,
+		input.hints,
 	);
 }
 

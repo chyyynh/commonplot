@@ -7,7 +7,7 @@ import {
 	materializePlatformResource,
 	type PlatformAcquiredMaterial,
 	type ResolvedResource,
-	type ResourceAcquisitionOrigin,
+	type ResourceAcquisitionHints,
 } from './materialize';
 import {
 	assertExpectedTwitterThreadPost,
@@ -459,7 +459,7 @@ export async function stageTwitterAcquisition(
 	step: WorkflowStep,
 	input: {
 		discoverRelatedContent: boolean;
-		origin: ResourceAcquisitionOrigin;
+		hints: ResourceAcquisitionHints;
 		processingId: string;
 		providerSequence?: string;
 		tweetId: string;
@@ -484,7 +484,7 @@ export async function stageTwitterAcquisition(
 			).body!;
 		},
 	);
-	return materializePlatformResource(await new Response(contentStream).json<PlatformAcquiredMaterial<'twitter'>>(), input.origin);
+	return materializePlatformResource(await new Response(contentStream).json<PlatformAcquiredMaterial<'twitter'>>(), input.hints);
 }
 
 type TwitterThreadSearchResult = {

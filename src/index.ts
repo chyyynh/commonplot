@@ -5,7 +5,6 @@ import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';
 import { type AppResourceDraftInput, enqueueAppResourceDraft } from '@ingest/processing-jobs';
 import {
-	assertResourceProcessable,
 	enqueueProcessing,
 	enqueueResourceResync,
 	reconcilePendingBlobProcessing,
@@ -61,9 +60,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	/** Reacquire a URL-backed resource through the enrichment workflow. */
-	async resyncResource(resourceId: string) {
-		const db = await connectCoreDb(this.env);
-		await assertResourceProcessable(db, resourceId);
+	resyncResource(resourceId: string) {
 		return enqueueResourceResync(this.env, resourceId);
 	}
 
