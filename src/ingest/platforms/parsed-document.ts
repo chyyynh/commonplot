@@ -1,5 +1,7 @@
+import { assessPdfTexts, type PdfTextSanitationSummary, stripUnsafePdfText } from './pdf-text-quality.ts';
+
 export const PARSED_DOCUMENT_SCHEMA_VERSION = 1 as const;
-export const LITEPARSE_POLICY_REVISION = 'liteparse-blocks-v1' as const;
+export const LITEPARSE_POLICY_REVISION = 'liteparse-blocks-v2' as const;
 
 export type ParsedDocumentBboxV1 = Readonly<{
 	x: number;
@@ -58,6 +60,7 @@ export type ParsedPageQualityV1 = Readonly<{
 		isComplex: boolean;
 		reasons: string[];
 	}> | null;
+	sanitation: PdfTextSanitationSummary;
 }>;
 
 export type ParsedDocumentPageV1 = Readonly<{
@@ -162,7 +165,7 @@ function responseRatio(value: unknown, path: string): number {
 }
 
 function optionalString(value: unknown, path: string): string | null {
-	return value === undefined ? null : responseString(value, path);
+	return value === undefined ? null : stripUnsafePdfText(responseString(value, path));
 }
 
 function optionalInteger(value: unknown, path: string): number | null {
@@ -175,7 +178,7 @@ function optionalBoolean(value: unknown, path: string): boolean {
 
 function responseStrings(value: unknown, path: string): string[] {
 	if (!Array.isArray(value)) return invalidLiteParseResponse(path, 'an array');
-	return value.map((item, index) => responseString(item, `${path}[${index}]`));
+	return value.map((item, index) => stripUnsafePdfText(responseString(item, `${path}[${index}]`)));
 }
 
 function canonicalReasonCodes(value: unknown, path: string): string[] {
@@ -205,7 +208,7 @@ function optionalBbox(value: unknown, path: string): ParsedDocumentBboxV1 | null
 function canonicalCell(value: unknown, path: string): ParsedDocumentCellV1 {
 	const cell = responseRecord(value, path);
 	return {
-		text: responseString(cell.text, `${path}.text`).trim(),
+		text: stripUnsafePdfText(responseString(cell.text, `${path}.text`)).trim(),
 		bbox: optionalBbox(cell.bbox, `${path}.bbox`),
 	};
 }
@@ -229,7 +232,7 @@ function canonicalBlockText(
 	header: readonly ParsedDocumentCellV1[],
 	rows: readonly ParsedDocumentCellV1[][],
 ): string | null {
-	const directText = text?.trim() || null;
+	const directText = text ? stripUnsafePdfText(text).trim() || null : null;
 	if (directText) return directText;
 	if (sourceKind === 'code' || sourceKind === 'grid_fallback') {
 		return lines.join('\n').trim() || null;
@@ -317,7 +320,7 @@ function canonicalLayout(value: unknown, path: string): ParsedPageQualityV1['lay
 	};
 }
 
-function canonicalQuality(value: unknown, pageNumber: number, path: string): ParsedPageQualityV1 {
+function canonicalQuality(value: unknown, pageNumber: number, path: string, sanitation: PdfTextSanitationSummary): ParsedPageQualityV1 {
 	const quality = responseRecord(value, path);
 	if (responseInteger(quality.pageNumber, `${path}.pageNumber`, 1) !== pageNumber) {
 		return invalidLiteParseResponse(`${path}.pageNumber`, `equal to page ${pageNumber}`);
@@ -329,10 +332,14 @@ function canonicalQuality(value: unknown, pageNumber: number, path: string): Par
 	}
 	const pageArea = responseFiniteNumber(quality.pageArea, `${path}.pageArea`);
 	if (pageArea <= 0) return invalidLiteParseResponse(`${path}.pageArea`, 'positive');
+	const providerNeedsOcr = responseBoolean(quality.needsOcr, `${path}.needsOcr`);
+	const providerIsGarbled = responseBoolean(quality.isGarbled, `${path}.isGarbled`);
 	return {
-		needsOcr: responseBoolean(quality.needsOcr, `${path}.needsOcr`),
-		isGarbled: responseBoolean(quality.isGarbled, `${path}.isGarbled`),
-		reasons: canonicalReasonCodes(quality.reasons, `${path}.reasons`),
+		needsOcr: providerNeedsOcr || sanitation.isGarbled,
+		isGarbled: providerIsGarbled || sanitation.isGarbled,
+		reasons: [
+			...new Set([...canonicalReasonCodes(quality.reasons, `${path}.reasons`), ...(sanitation.isGarbled ? ['binary-garbage'] : [])]),
+		].sort(),
 		textLength: responseInteger(quality.textLength, `${path}.textLength`, 0),
 		textCoverage: responseRatio(quality.textCoverage, `${path}.textCoverage`),
 		pageArea,
@@ -345,6 +352,7 @@ function canonicalQuality(value: unknown, pageNumber: number, path: string): Par
 		},
 		uncoveredVectorArea,
 		layout: canonicalLayout(quality.layout, `${path}.layout`),
+		sanitation,
 	};
 }
 
@@ -361,15 +369,19 @@ function canonicalPage(value: unknown, index: number, totalPages: number): Parse
 	const width = responseFiniteNumber(page.width, `${path}.width`);
 	const height = responseFiniteNumber(page.height, `${path}.height`);
 	if (width <= 0 || height <= 0) return invalidLiteParseResponse(path, 'a page with positive dimensions');
-	const markdown = responseString(page.markdown, `${path}.markdown`).trim();
-	const quality = canonicalQuality(page.complexity, pageNumber, `${path}.complexity`);
+	const rawText = responseString(page.text, `${path}.text`);
+	const rawMarkdown = responseString(page.markdown, `${path}.markdown`);
+	const sanitation = assessPdfTexts([rawText, rawMarkdown]);
+	const text = stripUnsafePdfText(rawText).trim();
+	const markdown = stripUnsafePdfText(rawMarkdown).trim();
+	const quality = canonicalQuality(page.complexity, pageNumber, `${path}.complexity`, sanitation);
 	if (!Array.isArray(page.blocks)) return invalidLiteParseResponse(`${path}.blocks`, 'an array');
 	return {
 		pageNumber,
 		width,
 		height,
 		source: 'liteparse',
-		text: responseString(page.text, `${path}.text`).trim(),
+		text,
 		markdown,
 		usable: !quality.isGarbled && extractedTextChars(markdown) > 0,
 		quality,
@@ -385,7 +397,7 @@ function canonicalPageErrors(value: unknown, totalPages: number): Array<{ pageNu
 			const error = responseRecord(item, path);
 			const pageNumber = responseInteger(error.pageNum, `${path}.pageNum`, 1);
 			if (pageNumber > totalPages) return invalidLiteParseResponse(`${path}.pageNum`, `within the ${totalPages}-page document`);
-			const message = responseString(error.message, `${path}.message`).trim();
+			const message = stripUnsafePdfText(responseString(error.message, `${path}.message`)).trim();
 			if (!message) return invalidLiteParseResponse(`${path}.message`, 'a non-empty string');
 			return { pageNumber, message };
 		})
