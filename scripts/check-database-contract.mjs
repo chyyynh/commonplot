@@ -20,12 +20,16 @@ function parseDomainConstraint(source, constraintName, columnName) {
 	return match ? [...match[1].matchAll(/'([^']+)'/g)].map((value) => value[1]) : null;
 }
 
-function parsePlatformKindConstraint(source) {
-	const body = source.match(/ADD CONSTRAINT resources_kind_platform_check\s+CHECK\s*\(([\s\S]*?)\);/)?.[1];
+function parseResourceIdentityConstraint(source) {
+	const body = source.match(/ADD CONSTRAINT resources_identity_check\s+CHECK\s*\(([\s\S]*?)\n {2}\);/)?.[1];
 	if (!body) return null;
-	const entries = new Map();
-	for (const match of body.matchAll(/WHEN '([^']+)' THEN '([^']+)'/g)) entries.set(match[1], match[2]);
-	return /resource_platform IS NULL\s+OR kind = CASE resource_platform/.test(body) && entries.size > 0 ? entries : null;
+	const kindDomain = body.match(/kind IN \(([^)]+)\)/)?.[1];
+	if (!kindDomain || !/resource_platform IS NULL\s+OR \(kind, resource_platform\) IN/.test(body)) return null;
+	const platformKinds = [...body.matchAll(/\('([^']+)',\s*'([^']+)'\)/g)].map(([, kind, platform]) => [platform, kind]);
+	return {
+		kinds: [...kindDomain.matchAll(/'([^']+)'/g)].map((value) => value[1]),
+		platformKinds,
+	};
 }
 
 function sameValues(actual, expected) {
@@ -45,12 +49,20 @@ if (/resources_type_check/.test(manualIndexesSource)) {
 if (/CREATE\s+(?:OR\s+REPLACE\s+)?VIEW\s+resources_localized/i.test(manualIndexesSource)) {
 	errors.push('manual-indexes.sql must not recreate the retired resources_localized projection');
 }
+const repairPreamble = manualIndexesSource.slice(0, manualIndexesSource.indexOf('-- ── exact external resource identity'));
+if (!/\\set ON_ERROR_STOP on[\s\S]*\nBEGIN;\s*$/.test(repairPreamble) || !/\nCOMMIT;\s*$/.test(manualIndexesSource)) {
+	errors.push('manual-indexes.sql must apply inside one top-level transaction');
+}
+for (const retiredConstraint of ['resources_kind_check', 'resources_resource_platform_check', 'resources_kind_platform_check']) {
+	if (new RegExp(`ADD CONSTRAINT ${retiredConstraint}\\b`).test(manualIndexesSource)) {
+		errors.push(`manual-indexes.sql must not recreate ${retiredConstraint}`);
+	}
+}
 
 const resourceKinds = Object.keys(RESOURCE_TYPES);
 const platformKinds = new Map(
 	Object.entries(RESOURCE_TYPES).flatMap(([kind, { platforms }]) => platforms.map((platform) => [platform, kind])),
 );
-const resourcePlatforms = [...platformKinds.keys()];
 
 const resourceModelBody = prismaSource.match(/model Resource \{([\s\S]*?)\n\}/)?.[1] ?? '';
 if (!/^\s*kind\s+String\s*$/m.test(resourceModelBody)) {
@@ -60,19 +72,16 @@ if (!/^\s*resourcePlatform\s+String\?\s+@map\("resource_platform"\)\s*$/m.test(r
 	errors.push('Prisma Resource.resourcePlatform must be nullable, mapped to resource_platform, and have no default');
 }
 
-const constrainedKinds = parseDomainConstraint(manualIndexesSource, 'resources_kind_check', 'kind');
-if (!constrainedKinds || !sameValues(constrainedKinds, resourceKinds)) {
-	errors.push('resources_kind_check differs from RESOURCE_TYPES');
-}
-const constrainedPlatforms = parseDomainConstraint(manualIndexesSource, 'resources_resource_platform_check', 'resource_platform');
-if (!constrainedPlatforms || !sameMembers(constrainedPlatforms, resourcePlatforms)) {
-	errors.push('resources_resource_platform_check differs from RESOURCE_TYPES');
-}
-const constrainedPlatformKinds = parsePlatformKindConstraint(manualIndexesSource);
+const constrainedIdentity = parseResourceIdentityConstraint(manualIndexesSource);
 const expectedPlatformKinds = [...platformKinds].map(([platform, kind]) => `${platform}:${kind}`);
-const actualPlatformKinds = constrainedPlatformKinds ? [...constrainedPlatformKinds].map(([platform, kind]) => `${platform}:${kind}`) : [];
-if (!constrainedPlatformKinds || !sameMembers(actualPlatformKinds, expectedPlatformKinds)) {
-	errors.push('resources_kind_platform_check differs from RESOURCE_TYPES');
+const actualPlatformKinds = constrainedIdentity?.platformKinds.map(([platform, kind]) => `${platform}:${kind}`) ?? [];
+if (
+	!constrainedIdentity ||
+	!sameValues(constrainedIdentity.kinds, resourceKinds) ||
+	constrainedIdentity.platformKinds.length !== new Set(actualPlatformKinds).size ||
+	!sameMembers(actualPlatformKinds, expectedPlatformKinds)
+) {
+	errors.push('resources_identity_check differs from RESOURCE_TYPES');
 }
 
 const sourceModelBody = prismaSource.match(/model Source \{([\s\S]*?)\n\}/)?.[1] ?? '';

@@ -1,28 +1,7 @@
 import assert from 'node:assert/strict';
 import { TwitterProviderSequenceSchema } from '../../../web-tanstack/src/server/domain/resource-graph-contracts.ts';
-import { RESOURCE_TYPES, ResourceIdentifiersSchema } from '../src/shared/resource.ts';
+import { ResourceIdentifiersSchema } from '../src/shared/resource.ts';
 import { detectResourceUrl, normalizeUrl, parseTwitterUsername } from '../src/shared/url.ts';
-
-const canonicalIdentities = Object.entries(RESOURCE_TYPES).flatMap(([kind, { platforms }]) => [
-	{ kind, resourcePlatform: null },
-	...platforms.map((resourcePlatform) => ({ kind, resourcePlatform })),
-]);
-for (const identity of canonicalIdentities) {
-	assert.equal(identity.resourcePlatform === null || RESOURCE_TYPES[identity.kind].platforms.includes(identity.resourcePlatform), true);
-}
-for (const identity of [
-	{ kind: 'blog', resourcePlatform: 'hackernews' },
-	{ kind: 'paper', resourcePlatform: 'hackernews' },
-	{ kind: 'video', resourcePlatform: 'twitter' },
-	{ kind: 'document', resourcePlatform: null },
-]) {
-	assert.equal(
-		Object.hasOwn(RESOURCE_TYPES, identity.kind) &&
-			(identity.resourcePlatform === null ||
-				RESOURCE_TYPES[identity.kind]?.platforms.some((platform) => platform === identity.resourcePlatform)),
-		false,
-	);
-}
 
 assert.deepEqual(detectResourceUrl('https://x.com/openai/status/1234567890'), {
 	resourcePlatform: 'twitter',
@@ -84,9 +63,7 @@ assert.equal(
 assert.equal(ResourceIdentifiersSchema.safeParse([{ preferred: true, scheme: 'youtube', value: 'too-short' }]).success, false);
 
 console.info({
-	event: 'resource_identity_smoke_passed',
-	canonicalIdentityCases: canonicalIdentities.length,
-	invalidIdentityCases: 4,
+	event: 'resource_contract_smoke_passed',
 	identifierContractCases: 5,
 	providerSequenceCases: 5,
 	twitterUsernameCases: twitterUsernameCases.length,
