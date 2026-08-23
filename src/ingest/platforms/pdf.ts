@@ -9,7 +9,6 @@ import type { ResourceProcessingWorkflowPayload } from '../processing-jobs';
 import { loadStoredPdfInput, markStoredBlobProcessingFailed, type StoredPdfInput } from '../stored-resource';
 import { parsePdfWithLiteParse } from './liteparse';
 import type { GenericAcquiredMaterial, ResolvedResource } from './materialize';
-import { detectPdfEnhancementPages } from './pdf-enhancement';
 import { type PdfWorkingDocumentV1, splitPdfMarkdownForTranslation } from './pdf-working-document';
 
 export const PDF_MIME = 'application/pdf';
@@ -111,11 +110,18 @@ function parseIdentity(target: StoredPdfTarget): ResourcePdfParseIdentity {
 }
 
 function localParseSummary(document: PdfWorkingDocumentV1) {
+	const qualityReasons = [
+		...(document.quality.needsOcrPages.length > 0 ? ['needs-ocr'] : []),
+		...(document.quality.garbledPages.length > 0 ? ['garbled-text'] : []),
+		...(document.quality.complexLayoutPages.length > 0 ? ['complex-layout'] : []),
+		...(document.quality.failedPages.length > 0 ? ['parse-failed'] : []),
+		...(document.quality.unparsedPages > 0 ? ['unparsed'] : []),
+	].sort();
 	return {
 		totalPages: document.totalPages,
 		usablePages: document.quality.usablePages,
 		problemPages: document.quality.problemPages,
-		qualityReasons: [...new Set(detectPdfEnhancementPages(document).flatMap((page) => page.reasons))].sort(),
+		qualityReasons,
 	};
 }
 

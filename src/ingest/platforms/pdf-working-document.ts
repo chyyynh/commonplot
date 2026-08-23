@@ -44,17 +44,6 @@ export type PdfWorkingPageV1 = Readonly<{
 	quality: PdfPageQualityV1;
 }>;
 
-export type PdfWorkingEnhancementV1 = Readonly<{
-	provider: 'llamaparse';
-	apiVersion: 'v2';
-	version: string;
-	policyRevision: string;
-	requestedPages: number[];
-	appliedPages: number[];
-	failedPages: ReadonlyArray<Readonly<{ pageNumber: number; message: string }>>;
-	usageCredits: number | null;
-}>;
-
 /**
  * Processing-only page state. Cloudflare Workflow streamed step output keeps it
  * durable between steps, but it is never the product's stored document. The
@@ -83,7 +72,6 @@ export type PdfWorkingDocumentV1 = Readonly<{
 		problemPages: number[];
 	}>;
 	markdown: string;
-	enhancement?: PdfWorkingEnhancementV1;
 }>;
 
 type LiteParseWorkingResult = Readonly<{
