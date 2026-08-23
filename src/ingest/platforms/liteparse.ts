@@ -1,7 +1,7 @@
 import { initSync, LiteParse, type LiteParseInit } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
 import liteParsePackage from '@llamaindex/liteparse-wasm/package.json';
-import { normalizeLiteParseDocument, type ParsedDocumentV1 } from './parsed-document';
+import { assembleLiteParseDocument, normalizeLiteParseDocument, type ParsedDocumentPageV1, type ParsedDocumentV1 } from './parsed-document';
 
 const LITEPARSE_CONFIG = {
 	continueOnPageError: true,
@@ -13,7 +13,11 @@ const LITEPARSE_CONFIG = {
 	quiet: true,
 } satisfies LiteParseInit;
 
-initSync({ module: wasmModule });
+const liteParseRuntime = initSync({ module: wasmModule });
+
+export function liteParseLinearMemoryBytes(): number {
+	return liteParseRuntime.memory.buffer.byteLength;
+}
 
 export async function parsePdfWithLiteParse(bytes: Uint8Array): Promise<ParsedDocumentV1> {
 	const parser = new LiteParse(LITEPARSE_CONFIG);
@@ -22,5 +26,32 @@ export async function parsePdfWithLiteParse(bytes: Uint8Array): Promise<ParsedDo
 		return normalizeLiteParseDocument(result, liteParsePackage.version);
 	} finally {
 		parser.free();
+	}
+}
+
+export async function parsePdfWithLiteParseBatches(bytes: Uint8Array, batchSize: number): Promise<ParsedDocumentV1> {
+	if (!Number.isInteger(batchSize) || batchSize < 1 || batchSize > 100) {
+		throw new TypeError('LiteParse batch size must be an integer between 1 and 100');
+	}
+	const parser = new LiteParse(LITEPARSE_CONFIG);
+	let session: Awaited<ReturnType<LiteParse['openBatchSession']>> | undefined;
+	try {
+		session = await parser.openBatchSession(bytes, batchSize);
+		const pages: ParsedDocumentPageV1[] = [];
+		const pageErrors: Array<{ pageNumber: number; message: string }> = [];
+		for (;;) {
+			const batch = await session.nextBatch();
+			if (!batch) break;
+			const document = normalizeLiteParseDocument(batch.result, liteParsePackage.version);
+			pages.push(...document.pages);
+			pageErrors.push(...document.pageErrors);
+		}
+		return assembleLiteParseDocument({ totalPages: session.totalPages, pages, pageErrors }, liteParsePackage.version);
+	} finally {
+		try {
+			session?.free();
+		} finally {
+			parser.free();
+		}
 	}
 }

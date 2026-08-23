@@ -415,11 +415,25 @@ function sortedPageUnion(...lists: readonly number[][]): number[] {
 	return [...new Set(lists.flat())].sort((left, right) => left - right);
 }
 
-export function normalizeLiteParseDocument(value: unknown, parserVersion: string): ParsedDocumentV1 {
+function assertParserVersion(parserVersion: string): void {
 	if (!/^[a-z0-9][a-z0-9._-]{0,63}$/.test(parserVersion)) {
 		throw new TypeError('LiteParse parser version is not a safe artifact revision');
 	}
-	const result = canonicalLiteParseResult(value);
+}
+
+export function assembleLiteParseDocument(result: LiteParseResultRecord, parserVersion: string): ParsedDocumentV1 {
+	assertParserVersion(parserVersion);
+	if (!Number.isInteger(result.totalPages) || result.totalPages < 1) {
+		throw new TypeError('LiteParse artifact totalPages must be a positive integer');
+	}
+	if (
+		result.pages.length === 0 ||
+		result.pages.some(
+			(page, index) => page.pageNumber > result.totalPages || (index > 0 && page.pageNumber <= (result.pages[index - 1]?.pageNumber ?? 0)),
+		)
+	) {
+		throw new TypeError('LiteParse artifact pages must be in strictly increasing source-page order');
+	}
 	const usablePages = result.pages.filter((page) => page.usable);
 	const needsOcrPages = result.pages.filter((page) => page.quality.needsOcr).map((page) => page.pageNumber);
 	const garbledPages = result.pages.filter((page) => page.quality.isGarbled).map((page) => page.pageNumber);
@@ -450,6 +464,10 @@ export function normalizeLiteParseDocument(value: unknown, parserVersion: string
 			.join('\n\n')
 			.trim(),
 	};
+}
+
+export function normalizeLiteParseDocument(value: unknown, parserVersion: string): ParsedDocumentV1 {
+	return assembleLiteParseDocument(canonicalLiteParseResult(value), parserVersion);
 }
 
 export function serializeParsedDocument(document: ParsedDocumentV1): string {

@@ -1,0 +1,7 @@
+{
+	"extends": "../../tsconfig.json",
+	"compilerOptions": {
+		"types": []
+	},
+	"include": ["worker.ts", "../../src/bindings.d.ts", "../../worker-configuration.d.ts"]
+}
