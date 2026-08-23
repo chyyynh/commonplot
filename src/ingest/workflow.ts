@@ -1,5 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import type { PersistResolvedResourceInput, PersistResolvedResourceTarget, ResourceGraphRpc } from '@app-domain/resource-graph-contracts';
+import type { PersistResolvedResourceInput, PersistResolvedResourceTarget } from '@app-domain/resource-graph-contracts';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/image-mapping';
 import { connectCoreDb } from '@db/connection';
 import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
@@ -237,14 +237,21 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			),
 			stageResourceImages(this.env, step, processingId, imageSources),
 		]);
-		const persistence = await step.do<Awaited<ReturnType<ResourceGraphRpc['persistResolvedResource']>>>(
+		const persistence = await step.do(
 			'persist-resolved-resource-scope-v2',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			() =>
-				this.env.DOMAIN.persistResolvedResource({
+			async () => {
+				using result = await this.env.DOMAIN.persistResolvedResource({
 					...resolvedResourceMutation(resource, classification, hostedImages),
 					target: call.persistenceTarget,
-				}),
+				});
+				return {
+					resourceId: result.resourceId,
+					scope: result.scope,
+					subjectAttached: result.subjectAttached,
+					translationRevision: result.translationRevision,
+				};
+			},
 		);
 		const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision } = persistence;
 		const followUps: Promise<unknown>[] = [];

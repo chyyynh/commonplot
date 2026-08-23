@@ -112,8 +112,7 @@
 	"services": [
 		{
 			"binding": "DOMAIN",
-			"service": "newsence-web-tanstack",
-			"entrypoint": "DomainRpc"
+			"service": "newsence-resource-domain"
 		}
 	],
 	/**
