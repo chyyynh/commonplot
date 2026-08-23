@@ -423,7 +423,7 @@ async function scrapeTweet(
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
 	const expectedReplyId = options.expectedReplyId === tweetId ? undefined : options.expectedReplyId;
 	const searchThread = shouldSearchTwitterThread(tweet, expectedReplyId, options.discoverUnsignaledThread);
-	let context: TwitterThreadSearchResult = { candidates: [], pages: 0, providerPosts: 0 };
+	let context: TwitterThreadSearchResult = { candidates: [], pages: 0, providerPosts: 0, skippedItems: 0 };
 	if (searchThread) {
 		try {
 			context = await fetchTwitterAuthorReplies(tweet, tweetId, apiKey);
@@ -446,6 +446,7 @@ async function scrapeTweet(
 		tweet_id: tweetId,
 		search_pages: context.pages,
 		search_posts: context.providerPosts,
+		search_skipped_items: context.skippedItems,
 		search_skipped: !searchThread,
 		thread_candidates: context.candidates.length,
 		thread_posts: thread.length,
@@ -491,6 +492,7 @@ type TwitterThreadSearchResult = {
 	candidates: Tweet[];
 	pages: number;
 	providerPosts: number;
+	skippedItems: number;
 };
 
 async function fetchTwitterAuthorReplies(root: Tweet, tweetId: string, apiKey: string): Promise<TwitterThreadSearchResult> {
@@ -500,6 +502,7 @@ async function fetchTwitterAuthorReplies(root: Tweet, tweetId: string, apiKey: s
 	let currentWindow = twitterThreadSearchWindow(root, tweetId);
 	let pages = 0;
 	let providerPosts = 0;
+	let skippedItems = 0;
 	while (true) {
 		if (pages >= TWITTER_THREAD_SEARCH_MAX_PAGES) {
 			throw new Error(`Twitter thread search ${tweetId} exceeded ${TWITTER_THREAD_SEARCH_MAX_PAGES} time-slice pages`);
@@ -519,7 +522,19 @@ async function fetchTwitterAuthorReplies(root: Tweet, tweetId: string, apiKey: s
 		}
 		const data = parseTwitterAdvancedSearchPage(await response.json());
 		pages++;
-		providerPosts += data.tweets.length;
+		providerPosts += data.rawTweetCount;
+		skippedItems += data.invalidItems.length;
+		for (const item of data.invalidItems) {
+			console.error({
+				tag: 'TWITTER',
+				event: 'twitter_provider_item_skipped',
+				stage: 'thread-search',
+				tweet_id: tweetId,
+				page: pages,
+				item_index: item.index,
+				error: item.message,
+			});
+		}
 		for (const candidate of twitterAuthorThreadCandidates(root, data.tweets)) {
 			const candidateId = candidate.id?.trim();
 			if (!candidateId) continue;
@@ -531,7 +546,7 @@ async function fetchTwitterAuthorReplies(root: Tweet, tweetId: string, apiKey: s
 		currentWindow = nextTwitterSearchWindow(currentWindow, data.tweets, `Twitter thread search ${tweetId}`);
 		await scheduler.wait(250);
 	}
-	return { candidates: [...candidates.values()], pages, providerPosts };
+	return { candidates: [...candidates.values()], pages, providerPosts, skippedItems };
 }
 
 function twitterCreator(data: TwitterMetadata): ResourceCreator[] {

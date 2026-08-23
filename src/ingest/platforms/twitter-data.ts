@@ -145,8 +145,8 @@ const TwitterArticleResponseSchema = z.object({
 export type TwitterArticle = z.infer<typeof TwitterArticleSchema>;
 type TwitterArticleContent = NonNullable<TwitterArticle['contents']>[number];
 
-const TwitterListPageSchema = z.object({
-	tweets: z.array(TweetSchema),
+const TwitterAdvancedSearchEnvelopeSchema = z.object({
+	tweets: z.array(z.unknown()),
 	has_next_page: z.boolean(),
 	next_cursor: z.string().optional(),
 	status: z.string().optional(),
@@ -168,6 +168,11 @@ export type TwitterListPage = {
 	tweets: Tweet[];
 	hasNextPage: boolean;
 	nextCursor?: string;
+};
+
+export type TwitterAdvancedSearchPage = TwitterListPage & {
+	rawTweetCount: number;
+	invalidItems: Array<{ index: number; message: string }>;
 };
 
 export type TwitterThreadContextPageDecision = { kind: 'complete' | 'empty-page' } | { kind: 'next'; cursor: string };
@@ -262,8 +267,8 @@ export function nextTwitterSearchWindow(window: TwitterSearchWindow, tweets: rea
 	return { sinceTime: window.sinceTime, untilTime: nextUntilTime };
 }
 
-export function twitterSearchNeedsOlderWindow(page: TwitterListPage): boolean {
-	return page.hasNextPage || page.tweets.length >= TWITTER_ADVANCED_SEARCH_PAGE_LIMIT;
+export function twitterSearchNeedsOlderWindow(page: Pick<TwitterAdvancedSearchPage, 'hasNextPage' | 'rawTweetCount'>): boolean {
+	return page.hasNextPage || page.rawTweetCount >= TWITTER_ADVANCED_SEARCH_PAGE_LIMIT;
 }
 
 function semanticTwitterError(status: string | undefined, message: string | undefined): string | null {
@@ -375,12 +380,28 @@ export function combineTwitterThreadMarkdown(rootMarkdown: string, continuationM
 	return [rootMarkdown.trim(), ...continuationMarkdown.map((part) => part.trim())].filter(Boolean).join('\n\n');
 }
 
-export function parseTwitterAdvancedSearchPage(value: unknown): TwitterListPage {
-	const response = TwitterListPageSchema.parse(value);
+export function parseTwitterAdvancedSearchPage(value: unknown): TwitterAdvancedSearchPage {
+	const response = TwitterAdvancedSearchEnvelopeSchema.parse(value);
 	const error = semanticTwitterError(response.status, response.message ?? response.msg);
 	if (error) throw new Error(`Twitter Advanced Search failed: ${error}`);
+	const tweets: Tweet[] = [];
+	const invalidItems: TwitterAdvancedSearchPage['invalidItems'] = [];
+	for (const [index, item] of response.tweets.entries()) {
+		const parsed = TweetSchema.safeParse(item);
+		if (parsed.success) {
+			tweets.push(parsed.data);
+			continue;
+		}
+		const issue = parsed.error.issues[0];
+		invalidItems.push({
+			index,
+			message: issue ? `${issue.path.join('.') || 'tweet'}: ${issue.message}` : 'Tweet is invalid',
+		});
+	}
 	return {
-		tweets: response.tweets,
+		tweets,
+		rawTweetCount: response.tweets.length,
+		invalidItems,
 		hasNextPage: response.has_next_page,
 		...(response.next_cursor === undefined ? {} : { nextCursor: response.next_cursor }),
 	};

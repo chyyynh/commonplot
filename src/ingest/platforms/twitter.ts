@@ -59,12 +59,12 @@ type TwitterSourceFetch = {
 	providerTweets: number;
 	pages: number;
 	searches: number;
-	errors: unknown[];
+	skippedItems: number;
 };
 
-function normalizeFetchedTweets(tweets: Tweet[], monitoredUserName: string): Pick<TwitterSourceFetch, 'errors' | 'tweets'> {
+function normalizeFetchedTweets(tweets: Tweet[], monitoredUserName: string): Pick<TwitterSourceFetch, 'skippedItems' | 'tweets'> {
 	const normalizedTweets: Tweet[] = [];
-	const errors: unknown[] = [];
+	let skippedItems = 0;
 	for (const tweet of tweets) {
 		try {
 			const normalized = normalizeRetweet(tweet);
@@ -77,17 +77,18 @@ function normalizeFetchedTweets(tweets: Tweet[], monitoredUserName: string): Pic
 			}
 			normalizedTweets.push(normalized);
 		} catch (error) {
-			errors.push(error);
+			skippedItems++;
 			console.error({
 				tag: 'TWITTER',
-				msg: 'Tweet normalization failed',
+				event: 'twitter_item_skipped',
+				stage: 'normalization',
 				tweetId: tweet.id,
 				userName: monitoredUserName,
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
 	}
-	return { tweets: normalizedTweets, errors };
+	return { tweets: normalizedTweets, skippedItems };
 }
 
 /** Fetch one filtered search stream through complete, cursor-free time slices. */
@@ -100,6 +101,7 @@ async function fetchTweetsForSearch(
 	const terminalTweets = new Map<string, Tweet>();
 	let providerTweets = 0;
 	let pages = 0;
+	let skippedItems = 0;
 	let currentWindow = window;
 
 	while (true) {
@@ -118,13 +120,26 @@ async function fetchTweetsForSearch(
 		}
 		const apiRes = parseTwitterAdvancedSearchPage(await response.json());
 		pages++;
-		providerTweets += apiRes.tweets.length;
+		providerTweets += apiRes.rawTweetCount;
+		skippedItems += apiRes.invalidItems.length;
+		for (const item of apiRes.invalidItems) {
+			console.error({
+				tag: 'TWITTER',
+				event: 'twitter_provider_item_skipped',
+				userName,
+				search_kind: search.kind,
+				page: pages,
+				item_index: item.index,
+				error: item.message,
+			});
+		}
 		for (const tweet of apiRes.tweets) terminalTweets.set(tweet.id?.trim() || tweet.url, tweet);
 		if (!twitterSearchNeedsOlderWindow(apiRes)) break;
 		currentWindow = nextTwitterSearchWindow(currentWindow, apiRes.tweets, `Twitter monitor search for @${userName}`);
 		await scheduler.wait(250);
 	}
 	const normalized = normalizeFetchedTweets([...terminalTweets.values()], userName);
+	skippedItems += normalized.skippedItems;
 
 	console.info({
 		tag: 'TWITTER',
@@ -134,9 +149,9 @@ async function fetchTweetsForSearch(
 		pages,
 		provider_tweets: providerTweets,
 		normalized_tweets: normalized.tweets.length,
-		errors: normalized.errors.length,
+		skipped_items: skippedItems,
 	});
-	return { tweets: normalized.tweets, providerTweets, pages, errors: normalized.errors };
+	return { tweets: normalized.tweets, providerTweets, pages, skippedItems };
 }
 
 /** Fetch only authored posts and authored self-replies; discard duplicate results across the two streams. */
@@ -152,7 +167,7 @@ async function fetchTweetsForSource(apiKey: string, userName: string, window: Tw
 		providerTweets: results.reduce((total, result) => total + result.providerTweets, 0),
 		pages: results.reduce((total, result) => total + result.pages, 0),
 		searches: searches.length,
-		errors: results.flatMap((result) => result.errors),
+		skippedItems: results.reduce((total, result) => total + result.skippedItems, 0),
 	};
 }
 
@@ -164,7 +179,7 @@ type TwitterAdmissionCounts = Record<TwitterAdmissionStatus, number>;
 type TweetSaveResult = {
 	admittedDrafts: number;
 	counts: TwitterAdmissionCounts;
-	errors: unknown[];
+	skippedItems: number;
 };
 
 type TwitterResourceDraft = SourceResourceDraft & {
@@ -228,9 +243,12 @@ function twitterResourceDraft(tweet: Tweet, source: MonitoredSource): TwitterRes
 	};
 }
 
-function twitterResourceDrafts(tweets: Tweet[], source: MonitoredSource): { drafts: Map<string, TwitterResourceDraft>; errors: unknown[] } {
-	const errors: unknown[] = [];
+function twitterResourceDrafts(
+	tweets: Tweet[],
+	source: MonitoredSource,
+): { drafts: Map<string, TwitterResourceDraft>; skippedItems: number } {
 	const drafts = new Map<string, TwitterResourceDraft>();
+	let skippedItems = 0;
 	for (const tweet of tweets) {
 		try {
 			const draft = twitterResourceDraft(tweet, source);
@@ -238,17 +256,19 @@ function twitterResourceDrafts(tweets: Tweet[], source: MonitoredSource): { draf
 			const existing = drafts.get(draft.url);
 			drafts.set(draft.url, existing ? latestTwitterDraft(existing, draft) : draft);
 		} catch (error) {
-			errors.push(error);
+			skippedItems++;
 			console.error({
 				tag: 'TWITTER',
-				msg: 'Tweet save failed',
+				event: 'twitter_item_skipped',
+				stage: 'draft',
 				userName: source.handle,
+				tweetId: tweet.id,
 				url: tweet.url,
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
 	}
-	return { drafts, errors };
+	return { drafts, skippedItems };
 }
 
 function emptyTwitterAdmissionCounts(): TwitterAdmissionCounts {
@@ -257,21 +277,10 @@ function emptyTwitterAdmissionCounts(): TwitterAdmissionCounts {
 
 async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource): Promise<TweetSaveResult> {
 	const counts = emptyTwitterAdmissionCounts();
-	const prepared = twitterResourceDrafts(tweets, source);
-	const { drafts, errors } = prepared;
+	const { drafts, skippedItems } = twitterResourceDrafts(tweets, source);
 	const pending = [...drafts.values()];
-	if (!pending.length) return { admittedDrafts: 0, counts, errors };
-	const outcomes = await admitDiscoveredSourceResources(env, pending).catch((error) => {
-		console.error({
-			tag: 'TWITTER',
-			msg: 'Twitter resource admission failed',
-			userName: source.handle,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		errors.push(error);
-		return null;
-	});
-	if (!outcomes) return { admittedDrafts: pending.length, counts, errors };
+	if (!pending.length) return { admittedDrafts: 0, counts, skippedItems };
+	const outcomes = await admitDiscoveredSourceResources(env, pending);
 
 	for (const [index, outcome] of outcomes.entries()) {
 		const draft = pending[index]!;
@@ -285,26 +294,21 @@ async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource
 			providerSequence: draft.providerSequence,
 		});
 	}
-	return { admittedDrafts: pending.length, counts, errors };
+	return { admittedDrafts: pending.length, counts, skippedItems };
 }
 
-type TwitterSourceOutcome = {
+type TwitterSourceMetrics = {
 	admittedDrafts: number;
-	complete: boolean;
 	counts: TwitterAdmissionCounts;
-	errors: unknown[];
 	normalizedTweets: number;
 	pages: number;
 	providerTweets: number;
 	searches: number;
+	skippedItems: number;
 	sourceId: string;
 };
 
-function twitterSourceFailure(userName: string, errors: unknown[]): Error {
-	const first = errors[0];
-	const message = first instanceof Error ? first.message : String(first);
-	return new Error(`${errors.length} Twitter monitor operation(s) failed for @${userName}: ${message}`);
-}
+type TwitterSourceOutcome = TwitterSourceMetrics & ({ status: 'completed' } | { status: 'failed'; error: unknown });
 
 async function processTwitterSource(env: CoreEnv, db: CoreDb, source: MonitoredSource, windowEnd: Date): Promise<TwitterSourceOutcome> {
 	let window: TwitterSearchWindow | null = null;
@@ -312,18 +316,16 @@ async function processTwitterSource(env: CoreEnv, db: CoreDb, source: MonitoredS
 		window = twitterSearchWindow(source.scrapedAt ?? source.createdAt, windowEnd, TWITTER_WATERMARK_OVERLAP_MS);
 		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, window);
 		const saved = await saveTweets(env, fetched.tweets, source);
-		const errors = [...fetched.errors, ...saved.errors];
-		if (errors.length) await recordSourceFailure(db, source.id, twitterSourceFailure(source.handle, errors));
 		const outcome: TwitterSourceOutcome = {
 			admittedDrafts: saved.admittedDrafts,
-			complete: errors.length === 0,
 			counts: saved.counts,
-			errors,
 			normalizedTweets: fetched.tweets.length,
 			pages: fetched.pages,
 			providerTweets: fetched.providerTweets,
 			searches: fetched.searches,
+			skippedItems: fetched.skippedItems + saved.skippedItems,
 			sourceId: source.id,
+			status: 'completed',
 		};
 		console.info({
 			tag: 'TWITTER',
@@ -336,12 +338,21 @@ async function processTwitterSource(env: CoreEnv, db: CoreDb, source: MonitoredS
 			provider_tweets: outcome.providerTweets,
 			normalized_tweets: outcome.normalizedTweets,
 			admitted_drafts: outcome.admittedDrafts,
+			skipped_items: outcome.skippedItems,
 			...outcome.counts,
-			errors: errors.length,
 		});
 		return outcome;
 	} catch (error) {
-		await recordSourceFailure(db, source.id, error);
+		try {
+			await recordSourceFailure(db, source.id, error);
+		} catch (recordError) {
+			console.error({
+				tag: 'TWITTER',
+				event: 'twitter_source_failure_record_failed',
+				userName: source.handle,
+				error: recordError instanceof Error ? recordError.message : String(recordError),
+			});
+		}
 		console.error({
 			tag: 'TWITTER',
 			event: 'twitter_source_failed',
@@ -351,14 +362,15 @@ async function processTwitterSource(env: CoreEnv, db: CoreDb, source: MonitoredS
 		});
 		return {
 			admittedDrafts: 0,
-			complete: false,
 			counts: emptyTwitterAdmissionCounts(),
-			errors: [error],
+			error,
 			normalizedTweets: 0,
 			pages: 0,
 			providerTweets: 0,
 			searches: 0,
+			skippedItems: 0,
 			sourceId: source.id,
+			status: 'failed',
 		};
 	}
 }
@@ -372,6 +384,7 @@ type TwitterMonitorOutcome = {
 	pages: number;
 	providerTweets: number;
 	searches: number;
+	skippedItems: number;
 	supersededSources: number;
 	systemFailures: unknown[];
 };
@@ -388,8 +401,11 @@ async function processTwitterSources(
 		outcomes.push(...(await Promise.all(group.map((source) => processTwitterSource(env, db, source, windowEnd)))));
 	}
 
-	const completedSourceIds = outcomes.filter((outcome) => outcome.complete).map((outcome) => outcome.sourceId);
-	const systemFailures = outcomes.flatMap((outcome) => outcome.errors);
+	const completedSourceIds = outcomes.filter((outcome) => outcome.status === 'completed').map((outcome) => outcome.sourceId);
+	const failedSources = outcomes.filter(
+		(outcome): outcome is TwitterSourceMetrics & { status: 'failed'; error: unknown } => outcome.status === 'failed',
+	);
+	const systemFailures = failedSources.map((outcome) => outcome.error);
 	let advancedSources = 0;
 	let watermarkFailures = 0;
 	if (completedSourceIds.length) {
@@ -415,11 +431,12 @@ async function processTwitterSources(
 		admittedDrafts: outcomes.reduce((total, outcome) => total + outcome.admittedDrafts, 0),
 		advancedSources,
 		counts,
-		incompleteSources: outcomes.filter((outcome) => !outcome.complete).length + watermarkFailures,
+		incompleteSources: failedSources.length + watermarkFailures,
 		normalizedTweets: outcomes.reduce((total, outcome) => total + outcome.normalizedTweets, 0),
 		pages: outcomes.reduce((total, outcome) => total + outcome.pages, 0),
 		providerTweets: outcomes.reduce((total, outcome) => total + outcome.providerTweets, 0),
 		searches: outcomes.reduce((total, outcome) => total + outcome.searches, 0),
+		skippedItems: outcomes.reduce((total, outcome) => total + outcome.skippedItems, 0),
 		supersededSources: completedSourceIds.length - advancedSources - watermarkFailures,
 		systemFailures,
 	};
@@ -447,6 +464,7 @@ export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date
 		groups,
 		provider_tweets: outcome.providerTweets,
 		normalized_tweets: outcome.normalizedTweets,
+		skipped_items: outcome.skippedItems,
 		pages: outcome.pages,
 		searches: outcome.searches,
 		admitted_drafts: outcome.admittedDrafts,

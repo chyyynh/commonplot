@@ -173,14 +173,29 @@ assert.throws(
 		),
 	/could not advance/,
 );
-assert.equal(twitterSearchNeedsOlderWindow({ tweets: Array.from({ length: 20 }, () => root), hasNextPage: false }), true);
-assert.equal(twitterSearchNeedsOlderWindow({ tweets: [root], hasNextPage: true }), true);
-assert.equal(twitterSearchNeedsOlderWindow({ tweets: [root], hasNextPage: false }), false);
+assert.equal(twitterSearchNeedsOlderWindow({ rawTweetCount: 20, hasNextPage: false }), true);
+assert.equal(twitterSearchNeedsOlderWindow({ rawTweetCount: 1, hasNextPage: true }), true);
+assert.equal(twitterSearchNeedsOlderWindow({ rawTweetCount: 1, hasNextPage: false }), false);
 assert.deepEqual(parseTwitterAdvancedSearchPage({ tweets: [root], has_next_page: true, next_cursor: 'next' }), {
 	tweets: [root],
+	rawTweetCount: 1,
+	invalidItems: [],
 	hasNextPage: true,
 	nextCursor: 'next',
 });
+const saturatedSearchPage = parseTwitterAdvancedSearchPage({
+	tweets: [{ ...root, createdAt: 123 }, ...Array.from({ length: 19 }, () => root)],
+	has_next_page: false,
+});
+assert.equal(saturatedSearchPage.rawTweetCount, 20);
+assert.equal(saturatedSearchPage.tweets.length, 19);
+assert.equal(saturatedSearchPage.invalidItems.length, 1);
+assert.equal(saturatedSearchPage.invalidItems[0]?.index, 0);
+assert.equal(twitterSearchNeedsOlderWindow(saturatedSearchPage), true);
+const invalidOnlySearchPage = parseTwitterAdvancedSearchPage({ tweets: [{ ...root, createdAt: null }], has_next_page: true });
+assert.equal(invalidOnlySearchPage.rawTweetCount, 1);
+assert.equal(invalidOnlySearchPage.tweets.length, 0);
+assert.throws(() => nextTwitterSearchWindow(searchWindow, invalidOnlySearchPage.tweets, 'Twitter malformed search'), /empty result/);
 assert.throws(
 	() => parseTwitterAdvancedSearchPage({ tweets: [], has_next_page: false, status: 'error', message: 'search failed' }),
 	/search failed/,
@@ -188,7 +203,7 @@ assert.throws(
 console.info({
 	event: 'twitter_thread_smoke_passed',
 	articleCases: 3,
-	advancedSearchCases: 13,
+	advancedSearchCases: 21,
 	threadGraphCases: 11,
 	threadPaginationCases: 5,
 	replyPredicateCases: 5,
