@@ -1,9 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import type {
-	PersistResolvedResourceInput,
-	PersistResolvedResourceResult,
-	PersistResolvedResourceTarget,
-} from '@app-domain/resource-graph-contracts';
+import type { PersistResolvedResourceInput, PersistResolvedResourceTarget, ResourceGraphRpc } from '@app-domain/resource-graph-contracts';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/image-mapping';
 import { connectCoreDb } from '@db/connection';
 import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
@@ -244,7 +240,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			),
 			stageResourceImages(this.env, step, processingId, imageSources),
 		]);
-		const persistence = await step.do<PersistResolvedResourceResult>(
+		const persistence = await step.do<Awaited<ReturnType<ResourceGraphRpc['persistResolvedResource']>>>(
 			'persist-resolved-resource-v1',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 			() =>
@@ -253,10 +249,10 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					target: call.persistenceTarget,
 				}),
 		);
-		if (persistence.status !== 'corpus') {
-			return { resourceId: persistence.resourceId };
+		const { resourceId: persistedResourceId, subjectAttached, translationRevision } = persistence;
+		if (!translationRevision) {
+			return { resourceId: persistedResourceId };
 		}
-		const persistedResourceId = persistence.resourceId;
 		const followUps: Promise<unknown>[] = [
 			step.do(
 				'sync-resolved-ai-search-v1',
@@ -269,11 +265,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			step.do(
 				'enqueue-resource-translation-v2',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() => enqueueResourceTranslation(this.env, persistedResourceId, persistence.translationRevision),
+				() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision),
 			),
 		];
 		const subject = resource.subject;
-		if (subject && !persistence.subjectAttached) {
+		if (subject && !subjectAttached) {
 			followUps.push(
 				step.do(
 					'enqueue-resolved-subject-child-v1',
