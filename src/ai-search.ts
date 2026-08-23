@@ -1,5 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { RESOURCE_TYPES } from '@core-shared/resource';
+import type { RESOURCE_TYPES } from '@core-shared/resource';
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/display-source-sql';
 import { inArray, sql } from 'drizzle-orm';
@@ -23,7 +23,9 @@ export function resourceIdFromAiSearchItemKey(key: string): string | null {
 	return isValidUuid(resourceId) ? resourceId : null;
 }
 
-export function aiSearchResourcePlatformMetadata(resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number] | null): string {
+export function aiSearchResourcePlatformMetadata(
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null,
+): string {
 	return resourcePlatform ?? NULL_RESOURCE_PLATFORM_METADATA;
 }
 
@@ -49,8 +51,8 @@ type CorpusTranslationRow = {
 type CorpusDocument = {
 	id: string;
 	source_id: string | null;
-	kind: string;
-	resource_platform: string | null;
+	kind: Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'>;
+	resource_platform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null;
 	original_lang: string;
 	effective_at: Date | string | null;
 	tags: string[] | null;
@@ -73,17 +75,6 @@ function documentEffectiveAt(row: CorpusDocument): string | undefined {
 	const date = new Date(row.effective_at);
 	if (Number.isNaN(date.getTime())) throw new Error(`AI Search document ${row.id} has invalid effective date`);
 	return date.toISOString();
-}
-
-function corpusDocumentIdentity(document: CorpusDocument) {
-	const identity = RESOURCE_TYPES.identity.safeParse({ kind: document.kind, resourcePlatform: document.resource_platform });
-	const kind = identity.success ? RESOURCE_TYPES.kinds.exclude(['image', 'file']).safeParse(identity.data.kind) : null;
-	if (!identity.success || !kind?.success) {
-		throw new Error(
-			`AI Search document ${document.id} has invalid persisted identity ${String(document.kind)} / ${String(document.resource_platform)}`,
-		);
-	}
-	return { ...identity.data, kind: kind.data };
 }
 
 function serializeTranslation(translation: CorpusTranslationRow, originalLang: string): string {
@@ -148,19 +139,18 @@ async function loadCorpusDocuments(db: CoreDb, resourceIds: readonly string[]): 
 		WHERE ${inArray(sql`r.id`, resourceIds)}
 		  AND r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND ${inArray(sql`r.kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
+		  AND r.kind NOT IN ('image', 'file')
 		`);
 	return result.rows;
 }
 
 function corpusItemMetadata(document: CorpusDocument): Record<string, unknown> {
 	const effectiveAt = documentEffectiveAt(document);
-	const identity = corpusDocumentIdentity(document);
 	return {
 		...(effectiveAt ? { effective_at: effectiveAt } : {}),
 		...(document.source_id ? { source_id: document.source_id } : {}),
-		kind: identity.kind,
-		resource_platform: aiSearchResourcePlatformMetadata(identity.resourcePlatform),
+		kind: document.kind,
+		resource_platform: aiSearchResourcePlatformMetadata(document.resource_platform),
 	};
 }
 
@@ -221,7 +211,7 @@ async function loadCorpusCount(db: CoreDb): Promise<number> {
 		FROM resources r
 		WHERE r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND ${inArray(sql`r.kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
+		  AND r.kind NOT IN ('image', 'file')
 	`);
 	const [row] = result.rows;
 	const count = Number(row?.count);
@@ -235,7 +225,7 @@ async function listCorpusIdsAfter(db: CoreDb, cursor: string | null): Promise<st
 		FROM resources r
 		WHERE r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND ${inArray(sql`r.kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
+		  AND r.kind NOT IN ('image', 'file')
 		  AND (${cursor}::uuid IS NULL OR r.id > ${cursor}::uuid)
 		ORDER BY r.id
 		LIMIT ${REINDEX_PAGE_SIZE}
@@ -276,7 +266,7 @@ async function listCorpusDeltaAfter(db: CoreDb, startedAt: string, cursor: Searc
 		  LEFT JOIN resource_translations translation ON translation.resource_id = r.id
 		  WHERE r.scope = 'corpus'
 		    AND r.enrichment_status = 'enriched'
-		    AND ${inArray(sql`r.kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
+		    AND r.kind NOT IN ('image', 'file')
 		  GROUP BY r.id, r.updated_at
 		)
 		SELECT id::text, to_char(updated_at, ${UTC_TIMESTAMP_FORMAT}) AS updated_at
@@ -321,7 +311,7 @@ async function loadEligibleCorpusIds(db: CoreDb, resourceIds: readonly string[])
 		WHERE ${inArray(sql`r.id`, resourceIds)}
 		  AND r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND ${inArray(sql`r.kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
+		  AND r.kind NOT IN ('image', 'file')
 	`);
 	return new Set(result.rows.map((row) => row.id));
 }

@@ -4,7 +4,7 @@ import type { PdfParseAdmissionSnapshot } from '@core-shared/pdf-parse-contract'
 import {
 	canonicalizeResourceLang,
 	parseStoredResourceKindMetadata,
-	RESOURCE_TYPES,
+	type RESOURCE_TYPES,
 	type ResourceCreator,
 	ResourceCreatorsSchema,
 	type ResourceIdentifier,
@@ -14,7 +14,7 @@ import {
 import { parseExternalHttpUrl } from '@core-shared/url';
 import type { CoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/display-source-sql';
-import { inArray, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { parsePdfParseAdmission } from '../shared/pdf-parse-contract.ts';
 import { parseResourceProcessingWorkflowPayload } from './processing-jobs';
@@ -58,8 +58,8 @@ export type ResourceReacquisitionInput = Omit<StoredResourceBase, 'url'> & {
 };
 
 type StoredResourceIdentityRow = {
-	kind: string;
-	resource_platform: string | null;
+	kind: keyof typeof RESOURCE_TYPES;
+	resource_platform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null;
 };
 
 type ResourceProcessableRow = StoredResourceIdentityRow & {
@@ -188,7 +188,7 @@ async function claimStalePendingBlobAdmissions(db: CoreDb, olderThan: Date, limi
 			    WHERE user_files.resource_id = resource.id
 			  )
 			  AND resource.updated_at < ${olderThan}
-			  AND ${inArray(sql`resource.kind`, RESOURCE_TYPES.kinds.exclude(['image', 'file']).options)}
+			  AND resource.kind NOT IN ('image', 'file')
 			ORDER BY resource.updated_at ASC, resource.id ASC
 			FOR UPDATE OF resource SKIP LOCKED
 			LIMIT ${limit}
@@ -270,13 +270,7 @@ export async function assertResourceProcessable(db: CoreDb, resourceId: string):
 	`);
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
-	const identity = RESOURCE_TYPES.identity.safeParse({
-		kind: row.kind,
-		resourcePlatform: row.resource_platform,
-	});
-	if (!identity.success || !RESOURCE_TYPES.kinds.exclude(['image', 'file']).safeParse(identity.data.kind).success) {
-		throw new Error(`Resource kind is not processable by core: ${identity.success ? identity.data.kind : row.kind}`);
-	}
+	if (row.kind === 'image' || row.kind === 'file') throw new Error(`Resource kind is not processable by core: ${row.kind}`);
 	if (!parseExternalHttpUrl(row.url)) throw new Error(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
 }
 
@@ -330,10 +324,6 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 	`);
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch stored PDF ${resourceId}: not found or not an owned private blob`);
-	const identity = RESOURCE_TYPES.identity.parse({
-		kind: row.kind,
-		resourcePlatform: row.resource_platform,
-	});
 	const base = storedResourceBase(row);
 	const title = row.title?.trim();
 	const source = row.source?.trim();
@@ -350,7 +340,7 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 		title,
 		source,
 		creators: storedResourceCreatorsValue(row.creators, resourceId),
-		kindMetadata: parseStoredResourceKindMetadata(identity.kind, row.kind_metadata),
+		kindMetadata: parseStoredResourceKindMetadata(row.kind, row.kind_metadata),
 		storageKey: row.storage_key,
 		fileType: row.file_type,
 	};
@@ -403,10 +393,6 @@ export async function loadResourceReacquisitionInput(db: CoreDb, resourceId: str
 	`);
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
-	RESOURCE_TYPES.identity.parse({
-		kind: row.kind,
-		resourcePlatform: row.resource_platform,
-	});
 	const base = storedResourceBase(row);
 	const url = parseExternalHttpUrl(base.url);
 	if (!url) throw new Error(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);

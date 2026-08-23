@@ -6,8 +6,8 @@ export type PublicResourceSearchInput = {
 	mode?: 'hybrid' | 'vector';
 	filters?: {
 		effectiveAfter?: Date;
-		kinds?: Exclude<(typeof RESOURCE_TYPES.kinds.options)[number], 'image' | 'file'>[];
-		resourcePlatforms?: ((typeof RESOURCE_TYPES.platforms.options)[number] | null)[];
+		kinds?: Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'>[];
+		resourcePlatforms?: ((typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null)[];
 		sourceIds?: string[];
 	};
 };
@@ -28,11 +28,15 @@ function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSea
 	const sourceIds = filters.sourceIds === undefined ? undefined : [...new Set(filters.sourceIds.map((value) => value.trim()))];
 	if (sourceIds?.some((value) => !isValidUuid(value))) throw new Error('Invalid sourceIds');
 	const kinds = filters.kinds === undefined ? undefined : [...new Set(filters.kinds)];
-	if (kinds?.some((value) => !RESOURCE_TYPES.kinds.exclude(['image', 'file']).safeParse(value).success)) {
+	if (kinds?.some((value) => !Object.hasOwn(RESOURCE_TYPES, value) || ['image', 'file'].includes(value))) {
 		throw new Error('Invalid resource kinds');
 	}
 	const resourcePlatforms = filters.resourcePlatforms === undefined ? undefined : [...new Set(filters.resourcePlatforms)];
-	if (resourcePlatforms?.some((value) => !RESOURCE_TYPES.platforms.nullable().safeParse(value).success)) {
+	if (
+		resourcePlatforms?.some(
+			(value) => value !== null && !Object.values(RESOURCE_TYPES).some(({ platforms }) => platforms.some((platform) => platform === value)),
+		)
+	) {
 		throw new Error('Invalid resource platforms');
 	}
 	return {

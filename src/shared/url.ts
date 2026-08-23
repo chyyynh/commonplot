@@ -72,7 +72,7 @@ export function normalizeUrl(url: string): string {
 }
 
 export function canonicalResourcePlatformUrl(
-	resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number],
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number],
 	platformId: string,
 ): string {
 	switch (resourcePlatform) {
@@ -120,7 +120,7 @@ function extractLessWrongPostId(url: string): string | null {
 }
 
 type DetectedResourceUrl = Readonly<{
-	resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number];
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number];
 	platformId: string;
 }>;
 

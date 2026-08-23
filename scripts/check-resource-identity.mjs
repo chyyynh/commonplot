@@ -3,17 +3,26 @@ import { TwitterProviderSequenceSchema } from '../../../web-tanstack/src/server/
 import { RESOURCE_TYPES, ResourceIdentifiersSchema } from '../src/shared/resource.ts';
 import { detectResourceUrl, normalizeUrl, parseTwitterUsername } from '../src/shared/url.ts';
 
-const canonicalIdentities = [
-	...RESOURCE_TYPES.kinds.options.map((kind) => ({ kind, resourcePlatform: null })),
-	...Object.entries(RESOURCE_TYPES.platformKinds).map(([resourcePlatform, kind]) => ({ kind, resourcePlatform })),
-];
+const canonicalIdentities = Object.entries(RESOURCE_TYPES).flatMap(([kind, { platforms }]) => [
+	{ kind, resourcePlatform: null },
+	...platforms.map((resourcePlatform) => ({ kind, resourcePlatform })),
+]);
 for (const identity of canonicalIdentities) {
-	assert.deepEqual(RESOURCE_TYPES.identity.parse(identity), identity);
+	assert.equal(identity.resourcePlatform === null || RESOURCE_TYPES[identity.kind].platforms.includes(identity.resourcePlatform), true);
 }
-assert.equal(RESOURCE_TYPES.identity.safeParse({ kind: 'blog', resourcePlatform: 'hackernews' }).success, false);
-assert.equal(RESOURCE_TYPES.identity.safeParse({ kind: 'paper', resourcePlatform: 'hackernews' }).success, false);
-assert.equal(RESOURCE_TYPES.identity.safeParse({ kind: 'video', resourcePlatform: 'twitter' }).success, false);
-assert.equal(RESOURCE_TYPES.identity.safeParse({ kind: 'document', resourcePlatform: null }).success, false);
+for (const identity of [
+	{ kind: 'blog', resourcePlatform: 'hackernews' },
+	{ kind: 'paper', resourcePlatform: 'hackernews' },
+	{ kind: 'video', resourcePlatform: 'twitter' },
+	{ kind: 'document', resourcePlatform: null },
+]) {
+	assert.equal(
+		Object.hasOwn(RESOURCE_TYPES, identity.kind) &&
+			(identity.resourcePlatform === null ||
+				RESOURCE_TYPES[identity.kind]?.platforms.some((platform) => platform === identity.resourcePlatform)),
+		false,
+	);
+}
 
 assert.deepEqual(detectResourceUrl('https://x.com/openai/status/1234567890'), {
 	resourcePlatform: 'twitter',

@@ -15,8 +15,8 @@ type ResolvedResourceSubject = Readonly<{
 }>;
 
 type MaterializedResource = Readonly<{
-	kind: Exclude<(typeof RESOURCE_TYPES.kinds.options)[number], 'image' | 'file'>;
-	resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number] | null;
+	kind: Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'>;
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null;
 }> & {
 	originalLang: string;
 	title: string;
@@ -58,7 +58,8 @@ export type GenericAcquiredMaterial = AcquiredMaterialFields & {
 };
 
 export type PlatformAcquiredMaterial<
-	T extends (typeof RESOURCE_TYPES.platforms.options)[number] = (typeof RESOURCE_TYPES.platforms.options)[number],
+	T extends
+		(typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] = (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number],
 > = AcquiredMaterialFields & {
 	platformId: string;
 	resourcePlatform: T;
@@ -87,11 +88,18 @@ export function materializeAcquiredResource(
 ): ResolvedResource {
 	const platformIdentity =
 		acquired.resourcePlatform === null ? null : { resourcePlatform: acquired.resourcePlatform, platformId: acquired.platformId };
-	const identity: Pick<MaterializedResource, 'kind' | 'resourcePlatform'> = platformIdentity
-		? { kind: RESOURCE_TYPES.platformKinds[platformIdentity.resourcePlatform], resourcePlatform: platformIdentity.resourcePlatform }
-		: resolution.resourceIdentifiers.some((identifier) => identifier.scheme === 'openalex')
+	let identity: Pick<MaterializedResource, 'kind' | 'resourcePlatform'>;
+	if (platformIdentity) {
+		const kind = Object.entries(RESOURCE_TYPES).find(([, { platforms }]) =>
+			platforms.some((platform) => platform === platformIdentity.resourcePlatform),
+		)?.[0] as Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'> | undefined;
+		if (!kind) throw new Error(`Unknown Resource platform: ${platformIdentity.resourcePlatform}`);
+		identity = { kind, resourcePlatform: platformIdentity.resourcePlatform };
+	} else {
+		identity = resolution.resourceIdentifiers.some((identifier) => identifier.scheme === 'openalex')
 			? { kind: 'paper', resourcePlatform: null }
 			: { kind: 'blog', resourcePlatform: null };
+	}
 	const identifiers: ResourceIdentifier[] = platformIdentity
 		? [{ preferred: true, scheme: platformIdentity.resourcePlatform, value: platformIdentity.platformId }]
 		: identity.kind === 'paper'

@@ -115,7 +115,7 @@ function creatorAliases(creators: readonly ResourceCreator[]): string[] {
 }
 
 function excludedEntityCanonicalNames(
-	resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number] | null,
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null,
 	source: string | null | undefined,
 	creators: readonly ResourceCreator[],
 ): Set<string> {
@@ -124,7 +124,7 @@ function excludedEntityCanonicalNames(
 }
 
 export function entityExtractionExclusionNames(
-	resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number] | null,
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null,
 	source?: string | null,
 	creators: readonly ResourceCreator[] = [],
 ): string[] {
@@ -143,7 +143,7 @@ export function entityExtractionExclusionNames(
 
 export function toStoredResourceEntities(
 	entities: ResourceEntityInput[],
-	resourcePlatform: (typeof RESOURCE_TYPES.platforms.options)[number] | null,
+	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number] | null,
 	source?: string | null,
 	creators: readonly ResourceCreator[] = [],
 ): StoredResourceEntity[] {
