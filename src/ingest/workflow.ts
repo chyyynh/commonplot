@@ -3,12 +3,12 @@ import type { PersistResolvedResourceInput, PersistResolvedResourceTarget, Resou
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/image-mapping';
 import { connectCoreDb } from '@db/connection';
 import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
-import { loadResourceReacquisitionInput, loadStoredPdfInput, markStoredBlobProcessingFailed } from '@ingest/stored-resource';
+import { loadResourceReacquisitionInput } from '@ingest/stored-resource';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { syncCorpusItem } from '../ai-search';
-import { type ProcessingResource, stageStoredPdfResource, stageUrlAcquisition } from './acquisition';
+import { type ProcessingResource, stageStoredResource, stageUrlAcquisition } from './acquisition';
 import { stageResourceImages } from './image-rehosting';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './processing-jobs';
 import { enqueueResourceTranslation } from './translation-workflow';
@@ -22,6 +22,8 @@ type ResourceClassification = {
 type ResolvedProcessingCall = {
 	resource: ProcessingResource;
 	persistenceTarget: PersistResolvedResourceTarget;
+	processingId: string;
+	complete?(originalTranslationRevision: string | null): Promise<void>;
 };
 
 const CLASSIFICATION_CONTENT_MAX_LENGTH = 10000;
@@ -157,6 +159,7 @@ async function resolveProcessingCall(
 			resourceIdentifiers: [],
 		};
 		return {
+			processingId: instanceId,
 			resource: await stageUrlAcquisition(env, step, {
 				discoverRelatedContent: target.admission.kind !== 'source',
 				isMonitoredOnly: target.admission.kind === 'source',
@@ -176,19 +179,7 @@ async function resolveProcessingCall(
 	}
 
 	if (target.kind === 'storedBlob') {
-		const storedPdf = await step.do(
-			'load-stored-pdf-input-v1',
-			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			async () => loadStoredPdfInput(await connectCoreDb(env), target.resourceId),
-			{
-				rollback: async () => markStoredBlobProcessingFailed(await connectCoreDb(env), target.resourceId),
-				rollbackConfig: {
-					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
-					timeout: '30 seconds',
-				},
-			},
-		);
-		return stageStoredPdfResource(env, step, storedPdf);
+		return stageStoredResource(env, step, target);
 	}
 
 	const snapshot = await step.do(
@@ -197,6 +188,7 @@ async function resolveProcessingCall(
 		async () => loadResourceReacquisitionInput(await connectCoreDb(env), target.resourceId),
 	);
 	return {
+		processingId: target.resourceId,
 		resource: await stageUrlAcquisition(env, step, {
 			discoverRelatedContent: true,
 			isMonitoredOnly: snapshot.isMonitoredOnly,
@@ -216,9 +208,9 @@ async function resolveProcessingCall(
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingWorkflowPayload> {
 	async run(event: WorkflowEvent<ResourceProcessingWorkflowPayload>, step: WorkflowStep) {
 		const { target } = parseResourceProcessingWorkflowPayload(event.payload);
-		const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
 		const call = await resolveProcessingCall(this.env, step, target, event.instanceId);
 		const resource = call.resource;
+		const processingId = call.processingId;
 
 		console.info({
 			tag: 'WORKFLOW',
@@ -249,24 +241,23 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				}),
 		);
 		const { resourceId: persistedResourceId, subjectAttached, translationRevision } = persistence;
-		if (!translationRevision) {
-			return { resourceId: persistedResourceId };
-		}
-		const followUps: Promise<unknown>[] = [
-			step.do(
-				'sync-resolved-ai-search-v1',
-				{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '90 seconds' },
-				async () => {
-					const db = await connectCoreDb(this.env);
-					await syncCorpusItem(this.env, db, persistedResourceId);
-				},
-			),
-			step.do(
-				'enqueue-resource-translation-v2',
-				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision),
-			),
-		];
+		const followUps: Promise<unknown>[] = translationRevision
+			? [
+					step.do(
+						'sync-resolved-ai-search-v1',
+						{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '90 seconds' },
+						async () => {
+							const db = await connectCoreDb(this.env);
+							await syncCorpusItem(this.env, db, persistedResourceId);
+						},
+					),
+					step.do(
+						'enqueue-resource-translation-v2',
+						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+						() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision),
+					),
+				]
+			: [];
 		const subject = resource.subject;
 		if (subject && !subjectAttached) {
 			followUps.push(
@@ -282,6 +273,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			);
 		}
 		await Promise.all(followUps);
+		await call.complete?.(translationRevision);
 
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
 		return { resourceId: persistedResourceId };

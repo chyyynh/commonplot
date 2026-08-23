@@ -55,9 +55,9 @@ export type PdfWorkingEnhancementV1 = Readonly<{
 }>;
 
 /**
- * Processing-only page state. It may be serialized to a temporary R2 object
- * between durable Workflow steps, but is never the product's stored document.
- * The published projection is `markdown` in the original ResourceTranslation;
+ * Processing-only page state. Cloudflare Workflow streamed step output keeps it
+ * durable between steps, but it is never the product's stored document. The
+ * published projection is `markdown` in the original ResourceTranslation;
  * localized ResourceTranslation rows are derived separately.
  */
 export type PdfWorkingDocumentV1 = Readonly<{

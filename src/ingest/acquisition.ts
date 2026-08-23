@@ -12,15 +12,11 @@ import {
 	type ResourceAcquisitionOrigin,
 } from './platforms/materialize';
 import { stagePaperProcessing } from './platforms/paper';
-import {
-	type StoredPdfAcquisitionInput,
-	type StoredPdfProcessingResult,
-	stageStoredPdfAcquisition,
-	storedPdfProcessingResult,
-} from './platforms/pdf';
+import { stageStoredPdfAcquisition, storedPdfProcessingResult } from './platforms/pdf';
 import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
 import { stageYouTubeAcquisition } from './platforms/youtube-acquisition';
+import type { ResourceProcessingWorkflowPayload } from './processing-jobs';
 
 export type ProcessingResource = ResolvedResource & { youtube?: YouTubeResourceMutation };
 
@@ -119,14 +115,23 @@ export async function stageUrlAcquisition(
 	}
 }
 
-export async function stageStoredPdfResource(
+export async function stageStoredResource(
 	env: CoreEnv,
 	step: WorkflowStep,
-	resource: StoredPdfAcquisitionInput & ResourceAcquisitionOrigin & { storageKey: string },
-): Promise<StoredPdfProcessingResult> {
-	const acquired = await stageStoredPdfAcquisition(env, step, resource);
-	return storedPdfProcessingResult(
-		await resolveGenericAcquiredResource(env, step, acquired, resource, resource.resourceId, false),
-		resource,
-	);
+	target: Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'storedBlob' }>,
+): Promise<{
+	resource: ProcessingResource;
+	persistenceTarget: ReturnType<typeof storedPdfProcessingResult>['persistenceTarget'];
+	processingId: string;
+	complete(originalTranslationRevision: string | null): Promise<void>;
+}> {
+	const acquired = await stageStoredPdfAcquisition(env, step, target);
+	return {
+		...storedPdfProcessingResult(
+			await resolveGenericAcquiredResource(env, step, acquired.material, acquired.resource, acquired.resource.resourceId, false),
+			acquired.resource,
+		),
+		processingId: target.parseAdmission.parseRunId,
+		complete: acquired.complete,
+	};
 }

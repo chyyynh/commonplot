@@ -23,6 +23,10 @@ const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
 const PENDING_BLOB_RECONCILE_CONCURRENCY = 10;
 const STORED_RESOURCE_WORKFLOW_REVISION = 'stored-resource-v10';
+const STORED_PDF_WORKFLOW_RETENTION = {
+	successRetention: '5 minutes',
+	errorRetention: '1 hour',
+} as const;
 
 type StoredResourceBase = {
 	resourceId: string;
@@ -37,6 +41,7 @@ type StoredResourceBase = {
 };
 
 export type StoredPdfInput = StoredResourceBase & {
+	contentHash: string;
 	title: string;
 	source: string;
 	creators: ResourceCreator[];
@@ -74,6 +79,7 @@ type StoredResourceBaseRow = StoredResourceIdentityRow & {
 };
 
 type StoredPdfRow = StoredResourceBaseRow & {
+	content_hash: string | null;
 	title: string | null;
 	source: string | null;
 	creators: unknown;
@@ -103,7 +109,7 @@ export async function enqueueProcessing(env: CoreEnv, input: StoredPdfProcessing
 	});
 	if (payload.target.kind !== 'storedBlob') throw new Error('Stored PDF processing payload was not preserved');
 	const id = `${STORED_RESOURCE_WORKFLOW_REVISION}-${payload.target.parseAdmission.parseRunId}`;
-	await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: payload }]);
+	await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: payload, retention: STORED_PDF_WORKFLOW_RETENTION }]);
 	return id;
 }
 
@@ -278,6 +284,7 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 	const result = await db.execute<StoredPdfRow>(sql`
 		SELECT
 			resource.id::text AS id,
+			resource.content_hash,
 			resource.kind,
 			resource.resource_platform,
 			original.title,
@@ -333,8 +340,13 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 	if (!title) throw new Error(`Stored PDF ${resourceId} has no title`);
 	if (!source) throw new Error(`Stored PDF ${resourceId} has no source`);
 	if (!row.storage_key || !row.file_type) throw new Error(`Stored PDF ${resourceId} has no blob representation`);
+	const contentHash = z
+		.string()
+		.regex(/^[0-9a-f]{64}$/)
+		.parse(row.content_hash);
 	return {
 		...base,
+		contentHash,
 		title,
 		source,
 		creators: storedResourceCreatorsValue(row.creators, resourceId),
