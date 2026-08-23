@@ -120,15 +120,12 @@ export const RESOURCE_TYPES = {
 	file: { platforms: [], metadata: z.null() },
 } as const satisfies Readonly<Record<string, { platforms: readonly { name: string; identifier: z.ZodString }[]; metadata: z.ZodType }>>;
 
-export type ResourceKindMetadataByKind = Readonly<{
+export type ForumKindMetadata = z.infer<(typeof RESOURCE_TYPES)['forum']['metadata']>;
+export type PostKindMetadata = z.infer<(typeof RESOURCE_TYPES)['post']['metadata']>;
+export type PaperKindMetadata = z.infer<(typeof RESOURCE_TYPES)['paper']['metadata']>;
+export type ResourceKindMetadata = {
 	[K in keyof typeof RESOURCE_TYPES]: z.infer<(typeof RESOURCE_TYPES)[K]['metadata']>;
-}>;
-
-export type ForumKindMetadata = ResourceKindMetadataByKind['forum'];
-export type PostKindMetadata = ResourceKindMetadataByKind['post'];
-export type PaperKindMetadata = ResourceKindMetadataByKind['paper'];
-
-export type ResourceKindMetadata = ResourceKindMetadataByKind[keyof ResourceKindMetadataByKind];
+}[keyof typeof RESOURCE_TYPES];
 
 export const ResourceCreatorsSchema = z.array(ResourceCreatorSchema);
 
