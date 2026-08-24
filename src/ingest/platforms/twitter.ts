@@ -183,14 +183,7 @@ async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime:
 	return { tweets: normalized.tweets, providerTweets, pages, skippedItems };
 }
 
-type TwitterAdmissionCounts = { created: number; deduplicated: number };
-
-function emptyTwitterAdmissionCounts(): TwitterAdmissionCounts {
-	return { created: 0, deduplicated: 0 };
-}
-
-async function saveTweets(env: CoreEnv, db: NodePgDatabase, tweets: Tweet[], source: TwitterSource) {
-	const counts = emptyTwitterAdmissionCounts();
+async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Tweet[], source: TwitterSource) {
 	const drafts = new Map<string, SourceResourceDraft>();
 	let skippedItems = 0;
 	for (const tweet of tweets) {
@@ -225,15 +218,14 @@ async function saveTweets(env: CoreEnv, db: NodePgDatabase, tweets: Tweet[], sou
 		}
 	}
 	const pending = [...drafts.values()];
-	if (!pending.length) return { admittedDrafts: 0, counts, skippedItems };
-	counts.created = await enqueueSourceDrafts(env, db, pending);
-	counts.deduplicated = pending.length - counts.created;
-	return { admittedDrafts: pending.length, counts, skippedItems };
+	const created = pending.length ? await enqueueSourceDrafts(env, db, pending) : 0;
+	return { admittedDrafts: pending.length, created, deduplicated: pending.length - created, skippedItems };
 }
 
 type TwitterSourceMetrics = {
 	admittedDrafts: number;
-	counts: TwitterAdmissionCounts;
+	created: number;
+	deduplicated: number;
 	normalizedTweets: number;
 	pages: number;
 	providerTweets: number;
@@ -241,30 +233,26 @@ type TwitterSourceMetrics = {
 	sourceId: string;
 };
 
-type TwitterSourceOutcome = TwitterSourceMetrics & ({ status: 'completed' } | { status: 'failed'; error: unknown });
-
 async function processTwitterSource(
 	env: CoreEnv,
 	db: NodePgDatabase,
 	source: TwitterSource,
 	windowEnd: Date,
-): Promise<TwitterSourceOutcome> {
-	let sinceTime: number | null = null;
-	let untilTime: number | null = null;
+): Promise<TwitterSourceMetrics> {
+	const sinceTime = Math.floor(new Date(source.scrapedAt ?? source.createdAt).getTime() / 1000);
+	const untilTime = Math.floor(windowEnd.getTime() / 1000);
 	try {
-		sinceTime = Math.floor(new Date(source.scrapedAt ?? source.createdAt).getTime() / 1000);
-		untilTime = Math.floor(windowEnd.getTime() / 1000);
 		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, sinceTime, untilTime);
-		const saved = await saveTweets(env, db, fetched.tweets, source);
-		const outcome: TwitterSourceOutcome = {
-			admittedDrafts: saved.admittedDrafts,
-			counts: saved.counts,
+		const admission = await enqueueTweets(env, db, fetched.tweets, source);
+		const metrics: TwitterSourceMetrics = {
+			admittedDrafts: admission.admittedDrafts,
+			created: admission.created,
+			deduplicated: admission.deduplicated,
 			normalizedTweets: fetched.tweets.length,
 			pages: fetched.pages,
 			providerTweets: fetched.providerTweets,
-			skippedItems: fetched.skippedItems + saved.skippedItems,
+			skippedItems: fetched.skippedItems + admission.skippedItems,
 			sourceId: source.id,
-			status: 'completed',
 		};
 		console.info({
 			tag: 'TWITTER',
@@ -272,67 +260,42 @@ async function processTwitterSource(
 			userName: source.handle,
 			since_time: sinceTime,
 			until_time: untilTime,
-			pages: outcome.pages,
-			provider_tweets: outcome.providerTweets,
-			normalized_tweets: outcome.normalizedTweets,
-			admitted_drafts: outcome.admittedDrafts,
-			skipped_items: outcome.skippedItems,
-			...outcome.counts,
+			pages: metrics.pages,
+			provider_tweets: metrics.providerTweets,
+			normalized_tweets: metrics.normalizedTweets,
+			admitted_drafts: metrics.admittedDrafts,
+			skipped_items: metrics.skippedItems,
+			created: metrics.created,
+			deduplicated: metrics.deduplicated,
 		});
-		return outcome;
+		return metrics;
 	} catch (error) {
 		await recordSourceFailure(db, source.id, error);
 		console.error({
 			tag: 'TWITTER',
 			event: 'twitter_source_failed',
 			userName: source.handle,
-			...(sinceTime !== null && untilTime !== null ? { since_time: sinceTime, until_time: untilTime } : {}),
+			since_time: sinceTime,
+			until_time: untilTime,
 			error: error instanceof Error ? error.message : String(error),
 		});
-		return {
-			admittedDrafts: 0,
-			counts: emptyTwitterAdmissionCounts(),
-			error,
-			normalizedTweets: 0,
-			pages: 0,
-			providerTweets: 0,
-			skippedItems: 0,
-			sourceId: source.id,
-			status: 'failed',
-		};
+		throw error;
 	}
 }
 
-type TwitterMonitorOutcome = {
-	admittedDrafts: number;
-	advancedSources: number;
-	counts: TwitterAdmissionCounts;
-	incompleteSources: number;
-	normalizedTweets: number;
-	pages: number;
-	providerTweets: number;
-	skippedItems: number;
-	supersededSources: number;
-	systemFailures: unknown[];
-};
-
-async function processTwitterSources(
-	env: CoreEnv,
-	db: NodePgDatabase,
-	sources: TwitterSource[],
-	windowEnd: Date,
-): Promise<TwitterMonitorOutcome> {
-	const outcomes: TwitterSourceOutcome[] = [];
+async function processTwitterSources(env: CoreEnv, db: NodePgDatabase, sources: TwitterSource[], windowEnd: Date) {
+	const completed: TwitterSourceMetrics[] = [];
+	const systemFailures: unknown[] = [];
 	for (let offset = 0; offset < sources.length; offset += TWITTER_SOURCE_CONCURRENCY) {
 		const group = sources.slice(offset, offset + TWITTER_SOURCE_CONCURRENCY);
-		outcomes.push(...(await Promise.all(group.map((source) => processTwitterSource(env, db, source, windowEnd)))));
+		const results = await Promise.allSettled(group.map((source) => processTwitterSource(env, db, source, windowEnd)));
+		for (const result of results) {
+			if (result.status === 'fulfilled') completed.push(result.value);
+			else systemFailures.push(result.reason);
+		}
 	}
 
-	const completedSourceIds = outcomes.filter((outcome) => outcome.status === 'completed').map((outcome) => outcome.sourceId);
-	const failedSources = outcomes.filter(
-		(outcome): outcome is TwitterSourceMetrics & { status: 'failed'; error: unknown } => outcome.status === 'failed',
-	);
-	const systemFailures = failedSources.map((outcome) => outcome.error);
+	const completedSourceIds = completed.map(({ sourceId }) => sourceId);
 	let advancedSources = 0;
 	let watermarkFailures = 0;
 	if (completedSourceIds.length) {
@@ -350,20 +313,28 @@ async function processTwitterSources(
 		}
 	}
 
-	const counts = emptyTwitterAdmissionCounts();
-	for (const outcome of outcomes) {
-		counts.created += outcome.counts.created;
-		counts.deduplicated += outcome.counts.deduplicated;
+	const totals = {
+		admittedDrafts: 0,
+		created: 0,
+		deduplicated: 0,
+		normalizedTweets: 0,
+		pages: 0,
+		providerTweets: 0,
+		skippedItems: 0,
+	};
+	for (const metrics of completed) {
+		totals.admittedDrafts += metrics.admittedDrafts;
+		totals.created += metrics.created;
+		totals.deduplicated += metrics.deduplicated;
+		totals.normalizedTweets += metrics.normalizedTweets;
+		totals.pages += metrics.pages;
+		totals.providerTweets += metrics.providerTweets;
+		totals.skippedItems += metrics.skippedItems;
 	}
 	return {
-		admittedDrafts: outcomes.reduce((total, outcome) => total + outcome.admittedDrafts, 0),
+		...totals,
 		advancedSources,
-		counts,
-		incompleteSources: failedSources.length + watermarkFailures,
-		normalizedTweets: outcomes.reduce((total, outcome) => total + outcome.normalizedTweets, 0),
-		pages: outcomes.reduce((total, outcome) => total + outcome.pages, 0),
-		providerTweets: outcomes.reduce((total, outcome) => total + outcome.providerTweets, 0),
-		skippedItems: outcomes.reduce((total, outcome) => total + outcome.skippedItems, 0),
+		incompleteSources: sources.length - completed.length + watermarkFailures,
 		supersededSources: completedSourceIds.length - advancedSources - watermarkFailures,
 		systemFailures,
 	};
@@ -394,7 +365,8 @@ export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date
 		skipped_items: outcome.skippedItems,
 		pages: outcome.pages,
 		admitted_drafts: outcome.admittedDrafts,
-		...outcome.counts,
+		created: outcome.created,
+		deduplicated: outcome.deduplicated,
 		advanced_sources: outcome.advancedSources,
 		superseded_sources: outcome.supersededSources,
 		incomplete_sources: outcome.incompleteSources,
