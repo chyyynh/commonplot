@@ -59,7 +59,9 @@ persistence tail。
 
 URL、source 與 derived-subject 都以 immutable Workflow draft 傳遞，只有第 5
 步成功時才建立 Resource。App-owned upload 因 ownership、quota 與 blob locator
-已存在，是唯一 record-first 例外。每個 durable step 各自重試。
+已存在，是唯一 record-first 例外。Source monitor 會先用 PostgreSQL 的 canonical
+Resource 過濾已完成項目；只有 in-flight 與 failed attempts 使用短期原生 Workflow
+retention。每個 durable step 各自重試。
 
 ## AI 管線
 

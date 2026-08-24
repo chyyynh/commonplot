@@ -59,7 +59,9 @@ Content arrives (source monitor / saved URL / uploaded blob / resync)
 
 URL, source, and derived-subject attempts carry immutable Workflow drafts and create no
 Resource row until step 5 succeeds. App-owned uploads are the record-first exception because
-their ownership, quota, and blob locator already exist. Each durable step retries independently.
+their ownership, quota, and blob locator already exist. Source monitors filter completed
+canonical Resources in PostgreSQL before enqueueing; only in-flight and failed attempts use
+short native Workflow retention. Each durable step retries independently.
 
 ## AI Pipeline
 

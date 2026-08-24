@@ -64,32 +64,49 @@ export type SourceResourceDraft = {
 };
 
 /** Crosses the discovery -> Resource Workflow boundary for every monitor. */
-export async function enqueueSourceDrafts(env: CoreEnv, drafts: SourceResourceDraft[]): Promise<number> {
+export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, drafts: SourceResourceDraft[]): Promise<number> {
+	const targets = drafts.map((draft) => {
+		const originalLang = canonicalizeOptionalResourceLang(draft.originalLang);
+		if (draft.publishedDate && !Number.isFinite(draft.publishedDate.getTime())) throw new Error('Source published date is invalid');
+		const parsedUrl = URL.parse(draft.url.trim());
+		if (!parsedUrl || (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || parsedUrl.username || parsedUrl.password) {
+			throw new Error('Source resource URL must be external http(s)');
+		}
+		const summary = draft.summary?.trim() || null;
+		return {
+			kind: 'draft',
+			relation: { kind: 'source', sourceId: z.uuid().parse(draft.sourceId.trim()) },
+			url: parsedUrl.toString(),
+			sourceHints: {
+				...(summary ? { summary } : {}),
+				...(originalLang ? { originalLang } : {}),
+				...(draft.publishedDate ? { publishedDate: draft.publishedDate.toISOString() } : {}),
+				...(draft.keywords?.length ? { keywords: draft.keywords } : {}),
+			},
+		} satisfies ResourceDraftTarget;
+	});
+	if (!targets.length) return 0;
+	const known = await db.execute<{ url: string }>(sql`
+		SELECT candidate.url
+		FROM UNNEST(${targets.map(({ url }) => url)}::text[]) AS candidate(url)
+		WHERE EXISTS (
+			SELECT 1
+			FROM resources resource
+			WHERE resource.scope = 'corpus'
+			  AND resource.enrichment_status = 'enriched'
+			  AND resource.source_id IS NOT NULL
+			  AND (resource.url = candidate.url OR resource.normalized_url = candidate.url)
+		)
+	`);
+	const knownUrls = new Set(known.rows.map(({ url }) => url));
 	const instances = await Promise.all(
-		drafts.map(async (draft) => {
-			const originalLang = canonicalizeOptionalResourceLang(draft.originalLang);
-			if (draft.publishedDate && !Number.isFinite(draft.publishedDate.getTime())) throw new Error('Source published date is invalid');
-			const parsedUrl = URL.parse(draft.url.trim());
-			if (!parsedUrl || (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || parsedUrl.username || parsedUrl.password) {
-				throw new Error('Source resource URL must be external http(s)');
-			}
-			const summary = draft.summary?.trim() || null;
-			const target = {
-				kind: 'draft',
-				relation: { kind: 'source', sourceId: z.uuid().parse(draft.sourceId.trim()) },
-				url: parsedUrl.toString(),
-				sourceHints: {
-					...(summary ? { summary } : {}),
-					...(originalLang ? { originalLang } : {}),
-					...(draft.publishedDate ? { publishedDate: draft.publishedDate.toISOString() } : {}),
-					...(draft.keywords?.length ? { keywords: draft.keywords } : {}),
-				},
-			} satisfies ResourceDraftTarget;
-			return {
-				id: `source-draft-v5-${await sha256Hex(JSON.stringify(target))}`,
+		targets
+			.filter(({ url }) => !knownUrls.has(url))
+			.map(async (target) => ({
+				id: `source-draft-v6-${await sha256Hex(`${target.relation.sourceId}:${target.url}`)}`,
 				params: target,
-			};
-		}),
+				retention: { successRetention: '5 minutes', errorRetention: '1 hour' } as const,
+			})),
 	);
 	let created = 0;
 	for (let offset = 0; offset < instances.length; offset += 100) {

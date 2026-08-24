@@ -189,7 +189,7 @@ function emptyTwitterAdmissionCounts(): TwitterAdmissionCounts {
 	return { created: 0, deduplicated: 0 };
 }
 
-async function saveTweets(env: CoreEnv, tweets: Tweet[], source: TwitterSource) {
+async function saveTweets(env: CoreEnv, db: NodePgDatabase, tweets: Tweet[], source: TwitterSource) {
 	const counts = emptyTwitterAdmissionCounts();
 	const drafts = new Map<string, SourceResourceDraft>();
 	let skippedItems = 0;
@@ -226,7 +226,7 @@ async function saveTweets(env: CoreEnv, tweets: Tweet[], source: TwitterSource) 
 	}
 	const pending = [...drafts.values()];
 	if (!pending.length) return { admittedDrafts: 0, counts, skippedItems };
-	counts.created = await enqueueSourceDrafts(env, pending);
+	counts.created = await enqueueSourceDrafts(env, db, pending);
 	counts.deduplicated = pending.length - counts.created;
 	return { admittedDrafts: pending.length, counts, skippedItems };
 }
@@ -255,7 +255,7 @@ async function processTwitterSource(
 		sinceTime = Math.floor(new Date(source.scrapedAt ?? source.createdAt).getTime() / 1000);
 		untilTime = Math.floor(windowEnd.getTime() / 1000);
 		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, sinceTime, untilTime);
-		const saved = await saveTweets(env, fetched.tweets, source);
+		const saved = await saveTweets(env, db, fetched.tweets, source);
 		const outcome: TwitterSourceOutcome = {
 			admittedDrafts: saved.admittedDrafts,
 			counts: saved.counts,

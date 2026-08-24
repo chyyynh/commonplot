@@ -254,7 +254,7 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: FeedSource): 
 		summary: item.summary,
 		originalLang: item.originalLang,
 	}));
-	const created = await enqueueSourceDrafts(env, drafts);
+	const created = await enqueueSourceDrafts(env, db, drafts);
 	console.info({
 		tag: 'RSS',
 		msg: 'Feed processed',
