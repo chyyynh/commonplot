@@ -8,11 +8,11 @@ import { handleTwitterCron, resolveTwitterMonitoredSource } from './ingest/platf
 import { resolveYouTubeMonitoredSource } from './ingest/platforms/youtube';
 import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import { type ResourceDraftTarget, ResourceDraftTargetSchema, ResourceProcessingV2Workflow } from './ingest/workflow';
-import { SearchIndexGeneration5RebuildWorkflow } from './operations/search-index-rebuild';
+import { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
 import { type PublicResourceSearchInput, searchPublicResourceIds } from './search-index';
 import { connectCoreDb } from './shared/db';
 
-export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexGeneration5RebuildWorkflow };
+export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexRebuildWorkflow };
 
 type AppResourceDraftInput = Readonly<{
 	instanceId: string;

@@ -201,7 +201,7 @@ Bindings (in `wrangler.jsonc`):
 | `HYPERDRIVE`       | Hyperdrive connection to your Postgres       |
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | Fetch, parse, classify, and persist a canonical resource |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | Translate a persisted resource into zh-Hant |
-| `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` | Rebuild and verify the generation-5 canonical search index |
+| `SEARCH_INDEX_REBUILD_WORKFLOW` | Rebuild and verify the canonical search index |
 | `workflow-errors-core` | Queue consumer that delays and retries errored autonomous resource drafts |
 | `R2`               | App-owned uploaded PDF reads              |
 | `IMAGES`           | Stream remote resource images to Cloudflare Images |
@@ -227,18 +227,18 @@ The searchable identity pairs are `blog / none`, `blog / lesswrong`,
 `forum / hackernews`, `post / twitter`, `video / youtube`, and `paper / none`.
 Private image and file Resources never enter the public index.
 
-Run the static gates, then start and inspect the generation-specific Workflow
-with Wrangler:
+Run the static gates, then start and inspect the rebuild Workflow with Wrangler.
+The runner ID carries the serving-index version:
 
 ```sh
 pnpm exec wrangler workflows trigger \
-  newsence-search-index-generation-5-rebuild \
+  newsence-search-index-rebuild \
   '{}' \
-  --id search-index-rebuild-generation-5-native-v2
+  --id search-index-rebuild-v6-native-v1
 
 pnpm exec wrangler workflows instances describe \
-  newsence-search-index-generation-5-rebuild \
-  search-index-rebuild-generation-5-native-v2
+  newsence-search-index-rebuild \
+  search-index-rebuild-v6-native-v1
 ```
 
 Wrangler's native instance description is the operator view of Workflow status,

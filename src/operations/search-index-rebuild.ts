@@ -281,17 +281,15 @@ async function waitForSearchIndex(env: CoreEnv, step: WorkflowStep) {
 	throw new Error(`AI Search index did not converge: ${JSON.stringify(last)}`);
 }
 
-export class SearchIndexGeneration5RebuildWorkflow extends WorkflowEntrypoint<CoreEnv, SearchIndexRebuildPayload> {
+export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, SearchIndexRebuildPayload> {
 	async run(event: WorkflowEvent<SearchIndexRebuildPayload>, step: WorkflowStep) {
-		const startedAt = await step.do('capture-generation-5-rebuild-started-at', async () => event.timestamp.toISOString());
-		const instanceConfig = await step.do('ensure-generation-5-search-config-native-v2', SHORT_STEP_OPTIONS, () =>
-			ensureCanonicalSearchInstanceConfig(this.env),
-		);
+		const startedAt = event.timestamp.toISOString();
+		const instanceConfig = await step.do('ensure-search-config', SHORT_STEP_OPTIONS, () => ensureCanonicalSearchInstanceConfig(this.env));
 		let cursor: string | null = null;
 		let uploaded = 0;
 		let pages = 0;
 		while (true) {
-			const result = await step.do(`upload-generation-5-corpus-page-native-v2-${pages}`, BATCH_STEP_OPTIONS, async () =>
+			const result = await step.do(`upload-corpus-page-${pages}`, BATCH_STEP_OPTIONS, async () =>
 				syncCorpusPageAfter(this.env, await connectCoreDb(this.env), cursor),
 			);
 			if (result.done) break;
@@ -305,7 +303,7 @@ export class SearchIndexGeneration5RebuildWorkflow extends WorkflowEntrypoint<Co
 		let deltaUploaded = 0;
 		let deltaPages = 0;
 		while (true) {
-			const result = await step.do(`upload-generation-5-delta-page-native-v2-${deltaPages}`, BATCH_STEP_OPTIONS, async () =>
+			const result = await step.do(`upload-delta-page-${deltaPages}`, BATCH_STEP_OPTIONS, async () =>
 				syncCorpusDeltaAfter(this.env, await connectCoreDb(this.env), startedAt, deltaCursor),
 			);
 			if (result.done) break;

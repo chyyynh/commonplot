@@ -9,10 +9,10 @@ surface.
 | Role | Active resource |
 | --- | --- |
 | Serving binding | `AI_SEARCH → newsence-corpus-v6` |
-| Rebuild binding | `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` |
-| Physical Workflow | `newsence-search-index-generation-5-rebuild` |
-| Entrypoint | `SearchIndexGeneration5RebuildWorkflow` |
-| Current runner | `search-index-rebuild-generation-5-native-v2` |
+| Rebuild binding | `SEARCH_INDEX_REBUILD_WORKFLOW` |
+| Physical Workflow | `newsence-search-index-rebuild` |
+| Entrypoint | `SearchIndexRebuildWorkflow` |
+| Current runner | `search-index-rebuild-v6-native-v1` |
 | Observability | Native Workflow instance status/output and AI Search item status |
 
 The instance owns four custom metadata fields: `effective_at`, `source_id`,
@@ -82,9 +82,9 @@ runner ID:
 
 ```sh
 pnpm -C workers/core-worker exec wrangler workflows trigger \
-  newsence-search-index-generation-5-rebuild \
+  newsence-search-index-rebuild \
   '{}' \
-  --id search-index-rebuild-generation-5-native-v2
+  --id search-index-rebuild-v6-native-v1
 ```
 
 ## Verify
@@ -93,8 +93,8 @@ Inspect the same Workflow instance:
 
 ```sh
 pnpm -C workers/core-worker exec wrangler workflows instances describe \
-  newsence-search-index-generation-5-rebuild \
-  search-index-rebuild-generation-5-native-v2
+  newsence-search-index-rebuild \
+  search-index-rebuild-v6-native-v1
 ```
 
 A completed instance has already returned a final observation with:

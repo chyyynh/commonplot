@@ -195,7 +195,7 @@ Bindings（在 `wrangler.jsonc` 裡設定）：
 | `HYPERDRIVE`       | 連線到你的 Postgres                         |
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | 抓取、解析、分類並寫回 canonical resource |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | 將已持久化的 resource 翻譯成繁體中文 |
-| `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` | 全量重建並驗證 generation-5 搜尋索引 |
+| `SEARCH_INDEX_REBUILD_WORKFLOW` | 全量重建並驗證 canonical 搜尋索引 |
 | `workflow-errors-core` | 延遲並重試失敗 autonomous resource drafts 的 Queue consumer |
 | `R2`               | 讀取 app-owned uploaded blob，供 PDF extraction 使用 |
 | `IMAGES`           | 將遠端 resource 圖片串流上傳至 Cloudflare Images |
@@ -227,9 +227,8 @@ adapter。
 AI Search 沿用 `newsence-corpus-v6`。PostgreSQL 是 canonical source，Core
 只把 keyed search document 同步進 AI Search；rebuild 的 durable 狀態、重試、
 錯誤與 output 直接使用 Cloudflare Workflow。實體 Workflow 是
-`newsence-search-index-generation-5-rebuild`，class 是
-`SearchIndexGeneration5RebuildWorkflow`，目前 runner 為
-`search-index-rebuild-generation-5-native-v2`。
+`newsence-search-index-rebuild`，class 是 `SearchIndexRebuildWorkflow`；
+目前帶有 serving-index 版本的 runner 是 `search-index-rebuild-v6-native-v1`。
 
 ## 新增擷取 adapter
 

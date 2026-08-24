@@ -74,9 +74,9 @@
 			"class_name": "ResourceTranslationV2Workflow"
 		},
 		{
-			"binding": "SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW",
-			"name": "newsence-search-index-generation-5-rebuild",
-			"class_name": "SearchIndexGeneration5RebuildWorkflow"
+			"binding": "SEARCH_INDEX_REBUILD_WORKFLOW",
+			"name": "newsence-search-index-rebuild",
+			"class_name": "SearchIndexRebuildWorkflow"
 		}
 	],
 	/**
