@@ -54,7 +54,7 @@ Content arrives (source monitor / saved URL / uploaded blob / resync)
   ├─ 3. AI Analysis ─────────── One structured call → tags, keywords, named entities
   ├─ 4. Host Images ─────────── Stream canonical remote images to Cloudflare Images
   ├─ 5. Finalize DB ─────────── Create or update a canonical URL resource; enrich an existing stored blob
-  └─ 6. Follow-ups ──────────── Apply user save; enqueue admitted translation/subject; sync corpus search
+  └─ 6. Follow-ups ──────────── Apply user save; enqueue translation, subject, and corpus-search jobs
 ```
 
 URL, source, and derived-subject attempts carry immutable Workflow drafts and create no
@@ -117,18 +117,11 @@ Copy the returned ID into `wrangler.jsonc` under the `hyperdrive[].id` field.
 
 Workflows are provisioned automatically on first deploy via the `workflows` bindings in `wrangler.jsonc`.
 
-Workflow lifecycle errors use one shared event queue. Create it, then subscribe the resource Workflow's error event:
-
-```bash
-pnpm exec wrangler queues create workflow-errors-core
-pnpm exec wrangler queues subscription create workflow-errors-core \
-  --source workflows.workflow \
-  --workflow-name newsence-resource-processing-v2 \
-  --events instance.errored \
-  --name newsence-resource-processing-errors
-```
-
-The consumer logs every subscribed Workflow error. Durable steps own their bounded retries; a terminally errored instance remains failed for inspection instead of being restarted by the Queue.
+The `resource-search-sync` Queue is provisioned from `wrangler.jsonc`. Resource
+and translation Workflows durably enqueue a Resource ID after PostgreSQL commits;
+the Queue consumer updates the derived AI Search document with native per-message
+acknowledgement and bounded retries. Workflow failures remain visible through
+Cloudflare's native Workflow status and Workers Logs.
 
 ### 4. Secrets
 
@@ -202,7 +195,7 @@ Bindings (in `wrangler.jsonc`):
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | Fetch, parse, classify, and persist a canonical resource |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | Translate a persisted resource into zh-Hant |
 | `SEARCH_INDEX_REBUILD_WORKFLOW` | Rebuild and verify the canonical search index |
-| `workflow-errors-core` | Queue consumer that records terminal Resource Workflow errors |
+| `RESOURCE_SEARCH_SYNC_QUEUE` | Durable AI Search sync after canonical PostgreSQL writes |
 | `R2`               | App-owned uploaded PDF reads              |
 | `IMAGES`           | Stream remote resource images to Cloudflare Images |
 | `AI`               | Workers AI binding for AI Gateway text calls |

@@ -32,11 +32,13 @@ Web hydrates and authoritatively filters every returned Resource ID.
 
 ## Runtime sync
 
-Resource and translation Workflows call `syncCorpusItem` after persistence.
-Eligible Resources upload to `resources/<resource-id>.md`; ineligible or
-deleted Resources remove that exact key through the native AI Search `key`
-filter. There is no R2 corpus mirror, database readiness row, generation lease,
-or app-side serving cutover.
+Resource and translation Workflows enqueue a Resource ID after persistence.
+The `resource-search-sync` Queue consumer calls `syncCorpusItem`; eligible
+Resources upload to `resources/<resource-id>.md`, while ineligible or deleted
+Resources remove that exact key through the native AI Search `key` filter.
+Canonical resource readiness never depends on this derived index. There is no
+R2 corpus mirror, database readiness row, generation lease, or app-side serving
+cutover.
 
 ## Rebuild graph
 

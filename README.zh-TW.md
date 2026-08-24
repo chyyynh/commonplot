@@ -54,7 +54,7 @@ persistence tail。
   ├─ 3. AI 分析 ───────────── 單次 structured call → 標籤、關鍵字、具名實體
   ├─ 4. 託管圖片 ──────────── 將 canonical 遠端圖片串流到 Cloudflare Images
   ├─ 5. 最終寫入 DB ───────── 建立或更新 canonical URL resource；enrich 既有 stored blob
-  └─ 6. 後續工作 ──────────── 套用 user save；enqueue 符合條件的翻譯／subject；同步 corpus search
+  └─ 6. 後續工作 ──────────── 套用 user save；enqueue 翻譯、subject 與 corpus search jobs
 ```
 
 URL、source 與 derived-subject 都以 immutable Workflow draft 傳遞，只有第 5
@@ -113,18 +113,10 @@ wrangler hyperdrive create newsence-db \
 
 Workflows 會在第一次 deploy 時透過 `wrangler.jsonc` 裡的 `workflows` bindings 自動建立。
 
-Workflow lifecycle errors 共用一條 event queue。先建立 queue，再訂閱 resource Workflow 的 error event：
-
-```bash
-pnpm exec wrangler queues create workflow-errors-core
-pnpm exec wrangler queues subscription create workflow-errors-core \
-  --source workflows.workflow \
-  --workflow-name newsence-resource-processing-v2 \
-  --events instance.errored \
-  --name newsence-resource-processing-errors
-```
-
-consumer 會記錄所有已訂閱的 Workflow errors。Durable step 自己負責有限次重試；terminally errored instance 會保留供檢查，不再由 Queue 重新啟動。
+`resource-search-sync` Queue 由 `wrangler.jsonc` 自動建立。Resource 與
+translation Workflows 只在 PostgreSQL commit 後 durable enqueue Resource ID；
+Queue consumer 再以原生逐訊息 ack 與有限 retry 更新衍生的 AI Search 文件。
+Workflow failures 直接透過 Cloudflare 原生 Workflow status 與 Workers Logs 查看。
 
 ### 4. Secrets
 
@@ -196,7 +188,7 @@ Bindings（在 `wrangler.jsonc` 裡設定）：
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | 抓取、解析、分類並寫回 canonical resource |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | 將已持久化的 resource 翻譯成繁體中文 |
 | `SEARCH_INDEX_REBUILD_WORKFLOW` | 全量重建並驗證 canonical 搜尋索引 |
-| `workflow-errors-core` | 記錄 terminal Resource Workflow errors 的 Queue consumer |
+| `RESOURCE_SEARCH_SYNC_QUEUE` | canonical PostgreSQL 寫入後 durable 同步 AI Search |
 | `R2`               | 讀取 app-owned uploaded blob，供 PDF extraction 使用 |
 | `IMAGES`           | 將遠端 resource 圖片串流上傳至 Cloudflare Images |
 | `AI`               | Workers AI binding（AI Gateway 文字呼叫）   |

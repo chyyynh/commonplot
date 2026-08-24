@@ -9,7 +9,7 @@ import { resolveYouTubeMonitoredSource } from './ingest/platforms/youtube';
 import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import { type ResourceDraftTarget, ResourceDraftTargetSchema, ResourceProcessingV2Workflow } from './ingest/workflow';
 import { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
-import { type PublicResourceSearchInput, searchPublicResourceIds } from './search-index';
+import { type PublicResourceSearchInput, searchPublicResourceIds, syncCorpusItem } from './search-index';
 import { connectCoreDb } from './shared/db';
 
 export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexRebuildWorkflow };
@@ -71,17 +71,7 @@ async function reconcilePendingBlobProcessing(env: CoreEnv, db: NodePgDatabase):
 	});
 }
 
-const ResourceWorkflowErroredEventSchema = z.object({
-	type: z.literal('cf.workflows.workflow.instance.errored'),
-	source: z.object({
-		type: z.literal('workflows.workflow'),
-		workflowName: z.literal('newsence-resource-processing-v2'),
-	}),
-	payload: z.object({
-		instanceId: z.string().min(1).max(100),
-		versionId: z.string().min(1),
-	}),
-});
+const ResourceSearchSyncMessageSchema = z.object({ resourceId: z.uuid() }).strict();
 
 async function runFiveMinuteCycle(env: CoreEnv): Promise<void> {
 	const db = await connectCoreDb(env);
@@ -112,23 +102,28 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		}
 	}
 
-	override queue(batch: MessageBatch<unknown>): void {
+	override async queue(batch: MessageBatch<unknown>): Promise<void> {
+		const db = await connectCoreDb(this.env);
 		for (const message of batch.messages) {
-			const event = ResourceWorkflowErroredEventSchema.safeParse(message.body);
-			if (!event.success) {
-				console.warn({ tag: 'WORKFLOW', event: 'workflow_error_event_invalid', message_id: message.id });
+			const input = ResourceSearchSyncMessageSchema.safeParse(message.body);
+			if (!input.success) {
+				console.warn({ tag: 'AI_SEARCH', msg: 'Invalid resource sync message', message_id: message.id });
 				message.ack();
 				continue;
 			}
-			const { instanceId, versionId } = event.data.payload;
-			console.error({
-				tag: 'WORKFLOW',
-				event: 'workflow_instance_errored',
-				workflow: event.data.source.workflowName,
-				instance_id: instanceId,
-				version_id: versionId,
-			});
-			message.ack();
+			try {
+				await syncCorpusItem(this.env, db, input.data.resourceId);
+				message.ack();
+			} catch (error) {
+				console.error({
+					tag: 'AI_SEARCH',
+					msg: 'Resource sync failed',
+					resource_id: input.data.resourceId,
+					attempt: message.attempts,
+					error,
+				});
+				message.retry();
+			}
 		}
 	}
 

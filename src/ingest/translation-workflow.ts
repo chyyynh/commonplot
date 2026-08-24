@@ -5,7 +5,6 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { syncCorpusItem } from '../search-index';
 import { connectCoreDb } from '../shared/db';
 import { canonicalizeResourceLang, type RESOURCE_TYPES } from '../shared/resource';
 import { pdfTranslationAdmission, privateUploadedPdfTranslationSqlAdmission, stagePrivatePdfMarkdownTranslation } from './platforms/pdf';
@@ -560,9 +559,9 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		}
 		if (resource.scope === 'corpus') {
 			await step.do(
-				'sync-translated-resource-to-ai-search',
-				{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '90 seconds' },
-				async () => syncCorpusItem(this.env, await connectCoreDb(this.env), resourceId),
+				'enqueue-translated-ai-search-sync-v1',
+				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+				() => this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId }),
 			);
 		}
 		console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Completed', resource_id: resourceId, scope: resource.scope });

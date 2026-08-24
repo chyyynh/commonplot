@@ -2,7 +2,6 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import { syncCorpusItem } from '../search-index';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
 import { resourceImageSourceUrls } from '../shared/image-mapping';
@@ -292,12 +291,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		if (scope === 'corpus') {
 			followUps.push(
 				step.do(
-					'sync-resolved-ai-search-v1',
-					{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '90 seconds' },
-					async () => {
-						const db = await connectCoreDb(this.env);
-						await syncCorpusItem(this.env, db, persistedResourceId);
-					},
+					'enqueue-resolved-ai-search-sync-v1',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					() => this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId: persistedResourceId }),
 				),
 			);
 		}

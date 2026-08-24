@@ -48,11 +48,17 @@
 			"0 */6 * * *" // Twitter monitor (every 6 hours)
 		]
 	},
-	/** Workflow lifecycle events are delivered here by account-level event subscriptions. */
+	/** AI Search is a derived index; this Queue keeps it off canonical Resource Workflows. */
 	"queues": {
+		"producers": [
+			{
+				"binding": "RESOURCE_SEARCH_SYNC_QUEUE",
+				"queue": "resource-search-sync"
+			}
+		],
 		"consumers": [
 			{
-				"queue": "workflow-errors-core",
+				"queue": "resource-search-sync",
 				"max_batch_size": 10,
 				"max_batch_timeout": 5
 			}
