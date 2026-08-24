@@ -16,8 +16,9 @@ registerHooks({
 	},
 });
 
-const [resource, hackerNews, lessWrong, twitter, youtube] = await Promise.all([
+const [resource, paper, hackerNews, lessWrong, twitter, youtube] = await Promise.all([
 	import('../src/shared/resource.ts'),
+	import('../src/shared/paper-identity.ts'),
 	import('../src/ingest/platforms/hackernews.ts'),
 	import('../src/ingest/platforms/lesswrong.ts'),
 	import('../src/ingest/platforms/twitter-acquisition.ts'),
@@ -89,6 +90,41 @@ assert.equal(
 		{ preferred: true, scheme: 'arxiv', value: '2402.12345' },
 	]).success,
 	false,
+);
+
+for (const input of [
+	'https://arxiv.org/abs/2507.12652',
+	'https://arxiv.org/html/2507.12652v2',
+	'https://arxiv.org/pdf/2507.12652v3.pdf',
+	'arXiv:2507.12652v4',
+	'2507.12652',
+]) {
+	assert.deepEqual(paper.resolveExactPaperInput(input), {
+		canonicalUrl: 'https://arxiv.org/abs/2507.12652',
+		identity: { arxivId: '2507.12652' },
+	});
+}
+assert.deepEqual(paper.resolveExactPaperInput('https://openalex.org/w2741809807'), {
+	canonicalUrl: 'https://openalex.org/W2741809807',
+	identity: { openAlexId: 'W2741809807' },
+});
+assert.deepEqual(paper.paperIdentityFromText('DOI: 10.1000/EXAMPLE\narXiv:2401.00001v2'), {
+	doi: '10.1000/example',
+	arxivId: '2401.00001',
+});
+assert.deepEqual(
+	paper.normalizePaperIdentifiers([
+		{ scheme: 'arxiv', value: 'arXiv:2405.06478', preferred: true },
+		{ scheme: 'openalex', value: 'W4411722349', preferred: true },
+		{ scheme: 'openalex', value: 'w4396882289', preferred: true },
+		{ scheme: 'doi', value: 'https://doi.org/10.1007/S00146-025-02400-Z' },
+	]),
+	[
+		{ scheme: 'arxiv', value: '2405.06478', preferred: true },
+		{ scheme: 'openalex', value: 'W4411722349', preferred: true },
+		{ scheme: 'openalex', value: 'W4396882289', preferred: false },
+		{ scheme: 'doi', value: '10.1007/s00146-025-02400-z', preferred: true },
+	],
 );
 assert.equal(resource.ResourceIdentifiersSchema.safeParse([{ preferred: true, scheme: 'youtube', value: 'too-short' }]).success, false);
 

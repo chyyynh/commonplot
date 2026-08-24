@@ -1,5 +1,13 @@
 import assert from 'node:assert/strict';
 import { materializeGenericResource, materializePlatformResource } from '../src/ingest/platforms/materialize.ts';
+import {
+	hostedResourceImageFields,
+	normalizedExternalMediaUrl,
+	normalizedResourceImageUrl,
+	resourceImageFieldsAreHosted,
+	resourceImageSourceUrls,
+	resourcePreviewImageUrl,
+} from '../src/shared/image-mapping.ts';
 
 const base = {
 	url: 'https://example.com/article',
@@ -207,4 +215,33 @@ assert.deepEqual(
 	'materialization keeps the already-resolved paper subject',
 );
 
-console.info(`Platform materialization contract checks passed (${cases.length + 2} cases).`);
+const imageA = 'https://images.example.com/a.jpg';
+const imageB = 'https://images.example.com/b.jpg';
+const avatar = 'https://avatars.example.com/author.jpg';
+const imageInput = {
+	creators: [{ avatarUrl: avatar, literal: 'Author', role: 'author' }],
+	kindMetadata: {
+		attachments: [
+			{ kind: 'image', url: imageA },
+			{ kind: 'image', url: imageB },
+		],
+	},
+	ogImageUrl: imageB,
+};
+assert.deepEqual(resourceImageSourceUrls(imageInput), [imageA, imageB, avatar]);
+assert.equal(normalizedExternalMediaUrl('https://user:password@images.example.com/private.png'), null);
+assert.equal(
+	normalizedResourceImageUrl('/wp-content/uploads/preview.jpg?resize=150,150&crop=1', 'https://example.com/article'),
+	'https://example.com/wp-content/uploads/preview.jpg?w=1200',
+);
+const hosted = [
+	{ deliveryUrl: `https://imagedelivery.net/account/resource-${'a'.repeat(64)}/public`, sourceUrl: imageA },
+	{ deliveryUrl: `https://imagedelivery.net/account/resource-${'b'.repeat(64)}/public`, sourceUrl: imageB },
+	{ deliveryUrl: `https://imagedelivery.net/account/resource-${'c'.repeat(64)}/public`, sourceUrl: avatar },
+];
+const canonicalImages = hostedResourceImageFields(imageInput, hosted);
+assert.equal(resourceImageFieldsAreHosted(canonicalImages), true);
+assert.equal(resourcePreviewImageUrl(canonicalImages), hosted[0].deliveryUrl);
+assert.throws(() => hostedResourceImageFields(imageInput, hosted.slice(0, 1)), /do not cover every source/);
+
+console.info(`Platform materialization contract checks passed (${cases.length + 7} cases).`);
