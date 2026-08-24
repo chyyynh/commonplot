@@ -122,7 +122,7 @@ function canonicalResource(
 		tags: [...classification.tags],
 		title,
 		url,
-		youtube: resource.youtube && youtubeVideoId ? { input: resource.youtube, videoId: youtubeVideoId } : null,
+		youtube: resource.youtube ?? null,
 	};
 }
 
@@ -205,17 +205,17 @@ async function existingSubject(db: NodePgDatabase, parentId: string, subject: No
 	return existing.scope === 'corpus' && existing.enrichment_status === 'enriched' ? existing.id : null;
 }
 
-async function persistYouTube(db: NodePgDatabase, videoId: string, input: YouTubeResourceData, highlightsGeneratedAt: Date | null) {
+async function persistYouTube(db: NodePgDatabase, resourceId: string, input: YouTubeResourceData, highlightsGeneratedAt: Date | null) {
 	await db.execute(sql`
 		INSERT INTO youtube_transcripts (
-			video_id, transcript, language, chapters, chapters_from_description,
+			resource_id, transcript, language, chapters, chapters_from_description,
 			fetched_at, ai_highlights, highlights_generated_at
 		) VALUES (
-			${videoId}, ${JSON.stringify(input.transcript.segments)}::jsonb, ${input.transcript.language},
+			${resourceId}::uuid, ${JSON.stringify(input.transcript.segments)}::jsonb, ${input.transcript.language},
 			${JSON.stringify(input.transcript.chapters)}::jsonb, ${input.transcript.chaptersFromDescription},
 			NOW(), ${input.highlights ? JSON.stringify(input.highlights) : null}::jsonb, ${highlightsGeneratedAt}
 		)
-		ON CONFLICT (video_id) DO UPDATE SET
+		ON CONFLICT (resource_id) DO UPDATE SET
 			transcript = EXCLUDED.transcript,
 			language = EXCLUDED.language,
 			chapters = EXCLUDED.chapters,
@@ -305,7 +305,7 @@ async function writeCanonicalResource(
 		`);
 	}
 	if (resource.youtube) {
-		await persistYouTube(db, resource.youtube.videoId, resource.youtube.input, resource.highlightsGeneratedAt);
+		await persistYouTube(db, resourceId, resource.youtube, resource.highlightsGeneratedAt);
 	}
 	const revision = await db.execute<{ revision: string }>(sql`
 		SELECT MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS revision
