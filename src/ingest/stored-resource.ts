@@ -93,23 +93,6 @@ export async function enqueueResourceResync(env: CoreEnv, resourceId: string): P
 	return instance.id;
 }
 
-export async function markStoredBlobProcessingFailed(db: NodePgDatabase, resourceId: string): Promise<void> {
-	await db.execute(sql`
-		UPDATE resources AS resource
-		SET enrichment_status = 'failed',
-		    updated_at = NOW()
-		WHERE resource.id = ${resourceId}::uuid
-		  AND resource.enrichment_status <> 'enriched'
-		  AND resource.scope = 'private'
-		  AND resource.storage_key IS NOT NULL
-		  AND EXISTS (
-		    SELECT 1
-		    FROM user_files
-		    WHERE user_files.resource_id = resource.id
-		  )
-	`);
-}
-
 type PendingBlobRow = {
 	resource_id: string;
 };

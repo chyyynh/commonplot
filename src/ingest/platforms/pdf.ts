@@ -7,7 +7,7 @@ import { initSync, LiteParse, type LiteParseInit, type ParseResult } from '@llam
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
 import liteParsePackage from '@llamaindex/liteparse-wasm/package.json';
 import { sql } from 'drizzle-orm';
-import { loadStoredPdfInput, markStoredBlobProcessingFailed, type StoredPdfInput } from '../stored-resource';
+import { loadStoredPdfInput, type StoredPdfInput } from '../stored-resource';
 import type { GenericAcquiredMaterial, ResolvedResource } from './materialize';
 
 export const PDF_MIME = 'application/pdf';
@@ -350,7 +350,9 @@ export async function stageStoredPdfAcquisition(
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 		async () => loadStoredPdfInput(await connectCoreDb(env), target.resourceId),
 		{
-			rollback: async () => markStoredBlobProcessingFailed(await connectCoreDb(env), target.resourceId),
+			rollback: async () => {
+				await env.DOMAIN.markStoredBlobProcessingFailed(target.resourceId);
+			},
 			rollbackConfig: {
 				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 				timeout: '30 seconds',
