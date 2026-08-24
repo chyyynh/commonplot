@@ -1,9 +1,10 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { connectCoreDb } from '@core-shared/db';
+import { normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { resolveMonitoredSource } from '@ingest/monitored-source';
 import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';
-import { type AppResourceDraftInput, enqueueAppResourceDraft, SourceResourceRecoveryWorkflow } from '@ingest/processing-jobs';
 import {
 	enqueueProcessing,
 	enqueueResourceResync,
@@ -11,23 +12,34 @@ import {
 	type StoredPdfProcessingInput,
 } from '@ingest/stored-resource';
 import { ResourceTranslationV2Workflow } from '@ingest/translation-workflow';
-import { ResourceProcessingV2Workflow } from '@ingest/workflow';
+import {
+	AutonomousResourceDraftIdSchema,
+	ResourceDraftRecoveryWorkflow,
+	ResourceDraftTargetSchema,
+	ResourceProcessingV2Workflow,
+} from '@ingest/workflow';
 import { z } from 'zod';
 import { SearchIndexGeneration5RebuildWorkflow } from './operations/search-index-rebuild';
 import { type PublicResourceSearchInput, searchPublicResourceIds } from './search-index';
 
 export {
+	ResourceDraftRecoveryWorkflow,
 	ResourceProcessingV2Workflow,
 	ResourceTranslationV2Workflow,
 	SearchIndexGeneration5RebuildWorkflow,
-	SourceResourceRecoveryWorkflow,
 };
+
+type AppResourceDraftInput = Readonly<{
+	instanceId: string;
+	url: string;
+	admission: Extract<ResourceDraftAdmission, { kind: 'profileSave' | 'container' }>;
+}>;
 
 const ResourceWorkflowErroredEventSchema = z.object({
 	type: z.literal('cf.workflows.workflow.instance.errored'),
 	source: z.object({
 		type: z.literal('workflows.workflow'),
-		workflowName: z.string().min(1),
+		workflowName: z.literal('newsence-resource-processing-v2'),
 	}),
 	payload: z.object({
 		instanceId: z.string().min(1).max(100),
@@ -65,7 +77,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	override async queue(batch: MessageBatch<unknown>): Promise<void> {
-		const sourceInstanceIds = new Set<string>();
+		const resourceDraftInstanceIds = new Set<string>();
 		for (const message of batch.messages) {
 			const event = ResourceWorkflowErroredEventSchema.safeParse(message.body);
 			if (!event.success) {
@@ -80,18 +92,21 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 				instance_id: instanceId,
 				version_id: versionId,
 			});
-			if (/^source-draft-v[1-9]\d*-[0-9a-f]{64}$/.test(instanceId)) sourceInstanceIds.add(instanceId);
+			const resourceDraftId = AutonomousResourceDraftIdSchema.safeParse(instanceId);
+			if (resourceDraftId.success) resourceDraftInstanceIds.add(resourceDraftId.data);
 		}
-		if (!sourceInstanceIds.size) return;
+		if (!resourceDraftInstanceIds.size) return;
 
-		const recoveries = [...sourceInstanceIds].map((instanceId) => ({
-			id: `source-recovery-v1-${instanceId.slice('source-draft-'.length)}`,
+		const recoveries = [...resourceDraftInstanceIds].map((instanceId) => ({
+			id: instanceId.startsWith('source-draft-')
+				? `source-recovery-v1-${instanceId.slice('source-draft-'.length)}`
+				: `subject-recovery-v1-${instanceId.slice('subject-draft-'.length)}`,
 			params: { instanceId },
 		}));
-		const created = await this.env.SOURCE_RESOURCE_RECOVERY_WORKFLOW.createBatch(recoveries);
+		const created = await this.env.RESOURCE_DRAFT_RECOVERY_WORKFLOW.createBatch(recoveries);
 		console.info({
-			tag: 'SOURCE_RECOVERY',
-			event: 'source_resource_recoveries_admitted',
+			tag: 'RESOURCE_RECOVERY',
+			event: 'resource_draft_recoveries_admitted',
 			received: recoveries.length,
 			created: created.length,
 			deduplicated: recoveries.length - created.length,
@@ -107,8 +122,22 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	/** Process an external URL before its canonical Resource and user relation become visible. */
-	enqueueResourceDraft(input: AppResourceDraftInput) {
-		return enqueueAppResourceDraft(this.env, input);
+	async enqueueResourceDraft(input: AppResourceDraftInput): Promise<string> {
+		if (!/^app-draft-v1-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.instanceId)) {
+			throw new Error('Invalid app draft Workflow ID');
+		}
+		const parsedUrl = parseExternalHttpUrl(input.url);
+		if (!parsedUrl) throw new Error('Only http(s) URLs without credentials are allowed');
+		const target = ResourceDraftTargetSchema.parse({
+			kind: 'draft',
+			admission: input.admission,
+			url: normalizeUrl(parsedUrl.toString()),
+		});
+		if (target.admission.kind !== 'profileSave' && target.admission.kind !== 'container') {
+			throw new Error('App URL drafts only support profileSave or container admission');
+		}
+		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id: input.instanceId, params: target }]);
+		return input.instanceId;
 	}
 
 	/** Reacquire a URL-backed resource through the enrichment workflow. */

@@ -168,15 +168,15 @@ Worker.
 
 ```
 src/
-├── index.ts              # Cloudflare WorkerEntrypoint class only
+├── index.ts              # service RPC, cron, and Workflow-error Queue entrypoints
 ├── entities/             # resource-local entity normalization
 ├── shared/               # small cross-subsystem primitives
 │   ├── resource.ts       # identity, identifiers, and canonical metadata contracts
 │   ├── image-mapping.ts  # canonical Hosted Images field mapping
 │   └── url.ts            # URL normalization and exact platform locators
 ├── ingest/               # ── resource ingestion pipeline (the open-source core) ──
-│   ├── workflow.ts       # acquisition-to-persistence Workflow
-│   ├── processing-jobs.ts # immutable draft and stored-target payloads
+│   ├── workflow.ts       # target validation, processing, and draft recovery Workflows
+│   ├── monitored-source.ts # source resolution, state, and deterministic draft admission
 │   ├── stored-resource.ts # narrow record-first blob and resync projections
 │   └── platforms/        # one file per source/stage
 │       ├── rss.ts        # feed polling
@@ -199,7 +199,7 @@ Bindings (in `wrangler.jsonc`):
 | ------------------ | -------------------------------------------- |
 | `HYPERDRIVE`       | Hyperdrive connection to your Postgres       |
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | Fetch, parse, classify, and persist a canonical resource |
-| `SOURCE_RESOURCE_RECOVERY_WORKFLOW` | Give an errored monitored-source draft one bounded delayed restart |
+| `RESOURCE_DRAFT_RECOVERY_WORKFLOW` | Give an errored autonomous source/subject draft one bounded delayed restart |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | Translate a persisted resource into zh-Hant |
 | `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` | Rebuild and verify the generation-5 canonical search index |
 | `workflow-errors-core` | Queue consumer for subscribed Workflow lifecycle errors |

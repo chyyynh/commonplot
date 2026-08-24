@@ -1,7 +1,13 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import type { PersistResolvedResourceInput, PersistResolvedResourceTarget } from '@app-domain/resource-graph-contracts';
+import {
+	type PersistResolvedResourceInput,
+	type PersistResolvedResourceTarget,
+	ResourceDraftAdmissionSchema,
+} from '@app-domain/resource-graph-contracts';
 import { connectCoreDb } from '@core-shared/db';
+import { sha256Hex } from '@core-shared/hash';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/image-mapping';
+import { normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
 import { loadResourceReacquisitionInput } from '@ingest/stored-resource';
 import { generateText, Output } from 'ai';
@@ -10,8 +16,54 @@ import { z } from 'zod';
 import { syncCorpusItem } from '../search-index';
 import { type ProcessingResource, stageStoredResource, stageUrlAcquisition } from './acquisition';
 import { stageResourceImages } from './image-rehosting';
-import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './processing-jobs';
 import { enqueueResourceTranslation } from './translation-workflow';
+
+export const ResourceDraftTargetSchema = z
+	.object({
+		kind: z.literal('draft'),
+		admission: ResourceDraftAdmissionSchema,
+		url: z
+			.url({ protocol: /^https?$/ })
+			.max(2_048)
+			.refine((value) => parseExternalHttpUrl(value) !== null, 'URL credentials are not allowed'),
+		sourceHints: z
+			.object({
+				summary: z.string().max(20_000).optional(),
+				originalLang: z.string().trim().min(1).max(35).optional(),
+				publishedDate: z.iso.datetime().optional(),
+				keywords: z.array(z.string().max(500)).max(100).optional(),
+				sourceAvatarUrl: z.url().max(2_048).optional(),
+			})
+			.strict()
+			.optional(),
+	})
+	.strict();
+
+const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
+	z
+		.object({
+			kind: z.literal('storedBlob'),
+			resourceId: z.string().uuid(),
+		})
+		.strict(),
+	z
+		.object({
+			kind: z.literal('reacquire'),
+			resourceId: z.string().uuid(),
+		})
+		.strict(),
+	ResourceDraftTargetSchema,
+]);
+
+type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSchema>;
+
+export const AutonomousResourceDraftIdSchema = z.string().regex(/^(?:source-draft-v5|subject-draft-v3)-[0-9a-f]{64}$/);
+
+const ResourceDraftRecoveryPayloadSchema = z
+	.object({
+		instanceId: AutonomousResourceDraftIdSchema,
+	})
+	.strict();
 
 type ResourceClassification = {
 	tags: string[];
@@ -149,7 +201,7 @@ function resolvedResourceMutation(
 async function resolveProcessingCall(
 	env: CoreEnv,
 	step: WorkflowStep,
-	target: ResourceProcessingWorkflowPayload['target'],
+	target: ResourceProcessingTarget,
 	instanceId: string,
 ): Promise<ResolvedProcessingCall> {
 	if (target.kind === 'draft') {
@@ -209,9 +261,9 @@ async function resolveProcessingCall(
 	};
 }
 
-export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingWorkflowPayload> {
-	async run(event: WorkflowEvent<ResourceProcessingWorkflowPayload>, step: WorkflowStep) {
-		const { target } = parseResourceProcessingWorkflowPayload(event.payload);
+export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
+	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep) {
+		const target = ResourceProcessingTargetSchema.parse(event.payload);
 		const call = await resolveProcessingCall(this.env, step, target, event.instanceId);
 		const resource = call.resource;
 		const processingId = call.processingId;
@@ -280,11 +332,16 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				step.do(
 					'enqueue-resolved-subject-child-v1',
 					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() =>
-						enqueueSubjectDraft(this.env, {
-							parentResourceId: persistedResourceId,
-							url: subject.normalizedUrl,
-						}),
+					async () => {
+						const subjectTarget = ResourceDraftTargetSchema.parse({
+							kind: 'draft',
+							admission: { kind: 'subject', parentResourceId: persistedResourceId },
+							url: normalizeUrl(subject.normalizedUrl),
+						});
+						const id = `subject-draft-v3-${await sha256Hex(JSON.stringify(subjectTarget))}`;
+						await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: subjectTarget }]);
+						return id;
+					},
 				),
 			);
 		}
@@ -292,5 +349,27 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
 		return { resourceId: persistedResourceId };
+	}
+}
+
+/** Gives an autonomous source or subject draft one delayed whole-Workflow retry. */
+export class ResourceDraftRecoveryWorkflow extends WorkflowEntrypoint<CoreEnv, z.infer<typeof ResourceDraftRecoveryPayloadSchema>> {
+	async run(event: WorkflowEvent<z.infer<typeof ResourceDraftRecoveryPayloadSchema>>, step: WorkflowStep) {
+		const { instanceId } = ResourceDraftRecoveryPayloadSchema.parse(event.payload);
+		await step.sleep('resource-draft-recovery-delay-v1', '15 minutes');
+		const outcome = await step.do(
+			'resource-draft-restart-once-v1',
+			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+			async () => {
+				const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.get(instanceId);
+				const state = await instance.status();
+				if (state.status === 'unknown') throw new Error(`Resource Workflow ${instanceId} has unknown status`);
+				if (state.status !== 'errored') return state.status;
+				await instance.restart();
+				return 'restarted' as const;
+			},
+		);
+		console.info({ tag: 'RESOURCE_RECOVERY', event: 'resource_draft_recovery_completed', instance_id: instanceId, outcome });
+		return { outcome };
 	}
 }

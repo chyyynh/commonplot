@@ -162,15 +162,15 @@ resource 讀取。已退役的本機 CLI／MCP 套件不屬於這個 Worker。
 
 ```
 src/
-├── index.ts              # 只保留 Cloudflare WorkerEntrypoint class
+├── index.ts              # service RPC、cron 與 Workflow-error Queue entrypoints
 ├── entities/             # resource-local entity normalization
 ├── shared/               # 小型跨子系統 primitives
 │   ├── resource.ts       # identity、identifier、canonical metadata contracts
 │   ├── image-mapping.ts  # canonical Hosted Images 欄位 mapping
 │   └── url.ts            # URL normalization 與精確 platform locator
 ├── ingest/               # ── resource 入庫 pipeline（開源核心）──
-│   ├── workflow.ts       # acquisition 到 persistence 的 Workflow
-│   ├── processing-jobs.ts # immutable draft 與 stored-target payload
+│   ├── workflow.ts       # target validation、processing 與 draft recovery Workflows
+│   ├── monitored-source.ts # source resolution、狀態與 deterministic draft admission
 │   ├── stored-resource.ts # record-first blob 與 resync 的窄 projection
 │   └── platforms/        # 每個來源或 stage 一個檔案
 │       ├── rss.ts        # feed polling
@@ -193,7 +193,7 @@ Bindings（在 `wrangler.jsonc` 裡設定）：
 | ------------------ | ------------------------------------------- |
 | `HYPERDRIVE`       | 連線到你的 Postgres                         |
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | 抓取、解析、分類並寫回 canonical resource |
-| `SOURCE_RESOURCE_RECOVERY_WORKFLOW` | 對失敗的 monitored-source draft 執行一次有界的延遲 restart |
+| `RESOURCE_DRAFT_RECOVERY_WORKFLOW` | 對失敗的 autonomous source／subject draft 執行一次有界的延遲 restart |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | 將已持久化的 resource 翻譯成繁體中文 |
 | `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` | 全量重建並驗證 generation-5 搜尋索引 |
 | `workflow-errors-core` | 接收已訂閱 Workflow lifecycle errors 的 Queue consumer |

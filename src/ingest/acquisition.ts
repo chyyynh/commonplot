@@ -15,7 +15,6 @@ import { stageStoredPdfAcquisition, storedPdfProcessingResult } from './platform
 import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
 import { stageYouTubeAcquisition } from './platforms/youtube-acquisition';
-import type { ResourceProcessingWorkflowPayload } from './processing-jobs';
 
 export type ProcessingResource = ResolvedResource & { youtube?: YouTubeResourceMutation };
 
@@ -122,7 +121,7 @@ export async function stageUrlAcquisition(
 export async function stageStoredResource(
 	env: CoreEnv,
 	step: WorkflowStep,
-	target: Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'storedBlob' }>,
+	target: Readonly<{ resourceId: string }>,
 ): Promise<{
 	keywordHints: readonly string[];
 	resource: ProcessingResource;

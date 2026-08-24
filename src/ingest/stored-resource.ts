@@ -14,7 +14,6 @@ import { parseExternalHttpUrl } from '@core-shared/url';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import { parseResourceProcessingWorkflowPayload } from './processing-jobs';
 
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
@@ -72,16 +71,10 @@ export type StoredPdfProcessingInput = Readonly<{
 }>;
 
 function storedPdfWorkflowInstance(resourceId: string) {
-	const payload = parseResourceProcessingWorkflowPayload({
-		target: {
-			kind: 'storedBlob',
-			resourceId: z.uuid().parse(resourceId),
-		},
-	});
-	if (payload.target.kind !== 'storedBlob') throw new Error('Stored PDF processing payload was not preserved');
+	const id = z.uuid().parse(resourceId);
 	return {
-		id: `${STORED_RESOURCE_WORKFLOW_REVISION}-${payload.target.resourceId}`,
-		params: payload,
+		id: `${STORED_RESOURCE_WORKFLOW_REVISION}-${id}`,
+		params: { kind: 'storedBlob' as const, resourceId: id },
 		retention: STORED_PDF_WORKFLOW_RETENTION,
 	};
 }
@@ -96,7 +89,7 @@ export async function enqueueResourceResync(env: CoreEnv, resourceId: string): P
 	const id = z.uuid().parse(resourceId);
 	const instance = await env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
 		id: `resource-resync-v3-${id}-${crypto.randomUUID()}`,
-		params: { target: { kind: 'reacquire', resourceId: id } },
+		params: { kind: 'reacquire', resourceId: id },
 	});
 	return instance.id;
 }

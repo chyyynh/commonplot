@@ -72,9 +72,9 @@
 			"class_name": "ResourceProcessingV2Workflow"
 		},
 		{
-			"binding": "SOURCE_RESOURCE_RECOVERY_WORKFLOW",
+			"binding": "RESOURCE_DRAFT_RECOVERY_WORKFLOW",
 			"name": "newsence-source-resource-recovery-v1",
-			"class_name": "SourceResourceRecoveryWorkflow"
+			"class_name": "ResourceDraftRecoveryWorkflow"
 		},
 		{
 			"binding": "RESOURCE_TRANSLATION_V2_WORKFLOW",

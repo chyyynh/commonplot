@@ -1,5 +1,11 @@
-import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/monitored-source';
-import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/processing-jobs';
+import {
+	admitDiscoveredSourceResources,
+	loadMonitoredSources,
+	type MonitoredSource,
+	markSourcesScraped,
+	recordSourceFailure,
+	type SourceResourceDraft,
+} from '@ingest/monitored-source';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { loadFeed } from './rss-feed';
 
@@ -23,19 +29,13 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredSour
 		originalLang: item.originalLang,
 		sourceAvatarUrl: feed.avatarUrl,
 	}));
-	const outcomes = await admitDiscoveredSourceResources(env, drafts);
-	let created = 0;
-	let deduplicated = 0;
-	for (const outcome of outcomes) {
-		if (outcome === 'created') created++;
-		else deduplicated++;
-	}
+	const created = await admitDiscoveredSourceResources(env, drafts);
 	console.info({
 		tag: 'RSS',
 		msg: 'Feed processed',
 		feed: feed.name,
 		created,
-		deduplicated,
+		deduplicated: drafts.length - created,
 		totalCount: itemCount,
 	});
 	await markSourcesScraped(db, [feed.id]);

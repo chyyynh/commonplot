@@ -1,7 +1,10 @@
-import { parseExternalHttpUrl, parseTwitterUsername } from '@core-shared/url';
+import { sha256Hex } from '@core-shared/hash';
+import { canonicalizeOptionalResourceLang } from '@core-shared/resource';
+import { normalizeUrl, parseExternalHttpUrl, parseTwitterUsername, validatedExternalMediaUrl } from '@core-shared/url';
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { loadFeed } from './platforms/rss-feed';
+import { ResourceDraftTargetSchema } from './workflow';
 
 // Resolves a feed/account/channel input into the exact source row the crons can
 // poll. Ordinary resource URLs use resource ingestion instead of this RPC.
@@ -130,6 +133,54 @@ export type MonitoredSource = {
 	scrapedAt: Date | null;
 	createdAt: Date;
 };
+
+export type SourceResourceDraft = {
+	sourceId: string;
+	url: string;
+	publishedDate: Date | null;
+	summary: string | null;
+	originalLang?: string;
+	keywords?: string[];
+	sourceAvatarUrl?: string | null;
+};
+
+const SOURCE_DRAFT_WORKFLOW_REVISION = 'source-draft-v5';
+const WORKFLOW_CREATE_BATCH_SIZE = 100;
+
+/** Admit feed/account discoveries as deterministic process-first Workflow drafts. */
+export async function admitDiscoveredSourceResources(env: CoreEnv, drafts: SourceResourceDraft[]): Promise<number> {
+	const instances = await Promise.all(
+		drafts.map(async (draft) => {
+			const originalLang = canonicalizeOptionalResourceLang(draft.originalLang);
+			if (draft.publishedDate && !Number.isFinite(draft.publishedDate.getTime())) throw new Error('Source published date is invalid');
+			const parsedUrl = parseExternalHttpUrl(draft.url.trim());
+			if (!parsedUrl) throw new Error('Source resource URL must be external http(s)');
+			const summary = draft.summary?.trim() || null;
+			const sourceAvatarUrl = validatedExternalMediaUrl(draft.sourceAvatarUrl);
+			const target = ResourceDraftTargetSchema.parse({
+				kind: 'draft',
+				admission: { kind: 'source', sourceId: draft.sourceId.trim() },
+				url: normalizeUrl(parsedUrl.toString()),
+				sourceHints: {
+					...(summary ? { summary } : {}),
+					...(originalLang ? { originalLang } : {}),
+					...(draft.publishedDate ? { publishedDate: draft.publishedDate.toISOString() } : {}),
+					...(draft.keywords?.length ? { keywords: draft.keywords } : {}),
+					...(sourceAvatarUrl ? { sourceAvatarUrl } : {}),
+				},
+			});
+			return {
+				id: `${SOURCE_DRAFT_WORKFLOW_REVISION}-${await sha256Hex(JSON.stringify(target))}`,
+				params: target,
+			};
+		}),
+	);
+	let created = 0;
+	for (let offset = 0; offset < instances.length; offset += WORKFLOW_CREATE_BATCH_SIZE) {
+		created += (await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(instances.slice(offset, offset + WORKFLOW_CREATE_BATCH_SIZE))).length;
+	}
+	return created;
+}
 
 /** Loads enabled sources due to be polled by the requested monitor. */
 export async function loadMonitoredSources(db: NodePgDatabase, monitor: 'feed' | 'twitter'): Promise<MonitoredSource[]> {

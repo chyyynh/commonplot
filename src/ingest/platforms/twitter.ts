@@ -1,7 +1,13 @@
 import { connectCoreDb } from '@core-shared/db';
 import { normalizeUrl } from '@core-shared/url';
-import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/monitored-source';
-import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/processing-jobs';
+import {
+	admitDiscoveredSourceResources,
+	loadMonitoredSources,
+	type MonitoredSource,
+	markSourcesScraped,
+	recordSourceFailure,
+	type SourceResourceDraft,
+} from '@ingest/monitored-source';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { parseTwitterAdvancedSearchPage, type Tweet } from './twitter-data';
 
@@ -184,19 +190,8 @@ async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource
 	}
 	const pending = [...drafts.values()];
 	if (!pending.length) return { admittedDrafts: 0, counts, skippedItems };
-	const outcomes = await admitDiscoveredSourceResources(env, pending);
-
-	for (const [index, outcome] of outcomes.entries()) {
-		const draft = pending[index]!;
-		counts[outcome]++;
-		console.info({
-			tag: 'TWITTER',
-			event: 'twitter_resource_admitted',
-			admission: outcome,
-			userName: source.handle,
-			url: draft.url,
-		});
-	}
+	counts.created = await admitDiscoveredSourceResources(env, pending);
+	counts.deduplicated = pending.length - counts.created;
 	return { admittedDrafts: pending.length, counts, skippedItems };
 }
 

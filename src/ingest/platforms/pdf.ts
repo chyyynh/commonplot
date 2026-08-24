@@ -8,7 +8,6 @@ import { initSync, LiteParse, type LiteParseInit, type ParseResult } from '@llam
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
 import liteParsePackage from '@llamaindex/liteparse-wasm/package.json';
 import { sql } from 'drizzle-orm';
-import type { ResourceProcessingWorkflowPayload } from '../processing-jobs';
 import { loadStoredPdfInput, markStoredBlobProcessingFailed, type StoredPdfInput } from '../stored-resource';
 import type { GenericAcquiredMaterial, ResolvedResource } from './materialize';
 
@@ -282,8 +281,6 @@ export type StoredPdfAcquisition = Readonly<{
 	resource: StoredPdfInput;
 }>;
 
-type StoredPdfTarget = Extract<ResourceProcessingWorkflowPayload['target'], { kind: 'storedBlob' }>;
-
 async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise<GenericAcquiredMaterial> {
 	if (resource.fileType !== PDF_MIME) {
 		throw new Error(`Stored resource ${resource.resourceId} is not an R2 PDF`);
@@ -344,7 +341,11 @@ export async function acquireFetchedPdfResponse(response: Response, finalUrl: st
 	};
 }
 
-export async function stageStoredPdfAcquisition(env: CoreEnv, step: WorkflowStep, target: StoredPdfTarget): Promise<StoredPdfAcquisition> {
+export async function stageStoredPdfAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	target: Readonly<{ resourceId: string }>,
+): Promise<StoredPdfAcquisition> {
 	const resource = await step.do(
 		'load-stored-pdf-input-v1',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
