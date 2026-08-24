@@ -70,8 +70,6 @@ type ResourceReacquisitionRow = {
 
 export type StoredPdfProcessingInput = Readonly<{
 	resourceId: string;
-	/** Accepted only while an older app deployment may still send it. */
-	parseAdmission?: unknown;
 }>;
 
 function storedPdfWorkflowInstance(resourceId: string) {

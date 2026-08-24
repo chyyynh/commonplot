@@ -34,9 +34,6 @@ const ResourceProcessingWorkflowPayloadSchema = z
 				.object({
 					kind: z.literal('storedBlob'),
 					resourceId: z.string().uuid(),
-					// Transitional compatibility for already-deployed app callers and
-					// Workflow instances. Core deliberately ignores the retired ledger.
-					parseAdmission: z.unknown().optional(),
 				})
 				.strict(),
 			z

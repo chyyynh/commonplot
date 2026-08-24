@@ -174,12 +174,15 @@ src/
 │   ├── stored-resource.ts # record-first blob 與 resync 的窄 projection
 │   └── platforms/        # 每個來源或 stage 一個檔案
 │       ├── rss.ts        # feed polling
-│       ├── twitter.ts    # monitor + scraper + processor
-│       ├── youtube.ts    # monitor + transcript/highlights
+│       ├── twitter.ts    # source monitor
+│       ├── twitter-acquisition.ts # tweet acquisition
+│       ├── youtube-acquisition.ts # transcript/highlights
 │       ├── hackernews.ts # HN processor
 │       ├── paper.ts      # OpenAlex enrichment stage
 │       └── pdf.ts        # PDF text extraction stage
-├── search-index.ts        # AI Search projection、同步與 rebuild Workflow
+├── operations/           # operator 觸發的 durable jobs
+│   └── search-index-rebuild.ts # AI Search 全量 rebuild
+├── search-index.ts        # runtime AI Search projection 與同步
 └── public-search.ts       # public Resource ID 排序檢索
 ```
 
@@ -229,10 +232,6 @@ AI Search 沿用 `newsence-corpus-v6`。PostgreSQL 是 canonical source，Core
 `SearchIndexGeneration5RebuildWorkflow`，目前 runner 為
 `search-index-rebuild-generation-5-native-v2`。
 
-Generation 5 與 canonical `blog`/`forum` database cutover 已完成。一次性
-migration 保留在 git history；目前操作直接從 target schema 開始，依
-`AI_SEARCH_V6_RUNBOOK.md` 執行 active rebuild 與驗證流程。
-
 ## 新增擷取 adapter
 
 擷取 adapter 集中在 `ingest/platforms/*.ts`，只放它真正需要的
@@ -241,8 +240,8 @@ discovery / scrape / process 邏輯。App-owned saved URL 以 Workflow draft
 與 `user_files`，再以 `resourceId` 啟動 Workflow。Core 透過
 `ingest/stored-resource.ts` 讀取既有 upload 或 resync rows；processed graph
 寫入統一跨越 app-owned `DOMAIN.persistResolvedResource` transaction
-boundary，並以 draft admission 或 revision-guarded existing target 區分語意。Admission query 與 translation input query 分別與各自流程放在
-`resource-admission.ts` 和 `resource-translation-workflow.ts`。
+boundary。Draft admission 直接跟隨 Workflow payload，translation input query 則與唯一的
+consumer 放在 `translation-workflow.ts`。
 
 各軸要分開：acquisition（generic web 或專用 adapter）不是 canonical
 `ResourcePlatform`（`youtube`、`twitter`、`hackernews`、`lesswrong` 或 null），也不是

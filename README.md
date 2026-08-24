@@ -180,12 +180,15 @@ src/
 │   ├── stored-resource.ts # narrow record-first blob and resync projections
 │   └── platforms/        # one file per source/stage
 │       ├── rss.ts        # feed polling
-│       ├── twitter.ts    # monitor + scraper + processor
-│       ├── youtube.ts    # monitor + transcript/highlights
+│       ├── twitter.ts    # source monitor
+│       ├── twitter-acquisition.ts # tweet acquisition
+│       ├── youtube-acquisition.ts # transcript/highlights
 │       ├── hackernews.ts # HN processor
 │       ├── paper.ts      # OpenAlex enrichment stage
 │       └── pdf.ts        # PDF text extraction stage
-├── search-index.ts        # AI Search projection, sync, and rebuild Workflow
+├── operations/           # operator-triggered durable jobs
+│   └── search-index-rebuild.ts # full AI Search rebuild
+├── search-index.ts        # runtime AI Search projection and sync
 └── public-search.ts       # ordered public Resource ID retrieval
 ```
 
@@ -249,20 +252,6 @@ Each deployment creates a versioned Workflow graph and every instance remains
 pinned to its `version_id`. Use a new source-controlled runner ID after an
 incompatible graph change; do not add another binding or entrypoint. See
 `AI_SEARCH_V6_RUNBOOK.md` for the active procedure.
-
-Generation 5 and the canonical `blog`/`forum` database cutover are complete.
-The one-shot migration lives in git history; current operations start from the
-target schema and use the active rebuild/verification procedure above.
-
-#### Historical generation evidence
-
-`newsence-corpus-v5`, durable state `public-corpus`, generation
-`3 / canonical-3-kind`, and `newsence-search-index-rebuild` belong to the
-completed #245 rollout. Historical scripts and logs retain those exact names as
-evidence. Generation 4 used `canonical-4-kind-platform` and
-`newsence-search-index-canonical-v6-rebuild`. These historical Workflow
-resources are not active bindings and must not be triggered or adopted for the
-generation-5 contract.
 
 ### Paper enrichment
 
