@@ -9,9 +9,6 @@ import {
 } from '@core-shared/paper-identity';
 import type { PaperRelationItem, PaperRelationSnapshot } from '@core-shared/resource';
 import { z } from 'zod';
-import { markdownFromXml } from '../document-conversion';
-import type { GenericAcquiredMaterial } from './materialize';
-import { acquireFetchedPdfResponse } from './pdf';
 
 export interface PaperMetadata {
 	title?: string;
@@ -73,8 +70,8 @@ const OpenAlexWorkSchema = z.object({
 	primary_location: OpenAlexLocationSchema.nullish(),
 	best_oa_location: OpenAlexLocationSchema.nullish(),
 	locations: z.array(OpenAlexLocationSchema).nullish(),
-	has_content: z.object({ pdf: z.boolean(), grobid_xml: z.boolean() }).nullish(),
-	content_urls: z.object({ pdf: z.string().nullish(), grobid_xml: z.string().nullish() }).nullish(),
+	has_content: z.object({ pdf: z.boolean() }).nullish(),
+	content_urls: z.object({ pdf: z.string().nullish() }).nullish(),
 });
 
 const OpenAlexListSchema = z.object({
@@ -85,7 +82,6 @@ const OpenAlexListSchema = z.object({
 type OpenAlexWork = z.infer<typeof OpenAlexWorkSchema>;
 
 type OpenAlexPaperResolution = Readonly<{
-	contentGrobidXmlUrl: string | null;
 	contentPdfUrl: string | null;
 	identifiers: PaperIdentifier[];
 	metadata: PaperMetadata;
@@ -134,8 +130,7 @@ function arxivIdFromWork(work: OpenAlexWork, identity: PaperIdentity | null): st
 	return undefined;
 }
 
-function openAlexContentUrl(input: {
-	extension: 'pdf' | 'grobid-xml';
+function openAlexContentPdfUrl(input: {
 	hasContent: boolean;
 	openAlexId: string | null | undefined;
 	value: string | null | undefined;
@@ -150,7 +145,7 @@ function openAlexContentUrl(input: {
 		url.password ||
 		url.search ||
 		url.hash ||
-		url.pathname !== `/works/${input.openAlexId}.${input.extension}`
+		url.pathname !== `/works/${input.openAlexId}.pdf`
 	) {
 		return null;
 	}
@@ -212,14 +207,7 @@ function normalizeOpenAlexWork(
 	const openAlexId = identity?.openAlexId;
 	const referenceCount = work.referenced_works_count ?? undefined;
 	return {
-		contentGrobidXmlUrl: openAlexContentUrl({
-			extension: 'grobid-xml',
-			hasContent: work.has_content?.grobid_xml === true,
-			openAlexId,
-			value: work.content_urls?.grobid_xml,
-		}),
-		contentPdfUrl: openAlexContentUrl({
-			extension: 'pdf',
+		contentPdfUrl: openAlexContentPdfUrl({
 			hasContent: work.has_content?.pdf === true,
 			openAlexId,
 			value: work.content_urls?.pdf,
@@ -326,7 +314,7 @@ export async function resolveOpenAlexPaper(input: {
 	return normalizeOpenAlexWork(work, identifiers, relations);
 }
 
-export async function acquireOpenAlexPdf(input: { apiKey?: string; contentPdfUrl: string }): Promise<GenericAcquiredMaterial> {
+export async function fetchOpenAlexPdf(input: { apiKey?: string; contentPdfUrl: string }): Promise<Response> {
 	const apiKey = input.apiKey?.trim();
 	if (!apiKey) throw new Error('OpenAlex content download requires an API key');
 	const contentUrl = new URL(input.contentPdfUrl);
@@ -351,38 +339,5 @@ export async function acquireOpenAlexPdf(input: { apiKey?: string; contentPdfUrl
 		await response.body?.cancel();
 		throw new Error(`OpenAlex content PDF request failed with HTTP ${status}`);
 	}
-	return acquireFetchedPdfResponse(response, contentUrl.toString());
-}
-
-export async function acquireOpenAlexGrobidText(input: {
-	contentGrobidXmlUrl: string;
-	env: CoreEnv;
-	processingId?: string;
-}): Promise<string> {
-	const apiKey = input.env.OPENALEX_API_KEY?.trim();
-	if (!apiKey) throw new Error('OpenAlex content download requires an API key');
-	const contentUrl = new URL(input.contentGrobidXmlUrl);
-	if (
-		contentUrl.protocol !== 'https:' ||
-		contentUrl.hostname !== OPENALEX_CONTENT_HOST ||
-		contentUrl.username ||
-		contentUrl.password ||
-		contentUrl.search ||
-		contentUrl.hash ||
-		!contentUrl.pathname.endsWith('.grobid-xml')
-	) {
-		throw new Error('OpenAlex content GROBID XML URL is invalid');
-	}
-	const requestUrl = new URL(contentUrl);
-	requestUrl.searchParams.set('api_key', apiKey);
-	const response = await fetch(requestUrl, {
-		headers: { Accept: 'application/xml,text/xml' },
-		signal: AbortSignal.timeout(CONTENT_REQUEST_TIMEOUT_MS),
-	});
-	if (!response.ok) {
-		const status = response.status;
-		await response.body?.cancel();
-		throw new Error(`OpenAlex content GROBID XML request failed with HTTP ${status}`);
-	}
-	return markdownFromXml(input.env, await response.text(), input.processingId);
+	return response;
 }

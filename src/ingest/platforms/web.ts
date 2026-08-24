@@ -2,7 +2,6 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
 import { extractFromHtml } from '@extractus/article-extractor';
-import { markdownFromHtml } from '../document-conversion';
 import { type GenericAcquiredMaterial, literalCreator, type PlatformResourceUrl } from './materialize';
 import { acquireFetchedPdfResponse, PDF_MIME } from './pdf';
 
@@ -54,11 +53,33 @@ type AcquiredWebContent = GenericAcquiredMaterial;
 
 type PlatformResolution = { platform: PlatformResourceUrl };
 
-async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, processingId?: string): Promise<AcquiredWebContent> {
+async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, processingId: string): Promise<AcquiredWebContent> {
 	const article = await extractHtmlArticle(html, url);
 	if (!article) throw new NonRetryableError('No readable article content found');
 
-	const content = await markdownFromHtml(env, article.html, url, processingId);
+	const hostname = new URL(url).hostname;
+	const converted = await env.AI.toMarkdown(
+		{
+			name: `${hostname.replace(/^www\./, '')}.html`,
+			blob: new Blob([article.html], { type: 'text/html' }),
+		},
+		{
+			gateway: {
+				id: 'core-ingest',
+				collectLog: true,
+				retries: { maxAttempts: 1 },
+				metadata: {
+					feature: 'html-to-markdown',
+					environment: env.AI_GATEWAY_ENVIRONMENT,
+					processing_id: processingId,
+				},
+			},
+			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
+			conversionOptions: { html: { hostname } },
+		},
+	);
+	if (converted.format === 'error') throw new Error(`Workers AI toMarkdown failed: ${converted.error}`);
+	const content = converted.data.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '').trim();
 	if (content.length < MIN_ARTICLE_CONTENT_CHARS) {
 		throw new NonRetryableError(`Extracted HTML content is too short (${content.length} chars)`);
 	}
@@ -81,7 +102,7 @@ async function acquireWebResource(
 	url: string,
 	env: CoreEnv,
 	platformUrl: (url: URL) => PlatformResourceUrl | null,
-	processingId?: string,
+	processingId: string,
 ): Promise<AcquiredWebContent | PlatformResolution> {
 	const response = await fetch(url, {
 		headers: {

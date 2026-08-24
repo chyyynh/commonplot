@@ -13,8 +13,8 @@ import {
 import type { PaperKindMetadata } from '@core-shared/resource';
 import { z } from 'zod';
 import { type GenericAcquiredMaterial, literalCreator } from './materialize';
-import { acquireOpenAlexGrobidText, acquireOpenAlexPdf, type PaperMetadata, resolveOpenAlexPaper } from './openalex';
-import { PDF_MIME } from './pdf';
+import { fetchOpenAlexPdf, type PaperMetadata, resolveOpenAlexPaper } from './openalex';
+import { acquireFetchedPdfResponse, PDF_MIME } from './pdf';
 
 const IDENTIFIER_SCAN_CHARS = 3_000;
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
@@ -44,7 +44,6 @@ type PaperEnrichmentCandidate = {
 };
 
 type PaperEnrichmentResolution = {
-	contentGrobidXmlUrl: string | null;
 	contentPdfUrl: string | null;
 	identifiers: PaperIdentifier[];
 	metadata: PaperMetadata | null;
@@ -166,7 +165,7 @@ async function stagePaperEnrichment(
 	candidate: PaperEnrichmentCandidate,
 ): Promise<PaperEnrichmentResolution> {
 	if (!candidate.identifiers.length && !candidate.citoidUrl) {
-		return { contentGrobidXmlUrl: null, contentPdfUrl: null, identifiers: [], metadata: null };
+		return { contentPdfUrl: null, identifiers: [], metadata: null };
 	}
 	const attemptStartedAt = Date.now();
 
@@ -209,7 +208,6 @@ async function stagePaperEnrichment(
 			},
 		);
 		return {
-			contentGrobidXmlUrl: resolution?.resolved?.contentGrobidXmlUrl ?? null,
 			contentPdfUrl: resolution?.resolved?.contentPdfUrl ?? null,
 			identifiers: resolution?.resolved?.identifiers ?? resolution?.identifiers ?? [],
 			metadata: resolution?.resolved?.metadata ?? null,
@@ -224,7 +222,6 @@ async function stagePaperEnrichment(
 			error: error instanceof Error ? error.message : String(error),
 		});
 		return {
-			contentGrobidXmlUrl: null,
 			contentPdfUrl: null,
 			identifiers: [],
 			metadata: null,
@@ -243,7 +240,8 @@ async function acquireOpenAlexPdfStream(
 	},
 	env: CoreEnv,
 ): Promise<ReadableStream<Uint8Array>> {
-	const acquired = await acquireOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
+	const response = await fetchOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
+	const acquired = await acquireFetchedPdfResponse(response, input.contentPdfUrl);
 	const sourceName = input.sourceName.trim();
 	if (!sourceName) throw new Error(`Processing ${input.processingId} has no source name for its OpenAlex PDF`);
 	return Response.json({
@@ -256,111 +254,42 @@ async function acquireOpenAlexPdfStream(
 	}).body!;
 }
 
-async function acquireOpenAlexGrobidStream(
-	input: {
-		contentGrobidXmlUrl: string;
-		description: string | null;
-		publishedDate: string | null;
-		processingId: string;
-		sourceName: string;
-		title: string;
-	},
-	env: CoreEnv,
-): Promise<ReadableStream<Uint8Array>> {
-	const markdown = await acquireOpenAlexGrobidText({
-		contentGrobidXmlUrl: input.contentGrobidXmlUrl,
-		env,
-		processingId: input.processingId,
-	});
-	const sourceName = input.sourceName.trim();
-	if (!sourceName) throw new Error('OpenAlex GROBID acquisition has no source name');
-	return Response.json({
-		resourcePlatform: null,
-		fileType: null,
-		title: input.title,
-		markdown,
-		source: sourceName,
-		originalLang: null,
-		publishedDate: input.publishedDate,
-		summary: input.description,
-		creators: [],
-		kindMetadata: { siteName: sourceName },
-	}).body!;
-}
-
 async function stageOpenAlexContentAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	resource: PaperContentCandidate,
 	resolution: PaperEnrichmentResolution,
 ): Promise<GenericAcquiredMaterial | null> {
-	const { contentGrobidXmlUrl, contentPdfUrl, metadata } = resolution;
-	if (!contentPdfUrl && !contentGrobidXmlUrl) return null;
+	const { contentPdfUrl, metadata } = resolution;
+	if (!contentPdfUrl) return null;
 
 	const sourceName = resource.source?.trim() || (resource.url ? new URL(resource.url).hostname : 'OpenAlex');
 	const description = metadata?.abstract?.trim() || resource.summary;
 	const publishedDate = metadata?.publicationDate?.trim() || resource.publishedDate;
 	const title = metadata?.title?.trim() || resource.title;
 
-	if (contentPdfUrl) {
-		const contentStream = await step
-			.do('acquire-openalex-content-pdf-v2', PAPER_CONTENT_ACQUISITION_STEP, () =>
-				acquireOpenAlexPdfStream(
-					{ contentPdfUrl, description, publishedDate, processingId: resource.processingId, sourceName, title },
-					env,
-				),
-			)
-			.catch((error) => {
-				console.error({
-					tag: 'OPENALEX_CONTENT',
-					event: 'pdf_acquisition_failed',
-					processing_id: resource.processingId,
-					error: error instanceof Error ? error.message : String(error),
-				});
-				return null;
-			});
-		if (contentStream) {
-			const acquired = await new Response(contentStream).json<GenericAcquiredMaterial>();
-			console.info({
+	const contentStream = await step
+		.do('acquire-openalex-content-pdf-v2', PAPER_CONTENT_ACQUISITION_STEP, () =>
+			acquireOpenAlexPdfStream({ contentPdfUrl, description, publishedDate, processingId: resource.processingId, sourceName, title }, env),
+		)
+		.catch((error) => {
+			console.error({
 				tag: 'OPENALEX_CONTENT',
-				event: 'pdf_acquired',
+				event: 'pdf_acquisition_failed',
 				processing_id: resource.processingId,
-				chars: acquired.markdown.length,
+				error: error instanceof Error ? error.message : String(error),
 			});
-			return acquired;
-		}
-	}
-
-	if (contentGrobidXmlUrl) {
-		const contentStream = await step
-			.do('acquire-openalex-content-grobid-v2', PAPER_CONTENT_ACQUISITION_STEP, () =>
-				acquireOpenAlexGrobidStream(
-					{ contentGrobidXmlUrl, description, processingId: resource.processingId, publishedDate, sourceName, title },
-					env,
-				),
-			)
-			.catch((error) => {
-				console.error({
-					tag: 'OPENALEX_CONTENT',
-					event: 'grobid_acquisition_failed',
-					processing_id: resource.processingId,
-					error: error instanceof Error ? error.message : String(error),
-				});
-				return null;
-			});
-		if (contentStream) {
-			const acquired = await new Response(contentStream).json<GenericAcquiredMaterial>();
-			console.info({
-				tag: 'OPENALEX_CONTENT',
-				event: 'grobid_acquired',
-				processing_id: resource.processingId,
-				chars: acquired.markdown.length,
-			});
-			return acquired;
-		}
-	}
-
-	return null;
+			return null;
+		});
+	if (!contentStream) return null;
+	const acquired = await new Response(contentStream).json<GenericAcquiredMaterial>();
+	console.info({
+		tag: 'OPENALEX_CONTENT',
+		event: 'pdf_acquired',
+		processing_id: resource.processingId,
+		chars: acquired.markdown.length,
+	});
+	return acquired;
 }
 
 export async function stagePaperProcessing(
