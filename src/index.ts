@@ -28,7 +28,7 @@ export {
 type AppResourceDraftInput = Readonly<{
 	instanceId: string;
 	url: string;
-	admission: Extract<ResourceDraftTarget['admission'], { kind: 'profileSave' | 'container' }>;
+	commitIntent: ResourceDraftTarget['commitIntent'];
 }>;
 
 type StoredPdfProcessingInput = Readonly<{ resourceId: string }>;
@@ -181,12 +181,9 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		}
 		const target = ResourceDraftTargetSchema.parse({
 			kind: 'draft',
-			admission: input.admission,
+			commitIntent: input.commitIntent,
 			url: parsedUrl.toString(),
 		});
-		if (target.admission.kind !== 'profileSave' && target.admission.kind !== 'container') {
-			throw new Error('App URL drafts only support profileSave or container admission');
-		}
 		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id: input.instanceId, params: target }]);
 		return input.instanceId;
 	}

@@ -485,7 +485,7 @@ export function storedPdfProcessingResult(resource: ResolvedResource, input: { r
 		resource: { ...resource, url, normalizedUrl: url },
 		persistenceTarget: {
 			kind: 'draft' as const,
-			admission: { kind: 'userFilePaper' as const, fileResourceId: input.resourceId },
+			commitIntent: { kind: 'userFilePaper' as const, fileResourceId: input.resourceId },
 		},
 	};
 }

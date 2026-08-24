@@ -28,30 +28,13 @@ import { enqueueResourceTranslation } from './translation-workflow';
 export const ResourceDraftTargetSchema = z
 	.object({
 		kind: z.literal('draft'),
-		admission: z.discriminatedUnion('kind', [
-			z
-				.object({
-					kind: z.literal('profileSave'),
-					userId: z.string().trim().min(1).max(255),
-					visibility: z.enum(['public', 'private']),
-				})
-				.strict(),
-			z
-				.object({
-					kind: z.literal('container'),
-					userId: z.string().trim().min(1).max(255),
-					container: z
-						.object({
-							kind: z.enum(['collection', 'workspace']),
-							id: z.string().uuid(),
-						})
-						.strict(),
-				})
-				.strict(),
-			z.object({ kind: z.literal('source'), sourceId: z.string().uuid() }).strict(),
-			z.object({ kind: z.literal('subject'), parentResourceId: z.string().uuid() }).strict(),
-			z.object({ kind: z.literal('userFilePaper'), fileResourceId: z.string().uuid() }).strict(),
-		]),
+		commitIntent: z.record(z.string(), z.json()),
+		monitor: z
+			.object({
+				avatarUrl: z.url().max(2_048).nullable(),
+			})
+			.strict()
+			.optional(),
 		url: z
 			.url({ protocol: /^https?$/ })
 			.max(2_048)
@@ -65,7 +48,6 @@ export const ResourceDraftTargetSchema = z
 				originalLang: z.string().trim().min(1).max(35).optional(),
 				publishedDate: z.iso.datetime().optional(),
 				keywords: z.array(z.string().max(500)).max(100).optional(),
-				sourceAvatarUrl: z.url().max(2_048).optional(),
 			})
 			.strict()
 			.optional(),
@@ -98,14 +80,14 @@ export async function enqueueSourceDrafts(env: CoreEnv, drafts: SourceResourceDr
 			const sourceAvatarUrl = normalizedExternalMediaUrl(draft.sourceAvatarUrl);
 			const target = {
 				kind: 'draft',
-				admission: { kind: 'source', sourceId: draft.sourceId.trim() },
+				commitIntent: { kind: 'source', sourceId: z.uuid().parse(draft.sourceId.trim()) },
+				monitor: { avatarUrl: sourceAvatarUrl },
 				url: parsedUrl.toString(),
 				sourceHints: {
 					...(summary ? { summary } : {}),
 					...(originalLang ? { originalLang } : {}),
 					...(draft.publishedDate ? { publishedDate: draft.publishedDate.toISOString() } : {}),
 					...(draft.keywords?.length ? { keywords: draft.keywords } : {}),
-					...(sourceAvatarUrl ? { sourceAvatarUrl } : {}),
 				},
 			} satisfies ResourceDraftTarget;
 			return {
@@ -157,7 +139,7 @@ type ResolvedProcessingCall = {
 	keywordHints: readonly string[];
 	resource: ProcessingResource;
 	persistenceTarget:
-		| Readonly<{ kind: 'draft'; admission: ResourceDraftTarget['admission'] }>
+		| Readonly<{ kind: 'draft'; commitIntent: ResourceDraftTarget['commitIntent'] }>
 		| Readonly<{ kind: 'existing'; resourceId: string }>;
 	processingId: string;
 };
@@ -349,12 +331,6 @@ async function resolveProcessingCall(
 	instanceId: string,
 ): Promise<ResolvedProcessingCall> {
 	if (target.kind === 'draft') {
-		const monitor =
-			target.admission.kind === 'source'
-				? {
-						avatarUrl: target.sourceHints?.sourceAvatarUrl ?? null,
-					}
-				: null;
 		return {
 			keywordHints: target.sourceHints?.keywords ?? [],
 			processingId: instanceId,
@@ -364,13 +340,13 @@ async function resolveProcessingCall(
 					publishedDate: target.sourceHints?.publishedDate ?? null,
 					summary: target.sourceHints?.summary ?? null,
 				},
-				monitor,
+				monitor: target.monitor ?? null,
 				processingId: instanceId,
 				url: target.url,
 			}),
 			persistenceTarget: {
 				kind: 'draft',
-				admission: target.admission,
+				commitIntent: target.commitIntent,
 			},
 		};
 	}
@@ -479,7 +455,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					async () => {
 						const subjectTarget = ResourceDraftTargetSchema.parse({
 							kind: 'draft',
-							admission: { kind: 'subject', parentResourceId: persistedResourceId },
+							commitIntent: { kind: 'subject', parentResourceId: persistedResourceId },
 							url: subject.normalizedUrl,
 						});
 						const id = `subject-draft-v3-${await sha256Hex(JSON.stringify(subjectTarget))}`;
