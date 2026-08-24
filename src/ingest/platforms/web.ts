@@ -79,7 +79,7 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, proce
 		},
 	);
 	if (converted.format === 'error') throw new Error(`Workers AI toMarkdown failed: ${converted.error}`);
-	const content = converted.data.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '').trim();
+	const content = converted.data.trim();
 	if (content.length < MIN_ARTICLE_CONTENT_CHARS) {
 		throw new NonRetryableError(`Extracted HTML content is too short (${content.length} chars)`);
 	}

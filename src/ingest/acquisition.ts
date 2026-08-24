@@ -66,7 +66,7 @@ async function resolveGenericAcquiredResource(
 		paperIdentifiers: readonly PaperIdentifier[];
 		processingId: string;
 		sourceUrl: string | null;
-		translateUrl: boolean;
+		allowCitoidLookup: boolean;
 	},
 ): Promise<ResolvedResource> {
 	let publishedDate = input.hints.publishedDate;
@@ -84,7 +84,7 @@ async function resolveGenericAcquiredResource(
 		publishedDate,
 		seedIdentifiers: input.paperIdentifiers,
 		sourceUrl: input.sourceUrl,
-		translateUrl: input.translateUrl,
+		allowCitoidLookup: input.allowCitoidLookup,
 	});
 	if (!paper.acquiredContent.markdown.trim()) {
 		throw new Error(`Processing ${input.processingId} has no extractable content`);
@@ -118,7 +118,7 @@ export async function stageUrlAcquisition(
 				paperIdentifiers: input.paperIdentifiers ?? [],
 				processingId: input.processingId,
 				sourceUrl: input.url,
-				translateUrl: input.monitor === null,
+				allowCitoidLookup: input.monitor === null,
 			});
 		}
 		detected = web.platform;
@@ -173,7 +173,7 @@ export async function stageStoredResource(
 				paperIdentifiers: [],
 				processingId: acquired.resource.resourceId,
 				sourceUrl: null,
-				translateUrl: false,
+				allowCitoidLookup: false,
 			}),
 			acquired.resource,
 		),

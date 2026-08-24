@@ -101,7 +101,7 @@ async function resolveCitoidPaperIdentifiers(value: string): Promise<PaperIdenti
 		if (status === 429) {
 			throw new Error(`Citoid request failed with HTTP 429${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
 		}
-		console.warn({ tag: 'CITOID', event: 'translation_unavailable', status });
+		console.warn({ tag: 'CITOID', event: 'lookup_unavailable', status });
 		return [];
 	}
 	const items = CitoidResponseSchema.parse(await response.json());
@@ -162,7 +162,7 @@ async function stagePaperEnrichment(
 							if (error instanceof Error && error.message.includes('HTTP 429')) throw error;
 							console.warn({
 								tag: 'CITOID',
-								event: 'translation_failed',
+								event: 'lookup_failed',
 								error: error instanceof Error ? error.message : String(error),
 							});
 							return [];
@@ -277,7 +277,7 @@ export async function stagePaperProcessing(
 		publishedDate: string | null;
 		seedIdentifiers: readonly PaperIdentifier[];
 		sourceUrl: string | null;
-		translateUrl: boolean;
+		allowCitoidLookup: boolean;
 	},
 ) {
 	const identifiers = localPaperIdentifiers({
@@ -287,7 +287,7 @@ export async function stagePaperProcessing(
 		sourceUrl: input.sourceUrl,
 	});
 	const resolution = await stagePaperEnrichment(env, step, {
-		citoidUrl: identifiers.length || !input.translateUrl ? null : input.canonicalUrl,
+		citoidUrl: identifiers.length || !input.allowCitoidLookup ? null : input.canonicalUrl,
 		identifiers,
 		processingId: input.processingId,
 	});
