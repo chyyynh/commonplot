@@ -8,7 +8,7 @@ import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput 
 import { syncCorpusItem } from '../search-index';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
-import { normalizedExternalMediaUrl, resourceImageSourceUrls } from '../shared/image-mapping';
+import { resourceImageSourceUrls } from '../shared/image-mapping';
 import { normalizePaperIdentifiers, type PaperIdentifier } from '../shared/paper-identity';
 import {
 	canonicalizeOptionalResourceLang,
@@ -31,12 +31,6 @@ export const ResourceDraftTargetSchema = z
 		kind: z.literal('draft'),
 		relation: ResourceDraftRelationSchema.optional(),
 		saveTarget: z.record(z.string(), z.json()).optional(),
-		monitor: z
-			.object({
-				avatarUrl: z.url().max(2_048).nullable(),
-			})
-			.strict()
-			.optional(),
 		url: z
 			.url({ protocol: /^https?$/ })
 			.max(2_048)
@@ -65,7 +59,6 @@ export type SourceResourceDraft = {
 	summary: string | null;
 	originalLang?: string;
 	keywords?: string[];
-	sourceAvatarUrl?: string | null;
 };
 
 /** Crosses the discovery -> Resource Workflow boundary for every monitor. */
@@ -79,11 +72,9 @@ export async function enqueueSourceDrafts(env: CoreEnv, drafts: SourceResourceDr
 				throw new Error('Source resource URL must be external http(s)');
 			}
 			const summary = draft.summary?.trim() || null;
-			const sourceAvatarUrl = normalizedExternalMediaUrl(draft.sourceAvatarUrl);
 			const target = {
 				kind: 'draft',
 				relation: { kind: 'source', sourceId: z.uuid().parse(draft.sourceId.trim()) },
-				monitor: { avatarUrl: sourceAvatarUrl },
 				url: parsedUrl.toString(),
 				sourceHints: {
 					...(summary ? { summary } : {}),
@@ -304,7 +295,7 @@ async function resolveProcessingCall(
 					publishedDate: target.sourceHints?.publishedDate ?? null,
 					summary: target.sourceHints?.summary ?? null,
 				},
-				monitor: target.monitor ?? null,
+				allowCitoidLookup: target.relation?.kind !== 'source',
 				processingId: instanceId,
 				url: target.url,
 			}),
@@ -334,7 +325,7 @@ async function resolveProcessingCall(
 				publishedDate: snapshot.publishedDate,
 				summary: snapshot.summary,
 			},
-			monitor: null,
+			allowCitoidLookup: false,
 			paperIdentifiers: snapshot.paperIdentifiers,
 			processingId: target.resourceId,
 			url: snapshot.url,

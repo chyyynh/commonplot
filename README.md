@@ -184,7 +184,7 @@ src/
 │       ├── rss.ts        # feed polling
 │       ├── twitter.ts    # source monitor
 │       ├── twitter-acquisition.ts # tweet acquisition
-│       ├── youtube-acquisition.ts # transcript/highlights
+│       ├── youtube.ts             # source resolution, acquisition, transcript/highlights
 │       ├── hackernews.ts # HN processor
 │       ├── paper.ts      # OpenAlex enrichment stage
 │       └── pdf.ts        # app-owned and external PDF acquisition/extraction

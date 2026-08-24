@@ -178,7 +178,7 @@ src/
 │       ├── rss.ts        # feed polling
 │       ├── twitter.ts    # source monitor
 │       ├── twitter-acquisition.ts # tweet acquisition
-│       ├── youtube-acquisition.ts # transcript/highlights
+│       ├── youtube.ts             # 來源解析、擷取、逐字稿／精華
 │       ├── hackernews.ts # HN processor
 │       ├── paper.ts      # OpenAlex enrichment stage
 │       └── pdf.ts        # PDF text extraction stage

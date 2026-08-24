@@ -11,7 +11,6 @@ type FeedSource = {
 	id: string;
 	name: string;
 	handle: string;
-	avatarUrl: string | null;
 };
 
 export async function resolveFeedMonitoredSource(url: URL) {
@@ -28,7 +27,7 @@ export async function resolveFeedMonitoredSource(url: URL) {
 
 async function loadFeedSources(db: NodePgDatabase): Promise<FeedSource[]> {
 	const result = await db.execute<FeedSource>(sql`
-		SELECT id::text AS id, name, handle, avatar_url AS "avatarUrl"
+		SELECT id::text AS id, name, handle
 		FROM sources
 		WHERE enabled = true
 		  AND monitor_kind = 'feed'
@@ -55,7 +54,6 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: FeedSource): 
 		publishedDate: item.publishedDate,
 		summary: item.summary,
 		originalLang: item.originalLang,
-		sourceAvatarUrl: feed.avatarUrl,
 	}));
 	const created = await enqueueSourceDrafts(env, drafts);
 	console.info({

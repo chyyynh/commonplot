@@ -5,7 +5,7 @@ import { z } from 'zod';
 import type {} from './env';
 import { handleRSSCron, resolveFeedMonitoredSource } from './ingest/platforms/rss';
 import { handleTwitterCron, resolveTwitterMonitoredSource } from './ingest/platforms/twitter';
-import { resolveYouTubeMonitoredSource } from './ingest/platforms/youtube-acquisition';
+import { resolveYouTubeMonitoredSource } from './ingest/platforms/youtube';
 import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import {
 	AutonomousResourceDraftIdSchema,

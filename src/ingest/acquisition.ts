@@ -14,13 +14,9 @@ import { stagePaperProcessing } from './platforms/paper';
 import { stageStoredPdfAcquisition, storedPdfProcessingResult } from './platforms/pdf';
 import { parseTwitterResourceUrl, stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
-import { parseYouTubeResourceUrl, stageYouTubeAcquisition, type YouTubeResourceMutation } from './platforms/youtube-acquisition';
+import { parseYouTubeResourceUrl, stageYouTubeAcquisition, type YouTubeResourceData } from './platforms/youtube';
 
-export type ProcessingResource = ResolvedResource & { youtube?: YouTubeResourceMutation };
-
-type MonitoredAcquisitionContext = Readonly<{
-	avatarUrl: string | null;
-}>;
+export type ProcessingResource = ResolvedResource & { youtube?: YouTubeResourceData };
 
 export function resolvePlatformResourceUrl(url: URL): PlatformResourceUrl | null {
 	const hostname = url.hostname.toLowerCase();
@@ -100,8 +96,8 @@ export async function stageUrlAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
+		allowCitoidLookup: boolean;
 		hints: ResourceAcquisitionHints;
-		monitor: MonitoredAcquisitionContext | null;
 		paperIdentifiers?: readonly PaperIdentifier[];
 		processingId: string;
 		url: string;
@@ -118,7 +114,7 @@ export async function stageUrlAcquisition(
 				paperIdentifiers: input.paperIdentifiers ?? [],
 				processingId: input.processingId,
 				sourceUrl: input.url,
-				allowCitoidLookup: input.monitor === null,
+				allowCitoidLookup: input.allowCitoidLookup,
 			});
 		}
 		detected = web.platform;
@@ -143,9 +139,7 @@ export async function stageUrlAcquisition(
 		case 'youtube':
 			return stageYouTubeAcquisition(env, step, {
 				hints: input.hints,
-				monitoredOnly: input.monitor !== null,
 				processingId: input.processingId,
-				sourceAvatarUrl: input.monitor?.avatarUrl ?? null,
 				videoId: detected.platformId,
 			});
 	}

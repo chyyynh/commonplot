@@ -19,7 +19,7 @@ const [resource, paper, hackerNews, lessWrong, twitter, youtube] = await Promise
 	import('../src/ingest/platforms/hackernews.ts'),
 	import('../src/ingest/platforms/lesswrong.ts'),
 	import('../src/ingest/platforms/twitter-acquisition.ts'),
-	import('../src/ingest/platforms/youtube-acquisition.ts'),
+	import('../src/ingest/platforms/youtube.ts'),
 ]);
 
 function detectResourceUrl(value) {

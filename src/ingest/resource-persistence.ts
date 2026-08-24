@@ -11,7 +11,7 @@ import {
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
 import type { ProcessingResource } from './acquisition';
-import type { YouTubeResourceMutation } from './platforms/youtube-acquisition';
+import type { YouTubeResourceData } from './platforms/youtube';
 
 type ResourceDraftRelation = Readonly<{ kind: 'source'; sourceId: string }> | Readonly<{ kind: 'subject'; parentResourceId: string }>;
 
@@ -205,36 +205,25 @@ async function existingSubject(db: NodePgDatabase, parentId: string, subject: No
 	return existing.scope === 'corpus' && existing.enrichment_status === 'enriched' ? existing.id : null;
 }
 
-async function persistYouTube(db: NodePgDatabase, videoId: string, input: YouTubeResourceMutation, highlightsGeneratedAt: Date | null) {
-	if (input.transcript) {
-		await db.execute(sql`
-			INSERT INTO youtube_transcripts (
-				video_id, transcript, language, chapters, chapters_from_description,
-				fetched_at, ai_highlights, highlights_generated_at
-			) VALUES (
-				${videoId}, ${JSON.stringify(input.transcript.segments)}::jsonb, ${input.transcript.language},
-				${JSON.stringify(input.transcript.chapters)}::jsonb, ${input.transcript.chaptersFromDescription},
-				NOW(), ${input.highlights ? JSON.stringify(input.highlights) : null}::jsonb, ${highlightsGeneratedAt}
-			)
-			ON CONFLICT (video_id) DO UPDATE SET
-				transcript = EXCLUDED.transcript,
-				language = EXCLUDED.language,
-				chapters = EXCLUDED.chapters,
-				chapters_from_description = EXCLUDED.chapters_from_description,
-				fetched_at = NOW(),
-				ai_highlights = COALESCE(EXCLUDED.ai_highlights, youtube_transcripts.ai_highlights),
-				highlights_generated_at = COALESCE(EXCLUDED.highlights_generated_at, youtube_transcripts.highlights_generated_at)
-		`);
-		return;
-	}
-	if (!input.highlights) return;
-	const updated = await db.execute(sql`
-		UPDATE youtube_transcripts
-		SET ai_highlights = ${JSON.stringify(input.highlights)}::jsonb,
-			highlights_generated_at = ${highlightsGeneratedAt}
-		WHERE video_id = ${videoId}
+async function persistYouTube(db: NodePgDatabase, videoId: string, input: YouTubeResourceData, highlightsGeneratedAt: Date | null) {
+	await db.execute(sql`
+		INSERT INTO youtube_transcripts (
+			video_id, transcript, language, chapters, chapters_from_description,
+			fetched_at, ai_highlights, highlights_generated_at
+		) VALUES (
+			${videoId}, ${JSON.stringify(input.transcript.segments)}::jsonb, ${input.transcript.language},
+			${JSON.stringify(input.transcript.chapters)}::jsonb, ${input.transcript.chaptersFromDescription},
+			NOW(), ${input.highlights ? JSON.stringify(input.highlights) : null}::jsonb, ${highlightsGeneratedAt}
+		)
+		ON CONFLICT (video_id) DO UPDATE SET
+			transcript = EXCLUDED.transcript,
+			language = EXCLUDED.language,
+			chapters = EXCLUDED.chapters,
+			chapters_from_description = EXCLUDED.chapters_from_description,
+			fetched_at = NOW(),
+			ai_highlights = COALESCE(EXCLUDED.ai_highlights, youtube_transcripts.ai_highlights),
+			highlights_generated_at = COALESCE(EXCLUDED.highlights_generated_at, youtube_transcripts.highlights_generated_at)
 	`);
-	if (updated.rowCount !== 1) throw new Error(`YouTube transcript ${videoId} was not found`);
 }
 
 async function writeCanonicalResource(

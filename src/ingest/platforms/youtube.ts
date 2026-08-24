@@ -2,6 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
+import type { TranscriptResponse } from 'youtube-transcript';
 import { z } from 'zod';
 import { RESOURCE_TYPES } from '../../shared/resource';
 import {
@@ -14,7 +15,6 @@ import {
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
-const MIN_MONITORED_VIDEO_DURATION_SECONDS = 180;
 const YOUTUBE_CHANNEL_ID_RE = /^UC[A-Za-z0-9_-]{22}$/;
 const YOUTUBE_HANDLE_RE = /^@[A-Za-z0-9._-]{3,30}$/;
 
@@ -32,8 +32,8 @@ type YouTubeHighlights = Readonly<{
 	highlights: ReadonlyArray<Readonly<{ title: string; summary: string; startTime: number; endTime: number }>>;
 	generatedAt: string;
 }>;
-export type YouTubeResourceMutation = Readonly<{
-	transcript: YouTubeTranscript | null;
+export type YouTubeResourceData = Readonly<{
+	transcript: YouTubeTranscript;
 	highlights: YouTubeHighlights | null;
 }>;
 
@@ -148,11 +148,8 @@ const YouTubeChannelsResponseSchema = z.object({
 });
 type YouTubeThumbnails = z.infer<typeof YouTubeThumbnailsSchema>;
 type YouTubeVideosResponse = z.infer<typeof YouTubeVideosResponseSchema>;
-type YouTubeAcquisition = Omit<PlatformAcquiredMaterial<'youtube'>, 'markdown' | 'summary'> & {
-	description: string;
-	transcript: YouTubeTranscript;
-};
-type YouTubeResolvedResource = ResolvedResource & { youtube: YouTubeResourceMutation };
+type YouTubeAcquisition = PlatformAcquiredMaterial<'youtube'> & { transcript: YouTubeTranscript };
+type YouTubeResolvedResource = ResolvedResource & { youtube: YouTubeResourceData };
 
 function bestThumbnailUrl(thumbnails: YouTubeThumbnails): string | null {
 	return (
@@ -231,7 +228,7 @@ async function fetchYouTubeVideoData(videoId: string, youtubeApiKey: string): Pr
 	}
 }
 
-export async function fetchYouTubeChannel(
+async function fetchYouTubeChannel(
 	youtubeApiKey: string,
 	lookup: { id: string } | { handle: string },
 ): Promise<{ id: string; title: string | null; avatarUrl: string | null } | null> {
@@ -264,9 +261,9 @@ export async function fetchYouTubeChannel(
 	}
 }
 
-async function fetchTranscript(videoId: string): Promise<YouTubeTranscriptSegment[]> {
+async function fetchTranscript(videoId: string): Promise<Pick<YouTubeTranscript, 'segments' | 'language'>> {
 	const { YoutubeTranscript } = await import('youtube-transcript');
-	let items: Array<{ offset: number; duration: number; text: string }>;
+	let items: TranscriptResponse[];
 	try {
 		items = await YoutubeTranscript.fetchTranscript(videoId, { fetch: transcriptFetch });
 	} catch (error) {
@@ -276,15 +273,15 @@ async function fetchTranscript(videoId: string): Promise<YouTubeTranscriptSegmen
 			videoId,
 			error: error instanceof Error ? error.message : String(error),
 		});
-		return [];
+		return { segments: [], language: null };
 	}
 
 	if (!items?.length) {
 		console.info({ tag: 'YOUTUBE', msg: 'Transcript unavailable; using video description', videoId });
-		return [];
+		return { segments: [], language: null };
 	}
 
-	const segments: YouTubeTranscriptSegment[] = items.map((item: { offset: number; duration: number; text: string }) => {
+	const segments: YouTubeTranscriptSegment[] = items.map((item) => {
 		const startTime = toSeconds(item.offset, 'offset', videoId) / 1000;
 		return {
 			startTime,
@@ -292,17 +289,13 @@ async function fetchTranscript(videoId: string): Promise<YouTubeTranscriptSegmen
 			text: item.text,
 		};
 	});
+	const language = items.find((item) => item.lang?.trim())?.lang?.trim() || null;
 
-	console.info({ tag: 'YOUTUBE', msg: 'Transcript fetched', provider: 'youtube-transcript', count: segments.length });
-	return segments;
+	console.info({ tag: 'YOUTUBE', msg: 'Transcript fetched', provider: 'youtube-transcript', count: segments.length, language });
+	return { segments, language };
 }
 
-async function scrapeYouTube(
-	videoId: string,
-	youtubeApiKey: string,
-	monitoredOnly: boolean,
-	sourceAvatarUrl: string | null,
-): Promise<YouTubeAcquisition> {
+async function scrapeYouTube(videoId: string, youtubeApiKey: string): Promise<YouTubeAcquisition> {
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching video', videoId });
 
 	const videoData = await fetchYouTubeVideoData(videoId, youtubeApiKey);
@@ -315,30 +308,22 @@ async function scrapeYouTube(
 	const stats = video.statistics;
 
 	const durationSeconds = isoDurationSeconds(video.contentDetails.duration);
-	if (monitoredOnly && (durationSeconds === null || durationSeconds <= MIN_MONITORED_VIDEO_DURATION_SECONDS)) {
-		const reason = durationSeconds === null ? 'is a live stream or unstarted premiere' : `runs ${durationSeconds}s`;
-		throw new NonRetryableError(
-			`YouTube video ${videoId} ${reason}; monitored videos must exceed ${MIN_MONITORED_VIDEO_DURATION_SECONDS}s`,
-		);
-	}
-
 	const thumbnailUrl = bestThumbnailUrl(snippet.thumbnails);
 	const chapters = parseChaptersFromDescription(snippet.description);
 
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching transcript', videoId });
 	const [channelAvatar, transcript] = await Promise.all([
-		sourceAvatarUrl ??
-			fetchYouTubeChannel(youtubeApiKey, { id: snippet.channelId })
-				.then((channel) => channel?.avatarUrl ?? null)
-				.catch((error) => {
-					console.warn({
-						tag: 'YOUTUBE',
-						msg: 'Channel avatar unavailable',
-						channelId: snippet.channelId,
-						error: error instanceof Error ? error.message : String(error),
-					});
-					return null;
-				}),
+		fetchYouTubeChannel(youtubeApiKey, { id: snippet.channelId })
+			.then((channel) => channel?.avatarUrl ?? null)
+			.catch((error) => {
+				console.warn({
+					tag: 'YOUTUBE',
+					msg: 'Channel avatar unavailable',
+					channelId: snippet.channelId,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				return null;
+			}),
 		fetchTranscript(videoId),
 	]);
 	const creators = literalCreator('channel', snippet.channelTitle, {
@@ -353,9 +338,14 @@ async function scrapeYouTube(
 		platformId: videoId,
 		fileType: null,
 		title: snippet.title,
-		description: snippet.description,
+		markdown:
+			transcript.segments
+				.map((segment) => segment.text.trim())
+				.filter(Boolean)
+				.join('\n') || snippet.description.trim(),
+		summary: snippet.description.substring(0, 500) || null,
 		source: snippet.channelTitle.trim() || 'YouTube',
-		originalLang: snippet.defaultAudioLanguage ?? null,
+		originalLang: transcript.language ?? snippet.defaultAudioLanguage ?? null,
 		publishedDate: snippet.publishedAt,
 		creators,
 		kindMetadata: {
@@ -366,8 +356,8 @@ async function scrapeYouTube(
 		},
 		previewImageUrl: thumbnailUrl,
 		transcript: {
-			segments: transcript,
-			language: snippet.defaultAudioLanguage ?? null,
+			segments: transcript.segments,
+			language: transcript.language ?? snippet.defaultAudioLanguage ?? null,
 			chapters,
 			chaptersFromDescription: chapters.length > 0,
 		},
@@ -378,47 +368,51 @@ export async function stageYouTubeAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		monitoredOnly: boolean;
 		hints: ResourceAcquisitionHints;
 		processingId: string;
-		sourceAvatarUrl: string | null;
 		videoId: string;
 	},
 ): Promise<YouTubeResolvedResource> {
 	const contentStream = await step.do(
 		'acquire-youtube-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY, input.monitoredOnly, input.sourceAvatarUrl)).body!,
+		async () => Response.json(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY)).body!,
 	);
 	const acquired = await new Response(contentStream).json<YouTubeAcquisition>();
-	const { description, transcript, ...material } = acquired;
-	const transcriptMarkdown = transcript.segments
-		.map((segment) => segment.text.trim())
-		.filter(Boolean)
-		.join('\n');
-	const resource = materializePlatformResource(
-		{
-			...material,
-			markdown: transcriptMarkdown || description.trim(),
-			summary: description.substring(0, 500) || null,
-		},
-		input.hints,
-		{ kind: 'video', url: `https://youtube.com/watch?v=${input.videoId}` },
-	);
+	const { transcript, ...material } = acquired;
+	const highlights = transcript.segments.length
+		? await step
+				.do(
+					'prepare-youtube-highlights-v2',
+					{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
+					() => prepareYouTubeHighlightsFromTranscript(env, input.processingId, input.videoId, transcript.segments),
+				)
+				.catch((error) => {
+					console.error({
+						tag: 'YOUTUBE',
+						msg: 'Optional YouTube highlights failed after retries',
+						processing_id: input.processingId,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					return null;
+				})
+		: null;
 	return {
-		...resource,
-		youtube: await stageYouTubeEnrichment(env, step, transcript, input.videoId, input.processingId),
+		...materializePlatformResource(material, input.hints, { kind: 'video', url: `https://youtube.com/watch?v=${input.videoId}` }),
+		youtube: { transcript, highlights },
 	};
 }
 
-const YouTubeHighlightSchema = z.object({
-	title: z.string().min(1),
-	summary: z.string().min(1),
-	startTime: z.number().nonnegative(),
-	endTime: z.number().nonnegative(),
-});
-const YouTubeHighlightsSchema = z.object({ highlights: z.array(YouTubeHighlightSchema).min(1) });
-const YOUTUBE_HIGHLIGHTS_MODEL = '@cf/meta/llama-3.3-70b-instruct-fp8-fast';
+const YouTubeHighlightSchema = z
+	.object({
+		title: z.string().min(1),
+		summary: z.string().min(1),
+		startTime: z.number().nonnegative(),
+		endTime: z.number().nonnegative(),
+	})
+	.refine(({ startTime, endTime }) => endTime > startTime, { message: 'Highlight endTime must be after startTime' });
+const YouTubeHighlightsSchema = z.object({ highlights: z.array(YouTubeHighlightSchema).min(5).max(8) });
+const YOUTUBE_HIGHLIGHTS_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
 const HIGHLIGHTS_SYSTEM_PROMPT = `你是專業的影片內容分析師。分析 YouTube 影片逐字稿，找出 5-8 個最重要的主題段落。
 
 規則：
@@ -430,39 +424,9 @@ const HIGHLIGHTS_SYSTEM_PROMPT = `你是專業的影片內容分析師。分析 
 
 只回傳符合 schema 的資料。`;
 
-async function stageYouTubeEnrichment(
-	env: CoreEnv,
-	step: WorkflowStep,
-	transcript: YouTubeTranscript,
-	videoId: string,
-	processingId: string,
-): Promise<YouTubeResourceMutation> {
-	const highlights = transcript.segments.length
-		? await step
-				.do(
-					'prepare-youtube-highlights-v2',
-					{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
-					() => prepareYouTubeHighlightsFromTranscript(env, processingId, videoId, transcript.segments),
-				)
-				.catch((error) => {
-					console.error({
-						tag: 'YOUTUBE',
-						msg: 'Optional YouTube highlights failed after retries',
-						processing_id: processingId,
-						error: error instanceof Error ? error.message : String(error),
-					});
-					return null;
-				})
-		: null;
-	return {
-		transcript,
-		highlights,
-	};
-}
-
 async function prepareYouTubeHighlightsFromTranscript(
 	env: CoreEnv,
-	resourceId: string,
+	processingId: string,
 	videoId: string,
 	transcript: YouTubeTranscriptSegment[],
 ): Promise<YouTubeHighlights> {
@@ -480,7 +444,7 @@ async function prepareYouTubeHighlightsFromTranscript(
 				metadata: {
 					feature: 'youtube-highlights',
 					environment: env.AI_GATEWAY_ENVIRONMENT,
-					resource_id: resourceId,
+					processing_id: processingId,
 				},
 			},
 			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
