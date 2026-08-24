@@ -100,7 +100,7 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, draf
 		targets
 			.filter(({ url }) => !knownUrls.has(url))
 			.map(async (target) => ({
-				id: `source-draft-v6-${await sha256Hex(`${target.relation.sourceId}:${target.url}`)}`,
+				id: `source-draft-v7-${await sha256Hex(`${target.relation.sourceId}:${target.url}`)}`,
 				params: target,
 				retention: { successRetention: '5 minutes', errorRetention: '1 hour' } as const,
 			})),
