@@ -188,8 +188,7 @@ src/
 │       └── pdf.ts        # PDF text extraction stage
 ├── operations/           # operator-triggered durable jobs
 │   └── search-index-rebuild.ts # full AI Search rebuild
-├── search-index.ts        # runtime AI Search projection and sync
-└── public-search.ts       # ordered public Resource ID retrieval
+└── search-index.ts        # runtime AI Search projection, sync, and ordered retrieval
 ```
 
 ## Environment Variables & Bindings

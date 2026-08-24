@@ -182,8 +182,7 @@ src/
 │       └── pdf.ts        # PDF text extraction stage
 ├── operations/           # operator 觸發的 durable jobs
 │   └── search-index-rebuild.ts # AI Search 全量 rebuild
-├── search-index.ts        # runtime AI Search projection 與同步
-└── public-search.ts       # public Resource ID 排序檢索
+└── search-index.ts        # runtime AI Search projection、同步與排序檢索
 ```
 
 ## 環境變數與 Bindings

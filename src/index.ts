@@ -14,7 +14,7 @@ import { ResourceTranslationV2Workflow } from '@ingest/translation-workflow';
 import { ResourceProcessingV2Workflow } from '@ingest/workflow';
 import { z } from 'zod';
 import { SearchIndexGeneration5RebuildWorkflow } from './operations/search-index-rebuild';
-import { type PublicResourceSearchInput, searchPublicResourceIds } from './public-search';
+import { type PublicResourceSearchInput, searchPublicResourceIds } from './search-index';
 
 export {
 	ResourceProcessingV2Workflow,
