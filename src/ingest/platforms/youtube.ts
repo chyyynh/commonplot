@@ -380,23 +380,24 @@ export async function stageYouTubeAcquisition(
 	);
 	const acquired = await new Response(contentStream).json<YouTubeAcquisition>();
 	const { transcript, ...material } = acquired;
-	const highlights = transcript.segments.length
-		? await step
-				.do(
-					'prepare-youtube-highlights-v2',
-					{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
-					() => prepareYouTubeHighlightsFromTranscript(env, input.processingId, input.videoId, transcript.segments),
-				)
-				.catch((error) => {
-					console.error({
-						tag: 'YOUTUBE',
-						msg: 'Optional YouTube highlights failed after retries',
-						processing_id: input.processingId,
-						error: error instanceof Error ? error.message : String(error),
-					});
-					return null;
-				})
-		: null;
+	const highlights =
+		transcript.segments.length && transcript.chapters.length === 0
+			? await step
+					.do(
+						'prepare-youtube-highlights-v2',
+						{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
+						() => prepareYouTubeHighlightsFromTranscript(env, input.processingId, input.videoId, transcript.segments),
+					)
+					.catch((error) => {
+						console.error({
+							tag: 'YOUTUBE',
+							msg: 'Optional YouTube highlights failed after retries',
+							processing_id: input.processingId,
+							error: error instanceof Error ? error.message : String(error),
+						});
+						return null;
+					})
+			: null;
 	return {
 		...materializePlatformResource(material, input.hints, { kind: 'video', url: `https://youtube.com/watch?v=${input.videoId}` }),
 		youtube: { transcript, highlights },

@@ -221,8 +221,14 @@ async function persistYouTube(db: NodePgDatabase, resourceId: string, input: You
 			chapters = EXCLUDED.chapters,
 			chapters_from_description = EXCLUDED.chapters_from_description,
 			fetched_at = NOW(),
-			ai_highlights = COALESCE(EXCLUDED.ai_highlights, youtube_transcripts.ai_highlights),
-			highlights_generated_at = COALESCE(EXCLUDED.highlights_generated_at, youtube_transcripts.highlights_generated_at)
+			ai_highlights = CASE
+				WHEN jsonb_array_length(EXCLUDED.chapters) > 0 THEN NULL
+				ELSE COALESCE(EXCLUDED.ai_highlights, youtube_transcripts.ai_highlights)
+			END,
+			highlights_generated_at = CASE
+				WHEN jsonb_array_length(EXCLUDED.chapters) > 0 THEN NULL
+				ELSE COALESCE(EXCLUDED.highlights_generated_at, youtube_transcripts.highlights_generated_at)
+			END
 	`);
 }
 
