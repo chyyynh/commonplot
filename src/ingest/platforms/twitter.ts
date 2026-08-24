@@ -245,16 +245,7 @@ async function processTwitterSource(
 		});
 		return outcome;
 	} catch (error) {
-		try {
-			await recordSourceFailure(db, source.id, error);
-		} catch (recordError) {
-			console.error({
-				tag: 'TWITTER',
-				event: 'twitter_source_failure_record_failed',
-				userName: source.handle,
-				error: recordError instanceof Error ? recordError.message : String(recordError),
-			});
-		}
+		await recordSourceFailure(db, source.id, error);
 		console.error({
 			tag: 'TWITTER',
 			event: 'twitter_source_failed',

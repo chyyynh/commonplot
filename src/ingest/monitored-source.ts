@@ -4,7 +4,8 @@ import { normalizeUrl, parseExternalHttpUrl, parseTwitterUsername, validatedExte
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { loadFeed } from './platforms/rss-feed';
-import { ResourceDraftTargetSchema } from './workflow';
+import { fetchYouTubeChannel } from './platforms/youtube-acquisition';
+import type { ResourceDraftTarget } from './workflow';
 
 // Resolves a feed/account/channel input into the exact source row the crons can
 // poll. Ordinary resource URLs use resource ingestion instead of this RPC.
@@ -18,99 +19,43 @@ type ResolvedMonitoredSource = {
 };
 
 const YOUTUBE_CHANNEL_ID_RE = /^UC[A-Za-z0-9_-]{22}$/;
-const YOUTUBE_HANDLE_RE = /^@?[A-Za-z0-9._-]{3,30}$/;
+const YOUTUBE_HANDLE_RE = /^@[A-Za-z0-9._-]{3,30}$/;
 
-async function resolveFeedSource(input: string): Promise<ResolvedMonitoredSource> {
-	const { effectiveUrl: feedUrl, title } = await loadFeed(input);
-	const host = feedUrl.hostname.toLowerCase().replace(/^www\./, '');
-	return {
-		monitorKind: 'feed',
-		handle: feedUrl.toString(),
-		name: title ?? host,
-		siteUrl: feedUrl.origin,
-		avatarUrl: null,
-	};
-}
-
-function resolveTwitterSource(input: string): ResolvedMonitoredSource {
-	const handle = parseTwitterUsername(input);
-	if (!handle) throw new Error('Enter a valid X/Twitter handle or profile URL.');
-	const lower = handle.toLowerCase();
-	return {
-		monitorKind: 'twitter',
-		handle: lower,
-		name: `@${lower}`,
-		siteUrl: `https://x.com/${lower}`,
-		avatarUrl: null,
-	};
-}
-
-function youtubeChannelIdFromInput(input: string): string | null {
-	const trimmed = input.trim();
-	if (YOUTUBE_CHANNEL_ID_RE.test(trimmed)) return trimmed;
-	const url = parseExternalHttpUrl(trimmed);
-	if (!url) return null;
-	const host = url.hostname.toLowerCase().replace(/^(www|m)\./, '');
-	if (host !== 'youtube.com') return null;
-	const feedChannelId = url.searchParams.get('channel_id');
-	if (feedChannelId && YOUTUBE_CHANNEL_ID_RE.test(feedChannelId)) return feedChannelId;
-	const segments = url.pathname.split('/').filter(Boolean);
-	return segments[0] === 'channel' && segments[1] && YOUTUBE_CHANNEL_ID_RE.test(segments[1]) ? segments[1] : null;
-}
-
-function youtubeHandleFromInput(input: string): string | null {
-	const trimmed = input.trim();
-	const url = parseExternalHttpUrl(trimmed);
-	if (!url) return null;
-	const host = url.hostname.toLowerCase().replace(/^(www|m)\./, '');
-	if (host !== 'youtube.com') return null;
-	const [segment] = url.pathname.split('/').filter(Boolean);
-	return segment?.startsWith('@') && YOUTUBE_HANDLE_RE.test(segment) ? segment.replace(/^@/, '') : null;
-}
-
-type YouTubeChannelLookup = { id: string; title: string | null; avatarUrl: string | null };
-
-async function fetchYouTubeChannel(env: CoreEnv, query: string): Promise<YouTubeChannelLookup | null> {
-	if (!env.YOUTUBE_API_KEY) throw new Error('YouTube channel lookup is not configured.');
-	const response = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&${query}&key=${env.YOUTUBE_API_KEY}`, {
-		signal: AbortSignal.timeout(15_000),
-	});
-	if (!response.ok) {
-		const status = response.status;
-		await response.body?.cancel();
-		throw new Error(`YouTube channel lookup failed with HTTP ${status}`);
-	}
-	const data = await response.json<{
-		items?: { id?: string; snippet?: { title?: string; thumbnails?: { default?: { url?: string } } } }[];
-	}>();
-	const item = data.items?.[0];
-	if (!item?.id) return null;
-	return {
-		id: item.id,
-		title: item.snippet?.title?.trim() || null,
-		avatarUrl: item.snippet?.thumbnails?.default?.url ?? null,
-	};
-}
-
-async function resolveYouTubeSource(env: CoreEnv, input: string): Promise<ResolvedMonitoredSource> {
-	const channelId = youtubeChannelIdFromInput(input);
-	let channel: YouTubeChannelLookup | null;
+async function resolveYouTubeSource(env: CoreEnv, input: string, url: URL | null): Promise<ResolvedMonitoredSource> {
+	const segments = url?.pathname.split('/').filter(Boolean) ?? [];
+	const feedChannelId = url?.searchParams.get('channel_id');
+	const channelId = [input, feedChannelId, segments[0] === 'channel' ? segments[1] : null].find((candidate) =>
+		YOUTUBE_CHANNEL_ID_RE.test(candidate ?? ''),
+	);
+	let id = channelId;
+	let title: string | null = null;
+	let avatarUrl: string | null = null;
 	if (channelId) {
-		// Direct ids resolve without the API being strictly necessary; the
-		// lookup only enriches name/avatar, so fall back to the bare id.
-		channel = (await fetchYouTubeChannel(env, `id=${channelId}`)) ?? { id: channelId, title: null, avatarUrl: null };
+		try {
+			const channel = await fetchYouTubeChannel(env.YOUTUBE_API_KEY, { id: channelId });
+			if (channel) ({ id, title, avatarUrl } = channel);
+		} catch (error) {
+			console.warn({
+				tag: 'YOUTUBE',
+				msg: 'Using channel ID without optional metadata',
+				channelId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	} else {
-		const handle = youtubeHandleFromInput(input);
+		const handle = YOUTUBE_HANDLE_RE.test(segments[0] ?? '') ? segments[0].slice(1) : null;
 		if (!handle) throw new Error('Enter a YouTube channel URL or channel ID.');
-		channel = await fetchYouTubeChannel(env, `forHandle=${encodeURIComponent(`@${handle}`)}`);
+		const channel = await fetchYouTubeChannel(env.YOUTUBE_API_KEY, { handle });
 		if (!channel) throw new Error(`YouTube channel @${handle} was not found.`);
+		({ id, title, avatarUrl } = channel);
 	}
+	if (!id) throw new Error('Enter a YouTube channel URL or channel ID.');
 	return {
 		monitorKind: 'feed',
-		handle: `https://www.youtube.com/feeds/videos.xml?channel_id=${channel.id}`,
-		name: channel.title ?? channel.id,
-		siteUrl: `https://www.youtube.com/channel/${channel.id}`,
-		avatarUrl: channel.avatarUrl,
+		handle: `https://www.youtube.com/feeds/videos.xml?channel_id=${id}`,
+		name: title ?? id,
+		siteUrl: `https://www.youtube.com/channel/${id}`,
+		avatarUrl,
 	};
 }
 
@@ -119,9 +64,29 @@ export async function resolveMonitoredSource(env: CoreEnv, input: string): Promi
 	if (!raw) throw new Error('Source input is required.');
 	const url = parseExternalHttpUrl(raw);
 	const host = url?.hostname.toLowerCase().replace(/^(www|m)\./, '');
-	if (YOUTUBE_CHANNEL_ID_RE.test(raw) || host === 'youtube.com') return resolveYouTubeSource(env, raw);
-	if (host === 'x.com' || host === 'twitter.com' || (!url && parseTwitterUsername(raw))) return resolveTwitterSource(raw);
-	if (url) return resolveFeedSource(raw);
+	if (YOUTUBE_CHANNEL_ID_RE.test(raw) || host === 'youtube.com') return resolveYouTubeSource(env, raw, url);
+	const twitterHandle = parseTwitterUsername(raw)?.toLowerCase() ?? null;
+	if (host === 'x.com' || host === 'twitter.com' || (!url && twitterHandle)) {
+		if (!twitterHandle) throw new Error('Enter a valid X/Twitter handle or profile URL.');
+		return {
+			monitorKind: 'twitter',
+			handle: twitterHandle,
+			name: `@${twitterHandle}`,
+			siteUrl: `https://x.com/${twitterHandle}`,
+			avatarUrl: null,
+		};
+	}
+	if (url) {
+		const { effectiveUrl: feedUrl, title } = await loadFeed(url.toString());
+		const feedHost = feedUrl.hostname.toLowerCase().replace(/^www\./, '');
+		return {
+			monitorKind: 'feed',
+			handle: feedUrl.toString(),
+			name: title ?? feedHost,
+			siteUrl: feedUrl.origin,
+			avatarUrl: null,
+		};
+	}
 	throw new Error('Enter a feed URL, YouTube channel URL or ID, or X/Twitter handle.');
 }
 
@@ -157,7 +122,7 @@ export async function admitDiscoveredSourceResources(env: CoreEnv, drafts: Sourc
 			if (!parsedUrl) throw new Error('Source resource URL must be external http(s)');
 			const summary = draft.summary?.trim() || null;
 			const sourceAvatarUrl = validatedExternalMediaUrl(draft.sourceAvatarUrl);
-			const target = ResourceDraftTargetSchema.parse({
+			const target = {
 				kind: 'draft',
 				admission: { kind: 'source', sourceId: draft.sourceId.trim() },
 				url: normalizeUrl(parsedUrl.toString()),
@@ -168,7 +133,7 @@ export async function admitDiscoveredSourceResources(env: CoreEnv, drafts: Sourc
 					...(draft.keywords?.length ? { keywords: draft.keywords } : {}),
 					...(sourceAvatarUrl ? { sourceAvatarUrl } : {}),
 				},
-			});
+			} satisfies ResourceDraftTarget;
 			return {
 				id: `${SOURCE_DRAFT_WORKFLOW_REVISION}-${await sha256Hex(JSON.stringify(target))}`,
 				params: target,

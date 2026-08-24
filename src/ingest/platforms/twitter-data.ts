@@ -46,10 +46,10 @@ const TweetSchema = z.object({
 	author: TwitterAuthorSchema.optional(),
 	text: z.string(),
 	extendedEntities: z.object({ media: z.array(TwitterMediaEntitySchema).optional() }).optional(),
-	hashTags: z.array(z.string()).optional(),
+	hashTags: z.array(z.string().max(500)).max(100).optional(),
 	urls: z.array(TwitterUrlEntitySchema).optional(),
 	entities: z.object({ urls: z.array(TwitterUrlEntitySchema).optional() }).optional(),
-	lang: z.string().optional(),
+	lang: z.string().max(35).optional(),
 	get quoted_tweet(): z.ZodCatch<z.ZodOptional<z.ZodNullable<typeof TweetSchema>>> {
 		return TweetSchema.nullish().catch(null);
 	},

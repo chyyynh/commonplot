@@ -57,7 +57,11 @@ const YouTubeChannelsResponseSchema = z.object({
 	items: z
 		.array(
 			z.object({
-				snippet: z.object({ thumbnails: YouTubeThumbnailsSchema }),
+				id: z.string().min(1),
+				snippet: z.object({
+					title: z.string(),
+					thumbnails: YouTubeThumbnailsSchema,
+				}),
 			}),
 		)
 		.optional(),
@@ -148,9 +152,14 @@ async function fetchYouTubeVideoData(videoId: string, youtubeApiKey: string): Pr
 	}
 }
 
-async function fetchYouTubeChannelAvatar(channelId: string, youtubeApiKey: string): Promise<string | null> {
+export async function fetchYouTubeChannel(
+	youtubeApiKey: string,
+	lookup: { id: string } | { handle: string },
+): Promise<{ id: string; title: string | null; avatarUrl: string | null } | null> {
+	if (!youtubeApiKey) throw new Error('YouTube channel lookup is not configured');
 	const url = new URL('https://www.googleapis.com/youtube/v3/channels');
-	url.searchParams.set('id', channelId);
+	if ('id' in lookup) url.searchParams.set('id', lookup.id);
+	else url.searchParams.set('forHandle', `@${lookup.handle.replace(/^@/, '')}`);
 	url.searchParams.set('part', 'snippet');
 	url.searchParams.set('key', youtubeApiKey);
 
@@ -163,17 +172,16 @@ async function fetchYouTubeChannelAvatar(channelId: string, youtubeApiKey: strin
 
 		const channelData = YouTubeChannelsResponseSchema.parse(await response.json());
 		if (channelData.error) throw new Error(channelData.error.message);
-		if (!channelData.items?.length) throw new Error('Channel not found');
-		return bestThumbnailUrl(channelData.items[0].snippet.thumbnails);
+		const channel = channelData.items?.[0];
+		if (!channel) return null;
+		return {
+			id: channel.id,
+			title: channel.snippet.title.trim() || null,
+			avatarUrl: bestThumbnailUrl(channel.snippet.thumbnails),
+		};
 	} catch (error) {
 		const message = String(error);
-		console.warn({
-			tag: 'YOUTUBE',
-			msg: 'Channel avatar unavailable',
-			channelId,
-			error: youtubeApiKey ? message.replaceAll(youtubeApiKey, '[redacted]') : message,
-		});
-		return null;
+		throw new Error(`YouTube channel lookup failed: ${message.replaceAll(youtubeApiKey, '[redacted]')}`);
 	}
 }
 
@@ -240,7 +248,18 @@ async function scrapeYouTube(
 
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching transcript', videoId });
 	const [channelAvatar, transcript] = await Promise.all([
-		sourceAvatarUrl ?? fetchYouTubeChannelAvatar(snippet.channelId, youtubeApiKey),
+		sourceAvatarUrl ??
+			fetchYouTubeChannel(youtubeApiKey, { id: snippet.channelId })
+				.then((channel) => channel?.avatarUrl ?? null)
+				.catch((error) => {
+					console.warn({
+						tag: 'YOUTUBE',
+						msg: 'Channel avatar unavailable',
+						channelId: snippet.channelId,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					return null;
+				}),
 		fetchTranscript(videoId),
 	]);
 	const creators = literalCreator('channel', snippet.channelTitle, {

@@ -39,6 +39,8 @@ export const ResourceDraftTargetSchema = z
 	})
 	.strict();
 
+export type ResourceDraftTarget = z.infer<typeof ResourceDraftTargetSchema>;
+
 const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
 	z
 		.object({
@@ -57,7 +59,7 @@ const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
 
 type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSchema>;
 
-export const AutonomousResourceDraftIdSchema = z.string().regex(/^(?:source-draft-v5|subject-draft-v3)-[0-9a-f]{64}$/);
+export const AutonomousResourceDraftIdSchema = z.string().regex(/^(?:source|subject)-draft-v[1-9]\d*-[0-9a-f]{64}$/);
 
 const ResourceDraftRecoveryPayloadSchema = z
 	.object({
