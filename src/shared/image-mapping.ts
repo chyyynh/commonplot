@@ -39,14 +39,6 @@ export function resourceImageFieldsAreHosted(resource: ResourceImageFields): boo
 	return resourceImageCandidates(resource).every((url) => hostedResourceImageUrl(url) === url);
 }
 
-export function resourcePreviewImageUrl(resource: ResourceImageFields): string | null {
-	for (const candidate of resourcePreviewImageCandidates(resource)) {
-		const hosted = hostedResourceImageUrl(candidate);
-		if (hosted) return hosted;
-	}
-	return null;
-}
-
 export type HostedResourceImage = Readonly<{
 	deliveryUrl: string;
 	sourceUrl: string;

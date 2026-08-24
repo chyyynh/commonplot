@@ -6,7 +6,6 @@ import {
 	normalizedResourceImageUrl,
 	resourceImageFieldsAreHosted,
 	resourceImageSourceUrls,
-	resourcePreviewImageUrl,
 } from '../src/shared/image-mapping.ts';
 
 const base = {
@@ -241,7 +240,6 @@ const hosted = [
 ];
 const canonicalImages = hostedResourceImageFields(imageInput, hosted);
 assert.equal(resourceImageFieldsAreHosted(canonicalImages), true);
-assert.equal(resourcePreviewImageUrl(canonicalImages), hosted[0].deliveryUrl);
 assert.throws(() => hostedResourceImageFields(imageInput, hosted.slice(0, 1)), /do not cover every source/);
 
-console.info(`Platform materialization contract checks passed (${cases.length + 7} cases).`);
+console.info(`Platform materialization contract checks passed (${cases.length + 6} cases).`);
