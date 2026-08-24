@@ -1,9 +1,10 @@
 import { sha256Hex } from '@core-shared/hash';
 import { canonicalizeOptionalResourceLang } from '@core-shared/resource';
-import { normalizeUrl, parseExternalHttpUrl, parseTwitterUsername, validatedExternalMediaUrl } from '@core-shared/url';
+import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { loadFeed } from './platforms/rss-feed';
+import { parseTwitterProfileInput } from './platforms/twitter-acquisition';
 import { fetchYouTubeChannel } from './platforms/youtube-acquisition';
 import type { ResourceDraftTarget } from './workflow';
 
@@ -65,7 +66,8 @@ export async function resolveMonitoredSource(env: CoreEnv, input: string): Promi
 	const url = parseExternalHttpUrl(raw);
 	const host = url?.hostname.toLowerCase().replace(/^(www|m)\./, '');
 	if (YOUTUBE_CHANNEL_ID_RE.test(raw) || host === 'youtube.com') return resolveYouTubeSource(env, raw, url);
-	const twitterHandle = parseTwitterUsername(raw)?.toLowerCase() ?? null;
+	const twitterHandle =
+		host === 'x.com' || host === 'twitter.com' || !url ? (parseTwitterProfileInput(raw, url)?.toLowerCase() ?? null) : null;
 	if (host === 'x.com' || host === 'twitter.com' || (!url && twitterHandle)) {
 		if (!twitterHandle) throw new Error('Enter a valid X/Twitter handle or profile URL.');
 		return {

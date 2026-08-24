@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
-import { detectResourceUrl, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
+import { parseExternalHttpUrl } from '@core-shared/url';
 import { extractFromHtml } from '@extractus/article-extractor';
 import { markdownFromHtml } from '../document-conversion';
 import { type GenericAcquiredMaterial, literalCreator } from './materialize';
@@ -11,6 +11,7 @@ const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
+const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
 
 type ExtractedHtmlArticle = {
 	html: string;
@@ -77,7 +78,12 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, proce
 	};
 }
 
-async function acquireWebResource(url: string, env: CoreEnv, processingId?: string): Promise<AcquiredWebContent | PlatformRedirect> {
+async function acquireWebResource(
+	url: string,
+	env: CoreEnv,
+	platformUrl: (url: URL) => { canonicalUrl: string } | null,
+	processingId?: string,
+): Promise<AcquiredWebContent | PlatformRedirect> {
 	const response = await fetch(url, {
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
@@ -98,11 +104,15 @@ async function acquireWebResource(url: string, env: CoreEnv, processingId?: stri
 		await response.body?.cancel();
 		throw new Error('Fetch response has no valid final URL');
 	}
-	const finalUrl = normalizeUrl(parsedFinalUrl.toString());
-	if (detectResourceUrl(finalUrl)) {
+	const platform = platformUrl(parsedFinalUrl);
+	if (platform) {
 		await response.body?.cancel();
-		return { redirectUrl: finalUrl };
+		return { redirectUrl: platform.canonicalUrl };
 	}
+	parsedFinalUrl.hostname = parsedFinalUrl.hostname.toLowerCase().replace(/^www\./, '');
+	for (const parameter of TRACKING_PARAMS) parsedFinalUrl.searchParams.delete(parameter);
+	parsedFinalUrl.searchParams.sort();
+	const finalUrl = parsedFinalUrl.toString();
 
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
 	if (contentType.includes(PDF_MIME) || new URL(finalUrl).pathname.toLowerCase().endsWith('.pdf')) {
@@ -135,12 +145,17 @@ async function acquireWebResource(url: string, env: CoreEnv, processingId?: stri
 	return { ...(await acquireHtmlArticle(env, html, finalUrl, processingId)), canonicalUrl: finalUrl };
 }
 
-export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { processingId: string; url: string }) {
+export async function stageWebAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: { processingId: string; url: string },
+	platformUrl: (url: URL) => { canonicalUrl: string } | null,
+) {
 	const result = await step.do(
 		'acquire-web-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => {
-			const acquired = await acquireWebResource(input.url, env, input.processingId);
+			const acquired = await acquireWebResource(input.url, env, platformUrl, input.processingId);
 			return 'redirectUrl' in acquired ? acquired : Response.json(acquired).body!;
 		},
 	);

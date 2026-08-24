@@ -7,6 +7,7 @@ import type {
 	YouTubeTranscript,
 	YouTubeTranscriptSegment,
 } from '@app-domain/resource-graph-contracts';
+import { RESOURCE_TYPES } from '@core-shared/resource';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
@@ -21,6 +22,30 @@ import {
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
 const MIN_MONITORED_VIDEO_DURATION_SECONDS = 180;
+
+export function parseYouTubeResourceUrl(url: URL) {
+	const hostname = url.hostname.toLowerCase().replace(/^www\./, '');
+	if (hostname !== 'youtube.com' && !hostname.endsWith('.youtube.com') && hostname !== 'youtu.be' && !hostname.endsWith('.youtu.be')) {
+		return null;
+	}
+	const [kind, maybeId] = url.pathname.split('/').filter(Boolean);
+	const candidate =
+		url.searchParams.get('v') ??
+		(hostname === 'youtu.be' || hostname.endsWith('.youtu.be')
+			? kind
+			: ['embed', 'shorts', 'live', 'v'].includes(kind ?? '')
+				? maybeId
+				: null);
+	const videoId = RESOURCE_TYPES.video.platforms[0].identifier.safeParse(candidate);
+	return videoId.success
+		? {
+				resourcePlatform: 'youtube' as const,
+				platformId: videoId.data,
+				canonicalUrl: `https://youtube.com/watch?v=${videoId.data}`,
+			}
+		: null;
+}
+
 const YouTubeThumbnailSchema = z.object({ url: z.string().min(1) });
 const YouTubeThumbnailsSchema = z.object({
 	default: YouTubeThumbnailSchema.optional(),

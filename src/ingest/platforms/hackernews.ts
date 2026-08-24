@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import type { ForumKindMetadata } from '@core-shared/resource';
+import { type ForumKindMetadata, RESOURCE_TYPES } from '@core-shared/resource';
 import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
@@ -14,6 +14,18 @@ import {
 } from './materialize';
 
 const HN_ALGOLIA_API = 'https://hn.algolia.com/api/v1/items';
+
+export function parseHackerNewsResourceUrl(url: URL) {
+	const itemId = RESOURCE_TYPES.forum.platforms[0].identifier.safeParse(url.searchParams.get('id'));
+	return itemId.success
+		? {
+				resourcePlatform: 'hackernews' as const,
+				platformId: itemId.data,
+				canonicalUrl: `https://news.ycombinator.com/item?id=${itemId.data}`,
+			}
+		: null;
+}
+
 interface HnComment {
 	author?: string;
 	text?: string;

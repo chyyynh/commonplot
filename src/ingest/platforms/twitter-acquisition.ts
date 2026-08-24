@@ -1,7 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import type { PostKindMetadata, ResourceCreator, ResourceMediaAttachment } from '@core-shared/resource';
-import { extractTweetId } from '@core-shared/url';
+import { type PostKindMetadata, RESOURCE_TYPES, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource';
 import {
 	literalCreator,
 	materializePlatformResource,
@@ -10,6 +9,33 @@ import {
 	type ResourceAcquisitionHints,
 } from './materialize';
 import { parseTwitterArticleResponse, parseTwitterTweetsResponse, renderTwitterArticleMarkdown, type Tweet } from './twitter-data';
+
+const TWITTER_PROFILE_NAME = /^[A-Za-z0-9_]{1,15}$/;
+const TWITTER_NON_PROFILE_PATHS = new Set(['home', 'i', 'intent', 'search', 'share']);
+
+function isTwitterHostname(hostname: string): boolean {
+	const lower = hostname.toLowerCase();
+	return lower === 'twitter.com' || lower.endsWith('.twitter.com') || lower === 'x.com' || lower.endsWith('.x.com');
+}
+
+export function parseTwitterResourceUrl(url: URL) {
+	const candidate = url.pathname.match(/^\/[^/]+\/status\/(\d+)(?:\/|$)/)?.[1] ?? url.pathname.match(/^\/i\/article\/(\d+)(?:\/|$)/)?.[1];
+	const tweetId = RESOURCE_TYPES.post.platforms[0].identifier.safeParse(candidate);
+	return tweetId.success
+		? {
+				resourcePlatform: 'twitter' as const,
+				platformId: tweetId.data,
+				canonicalUrl: `https://x.com/i/status/${tweetId.data}`,
+			}
+		: null;
+}
+
+export function parseTwitterProfileInput(input: string, url: URL | null): string | null {
+	const candidate = url ? url.pathname.split('/').filter(Boolean)[0] : input.trim().replace(/^@/, '');
+	if (url && !isTwitterHostname(url.hostname)) return null;
+	if (!candidate || TWITTER_NON_PROFILE_PATHS.has(candidate.toLowerCase())) return null;
+	return TWITTER_PROFILE_NAME.test(candidate) ? candidate : null;
+}
 
 interface TwitterMedia {
 	url: string;
@@ -118,11 +144,22 @@ function expandTweetUrls(text: string, tweet: Tweet): string {
 		replacements.set(token, /\/status\/\d+\/(?:photo|video)\/\d+/.test(expanded) ? '' : expanded);
 	}
 	const quoted = tweet.quoted_tweet;
-	const quotedTweetId = quoted ? quoted.id?.trim() || extractTweetId(quoted.url) : null;
+	const quotedTweetUrl = quoted ? URL.parse(quoted.url) : null;
+	const quotedTweetId = quoted
+		? quoted.id?.trim() ||
+			(quotedTweetUrl && isTwitterHostname(quotedTweetUrl.hostname) ? parseTwitterResourceUrl(quotedTweetUrl)?.platformId : null)
+		: null;
 	const trailing = text.match(/(https?:\/\/\S+)\s*$/)?.[1];
 	if (quotedTweetId && trailing) {
 		const expandedTrailing = replacements.get(trailing) ?? trailing;
-		if (extractTweetId(expandedTrailing) === quotedTweetId) replacements.set(trailing, '');
+		const expandedTrailingUrl = URL.parse(expandedTrailing);
+		if (
+			expandedTrailingUrl &&
+			isTwitterHostname(expandedTrailingUrl.hostname) &&
+			parseTwitterResourceUrl(expandedTrailingUrl)?.platformId === quotedTweetId
+		) {
+			replacements.set(trailing, '');
+		}
 	}
 	return text
 		.replace(TCO_TOKEN_RE, (token) => replacements.get(token) ?? '')

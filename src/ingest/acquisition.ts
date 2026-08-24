@@ -1,9 +1,8 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import type { YouTubeResourceMutation } from '@app-domain/resource-graph-contracts';
 import type { PaperIdentifier } from '@core-shared/paper-identity';
-import { detectResourceUrl, normalizeUrl } from '@core-shared/url';
-import { stageHackerNewsAcquisition } from './platforms/hackernews';
-import { stageLessWrongAcquisition } from './platforms/lesswrong';
+import { parseHackerNewsResourceUrl, stageHackerNewsAcquisition } from './platforms/hackernews';
+import { parseLessWrongResourceUrl, stageLessWrongAcquisition } from './platforms/lesswrong';
 import {
 	type GenericAcquiredMaterial,
 	materializeGenericResource,
@@ -12,15 +11,28 @@ import {
 } from './platforms/materialize';
 import { stagePaperProcessing } from './platforms/paper';
 import { stageStoredPdfAcquisition, storedPdfProcessingResult } from './platforms/pdf';
-import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
+import { parseTwitterResourceUrl, stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
-import { stageYouTubeAcquisition } from './platforms/youtube-acquisition';
+import { parseYouTubeResourceUrl, stageYouTubeAcquisition } from './platforms/youtube-acquisition';
 
 export type ProcessingResource = ResolvedResource & { youtube?: YouTubeResourceMutation };
 
 type MonitoredAcquisitionContext = Readonly<{
 	avatarUrl: string | null;
 }>;
+
+function resolvePlatformResourceUrl(url: URL) {
+	const hostname = url.hostname.toLowerCase();
+	if (hostname === 'ycombinator.com' || hostname.endsWith('.ycombinator.com')) return parseHackerNewsResourceUrl(url);
+	if (hostname === 'lesswrong.com' || hostname.endsWith('.lesswrong.com')) return parseLessWrongResourceUrl(url);
+	if (hostname === 'twitter.com' || hostname.endsWith('.twitter.com') || hostname === 'x.com' || hostname.endsWith('.x.com')) {
+		return parseTwitterResourceUrl(url);
+	}
+	if (hostname === 'youtube.com' || hostname.endsWith('.youtube.com') || hostname === 'youtu.be' || hostname.endsWith('.youtu.be')) {
+		return parseYouTubeResourceUrl(url);
+	}
+	return null;
+}
 
 async function resolveGenericAcquiredResource(
 	env: CoreEnv,
@@ -72,10 +84,12 @@ export async function stageUrlAcquisition(
 		url: string;
 	},
 ): Promise<ProcessingResource> {
-	let acquisitionUrl = normalizeUrl(input.url);
-	let detected = detectResourceUrl(acquisitionUrl);
+	let acquisitionUrl = input.url;
+	let parsedUrl = URL.parse(acquisitionUrl);
+	if (!parsedUrl) throw new Error(`Processing ${input.processingId} has an invalid URL`);
+	let detected = resolvePlatformResourceUrl(parsedUrl);
 	if (!detected) {
-		const web = await stageWebAcquisition(env, step, { processingId: input.processingId, url: acquisitionUrl });
+		const web = await stageWebAcquisition(env, step, { processingId: input.processingId, url: acquisitionUrl }, resolvePlatformResourceUrl);
 		if (!('redirectUrl' in web)) {
 			return resolveGenericAcquiredResource(env, step, web, {
 				hints: input.hints,
@@ -86,7 +100,8 @@ export async function stageUrlAcquisition(
 			});
 		}
 		acquisitionUrl = web.redirectUrl;
-		detected = detectResourceUrl(acquisitionUrl);
+		parsedUrl = URL.parse(acquisitionUrl);
+		detected = parsedUrl ? resolvePlatformResourceUrl(parsedUrl) : null;
 		if (!detected) throw new Error(`Web acquisition ${input.processingId} returned an undetectable platform redirect`);
 	}
 	switch (detected.resourcePlatform) {
@@ -112,9 +127,6 @@ export async function stageUrlAcquisition(
 				sourceAvatarUrl: input.monitor?.avatarUrl ?? null,
 				videoId: detected.platformId,
 			});
-		default:
-			detected.resourcePlatform satisfies never;
-			throw new Error(`Unsupported resource platform for ${input.processingId}`);
 	}
 }
 
