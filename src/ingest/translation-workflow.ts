@@ -9,6 +9,7 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { syncCorpusItem } from '../search-index';
 import { pdfTranslationAdmission, privateUploadedPdfTranslationSqlAdmission, stagePrivatePdfMarkdownTranslation } from './platforms/pdf';
+import { persistMachineZhHantTranslation } from './resource-persistence';
 
 type ResourceTranslationPayload = { resourceId: string; translationRevision: string };
 const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const;
@@ -478,8 +479,8 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			const persisted = await step.do(
 				'persist-zh-hant-title-summary',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() =>
-					this.env.DOMAIN.persistMachineZhHantTranslation({
+				async () =>
+					persistMachineZhHantTranslation(await connectCoreDb(this.env), {
 						resourceId,
 						translationRevision,
 						patch: translatedMetadata,
@@ -496,8 +497,8 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 					timeout: '30 seconds',
 				},
-				() =>
-					this.env.DOMAIN.persistMachineZhHantTranslation({
+				async () =>
+					persistMachineZhHantTranslation(await connectCoreDb(this.env), {
 						resourceId,
 						translationRevision,
 						patch: { content: translated },

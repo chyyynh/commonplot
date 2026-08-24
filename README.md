@@ -152,9 +152,9 @@ Or run locally with `pnpm dev` (uses `wrangler dev --test-scheduled`, so you can
 
 ## API surface
 
-Core exposes no product HTTP API; its default fetch handler only returns 404. App URL imports call a Cloudflare service-binding RPC with a Workflow instance ID, URL, and admission intent; monitors and derived subjects enqueue the same draft target internally. Uploaded blobs and explicit resyncs use persisted resource IDs. URL acquisition is an internal stage of the canonical resource Workflow.
+Core exposes no product HTTP API; its default fetch handler only returns 404. App URL imports call a Cloudflare service-binding RPC with a Workflow instance ID, URL, and user-owned `saveTarget`; monitors and derived subjects enqueue the same draft target internally without one. Uploaded blobs and explicit resyncs use persisted resource IDs. URL acquisition is an internal stage of the canonical resource Workflow.
 
-URL/platform acquisition and app-owned R2 PDF reads both materialize one canonical processing aggregate. Core selects any academic replacement content first, commits the aggregate through the app Domain transaction, and runs subject, translation, and AI Search follow-ups only for corpus results.
+URL/platform acquisition and app-owned R2 PDF reads both materialize one canonical processing aggregate. Core selects any academic replacement content first, commits canonical Resource state through Drizzle/Hyperdrive, and then runs a separate durable Web step only when user save/container/file ownership must be updated.
 
 ## Hosted MCP
 
@@ -173,10 +173,13 @@ src/
 ├── shared/               # small cross-subsystem primitives
 │   ├── resource.ts       # identity, identifiers, and canonical metadata contracts
 │   ├── image-mapping.ts  # canonical Hosted Images field mapping
-│   └── url.ts            # URL normalization and exact platform locators
+│   └── db.ts             # Drizzle over Hyperdrive
 ├── ingest/               # ── resource ingestion pipeline (the open-source core) ──
 │   ├── workflow.ts       # target validation, processing, and draft recovery Workflows
-│   ├── monitored-source.ts # source resolution, state, and deterministic draft admission
+│   ├── acquisition.ts    # one platform detection pass and adapter dispatch
+│   ├── resource-persistence.ts # canonical Resource transaction
+│   ├── source-monitor-state.ts # monitor state and deterministic source drafts
+│   ├── translation-workflow.ts # durable translation and canonical writeback
 │   └── platforms/        # one file per source/stage
 │       ├── rss.ts        # feed polling
 │       ├── twitter.ts    # source monitor
@@ -261,12 +264,11 @@ REST API. Provider failures preserve an existing compact academic snapshot.
 Ingest adapters live in `ingest/platforms/*.ts` with the
 discovery/scrape/process pieces they actually need. New saved URLs and monitored
 items enter the Workflow as immutable drafts; only successful processing creates
-or merges a canonical `resources` row and applies its save, container, source or
-subject admission in the same app-Domain transaction. App-owned uploads remain
+or merges a canonical `resources` row. Core owns canonical source and subject
+relations in the same Drizzle transaction; Web applies an optional user-owned
+save/container/file target in the next durable step. App-owned uploads remain
 the explicit record-first exception and create `resources` plus `user_files`
-before Core reads the stored blob. Every successful path crosses the single
-`DOMAIN.persistResolvedResource` transaction boundary with either a draft
-admission target or a revision-guarded existing-resource target.
+before Core reads the stored blob.
 
 Keep the axes separate: acquisition (generic web or a specialized adapter) is
 not canonical `ResourcePlatform` (`youtube`, `twitter`, `hackernews`, `lesswrong`, or null),
@@ -291,7 +293,7 @@ Minimum to add a new ingest source:
 
 The new resource goes through the same Workflow pipeline as every other ingest
 source. Resolver owns the final identity, the narrowed kind handler owns
-provider behavior, and the shared graph sink owns persistence. Adding a
+provider behavior, and Core's canonical transaction owns persistence. Adding a
 platform must not add a provider branch to common Workflow or Web rendering.
 
 ## License

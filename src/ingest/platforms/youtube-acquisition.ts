@@ -18,11 +18,24 @@ const MIN_MONITORED_VIDEO_DURATION_SECONDS = 180;
 const YOUTUBE_CHANNEL_ID_RE = /^UC[A-Za-z0-9_-]{22}$/;
 const YOUTUBE_HANDLE_RE = /^@[A-Za-z0-9._-]{3,30}$/;
 
-export type YouTubeResourceMutation = NonNullable<Parameters<CoreEnv['DOMAIN']['persistResolvedResource']>[0]['youtube']>;
-type YouTubeTranscript = NonNullable<YouTubeResourceMutation['transcript']>;
-type YouTubeTranscriptSegment = YouTubeTranscript['segments'][number];
-type YouTubeChapter = YouTubeTranscript['chapters'][number];
-type YouTubeHighlights = NonNullable<YouTubeResourceMutation['highlights']>;
+type YouTubeTranscriptSegment = Readonly<{ startTime: number; endTime: number; text: string }>;
+type YouTubeChapter = { title: string; startTime: number; endTime?: number };
+type YouTubeTranscript = Readonly<{
+	segments: YouTubeTranscriptSegment[];
+	language: string | null;
+	chapters: YouTubeChapter[];
+	chaptersFromDescription: boolean;
+}>;
+type YouTubeHighlights = Readonly<{
+	version: '1.0';
+	model: string;
+	highlights: ReadonlyArray<Readonly<{ title: string; summary: string; startTime: number; endTime: number }>>;
+	generatedAt: string;
+}>;
+export type YouTubeResourceMutation = Readonly<{
+	transcript: YouTubeTranscript | null;
+	highlights: YouTubeHighlights | null;
+}>;
 
 export async function resolveYouTubeMonitoredSource(youtubeApiKey: string, input: string, url: URL | null) {
 	const host = url?.hostname.toLowerCase().replace(/^(www|m)\./, '');

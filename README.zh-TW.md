@@ -148,9 +148,9 @@ pnpm run deploy
 
 ## API Surface
 
-Core 沒有產品 HTTP API；default fetch handler 只回傳 404。App URL import 透過 Cloudflare service-binding RPC 傳入 Workflow instance ID、URL 與 admission intent；monitor 與 derived subject 在 Core 內排入相同 draft target。只有 uploaded blob 與 explicit resync 傳入已持久化的 resource ID。URL acquisition 只存在於 canonical resource Workflow 內部。
+Core 沒有產品 HTTP API；default fetch handler 只回傳 404。App URL import 透過 Cloudflare service-binding RPC 傳入 Workflow instance ID、URL 與使用者的 `saveTarget`；monitor 與 derived subject 在 Core 內排入不含 save target 的相同 draft。只有 uploaded blob 與 explicit resync 傳入已持久化的 resource ID。URL acquisition 只存在於 canonical resource Workflow 內部。
 
-URL／platform acquisition 與 app-owned R2 PDF 讀取都只 materialize 一個 canonical processing aggregate。Core 先選定可能的學術替代正文，再透過 app Domain transaction commit；只有 corpus 結果會執行 subject、translation 與 AI Search follow-up。
+URL／platform acquisition 與 app-owned R2 PDF 讀取都只 materialize 一個 canonical processing aggregate。Core 先選定可能的學術替代正文，再透過 Drizzle／Hyperdrive commit canonical Resource；只有需要處理使用者 save／container／file ownership 時，才在下一個 durable step 呼叫 Web。
 
 ## Hosted MCP
 
@@ -167,11 +167,13 @@ src/
 ├── shared/               # 小型跨子系統 primitives
 │   ├── resource.ts       # identity、identifier、canonical metadata contracts
 │   ├── image-mapping.ts  # canonical Hosted Images 欄位 mapping
-│   └── url.ts            # URL normalization 與精確 platform locator
+│   └── db.ts             # Drizzle over Hyperdrive
 ├── ingest/               # ── resource 入庫 pipeline（開源核心）──
 │   ├── workflow.ts       # target validation、processing 與 draft recovery Workflows
-│   ├── monitored-source.ts # source resolution、狀態與 deterministic draft admission
-│   ├── stored-resource.ts # record-first blob 與 resync 的窄 projection
+│   ├── acquisition.ts    # 單次 platform detection 與 adapter dispatch
+│   ├── resource-persistence.ts # canonical Resource transaction
+│   ├── source-monitor-state.ts # monitor 狀態與 deterministic source drafts
+│   ├── translation-workflow.ts # durable translation 與 canonical writeback
 │   └── platforms/        # 每個來源或 stage 一個檔案
 │       ├── rss.ts        # feed polling
 │       ├── twitter.ts    # source monitor
@@ -236,11 +238,10 @@ AI Search 沿用 `newsence-corpus-v6`。PostgreSQL 是 canonical source，Core
 擷取 adapter 集中在 `ingest/platforms/*.ts`，只放它真正需要的
 discovery / scrape / process 邏輯。App-owned saved URL 以 Workflow draft
 進入 Core，成功處理後才建立 canonical row；upload 則先寫入 `resources`
-與 `user_files`，再以 `resourceId` 啟動 Workflow。Core 透過
-`ingest/stored-resource.ts` 讀取既有 upload 或 resync rows；processed graph
-寫入統一跨越 app-owned `DOMAIN.persistResolvedResource` transaction
-boundary。Draft admission 直接跟隨 Workflow payload，translation input query 則與唯一的
-consumer 放在 `translation-workflow.ts`。
+與 `user_files`，再以 `resourceId` 啟動 Workflow。Core 在自己的
+`resource-persistence.ts` transaction 寫入 canonical Resource、source 與 subject；
+使用者的 save／container／file target 則由下一個 durable step 交給 Web。
+Translation input query 與唯一 consumer 放在 `translation-workflow.ts`。
 
 各軸要分開：acquisition（generic web 或專用 adapter）不是 canonical
 `ResourcePlatform`（`youtube`、`twitter`、`hackernews`、`lesswrong` 或 null），也不是

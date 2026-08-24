@@ -1,12 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { connectCoreDb } from '@core-shared/db';
 import { sha256Hex } from '@core-shared/hash';
-import {
-	type HostedResourceImage,
-	hostedResourceImageFields,
-	normalizedExternalMediaUrl,
-	resourceImageSourceUrls,
-} from '@core-shared/image-mapping';
+import { normalizedExternalMediaUrl, resourceImageSourceUrls } from '@core-shared/image-mapping';
 import { normalizePaperIdentifiers, type PaperIdentifier } from '@core-shared/paper-identity';
 import {
 	canonicalizeOptionalResourceLang,
@@ -14,7 +9,7 @@ import {
 	isPaperIdentifier,
 	ResourceIdentifiersSchema,
 } from '@core-shared/resource';
-import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
+import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput } from '@entities/normalize';
 import { generateText, Output } from 'ai';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -23,6 +18,7 @@ import { z } from 'zod';
 import { syncCorpusItem } from '../search-index';
 import { type ProcessingResource, stageStoredResource, stageUrlAcquisition } from './acquisition';
 import { stageResourceImages } from './image-rehosting';
+import { persistResolvedResource, type ResourcePersistenceTarget } from './resource-persistence';
 import { enqueueResourceTranslation } from './translation-workflow';
 
 const ResourceDraftRelationSchema = z.discriminatedUnion('kind', [
@@ -147,9 +143,7 @@ type ResourceClassification = {
 type ResolvedProcessingCall = {
 	keywordHints: readonly string[];
 	resource: ProcessingResource;
-	persistenceTarget:
-		| Readonly<{ kind: 'draft'; relation?: z.infer<typeof ResourceDraftRelationSchema> }>
-		| Readonly<{ kind: 'existing'; resourceId: string }>;
+	persistenceTarget: ResourcePersistenceTarget;
 	processingId: string;
 	saveTarget: ResourceDraftTarget['saveTarget'] | null;
 };
@@ -234,43 +228,6 @@ ${resource.content.trim().substring(0, CLASSIFICATION_CONTENT_MAX_LENGTH)}`;
 		entities: classification.entities.slice(0, 10),
 		tags,
 		keywords: keywordHints.length ? [...keywordHints] : classification.keywords.slice(0, 8),
-	};
-}
-
-function resolvedResourceMutation(
-	resource: ProcessingResource,
-	classification: ResourceClassification,
-	hostedImages: readonly HostedResourceImage[],
-) {
-	const media = hostedResourceImageFields(
-		{ creators: resource.creators, kindMetadata: resource.kindMetadata, ogImageUrl: resource.previewImageUrl },
-		hostedImages,
-	);
-	return {
-		kind: resource.kind,
-		resourcePlatform: resource.resourcePlatform,
-		identifiers: resource.resourceIdentifiers,
-		creators: media.creators,
-		kindMetadata: media.kindMetadata,
-		...(resource.youtube ? { youtube: resource.youtube } : {}),
-		originalLang: resource.originalLang,
-		title: resource.title,
-		summary: resource.summary,
-		content: resource.content,
-		keywords: classification.keywords,
-		tags: classification.tags,
-		entities: toStoredResourceEntities(classification.entities, resource.resourcePlatform, resource.source, resource.creators),
-		subjectReference: resource.subject
-			? {
-					identifiers: resource.subject.identifiers,
-					normalizedUrl: resource.subject.normalizedUrl,
-				}
-			: null,
-		url: resource.url,
-		normalizedUrl: resource.normalizedUrl ?? resource.url,
-		fileType: resource.fileType ?? null,
-		publishedDate: resource.publishedDate,
-		ogImageUrl: media.ogImageUrl,
 	};
 }
 
@@ -422,18 +379,13 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const persistence = await step.do(
 			'persist-resolved-resource-scope-v2',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			async () => {
-				using result = await this.env.DOMAIN.persistResolvedResource({
-					...resolvedResourceMutation(resource, classification, hostedImages),
+			async () =>
+				persistResolvedResource(await connectCoreDb(this.env), {
+					resource,
+					classification,
+					hostedImages,
 					target: call.persistenceTarget,
-				});
-				return {
-					resourceId: result.resourceId,
-					scope: result.scope,
-					subjectAttached: result.subjectAttached,
-					translationRevision: result.translationRevision,
-				};
-			},
+				}),
 		);
 		const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision } = persistence;
 		const saveTarget = call.saveTarget;
