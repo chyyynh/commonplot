@@ -1,5 +1,4 @@
 import { connectCoreDb } from '@core-shared/db';
-import { normalizeUrl } from '@core-shared/url';
 import {
 	admitDiscoveredSourceResources,
 	loadMonitoredSources,
@@ -164,7 +163,9 @@ async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource
 			const userName = monitoredAuthorUserName(tweet);
 			if (!userName) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no monitored author identity`);
 			if (userName !== source.handle) throw new Error(`Tweet ${tweet.id ?? tweet.url} is not attributed to @${source.handle}`);
-			const url = normalizeUrl(tweet.url);
+			const tweetId = tweet.id?.trim();
+			if (!tweetId || !/^\d+$/.test(tweetId)) throw new Error(`Tweet ${tweet.url} has no valid provider id`);
+			const url = `https://x.com/i/status/${tweetId}`;
 			const publishedDate = new Date(tweet.createdAt);
 			if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id ?? url} has invalid publishedDate`);
 			drafts.set(url, {

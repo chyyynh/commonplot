@@ -10,6 +10,7 @@ import {
 	materializePlatformResource,
 	type PlatformAcquiredMaterial,
 	type ResolvedResource,
+	type ResolvedResourceSubject,
 	type ResourceAcquisitionHints,
 } from './materialize';
 
@@ -192,7 +193,12 @@ async function scrapeHackerNews(itemId: string): Promise<HackerNewsAcquisition> 
 export async function stageHackerNewsAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { hints: ResourceAcquisitionHints; itemId: string; processingId: string },
+	input: {
+		hints: ResourceAcquisitionHints;
+		itemId: string;
+		processingId: string;
+		resolveSubject: (url: string | null | undefined) => ResolvedResourceSubject | null;
+	},
 ): Promise<ResolvedResource> {
 	const contentStream = await step.do(
 		'acquire-hackernews-v1',
@@ -223,6 +229,7 @@ export async function stageHackerNewsAcquisition(
 		},
 		input.hints,
 		{ kind: 'forum', url: `https://news.ycombinator.com/item?id=${input.itemId}` },
+		input.resolveSubject(resource.subjectUrl),
 	);
 }
 

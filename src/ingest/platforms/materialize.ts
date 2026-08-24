@@ -1,4 +1,4 @@
-import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '../../shared/paper-identity.ts';
+import type { PaperIdentifier } from '../../shared/paper-identity.ts';
 import {
 	canonicalizeOptionalResourceLang,
 	type RESOURCE_TYPES,
@@ -6,9 +6,8 @@ import {
 	type ResourceIdentifier,
 	type ResourceKindMetadata,
 } from '../../shared/resource.ts';
-import { canonicalResourcePlatformUrl, detectResourceUrl, normalizeUrl } from '../../shared/url.ts';
 
-type ResolvedResourceSubject = Readonly<{
+export type ResolvedResourceSubject = Readonly<{
 	identifiers: ResourceIdentifier[];
 	normalizedUrl: string;
 }>;
@@ -62,6 +61,12 @@ export type PlatformAcquiredMaterial<
 	resourcePlatform: T;
 };
 
+export type PlatformResourceUrl = Readonly<{
+	canonicalUrl: string;
+	platformId: string;
+	resourcePlatform: PlatformAcquiredMaterial['resourcePlatform'];
+}>;
+
 export function literalCreator(
 	role: ResourceCreator['role'],
 	literal: string | null | undefined,
@@ -84,6 +89,7 @@ function materializeResource(
 		resourceIdentifiers: readonly ResourceIdentifier[];
 	},
 	publishedDate: string | null,
+	subject: ResolvedResourceSubject | null,
 ): ResolvedResource {
 	return {
 		...identity,
@@ -99,7 +105,7 @@ function materializeResource(
 		fileType: acquired.fileType,
 		normalizedUrl: identity.url,
 		previewImageUrl: acquired.previewImageUrl?.trim() || null,
-		subject: resolvedSubjectInput(acquired.subjectUrl?.trim()),
+		subject,
 	};
 }
 
@@ -124,6 +130,7 @@ export function materializeGenericResource(
 			url: resolution.canonicalUrl,
 		},
 		resolution.publishedDate,
+		null,
 	);
 }
 
@@ -131,6 +138,7 @@ export function materializePlatformResource(
 	acquired: PlatformAcquiredMaterial,
 	hints: ResourceAcquisitionHints,
 	identity: Pick<MaterializedResource, 'kind' | 'url'>,
+	subject: ResolvedResourceSubject | null = null,
 ): ResolvedResource {
 	let publishedDate = hints.publishedDate;
 	if (acquired.publishedDate?.trim()) {
@@ -146,22 +154,6 @@ export function materializePlatformResource(
 			resourcePlatform: acquired.resourcePlatform,
 		},
 		publishedDate,
+		subject,
 	);
-}
-
-function resolvedSubjectInput(subjectUrl: string | null | undefined): ResolvedResourceSubject | null {
-	if (!subjectUrl) return null;
-	const paper = resolveExactPaperInput(subjectUrl);
-	if (paper) {
-		return {
-			identifiers: paperIdentifiersFromIdentity(paper.identity),
-			normalizedUrl: paper.canonicalUrl,
-		};
-	}
-	const detected = detectResourceUrl(subjectUrl);
-	const normalizedUrl = detected ? canonicalResourcePlatformUrl(detected.resourcePlatform, detected.platformId) : normalizeUrl(subjectUrl);
-	return {
-		identifiers: detected ? [{ preferred: true, scheme: detected.resourcePlatform, value: detected.platformId }] : [],
-		normalizedUrl,
-	};
 }

@@ -6,6 +6,7 @@ import {
 	materializePlatformResource,
 	type PlatformAcquiredMaterial,
 	type ResolvedResource,
+	type ResolvedResourceSubject,
 	type ResourceAcquisitionHints,
 } from './materialize';
 import { parseTwitterArticleResponse, parseTwitterTweetsResponse, renderTwitterArticleMarkdown, type Tweet } from './twitter-data';
@@ -386,6 +387,7 @@ export async function stageTwitterAcquisition(
 	input: {
 		hints: ResourceAcquisitionHints;
 		processingId: string;
+		resolveSubject: (url: string | null | undefined) => ResolvedResourceSubject | null;
 		tweetId: string;
 	},
 ): Promise<ResolvedResource> {
@@ -402,10 +404,13 @@ export async function stageTwitterAcquisition(
 			return Response.json(await scrapeTweet(input.tweetId, env.KAITO_API_KEY)).body!;
 		},
 	);
-	return materializePlatformResource(await new Response(contentStream).json<PlatformAcquiredMaterial<'twitter'>>(), input.hints, {
-		kind: 'post',
-		url: `https://x.com/i/status/${input.tweetId}`,
-	});
+	const acquired = await new Response(contentStream).json<PlatformAcquiredMaterial<'twitter'>>();
+	return materializePlatformResource(
+		acquired,
+		input.hints,
+		{ kind: 'post', url: `https://x.com/i/status/${input.tweetId}` },
+		input.resolveSubject(acquired.subjectUrl),
+	);
 }
 
 function twitterCreator(data: TwitterMetadata): ResourceCreator[] {

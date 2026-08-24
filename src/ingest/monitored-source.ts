@@ -3,6 +3,7 @@ import { normalizedExternalMediaUrl } from '@core-shared/image-mapping';
 import { canonicalizeOptionalResourceLang } from '@core-shared/resource';
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { resolvePlatformResourceUrl } from './acquisition';
 import { loadFeed } from './platforms/rss-feed';
 import { parseTwitterProfileInput } from './platforms/twitter-acquisition';
 import { fetchYouTubeChannel } from './platforms/youtube-acquisition';
@@ -83,7 +84,7 @@ export async function resolveMonitoredSource(env: CoreEnv, input: string): Promi
 		};
 	}
 	if (url) {
-		const { effectiveUrl: feedUrl, title } = await loadFeed(url.toString());
+		const { effectiveUrl: feedUrl, title } = await loadFeed(url.toString(), resolvePlatformResourceUrl);
 		const feedHost = feedUrl.hostname.toLowerCase().replace(/^www\./, '');
 		return {
 			monitorKind: 'feed',

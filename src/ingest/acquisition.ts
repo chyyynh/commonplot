@@ -1,12 +1,14 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import type { YouTubeResourceMutation } from '@app-domain/resource-graph-contracts';
-import type { PaperIdentifier } from '@core-shared/paper-identity';
+import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { parseHackerNewsResourceUrl, stageHackerNewsAcquisition } from './platforms/hackernews';
 import { parseLessWrongResourceUrl, stageLessWrongAcquisition } from './platforms/lesswrong';
 import {
 	type GenericAcquiredMaterial,
 	materializeGenericResource,
+	type PlatformResourceUrl,
 	type ResolvedResource,
+	type ResolvedResourceSubject,
 	type ResourceAcquisitionHints,
 } from './platforms/materialize';
 import { stagePaperProcessing } from './platforms/paper';
@@ -21,7 +23,7 @@ type MonitoredAcquisitionContext = Readonly<{
 	avatarUrl: string | null;
 }>;
 
-function resolvePlatformResourceUrl(url: URL) {
+export function resolvePlatformResourceUrl(url: URL): PlatformResourceUrl | null {
 	const hostname = url.hostname.toLowerCase();
 	if (hostname === 'ycombinator.com' || hostname.endsWith('.ycombinator.com')) return parseHackerNewsResourceUrl(url);
 	if (hostname === 'lesswrong.com' || hostname.endsWith('.lesswrong.com')) return parseLessWrongResourceUrl(url);
@@ -32,6 +34,28 @@ function resolvePlatformResourceUrl(url: URL) {
 		return parseYouTubeResourceUrl(url);
 	}
 	return null;
+}
+
+const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
+
+function resolveResourceSubject(value: string | null | undefined): ResolvedResourceSubject | null {
+	const url = value?.trim() ? URL.parse(value) : null;
+	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null;
+
+	const platform = resolvePlatformResourceUrl(url);
+	if (platform) {
+		return {
+			identifiers: [{ preferred: true, scheme: platform.resourcePlatform, value: platform.platformId }],
+			normalizedUrl: platform.canonicalUrl,
+		};
+	}
+	const paper = resolveExactPaperInput(url.toString());
+	if (paper) return { identifiers: paperIdentifiersFromIdentity(paper.identity), normalizedUrl: paper.canonicalUrl };
+
+	url.hostname = url.hostname.toLowerCase().replace(/^www\./, '');
+	for (const parameter of TRACKING_PARAMS) url.searchParams.delete(parameter);
+	url.searchParams.sort();
+	return { identifiers: [], normalizedUrl: url.toString() };
 }
 
 async function resolveGenericAcquiredResource(
@@ -84,13 +108,12 @@ export async function stageUrlAcquisition(
 		url: string;
 	},
 ): Promise<ProcessingResource> {
-	let acquisitionUrl = input.url;
-	let parsedUrl = URL.parse(acquisitionUrl);
+	const parsedUrl = URL.parse(input.url);
 	if (!parsedUrl) throw new Error(`Processing ${input.processingId} has an invalid URL`);
 	let detected = resolvePlatformResourceUrl(parsedUrl);
 	if (!detected) {
-		const web = await stageWebAcquisition(env, step, { processingId: input.processingId, url: acquisitionUrl }, resolvePlatformResourceUrl);
-		if (!('redirectUrl' in web)) {
+		const web = await stageWebAcquisition(env, step, { processingId: input.processingId, url: input.url }, resolvePlatformResourceUrl);
+		if (!('platform' in web)) {
 			return resolveGenericAcquiredResource(env, step, web, {
 				hints: input.hints,
 				paperIdentifiers: input.paperIdentifiers ?? [],
@@ -99,10 +122,7 @@ export async function stageUrlAcquisition(
 				translateUrl: input.monitor === null,
 			});
 		}
-		acquisitionUrl = web.redirectUrl;
-		parsedUrl = URL.parse(acquisitionUrl);
-		detected = parsedUrl ? resolvePlatformResourceUrl(parsedUrl) : null;
-		if (!detected) throw new Error(`Web acquisition ${input.processingId} returned an undetectable platform redirect`);
+		detected = web.platform;
 	}
 	switch (detected.resourcePlatform) {
 		case 'hackernews':
@@ -110,6 +130,7 @@ export async function stageUrlAcquisition(
 				hints: input.hints,
 				itemId: detected.platformId,
 				processingId: input.processingId,
+				resolveSubject: resolveResourceSubject,
 			});
 		case 'lesswrong':
 			return stageLessWrongAcquisition(step, detected.platformId, input.hints);
@@ -117,6 +138,7 @@ export async function stageUrlAcquisition(
 			return stageTwitterAcquisition(env, step, {
 				hints: input.hints,
 				processingId: input.processingId,
+				resolveSubject: resolveResourceSubject,
 				tweetId: detected.platformId,
 			});
 		case 'youtube':

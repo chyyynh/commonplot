@@ -1,4 +1,3 @@
-import { extractHackerNewsId, normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { parseFeed } from 'feedsmith';
 import { decode } from 'html-entities';
 
@@ -6,6 +5,7 @@ const MAX_FEED_BYTES = 3 * 1024 * 1024;
 const MAX_FEED_ITEMS = 30;
 const FEED_SUMMARY_MAX_CHARS = 500;
 const RSS_FETCH_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
+const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
 
 type ParsedFeed = ReturnType<typeof parseFeed>;
 type RawFeedItem = {
@@ -94,15 +94,66 @@ function feedItems(parsed: ParsedFeed): RawFeedItem[] {
 	});
 }
 
+function feedEntryUrl(item: RawFeedItem, resolvePlatformUrl: (url: URL) => { canonicalUrl: string } | null): string | null {
+	const idUrl = URL.parse(item.id);
+	if (idUrl && (idUrl.protocol === 'http:' || idUrl.protocol === 'https:') && !idUrl.username && !idUrl.password) {
+		const platform = resolvePlatformUrl(idUrl);
+		if (platform) return platform.canonicalUrl;
+	}
+
+	const itemUrl = item.link ? URL.parse(item.link) : null;
+	if (!itemUrl || (itemUrl.protocol !== 'http:' && itemUrl.protocol !== 'https:') || itemUrl.username || itemUrl.password) return null;
+	const platform = resolvePlatformUrl(itemUrl);
+	if (platform) return platform.canonicalUrl;
+
+	itemUrl.hostname = itemUrl.hostname.toLowerCase().replace(/^www\./, '');
+	for (const parameter of TRACKING_PARAMS) itemUrl.searchParams.delete(parameter);
+	itemUrl.searchParams.sort();
+	return itemUrl.toString();
+}
+
+function normalizedFeedEntries(items: RawFeedItem[], resolvePlatformUrl: (url: URL) => { canonicalUrl: string } | null): FeedEntry[] {
+	const entries = new Map<string, FeedEntry>();
+	for (const item of items) {
+		const url = feedEntryUrl(item, resolvePlatformUrl);
+		if (!url || entries.has(url)) continue;
+		const date = item.published ? new Date(item.published) : null;
+		const summary = item.summary
+			? decode(item.summary.replace(/<[^>]*>/g, ' '))
+					.replace(/\s+/g, ' ')
+					.trim()
+					.slice(0, FEED_SUMMARY_MAX_CHARS) || null
+			: null;
+		entries.set(url, {
+			url,
+			title: item.title ?? null,
+			summary,
+			publishedDate: date && !Number.isNaN(date.getTime()) ? date : null,
+			originalLang: item.language,
+		});
+	}
+	return [...entries.values()];
+}
+
 /** Fetches and normalizes one RSS, Atom, RDF, or JSON Feed document. */
-export async function loadFeed(feedUrl: string): Promise<{
+export async function loadFeed(
+	feedUrl: string,
+	resolvePlatformUrl: (url: URL) => { canonicalUrl: string } | null,
+): Promise<{
 	effectiveUrl: URL;
 	title: string | null;
 	itemCount: number;
 	entries: FeedEntry[];
 }> {
-	const requestedUrl = parseExternalHttpUrl(feedUrl);
-	if (!requestedUrl) throw new Error('Enter a valid feed URL (http/https).');
+	const requestedUrl = URL.parse(feedUrl);
+	if (
+		!requestedUrl ||
+		(requestedUrl.protocol !== 'http:' && requestedUrl.protocol !== 'https:') ||
+		requestedUrl.username ||
+		requestedUrl.password
+	) {
+		throw new Error('Enter a valid feed URL (http/https).');
+	}
 	const response = await fetch(requestedUrl, {
 		headers: {
 			'User-Agent': RSS_FETCH_USER_AGENT,
@@ -115,8 +166,13 @@ export async function loadFeed(feedUrl: string): Promise<{
 		await response.body?.cancel();
 		throw new Error(`Feed fetch failed with HTTP ${status}.`);
 	}
-	const effectiveUrl = parseExternalHttpUrl(response.url);
-	if (!effectiveUrl) {
+	const effectiveUrl = URL.parse(response.url);
+	if (
+		!effectiveUrl ||
+		(effectiveUrl.protocol !== 'http:' && effectiveUrl.protocol !== 'https:') ||
+		effectiveUrl.username ||
+		effectiveUrl.password
+	) {
 		await response.body?.cancel();
 		throw new Error('Feed redirected to an invalid URL.');
 	}
@@ -146,32 +202,11 @@ export async function loadFeed(feedUrl: string): Promise<{
 	}
 
 	const items = feedItems(parsed);
-	const entries = new Map<string, FeedEntry>();
-	for (const item of items) {
-		const hackerNewsId = extractHackerNewsId(item.id);
-		const itemUrl = parseExternalHttpUrl(hackerNewsId ? `https://news.ycombinator.com/item?id=${hackerNewsId}` : item.link);
-		if (!itemUrl) continue;
-		const url = normalizeUrl(itemUrl.toString());
-		if (entries.has(url)) continue;
-		const date = item.published ? new Date(item.published) : null;
-		const summary = item.summary
-			? decode(item.summary.replace(/<[^>]*>/g, ' '))
-					.replace(/\s+/g, ' ')
-					.trim()
-					.slice(0, FEED_SUMMARY_MAX_CHARS) || null
-			: null;
-		entries.set(url, {
-			url,
-			title: item.title ?? null,
-			summary,
-			publishedDate: date && !Number.isNaN(date.getTime()) ? date : null,
-			originalLang: item.language,
-		});
-	}
+	const entries = normalizedFeedEntries(items, resolvePlatformUrl);
 	return {
 		effectiveUrl,
 		title: decodedString(parsed.feed.title) ?? null,
 		itemCount: items.length,
-		entries: [...entries.values()],
+		entries,
 	};
 }

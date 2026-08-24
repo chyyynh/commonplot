@@ -3,7 +3,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
 import { extractFromHtml } from '@extractus/article-extractor';
 import { markdownFromHtml } from '../document-conversion';
-import { type GenericAcquiredMaterial, literalCreator } from './materialize';
+import { type GenericAcquiredMaterial, literalCreator, type PlatformResourceUrl } from './materialize';
 import { acquireFetchedPdfResponse, PDF_MIME } from './pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
@@ -52,7 +52,7 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 
 type AcquiredWebContent = GenericAcquiredMaterial;
 
-type PlatformRedirect = { redirectUrl: string };
+type PlatformResolution = { platform: PlatformResourceUrl };
 
 async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, processingId?: string): Promise<AcquiredWebContent> {
 	const article = await extractHtmlArticle(html, url);
@@ -80,9 +80,9 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, proce
 async function acquireWebResource(
 	url: string,
 	env: CoreEnv,
-	platformUrl: (url: URL) => { canonicalUrl: string } | null,
+	platformUrl: (url: URL) => PlatformResourceUrl | null,
 	processingId?: string,
-): Promise<AcquiredWebContent | PlatformRedirect> {
+): Promise<AcquiredWebContent | PlatformResolution> {
 	const response = await fetch(url, {
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
@@ -111,7 +111,7 @@ async function acquireWebResource(
 	const platform = platformUrl(parsedFinalUrl);
 	if (platform) {
 		await response.body?.cancel();
-		return { redirectUrl: platform.canonicalUrl };
+		return { platform };
 	}
 	parsedFinalUrl.hostname = parsedFinalUrl.hostname.toLowerCase().replace(/^www\./, '');
 	for (const parameter of TRACKING_PARAMS) parsedFinalUrl.searchParams.delete(parameter);
@@ -153,15 +153,15 @@ export async function stageWebAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: { processingId: string; url: string },
-	platformUrl: (url: URL) => { canonicalUrl: string } | null,
+	platformUrl: (url: URL) => PlatformResourceUrl | null,
 ) {
 	const result = await step.do(
 		'acquire-web-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => {
 			const acquired = await acquireWebResource(input.url, env, platformUrl, input.processingId);
-			return 'redirectUrl' in acquired ? acquired : Response.json(acquired).body!;
+			return 'platform' in acquired ? acquired : Response.json(acquired).body!;
 		},
 	);
-	return 'redirectUrl' in result ? result : new Response(result).json<AcquiredWebContent>();
+	return 'platform' in result ? result : new Response(result).json<AcquiredWebContent>();
 }

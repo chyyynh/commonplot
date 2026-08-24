@@ -1,3 +1,4 @@
+import { resolvePlatformResourceUrl } from '@ingest/acquisition';
 import {
 	admitDiscoveredSourceResources,
 	loadMonitoredSources,
@@ -12,7 +13,7 @@ import { loadFeed } from './rss-feed';
 const FEED_CONCURRENCY = 4;
 
 async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredSource): Promise<void> {
-	const { entries, itemCount } = await loadFeed(feed.handle);
+	const { entries, itemCount } = await loadFeed(feed.handle, resolvePlatformResourceUrl);
 	const skipped = itemCount - entries.length;
 	if (skipped) console.warn({ tag: 'RSS', msg: 'Skipped invalid or duplicate feed items', feed: feed.name, count: skipped });
 	if (!entries.length) {

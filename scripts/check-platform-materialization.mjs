@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
 import { materializeGenericResource, materializePlatformResource } from '../src/ingest/platforms/materialize.ts';
-import { detectResourceUrl } from '../src/shared/url.ts';
 
 const base = {
 	url: 'https://example.com/article',
@@ -8,10 +7,8 @@ const base = {
 
 function materialize(input = {}) {
 	const url = input.url === undefined ? base.url : input.url;
-	const platformIdentity = url ? detectResourceUrl(url) : null;
 	const acquired = {
 		...(url ? { canonicalUrl: url } : {}),
-		...(input.subjectUrl ? { subjectUrl: input.subjectUrl } : {}),
 		fileType: null,
 		title: 'Example',
 		markdown: 'Example content',
@@ -23,11 +20,12 @@ function materialize(input = {}) {
 		kindMetadata: null,
 	};
 	const hints = { originalLang: 'en', publishedDate: null, summary: null };
-	if (platformIdentity) {
+	if (input.resourcePlatform) {
 		return materializePlatformResource(
-			{ ...acquired, platformId: platformIdentity.platformId, resourcePlatform: platformIdentity.resourcePlatform },
+			{ ...acquired, platformId: input.platformId, resourcePlatform: input.resourcePlatform },
 			hints,
 			{ kind: input.kind, url },
+			input.subject ?? null,
 		);
 	}
 	const identity =
@@ -88,6 +86,8 @@ const cases = [
 		name: 'HN carrier with legacy academic identifiers stays forum',
 		input: {
 			kind: 'forum',
+			platformId: '123',
+			resourcePlatform: 'hackernews',
 			url: 'https://news.ycombinator.com/item?id=123',
 			resourceIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
 		},
@@ -101,6 +101,8 @@ const cases = [
 		name: 'HN URL stays forum',
 		input: {
 			kind: 'forum',
+			platformId: '124',
+			resourcePlatform: 'hackernews',
 			url: 'https://news.ycombinator.com/item?id=124',
 		},
 		expected: {
@@ -113,6 +115,8 @@ const cases = [
 		name: 'Twitter share stays post',
 		input: {
 			kind: 'post',
+			platformId: '125',
+			resourcePlatform: 'twitter',
 			url: 'https://x.com/example/status/125',
 		},
 		expected: {
@@ -125,6 +129,8 @@ const cases = [
 		name: 'YouTube stays video',
 		input: {
 			kind: 'video',
+			platformId: 'abcdefghijk',
+			resourcePlatform: 'youtube',
 			url: 'https://www.youtube.com/watch?v=abcdefghijk',
 		},
 		expected: {
@@ -137,6 +143,8 @@ const cases = [
 		name: 'LessWrong stays a platform blog',
 		input: {
 			kind: 'blog',
+			platformId: 'A2kJKqnHhh5Hq4p2S',
+			resourcePlatform: 'lesswrong',
 			url: 'https://www.lesswrong.com/posts/A2kJKqnHhh5Hq4p2S/example-slug',
 		},
 		expected: {
@@ -167,6 +175,8 @@ for (const testCase of cases) {
 
 const migratedCarrier = materialize({
 	kind: 'forum',
+	platformId: '126',
+	resourcePlatform: 'hackernews',
 	url: 'https://news.ycombinator.com/item?id=126',
 	resourceIdentifiers: [
 		{ preferred: true, scheme: 'doi', value: '10.1000/example' },
@@ -180,21 +190,21 @@ assert.deepEqual(
 );
 
 assert.deepEqual(
-	materialize({ subjectUrl: 'https://doi.org/10.1000/example' }).subject,
+	materialize({
+		kind: 'forum',
+		platformId: '127',
+		resourcePlatform: 'hackernews',
+		url: 'https://news.ycombinator.com/item?id=127',
+		subject: {
+			identifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
+			normalizedUrl: 'https://doi.org/10.1000/example',
+		},
+	}).subject,
 	{
 		identifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
 		normalizedUrl: 'https://doi.org/10.1000/example',
 	},
-	'paper subjects resolve independently from their carrier',
-);
-
-assert.deepEqual(
-	materialize({ subjectUrl: 'https://example.com/article' }).subject,
-	{
-		identifiers: [],
-		normalizedUrl: 'https://example.com/article',
-	},
-	'generic subjects retain their normalized URL identity',
+	'materialization keeps the already-resolved paper subject',
 );
 
 console.info(`Platform materialization contract checks passed (${cases.length + 2} cases).`);
