@@ -6,7 +6,13 @@ import {
 } from '@app-domain/resource-graph-contracts';
 import { connectCoreDb } from '@core-shared/db';
 import { sha256Hex } from '@core-shared/hash';
-import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/image-mapping';
+import {
+	type HostedResourceImage,
+	hostedResourceImageFields,
+	normalizedExternalMediaUrl,
+	resourceImageSourceUrls,
+} from '@core-shared/image-mapping';
+import { canonicalizeOptionalResourceLang } from '@core-shared/resource';
 import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
 import { loadResourceReacquisitionInput } from '@ingest/stored-resource';
 import { generateText, Output } from 'ai';
@@ -42,6 +48,53 @@ export const ResourceDraftTargetSchema = z
 	.strict();
 
 export type ResourceDraftTarget = z.infer<typeof ResourceDraftTargetSchema>;
+
+export type SourceResourceDraft = {
+	sourceId: string;
+	url: string;
+	publishedDate: Date | null;
+	summary: string | null;
+	originalLang?: string;
+	keywords?: string[];
+	sourceAvatarUrl?: string | null;
+};
+
+/** Crosses the discovery -> Resource Workflow boundary for every monitor. */
+export async function enqueueSourceDrafts(env: CoreEnv, drafts: SourceResourceDraft[]): Promise<number> {
+	const instances = await Promise.all(
+		drafts.map(async (draft) => {
+			const originalLang = canonicalizeOptionalResourceLang(draft.originalLang);
+			if (draft.publishedDate && !Number.isFinite(draft.publishedDate.getTime())) throw new Error('Source published date is invalid');
+			const parsedUrl = URL.parse(draft.url.trim());
+			if (!parsedUrl || (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || parsedUrl.username || parsedUrl.password) {
+				throw new Error('Source resource URL must be external http(s)');
+			}
+			const summary = draft.summary?.trim() || null;
+			const sourceAvatarUrl = normalizedExternalMediaUrl(draft.sourceAvatarUrl);
+			const target = {
+				kind: 'draft',
+				admission: { kind: 'source', sourceId: draft.sourceId.trim() },
+				url: parsedUrl.toString(),
+				sourceHints: {
+					...(summary ? { summary } : {}),
+					...(originalLang ? { originalLang } : {}),
+					...(draft.publishedDate ? { publishedDate: draft.publishedDate.toISOString() } : {}),
+					...(draft.keywords?.length ? { keywords: draft.keywords } : {}),
+					...(sourceAvatarUrl ? { sourceAvatarUrl } : {}),
+				},
+			} satisfies ResourceDraftTarget;
+			return {
+				id: `source-draft-v5-${await sha256Hex(JSON.stringify(target))}`,
+				params: target,
+			};
+		}),
+	);
+	let created = 0;
+	for (let offset = 0; offset < instances.length; offset += 100) {
+		created += (await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(instances.slice(offset, offset + 100))).length;
+	}
+	return created;
+}
 
 const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
 	z

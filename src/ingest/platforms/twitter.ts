@@ -1,13 +1,9 @@
 import { connectCoreDb } from '@core-shared/db';
-import {
-	admitDiscoveredSourceResources,
-	loadMonitoredSources,
-	type MonitoredSource,
-	markSourcesScraped,
-	recordSourceFailure,
-	type SourceResourceDraft,
-} from '@ingest/monitored-source';
+import { markSourcesScraped, recordSourceFailure } from '@ingest/source-monitor-state';
+import { enqueueSourceDrafts, type SourceResourceDraft } from '@ingest/workflow';
+import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { parseTwitterProfileInput } from './twitter-acquisition';
 import { parseTwitterAdvancedSearchPage, type Tweet } from './twitter-data';
 
 // Twitter Monitor
@@ -15,6 +11,45 @@ import { parseTwitterAdvancedSearchPage, type Tweet } from './twitter-data';
 const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
 
 const TWITTER_SOURCE_CONCURRENCY = 5;
+
+type TwitterSource = {
+	id: string;
+	name: string;
+	handle: string;
+	scrapedAt: Date | null;
+	createdAt: Date;
+};
+
+export function resolveTwitterMonitoredSource(input: string, url: URL | null) {
+	const host = url?.hostname.toLowerCase().replace(/^(www|m)\./, '');
+	if (url && host !== 'x.com' && host !== 'twitter.com') return null;
+	const handle = parseTwitterProfileInput(input, url)?.toLowerCase() ?? null;
+	if (!handle) {
+		if (url && (host === 'x.com' || host === 'twitter.com')) throw new Error('Enter a valid X/Twitter handle or profile URL.');
+		return null;
+	}
+	return {
+		monitorKind: 'twitter' as const,
+		handle,
+		name: `@${handle}`,
+		siteUrl: `https://x.com/${handle}`,
+		avatarUrl: null,
+	};
+}
+
+async function loadTwitterSources(db: NodePgDatabase): Promise<TwitterSource[]> {
+	const result = await db.execute<TwitterSource>(sql`
+		SELECT
+			id::text AS id,
+			name,
+			handle,
+			scraped_at AS "scrapedAt",
+			created_at AS "createdAt"
+		FROM sources
+		WHERE enabled = true AND monitor_kind = 'twitter'
+	`);
+	return result.rows;
+}
 
 function monitoredAuthorUserName(tweet: Tweet): string | null {
 	const userName = tweet.retweetedBy?.authorUserName || tweet.author?.userName;
@@ -154,7 +189,7 @@ function emptyTwitterAdmissionCounts(): TwitterAdmissionCounts {
 	return { created: 0, deduplicated: 0 };
 }
 
-async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource) {
+async function saveTweets(env: CoreEnv, tweets: Tweet[], source: TwitterSource) {
 	const counts = emptyTwitterAdmissionCounts();
 	const drafts = new Map<string, SourceResourceDraft>();
 	let skippedItems = 0;
@@ -191,7 +226,7 @@ async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource
 	}
 	const pending = [...drafts.values()];
 	if (!pending.length) return { admittedDrafts: 0, counts, skippedItems };
-	counts.created = await admitDiscoveredSourceResources(env, pending);
+	counts.created = await enqueueSourceDrafts(env, pending);
 	counts.deduplicated = pending.length - counts.created;
 	return { admittedDrafts: pending.length, counts, skippedItems };
 }
@@ -211,7 +246,7 @@ type TwitterSourceOutcome = TwitterSourceMetrics & ({ status: 'completed' } | { 
 async function processTwitterSource(
 	env: CoreEnv,
 	db: NodePgDatabase,
-	source: MonitoredSource,
+	source: TwitterSource,
 	windowEnd: Date,
 ): Promise<TwitterSourceOutcome> {
 	let sinceTime: number | null = null;
@@ -284,7 +319,7 @@ type TwitterMonitorOutcome = {
 async function processTwitterSources(
 	env: CoreEnv,
 	db: NodePgDatabase,
-	sources: MonitoredSource[],
+	sources: TwitterSource[],
 	windowEnd: Date,
 ): Promise<TwitterMonitorOutcome> {
 	const outcomes: TwitterSourceOutcome[] = [];
@@ -339,7 +374,7 @@ export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date
 	if (!Number.isFinite(windowEnd.getTime())) throw new Error('Twitter monitor window end is invalid');
 	const db = await connectCoreDb(env);
 	console.info({ tag: 'TWITTER', msg: 'start', window_end: windowEnd.toISOString() });
-	const sources = await loadMonitoredSources(db, 'twitter');
+	const sources = await loadTwitterSources(db);
 	if (!sources.length) {
 		console.info({ tag: 'TWITTER', msg: 'No twitter sources configured' });
 		return;

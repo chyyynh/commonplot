@@ -1,9 +1,9 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { connectCoreDb } from '@core-shared/db';
-import { resolveMonitoredSource } from '@ingest/monitored-source';
-import { handleRSSCron } from '@ingest/platforms/rss';
-import { handleTwitterCron } from '@ingest/platforms/twitter';
+import { handleRSSCron, resolveFeedMonitoredSource } from '@ingest/platforms/rss';
+import { handleTwitterCron, resolveTwitterMonitoredSource } from '@ingest/platforms/twitter';
+import { resolveYouTubeMonitoredSource } from '@ingest/platforms/youtube-acquisition';
 import {
 	enqueueProcessing,
 	enqueueResourceResync,
@@ -158,7 +158,19 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	/** Resolve a feed/account/channel monitor into a source row candidate (#237). */
-	resolveMonitoredSource(input: string) {
-		return resolveMonitoredSource(this.env, input);
+	async resolveMonitoredSource(input: string) {
+		const raw = typeof input === 'string' ? input.trim() : '';
+		if (!raw) throw new Error('Source input is required.');
+		const parsedUrl = URL.parse(raw);
+		const url =
+			parsedUrl && (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:') && !parsedUrl.username && !parsedUrl.password
+				? parsedUrl
+				: null;
+		const youtube = await resolveYouTubeMonitoredSource(this.env.YOUTUBE_API_KEY, raw, url);
+		if (youtube) return youtube;
+		const twitter = resolveTwitterMonitoredSource(raw, url);
+		if (twitter) return twitter;
+		if (url) return resolveFeedMonitoredSource(url);
+		throw new Error('Enter a feed URL, YouTube channel URL or ID, or X/Twitter handle.');
 	}
 }

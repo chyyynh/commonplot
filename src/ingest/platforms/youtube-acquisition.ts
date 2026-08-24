@@ -22,6 +22,48 @@ import {
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
 const MIN_MONITORED_VIDEO_DURATION_SECONDS = 180;
+const YOUTUBE_CHANNEL_ID_RE = /^UC[A-Za-z0-9_-]{22}$/;
+const YOUTUBE_HANDLE_RE = /^@[A-Za-z0-9._-]{3,30}$/;
+
+export async function resolveYouTubeMonitoredSource(youtubeApiKey: string, input: string, url: URL | null) {
+	const host = url?.hostname.toLowerCase().replace(/^(www|m)\./, '');
+	if (!YOUTUBE_CHANNEL_ID_RE.test(input) && host !== 'youtube.com') return null;
+	const segments = url?.pathname.split('/').filter(Boolean) ?? [];
+	const feedChannelId = url?.searchParams.get('channel_id');
+	const channelId = [input, feedChannelId, segments[0] === 'channel' ? segments[1] : null].find((candidate) =>
+		YOUTUBE_CHANNEL_ID_RE.test(candidate ?? ''),
+	);
+	let id = channelId;
+	let title: string | null = null;
+	let avatarUrl: string | null = null;
+	if (channelId) {
+		try {
+			const channel = await fetchYouTubeChannel(youtubeApiKey, { id: channelId });
+			if (channel) ({ id, title, avatarUrl } = channel);
+		} catch (error) {
+			console.warn({
+				tag: 'YOUTUBE',
+				msg: 'Using channel ID without optional metadata',
+				channelId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	} else {
+		const handle = YOUTUBE_HANDLE_RE.test(segments[0] ?? '') ? segments[0].slice(1) : null;
+		if (!handle) throw new Error('Enter a YouTube channel URL or channel ID.');
+		const channel = await fetchYouTubeChannel(youtubeApiKey, { handle });
+		if (!channel) throw new Error(`YouTube channel @${handle} was not found.`);
+		({ id, title, avatarUrl } = channel);
+	}
+	if (!id) throw new Error('Enter a YouTube channel URL or channel ID.');
+	return {
+		monitorKind: 'feed' as const,
+		handle: `https://www.youtube.com/feeds/videos.xml?channel_id=${id}`,
+		name: title ?? id,
+		siteUrl: `https://www.youtube.com/channel/${id}`,
+		avatarUrl,
+	};
+}
 
 export function parseYouTubeResourceUrl(url: URL) {
 	const hostname = url.hostname.toLowerCase().replace(/^www\./, '');
