@@ -117,8 +117,6 @@ const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
 
 type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSchema>;
 
-export const AutonomousResourceDraftIdSchema = z.string().regex(/^(?:source|subject)-draft-v[1-9]\d*-[0-9a-f]{64}$/);
-
 type ResolvedProcessingCall = {
 	keywordHints: readonly string[];
 	resource: ProcessingResource;

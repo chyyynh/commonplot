@@ -113,11 +113,10 @@ wrangler hyperdrive create newsence-db \
 
 Workflows 會在第一次 deploy 時透過 `wrangler.jsonc` 裡的 `workflows` bindings 自動建立。
 
-Workflow lifecycle errors 共用一條 event queue。先建立 queue 與 dead-letter queue，再訂閱 resource Workflow 的 error event：
+Workflow lifecycle errors 共用一條 event queue。先建立 queue，再訂閱 resource Workflow 的 error event：
 
 ```bash
 pnpm exec wrangler queues create workflow-errors-core
-pnpm exec wrangler queues create workflow-errors-dlq-core
 pnpm exec wrangler queues subscription create workflow-errors-core \
   --source workflows.workflow \
   --workflow-name newsence-resource-processing-v2 \
@@ -125,7 +124,7 @@ pnpm exec wrangler queues subscription create workflow-errors-core \
   --name newsence-resource-processing-errors
 ```
 
-consumer 會記錄所有已訂閱的 Workflow errors。失敗的 monitored-source draft 只會得到一次延遲且 deduplicated 的 recovery；platform detection 與 acquisition 仍留在原本的 resource Workflow 內。
+consumer 會記錄所有已訂閱的 Workflow errors。Durable step 自己負責有限次重試；terminally errored instance 會保留供檢查，不再由 Queue 重新啟動。
 
 ### 4. Secrets
 

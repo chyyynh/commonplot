@@ -117,11 +117,10 @@ Copy the returned ID into `wrangler.jsonc` under the `hyperdrive[].id` field.
 
 Workflows are provisioned automatically on first deploy via the `workflows` bindings in `wrangler.jsonc`.
 
-Workflow lifecycle errors use one shared event queue. Create it and its dead-letter queue, then subscribe the resource Workflow's error event:
+Workflow lifecycle errors use one shared event queue. Create it, then subscribe the resource Workflow's error event:
 
 ```bash
 pnpm exec wrangler queues create workflow-errors-core
-pnpm exec wrangler queues create workflow-errors-dlq-core
 pnpm exec wrangler queues subscription create workflow-errors-core \
   --source workflows.workflow \
   --workflow-name newsence-resource-processing-v2 \
@@ -129,7 +128,7 @@ pnpm exec wrangler queues subscription create workflow-errors-core \
   --name newsence-resource-processing-errors
 ```
 
-The consumer logs every subscribed Workflow error. Failed monitored-source drafts receive one delayed, deduplicated recovery attempt; platform detection and acquisition remain inside the original resource Workflow.
+The consumer logs every subscribed Workflow error. Durable steps own their bounded retries; a terminally errored instance remains failed for inspection instead of being restarted by the Queue.
 
 ### 4. Secrets
 

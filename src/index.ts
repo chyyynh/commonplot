@@ -7,12 +7,7 @@ import { handleRSSCron, resolveFeedMonitoredSource } from './ingest/platforms/rs
 import { handleTwitterCron, resolveTwitterMonitoredSource } from './ingest/platforms/twitter';
 import { resolveYouTubeMonitoredSource } from './ingest/platforms/youtube';
 import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
-import {
-	AutonomousResourceDraftIdSchema,
-	type ResourceDraftTarget,
-	ResourceDraftTargetSchema,
-	ResourceProcessingV2Workflow,
-} from './ingest/workflow';
+import { type ResourceDraftTarget, ResourceDraftTargetSchema, ResourceProcessingV2Workflow } from './ingest/workflow';
 import { SearchIndexGeneration5RebuildWorkflow } from './operations/search-index-rebuild';
 import { type PublicResourceSearchInput, searchPublicResourceIds } from './search-index';
 import { connectCoreDb } from './shared/db';
@@ -117,7 +112,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		}
 	}
 
-	override async queue(batch: MessageBatch<unknown>): Promise<void> {
+	override queue(batch: MessageBatch<unknown>): void {
 		for (const message of batch.messages) {
 			const event = ResourceWorkflowErroredEventSchema.safeParse(message.body);
 			if (!event.success) {
@@ -133,37 +128,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 				instance_id: instanceId,
 				version_id: versionId,
 			});
-			const resourceDraftId = AutonomousResourceDraftIdSchema.safeParse(instanceId);
-			if (!resourceDraftId.success) {
-				message.ack();
-				continue;
-			}
-			if (message.attempts === 1) {
-				message.retry({ delaySeconds: 15 * 60 });
-				continue;
-			}
-
-			try {
-				const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.get(resourceDraftId.data);
-				const state = await instance.status();
-				if (state.status === 'unknown') throw new Error(`Resource Workflow ${resourceDraftId.data} has unknown status`);
-				if (state.status === 'errored') await instance.restart();
-				console.info({
-					tag: 'RESOURCE_RECOVERY',
-					event: 'resource_draft_recovery_completed',
-					instance_id: resourceDraftId.data,
-					outcome: state.status === 'errored' ? 'restarted' : state.status,
-				});
-				message.ack();
-			} catch (error) {
-				console.error({
-					tag: 'RESOURCE_RECOVERY',
-					event: 'resource_draft_recovery_failed',
-					instance_id: resourceDraftId.data,
-					error: error instanceof Error ? error.message : String(error),
-				});
-				message.retry();
-			}
+			message.ack();
 		}
 	}
 
