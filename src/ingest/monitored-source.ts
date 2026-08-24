@@ -1,6 +1,6 @@
 import { parseExternalHttpUrl, parseTwitterUsername } from '@core-shared/url';
-import type { CoreDb } from '@db/connection';
 import { inArray, sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { loadFeed } from './platforms/rss-feed';
 
 // Resolves a feed/account/channel input into the exact source row the crons can
@@ -132,7 +132,7 @@ export type MonitoredSource = {
 };
 
 /** Loads enabled sources due to be polled by the requested monitor. */
-export async function loadMonitoredSources(db: CoreDb, monitor: 'feed' | 'twitter'): Promise<MonitoredSource[]> {
+export async function loadMonitoredSources(db: NodePgDatabase, monitor: 'feed' | 'twitter'): Promise<MonitoredSource[]> {
 	const monitorFilter =
 		monitor === 'twitter'
 			? sql`monitor_kind = 'twitter'`
@@ -155,7 +155,7 @@ export async function loadMonitoredSources(db: CoreDb, monitor: 'feed' | 'twitte
 	return result.rows;
 }
 
-export async function markSourcesScraped(db: CoreDb, sourceIds: string[], scrapedAt: Date = new Date()): Promise<number> {
+export async function markSourcesScraped(db: NodePgDatabase, sourceIds: string[], scrapedAt: Date = new Date()): Promise<number> {
 	if (!sourceIds.length) return 0;
 	if (!Number.isFinite(scrapedAt.getTime())) throw new Error('Source watermark is invalid');
 	const updated = await db.execute(sql`
@@ -176,7 +176,7 @@ const PENDING_VALIDATION_FAILURE_LIMIT = 3;
 // Failure bookkeeping must not break per-source cron isolation. Pending
 // sources are disabled after three failed validation attempts; active sources
 // keep monitoring through transient provider failures.
-export async function recordSourceFailure(db: CoreDb, sourceId: string, error: unknown): Promise<void> {
+export async function recordSourceFailure(db: NodePgDatabase, sourceId: string, error: unknown): Promise<void> {
 	const failedAt = new Date();
 	const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
 	try {

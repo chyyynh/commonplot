@@ -1,11 +1,11 @@
-import type { CoreDb } from '@db/connection';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/monitored-source';
 import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/processing-jobs';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { loadFeed } from './rss-feed';
 
 const FEED_CONCURRENCY = 4;
 
-async function processFeed(env: CoreEnv, db: CoreDb, feed: MonitoredSource): Promise<void> {
+async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredSource): Promise<void> {
 	const { entries, itemCount } = await loadFeed(feed.handle);
 	const skipped = itemCount - entries.length;
 	if (skipped) console.warn({ tag: 'RSS', msg: 'Skipped invalid or duplicate feed items', feed: feed.name, count: skipped });
@@ -41,7 +41,7 @@ async function processFeed(env: CoreEnv, db: CoreDb, feed: MonitoredSource): Pro
 	await markSourcesScraped(db, [feed.id]);
 }
 
-export async function handleRSSCron(env: CoreEnv, db: CoreDb): Promise<void> {
+export async function handleRSSCron(env: CoreEnv, db: NodePgDatabase): Promise<void> {
 	console.info({ tag: 'RSS', msg: 'start' });
 	// Every feed source uses the same parser. A YouTube channel handle is an Atom
 	// feed URL, so there is nothing for a separate monitor to do.

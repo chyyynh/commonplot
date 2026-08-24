@@ -1,7 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { PersistResolvedResourceInput, PersistResolvedResourceTarget } from '@app-domain/resource-graph-contracts';
+import { connectCoreDb } from '@core-shared/db';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/image-mapping';
-import { connectCoreDb } from '@db/connection';
 import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
 import { loadResourceReacquisitionInput } from '@ingest/stored-resource';
 import { generateText, Output } from 'ai';

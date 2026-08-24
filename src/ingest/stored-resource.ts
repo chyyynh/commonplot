@@ -11,8 +11,8 @@ import {
 	type ResourceKindMetadata,
 } from '@core-shared/resource';
 import { parseExternalHttpUrl } from '@core-shared/url';
-import type { CoreDb } from '@db/connection';
 import { sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { parseResourceProcessingWorkflowPayload } from './processing-jobs';
 
@@ -101,7 +101,7 @@ export async function enqueueResourceResync(env: CoreEnv, resourceId: string): P
 	return instance.id;
 }
 
-export async function markStoredBlobProcessingFailed(db: CoreDb, resourceId: string): Promise<void> {
+export async function markStoredBlobProcessingFailed(db: NodePgDatabase, resourceId: string): Promise<void> {
 	await db.execute(sql`
 		UPDATE resources AS resource
 		SET enrichment_status = 'failed',
@@ -122,7 +122,7 @@ type PendingBlobRow = {
 	resource_id: string;
 };
 
-async function stalePendingBlobResourceIds(db: CoreDb, olderThan: Date, limit: number): Promise<string[]> {
+async function stalePendingBlobResourceIds(db: NodePgDatabase, olderThan: Date, limit: number): Promise<string[]> {
 	const result = await db.execute<PendingBlobRow>(sql`
 		SELECT resource.id::text AS resource_id
 		FROM resources resource
@@ -145,7 +145,7 @@ async function stalePendingBlobResourceIds(db: CoreDb, olderThan: Date, limit: n
 }
 
 /** Repairs only interrupted DB-to-Workflow handoffs for record-first app-owned blobs. */
-export async function reconcilePendingBlobProcessing(env: CoreEnv, db: CoreDb): Promise<void> {
+export async function reconcilePendingBlobProcessing(env: CoreEnv, db: NodePgDatabase): Promise<void> {
 	const resourceIds = await stalePendingBlobResourceIds(db, new Date(Date.now() - PENDING_BLOB_GRACE_MS), PENDING_BLOB_RECONCILE_LIMIT);
 	if (!resourceIds.length) return;
 	const created = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(resourceIds.map(storedPdfWorkflowInstance));
@@ -158,7 +158,7 @@ export async function reconcilePendingBlobProcessing(env: CoreEnv, db: CoreDb): 
 	});
 }
 
-export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promise<StoredPdfInput> {
+export async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promise<StoredPdfInput> {
 	const result = await db.execute<StoredPdfRow>(sql`
 		SELECT
 			resource.id::text AS id,
@@ -217,7 +217,7 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 	};
 }
 
-export async function loadResourceReacquisitionInput(db: CoreDb, resourceId: string): Promise<ResourceReacquisitionInput> {
+export async function loadResourceReacquisitionInput(db: NodePgDatabase, resourceId: string): Promise<ResourceReacquisitionInput> {
 	const result = await db.execute<ResourceReacquisitionRow>(sql`
 		SELECT
 			original.summary,

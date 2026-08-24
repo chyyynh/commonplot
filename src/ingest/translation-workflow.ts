@@ -1,9 +1,10 @@
 // Durable translation execution; resource processing only enqueues this Workflow.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
+import { connectCoreDb } from '@core-shared/db';
 import { canonicalizeResourceLang, type RESOURCE_TYPES } from '@core-shared/resource';
-import { type CoreDb, connectCoreDb } from '@db/connection';
 import { generateText, Output } from 'ai';
 import { sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { syncCorpusItem } from '../search-index';
@@ -342,7 +343,7 @@ function parseTranslationSource(value: unknown): ResourceTranslationSource | nul
 }
 
 async function loadResourceTranslationInput(
-	db: CoreDb,
+	db: NodePgDatabase,
 	resourceId: string,
 ): Promise<{ resource: ResourceTranslationInput; translationRevision: string } | null> {
 	const result = await db.execute<ResourceTranslationInputRow>(sql`

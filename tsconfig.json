@@ -19,7 +19,6 @@
 		"paths": {
 			"@/*": ["../../web-tanstack/src/*"],
 			"@app-domain/*": ["../../web-tanstack/src/server/domain/*"],
-			"@db/*": ["./src/db/*"],
 			"@core-shared/*": ["./src/shared/*"],
 			"@entities/*": ["./src/entities/*"],
 			"@ingest/*": ["./src/ingest/*"]

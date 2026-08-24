@@ -1,5 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { connectCoreDb } from '@db/connection';
+import { connectCoreDb } from '@core-shared/db';
 import { resolveMonitoredSource } from '@ingest/monitored-source';
 import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';

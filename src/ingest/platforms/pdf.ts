@@ -1,9 +1,9 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { PersistResolvedResourceTarget } from '@app-domain/resource-graph-contracts';
+import { connectCoreDb } from '@core-shared/db';
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
 import { isPaperIdentifier } from '@core-shared/resource';
-import { connectCoreDb } from '@db/connection';
 import { initSync, LiteParse, type LiteParseInit, type ParseResult } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
 import liteParsePackage from '@llamaindex/liteparse-wasm/package.json';

@@ -1,6 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { type CoreDb, connectCoreDb } from '@db/connection';
+import { connectCoreDb } from '@core-shared/db';
 import { inArray, sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { AI_SEARCH_ITEM_PREFIX, resourceIdFromAiSearchItemKey, upsertCorpusItems } from '../search-index';
 
 // Cloudflare AI Search allows at most five custom metadata fields per instance.
@@ -37,7 +38,7 @@ const BATCH_STEP_OPTIONS = { retries: STEP_RETRIES, timeout: '300 seconds' } as 
 const UTC_TIMESTAMP_FORMAT = 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"';
 const CORPUS_FOLDER_FILTER = JSON.stringify({ folder: AI_SEARCH_ITEM_PREFIX });
 
-async function loadCorpusCount(db: CoreDb): Promise<number> {
+async function loadCorpusCount(db: NodePgDatabase): Promise<number> {
 	const result = await db.execute<{ count: string }>(sql`
 		SELECT COUNT(*)::text AS count
 		FROM resources r
@@ -51,7 +52,7 @@ async function loadCorpusCount(db: CoreDb): Promise<number> {
 	return count;
 }
 
-async function listCorpusIdsAfter(db: CoreDb, cursor: string | null): Promise<string[]> {
+async function listCorpusIdsAfter(db: NodePgDatabase, cursor: string | null): Promise<string[]> {
 	const result = await db.execute<{ id: string }>(sql`
 		SELECT r.id::text
 		FROM resources r
@@ -65,7 +66,7 @@ async function listCorpusIdsAfter(db: CoreDb, cursor: string | null): Promise<st
 	return result.rows.map((row) => row.id);
 }
 
-async function uploadCorpusIds(env: CoreEnv, db: CoreDb, ids: readonly string[]): Promise<number> {
+async function uploadCorpusIds(env: CoreEnv, db: NodePgDatabase, ids: readonly string[]): Promise<number> {
 	let uploaded = 0;
 	for (let offset = 0; offset < ids.length; offset += REINDEX_AI_SEARCH_CONCURRENCY) {
 		const batch = ids.slice(offset, offset + REINDEX_AI_SEARCH_CONCURRENCY);
@@ -80,7 +81,7 @@ async function uploadCorpusIds(env: CoreEnv, db: CoreDb, ids: readonly string[])
 
 async function syncCorpusPageAfter(
 	env: CoreEnv,
-	db: CoreDb,
+	db: NodePgDatabase,
 	cursor: string | null,
 ): Promise<{ cursor: string | null; done: boolean; uploaded: number }> {
 	const ids = await listCorpusIdsAfter(db, cursor);
@@ -88,7 +89,7 @@ async function syncCorpusPageAfter(
 	return { cursor: ids.at(-1)!, done: false, uploaded: await uploadCorpusIds(env, db, ids) };
 }
 
-async function listCorpusDeltaAfter(db: CoreDb, startedAt: string, cursor: SearchDeltaCursor | null): Promise<SearchDeltaRow[]> {
+async function listCorpusDeltaAfter(db: NodePgDatabase, startedAt: string, cursor: SearchDeltaCursor | null): Promise<SearchDeltaRow[]> {
 	const result = await db.execute<SearchDeltaRow>(sql`
 		WITH changed_resources AS (
 		  SELECT r.id,
@@ -116,7 +117,7 @@ async function listCorpusDeltaAfter(db: CoreDb, startedAt: string, cursor: Searc
 
 async function syncCorpusDeltaAfter(
 	env: CoreEnv,
-	db: CoreDb,
+	db: NodePgDatabase,
 	startedAt: string,
 	cursor: SearchDeltaCursor | null,
 ): Promise<{ cursor: SearchDeltaCursor | null; done: boolean; uploaded: number }> {
@@ -134,7 +135,7 @@ async function syncCorpusDeltaAfter(
 	};
 }
 
-async function loadEligibleCorpusIds(db: CoreDb, resourceIds: readonly string[]): Promise<Set<string>> {
+async function loadEligibleCorpusIds(db: NodePgDatabase, resourceIds: readonly string[]): Promise<Set<string>> {
 	if (!resourceIds.length) return new Set();
 	const result = await db.execute<{ id: string }>(sql`
 		SELECT r.id::text
@@ -159,7 +160,7 @@ async function loadSearchItemPageCount(env: CoreEnv): Promise<number> {
 	return Math.ceil(total / REINDEX_PAGE_SIZE);
 }
 
-async function pruneSearchItemPage(env: CoreEnv, db: CoreDb, page: number): Promise<number> {
+async function pruneSearchItemPage(env: CoreEnv, db: NodePgDatabase, page: number): Promise<number> {
 	const listed = await env.AI_SEARCH.items.list({
 		metadata_filter: CORPUS_FOLDER_FILTER,
 		page,
@@ -179,7 +180,7 @@ async function pruneSearchItemPage(env: CoreEnv, db: CoreDb, page: number): Prom
 	return staleItems.length;
 }
 
-async function pruneSearchItemPages(env: CoreEnv, db: CoreDb, firstPage: number, lastPage: number): Promise<number> {
+async function pruneSearchItemPages(env: CoreEnv, db: NodePgDatabase, firstPage: number, lastPage: number): Promise<number> {
 	let deleted = 0;
 	for (let page = lastPage; page >= firstPage; page--) deleted += await pruneSearchItemPage(env, db, page);
 	return deleted;
@@ -231,7 +232,7 @@ async function ensureCanonicalSearchInstanceConfig(env: CoreEnv): Promise<'uncha
 	return 'updated';
 }
 
-async function observeSearchIndex(env: CoreEnv, db: CoreDb): Promise<SearchIndexStats & { configReady: boolean }> {
+async function observeSearchIndex(env: CoreEnv, db: NodePgDatabase): Promise<SearchIndexStats & { configReady: boolean }> {
 	const info = await env.AI_SEARCH.info();
 	const stats = await env.AI_SEARCH.stats();
 	const listed = await env.AI_SEARCH.items.list({

@@ -1,7 +1,8 @@
+import { connectCoreDb } from '@core-shared/db';
 import { normalizeUrl } from '@core-shared/url';
-import { type CoreDb, connectCoreDb } from '@db/connection';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/monitored-source';
 import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/processing-jobs';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { parseTwitterAdvancedSearchPage, type Tweet } from './twitter-data';
 
 // Twitter Monitor
@@ -211,7 +212,12 @@ type TwitterSourceMetrics = {
 
 type TwitterSourceOutcome = TwitterSourceMetrics & ({ status: 'completed' } | { status: 'failed'; error: unknown });
 
-async function processTwitterSource(env: CoreEnv, db: CoreDb, source: MonitoredSource, windowEnd: Date): Promise<TwitterSourceOutcome> {
+async function processTwitterSource(
+	env: CoreEnv,
+	db: NodePgDatabase,
+	source: MonitoredSource,
+	windowEnd: Date,
+): Promise<TwitterSourceOutcome> {
 	let sinceTime: number | null = null;
 	let untilTime: number | null = null;
 	try {
@@ -290,7 +296,7 @@ type TwitterMonitorOutcome = {
 
 async function processTwitterSources(
 	env: CoreEnv,
-	db: CoreDb,
+	db: NodePgDatabase,
 	sources: MonitoredSource[],
 	windowEnd: Date,
 ): Promise<TwitterMonitorOutcome> {

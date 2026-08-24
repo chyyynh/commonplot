@@ -1,6 +1,6 @@
 import { RESOURCE_TYPES } from '@core-shared/resource';
-import type { CoreDb } from '@db/connection';
 import { inArray, sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
 // Postgres is canonical; AI Search is its derived public-corpus index.
 export const AI_SEARCH_ITEM_PREFIX = 'resources/';
@@ -111,7 +111,7 @@ function serializeDocument(row: CorpusDocument): string {
 		.join('\n\n');
 }
 
-async function loadCorpusDocuments(db: CoreDb, resourceIds: readonly string[]): Promise<CorpusDocument[]> {
+async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly string[]): Promise<CorpusDocument[]> {
 	if (!resourceIds.length) return [];
 	const result = await db.execute<CorpusDocument>(sql`
 		SELECT r.id::text,
@@ -176,7 +176,7 @@ async function uploadCorpusDocument(env: CoreEnv, document: CorpusDocument): Pro
 	});
 }
 
-export async function upsertCorpusItems(env: CoreEnv, db: CoreDb, resourceIds: readonly string[]): Promise<number> {
+export async function upsertCorpusItems(env: CoreEnv, db: NodePgDatabase, resourceIds: readonly string[]): Promise<number> {
 	const documents = await loadCorpusDocuments(db, resourceIds);
 	await Promise.all(documents.map((document) => uploadCorpusDocument(env, document)));
 	return documents.length;
@@ -191,7 +191,7 @@ async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<void>
 	console.info({ tag: 'AI_SEARCH', msg: 'Corpus item deleted', resource_id: resourceId, item_id: item.id });
 }
 
-export async function syncCorpusItem(env: CoreEnv, db: CoreDb, resourceId: string): Promise<void> {
+export async function syncCorpusItem(env: CoreEnv, db: NodePgDatabase, resourceId: string): Promise<void> {
 	if (!isValidUuid(resourceId)) return;
 	if ((await upsertCorpusItems(env, db, [resourceId])) === 0) await deleteCorpusItem(env, resourceId);
 }
