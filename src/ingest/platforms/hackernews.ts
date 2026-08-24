@@ -210,6 +210,7 @@ export async function stageHackerNewsAcquisition(
 			...(annotation ? { markdown: applyHackerNewsAnnotation(resource.markdown, annotation) } : {}),
 		},
 		input.hints,
+		{ kind: 'forum', url: `https://news.ycombinator.com/item?id=${input.itemId}` },
 	);
 }
 

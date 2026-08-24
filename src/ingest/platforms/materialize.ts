@@ -1,7 +1,7 @@
 import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '../../shared/paper-identity.ts';
 import {
 	canonicalizeOptionalResourceLang,
-	RESOURCE_TYPES,
+	type RESOURCE_TYPES,
 	type ResourceCreator,
 	type ResourceIdentifier,
 	type ResourceKindMetadata,
@@ -127,25 +127,23 @@ export function materializeGenericResource(
 	);
 }
 
-export function materializePlatformResource(acquired: PlatformAcquiredMaterial, hints: ResourceAcquisitionHints): ResolvedResource {
-	const kind = Object.entries(RESOURCE_TYPES).find(([, { platforms }]) =>
-		platforms.some(({ name }) => name === acquired.resourcePlatform),
-	)?.[0] as Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'> | undefined;
-	if (!kind) throw new Error(`Unknown Resource platform: ${acquired.resourcePlatform}`);
+export function materializePlatformResource(
+	acquired: PlatformAcquiredMaterial,
+	hints: ResourceAcquisitionHints,
+	identity: Pick<MaterializedResource, 'kind' | 'url'>,
+): ResolvedResource {
 	let publishedDate = hints.publishedDate;
 	if (acquired.publishedDate?.trim()) {
 		const parsed = new Date(acquired.publishedDate);
 		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
 	}
-	const url = canonicalResourcePlatformUrl(acquired.resourcePlatform, acquired.platformId);
 	return materializeResource(
 		acquired,
 		hints,
 		{
-			kind,
+			...identity,
 			resourceIdentifiers: [{ preferred: true, scheme: acquired.resourcePlatform, value: acquired.platformId }],
 			resourcePlatform: acquired.resourcePlatform,
-			url,
 		},
 		publishedDate,
 	);

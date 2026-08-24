@@ -324,6 +324,7 @@ export async function stageYouTubeAcquisition(
 			summary: description.substring(0, 500) || null,
 		},
 		input.hints,
+		{ kind: 'video', url: `https://youtube.com/watch?v=${input.videoId}` },
 	);
 	return {
 		...resource,

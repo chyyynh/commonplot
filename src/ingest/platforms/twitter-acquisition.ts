@@ -365,7 +365,10 @@ export async function stageTwitterAcquisition(
 			return Response.json(await scrapeTweet(input.tweetId, env.KAITO_API_KEY)).body!;
 		},
 	);
-	return materializePlatformResource(await new Response(contentStream).json<PlatformAcquiredMaterial<'twitter'>>(), input.hints);
+	return materializePlatformResource(await new Response(contentStream).json<PlatformAcquiredMaterial<'twitter'>>(), input.hints, {
+		kind: 'post',
+		url: `https://x.com/i/status/${input.tweetId}`,
+	});
 }
 
 function twitterCreator(data: TwitterMetadata): ResourceCreator[] {

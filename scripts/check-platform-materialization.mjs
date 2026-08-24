@@ -27,6 +27,7 @@ function materialize(input = {}) {
 		return materializePlatformResource(
 			{ ...acquired, platformId: platformIdentity.platformId, resourcePlatform: platformIdentity.resourcePlatform },
 			hints,
+			{ kind: input.kind, url },
 		);
 	}
 	const identity =
@@ -86,6 +87,7 @@ const cases = [
 	{
 		name: 'HN carrier with legacy academic identifiers stays forum',
 		input: {
+			kind: 'forum',
 			url: 'https://news.ycombinator.com/item?id=123',
 			resourceIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
 		},
@@ -98,6 +100,7 @@ const cases = [
 	{
 		name: 'HN URL stays forum',
 		input: {
+			kind: 'forum',
 			url: 'https://news.ycombinator.com/item?id=124',
 		},
 		expected: {
@@ -109,6 +112,7 @@ const cases = [
 	{
 		name: 'Twitter share stays post',
 		input: {
+			kind: 'post',
 			url: 'https://x.com/example/status/125',
 		},
 		expected: {
@@ -120,6 +124,7 @@ const cases = [
 	{
 		name: 'YouTube stays video',
 		input: {
+			kind: 'video',
 			url: 'https://www.youtube.com/watch?v=abcdefghijk',
 		},
 		expected: {
@@ -131,6 +136,7 @@ const cases = [
 	{
 		name: 'LessWrong stays a platform blog',
 		input: {
+			kind: 'blog',
 			url: 'https://www.lesswrong.com/posts/A2kJKqnHhh5Hq4p2S/example-slug',
 		},
 		expected: {
@@ -160,6 +166,7 @@ for (const testCase of cases) {
 }
 
 const migratedCarrier = materialize({
+	kind: 'forum',
 	url: 'https://news.ycombinator.com/item?id=126',
 	resourceIdentifiers: [
 		{ preferred: true, scheme: 'doi', value: '10.1000/example' },
