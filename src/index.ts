@@ -22,6 +22,8 @@ type AppResourceDraftInput = Readonly<{
 
 type StoredPdfProcessingInput = Readonly<{ resourceId: string }>;
 
+const APP_RESOURCE_BATCH_LIMIT = 20;
+const APP_DRAFT_WORKFLOW_ID_RE = /^app-draft-v1-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
 const STORED_BLOB_WORKFLOW_REVISION = 'stored-resource-v11';
@@ -137,22 +139,29 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		return instance.id;
 	}
 
-	/** Process an external URL before its canonical Resource and user relation become visible. */
-	async enqueueResourceDraft(input: AppResourceDraftInput): Promise<string> {
-		if (!/^app-draft-v1-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.instanceId)) {
-			throw new Error('Invalid app draft Workflow ID');
+	/** Process external URLs before their canonical Resources and user relations become visible. */
+	async enqueueResourceDrafts(inputs: AppResourceDraftInput[]): Promise<void> {
+		if (!Array.isArray(inputs) || !inputs.length || inputs.length > APP_RESOURCE_BATCH_LIMIT) {
+			throw new Error(`Resource draft batch must contain 1-${APP_RESOURCE_BATCH_LIMIT} items`);
 		}
-		const parsedUrl = URL.parse(input.url);
-		if (!parsedUrl || (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || parsedUrl.username || parsedUrl.password) {
-			throw new Error('Only http(s) URLs without credentials are allowed');
-		}
-		const target = ResourceDraftTargetSchema.parse({
-			kind: 'draft',
-			saveTarget: input.saveTarget,
-			url: parsedUrl.toString(),
+		const instances = inputs.map((input) => {
+			if (!APP_DRAFT_WORKFLOW_ID_RE.test(input.instanceId)) {
+				throw new Error('Invalid app draft Workflow ID');
+			}
+			const parsedUrl = URL.parse(input.url);
+			if (!parsedUrl || (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || parsedUrl.username || parsedUrl.password) {
+				throw new Error('Only http(s) URLs without credentials are allowed');
+			}
+			return {
+				id: input.instanceId,
+				params: ResourceDraftTargetSchema.parse({
+					kind: 'draft',
+					saveTarget: input.saveTarget,
+					url: parsedUrl.toString(),
+				}),
+			};
 		});
-		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id: input.instanceId, params: target }]);
-		return input.instanceId;
+		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(instances);
 	}
 
 	/** Reacquire a URL-backed resource through the enrichment workflow. */
@@ -165,15 +174,33 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		return instance.id;
 	}
 
-	/** AI Search candidates; the app Worker authoritatively filters and hydrates them. */
-	searchPublicResourceIds(input: PublicResourceSearchInput) {
-		return searchPublicResourceIds(this.env, input);
+	/** Ranked AI Search candidate groups; the app Worker authoritatively filters and hydrates them. */
+	searchPublicResourceIdGroups(inputs: PublicResourceSearchInput[]) {
+		if (!Array.isArray(inputs) || !inputs.length || inputs.length > 10) {
+			throw new Error('Public Resource search batch must contain 1-10 groups');
+		}
+		return Promise.all(inputs.map((input) => searchPublicResourceIds(this.env, input)));
 	}
 
-	/** Read workflow status for app-side polling. */
-	async getWorkflowStatus(instanceId: string) {
-		const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.get(instanceId);
-		return instance.status();
+	/** Read a bounded set of workflow statuses for app-side polling. */
+	async getResourceWorkflowStatuses(instanceIds: string[]) {
+		const ids = z.array(z.string().trim().min(1).max(100)).min(1).max(APP_RESOURCE_BATCH_LIMIT).parse(instanceIds);
+		return Promise.all(
+			ids.map(async (instanceId) => {
+				try {
+					const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.get(instanceId);
+					return await instance.status();
+				} catch (error) {
+					console.error({
+						tag: 'RESOURCE_WORKFLOW',
+						event: 'status_unavailable',
+						instance_id: instanceId,
+						error,
+					});
+					return null;
+				}
+			}),
+		);
 	}
 
 	/** Resolve a feed/account/channel monitor into a source row candidate (#237). */
