@@ -1,12 +1,5 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import type {
-	YouTubeChapter,
-	YouTubeHighlights,
-	YouTubeResourceMutation,
-	YouTubeTranscript,
-	YouTubeTranscriptSegment,
-} from '@app-domain/resource-graph-contracts';
 import { RESOURCE_TYPES } from '@core-shared/resource';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
@@ -24,6 +17,37 @@ const YOUTUBE_API_TIMEOUT_MS = 15_000;
 const MIN_MONITORED_VIDEO_DURATION_SECONDS = 180;
 const YOUTUBE_CHANNEL_ID_RE = /^UC[A-Za-z0-9_-]{22}$/;
 const YOUTUBE_HANDLE_RE = /^@[A-Za-z0-9._-]{3,30}$/;
+
+interface YouTubeTranscriptSegment {
+	startTime: number;
+	endTime: number;
+	text: string;
+}
+
+interface YouTubeChapter {
+	title: string;
+	startTime: number;
+	endTime?: number;
+}
+
+interface YouTubeHighlights {
+	version: '1.0';
+	model: string;
+	highlights: Array<{ title: string; summary: string; startTime: number; endTime: number }>;
+	generatedAt: string;
+}
+
+interface YouTubeTranscript {
+	segments: YouTubeTranscriptSegment[];
+	language: string | null;
+	chapters: YouTubeChapter[];
+	chaptersFromDescription: boolean;
+}
+
+export type YouTubeResourceMutation = Readonly<{
+	transcript: YouTubeTranscript | null;
+	highlights: YouTubeHighlights | null;
+}>;
 
 export async function resolveYouTubeMonitoredSource(youtubeApiKey: string, input: string, url: URL | null) {
 	const host = url?.hostname.toLowerCase().replace(/^(www|m)\./, '');

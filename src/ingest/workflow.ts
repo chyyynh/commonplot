@@ -1,9 +1,4 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import {
-	type PersistResolvedResourceInput,
-	type PersistResolvedResourceTarget,
-	ResourceDraftAdmissionSchema,
-} from '@app-domain/resource-graph-contracts';
 import { connectCoreDb } from '@core-shared/db';
 import { sha256Hex } from '@core-shared/hash';
 import {
@@ -26,7 +21,30 @@ import { enqueueResourceTranslation } from './translation-workflow';
 export const ResourceDraftTargetSchema = z
 	.object({
 		kind: z.literal('draft'),
-		admission: ResourceDraftAdmissionSchema,
+		admission: z.discriminatedUnion('kind', [
+			z
+				.object({
+					kind: z.literal('profileSave'),
+					userId: z.string().trim().min(1).max(255),
+					visibility: z.enum(['public', 'private']),
+				})
+				.strict(),
+			z
+				.object({
+					kind: z.literal('container'),
+					userId: z.string().trim().min(1).max(255),
+					container: z
+						.object({
+							kind: z.enum(['collection', 'workspace']),
+							id: z.string().uuid(),
+						})
+						.strict(),
+				})
+				.strict(),
+			z.object({ kind: z.literal('source'), sourceId: z.string().uuid() }).strict(),
+			z.object({ kind: z.literal('subject'), parentResourceId: z.string().uuid() }).strict(),
+			z.object({ kind: z.literal('userFilePaper'), fileResourceId: z.string().uuid() }).strict(),
+		]),
 		url: z
 			.url({ protocol: /^https?$/ })
 			.max(2_048)
@@ -131,7 +149,9 @@ type ResourceClassification = {
 type ResolvedProcessingCall = {
 	keywordHints: readonly string[];
 	resource: ProcessingResource;
-	persistenceTarget: PersistResolvedResourceTarget;
+	persistenceTarget:
+		| Readonly<{ kind: 'draft'; admission: ResourceDraftTarget['admission'] }>
+		| Readonly<{ kind: 'existing'; resourceId: string }>;
 	processingId: string;
 };
 
@@ -222,7 +242,7 @@ function resolvedResourceMutation(
 	resource: ProcessingResource,
 	classification: ResourceClassification,
 	hostedImages: readonly HostedResourceImage[],
-): Omit<PersistResolvedResourceInput, 'target'> {
+) {
 	const media = hostedResourceImageFields(
 		{ creators: resource.creators, kindMetadata: resource.kindMetadata, ogImageUrl: resource.previewImageUrl },
 		hostedImages,

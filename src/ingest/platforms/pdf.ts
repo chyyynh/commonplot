@@ -1,6 +1,5 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import type { PersistResolvedResourceTarget } from '@app-domain/resource-graph-contracts';
 import { connectCoreDb } from '@core-shared/db';
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
 import { isPaperIdentifier } from '@core-shared/resource';
@@ -369,14 +368,11 @@ export async function stageStoredPdfAcquisition(
 	};
 }
 
-export function storedPdfProcessingResult(
-	resource: ResolvedResource,
-	input: { resourceId: string },
-): { resource: ResolvedResource; persistenceTarget: PersistResolvedResourceTarget } {
+export function storedPdfProcessingResult(resource: ResolvedResource, input: { resourceId: string }) {
 	if (resource.kind !== 'paper') {
 		return {
 			resource,
-			persistenceTarget: { kind: 'existing', resourceId: input.resourceId },
+			persistenceTarget: { kind: 'existing' as const, resourceId: input.resourceId },
 		};
 	}
 	const identity = paperIdentityFromIdentifiers(resource.resourceIdentifiers.filter(isPaperIdentifier));
@@ -385,8 +381,8 @@ export function storedPdfProcessingResult(
 	return {
 		resource: { ...resource, url, normalizedUrl: url },
 		persistenceTarget: {
-			kind: 'draft',
-			admission: { kind: 'userFilePaper', fileResourceId: input.resourceId },
+			kind: 'draft' as const,
+			admission: { kind: 'userFilePaper' as const, fileResourceId: input.resourceId },
 		},
 	};
 }

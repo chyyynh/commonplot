@@ -1,5 +1,4 @@
 import type { WorkflowStep } from 'cloudflare:workers';
-import type { YouTubeResourceMutation } from '@app-domain/resource-graph-contracts';
 import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
 import { parseHackerNewsResourceUrl, stageHackerNewsAcquisition } from './platforms/hackernews';
 import { parseLessWrongResourceUrl, stageLessWrongAcquisition } from './platforms/lesswrong';
@@ -15,7 +14,7 @@ import { stagePaperProcessing } from './platforms/paper';
 import { stageStoredPdfAcquisition, storedPdfProcessingResult } from './platforms/pdf';
 import { parseTwitterResourceUrl, stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
-import { parseYouTubeResourceUrl, stageYouTubeAcquisition } from './platforms/youtube-acquisition';
+import { parseYouTubeResourceUrl, stageYouTubeAcquisition, type YouTubeResourceMutation } from './platforms/youtube-acquisition';
 
 export type ProcessingResource = ResolvedResource & { youtube?: YouTubeResourceMutation };
 

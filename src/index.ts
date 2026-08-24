@@ -1,5 +1,4 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { connectCoreDb } from '@core-shared/db';
 import { handleRSSCron, resolveFeedMonitoredSource } from '@ingest/platforms/rss';
 import { handleTwitterCron, resolveTwitterMonitoredSource } from '@ingest/platforms/twitter';
@@ -14,6 +13,7 @@ import { ResourceTranslationV2Workflow } from '@ingest/translation-workflow';
 import {
 	AutonomousResourceDraftIdSchema,
 	ResourceDraftRecoveryWorkflow,
+	type ResourceDraftTarget,
 	ResourceDraftTargetSchema,
 	ResourceProcessingV2Workflow,
 } from '@ingest/workflow';
@@ -31,7 +31,7 @@ export {
 type AppResourceDraftInput = Readonly<{
 	instanceId: string;
 	url: string;
-	admission: Extract<ResourceDraftAdmission, { kind: 'profileSave' | 'container' }>;
+	admission: Extract<ResourceDraftTarget['admission'], { kind: 'profileSave' | 'container' }>;
 }>;
 
 const ResourceWorkflowErroredEventSchema = z.object({
