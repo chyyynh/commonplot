@@ -301,7 +301,15 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				),
 			);
 		}
-		if (translationRevision) {
+		const shouldTranslate =
+			preparedResource.originalLang !== 'zh-Hant' &&
+			preparedResource.kind !== 'video' &&
+			(scope === 'corpus' ||
+				(preparedResource.kind === 'blog' &&
+					preparedResource.resourcePlatform === null &&
+					preparedResource.fileType === 'application/pdf' &&
+					preparedResource.url === null));
+		if (shouldTranslate) {
 			followUps.push(
 				step.do(
 					'enqueue-resource-translation-v2',
