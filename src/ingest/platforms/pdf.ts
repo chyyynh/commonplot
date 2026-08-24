@@ -476,6 +476,7 @@ export function storedPdfProcessingResult(resource: ResolvedResource, input: { r
 		return {
 			resource,
 			persistenceTarget: { kind: 'existing' as const, resourceId: input.resourceId },
+			saveTarget: null,
 		};
 	}
 	const identity = paperIdentityFromIdentifiers(resource.resourceIdentifiers.filter(isPaperIdentifier));
@@ -485,7 +486,7 @@ export function storedPdfProcessingResult(resource: ResolvedResource, input: { r
 		resource: { ...resource, url, normalizedUrl: url },
 		persistenceTarget: {
 			kind: 'draft' as const,
-			commitIntent: { kind: 'userFilePaper' as const, fileResourceId: input.resourceId },
 		},
+		saveTarget: { kind: 'userFilePaper' as const, fileResourceId: input.resourceId },
 	};
 }

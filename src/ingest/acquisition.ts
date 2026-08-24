@@ -160,6 +160,7 @@ export async function stageStoredResource(
 	resource: ProcessingResource;
 	persistenceTarget: ReturnType<typeof storedPdfProcessingResult>['persistenceTarget'];
 	processingId: string;
+	saveTarget: ReturnType<typeof storedPdfProcessingResult>['saveTarget'];
 }> {
 	const acquired = await stageStoredPdfAcquisition(env, step, target);
 	return {

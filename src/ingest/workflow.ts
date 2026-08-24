@@ -25,10 +25,19 @@ import { type ProcessingResource, stageStoredResource, stageUrlAcquisition } fro
 import { stageResourceImages } from './image-rehosting';
 import { enqueueResourceTranslation } from './translation-workflow';
 
+const ResourceDraftRelationSchema = z.discriminatedUnion('kind', [
+	z.object({ kind: z.literal('source'), sourceId: z.uuid() }).strict(),
+	z.object({ kind: z.literal('subject'), parentResourceId: z.uuid() }).strict(),
+]);
+
+type ResourceSaveTarget = Parameters<CoreEnv['DOMAIN']['completeResourceSave']>[0]['saveTarget'];
+const ResourceSaveTargetSchema = z.record(z.string(), z.json()).transform((value) => value as ResourceSaveTarget);
+
 export const ResourceDraftTargetSchema = z
 	.object({
 		kind: z.literal('draft'),
-		commitIntent: z.record(z.string(), z.json()),
+		relation: ResourceDraftRelationSchema.optional(),
+		saveTarget: ResourceSaveTargetSchema.optional(),
 		monitor: z
 			.object({
 				avatarUrl: z.url().max(2_048).nullable(),
@@ -80,7 +89,7 @@ export async function enqueueSourceDrafts(env: CoreEnv, drafts: SourceResourceDr
 			const sourceAvatarUrl = normalizedExternalMediaUrl(draft.sourceAvatarUrl);
 			const target = {
 				kind: 'draft',
-				commitIntent: { kind: 'source', sourceId: z.uuid().parse(draft.sourceId.trim()) },
+				relation: { kind: 'source', sourceId: z.uuid().parse(draft.sourceId.trim()) },
 				monitor: { avatarUrl: sourceAvatarUrl },
 				url: parsedUrl.toString(),
 				sourceHints: {
@@ -139,9 +148,10 @@ type ResolvedProcessingCall = {
 	keywordHints: readonly string[];
 	resource: ProcessingResource;
 	persistenceTarget:
-		| Readonly<{ kind: 'draft'; commitIntent: ResourceDraftTarget['commitIntent'] }>
+		| Readonly<{ kind: 'draft'; relation?: z.infer<typeof ResourceDraftRelationSchema> }>
 		| Readonly<{ kind: 'existing'; resourceId: string }>;
 	processingId: string;
+	saveTarget: ResourceDraftTarget['saveTarget'] | null;
 };
 
 const CLASSIFICATION_CONTENT_MAX_LENGTH = 10000;
@@ -346,8 +356,9 @@ async function resolveProcessingCall(
 			}),
 			persistenceTarget: {
 				kind: 'draft',
-				commitIntent: target.commitIntent,
+				...(target.relation ? { relation: target.relation } : {}),
 			},
+			saveTarget: target.saveTarget ?? null,
 		};
 	}
 
@@ -378,6 +389,7 @@ async function resolveProcessingCall(
 			kind: 'existing',
 			resourceId: target.resourceId,
 		},
+		saveTarget: null,
 	};
 }
 
@@ -424,6 +436,20 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			},
 		);
 		const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision } = persistence;
+		const saveTarget = call.saveTarget;
+		if (saveTarget) {
+			await step.do(
+				'complete-resource-save-v1',
+				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+				async () => {
+					await this.env.DOMAIN.completeResourceSave({
+						resourceId: persistedResourceId,
+						saveTarget,
+					});
+					return true;
+				},
+			);
+		}
 		const followUps: Promise<unknown>[] = [];
 		if (scope === 'corpus') {
 			followUps.push(
@@ -455,7 +481,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					async () => {
 						const subjectTarget = ResourceDraftTargetSchema.parse({
 							kind: 'draft',
-							commitIntent: { kind: 'subject', parentResourceId: persistedResourceId },
+							relation: { kind: 'subject', parentResourceId: persistedResourceId },
 							url: subject.normalizedUrl,
 						});
 						const id = `subject-draft-v3-${await sha256Hex(JSON.stringify(subjectTarget))}`;

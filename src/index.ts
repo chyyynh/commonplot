@@ -28,7 +28,7 @@ export {
 type AppResourceDraftInput = Readonly<{
 	instanceId: string;
 	url: string;
-	commitIntent: ResourceDraftTarget['commitIntent'];
+	saveTarget: Exclude<ResourceDraftTarget['saveTarget'], undefined>;
 }>;
 
 type StoredPdfProcessingInput = Readonly<{ resourceId: string }>;
@@ -181,7 +181,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		}
 		const target = ResourceDraftTargetSchema.parse({
 			kind: 'draft',
-			commitIntent: input.commitIntent,
+			saveTarget: input.saveTarget,
 			url: parsedUrl.toString(),
 		});
 		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id: input.instanceId, params: target }]);
