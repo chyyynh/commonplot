@@ -9,7 +9,6 @@ import { resolveYouTubeMonitoredSource } from './ingest/platforms/youtube';
 import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import {
 	AutonomousResourceDraftIdSchema,
-	ResourceDraftRecoveryWorkflow,
 	type ResourceDraftTarget,
 	ResourceDraftTargetSchema,
 	ResourceProcessingV2Workflow,
@@ -18,12 +17,7 @@ import { SearchIndexGeneration5RebuildWorkflow } from './operations/search-index
 import { type PublicResourceSearchInput, searchPublicResourceIds } from './search-index';
 import { connectCoreDb } from './shared/db';
 
-export {
-	ResourceDraftRecoveryWorkflow,
-	ResourceProcessingV2Workflow,
-	ResourceTranslationV2Workflow,
-	SearchIndexGeneration5RebuildWorkflow,
-};
+export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexGeneration5RebuildWorkflow };
 
 type AppResourceDraftInput = Readonly<{
 	instanceId: string;
@@ -124,11 +118,11 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	override async queue(batch: MessageBatch<unknown>): Promise<void> {
-		const resourceDraftInstanceIds = new Set<string>();
 		for (const message of batch.messages) {
 			const event = ResourceWorkflowErroredEventSchema.safeParse(message.body);
 			if (!event.success) {
 				console.warn({ tag: 'WORKFLOW', event: 'workflow_error_event_invalid', message_id: message.id });
+				message.ack();
 				continue;
 			}
 			const { instanceId, versionId } = event.data.payload;
@@ -140,24 +134,37 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 				version_id: versionId,
 			});
 			const resourceDraftId = AutonomousResourceDraftIdSchema.safeParse(instanceId);
-			if (resourceDraftId.success) resourceDraftInstanceIds.add(resourceDraftId.data);
-		}
-		if (!resourceDraftInstanceIds.size) return;
+			if (!resourceDraftId.success) {
+				message.ack();
+				continue;
+			}
+			if (message.attempts === 1) {
+				message.retry({ delaySeconds: 15 * 60 });
+				continue;
+			}
 
-		const recoveries = [...resourceDraftInstanceIds].map((instanceId) => ({
-			id: instanceId.startsWith('source-draft-')
-				? `source-recovery-v1-${instanceId.slice('source-draft-'.length)}`
-				: `subject-recovery-v1-${instanceId.slice('subject-draft-'.length)}`,
-			params: { instanceId },
-		}));
-		const created = await this.env.RESOURCE_DRAFT_RECOVERY_WORKFLOW.createBatch(recoveries);
-		console.info({
-			tag: 'RESOURCE_RECOVERY',
-			event: 'resource_draft_recoveries_admitted',
-			received: recoveries.length,
-			created: created.length,
-			deduplicated: recoveries.length - created.length,
-		});
+			try {
+				const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.get(resourceDraftId.data);
+				const state = await instance.status();
+				if (state.status === 'unknown') throw new Error(`Resource Workflow ${resourceDraftId.data} has unknown status`);
+				if (state.status === 'errored') await instance.restart();
+				console.info({
+					tag: 'RESOURCE_RECOVERY',
+					event: 'resource_draft_recovery_completed',
+					instance_id: resourceDraftId.data,
+					outcome: state.status === 'errored' ? 'restarted' : state.status,
+				});
+				message.ack();
+			} catch (error) {
+				console.error({
+					tag: 'RESOURCE_RECOVERY',
+					event: 'resource_draft_recovery_failed',
+					instance_id: resourceDraftId.data,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				message.retry();
+			}
+		}
 	}
 
 	// Service-binding RPC for engine capabilities. Product-domain writes live on

@@ -122,12 +122,6 @@ type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSchema>;
 
 export const AutonomousResourceDraftIdSchema = z.string().regex(/^(?:source|subject)-draft-v[1-9]\d*-[0-9a-f]{64}$/);
 
-const ResourceDraftRecoveryPayloadSchema = z
-	.object({
-		instanceId: AutonomousResourceDraftIdSchema,
-	})
-	.strict();
-
 type ResolvedProcessingCall = {
 	keywordHints: readonly string[];
 	resource: ProcessingResource;
@@ -421,27 +415,5 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
 		return { resourceId: persistedResourceId };
-	}
-}
-
-/** Gives an autonomous source or subject draft one delayed whole-Workflow retry. */
-export class ResourceDraftRecoveryWorkflow extends WorkflowEntrypoint<CoreEnv, z.infer<typeof ResourceDraftRecoveryPayloadSchema>> {
-	async run(event: WorkflowEvent<z.infer<typeof ResourceDraftRecoveryPayloadSchema>>, step: WorkflowStep) {
-		const { instanceId } = ResourceDraftRecoveryPayloadSchema.parse(event.payload);
-		await step.sleep('resource-draft-recovery-delay-v1', '15 minutes');
-		const outcome = await step.do(
-			'resource-draft-restart-once-v1',
-			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			async () => {
-				const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.get(instanceId);
-				const state = await instance.status();
-				if (state.status === 'unknown') throw new Error(`Resource Workflow ${instanceId} has unknown status`);
-				if (state.status !== 'errored') return state.status;
-				await instance.restart();
-				return 'restarted' as const;
-			},
-		);
-		console.info({ tag: 'RESOURCE_RECOVERY', event: 'resource_draft_recovery_completed', instance_id: instanceId, outcome });
-		return { outcome };
 	}
 }

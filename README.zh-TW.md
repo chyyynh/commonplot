@@ -195,10 +195,9 @@ Bindings（在 `wrangler.jsonc` 裡設定）：
 | ------------------ | ------------------------------------------- |
 | `HYPERDRIVE`       | 連線到你的 Postgres                         |
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | 抓取、解析、分類並寫回 canonical resource |
-| `RESOURCE_DRAFT_RECOVERY_WORKFLOW` | 對失敗的 autonomous source／subject draft 執行一次有界的延遲 restart |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | 將已持久化的 resource 翻譯成繁體中文 |
 | `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` | 全量重建並驗證 generation-5 搜尋索引 |
-| `workflow-errors-core` | 接收已訂閱 Workflow lifecycle errors 的 Queue consumer |
+| `workflow-errors-core` | 延遲並重試失敗 autonomous resource drafts 的 Queue consumer |
 | `R2`               | 讀取 app-owned uploaded blob，供 PDF extraction 使用 |
 | `IMAGES`           | 將遠端 resource 圖片串流上傳至 Cloudflare Images |
 | `AI`               | Workers AI binding（AI Gateway 文字呼叫）   |
