@@ -175,7 +175,7 @@ src/
 │   └── db.ts             # Drizzle over Hyperdrive
 ├── ingest/               # ── resource ingestion pipeline (the open-source core) ──
 │   ├── workflow.ts       # target validation, processing, and draft recovery Workflows
-│   ├── entity.ts         # resource-local entity normalization
+│   ├── analysis.ts       # AI classification and resource-local entity normalization
 │   ├── acquisition.ts    # one platform detection pass and adapter dispatch
 │   ├── resource-persistence.ts # canonical Resource transaction
 │   ├── source-monitor-state.ts # monitor state and deterministic source drafts

@@ -10,7 +10,7 @@ import {
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
 import type { ProcessingResource } from './acquisition';
-import { type ResourceEntity, toStoredResourceEntities } from './entity';
+import { type ResourceAnalysis, toStoredResourceEntities } from './analysis';
 import type { YouTubeResourceData } from './platforms/youtube';
 
 export type ResourceDraftRelation =
@@ -20,12 +20,6 @@ export type ResourceDraftRelation =
 export type ResourcePersistenceTarget =
 	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation }>
 	| Readonly<{ kind: 'existing'; resourceId: string }>;
-
-export type ResourceClassification = Readonly<{
-	entities: ResourceEntity[];
-	keywords: readonly string[];
-	tags: readonly string[];
-}>;
 
 type LockedResource = Readonly<{
 	enrichment_status: string;
@@ -54,7 +48,7 @@ function identifierMatchesResource(identifier: ResourceIdentifier, resource: Pro
 
 export function prepareResolvedResource(
 	resource: ProcessingResource,
-	classification: ResourceClassification,
+	analysis: ResourceAnalysis,
 	hostedImages: readonly HostedResourceImage[],
 ) {
 	const originalLang = canonicalizeResourceLang(resource.originalLang);
@@ -99,11 +93,11 @@ export function prepareResolvedResource(
 	return {
 		content,
 		creators: media.creators,
-		entities: toStoredResourceEntities(classification.entities, resource.resourcePlatform, resource.source, resource.creators),
+		entities: toStoredResourceEntities(analysis.entities, resource.resourcePlatform, resource.source, resource.creators),
 		fileType: resource.fileType ?? null,
 		highlightsGeneratedAt,
 		identifiers,
-		keywords: [...classification.keywords],
+		keywords: [...analysis.keywords],
 		kind: resource.kind,
 		kindMetadata: media.kindMetadata,
 		normalizedUrl,
@@ -113,7 +107,7 @@ export function prepareResolvedResource(
 		resourcePlatform: resource.resourcePlatform,
 		subject,
 		summary: resource.summary,
-		tags: [...classification.tags],
+		tags: [...analysis.tags],
 		title,
 		url,
 		youtube: resource.youtube ?? null,

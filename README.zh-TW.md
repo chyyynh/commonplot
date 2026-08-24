@@ -169,7 +169,7 @@ src/
 │   └── db.ts             # Drizzle over Hyperdrive
 ├── ingest/               # ── resource 入庫 pipeline（開源核心）──
 │   ├── workflow.ts       # target validation、processing 與 draft recovery Workflows
-│   ├── entity.ts         # resource-local entity normalization
+│   ├── analysis.ts       # AI 分析與 resource-local entity normalization
 │   ├── acquisition.ts    # 單次 platform detection 與 adapter dispatch
 │   ├── resource-persistence.ts # canonical Resource transaction
 │   ├── source-monitor-state.ts # monitor 狀態與 deterministic source drafts
