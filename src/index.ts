@@ -1,22 +1,22 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { connectCoreDb } from '@core-shared/db';
-import { handleRSSCron, resolveFeedMonitoredSource } from '@ingest/platforms/rss';
-import { handleTwitterCron, resolveTwitterMonitoredSource } from '@ingest/platforms/twitter';
-import { resolveYouTubeMonitoredSource } from '@ingest/platforms/youtube-acquisition';
-import { ResourceTranslationV2Workflow } from '@ingest/translation-workflow';
+import { sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { z } from 'zod';
+import type {} from './env';
+import { handleRSSCron, resolveFeedMonitoredSource } from './ingest/platforms/rss';
+import { handleTwitterCron, resolveTwitterMonitoredSource } from './ingest/platforms/twitter';
+import { resolveYouTubeMonitoredSource } from './ingest/platforms/youtube-acquisition';
+import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import {
 	AutonomousResourceDraftIdSchema,
 	ResourceDraftRecoveryWorkflow,
 	type ResourceDraftTarget,
 	ResourceDraftTargetSchema,
 	ResourceProcessingV2Workflow,
-} from '@ingest/workflow';
-import { sql } from 'drizzle-orm';
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { z } from 'zod';
-import type {} from './env';
+} from './ingest/workflow';
 import { SearchIndexGeneration5RebuildWorkflow } from './operations/search-index-rebuild';
 import { type PublicResourceSearchInput, searchPublicResourceIds } from './search-index';
+import { connectCoreDb } from './shared/db';
 
 export {
 	ResourceDraftRecoveryWorkflow,

@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import {
 	normalizeArxivId,
 	normalizeDoi,
@@ -6,9 +7,8 @@ import {
 	type PaperIdentifier,
 	type PaperIdentity,
 	paperIdentityFromIdentifiers,
-} from '@core-shared/paper-identity';
-import type { PaperRelationItem, PaperRelationSnapshot } from '@core-shared/resource';
-import { z } from 'zod';
+} from '../../shared/paper-identity';
+import type { PaperRelationItem, PaperRelationSnapshot } from '../../shared/resource';
 
 export interface PaperMetadata {
 	title?: string;

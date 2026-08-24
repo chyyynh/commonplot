@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
 import { extractFromHtml } from '@extractus/article-extractor';
+import { normalizedResourceImageUrl } from '../../shared/image-mapping';
 import { type GenericAcquiredMaterial, literalCreator, type PlatformResourceUrl } from './materialize';
 import { acquireFetchedPdfResponse, PDF_MIME } from './pdf';
 

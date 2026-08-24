@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { type PostKindMetadata, RESOURCE_TYPES, type ResourceCreator, type ResourceMediaAttachment } from '@core-shared/resource';
+import { type PostKindMetadata, RESOURCE_TYPES, type ResourceCreator, type ResourceMediaAttachment } from '../../shared/resource';
 import {
 	literalCreator,
 	materializePlatformResource,

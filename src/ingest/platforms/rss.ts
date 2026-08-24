@@ -1,8 +1,8 @@
-import { resolvePlatformResourceUrl } from '@ingest/acquisition';
-import { markSourcesScraped, recordSourceFailure } from '@ingest/source-monitor-state';
-import { enqueueSourceDrafts, type SourceResourceDraft } from '@ingest/workflow';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { resolvePlatformResourceUrl } from '../acquisition';
+import { markSourcesScraped, recordSourceFailure } from '../source-monitor-state';
+import { enqueueSourceDrafts, type SourceResourceDraft } from '../workflow';
 import { loadFeed } from './rss-feed';
 
 const FEED_CONCURRENCY = 4;

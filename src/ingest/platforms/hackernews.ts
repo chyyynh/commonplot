@@ -1,10 +1,10 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { type ForumKindMetadata, RESOURCE_TYPES } from '@core-shared/resource';
 import { generateText } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
+import { type ForumKindMetadata, RESOURCE_TYPES } from '../../shared/resource';
 import {
 	literalCreator,
 	materializePlatformResource,

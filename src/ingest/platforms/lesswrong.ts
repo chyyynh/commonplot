@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
-import { RESOURCE_TYPES } from '@core-shared/resource';
+import { normalizedResourceImageUrl } from '../../shared/image-mapping';
+import { RESOURCE_TYPES } from '../../shared/resource';
 import {
 	literalCreator,
 	materializePlatformResource,

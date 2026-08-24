@@ -1,13 +1,13 @@
 // Durable translation execution; resource processing only enqueues this Workflow.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { connectCoreDb } from '@core-shared/db';
-import { canonicalizeResourceLang, type RESOURCE_TYPES } from '@core-shared/resource';
 import { generateText, Output } from 'ai';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { syncCorpusItem } from '../search-index';
+import { connectCoreDb } from '../shared/db';
+import { canonicalizeResourceLang, type RESOURCE_TYPES } from '../shared/resource';
 import { pdfTranslationAdmission, privateUploadedPdfTranslationSqlAdmission, stagePrivatePdfMarkdownTranslation } from './platforms/pdf';
 import { persistMachineZhHantTranslation } from './resource-persistence';
 

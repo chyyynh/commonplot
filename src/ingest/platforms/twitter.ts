@@ -1,8 +1,8 @@
-import { connectCoreDb } from '@core-shared/db';
-import { markSourcesScraped, recordSourceFailure } from '@ingest/source-monitor-state';
-import { enqueueSourceDrafts, type SourceResourceDraft } from '@ingest/workflow';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { connectCoreDb } from '../../shared/db';
+import { markSourcesScraped, recordSourceFailure } from '../source-monitor-state';
+import { enqueueSourceDrafts, type SourceResourceDraft } from '../workflow';
 import { parseTwitterProfileInput } from './twitter-acquisition';
 import { parseTwitterAdvancedSearchPage, type Tweet } from './twitter-data';
 

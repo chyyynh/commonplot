@@ -6,9 +6,6 @@ registerHooks({
 		if (specifier === 'cloudflare:workflows') {
 			return { shortCircuit: true, url: 'data:text/javascript,export class NonRetryableError extends Error {}' };
 		}
-		if (specifier.startsWith('@core-shared/')) {
-			return { shortCircuit: true, url: new URL(`../src/shared/${specifier.slice('@core-shared/'.length)}.ts`, import.meta.url).href };
-		}
 		if (specifier.startsWith('.') && !specifier.endsWith('.ts') && context.parentURL?.includes('/workers/core-worker/src/')) {
 			return { shortCircuit: true, url: new URL(`${specifier}.ts`, context.parentURL).href };
 		}

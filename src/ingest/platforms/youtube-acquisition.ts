@@ -1,9 +1,9 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { RESOURCE_TYPES } from '@core-shared/resource';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
+import { RESOURCE_TYPES } from '../../shared/resource';
 import {
 	literalCreator,
 	materializePlatformResource,

@@ -1,5 +1,5 @@
 import type { WorkflowStep } from 'cloudflare:workers';
-import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '@core-shared/paper-identity';
+import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '../shared/paper-identity';
 import { parseHackerNewsResourceUrl, stageHackerNewsAcquisition } from './platforms/hackernews';
 import { parseLessWrongResourceUrl, stageLessWrongAcquisition } from './platforms/lesswrong';
 import {

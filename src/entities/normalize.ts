@@ -4,7 +4,7 @@
 // storing and under WHAT canonical key. Consumed by the ingest
 // pipeline (persistence + prompt exclusion lists).
 
-import type { RESOURCE_TYPES, ResourceCreator } from '@core-shared/resource';
+import type { RESOURCE_TYPES, ResourceCreator } from '../shared/resource';
 
 export type ResourceEntityInput = { name: string; name_cn: string; type: string };
 export const ENTITY_TYPES = ['person', 'organization', 'product', 'technology', 'event', 'location'] as const;

@@ -1,6 +1,6 @@
-import { RESOURCE_TYPES } from '@core-shared/resource';
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { RESOURCE_TYPES } from './shared/resource';
 
 // Postgres is canonical; AI Search is its derived public-corpus index.
 export const AI_SEARCH_ITEM_PREFIX = 'resources/';

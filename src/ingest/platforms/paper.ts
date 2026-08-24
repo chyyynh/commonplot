@@ -1,6 +1,7 @@
 // Provider-independent bibliographic resolution followed by OpenAlex enrichment.
 
 import type { WorkflowStep } from 'cloudflare:workers';
+import { z } from 'zod';
 import {
 	normalizePaperIdentifiers,
 	PAPER_IDENTIFIER_SCHEMES,
@@ -9,9 +10,8 @@ import {
 	paperIdentifiersFromIdentity,
 	paperIdentityFromText,
 	resolveExactPaperInput,
-} from '@core-shared/paper-identity';
-import type { PaperKindMetadata } from '@core-shared/resource';
-import { z } from 'zod';
+} from '../../shared/paper-identity';
+import type { PaperKindMetadata } from '../../shared/resource';
 import { type GenericAcquiredMaterial, literalCreator } from './materialize';
 import { fetchOpenAlexPdf, type PaperMetadata, resolveOpenAlexPaper } from './openalex';
 import { acquireFetchedPdfResponse, PDF_MIME } from './pdf';

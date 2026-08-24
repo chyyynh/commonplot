@@ -1,21 +1,21 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { connectCoreDb } from '@core-shared/db';
-import { sha256Hex } from '@core-shared/hash';
-import { normalizedExternalMediaUrl, resourceImageSourceUrls } from '@core-shared/image-mapping';
-import { normalizePaperIdentifiers, type PaperIdentifier } from '@core-shared/paper-identity';
-import {
-	canonicalizeOptionalResourceLang,
-	canonicalizeResourceLang,
-	isPaperIdentifier,
-	ResourceIdentifiersSchema,
-} from '@core-shared/resource';
-import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput } from '@entities/normalize';
 import { generateText, Output } from 'ai';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
+import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput } from '../entities/normalize';
 import { syncCorpusItem } from '../search-index';
+import { connectCoreDb } from '../shared/db';
+import { sha256Hex } from '../shared/hash';
+import { normalizedExternalMediaUrl, resourceImageSourceUrls } from '../shared/image-mapping';
+import { normalizePaperIdentifiers, type PaperIdentifier } from '../shared/paper-identity';
+import {
+	canonicalizeOptionalResourceLang,
+	canonicalizeResourceLang,
+	isPaperIdentifier,
+	ResourceIdentifiersSchema,
+} from '../shared/resource';
 import { type ProcessingResource, stageStoredResource, stageUrlAcquisition } from './acquisition';
 import { stageResourceImages } from './image-rehosting';
 import { persistResolvedResource, type ResourcePersistenceTarget } from './resource-persistence';
@@ -391,10 +391,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				'complete-resource-save-v1',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 				async () => {
-					await this.env.APP.completeResourceSave({
-						resourceId: persistedResourceId,
-						saveTarget,
-					});
+					await this.env.APP.completeResourceSave(persistedResourceId, saveTarget);
 					return true;
 				},
 			);

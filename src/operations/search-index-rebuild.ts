@@ -1,8 +1,8 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { connectCoreDb } from '@core-shared/db';
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { AI_SEARCH_ITEM_PREFIX, resourceIdFromAiSearchItemKey, upsertCorpusItems } from '../search-index';
+import { connectCoreDb } from '../shared/db';
 
 // Cloudflare AI Search allows at most five custom metadata fields per instance.
 const CANONICAL_CUSTOM_METADATA = [

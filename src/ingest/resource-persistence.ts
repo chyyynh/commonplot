@@ -1,4 +1,7 @@
-import { type HostedResourceImage, hostedResourceImageFields, resourceImageFieldsAreHosted } from '@core-shared/image-mapping';
+import { sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { type ResourceEntityInput, toStoredResourceEntities } from '../entities/normalize';
+import { type HostedResourceImage, hostedResourceImageFields, resourceImageFieldsAreHosted } from '../shared/image-mapping';
 import {
 	canonicalizeResourceLang,
 	isPaperIdentifier,
@@ -6,10 +9,7 @@ import {
 	ResourceCreatorsSchema,
 	type ResourceIdentifier,
 	ResourceIdentifiersSchema,
-} from '@core-shared/resource';
-import { type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
-import { sql } from 'drizzle-orm';
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+} from '../shared/resource';
 import type { ProcessingResource } from './acquisition';
 import type { YouTubeResourceMutation } from './platforms/youtube-acquisition';
 

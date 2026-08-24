@@ -1,7 +1,12 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { connectCoreDb } from '@core-shared/db';
-import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
+import { initSync, LiteParse, type LiteParseInit, type ParseResult } from '@llamaindex/liteparse-wasm';
+import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
+import liteParsePackage from '@llamaindex/liteparse-wasm/package.json';
+import { sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { connectCoreDb } from '../../shared/db';
+import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '../../shared/paper-identity';
 import {
 	canonicalizeResourceLang,
 	isPaperIdentifier,
@@ -9,12 +14,7 @@ import {
 	type ResourceCreator,
 	ResourceCreatorsSchema,
 	type ResourceKindMetadata,
-} from '@core-shared/resource';
-import { initSync, LiteParse, type LiteParseInit, type ParseResult } from '@llamaindex/liteparse-wasm';
-import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
-import liteParsePackage from '@llamaindex/liteparse-wasm/package.json';
-import { sql } from 'drizzle-orm';
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+} from '../../shared/resource';
 import type { GenericAcquiredMaterial, ResolvedResource } from './materialize';
 
 export const PDF_MIME = 'application/pdf';
