@@ -13,13 +13,15 @@ import {
 import type { ProcessingResource } from './acquisition';
 import type { YouTubeResourceData } from './platforms/youtube';
 
-type ResourceDraftRelation = Readonly<{ kind: 'source'; sourceId: string }> | Readonly<{ kind: 'subject'; parentResourceId: string }>;
+export type ResourceDraftRelation =
+	| Readonly<{ kind: 'source'; sourceId: string }>
+	| Readonly<{ kind: 'subject'; parentResourceId: string }>;
 
 export type ResourcePersistenceTarget =
 	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation }>
 	| Readonly<{ kind: 'existing'; resourceId: string }>;
 
-type ResourceClassification = Readonly<{
+export type ResourceClassification = Readonly<{
 	entities: ResourceEntityInput[];
 	keywords: readonly string[];
 	tags: readonly string[];
@@ -33,15 +35,7 @@ type LockedResource = Readonly<{
 	subject_resource_id: string | null;
 }>;
 
-type CanonicalResource = ReturnType<typeof canonicalResource>;
-
-export type PersistMachineZhHantTranslationInput = Readonly<{
-	resourceId: string;
-	translationRevision: string;
-	patch: Readonly<{ title?: string; summary?: string; content?: string }>;
-}>;
-
-const RESOURCE_TRANSLATION_REVISION_RE = /^[0-9a-f]{32}$/;
+export type PreparedResource = ReturnType<typeof prepareResolvedResource>;
 
 function httpUrl(value: string | null, field: string): string | null {
 	if (value === null) return null;
@@ -58,7 +52,7 @@ function identifierMatchesResource(identifier: ResourceIdentifier, resource: Pro
 		: resource.kind === 'paper' && isPaperIdentifier(identifier);
 }
 
-function canonicalResource(
+export function prepareResolvedResource(
 	resource: ProcessingResource,
 	classification: ResourceClassification,
 	hostedImages: readonly HostedResourceImage[],
@@ -164,7 +158,7 @@ async function corpusUrlOwner(db: NodePgDatabase, normalizedUrl: string | null):
 	return result.rows[0]?.id ?? null;
 }
 
-async function draftRoot(db: NodePgDatabase, resource: CanonicalResource): Promise<LockedResource> {
+async function draftRoot(db: NodePgDatabase, resource: PreparedResource): Promise<LockedResource> {
 	const owners = await identifierOwners(db, resource.identifiers);
 	if (owners.length > 1) throw new Error('Resolved identifiers belong to different Resources');
 	const identifierOwner = owners[0] ?? null;
@@ -193,7 +187,7 @@ async function draftRoot(db: NodePgDatabase, resource: CanonicalResource): Promi
 	return created;
 }
 
-async function existingSubject(db: NodePgDatabase, parentId: string, subject: NonNullable<CanonicalResource['subject']>) {
+async function existingSubject(db: NodePgDatabase, parentId: string, subject: NonNullable<PreparedResource['subject']>) {
 	const owners = await identifierOwners(db, subject.identifiers);
 	if (owners.length > 1) return null;
 	const identifierOwner = owners[0] ?? null;
@@ -235,7 +229,7 @@ async function persistYouTube(db: NodePgDatabase, resourceId: string, input: You
 async function writeCanonicalResource(
 	db: NodePgDatabase,
 	resourceId: string,
-	resource: CanonicalResource,
+	resource: PreparedResource,
 	previousOriginalLang: string,
 	subjectResourceId: string | null,
 ) {
@@ -343,16 +337,7 @@ async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relati
 	if (attached.rowCount !== 1) throw new Error('Subject parent is no longer eligible for attachment');
 }
 
-export async function persistResolvedResource(
-	db: NodePgDatabase,
-	input: Readonly<{
-		resource: ProcessingResource;
-		classification: ResourceClassification;
-		hostedImages: readonly HostedResourceImage[];
-		target: ResourcePersistenceTarget;
-	}>,
-) {
-	const resource = canonicalResource(input.resource, input.classification, input.hostedImages);
+export async function persistResolvedResource(db: NodePgDatabase, resource: PreparedResource, target: ResourcePersistenceTarget) {
 	const lockKeys = [
 		...(resource.normalizedUrl ? [`url:${resource.normalizedUrl}`] : []),
 		...resource.identifiers.map(({ scheme, value }) => `id:${scheme}:${value}`),
@@ -364,12 +349,12 @@ export async function persistResolvedResource(
 		for (const key of [...new Set(lockKeys)].sort()) {
 			await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`newsence:resource:${key}`}, 0))`);
 		}
-		const root = input.target.kind === 'draft' ? await draftRoot(tx, resource) : await lockResource(tx, input.target.resourceId);
+		const root = target.kind === 'draft' ? await draftRoot(tx, resource) : await lockResource(tx, target.resourceId);
 		const resolvedSubjectId = resource.subject ? await existingSubject(tx, root.id, resource.subject) : null;
 		const subjectResourceId = resolvedSubjectId ?? root.subject_resource_id;
 		const translationRevision = await writeCanonicalResource(tx, root.id, resource, root.original_lang, subjectResourceId);
-		if (input.target.kind === 'draft' && input.target.relation) {
-			await applyDraftRelation(tx, root.id, input.target.relation);
+		if (target.kind === 'draft' && target.relation) {
+			await applyDraftRelation(tx, root.id, target.relation);
 		}
 		if (!translationRevision) throw new Error(`Resource ${root.id} has no original translation`);
 		return {
@@ -379,73 +364,4 @@ export async function persistResolvedResource(
 			translationRevision,
 		};
 	});
-}
-
-export async function persistMachineZhHantTranslation(db: NodePgDatabase, input: PersistMachineZhHantTranslationInput): Promise<boolean> {
-	if (!RESOURCE_TRANSLATION_REVISION_RE.test(input.translationRevision)) {
-		throw new TypeError('Resource translation revision is invalid');
-	}
-	if (input.patch.title === undefined && input.patch.summary === undefined && input.patch.content === undefined) {
-		throw new TypeError('Resource translation patch is empty');
-	}
-	const result = await db.execute<{ resource_id: string }>(sql`
-		WITH target_resource AS (
-			SELECT resource.id
-			FROM resources resource
-			WHERE resource.id = ${input.resourceId}::uuid
-			  AND (
-				resource.scope = 'corpus'
-				OR (
-				  resource.scope = 'private'
-				  AND resource.kind = 'blog'
-				  AND resource.resource_platform IS NULL
-				  AND resource.file_type = 'application/pdf'
-				  AND resource.storage_key IS NOT NULL
-				  AND EXISTS (SELECT 1 FROM user_files file WHERE file.resource_id = resource.id)
-				)
-			  )
-			  AND EXISTS (
-				SELECT 1
-				FROM resource_translations original
-				WHERE original.resource_id = resource.id
-				  AND original.lang = resource.original_lang
-				  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${input.translationRevision}
-			  )
-			FOR UPDATE OF resource
-		)
-		INSERT INTO resource_translations AS current_translation (
-			resource_id, lang, title, summary, content, keywords, source, updated_at
-		)
-		SELECT
-			target_resource.id, 'zh-Hant', ${input.patch.title ?? null}, ${input.patch.summary ?? null}, ${input.patch.content ?? null},
-			ARRAY[]::text[], 'machine', NOW()
-		FROM target_resource
-		ON CONFLICT (resource_id, lang) DO UPDATE SET
-			title = CASE
-				WHEN current_translation.source IN ('human', 'original') OR ${input.patch.title === undefined}
-					THEN current_translation.title
-				ELSE EXCLUDED.title
-			END,
-			summary = CASE
-				WHEN current_translation.source IN ('human', 'original') OR ${input.patch.summary === undefined}
-					THEN current_translation.summary
-				ELSE EXCLUDED.summary
-			END,
-			content = CASE
-				WHEN current_translation.source IN ('human', 'original') OR ${input.patch.content === undefined}
-					THEN current_translation.content
-				ELSE EXCLUDED.content
-			END,
-			keywords = CASE
-				WHEN current_translation.source IN ('human', 'original') THEN current_translation.keywords
-				ELSE EXCLUDED.keywords
-			END,
-			source = CASE
-				WHEN current_translation.source IN ('human', 'original') THEN current_translation.source
-				ELSE EXCLUDED.source
-			END,
-			updated_at = NOW()
-		RETURNING resource_id::text
-	`);
-	return result.rows.length > 0;
 }

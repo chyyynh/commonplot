@@ -9,7 +9,6 @@ import { syncCorpusItem } from '../search-index';
 import { connectCoreDb } from '../shared/db';
 import { canonicalizeResourceLang, type RESOURCE_TYPES } from '../shared/resource';
 import { pdfTranslationAdmission, privateUploadedPdfTranslationSqlAdmission, stagePrivatePdfMarkdownTranslation } from './platforms/pdf';
-import { persistMachineZhHantTranslation } from './resource-persistence';
 
 type ResourceTranslationPayload = { resourceId: string; translationRevision: string };
 const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const;
@@ -414,6 +413,68 @@ async function loadResourceTranslationInput(
 	};
 }
 
+async function persistMachineZhHantTranslation(
+	db: NodePgDatabase,
+	resourceId: string,
+	translationRevision: string,
+	patch: Readonly<{ title?: string; summary?: string; content?: string }>,
+): Promise<boolean> {
+	if (!isResourceTranslationRevision(translationRevision)) throw new TypeError('Resource translation revision is invalid');
+	if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) {
+		throw new TypeError('Resource translation patch is empty');
+	}
+	const result = await db.execute<{ resource_id: string }>(sql`
+		WITH target_resource AS (
+			SELECT resource.id
+			FROM resources resource
+			WHERE resource.id = ${resourceId}::uuid
+			  AND (resource.scope = 'corpus' OR ${privateUploadedPdfTranslationSqlAdmission()})
+			  AND EXISTS (
+				SELECT 1
+				FROM resource_translations original
+				WHERE original.resource_id = resource.id
+				  AND original.lang = resource.original_lang
+				  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${translationRevision}
+			  )
+			FOR UPDATE OF resource
+		)
+		INSERT INTO resource_translations AS current_translation (
+			resource_id, lang, title, summary, content, keywords, source, updated_at
+		)
+		SELECT
+			target_resource.id, 'zh-Hant', ${patch.title ?? null}, ${patch.summary ?? null}, ${patch.content ?? null},
+			ARRAY[]::text[], 'machine', NOW()
+		FROM target_resource
+		ON CONFLICT (resource_id, lang) DO UPDATE SET
+			title = CASE
+				WHEN current_translation.source IN ('human', 'original') OR ${patch.title === undefined}
+					THEN current_translation.title
+				ELSE EXCLUDED.title
+			END,
+			summary = CASE
+				WHEN current_translation.source IN ('human', 'original') OR ${patch.summary === undefined}
+					THEN current_translation.summary
+				ELSE EXCLUDED.summary
+			END,
+			content = CASE
+				WHEN current_translation.source IN ('human', 'original') OR ${patch.content === undefined}
+					THEN current_translation.content
+				ELSE EXCLUDED.content
+			END,
+			keywords = CASE
+				WHEN current_translation.source IN ('human', 'original') THEN current_translation.keywords
+				ELSE EXCLUDED.keywords
+			END,
+			source = CASE
+				WHEN current_translation.source IN ('human', 'original') THEN current_translation.source
+				ELSE EXCLUDED.source
+			END,
+			updated_at = NOW()
+		RETURNING resource_id::text
+	`);
+	return result.rows.length > 0;
+}
+
 // One stable instance per translation revision dedupes duplicate enqueue calls;
 // a changed original gets a new ID.
 export async function enqueueResourceTranslation(env: CoreEnv, resourceId: string, translationRevision: string): Promise<string> {
@@ -479,12 +540,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			const persisted = await step.do(
 				'persist-zh-hant-title-summary',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				async () =>
-					persistMachineZhHantTranslation(await connectCoreDb(this.env), {
-						resourceId,
-						translationRevision,
-						patch: translatedMetadata,
-					}),
+				async () => persistMachineZhHantTranslation(await connectCoreDb(this.env), resourceId, translationRevision, translatedMetadata),
 			);
 			if (!persisted) return;
 		}
@@ -498,11 +554,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 					timeout: '30 seconds',
 				},
 				async () =>
-					persistMachineZhHantTranslation(await connectCoreDb(this.env), {
-						resourceId,
-						translationRevision,
-						patch: { content: translated },
-					}),
+					persistMachineZhHantTranslation(await connectCoreDb(this.env), resourceId, translationRevision, { content: translated }),
 			);
 			if (!persisted) return;
 		}

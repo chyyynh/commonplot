@@ -4,7 +4,7 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput } from '../entities/normalize';
+import { ENTITY_TYPES, entityExtractionExclusionNames } from '../entities/normalize';
 import { syncCorpusItem } from '../search-index';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
@@ -18,10 +18,16 @@ import {
 } from '../shared/resource';
 import { type ProcessingResource, stageStoredResource, stageUrlAcquisition } from './acquisition';
 import { stageResourceImages } from './image-rehosting';
-import { persistResolvedResource, type ResourcePersistenceTarget } from './resource-persistence';
+import {
+	persistResolvedResource,
+	prepareResolvedResource,
+	type ResourceClassification,
+	type ResourceDraftRelation,
+	type ResourcePersistenceTarget,
+} from './resource-persistence';
 import { enqueueResourceTranslation } from './translation-workflow';
 
-const ResourceDraftRelationSchema = z.discriminatedUnion('kind', [
+const ResourceDraftRelationSchema: z.ZodType<ResourceDraftRelation> = z.discriminatedUnion('kind', [
 	z.object({ kind: z.literal('source'), sourceId: z.uuid() }).strict(),
 	z.object({ kind: z.literal('subject'), parentResourceId: z.uuid() }).strict(),
 ]);
@@ -121,12 +127,6 @@ const ResourceDraftRecoveryPayloadSchema = z
 		instanceId: AutonomousResourceDraftIdSchema,
 	})
 	.strict();
-
-type ResourceClassification = {
-	tags: string[];
-	keywords: string[];
-	entities: ResourceEntityInput[];
-};
 
 type ResolvedProcessingCall = {
 	keywordHints: readonly string[];
@@ -364,16 +364,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			),
 			stageResourceImages(this.env, step, processingId, imageSources),
 		]);
+		const preparedResource = prepareResolvedResource(resource, classification, hostedImages);
 		const persistence = await step.do(
 			'persist-resolved-resource-scope-v2',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			async () =>
-				persistResolvedResource(await connectCoreDb(this.env), {
-					resource,
-					classification,
-					hostedImages,
-					target: call.persistenceTarget,
-				}),
+			async () => persistResolvedResource(await connectCoreDb(this.env), preparedResource, call.persistenceTarget),
 		);
 		const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision } = persistence;
 		const saveTarget = call.saveTarget;
