@@ -35,60 +35,31 @@ const TwitterMediaEntitySchema = z.object({
 		.optional(),
 });
 
-interface RetweetedByData {
-	authorUserName: string;
-}
-
-// twitterapi.io tweet response shape used inside the Twitter platform only.
-export interface Tweet {
-	id?: string;
-	url: string;
-	createdAt: string;
-	author?: {
-		userName: string;
-		name: string;
-		profilePicture?: string;
-		isBlueVerified?: boolean;
-	};
-	text: string;
-	extendedEntities?: {
-		media?: Array<{
-			media_url_https: string;
-			type: string;
-			sizes?: { large?: { w: number; h: number } };
-			video_info?: { variants?: Array<{ bitrate?: number; content_type?: string; url: string }> };
-		}>;
-	};
-	hashTags?: string[];
-	urls?: Array<{ expanded_url?: string; url?: string }>;
-	entities?: { urls?: Array<{ expanded_url?: string; url?: string }> };
-	lang?: string;
-	quoted_tweet?: Tweet | null;
-	retweeted_tweet?: Tweet | null;
-	retweetedBy?: RetweetedByData;
-}
-
 const RetweetedByDataSchema = z.object({
 	authorUserName: z.string(),
 });
 
-const TweetSchema: z.ZodType<Tweet> = z.lazy(() =>
-	z.object({
-		id: z.string().optional(),
-		url: z.string().min(1),
-		createdAt: z.string().min(1),
-		author: TwitterAuthorSchema.optional(),
-		text: z.string(),
-		extendedEntities: z.object({ media: z.array(TwitterMediaEntitySchema).optional() }).optional(),
-		hashTags: z.array(z.string()).optional(),
-		urls: z.array(TwitterUrlEntitySchema).optional(),
-		entities: z.object({ urls: z.array(TwitterUrlEntitySchema).optional() }).optional(),
-		lang: z.string().optional(),
-		quoted_tweet: TweetSchema.nullish(),
-		retweeted_tweet: TweetSchema.nullish(),
-		retweetedBy: RetweetedByDataSchema.optional(),
-	}),
-);
+const TweetSchema = z.object({
+	id: z.string().optional(),
+	url: z.string().min(1),
+	createdAt: z.string().min(1),
+	author: TwitterAuthorSchema.optional(),
+	text: z.string(),
+	extendedEntities: z.object({ media: z.array(TwitterMediaEntitySchema).optional() }).optional(),
+	hashTags: z.array(z.string()).optional(),
+	urls: z.array(TwitterUrlEntitySchema).optional(),
+	entities: z.object({ urls: z.array(TwitterUrlEntitySchema).optional() }).optional(),
+	lang: z.string().optional(),
+	get quoted_tweet(): z.ZodCatch<z.ZodOptional<z.ZodNullable<typeof TweetSchema>>> {
+		return TweetSchema.nullish().catch(null);
+	},
+	get retweeted_tweet(): z.ZodCatch<z.ZodOptional<z.ZodNullable<typeof TweetSchema>>> {
+		return TweetSchema.nullish().catch(null);
+	},
+	retweetedBy: RetweetedByDataSchema.optional(),
+});
+
+export type Tweet = z.infer<typeof TweetSchema>;
 
 const TwitterTweetsResponseSchema = z.object({
 	tweets: z.array(TweetSchema),
@@ -138,75 +109,11 @@ type TwitterArticleContent = NonNullable<TwitterArticle['contents']>[number];
 const TwitterAdvancedSearchEnvelopeSchema = z.object({
 	tweets: z.array(z.unknown()),
 	has_next_page: z.boolean(),
+	next_cursor: z.string().nullish(),
 	status: z.string().optional(),
 	message: z.string().optional(),
 	msg: z.string().optional(),
 });
-export type TwitterAdvancedSearchPage = {
-	tweets: Tweet[];
-	hasNextPage: boolean;
-	rawTweetCount: number;
-	invalidItems: Array<{ index: number; message: string }>;
-};
-
-export type TwitterSearchWindow = {
-	sinceTime: number;
-	untilTime: number;
-};
-
-const TWITTER_ADVANCED_SEARCH_PAGE_LIMIT = 20;
-
-export function twitterSearchWindow(watermark: Date | string, windowEnd: Date, overlapMs: number): TwitterSearchWindow {
-	const watermarkMs = new Date(watermark).getTime();
-	const windowEndMs = windowEnd.getTime();
-	if (!Number.isFinite(watermarkMs)) throw new Error('Twitter source has an invalid monitoring watermark');
-	if (!Number.isFinite(windowEndMs)) throw new Error('Twitter monitor has an invalid window end');
-	if (!Number.isSafeInteger(overlapMs) || overlapMs < 0) throw new Error('Twitter monitor has an invalid watermark overlap');
-	const sinceTime = Math.floor((watermarkMs - overlapMs) / 1000);
-	const untilTime = Math.floor(windowEndMs / 1000);
-	if (sinceTime < 0 || sinceTime >= untilTime) throw new Error('Twitter monitoring window is empty or invalid');
-	return { sinceTime, untilTime };
-}
-
-function assertTwitterSearchWindow(window: TwitterSearchWindow): void {
-	if (
-		!Number.isSafeInteger(window.sinceTime) ||
-		!Number.isSafeInteger(window.untilTime) ||
-		window.sinceTime < 0 ||
-		window.sinceTime >= window.untilTime
-	) {
-		throw new Error('Twitter Advanced Search has an invalid time window');
-	}
-}
-
-export function withTwitterSearchWindow(query: string, window: TwitterSearchWindow): string {
-	assertTwitterSearchWindow(window);
-	return `${query} since_time:${window.sinceTime} until_time:${window.untilTime}`;
-}
-
-/**
- * Advanced Search currently documents cursor pagination as unreliable. Move
- * the exclusive upper bound behind the oldest returned second instead, keeping
- * that second overlapped so posts sharing its timestamp cannot be skipped.
- */
-export function nextTwitterSearchWindow(window: TwitterSearchWindow, tweets: readonly Tweet[], context: string): TwitterSearchWindow {
-	assertTwitterSearchWindow(window);
-	if (!tweets.length) throw new Error(`${context} returned an empty result before completion`);
-	const timestamps = tweets.map((tweet) => {
-		const timestamp = new Date(tweet.createdAt).getTime();
-		if (!Number.isFinite(timestamp)) throw new Error(`${context} returned a tweet with an invalid creation time`);
-		return Math.floor(timestamp / 1000);
-	});
-	const nextUntilTime = Math.min(...timestamps) + 1;
-	if (!Number.isSafeInteger(nextUntilTime) || nextUntilTime <= window.sinceTime || nextUntilTime >= window.untilTime) {
-		throw new Error(`${context} could not advance its Twitter Advanced Search time window`);
-	}
-	return { sinceTime: window.sinceTime, untilTime: nextUntilTime };
-}
-
-export function twitterSearchNeedsOlderWindow(page: Pick<TwitterAdvancedSearchPage, 'hasNextPage' | 'rawTweetCount'>): boolean {
-	return page.hasNextPage || page.rawTweetCount >= TWITTER_ADVANCED_SEARCH_PAGE_LIMIT;
-}
 
 function semanticTwitterError(status: string | undefined, message: string | undefined): string | null {
 	return status?.toLowerCase() === 'error' ? message?.trim() || 'unknown provider error' : null;
@@ -313,12 +220,12 @@ export function renderTwitterArticleMarkdown(article: TwitterArticle): string {
 	return markdown;
 }
 
-export function parseTwitterAdvancedSearchPage(value: unknown): TwitterAdvancedSearchPage {
+export function parseTwitterAdvancedSearchPage(value: unknown) {
 	const response = TwitterAdvancedSearchEnvelopeSchema.parse(value);
 	const error = semanticTwitterError(response.status, response.message ?? response.msg);
 	if (error) throw new Error(`Twitter Advanced Search failed: ${error}`);
 	const tweets: Tweet[] = [];
-	const invalidItems: TwitterAdvancedSearchPage['invalidItems'] = [];
+	const invalidItems: Array<{ index: number; message: string }> = [];
 	for (const [index, item] of response.tweets.entries()) {
 		const parsed = TweetSchema.safeParse(item);
 		if (parsed.success) {
@@ -336,5 +243,6 @@ export function parseTwitterAdvancedSearchPage(value: unknown): TwitterAdvancedS
 		rawTweetCount: response.tweets.length,
 		invalidItems,
 		hasNextPage: response.has_next_page,
+		nextCursor: response.next_cursor?.trim() || null,
 	};
 }

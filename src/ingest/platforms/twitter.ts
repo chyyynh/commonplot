@@ -2,30 +2,20 @@ import { normalizeUrl } from '@core-shared/url';
 import { type CoreDb, connectCoreDb } from '@db/connection';
 import { loadMonitoredSources, type MonitoredSource, markSourcesScraped, recordSourceFailure } from '@ingest/monitored-source';
 import { admitDiscoveredSourceResources, type SourceResourceDraft } from '@ingest/processing-jobs';
-import {
-	nextTwitterSearchWindow,
-	parseTwitterAdvancedSearchPage,
-	type Tweet,
-	type TwitterSearchWindow,
-	twitterSearchNeedsOlderWindow,
-	twitterSearchWindow,
-	withTwitterSearchWindow,
-} from './twitter-data';
+import { parseTwitterAdvancedSearchPage, type Tweet } from './twitter-data';
 
 // Twitter Monitor
 
 const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
 
 const TWITTER_SOURCE_CONCURRENCY = 5;
-const TWITTER_WATERMARK_OVERLAP_MS = 60 * 60 * 1000;
-const TWITTER_SEARCH_MAX_PAGES = 4;
 
 function monitoredAuthorUserName(tweet: Tweet): string | null {
 	const userName = tweet.retweetedBy?.authorUserName || tweet.author?.userName;
 	return userName?.trim().toLowerCase() || null;
 }
 
-function normalizeRetweet(tweet: Tweet): Tweet | null {
+function normalizeRetweet(tweet: Tweet): Tweet {
 	if (tweet.retweeted_tweet) {
 		const retweeter = tweet.author;
 		if (!retweeter?.userName.trim()) {
@@ -42,7 +32,12 @@ function normalizeRetweet(tweet: Tweet): Tweet | null {
 		}
 		return normalized;
 	}
-	if (tweet.text.startsWith('RT @')) return null;
+	// Keep a carrier when the provider omits or changes its nested retweet
+	// payload. Its canonical URL is fetched again by the Resource Workflow.
+	if (tweet.text.startsWith('RT @')) {
+		console.warn({ tag: 'TWITTER', event: 'twitter_retweet_carrier_preserved', tweetId: tweet.id, url: tweet.url });
+		return tweet;
+	}
 	if (!tweet.author?.name.trim() || !tweet.author.userName.trim()) {
 		throw new Error(`Tweet ${tweet.id ?? tweet.url} has no complete author`);
 	}
@@ -62,7 +57,6 @@ function normalizeFetchedTweets(tweets: Tweet[], monitoredUserName: string): Pic
 	for (const tweet of tweets) {
 		try {
 			const normalized = normalizeRetweet(tweet);
-			if (!normalized) continue;
 			const attributedUserName = monitoredAuthorUserName(normalized);
 			if (attributedUserName !== monitoredUserName) {
 				throw new Error(
@@ -85,22 +79,24 @@ function normalizeFetchedTweets(tweets: Tweet[], monitoredUserName: string): Pic
 	return { tweets: normalizedTweets, skippedItems };
 }
 
-/** Fetch authored top-level posts through complete, cursor-free time slices. */
-async function fetchTweetsForSource(apiKey: string, userName: string, window: TwitterSearchWindow): Promise<TwitterSourceFetch> {
+/** Fetch one fixed monitoring window using twitterapi.io's native cursor. */
+async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime: number, untilTime: number): Promise<TwitterSourceFetch> {
 	const normalizedUserName = userName.replace(/^@/, '').trim().toLowerCase();
 	if (!/^[a-z0-9_]{1,15}$/.test(normalizedUserName)) throw new Error('Twitter source has an invalid handle');
-	const query = `from:${normalizedUserName} -filter:replies`;
+	if (!Number.isSafeInteger(sinceTime) || !Number.isSafeInteger(untilTime) || sinceTime < 0 || sinceTime >= untilTime) {
+		throw new Error('Twitter monitor has an invalid time window');
+	}
+	const query = `from:${normalizedUserName} include:nativeretweets -filter:replies since_time:${sinceTime} until_time:${untilTime}`;
 	const terminalTweets = new Map<string, Tweet>();
+	const seenCursors = new Set<string>();
 	let providerTweets = 0;
 	let pages = 0;
 	let skippedItems = 0;
-	let currentWindow = window;
+	let cursor: string | null = null;
 
 	while (true) {
-		if (pages >= TWITTER_SEARCH_MAX_PAGES) {
-			throw new Error(`Twitter Advanced Search exceeded ${TWITTER_SEARCH_MAX_PAGES} time-slice pages`);
-		}
-		const params = new URLSearchParams({ query: withTwitterSearchWindow(query, currentWindow), queryType: 'Latest' });
+		const params = new URLSearchParams({ query, queryType: 'Latest' });
+		if (cursor) params.set('cursor', cursor);
 
 		const response = await fetch(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, {
 			headers: { 'x-api-key': apiKey },
@@ -125,16 +121,18 @@ async function fetchTweetsForSource(apiKey: string, userName: string, window: Tw
 			});
 		}
 		for (const tweet of apiRes.tweets) terminalTweets.set(tweet.id?.trim() || tweet.url, tweet);
-		if (!twitterSearchNeedsOlderWindow(apiRes)) break;
-		currentWindow = nextTwitterSearchWindow(currentWindow, apiRes.tweets, `Twitter monitor search for @${userName}`);
-		await scheduler.wait(250);
+		if (!apiRes.hasNextPage) break;
+		if (!apiRes.nextCursor) throw new Error(`Twitter Advanced Search omitted the next cursor for @${userName}`);
+		if (seenCursors.has(apiRes.nextCursor)) throw new Error(`Twitter Advanced Search repeated its cursor for @${userName}`);
+		seenCursors.add(apiRes.nextCursor);
+		cursor = apiRes.nextCursor;
 	}
 	const normalized = normalizeFetchedTweets([...terminalTweets.values()], userName);
 	skippedItems += normalized.skippedItems;
 
 	console.info({
 		tag: 'TWITTER',
-		event: 'twitter_search_stream_completed',
+		event: 'twitter_search_completed',
 		userName,
 		pages,
 		provider_tweets: providerTweets,
@@ -144,45 +142,32 @@ async function fetchTweetsForSource(apiKey: string, userName: string, window: Tw
 	return { tweets: normalized.tweets, providerTweets, pages, skippedItems };
 }
 
-const TWITTER_ADMISSION_STATUSES = ['created', 'deduplicated'] as const;
-type TwitterAdmissionStatus = (typeof TWITTER_ADMISSION_STATUSES)[number];
+type TwitterAdmissionCounts = { created: number; deduplicated: number };
 
-type TwitterAdmissionCounts = Record<TwitterAdmissionStatus, number>;
-
-type TweetSaveResult = {
-	admittedDrafts: number;
-	counts: TwitterAdmissionCounts;
-	skippedItems: number;
-};
-
-function twitterResourceDraft(tweet: Tweet, source: MonitoredSource): SourceResourceDraft {
-	const userName = monitoredAuthorUserName(tweet);
-	if (!userName) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no monitored author identity`);
-	if (userName !== source.handle) throw new Error(`Tweet ${tweet.id ?? tweet.url} is not attributed to @${source.handle}`);
-
-	const url = normalizeUrl(tweet.url);
-	const publishedDate = new Date(tweet.createdAt);
-	if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id ?? url} has invalid publishedDate`);
-	return {
-		sourceId: source.id,
-		url,
-		publishedDate,
-		summary: null,
-		originalLang: tweet.lang,
-		keywords: tweet.hashTags,
-	};
+function emptyTwitterAdmissionCounts(): TwitterAdmissionCounts {
+	return { created: 0, deduplicated: 0 };
 }
 
-function twitterResourceDrafts(
-	tweets: Tweet[],
-	source: MonitoredSource,
-): { drafts: Map<string, SourceResourceDraft>; skippedItems: number } {
+async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource) {
+	const counts = emptyTwitterAdmissionCounts();
 	const drafts = new Map<string, SourceResourceDraft>();
 	let skippedItems = 0;
 	for (const tweet of tweets) {
 		try {
-			const draft = twitterResourceDraft(tweet, source);
-			drafts.set(draft.url, draft);
+			const userName = monitoredAuthorUserName(tweet);
+			if (!userName) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no monitored author identity`);
+			if (userName !== source.handle) throw new Error(`Tweet ${tweet.id ?? tweet.url} is not attributed to @${source.handle}`);
+			const url = normalizeUrl(tweet.url);
+			const publishedDate = new Date(tweet.createdAt);
+			if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id ?? url} has invalid publishedDate`);
+			drafts.set(url, {
+				sourceId: source.id,
+				url,
+				publishedDate,
+				summary: null,
+				originalLang: tweet.lang,
+				keywords: tweet.hashTags,
+			});
 		} catch (error) {
 			skippedItems++;
 			console.error({
@@ -196,16 +181,6 @@ function twitterResourceDrafts(
 			});
 		}
 	}
-	return { drafts, skippedItems };
-}
-
-function emptyTwitterAdmissionCounts(): TwitterAdmissionCounts {
-	return { created: 0, deduplicated: 0 };
-}
-
-async function saveTweets(env: CoreEnv, tweets: Tweet[], source: MonitoredSource): Promise<TweetSaveResult> {
-	const counts = emptyTwitterAdmissionCounts();
-	const { drafts, skippedItems } = twitterResourceDrafts(tweets, source);
 	const pending = [...drafts.values()];
 	if (!pending.length) return { admittedDrafts: 0, counts, skippedItems };
 	const outcomes = await admitDiscoveredSourceResources(env, pending);
@@ -237,10 +212,12 @@ type TwitterSourceMetrics = {
 type TwitterSourceOutcome = TwitterSourceMetrics & ({ status: 'completed' } | { status: 'failed'; error: unknown });
 
 async function processTwitterSource(env: CoreEnv, db: CoreDb, source: MonitoredSource, windowEnd: Date): Promise<TwitterSourceOutcome> {
-	let window: TwitterSearchWindow | null = null;
+	let sinceTime: number | null = null;
+	let untilTime: number | null = null;
 	try {
-		window = twitterSearchWindow(source.scrapedAt ?? source.createdAt, windowEnd, TWITTER_WATERMARK_OVERLAP_MS);
-		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, window);
+		sinceTime = Math.floor(new Date(source.scrapedAt ?? source.createdAt).getTime() / 1000);
+		untilTime = Math.floor(windowEnd.getTime() / 1000);
+		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, sinceTime, untilTime);
 		const saved = await saveTweets(env, fetched.tweets, source);
 		const outcome: TwitterSourceOutcome = {
 			admittedDrafts: saved.admittedDrafts,
@@ -256,8 +233,8 @@ async function processTwitterSource(env: CoreEnv, db: CoreDb, source: MonitoredS
 			tag: 'TWITTER',
 			event: 'twitter_source_processed',
 			userName: source.handle,
-			since_time: window.sinceTime,
-			until_time: window.untilTime,
+			since_time: sinceTime,
+			until_time: untilTime,
 			pages: outcome.pages,
 			provider_tweets: outcome.providerTweets,
 			normalized_tweets: outcome.normalizedTweets,
@@ -281,7 +258,7 @@ async function processTwitterSource(env: CoreEnv, db: CoreDb, source: MonitoredS
 			tag: 'TWITTER',
 			event: 'twitter_source_failed',
 			userName: source.handle,
-			...(window ? { since_time: window.sinceTime, until_time: window.untilTime } : {}),
+			...(sinceTime !== null && untilTime !== null ? { since_time: sinceTime, until_time: untilTime } : {}),
 			error: error instanceof Error ? error.message : String(error),
 		});
 		return {
@@ -347,7 +324,8 @@ async function processTwitterSources(
 
 	const counts = emptyTwitterAdmissionCounts();
 	for (const outcome of outcomes) {
-		for (const status of TWITTER_ADMISSION_STATUSES) counts[status] += outcome.counts[status];
+		counts.created += outcome.counts.created;
+		counts.deduplicated += outcome.counts.deduplicated;
 	}
 	return {
 		admittedDrafts: outcomes.reduce((total, outcome) => total + outcome.admittedDrafts, 0),
