@@ -17,7 +17,6 @@ type ParsedFeed = ReturnType<typeof parseFeed>;
 type RawFeedItem = {
 	id: string;
 	link?: string;
-	title?: string;
 	summary?: string;
 	published?: string;
 	language?: string;
@@ -25,7 +24,6 @@ type RawFeedItem = {
 
 type FeedEntry = {
 	url: string;
-	title: string | null;
 	summary: string | null;
 	publishedDate: Date | null;
 	originalLang?: string;
@@ -56,7 +54,6 @@ function feedItems(parsed: ParsedFeed): RawFeedItem[] {
 			return {
 				id: guid ?? link ?? '',
 				link,
-				title: decodedString(item.title),
 				summary: optionalString(item.description),
 				published: optionalString(item.pubDate) ?? optionalString(item.dc?.dates?.[0]),
 				language,
@@ -71,7 +68,6 @@ function feedItems(parsed: ParsedFeed): RawFeedItem[] {
 			return {
 				id: optionalString(entry.id) ?? link ?? '',
 				link,
-				title: decodedString(entry.title),
 				summary: optionalString(entry.summary),
 				published: optionalString(entry.published) ?? optionalString(entry.updated),
 				language: optionalString(entry.dc?.languages?.[0]),
@@ -85,7 +81,6 @@ function feedItems(parsed: ParsedFeed): RawFeedItem[] {
 			return {
 				id: optionalString(item.rdf?.about) ?? link ?? '',
 				link,
-				title: decodedString(item.title),
 				summary: optionalString(item.description),
 				published: optionalString(item.dc?.dates?.[0]),
 				language,
@@ -98,7 +93,6 @@ function feedItems(parsed: ParsedFeed): RawFeedItem[] {
 		return {
 			id: optionalString(item.id) ?? link ?? '',
 			link,
-			title: decodedString(item.title),
 			summary: optionalString(item.summary),
 			published: optionalString(item.date_published) ?? optionalString(item.date_modified),
 			language: optionalString(item.language) ?? language,
@@ -138,7 +132,6 @@ function normalizedFeedEntries(items: RawFeedItem[]): FeedEntry[] {
 			: null;
 		entries.set(url, {
 			url,
-			title: item.title ?? null,
 			summary,
 			publishedDate: date && !Number.isNaN(date.getTime()) ? date : null,
 			originalLang: item.language,

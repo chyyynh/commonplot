@@ -20,7 +20,7 @@
 
 ## newsence 是什麼？
 
-[**newsence.app**](https://www.newsence.app) 的引擎。支援 RSS、Twitter/X、YouTube、Hacker News、一般網頁與上傳檔案，自動進行中英雙語 AI 分析並保留每筆 resource 的實體註記，再將完成 enrichment 的 corpus resource 同步到 Cloudflare AI Search。
+[**newsence.app**](https://www.newsence.app) 的引擎。支援 RSS、Twitter/X、YouTube、Hacker News、一般網頁與上傳檔案，自動進行結構化 AI 分析與繁中翻譯並保留每筆 resource 的實體註記，再將完成 enrichment 的 corpus resource 同步到 Cloudflare AI Search。
 
 ## 支援平台
 
@@ -32,15 +32,15 @@
 | 平台            | 類型   | 排程       | 說明                                             |
 | --------------- | ------ | ---------- | ------------------------------------------------ |
 | **RSS 訂閱**    | 監控   | 每 5 分鐘  | 抓取 feed、依 URL 去重、偵測 HN 連結             |
-| **Twitter/X**   | 監控   | 每 6 小時  | 透過 Kaito API 追蹤用戶 — 推文、串文、長文、媒體 |
+| **Twitter/X**   | 監控   | 每 6 小時  | 透過 Kaito API 追蹤用戶 — 推文、長文、媒體       |
 | **YouTube**     | 監控   | 每 30 分鐘 | Atom feed → 影片資訊、字幕、章節、AI 精華段落    |
 | **Hacker News** | 處理器 | 經由 RSS   | 偵測 HN 連結 → Algolia 取評論 → 生成編輯筆記     |
-| **網頁**        | 爬蟲   | saved URL  | 全文擷取（Readability + Cheerio）、OG metadata   |
+| **網頁**        | 爬蟲   | saved URL  | 文章擷取、redirect/platform 與 PDF 偵測、OG metadata |
 | **App 輸入**    | 入口   | 即時       | Service-binding RPC — saved URL/blob acquisition + enrichment；membership 由 app 擁有 |
 
-所有 provider 只輸出不帶產品 identity 的 acquisition material；單一 resolver
-決定最終 Resource identity，再由 exhaustive kind handler 進入共用的 AI 與
-graph-persistence tail。
+單一 URL detector 先選出負責的 platform adapter。每個 adapter 自己取得內容並
+materialize 成相同的 resolved Resource shape，再進入共用的 analysis、image 與
+persistence tail。
 
 ## 運作流程
 
@@ -51,10 +51,10 @@ graph-persistence tail。
   │
   ├─ 1. 取得內容 ──────────── 抓取 URL draft，或讀取／抽取 app-owned blob
   ├─ 2. 決定 identity ─────── 完成 kind/platform、paper metadata 與 subject intent
-  ├─ 3. AI 分析 ───────────── AI Gateway calls → 中英標題、摘要、標籤、關鍵字、實體
+  ├─ 3. AI 分析 ───────────── 單次 structured call → 標籤、關鍵字、具名實體
   ├─ 4. 託管圖片 ──────────── 將 canonical 遠端圖片串流到 Cloudflare Images
   ├─ 5. 最終寫入 DB ───────── 建立或更新 canonical URL resource；enrich 既有 stored blob
-  └─ 6. 後續工作 ──────────── corpus 結果才 attach／enqueue subject、翻譯與同步 AI Search
+  └─ 6. 後續工作 ──────────── 套用 user save；enqueue 符合條件的翻譯／subject；同步 corpus search
 ```
 
 URL、source 與 derived-subject 都以 immutable Workflow draft 傳遞，只有第 5
@@ -65,11 +65,11 @@ URL、source 與 derived-subject 都以 immutable Workflow draft 傳遞，只有
 
 | 階段         | 模型              | 說明                                                        |
 | ------------ | ----------------- | ----------------------------------------------------------- |
-| **分析**     | AI Gateway text model | Resource → 中英標題、摘要、標籤與關鍵字                     |
-| **實體提取** | AI Gateway JSON model | Resource → 具名實體（人物、組織、產品、技術、事件），含中英名稱 |
+| **分析**     | AI Gateway structured output | Resource → 標籤、關鍵字與原文／繁中具名實體                   |
+| **翻譯**     | AI Gateway text models      | 符合條件的已持久化 Resource → 繁中標題、摘要與正文             |
 | **搜尋索引** | Cloudflare AI Search  | 對完成 enrichment 的 corpus 文件提供 hybrid retrieval       |
 
-翻譯/摘要與分類/實體是分開的 structured calls，避免其中一個 schema 失敗就讓整個 resource 落入 fallback。
+Resource analysis 是一次 structured call；翻譯在獨立 Workflow 裡稍後執行，因此 localization 失敗不會讓已寫入的 canonical Resource 失效。
 
 ### 實體資料策略
 
@@ -167,11 +167,11 @@ src/
 │   ├── image-mapping.ts  # canonical Hosted Images 欄位 mapping
 │   └── db.ts             # Drizzle over Hyperdrive
 ├── ingest/               # ── resource 入庫 pipeline（開源核心）──
-│   ├── workflow.ts       # target validation、processing 與 draft recovery Workflows
+│   ├── workflow.ts       # durable resource processing 與 follow-up orchestration
 │   ├── analysis.ts       # AI 分析與 resource-local entity normalization
 │   ├── acquisition.ts    # 單次 platform detection 與 adapter dispatch
 │   ├── resource-persistence.ts # canonical Resource transaction
-│   ├── source-monitor-state.ts # monitor 狀態與 deterministic source drafts
+│   ├── source-monitor-state.ts # monitor watermark 與 failure state
 │   ├── translation-workflow.ts # durable translation 與 canonical writeback
 │   └── platforms/        # 每個來源或 stage 一個檔案
 │       ├── rss.ts        # feed polling
@@ -196,7 +196,7 @@ Bindings（在 `wrangler.jsonc` 裡設定）：
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | 抓取、解析、分類並寫回 canonical resource |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | 將已持久化的 resource 翻譯成繁體中文 |
 | `SEARCH_INDEX_REBUILD_WORKFLOW` | 全量重建並驗證 canonical 搜尋索引 |
-| `workflow-errors-core` | 延遲並重試失敗 autonomous resource drafts 的 Queue consumer |
+| `workflow-errors-core` | 記錄 terminal Resource Workflow errors 的 Queue consumer |
 | `R2`               | 讀取 app-owned uploaded blob，供 PDF extraction 使用 |
 | `IMAGES`           | 將遠端 resource 圖片串流上傳至 Cloudflare Images |
 | `AI`               | Workers AI binding（AI Gateway 文字呼叫）   |

@@ -20,7 +20,7 @@
 
 ## What is newsence?
 
-Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls contents from RSS / Twitter/X / YouTube / Hacker News / web URLs / uploaded files, runs bilingual AI analysis on each, and stores searchable resources with resource-local entity annotations. Each enriched corpus resource is synchronized to Cloudflare AI Search for retrieval.
+Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content from RSS / Twitter/X / YouTube / Hacker News / web URLs / uploaded files, runs structured AI analysis and zh-Hant localization, and stores searchable resources with resource-local entity annotations. Each enriched corpus resource is synchronized to Cloudflare AI Search for retrieval.
 
 ## Supported Platforms
 
@@ -35,12 +35,12 @@ Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content
 | **Twitter/X**        | Monitor   | Every 6 hours | Tracks users via Kaito API — posts, longform posts, and media               |
 | **YouTube**          | Monitor   | Every 30 min  | Atom feed → video metadata, transcripts, chapters, AI highlights            |
 | **Hacker News**      | Processor | Via RSS       | Detects HN links → fetches comments via Algolia → generates editorial notes |
-| **Web**              | Scraper   | Saved URL     | Full content extraction (Readability + Cheerio), OG metadata                |
+| **Web**              | Scraper   | Saved URL     | Article extraction, redirect/platform detection, PDF detection, OG metadata |
 | **App Inputs**       | Ingestion | Real-time     | Service-binding RPC — saved URL/blob acquisition + enrichment; membership stays app-owned |
 
-All providers output identity-free acquisition material. One resolver finalizes
-the Resource identity, then an exhaustive kind handler feeds the shared AI and
-graph-persistence tail.
+One URL detector selects the owning platform adapter. Each adapter acquires and
+materializes the same resolved Resource shape for the shared analysis, image,
+and persistence tail.
 
 ## How it works
 
@@ -51,10 +51,10 @@ Content arrives (source monitor / saved URL / uploaded blob / resync)
   │
   ├─ 1. Acquire ─────────────── Fetch a URL draft, or load/extract an app-owned blob
   ├─ 2. Resolve ─────────────── Finalize kind/platform identity, paper metadata, and subject intent
-  ├─ 3. AI Analysis ─────────── AI Gateway calls → bilingual title, summary, tags, keywords, entities
+  ├─ 3. AI Analysis ─────────── One structured call → tags, keywords, named entities
   ├─ 4. Host Images ─────────── Stream canonical remote images to Cloudflare Images
   ├─ 5. Finalize DB ─────────── Create or update a canonical URL resource; enrich an existing stored blob
-  └─ 6. Follow-ups ──────────── For corpus results, attach/enqueue subjects, translation, and AI Search sync
+  └─ 6. Follow-ups ──────────── Apply user save; enqueue admitted translation/subject; sync corpus search
 ```
 
 URL, source, and derived-subject attempts carry immutable Workflow drafts and create no
@@ -65,11 +65,11 @@ their ownership, quota, and blob locator already exist. Each durable step retrie
 
 | Stage                   | Model             | What it does                                                                                      |
 | ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------- |
-| **Analysis**          | AI Gateway text model | Resource → bilingual title, summary, tags, and keywords                                             |
-| **Entity Extraction** | AI Gateway JSON model | Resource → named entities (person, organization, product, technology, event, location) with EN + zh-TW names |
+| **Analysis**          | AI Gateway structured output | Resource → tags, keywords, and named entities with original + zh-TW names                         |
+| **Translation**       | AI Gateway text models      | Admitted persisted Resources → zh-Hant title, summary, and content                                |
 | **Retrieval Index**   | Cloudflare AI Search  | Hybrid keyword and semantic retrieval over enriched corpus documents                              |
 
-Translation/summary and classification/entities are separate structured calls so one schema failure does not force the whole resource into fallback.
+Resource analysis is one structured call. Translation runs later in its own Workflow, so localization failure cannot invalidate an already persisted canonical Resource.
 
 ### Entity Quality Policy
 
@@ -173,11 +173,11 @@ src/
 │   ├── image-mapping.ts  # canonical Hosted Images field mapping
 │   └── db.ts             # Drizzle over Hyperdrive
 ├── ingest/               # ── resource ingestion pipeline (the open-source core) ──
-│   ├── workflow.ts       # target validation, processing, and draft recovery Workflows
+│   ├── workflow.ts       # durable resource processing and follow-up orchestration
 │   ├── analysis.ts       # AI classification and resource-local entity normalization
 │   ├── acquisition.ts    # one platform detection pass and adapter dispatch
 │   ├── resource-persistence.ts # canonical Resource transaction
-│   ├── source-monitor-state.ts # monitor state and deterministic source drafts
+│   ├── source-monitor-state.ts # monitor watermarks and failure state
 │   ├── translation-workflow.ts # durable translation and canonical writeback
 │   └── platforms/        # one file per source/stage
 │       ├── rss.ts        # feed polling
@@ -202,7 +202,7 @@ Bindings (in `wrangler.jsonc`):
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | Fetch, parse, classify, and persist a canonical resource |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | Translate a persisted resource into zh-Hant |
 | `SEARCH_INDEX_REBUILD_WORKFLOW` | Rebuild and verify the canonical search index |
-| `workflow-errors-core` | Queue consumer that delays and retries errored autonomous resource drafts |
+| `workflow-errors-core` | Queue consumer that records terminal Resource Workflow errors |
 | `R2`               | App-owned uploaded PDF reads              |
 | `IMAGES`           | Stream remote resource images to Cloudflare Images |
 | `AI`               | Workers AI binding for AI Gateway text calls |
