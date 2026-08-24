@@ -14,6 +14,7 @@ const RESULT_LIMIT_MAX = 50;
 
 export type PublicResourceSearchInput = {
 	query: string;
+	limit: number;
 	mode?: 'hybrid' | 'vector';
 	filters?: {
 		effectiveAfter?: Date;
@@ -238,6 +239,9 @@ function aiSearchFilters(filters: NormalizedSearchFilters): VectorizeVectorMetad
 
 /** Return AI Search candidates only; Web authoritatively filters and hydrates them from Postgres. */
 export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourceSearchInput): Promise<string[]> {
+	if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > RESULT_LIMIT_MAX) {
+		throw new Error(`Public Resource search limit must be 1-${RESULT_LIMIT_MAX}`);
+	}
 	const query = input.query.trim();
 	if (!query) return [];
 	const filters = normalizeSearchFilters(input);
@@ -253,7 +257,7 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 				retrieval_type: retrievalType,
 				...(retrievalType === 'hybrid' ? { fusion_method: 'rrf' as const } : {}),
 				keyword_match_mode: 'or',
-				max_num_results: RESULT_LIMIT_MAX,
+				max_num_results: input.limit,
 				metadata_only: true,
 				return_on_failure: false,
 				...(retrievalType === 'hybrid' ? { boost_by: [{ field: 'effective_at', direction: 'desc' as const }] } : {}),
