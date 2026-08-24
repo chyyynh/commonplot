@@ -1,5 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { sql } from 'drizzle-orm';
+import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
@@ -86,19 +86,16 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, draf
 		} satisfies ResourceDraftTarget;
 	});
 	if (!targets.length) return 0;
-	const known = await db.execute<{ url: string }>(sql`
-		SELECT candidate.url
-		FROM UNNEST(${targets.map(({ url }) => url)}::text[]) AS candidate(url)
-		WHERE EXISTS (
-			SELECT 1
-			FROM resources resource
-			WHERE resource.scope = 'corpus'
-			  AND resource.enrichment_status = 'enriched'
-			  AND resource.source_id IS NOT NULL
-			  AND (resource.url = candidate.url OR resource.normalized_url = candidate.url)
-		)
+	const urls = targets.map(({ url }) => url);
+	const known = await db.execute<{ normalized_url: string | null; url: string | null }>(sql`
+		SELECT resource.url, resource.normalized_url
+		FROM resources resource
+		WHERE resource.scope = 'corpus'
+		  AND resource.enrichment_status = 'enriched'
+		  AND resource.source_id IS NOT NULL
+		  AND (${inArray(sql`resource.url`, urls)} OR ${inArray(sql`resource.normalized_url`, urls)})
 	`);
-	const knownUrls = new Set(known.rows.map(({ url }) => url));
+	const knownUrls = new Set(known.rows.flatMap(({ normalized_url, url }) => [url, normalized_url]).filter((url) => url !== null));
 	const instances = await Promise.all(
 		targets
 			.filter(({ url }) => !knownUrls.has(url))
