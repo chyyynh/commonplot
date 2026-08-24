@@ -452,7 +452,7 @@ export async function stageStoredPdfAcquisition(
 		async () => loadStoredPdfInput(await connectCoreDb(env), target.resourceId),
 		{
 			rollback: async () => {
-				await env.DOMAIN.markStoredBlobProcessingFailed(target.resourceId);
+				await env.APP.markStoredBlobProcessingFailed(target.resourceId);
 			},
 			rollbackConfig: {
 				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },

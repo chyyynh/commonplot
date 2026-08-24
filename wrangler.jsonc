@@ -129,7 +129,7 @@
 	],
 	"services": [
 		{
-			"binding": "DOMAIN",
+			"binding": "APP",
 			"service": "newsence-web-tanstack",
 			"entrypoint": "DomainRpc"
 		}

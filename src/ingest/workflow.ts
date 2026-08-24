@@ -26,14 +26,11 @@ const ResourceDraftRelationSchema = z.discriminatedUnion('kind', [
 	z.object({ kind: z.literal('subject'), parentResourceId: z.uuid() }).strict(),
 ]);
 
-type ResourceSaveTarget = Parameters<CoreEnv['DOMAIN']['completeResourceSave']>[0]['saveTarget'];
-const ResourceSaveTargetSchema = z.record(z.string(), z.json()).transform((value) => value as ResourceSaveTarget);
-
 export const ResourceDraftTargetSchema = z
 	.object({
 		kind: z.literal('draft'),
 		relation: ResourceDraftRelationSchema.optional(),
-		saveTarget: ResourceSaveTargetSchema.optional(),
+		saveTarget: z.record(z.string(), z.json()).optional(),
 		monitor: z
 			.object({
 				avatarUrl: z.url().max(2_048).nullable(),
@@ -394,7 +391,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				'complete-resource-save-v1',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 				async () => {
-					await this.env.DOMAIN.completeResourceSave({
+					await this.env.APP.completeResourceSave({
 						resourceId: persistedResourceId,
 						saveTarget,
 					});

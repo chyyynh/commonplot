@@ -1,8 +1,7 @@
 export {};
 
 declare global {
-	type CoreEnv = Omit<CoreBindings, 'DOMAIN'> & {
-		DOMAIN: CoreBindings['DOMAIN'] &
-			Rpc.Provider<import('../../../web-tanstack/src/server/domain/resource-persistence-contracts').ResourcePersistenceRpc>;
+	type CoreEnv = Omit<CoreBindings, 'APP'> & {
+		APP: CoreBindings['APP'] & Rpc.Provider<import('@app-domain/resource-persistence-contracts').AppResourceLifecycleRpc>;
 	};
 }
