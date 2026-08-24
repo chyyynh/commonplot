@@ -163,13 +163,13 @@ resource 讀取。已退役的本機 CLI／MCP 套件不屬於這個 Worker。
 ```
 src/
 ├── index.ts              # service RPC、cron 與 Workflow-error Queue entrypoints
-├── entities/             # resource-local entity normalization
 ├── shared/               # 小型跨子系統 primitives
 │   ├── resource.ts       # identity、identifier、canonical metadata contracts
 │   ├── image-mapping.ts  # canonical Hosted Images 欄位 mapping
 │   └── db.ts             # Drizzle over Hyperdrive
 ├── ingest/               # ── resource 入庫 pipeline（開源核心）──
 │   ├── workflow.ts       # target validation、processing 與 draft recovery Workflows
+│   ├── entity.ts         # resource-local entity normalization
 │   ├── acquisition.ts    # 單次 platform detection 與 adapter dispatch
 │   ├── resource-persistence.ts # canonical Resource transaction
 │   ├── source-monitor-state.ts # monitor 狀態與 deterministic source drafts

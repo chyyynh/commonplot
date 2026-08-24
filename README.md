@@ -169,13 +169,13 @@ Worker.
 ```
 src/
 ├── index.ts              # service RPC, cron, and Workflow-error Queue entrypoints
-├── entities/             # resource-local entity normalization
 ├── shared/               # small cross-subsystem primitives
 │   ├── resource.ts       # identity, identifiers, and canonical metadata contracts
 │   ├── image-mapping.ts  # canonical Hosted Images field mapping
 │   └── db.ts             # Drizzle over Hyperdrive
 ├── ingest/               # ── resource ingestion pipeline (the open-source core) ──
 │   ├── workflow.ts       # target validation, processing, and draft recovery Workflows
+│   ├── entity.ts         # resource-local entity normalization
 │   ├── acquisition.ts    # one platform detection pass and adapter dispatch
 │   ├── resource-persistence.ts # canonical Resource transaction
 │   ├── source-monitor-state.ts # monitor state and deterministic source drafts

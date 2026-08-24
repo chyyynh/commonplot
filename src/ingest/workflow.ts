@@ -4,7 +4,6 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { ENTITY_TYPES, entityExtractionExclusionNames } from '../entities/normalize';
 import { syncCorpusItem } from '../search-index';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
@@ -17,6 +16,7 @@ import {
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
 import { type ProcessingResource, stageStoredResource, stageUrlAcquisition } from './acquisition';
+import { entityExtractionExclusionNames, ResourceEntitiesSchema } from './entity';
 import { stageResourceImages } from './image-rehosting';
 import {
 	persistResolvedResource,
@@ -141,13 +141,7 @@ const CLASSIFICATION_CONTENT_MAX_LENGTH = 10000;
 const ResourceClassificationSchema = z.object({
 	tags: z.array(z.string().min(1)).min(1),
 	keywords: z.array(z.string().min(1)).min(1),
-	entities: z.array(
-		z.object({
-			name: z.string().min(1),
-			name_cn: z.string().min(1),
-			type: z.enum(ENTITY_TYPES),
-		}),
-	),
+	entities: ResourceEntitiesSchema,
 });
 
 const RESOURCE_CLASSIFICATION_SYSTEM_PROMPT = `你是專業的新聞分類和實體分析師。請只輸出符合 schema 的分類資料。
@@ -213,7 +207,7 @@ ${resource.content.trim().substring(0, CLASSIFICATION_CONTENT_MAX_LENGTH)}`;
 	if (finishReason === 'length') throw new Error('Resource classification hit its output token cap');
 	const tags = classification.tags.slice(0, 5);
 	return {
-		entities: classification.entities.slice(0, 10),
+		entities: classification.entities,
 		tags,
 		keywords: keywordHints.length ? [...keywordHints] : classification.keywords.slice(0, 8),
 	};

@@ -1,6 +1,5 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { type ResourceEntityInput, toStoredResourceEntities } from '../entities/normalize';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageFieldsAreHosted } from '../shared/image-mapping';
 import {
 	canonicalizeResourceLang,
@@ -11,6 +10,7 @@ import {
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
 import type { ProcessingResource } from './acquisition';
+import { type ResourceEntity, toStoredResourceEntities } from './entity';
 import type { YouTubeResourceData } from './platforms/youtube';
 
 export type ResourceDraftRelation =
@@ -22,7 +22,7 @@ export type ResourcePersistenceTarget =
 	| Readonly<{ kind: 'existing'; resourceId: string }>;
 
 export type ResourceClassification = Readonly<{
-	entities: ResourceEntityInput[];
+	entities: ResourceEntity[];
 	keywords: readonly string[];
 	tags: readonly string[];
 }>;
