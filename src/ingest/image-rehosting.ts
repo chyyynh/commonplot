@@ -1,8 +1,12 @@
 // Shared media rehosting for every Resource platform; this is not the image Resource kind adapter.
 import type { WorkflowStep } from 'cloudflare:workers';
 import { sha256Hex } from '@core-shared/hash';
-import { type HostedResourceImage, hostedResourceImageUrl, normalizedResourceImageUrl } from '@core-shared/image-mapping';
-import { validatedExternalMediaUrl } from '@core-shared/url';
+import {
+	type HostedResourceImage,
+	hostedResourceImageUrl,
+	normalizedExternalMediaUrl,
+	normalizedResourceImageUrl,
+} from '@core-shared/image-mapping';
 
 const REHOST_TIMEOUT_MS = 8_000;
 const MAX_SOURCE_REDIRECTS = 3;
@@ -28,7 +32,7 @@ async function redirectTarget(response: Response, currentUrl: string, redirects:
 	} catch {
 		throw failure('unsafe_redirect', 'invalid Location header');
 	}
-	const nextUrl = validatedExternalMediaUrl(resolved);
+	const nextUrl = normalizedExternalMediaUrl(resolved);
 	if (!nextUrl) throw failure('unsafe_redirect');
 	return nextUrl;
 }

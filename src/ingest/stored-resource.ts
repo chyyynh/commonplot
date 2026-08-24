@@ -10,7 +10,6 @@ import {
 	ResourceIdentifiersSchema,
 	type ResourceKindMetadata,
 } from '@core-shared/resource';
-import { parseExternalHttpUrl } from '@core-shared/url';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
@@ -239,8 +238,10 @@ export async function loadResourceReacquisitionInput(db: NodePgDatabase, resourc
 	`);
 	const row = result.rows[0];
 	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
-	const url = parseExternalHttpUrl(row.url);
-	if (!url) throw new Error(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
+	const url = row.url ? URL.parse(row.url) : null;
+	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) {
+		throw new Error(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
+	}
 	return {
 		originalLang: canonicalizeResourceLang(row.original_lang),
 		paperIdentifiers: normalizePaperIdentifiers(ResourceIdentifiersSchema.parse(row.resource_identifiers ?? []).filter(isPaperIdentifier)),

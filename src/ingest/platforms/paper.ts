@@ -11,7 +11,6 @@ import {
 	resolveExactPaperInput,
 } from '@core-shared/paper-identity';
 import type { PaperKindMetadata } from '@core-shared/resource';
-import { parseExternalHttpUrl } from '@core-shared/url';
 import { z } from 'zod';
 import { type GenericAcquiredMaterial, literalCreator } from './materialize';
 import { acquireOpenAlexGrobidText, acquireOpenAlexPdf, type PaperMetadata, resolveOpenAlexPaper } from './openalex';
@@ -109,8 +108,11 @@ function choosePreferredIdentifiers(identifiers: readonly PaperIdentifier[]): Pa
 }
 
 async function resolveCitoidPaperIdentifiers(value: string): Promise<PaperIdentifier[]> {
-	const url = parseExternalHttpUrl(value)?.toString();
-	if (!url) return [];
+	const parsedUrl = URL.parse(value);
+	if (!parsedUrl || (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || parsedUrl.username || parsedUrl.password) {
+		return [];
+	}
+	const url = parsedUrl.toString();
 	const response = await fetch(`${CITOID_BASE}${encodeURIComponent(url)}`, {
 		headers: { Accept: 'application/json', 'Api-User-Agent': CITOID_USER_AGENT, 'User-Agent': CITOID_USER_AGENT },
 		signal: AbortSignal.timeout(CITOID_TIMEOUT_MS),

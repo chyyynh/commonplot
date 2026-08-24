@@ -1,7 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizedResourceImageUrl } from '@core-shared/image-mapping';
-import { parseExternalHttpUrl } from '@core-shared/url';
 import { extractFromHtml } from '@extractus/article-extractor';
 import { markdownFromHtml } from '../document-conversion';
 import { type GenericAcquiredMaterial, literalCreator } from './materialize';
@@ -99,8 +98,13 @@ async function acquireWebResource(
 		}
 		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 	}
-	const parsedFinalUrl = parseExternalHttpUrl(response.url);
-	if (!parsedFinalUrl) {
+	const parsedFinalUrl = URL.parse(response.url);
+	if (
+		!parsedFinalUrl ||
+		(parsedFinalUrl.protocol !== 'http:' && parsedFinalUrl.protocol !== 'https:') ||
+		parsedFinalUrl.username ||
+		parsedFinalUrl.password
+	) {
 		await response.body?.cancel();
 		throw new Error('Fetch response has no valid final URL');
 	}

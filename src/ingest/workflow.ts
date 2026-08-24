@@ -7,7 +7,6 @@ import {
 import { connectCoreDb } from '@core-shared/db';
 import { sha256Hex } from '@core-shared/hash';
 import { type HostedResourceImage, hostedResourceImageFields, resourceImageSourceUrls } from '@core-shared/image-mapping';
-import { normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
 import { loadResourceReacquisitionInput } from '@ingest/stored-resource';
 import { generateText, Output } from 'ai';
@@ -25,7 +24,10 @@ export const ResourceDraftTargetSchema = z
 		url: z
 			.url({ protocol: /^https?$/ })
 			.max(2_048)
-			.refine((value) => parseExternalHttpUrl(value) !== null, 'URL credentials are not allowed'),
+			.refine((value) => {
+				const url = URL.parse(value);
+				return url !== null && !url.username && !url.password;
+			}, 'URL credentials are not allowed'),
 		sourceHints: z
 			.object({
 				summary: z.string().max(20_000).optional(),
@@ -338,7 +340,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						const subjectTarget = ResourceDraftTargetSchema.parse({
 							kind: 'draft',
 							admission: { kind: 'subject', parentResourceId: persistedResourceId },
-							url: normalizeUrl(subject.normalizedUrl),
+							url: subject.normalizedUrl,
 						});
 						const id = `subject-draft-v3-${await sha256Hex(JSON.stringify(subjectTarget))}`;
 						await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: subjectTarget }]);

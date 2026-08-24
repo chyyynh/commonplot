@@ -1,6 +1,5 @@
 // Pure Resource image selection and Hosted Images URL mapping; Cloudflare I/O lives in image-rehosting.ts.
 import type { PostKindMetadata, ResourceCreator, ResourceKindMetadata } from './resource.ts';
-import { validatedExternalMediaUrl } from './url.ts';
 
 const HOSTED_RESOURCE_IMAGE_PATTERN = /^https:\/\/imagedelivery\.net\/[a-zA-Z0-9_-]+\/resource-[a-f0-9]{64}\/public$/;
 const PREVIEW_IMAGE_TARGET_WIDTH = 1200;
@@ -53,6 +52,13 @@ export type HostedResourceImage = Readonly<{
 	sourceUrl: string;
 }>;
 
+export function normalizedExternalMediaUrl(rawUrl: string | null | undefined, baseUrl?: string): string | null {
+	const url = rawUrl?.trim() ? URL.parse(rawUrl, baseUrl) : null;
+	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null;
+	url.protocol = 'https:';
+	return url.toString();
+}
+
 function positiveInteger(value: string | null): number | null {
 	if (!value || !/^\d+$/.test(value)) return null;
 	const parsed = Number(value);
@@ -60,7 +66,7 @@ function positiveInteger(value: string | null): number | null {
 }
 
 export function normalizedResourceImageUrl(rawUrl: string | null | undefined, baseUrl?: string): string | null {
-	const normalized = validatedExternalMediaUrl(rawUrl, baseUrl);
+	const normalized = normalizedExternalMediaUrl(rawUrl, baseUrl);
 	if (!normalized) return null;
 
 	const url = new URL(normalized);

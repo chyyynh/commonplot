@@ -1,6 +1,6 @@
 import { sha256Hex } from '@core-shared/hash';
+import { normalizedExternalMediaUrl } from '@core-shared/image-mapping';
 import { canonicalizeOptionalResourceLang } from '@core-shared/resource';
-import { normalizeUrl, parseExternalHttpUrl, validatedExternalMediaUrl } from '@core-shared/url';
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { loadFeed } from './platforms/rss-feed';
@@ -63,7 +63,11 @@ async function resolveYouTubeSource(env: CoreEnv, input: string, url: URL | null
 export async function resolveMonitoredSource(env: CoreEnv, input: string): Promise<ResolvedMonitoredSource> {
 	const raw = typeof input === 'string' ? input.trim() : '';
 	if (!raw) throw new Error('Source input is required.');
-	const url = parseExternalHttpUrl(raw);
+	const parsedUrl = URL.parse(raw);
+	const url =
+		parsedUrl && (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:') && !parsedUrl.username && !parsedUrl.password
+			? parsedUrl
+			: null;
 	const host = url?.hostname.toLowerCase().replace(/^(www|m)\./, '');
 	if (YOUTUBE_CHANNEL_ID_RE.test(raw) || host === 'youtube.com') return resolveYouTubeSource(env, raw, url);
 	const twitterHandle =
@@ -120,14 +124,16 @@ export async function admitDiscoveredSourceResources(env: CoreEnv, drafts: Sourc
 		drafts.map(async (draft) => {
 			const originalLang = canonicalizeOptionalResourceLang(draft.originalLang);
 			if (draft.publishedDate && !Number.isFinite(draft.publishedDate.getTime())) throw new Error('Source published date is invalid');
-			const parsedUrl = parseExternalHttpUrl(draft.url.trim());
-			if (!parsedUrl) throw new Error('Source resource URL must be external http(s)');
+			const parsedUrl = URL.parse(draft.url.trim());
+			if (!parsedUrl || (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || parsedUrl.username || parsedUrl.password) {
+				throw new Error('Source resource URL must be external http(s)');
+			}
 			const summary = draft.summary?.trim() || null;
-			const sourceAvatarUrl = validatedExternalMediaUrl(draft.sourceAvatarUrl);
+			const sourceAvatarUrl = normalizedExternalMediaUrl(draft.sourceAvatarUrl);
 			const target = {
 				kind: 'draft',
 				admission: { kind: 'source', sourceId: draft.sourceId.trim() },
-				url: normalizeUrl(parsedUrl.toString()),
+				url: parsedUrl.toString(),
 				sourceHints: {
 					...(summary ? { summary } : {}),
 					...(originalLang ? { originalLang } : {}),

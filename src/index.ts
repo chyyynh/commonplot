@@ -1,7 +1,6 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { ResourceDraftAdmission } from '@app-domain/resource-graph-contracts';
 import { connectCoreDb } from '@core-shared/db';
-import { normalizeUrl, parseExternalHttpUrl } from '@core-shared/url';
 import { resolveMonitoredSource } from '@ingest/monitored-source';
 import { handleRSSCron } from '@ingest/platforms/rss';
 import { handleTwitterCron } from '@ingest/platforms/twitter';
@@ -126,12 +125,14 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		if (!/^app-draft-v1-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(input.instanceId)) {
 			throw new Error('Invalid app draft Workflow ID');
 		}
-		const parsedUrl = parseExternalHttpUrl(input.url);
-		if (!parsedUrl) throw new Error('Only http(s) URLs without credentials are allowed');
+		const parsedUrl = URL.parse(input.url);
+		if (!parsedUrl || (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || parsedUrl.username || parsedUrl.password) {
+			throw new Error('Only http(s) URLs without credentials are allowed');
+		}
 		const target = ResourceDraftTargetSchema.parse({
 			kind: 'draft',
 			admission: input.admission,
-			url: normalizeUrl(parsedUrl.toString()),
+			url: parsedUrl.toString(),
 		});
 		if (target.admission.kind !== 'profileSave' && target.admission.kind !== 'container') {
 			throw new Error('App URL drafts only support profileSave or container admission');
