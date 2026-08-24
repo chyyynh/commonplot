@@ -2,12 +2,19 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { connectCoreDb } from '@core-shared/db';
 import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '@core-shared/paper-identity';
-import { isPaperIdentifier } from '@core-shared/resource';
+import {
+	canonicalizeResourceLang,
+	isPaperIdentifier,
+	RESOURCE_TYPES,
+	type ResourceCreator,
+	ResourceCreatorsSchema,
+	type ResourceKindMetadata,
+} from '@core-shared/resource';
 import { initSync, LiteParse, type LiteParseInit, type ParseResult } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
 import liteParsePackage from '@llamaindex/liteparse-wasm/package.json';
 import { sql } from 'drizzle-orm';
-import { loadStoredPdfInput, type StoredPdfInput } from '../stored-resource';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { GenericAcquiredMaterial, ResolvedResource } from './materialize';
 
 export const PDF_MIME = 'application/pdf';
@@ -275,7 +282,101 @@ export async function stagePrivatePdfMarkdownTranslation(
 	return translated.join('\n\n');
 }
 
-export type StoredPdfAcquisition = Readonly<{
+type StoredPdfInput = {
+	creators: ResourceCreator[];
+	fileType: string;
+	kindMetadata: ResourceKindMetadata | null;
+	originalLang: string;
+	publishedDate: string | null;
+	resourceId: string;
+	source: string;
+	storageKey: string;
+	summary: string | null;
+	title: string;
+};
+
+type StoredPdfRow = {
+	creators: unknown;
+	file_type: string | null;
+	id: string;
+	kind: keyof typeof RESOURCE_TYPES;
+	kind_metadata: unknown;
+	original_lang: string;
+	published_date: Date | string | null;
+	source: string | null;
+	storage_key: string | null;
+	summary: string | null;
+	title: string | null;
+};
+
+async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promise<StoredPdfInput> {
+	const result = await db.execute<StoredPdfRow>(sql`
+		SELECT
+			resource.id::text AS id,
+			resource.kind,
+			original.title,
+			original.summary,
+			resource.original_lang,
+			COALESCE(
+				NULLIF(BTRIM(monitored_source.name), ''),
+				NULLIF(BTRIM(COALESCE(
+					resource.creators->0->>'literal',
+					CONCAT_WS(' ', resource.creators->0->>'given', resource.creators->0->>'family')
+				)), ''),
+				CASE resource.resource_platform
+					WHEN 'twitter' THEN 'Twitter'
+					WHEN 'youtube' THEN 'YouTube'
+					WHEN 'hackernews' THEN 'Hacker News'
+					WHEN 'lesswrong' THEN 'LessWrong'
+				END,
+				INITCAP(resource.kind)
+			) AS source,
+			resource.published_date,
+			resource.creators,
+			resource.kind_metadata,
+			resource.storage_key,
+			resource.file_type
+		FROM resources resource
+		JOIN resource_translations original
+		  ON original.resource_id = resource.id
+		 AND original.lang = resource.original_lang
+		LEFT JOIN sources monitored_source ON monitored_source.id = resource.source_id
+		WHERE resource.id = ${resourceId}::uuid
+		  AND resource.scope = 'private'
+		  AND resource.storage_key IS NOT NULL
+		  AND EXISTS (SELECT 1 FROM user_files file WHERE file.resource_id = resource.id)
+		LIMIT 1
+	`);
+	const row = result.rows[0];
+	if (!row) throw new Error(`Failed to fetch stored PDF ${resourceId}: not found or not an owned private blob`);
+	const title = row.title?.trim();
+	const source = row.source?.trim();
+	if (!title) throw new Error(`Stored PDF ${resourceId} has no title`);
+	if (!source) throw new Error(`Stored PDF ${resourceId} has no source`);
+	if (!row.storage_key || !row.file_type) throw new Error(`Stored PDF ${resourceId} has no blob representation`);
+	const publishedDate = row.published_date instanceof Date ? row.published_date : row.published_date ? new Date(row.published_date) : null;
+	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new Error('Invalid published_date: expected date');
+	let creators: ResourceCreator[];
+	try {
+		creators = ResourceCreatorsSchema.parse(row.creators);
+	} catch (error) {
+		throw new Error(`Invalid creators for ${resourceId}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	return {
+		creators,
+		fileType: row.file_type,
+		kindMetadata: RESOURCE_TYPES[row.kind].metadata.parse(row.kind_metadata),
+		originalLang: canonicalizeResourceLang(row.original_lang),
+		publishedDate: publishedDate?.toISOString() ?? null,
+		resourceId: row.id,
+		source,
+		storageKey: row.storage_key,
+		summary: row.summary,
+		title,
+	};
+}
+
+type StoredPdfAcquisition = Readonly<{
 	material: GenericAcquiredMaterial;
 	resource: StoredPdfInput;
 }>;

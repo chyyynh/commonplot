@@ -177,7 +177,6 @@ src/
 ├── ingest/               # ── resource ingestion pipeline (the open-source core) ──
 │   ├── workflow.ts       # target validation, processing, and draft recovery Workflows
 │   ├── monitored-source.ts # source resolution, state, and deterministic draft admission
-│   ├── stored-resource.ts # narrow record-first blob and resync projections
 │   └── platforms/        # one file per source/stage
 │       ├── rss.ts        # feed polling
 │       ├── twitter.ts    # source monitor
@@ -185,7 +184,7 @@ src/
 │       ├── youtube-acquisition.ts # transcript/highlights
 │       ├── hackernews.ts # HN processor
 │       ├── paper.ts      # OpenAlex enrichment stage
-│       └── pdf.ts        # PDF text extraction stage
+│       └── pdf.ts        # app-owned and external PDF acquisition/extraction
 ├── operations/           # operator-triggered durable jobs
 │   └── search-index-rebuild.ts # full AI Search rebuild
 └── search-index.ts        # runtime AI Search projection, sync, and ordered retrieval

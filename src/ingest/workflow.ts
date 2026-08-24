@@ -7,10 +7,17 @@ import {
 	normalizedExternalMediaUrl,
 	resourceImageSourceUrls,
 } from '@core-shared/image-mapping';
-import { canonicalizeOptionalResourceLang } from '@core-shared/resource';
+import { normalizePaperIdentifiers, type PaperIdentifier } from '@core-shared/paper-identity';
+import {
+	canonicalizeOptionalResourceLang,
+	canonicalizeResourceLang,
+	isPaperIdentifier,
+	ResourceIdentifiersSchema,
+} from '@core-shared/resource';
 import { ENTITY_TYPES, entityExtractionExclusionNames, type ResourceEntityInput, toStoredResourceEntities } from '@entities/normalize';
-import { loadResourceReacquisitionInput } from '@ingest/stored-resource';
 import { generateText, Output } from 'ai';
+import { sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { syncCorpusItem } from '../search-index';
@@ -272,6 +279,66 @@ function resolvedResourceMutation(
 		fileType: resource.fileType ?? null,
 		publishedDate: resource.publishedDate,
 		ogImageUrl: media.ogImageUrl,
+	};
+}
+
+type ResourceReacquisitionInput = {
+	originalLang: string;
+	paperIdentifiers: PaperIdentifier[];
+	publishedDate: string | null;
+	summary: string | null;
+	url: string;
+};
+
+type ResourceReacquisitionRow = {
+	original_lang: string;
+	published_date: Date | string | null;
+	resource_identifiers: unknown;
+	summary: string | null;
+	url: string | null;
+};
+
+async function loadResourceReacquisitionInput(db: NodePgDatabase, resourceId: string): Promise<ResourceReacquisitionInput> {
+	const result = await db.execute<ResourceReacquisitionRow>(sql`
+		SELECT
+			original.summary,
+			resource.original_lang,
+			(
+				SELECT jsonb_agg(
+					jsonb_build_object(
+						'preferred', identifier.is_preferred,
+						'scheme', identifier.scheme,
+						'value', identifier.value
+					)
+					ORDER BY identifier.scheme, identifier.is_preferred DESC, identifier.value
+				)
+				FROM resource_identifiers identifier
+				WHERE identifier.resource_id = resource.id
+				  AND identifier.scheme IN ('doi', 'arxiv', 'openalex')
+			) AS resource_identifiers,
+			resource.url,
+			resource.published_date
+		FROM resources resource
+		JOIN resource_translations original
+		  ON original.resource_id = resource.id
+		 AND original.lang = resource.original_lang
+		WHERE resource.id = ${resourceId}::uuid
+		LIMIT 1
+	`);
+	const row = result.rows[0];
+	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
+	const url = row.url ? URL.parse(row.url) : null;
+	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) {
+		throw new Error(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
+	}
+	const publishedDate = row.published_date instanceof Date ? row.published_date : row.published_date ? new Date(row.published_date) : null;
+	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new Error('Invalid published_date: expected date');
+	return {
+		originalLang: canonicalizeResourceLang(row.original_lang),
+		paperIdentifiers: normalizePaperIdentifiers(ResourceIdentifiersSchema.parse(row.resource_identifiers ?? []).filter(isPaperIdentifier)),
+		publishedDate: publishedDate?.toISOString() ?? null,
+		summary: row.summary,
+		url: url.toString(),
 	};
 }
 

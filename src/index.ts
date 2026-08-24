@@ -3,12 +3,6 @@ import { connectCoreDb } from '@core-shared/db';
 import { handleRSSCron, resolveFeedMonitoredSource } from '@ingest/platforms/rss';
 import { handleTwitterCron, resolveTwitterMonitoredSource } from '@ingest/platforms/twitter';
 import { resolveYouTubeMonitoredSource } from '@ingest/platforms/youtube-acquisition';
-import {
-	enqueueProcessing,
-	enqueueResourceResync,
-	reconcilePendingBlobProcessing,
-	type StoredPdfProcessingInput,
-} from '@ingest/stored-resource';
 import { ResourceTranslationV2Workflow } from '@ingest/translation-workflow';
 import {
 	AutonomousResourceDraftIdSchema,
@@ -17,6 +11,8 @@ import {
 	ResourceDraftTargetSchema,
 	ResourceProcessingV2Workflow,
 } from '@ingest/workflow';
+import { sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { SearchIndexGeneration5RebuildWorkflow } from './operations/search-index-rebuild';
 import { type PublicResourceSearchInput, searchPublicResourceIds } from './search-index';
@@ -33,6 +29,57 @@ type AppResourceDraftInput = Readonly<{
 	url: string;
 	admission: Extract<ResourceDraftTarget['admission'], { kind: 'profileSave' | 'container' }>;
 }>;
+
+type StoredPdfProcessingInput = Readonly<{ resourceId: string }>;
+
+const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
+const PENDING_BLOB_RECONCILE_LIMIT = 50;
+const STORED_BLOB_WORKFLOW_REVISION = 'stored-resource-v11';
+const STORED_BLOB_WORKFLOW_RETENTION = {
+	successRetention: '5 minutes',
+	errorRetention: '1 hour',
+} as const;
+
+function storedBlobWorkflowInstance(resourceId: string) {
+	const id = z.uuid().parse(resourceId);
+	return {
+		id: `${STORED_BLOB_WORKFLOW_REVISION}-${id}`,
+		params: { kind: 'storedBlob' as const, resourceId: id },
+		retention: STORED_BLOB_WORKFLOW_RETENTION,
+	};
+}
+
+/** Repairs only interrupted DB-to-Workflow handoffs for record-first app-owned blobs. */
+async function reconcilePendingBlobProcessing(env: CoreEnv, db: NodePgDatabase): Promise<void> {
+	const result = await db.execute<{ resource_id: string }>(sql`
+		SELECT resource.id::text AS resource_id
+		FROM resources resource
+		WHERE resource.enrichment_status = 'pending'
+		  AND resource.scope = 'private'
+		  AND resource.kind = 'blog'
+		  AND resource.resource_platform IS NULL
+		  AND resource.file_type = 'application/pdf'
+		  AND resource.storage_key IS NOT NULL
+		  AND EXISTS (
+		    SELECT 1
+		    FROM user_files
+		    WHERE user_files.resource_id = resource.id
+		  )
+		  AND resource.updated_at < ${new Date(Date.now() - PENDING_BLOB_GRACE_MS)}
+		ORDER BY resource.updated_at ASC, resource.id ASC
+		LIMIT ${PENDING_BLOB_RECONCILE_LIMIT}
+	`);
+	const resourceIds = result.rows.map((row) => row.resource_id);
+	if (!resourceIds.length) return;
+	const created = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(resourceIds.map(storedBlobWorkflowInstance));
+	console.info({
+		tag: 'RESOURCE_WORKFLOW',
+		event: 'pending_blob_reconciliation_completed',
+		attempted: resourceIds.length,
+		created: created.length,
+		existing: resourceIds.length - created.length,
+	});
+}
 
 const ResourceWorkflowErroredEventSchema = z.object({
 	type: z.literal('cf.workflows.workflow.instance.errored'),
@@ -117,7 +164,9 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 
 	/** Enqueue an app-owned blob after its R2 object and private ownership row exist. */
 	async enqueueResourceProcessing(input: StoredPdfProcessingInput) {
-		return enqueueProcessing(this.env, input);
+		const instance = storedBlobWorkflowInstance(input.resourceId);
+		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([instance]);
+		return instance.id;
 	}
 
 	/** Process an external URL before its canonical Resource and user relation become visible. */
@@ -142,8 +191,13 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	/** Reacquire a URL-backed resource through the enrichment workflow. */
-	resyncResource(resourceId: string) {
-		return enqueueResourceResync(this.env, resourceId);
+	async resyncResource(resourceId: string) {
+		const id = z.uuid().parse(resourceId);
+		const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
+			id: `resource-resync-v3-${id}-${crypto.randomUUID()}`,
+			params: { kind: 'reacquire', resourceId: id },
+		});
+		return instance.id;
 	}
 
 	/** AI Search candidates; the app Worker authoritatively filters and hydrates them. */
