@@ -12,7 +12,6 @@ import {
 } from '@core-shared/resource';
 import { parseExternalHttpUrl } from '@core-shared/url';
 import type { CoreDb } from '@db/connection';
-import { resourceDisplaySourceSql } from '@db/display-source-sql';
 import { sql } from 'drizzle-orm';
 import { z } from 'zod';
 import { parseResourceProcessingWorkflowPayload } from './processing-jobs';
@@ -167,12 +166,20 @@ export async function loadStoredPdfInput(db: CoreDb, resourceId: string): Promis
 			original.title,
 			original.summary,
 			resource.original_lang,
-			${resourceDisplaySourceSql({
-				creatorName: sql`COALESCE(resource.creators->0->>'literal', CONCAT_WS(' ', resource.creators->0->>'given', resource.creators->0->>'family'))`,
-				kind: sql`resource.kind`,
-				monitoredSourceName: sql`monitored_source.name`,
-				resourcePlatform: sql`resource.resource_platform`,
-			})} AS source,
+			COALESCE(
+				NULLIF(BTRIM(monitored_source.name), ''),
+				NULLIF(BTRIM(COALESCE(
+					resource.creators->0->>'literal',
+					CONCAT_WS(' ', resource.creators->0->>'given', resource.creators->0->>'family')
+				)), ''),
+				CASE resource.resource_platform
+					WHEN 'twitter' THEN 'Twitter'
+					WHEN 'youtube' THEN 'YouTube'
+					WHEN 'hackernews' THEN 'Hacker News'
+					WHEN 'lesswrong' THEN 'LessWrong'
+				END,
+				INITCAP(resource.kind)
+			) AS source,
 			resource.published_date,
 			resource.creators,
 			resource.kind_metadata,

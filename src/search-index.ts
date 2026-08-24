@@ -1,6 +1,5 @@
 import { RESOURCE_TYPES } from '@core-shared/resource';
 import type { CoreDb } from '@db/connection';
-import { resourceDisplaySourceSql } from '@db/display-source-sql';
 import { inArray, sql } from 'drizzle-orm';
 
 // Postgres is canonical; AI Search is its derived public-corpus index.
@@ -122,12 +121,20 @@ async function loadCorpusDocuments(db: CoreDb, resourceIds: readonly string[]): 
 		       r.original_lang,
 		       COALESCE(r.published_date, r.scraped_date, r.created_at) AS effective_at,
 		       r.tags,
-		       ${resourceDisplaySourceSql({
-							creatorName: sql`COALESCE(r.creators->0->>'literal', CONCAT_WS(' ', r.creators->0->>'given', r.creators->0->>'family'))`,
-							kind: sql`r.kind`,
-							monitoredSourceName: sql`s.name`,
-							resourcePlatform: sql`r.resource_platform`,
-						})} AS source,
+		       COALESCE(
+		         NULLIF(BTRIM(s.name), ''),
+		         NULLIF(BTRIM(COALESCE(
+		           r.creators->0->>'literal',
+		           CONCAT_WS(' ', r.creators->0->>'given', r.creators->0->>'family')
+		         )), ''),
+		         CASE r.resource_platform
+		           WHEN 'twitter' THEN 'Twitter'
+		           WHEN 'youtube' THEN 'YouTube'
+		           WHEN 'hackernews' THEN 'Hacker News'
+		           WHEN 'lesswrong' THEN 'LessWrong'
+		         END,
+		         INITCAP(r.kind)
+		       ) AS source,
 		       COALESCE((
 		         SELECT jsonb_agg(
 		           jsonb_build_object(
