@@ -4,6 +4,7 @@ import { type CoreDb, connectCoreDb } from '@db/connection';
 import { resourceDisplaySourceSql } from '@db/display-source-sql';
 import { inArray, sql } from 'drizzle-orm';
 
+// Postgres is canonical; AI Search is its derived public-corpus index.
 const AI_SEARCH_ITEM_PREFIX = 'resources/';
 const AI_SEARCH_ITEM_SUFFIX = '.md';
 const NULL_RESOURCE_PLATFORM_METADATA = 'none';

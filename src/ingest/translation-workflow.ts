@@ -6,7 +6,7 @@ import { generateText, Output } from 'ai';
 import { sql } from 'drizzle-orm';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { syncCorpusItem } from '../ai-search';
+import { syncCorpusItem } from '../search-index';
 import { pdfTranslationAdmission, privateUploadedPdfTranslationSqlAdmission, stagePrivatePdfMarkdownTranslation } from './platforms/pdf';
 
 type ResourceTranslationPayload = { resourceId: string; translationRevision: string };

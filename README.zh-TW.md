@@ -179,7 +179,7 @@ src/
 │       ├── hackernews.ts # HN processor
 │       ├── paper.ts      # OpenAlex enrichment stage
 │       └── pdf.ts        # PDF text extraction stage
-├── ai-search.ts           # AI Search projection、同步與 rebuild Workflow
+├── search-index.ts        # AI Search projection、同步與 rebuild Workflow
 └── public-search.ts       # public Resource ID 排序檢索
 ```
 

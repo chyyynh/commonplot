@@ -7,7 +7,7 @@ import { loadResourceReacquisitionInput } from '@ingest/stored-resource';
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { syncCorpusItem } from '../ai-search';
+import { syncCorpusItem } from '../search-index';
 import { type ProcessingResource, stageStoredResource, stageUrlAcquisition } from './acquisition';
 import { stageResourceImages } from './image-rehosting';
 import { enqueueSubjectDraft, parseResourceProcessingWorkflowPayload, type ResourceProcessingWorkflowPayload } from './processing-jobs';

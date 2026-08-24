@@ -185,7 +185,7 @@ src/
 │       ├── hackernews.ts # HN processor
 │       ├── paper.ts      # OpenAlex enrichment stage
 │       └── pdf.ts        # PDF text extraction stage
-├── ai-search.ts           # AI Search projection, sync, and rebuild Workflow
+├── search-index.ts        # AI Search projection, sync, and rebuild Workflow
 └── public-search.ts       # ordered public Resource ID retrieval
 ```
 

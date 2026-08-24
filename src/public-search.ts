@@ -1,5 +1,5 @@
 import { RESOURCE_TYPES } from '@core-shared/resource';
-import { aiSearchResourcePlatformMetadata, isValidUuid, resourceIdFromAiSearchItemKey } from './ai-search';
+import { aiSearchResourcePlatformMetadata, isValidUuid, resourceIdFromAiSearchItemKey } from './search-index';
 
 export type PublicResourceSearchInput = {
 	query: string;
