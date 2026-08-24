@@ -17,7 +17,6 @@
 		/* Path aliases for the feature-first src layout.
 		   No baseUrl — since TS 5.0 paths resolve relative to this tsconfig's directory. */
 		"paths": {
-			"@/*": ["../../web-tanstack/src/*"],
 			"@core-shared/*": ["./src/shared/*"],
 			"@entities/*": ["./src/entities/*"],
 			"@ingest/*": ["./src/ingest/*"]

@@ -14,6 +14,7 @@ import {
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
+import type {} from './env';
 import { SearchIndexGeneration5RebuildWorkflow } from './operations/search-index-rebuild';
 import { type PublicResourceSearchInput, searchPublicResourceIds } from './search-index';
 
