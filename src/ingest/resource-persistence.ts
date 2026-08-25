@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { type HostedResourceImage, hostedResourceImageFields, resourceImageFieldsAreHosted } from '../shared/image-mapping';
+import { type HostedResourceImage, hostedResourceImageFields } from '../shared/image-mapping';
 import {
 	canonicalizeResourceLang,
 	isPaperIdentifier,
@@ -58,7 +58,6 @@ export function prepareResolvedResource(
 	const creators = ResourceCreatorsSchema.parse(resource.creators);
 	const kindMetadata = RESOURCE_TYPES[resource.kind].metadata.parse(resource.kindMetadata);
 	const media = hostedResourceImageFields({ creators, kindMetadata, ogImageUrl: resource.previewImageUrl }, hostedImages);
-	if (!resourceImageFieldsAreHosted(media)) throw new TypeError('Resource images must use canonical Hosted Images URLs');
 	const identifiers = ResourceIdentifiersSchema.parse(resource.resourceIdentifiers);
 	if (resource.kind === 'paper' && !identifiers.some(({ scheme }) => scheme === 'openalex')) {
 		throw new TypeError('Paper Resource requires an OpenAlex identifier');

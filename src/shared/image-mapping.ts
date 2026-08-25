@@ -32,10 +32,6 @@ export function hostedResourceImageUrl(value: string | null | undefined): string
 	return url && HOSTED_RESOURCE_IMAGE_PATTERN.test(url) ? url : null;
 }
 
-export function resourceImageFieldsAreHosted(resource: ResourceImageFields): boolean {
-	return resourceImageCandidates(resource).every((url) => hostedResourceImageUrl(url) === url);
-}
-
 export type HostedResourceImage = Readonly<{
 	deliveryUrl: string;
 	sourceUrl: string;

@@ -4,7 +4,6 @@ import {
 	hostedResourceImageFields,
 	normalizedExternalMediaUrl,
 	normalizedResourceImageUrl,
-	resourceImageFieldsAreHosted,
 	resourceImageSourceUrls,
 } from '../src/shared/image-mapping.ts';
 
@@ -239,7 +238,10 @@ const hosted = [
 	{ deliveryUrl: `https://imagedelivery.net/account/resource-${'c'.repeat(64)}/public`, sourceUrl: avatar },
 ];
 const canonicalImages = hostedResourceImageFields(imageInput, hosted);
-assert.equal(resourceImageFieldsAreHosted(canonicalImages), true);
+assert.deepEqual(
+	resourceImageSourceUrls(canonicalImages),
+	hosted.map(({ deliveryUrl }) => deliveryUrl),
+);
 assert.throws(() => hostedResourceImageFields(imageInput, hosted.slice(0, 1)), /do not cover every source/);
 
 console.info(`Platform materialization contract checks passed (${cases.length + 6} cases).`);
