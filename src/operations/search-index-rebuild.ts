@@ -16,6 +16,7 @@ type SearchIndexName = 'corpus' | 'related';
 
 const CANONICAL_SEARCH_CONFIGS = {
 	corpus: {
+		cache: false,
 		chunk: true,
 		chunk_overlap: 12,
 		chunk_size: 512,
@@ -262,6 +263,7 @@ function canonicalSearchInstanceConfigMatches(info: AiSearchInstanceInfo, index:
 	}
 	const corpus = CANONICAL_SEARCH_CONFIGS.corpus;
 	return (
+		info.cache === corpus.cache &&
 		info.chunk_size === corpus.chunk_size &&
 		info.chunk_overlap === corpus.chunk_overlap &&
 		info.index_method.keyword === true &&

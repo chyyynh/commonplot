@@ -303,6 +303,7 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 	const response = await env.AI_SEARCH.search({
 		query,
 		ai_search_options: {
+			cache: { enabled: false },
 			query_rewrite: { enabled: false },
 			reranking: { enabled: false },
 			retrieval: {
