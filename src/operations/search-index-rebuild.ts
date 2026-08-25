@@ -306,13 +306,35 @@ async function observeSearchIndex(
 	};
 }
 
+async function retryFailedSearchItems(env: CoreEnv, instance: AiSearchInstance): Promise<number> {
+	const listed = await instance.items.list({
+		metadata_filter: CORPUS_FOLDER_FILTER,
+		page: 1,
+		per_page: REINDEX_PAGE_SIZE,
+		source: 'builtin',
+		status: 'error',
+	});
+	const resourceIds = [
+		...new Set(listed.result.map((item) => resourceIdFromAiSearchItemKey(item.key)).filter((id): id is string => id !== null)),
+	];
+	if (!resourceIds.length) return 0;
+	await uploadCorpusIds(env, await connectCoreDb(env), resourceIds);
+	return resourceIds.length;
+}
+
 async function waitForSearchIndex(env: CoreEnv, instance: AiSearchInstance, index: SearchIndexName, step: WorkflowStep) {
 	let last: (SearchIndexStats & { configReady: boolean }) | null = null;
 	for (let attempt = 0; attempt < REINDEX_READY_POLL_ATTEMPTS; attempt++) {
 		last = await step.do(`observe-${index}-search-index-${attempt}`, SHORT_STEP_OPTIONS, async () =>
 			observeSearchIndex(instance, index, await connectCoreDb(env)),
 		);
-		if (last.error > 0 || last.skipped > 0 || last.outdated > 0) {
+		if (last.error > 0) {
+			const retried = await step.do(`retry-${index}-search-errors-${attempt}`, BATCH_STEP_OPTIONS, () =>
+				retryFailedSearchItems(env, instance),
+			);
+			if (retried === 0) throw new Error(`${index} AI Search reported errors without retryable Resource items: ${JSON.stringify(last)}`);
+		}
+		if (last.skipped > 0 || last.outdated > 0) {
 			throw new Error(`${index} AI Search finished with terminal items: ${JSON.stringify(last)}`);
 		}
 		if (
