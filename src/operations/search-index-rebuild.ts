@@ -26,10 +26,14 @@ const CANONICAL_SEARCH_CONFIGS = {
 		max_num_results: 50,
 	},
 	related: {
-		chunk: false,
+		cache: false,
+		chunk: true,
+		chunk_overlap: 0,
+		chunk_size: 4_096,
 		embedding_model: '@cf/qwen/qwen3-embedding-0.6b',
 		index_method: { keyword: false, vector: true },
 		max_num_results: 50,
+		score_threshold: 0,
 	},
 } as const satisfies Record<SearchIndexName, Partial<AiSearchConfig>>;
 
@@ -245,7 +249,16 @@ function canonicalSearchInstanceConfigMatches(info: AiSearchInstanceInfo, index:
 	) {
 		return false;
 	}
-	if (index === 'related') return info.index_method.keyword === false;
+	if (index === 'related') {
+		const related = CANONICAL_SEARCH_CONFIGS.related;
+		return (
+			info.cache === related.cache &&
+			info.chunk_size === related.chunk_size &&
+			info.chunk_overlap === related.chunk_overlap &&
+			info.index_method.keyword === false &&
+			info.score_threshold === related.score_threshold
+		);
+	}
 	const corpus = CANONICAL_SEARCH_CONFIGS.corpus;
 	return (
 		info.chunk_size === corpus.chunk_size &&

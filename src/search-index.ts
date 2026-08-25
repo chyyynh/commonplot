@@ -9,7 +9,8 @@ const NULL_RESOURCE_PLATFORM_METADATA = 'none';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
 const TRANSLATED_CONTENT_MAX_CHARS = 4_000;
-const RELATED_SUMMARY_MAX_CHARS = 2_000;
+const RELATED_SUMMARY_MAX_CHARS = 800;
+const RELATED_DOCUMENT_MAX_CHARS = 3_000;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 const RESULT_LIMIT_MAX = 50;
 const RELATED_RESULT_LIMIT_MAX = RESULT_LIMIT_MAX - 1;
@@ -116,7 +117,8 @@ function serializeRelatedDocument(row: CorpusDocument): string {
 		]),
 	]
 		.filter(Boolean)
-		.join('\n\n');
+		.join('\n\n')
+		.slice(0, RELATED_DOCUMENT_MAX_CHARS);
 }
 
 async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly string[]): Promise<CorpusDocument[]> {
