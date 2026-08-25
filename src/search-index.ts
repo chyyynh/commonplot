@@ -16,6 +16,7 @@ const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 const RESULT_LIMIT_MAX = 50;
 const RELATED_RESULT_LIMIT_MAX = RESULT_LIMIT_MAX - 1;
 const METADATA_IN_FILTER_LIMIT = 50;
+const SEARCHABLE_RESOURCE_KIND_COUNT = Object.keys(RESOURCE_TYPES).filter((kind) => kind !== 'image' && kind !== 'file').length;
 
 export type PublicResourceSearchInput = {
 	query: string;
@@ -267,7 +268,9 @@ function aiSearchFilters(filters: NormalizedSearchFilters): VectorizeVectorMetad
 	if (filters.sourceIds?.length && filters.sourceIds.length <= METADATA_IN_FILTER_LIMIT) {
 		metadata.source_id = { $in: filters.sourceIds };
 	}
-	if (filters.kinds?.length) metadata.kind = { $in: filters.kinds };
+	if (filters.kinds?.length && filters.kinds.length < SEARCHABLE_RESOURCE_KIND_COUNT) {
+		metadata.kind = { $in: filters.kinds };
+	}
 	if (filters.resourcePlatforms?.length) {
 		metadata.resource_platform = {
 			$in: filters.resourcePlatforms.map((platform) => platform ?? NULL_RESOURCE_PLATFORM_METADATA),
