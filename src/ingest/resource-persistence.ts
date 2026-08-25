@@ -40,12 +40,6 @@ function httpUrl(value: string | null, field: string): string | null {
 	return url.toString();
 }
 
-function identifierMatchesResource(identifier: ResourceIdentifier, resource: ProcessingResource): boolean {
-	return resource.resourcePlatform !== null
-		? identifier.scheme === resource.resourcePlatform
-		: resource.kind === 'paper' && isPaperIdentifier(identifier);
-}
-
 export function prepareResolvedResource(
 	resource: ProcessingResource,
 	analysis: ResourceAnalysis,
@@ -62,7 +56,13 @@ export function prepareResolvedResource(
 	if (resource.kind === 'paper' && !identifiers.some(({ scheme }) => scheme === 'openalex')) {
 		throw new TypeError('Paper Resource requires an OpenAlex identifier');
 	}
-	if (identifiers.some((identifier) => !identifierMatchesResource(identifier, resource))) {
+	if (
+		identifiers.some((identifier) =>
+			resource.resourcePlatform !== null
+				? identifier.scheme !== resource.resourcePlatform
+				: resource.kind !== 'paper' || !isPaperIdentifier(identifier),
+		)
+	) {
 		throw new TypeError('Resource identifiers do not match its identity');
 	}
 	if (resource.resourcePlatform !== null && !identifiers.some(({ scheme }) => scheme === resource.resourcePlatform)) {
