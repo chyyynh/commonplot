@@ -125,12 +125,8 @@ export function normalizeDoi(value: unknown): string | null {
 }
 
 function arxivIdFromUrl(value: string): string | null {
-	let url: URL;
-	try {
-		url = new URL(value);
-	} catch {
-		return null;
-	}
+	const url = URL.parse(value);
+	if (!url) return null;
 	if (url.hostname.toLowerCase() !== 'arxiv.org' && !url.hostname.toLowerCase().endsWith('.arxiv.org')) return null;
 	return url.pathname.match(/^\/(?:abs|html|pdf)\/(.+?)(?:\.pdf)?\/?$/i)?.[1] ?? null;
 }

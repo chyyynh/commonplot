@@ -80,12 +80,8 @@ function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {
 const NON_RESOURCE_LINK_HOSTS = new Set(['twitter.com', 'x.com', 'instagram.com', 'tiktok.com', 'facebook.com', 'threads.net']);
 
 function isNonResourceLinkUrl(url: string): boolean {
-	let hostname: string;
-	try {
-		hostname = new URL(url).hostname.toLowerCase();
-	} catch {
-		return false;
-	}
+	let hostname = URL.parse(url)?.hostname.toLowerCase();
+	if (!hostname) return false;
 	if (hostname.startsWith('www.')) hostname = hostname.slice(4);
 	for (const host of NON_RESOURCE_LINK_HOSTS) {
 		if (hostname === host || hostname.endsWith(`.${host}`)) return true;

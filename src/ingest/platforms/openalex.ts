@@ -101,12 +101,8 @@ function abstractFromInvertedIndex(index: Record<string, number[]> | null | unde
 
 function httpsUrl(value: string | null | undefined): string | undefined {
 	if (!value?.trim()) return undefined;
-	try {
-		const url = new URL(value);
-		return url.protocol === 'https:' ? url.toString() : undefined;
-	} catch {
-		return undefined;
-	}
+	const url = URL.parse(value);
+	return url?.protocol === 'https:' ? url.toString() : undefined;
 }
 
 function licensedPdfUrl(work: OpenAlexWork): string | null {

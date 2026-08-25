@@ -26,14 +26,8 @@ async function redirectTarget(response: Response, currentUrl: string, redirects:
 	await cancelBody(response.body);
 	if (redirects >= MAX_SOURCE_REDIRECTS) throw failure('redirect_limit');
 	if (!location) throw failure('unsafe_redirect', 'missing Location header');
-	let resolved: string;
-	try {
-		resolved = new URL(location, currentUrl).toString();
-	} catch {
-		throw failure('unsafe_redirect', 'invalid Location header');
-	}
-	const nextUrl = normalizedExternalMediaUrl(resolved);
-	if (!nextUrl) throw failure('unsafe_redirect');
+	const nextUrl = normalizedExternalMediaUrl(location, currentUrl);
+	if (!nextUrl) throw failure('unsafe_redirect', 'invalid Location header');
 	return nextUrl;
 }
 
