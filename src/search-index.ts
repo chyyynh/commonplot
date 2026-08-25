@@ -9,8 +9,10 @@ const NULL_RESOURCE_PLATFORM_METADATA = 'none';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
 const TRANSLATED_CONTENT_MAX_CHARS = 4_000;
+const RELATED_SUMMARY_MAX_CHARS = 2_000;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 const RESULT_LIMIT_MAX = 50;
+const RELATED_RESULT_LIMIT_MAX = RESULT_LIMIT_MAX - 1;
 
 export type PublicResourceSearchInput = {
 	query: string;
@@ -22,6 +24,11 @@ export type PublicResourceSearchInput = {
 		resourcePlatforms?: ((typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null)[];
 		sourceIds?: string[];
 	};
+};
+
+export type RelatedResourceSearchInput = {
+	resourceId: string;
+	limit: number;
 };
 
 type NormalizedSearchFilters = Omit<NonNullable<PublicResourceSearchInput['filters']>, 'publishedAfter'> & {
@@ -95,6 +102,23 @@ function serializeDocument(row: CorpusDocument): string {
 		.join('\n\n');
 }
 
+function serializeRelatedDocument(row: CorpusDocument): string {
+	const original = row.translations.find((translation) => translation.lang === row.original_lang);
+	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
+	return [
+		`# ${requiredDocumentText(original.title, 'title', row.id)}`,
+		`Source: ${requiredDocumentText(row.source, 'source', row.id)}`,
+		row.tags?.length ? `Tags: ${row.tags.join(', ')}` : '',
+		...row.translations.flatMap((translation) => [
+			translation.lang === row.original_lang || !translation.title?.trim() ? '' : `${translation.lang} title: ${translation.title.trim()}`,
+			translation.keywords?.length ? `${translation.lang} keywords: ${translation.keywords.join(', ')}` : '',
+			translation.summary?.trim() ? `${translation.lang} summary: ${translation.summary.trim().slice(0, RELATED_SUMMARY_MAX_CHARS)}` : '',
+		]),
+	]
+		.filter(Boolean)
+		.join('\n\n');
+}
+
 async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly string[]): Promise<CorpusDocument[]> {
 	if (!resourceIds.length) return [];
 	const result = await db.execute<CorpusDocument>(sql`
@@ -147,36 +171,43 @@ async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly str
 export async function upsertCorpusItems(env: CoreEnv, db: NodePgDatabase, resourceIds: readonly string[]): Promise<number> {
 	const documents = await loadCorpusDocuments(db, resourceIds);
 	await Promise.all(
-		documents.map((document) => {
+		documents.flatMap((document) => {
 			const publishedAt = document.published_at === null ? null : new Date(document.published_at);
 			if (publishedAt && Number.isNaN(publishedAt.getTime())) {
 				throw new Error(`AI Search document ${document.id} has invalid publication date`);
 			}
-			return env.AI_SEARCH.items.upload(aiSearchItemKey(document.id), serializeDocument(document), {
+			const options = {
 				metadata: {
 					...(publishedAt ? { published_at: publishedAt.toISOString() } : {}),
 					...(document.source_id ? { source_id: document.source_id } : {}),
 					kind: document.kind,
 					resource_platform: document.resource_platform ?? NULL_RESOURCE_PLATFORM_METADATA,
 				},
-			});
+			};
+			const key = aiSearchItemKey(document.id);
+			return [
+				env.AI_SEARCH.items.upload(key, serializeDocument(document), options),
+				env.RELATED_SEARCH.items.upload(key, serializeRelatedDocument(document), options),
+			];
 		}),
 	);
 	return documents.length;
 }
 
-async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<void> {
+async function deleteCorpusItem(instance: AiSearchInstance, index: 'corpus' | 'related', resourceId: string): Promise<void> {
 	const key = aiSearchItemKey(resourceId);
-	const listed = await env.AI_SEARCH.items.list({ key, source: 'builtin', per_page: 1 });
+	const listed = await instance.items.list({ key, source: 'builtin', per_page: 1 });
 	const item = listed.result.find((candidate) => candidate.key === key && candidate.source_id === 'builtin');
 	if (!item) return;
-	await env.AI_SEARCH.items.delete(item.id);
-	console.info({ tag: 'AI_SEARCH', msg: 'Corpus item deleted', resource_id: resourceId, item_id: item.id });
+	await instance.items.delete(item.id);
+	console.info({ tag: 'AI_SEARCH', msg: 'Corpus item deleted', index, resource_id: resourceId, item_id: item.id });
 }
 
 export async function syncCorpusItem(env: CoreEnv, db: NodePgDatabase, resourceId: string): Promise<void> {
 	if (!UUID_RE.test(resourceId)) return;
-	if ((await upsertCorpusItems(env, db, [resourceId])) === 0) await deleteCorpusItem(env, resourceId);
+	if ((await upsertCorpusItems(env, db, [resourceId])) === 0) {
+		await Promise.all([deleteCorpusItem(env.AI_SEARCH, 'corpus', resourceId), deleteCorpusItem(env.RELATED_SEARCH, 'related', resourceId)]);
+	}
 }
 
 function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSearchFilters {
@@ -221,6 +252,18 @@ function aiSearchFilters(filters: NormalizedSearchFilters): VectorizeVectorMetad
 	return Object.keys(metadata).length ? metadata : undefined;
 }
 
+function resourceIdsFromSearchResponse(response: AiSearchSearchResponse): string[] {
+	const ids: string[] = [];
+	const seen = new Set<string>();
+	for (const chunk of response.chunks) {
+		const id = resourceIdFromAiSearchItemKey(chunk.item.key);
+		if (!id || seen.has(id)) continue;
+		seen.add(id);
+		ids.push(id);
+	}
+	return ids;
+}
+
 /** Return AI Search candidates only; Web authoritatively filters and hydrates them from Postgres. */
 export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourceSearchInput): Promise<string[]> {
 	if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > RESULT_LIMIT_MAX) {
@@ -249,13 +292,31 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 			},
 		},
 	});
-	const ids: string[] = [];
-	const seen = new Set<string>();
-	for (const chunk of response.chunks) {
-		const id = resourceIdFromAiSearchItemKey(chunk.item.key);
-		if (!id || seen.has(id)) continue;
-		seen.add(id);
-		ids.push(id);
+	return resourceIdsFromSearchResponse(response);
+}
+
+/** Search one-vector-per-resource documents so AI Search results map directly to resources. */
+export async function searchRelatedResourceIds(env: CoreEnv, db: NodePgDatabase, input: RelatedResourceSearchInput): Promise<string[]> {
+	if (!UUID_RE.test(input.resourceId)) throw new Error('Invalid related Resource ID');
+	if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > RELATED_RESULT_LIMIT_MAX) {
+		throw new Error(`Related Resource search limit must be 1-${RELATED_RESULT_LIMIT_MAX}`);
 	}
-	return ids;
+	const [document] = await loadCorpusDocuments(db, [input.resourceId]);
+	if (!document) return [];
+	const response = await env.RELATED_SEARCH.search({
+		query: serializeRelatedDocument(document),
+		ai_search_options: {
+			query_rewrite: { enabled: false },
+			reranking: { enabled: false },
+			retrieval: {
+				retrieval_type: 'vector',
+				max_num_results: input.limit + 1,
+				metadata_only: true,
+				return_on_failure: false,
+			},
+		},
+	});
+	return resourceIdsFromSearchResponse(response)
+		.filter((resourceId) => resourceId !== input.resourceId)
+		.slice(0, input.limit);
 }

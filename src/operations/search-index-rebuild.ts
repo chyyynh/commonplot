@@ -12,6 +12,27 @@ const CANONICAL_CUSTOM_METADATA = [
 	{ field_name: 'resource_platform', data_type: 'text' },
 ] as const satisfies NonNullable<AiSearchConfig['custom_metadata']>;
 
+type SearchIndexName = 'corpus' | 'related';
+
+const CANONICAL_SEARCH_CONFIGS = {
+	corpus: {
+		chunk: true,
+		chunk_overlap: 12,
+		chunk_size: 512,
+		embedding_model: '@cf/qwen/qwen3-embedding-0.6b',
+		fusion_method: 'rrf',
+		index_method: { keyword: true, vector: true },
+		indexing_options: { keyword_tokenizer: 'trigram' },
+		max_num_results: 50,
+	},
+	related: {
+		chunk: false,
+		embedding_model: '@cf/qwen/qwen3-embedding-0.6b',
+		index_method: { keyword: false, vector: true },
+		max_num_results: 50,
+	},
+} as const satisfies Record<SearchIndexName, Partial<AiSearchConfig>>;
+
 type SearchIndexRebuildPayload = Record<string, never>;
 type SearchDeltaCursor = { id: string; updatedAt: string };
 type SearchDeltaRow = { id: string; updated_at: string };
@@ -148,8 +169,8 @@ async function loadEligibleCorpusIds(db: NodePgDatabase, resourceIds: readonly s
 	return new Set(result.rows.map((row) => row.id));
 }
 
-async function loadSearchItemPageCount(env: CoreEnv): Promise<number> {
-	const listed = await env.AI_SEARCH.items.list({
+async function loadSearchItemPageCount(instance: AiSearchInstance): Promise<number> {
+	const listed = await instance.items.list({
 		metadata_filter: CORPUS_FOLDER_FILTER,
 		page: 1,
 		per_page: REINDEX_PAGE_SIZE,
@@ -160,8 +181,8 @@ async function loadSearchItemPageCount(env: CoreEnv): Promise<number> {
 	return Math.ceil(total / REINDEX_PAGE_SIZE);
 }
 
-async function pruneSearchItemPage(env: CoreEnv, db: NodePgDatabase, page: number): Promise<number> {
-	const listed = await env.AI_SEARCH.items.list({
+async function pruneSearchItemPage(instance: AiSearchInstance, db: NodePgDatabase, page: number): Promise<number> {
+	const listed = await instance.items.list({
 		metadata_filter: CORPUS_FOLDER_FILTER,
 		page,
 		per_page: REINDEX_PAGE_SIZE,
@@ -175,32 +196,34 @@ async function pruneSearchItemPage(env: CoreEnv, db: NodePgDatabase, page: numbe
 		return resourceId === null || !eligibleIds.has(resourceId);
 	});
 	for (let offset = 0; offset < staleItems.length; offset += REINDEX_AI_SEARCH_CONCURRENCY) {
-		await Promise.all(staleItems.slice(offset, offset + REINDEX_AI_SEARCH_CONCURRENCY).map((item) => env.AI_SEARCH.items.delete(item.id)));
+		await Promise.all(staleItems.slice(offset, offset + REINDEX_AI_SEARCH_CONCURRENCY).map((item) => instance.items.delete(item.id)));
 	}
 	return staleItems.length;
 }
 
-async function pruneSearchItemPages(env: CoreEnv, db: NodePgDatabase, firstPage: number, lastPage: number): Promise<number> {
+async function pruneSearchItemPages(instance: AiSearchInstance, db: NodePgDatabase, firstPage: number, lastPage: number): Promise<number> {
 	let deleted = 0;
-	for (let page = lastPage; page >= firstPage; page--) deleted += await pruneSearchItemPage(env, db, page);
+	for (let page = lastPage; page >= firstPage; page--) deleted += await pruneSearchItemPage(instance, db, page);
 	return deleted;
 }
 
-async function reconcileSearchItems(env: CoreEnv, step: WorkflowStep) {
+async function reconcileSearchItems(env: CoreEnv, instance: AiSearchInstance, index: SearchIndexName, step: WorkflowStep) {
 	let deleted = 0;
 	for (let pass = 0; pass < REINDEX_MAX_PRUNE_PASSES; pass++) {
-		const pageCount = await step.do(`count-search-item-pages-${pass}`, SHORT_STEP_OPTIONS, () => loadSearchItemPageCount(env));
+		const pageCount = await step.do(`count-${index}-search-item-pages-${pass}`, SHORT_STEP_OPTIONS, () =>
+			loadSearchItemPageCount(instance),
+		);
 		let passDeleted = 0;
 		for (let lastPage = pageCount; lastPage >= 1; lastPage -= REINDEX_PRUNE_PAGES_PER_STEP) {
 			const firstPage = Math.max(1, lastPage - REINDEX_PRUNE_PAGES_PER_STEP + 1);
-			passDeleted += await step.do(`prune-search-items-${pass}-${firstPage}-${lastPage}`, BATCH_STEP_OPTIONS, async () =>
-				pruneSearchItemPages(env, await connectCoreDb(env), firstPage, lastPage),
+			passDeleted += await step.do(`prune-${index}-search-items-${pass}-${firstPage}-${lastPage}`, BATCH_STEP_OPTIONS, async () =>
+				pruneSearchItemPages(instance, await connectCoreDb(env), firstPage, lastPage),
 			);
 		}
 		deleted += passDeleted;
 		if (passDeleted === 0) return { deleted, passes: pass + 1 };
 	}
-	throw new Error(`AI Search stale-item reconciliation did not converge after ${REINDEX_MAX_PRUNE_PASSES} passes`);
+	throw new Error(`${index} AI Search stale-item reconciliation did not converge after ${REINDEX_MAX_PRUNE_PASSES} passes`);
 }
 
 function normalizedCustomMetadata(
@@ -211,31 +234,45 @@ function normalizedCustomMetadata(
 		.sort((left, right) => left.field_name.localeCompare(right.field_name));
 }
 
-function canonicalSearchInstanceConfigMatches(info: AiSearchInstanceInfo): boolean {
+function canonicalSearchInstanceConfigMatches(info: AiSearchInstanceInfo, index: SearchIndexName): boolean {
+	const expected = CANONICAL_SEARCH_CONFIGS[index];
+	if (
+		info.chunk !== expected.chunk ||
+		info.embedding_model !== expected.embedding_model ||
+		info.index_method?.vector !== true ||
+		info.max_num_results !== expected.max_num_results ||
+		JSON.stringify(normalizedCustomMetadata(info.custom_metadata)) !== JSON.stringify(normalizedCustomMetadata(CANONICAL_CUSTOM_METADATA))
+	) {
+		return false;
+	}
+	if (index === 'related') return info.index_method.keyword === false;
+	const corpus = CANONICAL_SEARCH_CONFIGS.corpus;
 	return (
-		info.index_method?.vector === true &&
+		info.chunk_size === corpus.chunk_size &&
+		info.chunk_overlap === corpus.chunk_overlap &&
 		info.index_method.keyword === true &&
-		info.fusion_method === 'rrf' &&
-		info.indexing_options?.keyword_tokenizer === 'trigram' &&
-		JSON.stringify(normalizedCustomMetadata(info.custom_metadata)) === JSON.stringify(normalizedCustomMetadata(CANONICAL_CUSTOM_METADATA))
+		info.fusion_method === corpus.fusion_method &&
+		info.indexing_options?.keyword_tokenizer === corpus.indexing_options.keyword_tokenizer
 	);
 }
 
-async function ensureCanonicalSearchInstanceConfig(env: CoreEnv): Promise<'unchanged' | 'updated'> {
-	if (canonicalSearchInstanceConfigMatches(await env.AI_SEARCH.info())) return 'unchanged';
-	await env.AI_SEARCH.update({
-		index_method: { vector: true, keyword: true },
-		fusion_method: 'rrf',
-		indexing_options: { keyword_tokenizer: 'trigram' },
+async function ensureCanonicalSearchInstanceConfig(instance: AiSearchInstance, index: SearchIndexName): Promise<'unchanged' | 'updated'> {
+	if (canonicalSearchInstanceConfigMatches(await instance.info(), index)) return 'unchanged';
+	await instance.update({
+		...CANONICAL_SEARCH_CONFIGS[index],
 		custom_metadata: [...CANONICAL_CUSTOM_METADATA],
 	});
 	return 'updated';
 }
 
-async function observeSearchIndex(env: CoreEnv, db: NodePgDatabase): Promise<SearchIndexStats & { configReady: boolean }> {
-	const info = await env.AI_SEARCH.info();
-	const stats = await env.AI_SEARCH.stats();
-	const listed = await env.AI_SEARCH.items.list({
+async function observeSearchIndex(
+	instance: AiSearchInstance,
+	index: SearchIndexName,
+	db: NodePgDatabase,
+): Promise<SearchIndexStats & { configReady: boolean }> {
+	const info = await instance.info();
+	const stats = await instance.stats();
+	const listed = await instance.items.list({
 		metadata_filter: CORPUS_FOLDER_FILTER,
 		page: 1,
 		per_page: 1,
@@ -245,7 +282,7 @@ async function observeSearchIndex(env: CoreEnv, db: NodePgDatabase): Promise<Sea
 	if (indexedItems === undefined) throw new Error('AI Search readiness listing did not return total_count');
 	return {
 		completed: stats.completed ?? 0,
-		configReady: canonicalSearchInstanceConfigMatches(info),
+		configReady: canonicalSearchInstanceConfigMatches(info, index),
 		error: stats.error ?? 0,
 		expectedItems: await loadCorpusCount(db),
 		indexedItems,
@@ -256,14 +293,14 @@ async function observeSearchIndex(env: CoreEnv, db: NodePgDatabase): Promise<Sea
 	};
 }
 
-async function waitForSearchIndex(env: CoreEnv, step: WorkflowStep) {
+async function waitForSearchIndex(env: CoreEnv, instance: AiSearchInstance, index: SearchIndexName, step: WorkflowStep) {
 	let last: (SearchIndexStats & { configReady: boolean }) | null = null;
 	for (let attempt = 0; attempt < REINDEX_READY_POLL_ATTEMPTS; attempt++) {
-		last = await step.do(`observe-search-index-${attempt}`, SHORT_STEP_OPTIONS, async () =>
-			observeSearchIndex(env, await connectCoreDb(env)),
+		last = await step.do(`observe-${index}-search-index-${attempt}`, SHORT_STEP_OPTIONS, async () =>
+			observeSearchIndex(instance, index, await connectCoreDb(env)),
 		);
 		if (last.error > 0 || last.skipped > 0 || last.outdated > 0) {
-			throw new Error(`AI Search finished with terminal items: ${JSON.stringify(last)}`);
+			throw new Error(`${index} AI Search finished with terminal items: ${JSON.stringify(last)}`);
 		}
 		if (
 			last.configReady &&
@@ -275,16 +312,19 @@ async function waitForSearchIndex(env: CoreEnv, step: WorkflowStep) {
 			return last;
 		}
 		if (attempt < REINDEX_READY_POLL_ATTEMPTS - 1) {
-			await step.sleep(`wait-search-index-${attempt}`, REINDEX_READY_POLL_INTERVAL);
+			await step.sleep(`wait-${index}-search-index-${attempt}`, REINDEX_READY_POLL_INTERVAL);
 		}
 	}
-	throw new Error(`AI Search index did not converge: ${JSON.stringify(last)}`);
+	throw new Error(`${index} AI Search index did not converge: ${JSON.stringify(last)}`);
 }
 
 export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, SearchIndexRebuildPayload> {
 	async run(event: WorkflowEvent<SearchIndexRebuildPayload>, step: WorkflowStep) {
 		const startedAt = event.timestamp.toISOString();
-		const instanceConfig = await step.do('ensure-search-config', SHORT_STEP_OPTIONS, () => ensureCanonicalSearchInstanceConfig(this.env));
+		const instanceConfig = await step.do('ensure-search-configs', SHORT_STEP_OPTIONS, async () => ({
+			corpus: await ensureCanonicalSearchInstanceConfig(this.env.AI_SEARCH, 'corpus'),
+			related: await ensureCanonicalSearchInstanceConfig(this.env.RELATED_SEARCH, 'related'),
+		}));
 		let cursor: string | null = null;
 		let uploaded = 0;
 		let pages = 0;
@@ -312,8 +352,14 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 			deltaPages++;
 		}
 
-		const reconciliation = await reconcileSearchItems(this.env, step);
-		const readiness = await waitForSearchIndex(this.env, step);
+		const reconciliation = {
+			corpus: await reconcileSearchItems(this.env, this.env.AI_SEARCH, 'corpus', step),
+			related: await reconcileSearchItems(this.env, this.env.RELATED_SEARCH, 'related', step),
+		};
+		const readiness = {
+			corpus: await waitForSearchIndex(this.env, this.env.AI_SEARCH, 'corpus', step),
+			related: await waitForSearchIndex(this.env, this.env.RELATED_SEARCH, 'related', step),
+		};
 		return {
 			mode: 'rebuild' as const,
 			startedAt,

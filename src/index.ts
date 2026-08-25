@@ -9,7 +9,13 @@ import { resolveYouTubeMonitoredSource } from './ingest/platforms/youtube';
 import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import { type ResourceDraftTarget, ResourceDraftTargetSchema, ResourceProcessingV2Workflow } from './ingest/workflow';
 import { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
-import { type PublicResourceSearchInput, searchPublicResourceIds, syncCorpusItem } from './search-index';
+import {
+	type PublicResourceSearchInput,
+	type RelatedResourceSearchInput,
+	searchPublicResourceIds,
+	searchRelatedResourceIds,
+	syncCorpusItem,
+} from './search-index';
 import { connectCoreDb } from './shared/db';
 
 export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexRebuildWorkflow };
@@ -174,6 +180,11 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	/** Ranked AI Search candidates; the app Worker authoritatively filters and hydrates them. */
 	searchPublicResourceIds(input: PublicResourceSearchInput) {
 		return searchPublicResourceIds(this.env, input);
+	}
+
+	/** Resource-level semantic neighbors; the app Worker authoritatively filters and hydrates them. */
+	async searchRelatedResourceIds(input: RelatedResourceSearchInput) {
+		return searchRelatedResourceIds(this.env, await connectCoreDb(this.env), input);
 	}
 
 	/** Read a bounded set of workflow statuses for app-side polling. */
