@@ -6,16 +6,14 @@ import liteParsePackage from '@llamaindex/liteparse-wasm/package.json';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
-import { canonicalPaperUrl, paperIdentityFromIdentifiers } from '../../shared/paper-identity';
 import {
 	canonicalizeResourceLang,
-	isPaperIdentifier,
 	RESOURCE_TYPES,
 	type ResourceCreator,
 	ResourceCreatorsSchema,
 	type ResourceKindMetadata,
 } from '../../shared/resource';
-import type { GenericAcquiredMaterial, ResolvedResource } from './materialize';
+import type { GenericAcquiredMaterial } from './materialize';
 
 export const PDF_MIME = 'application/pdf';
 
@@ -458,25 +456,5 @@ export async function stageStoredPdfAcquisition(
 	return {
 		material: await new Response(contentStream).json<GenericAcquiredMaterial>(),
 		resource,
-	};
-}
-
-export function storedPdfProcessingResult(resource: ResolvedResource, input: { resourceId: string }) {
-	if (resource.kind !== 'paper') {
-		return {
-			resource,
-			persistenceTarget: { kind: 'existing' as const, resourceId: input.resourceId },
-			saveTarget: null,
-		};
-	}
-	const identity = paperIdentityFromIdentifiers(resource.resourceIdentifiers.filter(isPaperIdentifier));
-	if (!identity) throw new Error(`Private paper processing ${input.resourceId} has no canonical identity`);
-	const url = canonicalPaperUrl(identity);
-	return {
-		resource: { ...resource, url, normalizedUrl: url },
-		persistenceTarget: {
-			kind: 'draft' as const,
-		},
-		saveTarget: { kind: 'userFilePaper' as const, fileResourceId: input.resourceId },
 	};
 }

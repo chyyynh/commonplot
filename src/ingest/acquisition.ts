@@ -1,5 +1,12 @@
 import type { WorkflowStep } from 'cloudflare:workers';
-import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '../shared/paper-identity';
+import {
+	canonicalPaperUrl,
+	type PaperIdentifier,
+	paperIdentifiersFromIdentity,
+	paperIdentityFromIdentifiers,
+	resolveExactPaperInput,
+} from '../shared/paper-identity';
+import { isPaperIdentifier } from '../shared/resource';
 import { parseHackerNewsResourceUrl, stageHackerNewsAcquisition } from './platforms/hackernews';
 import { parseLessWrongResourceUrl, stageLessWrongAcquisition } from './platforms/lesswrong';
 import {
@@ -11,7 +18,7 @@ import {
 	type ResourceAcquisitionHints,
 } from './platforms/materialize';
 import { stagePaperProcessing } from './platforms/paper';
-import { stageStoredPdfAcquisition, storedPdfProcessingResult } from './platforms/pdf';
+import { stageStoredPdfAcquisition } from './platforms/pdf';
 import { parseTwitterResourceUrl, stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
 import { parseYouTubeResourceUrl, stageYouTubeAcquisition, type YouTubeResourceData } from './platforms/youtube';
@@ -145,34 +152,37 @@ export async function stageUrlAcquisition(
 	}
 }
 
-export async function stageStoredResource(
-	env: CoreEnv,
-	step: WorkflowStep,
-	target: Readonly<{ resourceId: string }>,
-): Promise<{
-	keywordHints: readonly string[];
-	resource: ProcessingResource;
-	persistenceTarget: ReturnType<typeof storedPdfProcessingResult>['persistenceTarget'];
-	processingId: string;
-	saveTarget: ReturnType<typeof storedPdfProcessingResult>['saveTarget'];
-}> {
+export async function stageStoredResource(env: CoreEnv, step: WorkflowStep, target: Readonly<{ resourceId: string }>) {
 	const acquired = await stageStoredPdfAcquisition(env, step, target);
+	const resource = await resolveGenericAcquiredResource(env, step, acquired.material, {
+		hints: {
+			originalLang: acquired.resource.originalLang,
+			publishedDate: acquired.resource.publishedDate,
+			summary: acquired.resource.summary,
+		},
+		paperIdentifiers: [],
+		processingId: acquired.resource.resourceId,
+		sourceUrl: null,
+		allowCitoidLookup: false,
+	});
+	if (resource.kind !== 'paper') {
+		return {
+			keywordHints: [],
+			persistenceTarget: { kind: 'existing' as const, resourceId: target.resourceId },
+			processingId: target.resourceId,
+			resource,
+			saveTarget: null,
+		};
+	}
+
+	const identity = paperIdentityFromIdentifiers(resource.resourceIdentifiers.filter(isPaperIdentifier));
+	if (!identity) throw new Error(`Private paper processing ${target.resourceId} has no canonical identity`);
+	const url = canonicalPaperUrl(identity);
 	return {
-		...storedPdfProcessingResult(
-			await resolveGenericAcquiredResource(env, step, acquired.material, {
-				hints: {
-					originalLang: acquired.resource.originalLang,
-					publishedDate: acquired.resource.publishedDate,
-					summary: acquired.resource.summary,
-				},
-				paperIdentifiers: [],
-				processingId: acquired.resource.resourceId,
-				sourceUrl: null,
-				allowCitoidLookup: false,
-			}),
-			acquired.resource,
-		),
 		keywordHints: [],
+		persistenceTarget: { kind: 'draft' as const },
 		processingId: target.resourceId,
+		resource: { ...resource, url, normalizedUrl: url },
+		saveTarget: { kind: 'userFilePaper' as const, fileResourceId: target.resourceId },
 	};
 }
