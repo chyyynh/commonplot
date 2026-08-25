@@ -106,16 +106,6 @@ async function uploadCorpusIds(env: CoreEnv, db: NodePgDatabase, ids: readonly s
 	return uploaded;
 }
 
-async function syncCorpusPageAfter(
-	env: CoreEnv,
-	db: NodePgDatabase,
-	cursor: string | null,
-): Promise<{ cursor: string | null; done: boolean; uploaded: number }> {
-	const ids = await listCorpusIdsAfter(db, cursor);
-	if (!ids.length) return { cursor, done: true, uploaded: 0 };
-	return { cursor: ids.at(-1)!, done: false, uploaded: await uploadCorpusIds(env, db, ids) };
-}
-
 async function listCorpusDeltaAfter(db: NodePgDatabase, startedAt: string, cursor: SearchDeltaCursor | null): Promise<SearchDeltaRow[]> {
 	const result = await db.execute<SearchDeltaRow>(sql`
 		WITH changed_resources AS (
@@ -140,26 +130,6 @@ async function listCorpusDeltaAfter(db: NodePgDatabase, startedAt: string, curso
 		LIMIT ${REINDEX_PAGE_SIZE}
 	`);
 	return result.rows;
-}
-
-async function syncCorpusDeltaAfter(
-	env: CoreEnv,
-	db: NodePgDatabase,
-	startedAt: string,
-	cursor: SearchDeltaCursor | null,
-): Promise<{ cursor: SearchDeltaCursor | null; done: boolean; uploaded: number }> {
-	const rows = await listCorpusDeltaAfter(db, startedAt, cursor);
-	if (!rows.length) return { cursor, done: true, uploaded: 0 };
-	const last = rows.at(-1)!;
-	return {
-		cursor: { id: last.id, updatedAt: last.updated_at },
-		done: false,
-		uploaded: await uploadCorpusIds(
-			env,
-			db,
-			rows.map((row) => row.id),
-		),
-	};
 }
 
 async function loadEligibleCorpusIds(db: NodePgDatabase, resourceIds: readonly string[]): Promise<Set<string>> {
@@ -207,12 +177,6 @@ async function pruneSearchItemPage(instance: AiSearchInstance, db: NodePgDatabas
 	return staleItems.length;
 }
 
-async function pruneSearchItemPages(instance: AiSearchInstance, db: NodePgDatabase, firstPage: number, lastPage: number): Promise<number> {
-	let deleted = 0;
-	for (let page = lastPage; page >= firstPage; page--) deleted += await pruneSearchItemPage(instance, db, page);
-	return deleted;
-}
-
 async function reconcileSearchItems(env: CoreEnv, instance: AiSearchInstance, index: SearchIndexName, step: WorkflowStep) {
 	let deleted = 0;
 	for (let pass = 0; pass < REINDEX_MAX_PRUNE_PASSES; pass++) {
@@ -222,9 +186,14 @@ async function reconcileSearchItems(env: CoreEnv, instance: AiSearchInstance, in
 		let passDeleted = 0;
 		for (let lastPage = pageCount; lastPage >= 1; lastPage -= REINDEX_PRUNE_PAGES_PER_STEP) {
 			const firstPage = Math.max(1, lastPage - REINDEX_PRUNE_PAGES_PER_STEP + 1);
-			passDeleted += await step.do(`prune-${index}-search-items-${pass}-${firstPage}-${lastPage}`, BATCH_STEP_OPTIONS, async () =>
-				pruneSearchItemPages(instance, await connectCoreDb(env), firstPage, lastPage),
-			);
+			passDeleted += await step.do(`prune-${index}-search-items-${pass}-${firstPage}-${lastPage}`, BATCH_STEP_OPTIONS, async () => {
+				const db = await connectCoreDb(env);
+				let deleted = 0;
+				for (let page = lastPage; page >= firstPage; page--) {
+					deleted += await pruneSearchItemPage(instance, db, page);
+				}
+				return deleted;
+			});
 		}
 		deleted += passDeleted;
 		if (passDeleted === 0) return { deleted, passes: pass + 1 };
@@ -368,9 +337,12 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 		let uploaded = 0;
 		let pages = 0;
 		while (true) {
-			const result = await step.do(`upload-corpus-page-${pages}`, BATCH_STEP_OPTIONS, async () =>
-				syncCorpusPageAfter(this.env, await connectCoreDb(this.env), cursor),
-			);
+			const result = await step.do(`upload-corpus-page-${pages}`, BATCH_STEP_OPTIONS, async () => {
+				const db = await connectCoreDb(this.env);
+				const ids = await listCorpusIdsAfter(db, cursor);
+				if (!ids.length) return { cursor, done: true, uploaded: 0 };
+				return { cursor: ids.at(-1)!, done: false, uploaded: await uploadCorpusIds(this.env, db, ids) };
+			});
 			if (result.done) break;
 			if (!result.cursor) throw new Error(`AI Search rebuild page ${pages} did not return a cursor`);
 			cursor = result.cursor;
@@ -382,9 +354,21 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 		let deltaUploaded = 0;
 		let deltaPages = 0;
 		while (true) {
-			const result = await step.do(`upload-delta-page-${deltaPages}`, BATCH_STEP_OPTIONS, async () =>
-				syncCorpusDeltaAfter(this.env, await connectCoreDb(this.env), startedAt, deltaCursor),
-			);
+			const result = await step.do(`upload-delta-page-${deltaPages}`, BATCH_STEP_OPTIONS, async () => {
+				const db = await connectCoreDb(this.env);
+				const rows = await listCorpusDeltaAfter(db, startedAt, deltaCursor);
+				if (!rows.length) return { cursor: deltaCursor, done: true, uploaded: 0 };
+				const last = rows.at(-1)!;
+				return {
+					cursor: { id: last.id, updatedAt: last.updated_at },
+					done: false,
+					uploaded: await uploadCorpusIds(
+						this.env,
+						db,
+						rows.map((row) => row.id),
+					),
+				};
+			});
 			if (result.done) break;
 			deltaCursor = result.cursor;
 			deltaUploaded += result.uploaded;
