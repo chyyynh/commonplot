@@ -175,12 +175,9 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		return instance.id;
 	}
 
-	/** Ranked AI Search candidate groups; the app Worker authoritatively filters and hydrates them. */
-	searchPublicResourceIdGroups(inputs: PublicResourceSearchInput[]) {
-		if (!Array.isArray(inputs) || !inputs.length || inputs.length > 2) {
-			throw new Error('Public Resource search batch must contain 1-2 groups');
-		}
-		return Promise.all(inputs.map((input) => searchPublicResourceIds(this.env, input)));
+	/** Ranked AI Search candidates; the app Worker authoritatively filters and hydrates them. */
+	searchPublicResourceIds(input: PublicResourceSearchInput) {
+		return searchPublicResourceIds(this.env, input);
 	}
 
 	/** Read a bounded set of workflow statuses for app-side polling. */
