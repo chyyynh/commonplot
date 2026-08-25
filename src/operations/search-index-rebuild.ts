@@ -6,7 +6,7 @@ import { connectCoreDb } from '../shared/db';
 
 // Cloudflare AI Search allows at most five custom metadata fields per instance.
 const CANONICAL_CUSTOM_METADATA = [
-	{ field_name: 'effective_at', data_type: 'datetime' },
+	{ field_name: 'published_at', data_type: 'datetime' },
 	{ field_name: 'source_id', data_type: 'text' },
 	{ field_name: 'kind', data_type: 'text' },
 	{ field_name: 'resource_platform', data_type: 'text' },

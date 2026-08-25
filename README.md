@@ -214,7 +214,7 @@ Secrets (via `wrangler secret put`):
 ### Canonical AI Search v6
 
 `AI_SEARCH` serves `newsence-corpus-v6`. Its four custom metadata fields are
-`effective_at`, `source_id`, `kind`, and `resource_platform`; null
+`published_at`, `source_id`, `kind`, and `resource_platform`; null
 platforms use the reserved `none` sentinel. PostgreSQL remains canonical;
 AI Search stores only keyed search documents and eventually consistent status.
 
@@ -229,11 +229,11 @@ The runner ID carries the serving-index version:
 pnpm exec wrangler workflows trigger \
   newsence-search-index-rebuild \
   '{}' \
-  --id search-index-rebuild-v6-native-v1
+  --id search-index-rebuild-v6-publication-time-v1
 
 pnpm exec wrangler workflows instances describe \
   newsence-search-index-rebuild \
-  search-index-rebuild-v6-native-v1
+  search-index-rebuild-v6-publication-time-v1
 ```
 
 Wrangler's native instance description is the operator view of Workflow status,

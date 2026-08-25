@@ -17,15 +17,15 @@ export type PublicResourceSearchInput = {
 	limit: number;
 	mode?: 'hybrid' | 'vector';
 	filters?: {
-		effectiveAfter?: Date;
+		publishedAfter?: Date;
 		kinds?: Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'>[];
 		resourcePlatforms?: ((typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null)[];
 		sourceIds?: string[];
 	};
 };
 
-type NormalizedSearchFilters = Omit<NonNullable<PublicResourceSearchInput['filters']>, 'effectiveAfter'> & {
-	effectiveAfter: Date | null;
+type NormalizedSearchFilters = Omit<NonNullable<PublicResourceSearchInput['filters']>, 'publishedAfter'> & {
+	publishedAfter: Date | null;
 	excludeAll: boolean;
 };
 
@@ -53,7 +53,7 @@ type CorpusDocument = {
 	kind: Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'>;
 	resource_platform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null;
 	original_lang: string;
-	effective_at: Date | string | null;
+	published_at: Date | string | null;
 	tags: string[] | null;
 	source: string | null;
 	translations: CorpusTranslationRow[];
@@ -103,7 +103,7 @@ async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly str
 		       r.kind,
 		       r.resource_platform,
 		       r.original_lang,
-		       COALESCE(r.published_date, r.scraped_date, r.created_at) AS effective_at,
+		       r.published_date,
 		       r.tags,
 		       COALESCE(
 		         NULLIF(BTRIM(s.name), ''),
@@ -148,13 +148,13 @@ export async function upsertCorpusItems(env: CoreEnv, db: NodePgDatabase, resour
 	const documents = await loadCorpusDocuments(db, resourceIds);
 	await Promise.all(
 		documents.map((document) => {
-			const effectiveAt = document.effective_at === null ? null : new Date(document.effective_at);
-			if (effectiveAt && Number.isNaN(effectiveAt.getTime())) {
-				throw new Error(`AI Search document ${document.id} has invalid effective date`);
+			const publishedAt = document.published_at === null ? null : new Date(document.published_at);
+			if (publishedAt && Number.isNaN(publishedAt.getTime())) {
+				throw new Error(`AI Search document ${document.id} has invalid publication date`);
 			}
 			return env.AI_SEARCH.items.upload(aiSearchItemKey(document.id), serializeDocument(document), {
 				metadata: {
-					...(effectiveAt ? { effective_at: effectiveAt.toISOString() } : {}),
+					...(publishedAt ? { published_at: publishedAt.toISOString() } : {}),
 					...(document.source_id ? { source_id: document.source_id } : {}),
 					kind: document.kind,
 					resource_platform: document.resource_platform ?? NULL_RESOURCE_PLATFORM_METADATA,
@@ -181,9 +181,9 @@ export async function syncCorpusItem(env: CoreEnv, db: NodePgDatabase, resourceI
 
 function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSearchFilters {
 	const filters = input.filters ?? {};
-	const effectiveAfter = filters.effectiveAfter ?? null;
-	if (effectiveAfter && (!(effectiveAfter instanceof Date) || Number.isNaN(effectiveAfter.getTime()))) {
-		throw new Error('Invalid effectiveAfter');
+	const publishedAfter = filters.publishedAfter ?? null;
+	if (publishedAfter && (!(publishedAfter instanceof Date) || Number.isNaN(publishedAfter.getTime()))) {
+		throw new Error('Invalid publishedAfter');
 	}
 	const sourceIds = filters.sourceIds === undefined ? undefined : [...new Set(filters.sourceIds.map((value) => value.trim()))];
 	if (sourceIds?.some((value) => !UUID_RE.test(value))) throw new Error('Invalid sourceIds');
@@ -200,7 +200,7 @@ function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSea
 		throw new Error('Invalid resource platforms');
 	}
 	return {
-		effectiveAfter,
+		publishedAfter,
 		excludeAll: sourceIds?.length === 0 || kinds?.length === 0 || resourcePlatforms?.length === 0,
 		kinds,
 		resourcePlatforms,
@@ -217,7 +217,7 @@ function aiSearchFilters(filters: NormalizedSearchFilters): VectorizeVectorMetad
 			$in: filters.resourcePlatforms.map((platform) => platform ?? NULL_RESOURCE_PLATFORM_METADATA),
 		};
 	}
-	if (filters.effectiveAfter) metadata.effective_at = { $gte: filters.effectiveAfter.toISOString() };
+	if (filters.publishedAfter) metadata.published_at = { $gte: filters.publishedAfter.toISOString() };
 	return Object.keys(metadata).length ? metadata : undefined;
 }
 
@@ -244,7 +244,7 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 				max_num_results: input.limit,
 				metadata_only: true,
 				return_on_failure: false,
-				...(retrievalType === 'hybrid' ? { boost_by: [{ field: 'effective_at', direction: 'desc' as const }] } : {}),
+				...(retrievalType === 'hybrid' ? { boost_by: [{ field: 'published_at', direction: 'desc' as const }] } : {}),
 				...(metadataFilters ? { filters: metadataFilters } : {}),
 			},
 		},
