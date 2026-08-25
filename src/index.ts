@@ -149,16 +149,12 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 			if (!APP_DRAFT_WORKFLOW_ID_RE.test(input.instanceId)) {
 				throw new Error('Invalid app draft Workflow ID');
 			}
-			const parsedUrl = URL.parse(input.url);
-			if (!parsedUrl || (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || parsedUrl.username || parsedUrl.password) {
-				throw new Error('Only http(s) URLs without credentials are allowed');
-			}
 			return {
 				id: input.instanceId,
 				params: ResourceDraftTargetSchema.parse({
 					kind: 'draft',
 					saveTarget: input.saveTarget,
-					url: parsedUrl.toString(),
+					url: input.url,
 				}),
 			};
 		});

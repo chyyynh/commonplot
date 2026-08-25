@@ -34,7 +34,7 @@ export const ResourceDraftTargetSchema = z
 		relation: ResourceDraftRelationSchema.optional(),
 		saveTarget: z.record(z.string(), z.json()).optional(),
 		url: z
-			.url({ protocol: /^https?$/ })
+			.url({ normalize: true, protocol: /^https?$/ })
 			.max(2_048)
 			.refine((value) => {
 				const url = URL.parse(value);
@@ -68,15 +68,11 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, draf
 	const targets = drafts.map((draft) => {
 		const originalLang = canonicalizeOptionalResourceLang(draft.originalLang);
 		if (draft.publishedDate && !Number.isFinite(draft.publishedDate.getTime())) throw new Error('Source published date is invalid');
-		const parsedUrl = URL.parse(draft.url.trim());
-		if (!parsedUrl || (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || parsedUrl.username || parsedUrl.password) {
-			throw new Error('Source resource URL must be external http(s)');
-		}
 		const summary = draft.summary?.trim() || null;
 		return {
 			kind: 'draft',
 			relation: { kind: 'source', sourceId: z.uuid().parse(draft.sourceId.trim()) },
-			url: parsedUrl.toString(),
+			url: ResourceDraftTargetSchema.shape.url.parse(draft.url),
 			sourceHints: {
 				...(summary ? { summary } : {}),
 				...(originalLang ? { originalLang } : {}),
