@@ -179,8 +179,7 @@ function expandKnownTweetUrls(text: string, tweet: Tweet): string {
 function stripTrailingExternalUrl(text: string, externalUrl: string): string {
 	const match = text.match(/(https?:\/\/\S+)\s*$/);
 	if (!match || match.index === undefined) return text;
-	const normalize = (value: string) => value.replace(/\/+$/, '');
-	return normalize(match[1]) === normalize(externalUrl) ? text.slice(0, match.index).trimEnd() : text;
+	return match[1].replace(/\/+$/, '') === externalUrl.replace(/\/+$/, '') ? text.slice(0, match.index).trimEnd() : text;
 }
 
 function stripTweetUrls(text: string): string {
