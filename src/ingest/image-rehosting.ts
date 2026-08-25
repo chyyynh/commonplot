@@ -16,14 +16,10 @@ function failure(code: string, detail?: string): Error {
 	return new Error(detail ? `${code}: ${detail}` : code);
 }
 
-async function cancelBody(body: ReadableStream<Uint8Array> | null): Promise<void> {
-	if (body) await body.cancel().catch(() => undefined);
-}
-
 async function redirectTarget(response: Response, currentUrl: string, redirects: number): Promise<string | null> {
 	if (![301, 302, 303, 307, 308].includes(response.status)) return null;
 	const location = response.headers.get('location');
-	await cancelBody(response.body);
+	await response.body?.cancel().catch(() => undefined);
 	if (redirects >= MAX_SOURCE_REDIRECTS) throw failure('redirect_limit');
 	if (!location) throw failure('unsafe_redirect', 'missing Location header');
 	const nextUrl = normalizedExternalMediaUrl(location, currentUrl);
@@ -33,7 +29,7 @@ async function redirectTarget(response: Response, currentUrl: string, redirects:
 
 async function assertImageResponse(response: Response): Promise<void> {
 	if (!response.ok) {
-		await cancelBody(response.body);
+		await response.body?.cancel().catch(() => undefined);
 		throw failure('upstream_status', `HTTP ${response.status}`);
 	}
 	if (!response.body) throw failure('missing_body');
