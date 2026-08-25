@@ -127,7 +127,7 @@ async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly str
 		       r.kind,
 		       r.resource_platform,
 		       r.original_lang,
-		       r.published_date,
+		       r.published_date AS published_at,
 		       r.tags,
 		       COALESCE(
 		         NULLIF(BTRIM(s.name), ''),
