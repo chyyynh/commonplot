@@ -29,10 +29,6 @@ type NormalizedSearchFilters = Omit<NonNullable<PublicResourceSearchInput['filte
 	excludeAll: boolean;
 };
 
-function isValidUuid(value: string): boolean {
-	return UUID_RE.test(value);
-}
-
 function aiSearchItemKey(resourceId: string): string {
 	return `${AI_SEARCH_ITEM_PREFIX}${resourceId}${AI_SEARCH_ITEM_SUFFIX}`;
 }
@@ -40,13 +36,7 @@ function aiSearchItemKey(resourceId: string): string {
 export function resourceIdFromAiSearchItemKey(key: string): string | null {
 	if (!key.startsWith(AI_SEARCH_ITEM_PREFIX) || !key.endsWith(AI_SEARCH_ITEM_SUFFIX)) return null;
 	const resourceId = key.slice(AI_SEARCH_ITEM_PREFIX.length, -AI_SEARCH_ITEM_SUFFIX.length);
-	return isValidUuid(resourceId) ? resourceId : null;
-}
-
-function aiSearchResourcePlatformMetadata(
-	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null,
-): string {
-	return resourcePlatform ?? NULL_RESOURCE_PLATFORM_METADATA;
+	return UUID_RE.test(resourceId) ? resourceId : null;
 }
 
 type CorpusTranslationRow = {
@@ -167,19 +157,19 @@ function corpusItemMetadata(document: CorpusDocument): Record<string, unknown> {
 		...(effectiveAt ? { effective_at: effectiveAt } : {}),
 		...(document.source_id ? { source_id: document.source_id } : {}),
 		kind: document.kind,
-		resource_platform: aiSearchResourcePlatformMetadata(document.resource_platform),
+		resource_platform: document.resource_platform ?? NULL_RESOURCE_PLATFORM_METADATA,
 	};
-}
-
-async function uploadCorpusDocument(env: CoreEnv, document: CorpusDocument): Promise<void> {
-	await env.AI_SEARCH.items.upload(aiSearchItemKey(document.id), serializeDocument(document), {
-		metadata: corpusItemMetadata(document),
-	});
 }
 
 export async function upsertCorpusItems(env: CoreEnv, db: NodePgDatabase, resourceIds: readonly string[]): Promise<number> {
 	const documents = await loadCorpusDocuments(db, resourceIds);
-	await Promise.all(documents.map((document) => uploadCorpusDocument(env, document)));
+	await Promise.all(
+		documents.map((document) =>
+			env.AI_SEARCH.items.upload(aiSearchItemKey(document.id), serializeDocument(document), {
+				metadata: corpusItemMetadata(document),
+			}),
+		),
+	);
 	return documents.length;
 }
 
@@ -193,7 +183,7 @@ async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<void>
 }
 
 export async function syncCorpusItem(env: CoreEnv, db: NodePgDatabase, resourceId: string): Promise<void> {
-	if (!isValidUuid(resourceId)) return;
+	if (!UUID_RE.test(resourceId)) return;
 	if ((await upsertCorpusItems(env, db, [resourceId])) === 0) await deleteCorpusItem(env, resourceId);
 }
 
@@ -204,7 +194,7 @@ function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSea
 		throw new Error('Invalid effectiveAfter');
 	}
 	const sourceIds = filters.sourceIds === undefined ? undefined : [...new Set(filters.sourceIds.map((value) => value.trim()))];
-	if (sourceIds?.some((value) => !isValidUuid(value))) throw new Error('Invalid sourceIds');
+	if (sourceIds?.some((value) => !UUID_RE.test(value))) throw new Error('Invalid sourceIds');
 	const kinds = filters.kinds === undefined ? undefined : [...new Set(filters.kinds)];
 	if (kinds?.some((value) => !Object.hasOwn(RESOURCE_TYPES, value) || ['image', 'file'].includes(value))) {
 		throw new Error('Invalid resource kinds');
@@ -231,7 +221,9 @@ function aiSearchFilters(filters: NormalizedSearchFilters): VectorizeVectorMetad
 	if (filters.sourceIds?.length) metadata.source_id = { $in: filters.sourceIds };
 	if (filters.kinds?.length) metadata.kind = { $in: filters.kinds };
 	if (filters.resourcePlatforms?.length) {
-		metadata.resource_platform = { $in: filters.resourcePlatforms.map(aiSearchResourcePlatformMetadata) };
+		metadata.resource_platform = {
+			$in: filters.resourcePlatforms.map((platform) => platform ?? NULL_RESOURCE_PLATFORM_METADATA),
+		};
 	}
 	if (filters.effectiveAfter) metadata.effective_at = { $gte: filters.effectiveAfter.toISOString() };
 	return Object.keys(metadata).length ? metadata : undefined;
