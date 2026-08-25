@@ -15,6 +15,7 @@ const RELATED_QUERY_MAX_CHARS = 1_000;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 const RESULT_LIMIT_MAX = 50;
 const RELATED_RESULT_LIMIT_MAX = RESULT_LIMIT_MAX - 1;
+const METADATA_IN_FILTER_LIMIT = 50;
 
 export type PublicResourceSearchInput = {
 	query: string;
@@ -260,7 +261,12 @@ function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSea
 
 function aiSearchFilters(filters: NormalizedSearchFilters): VectorizeVectorMetadataFilter | undefined {
 	const metadata: VectorizeVectorMetadataFilter = {};
-	if (filters.sourceIds?.length) metadata.source_id = { $in: filters.sourceIds };
+	// AI Search currently stalls instead of rejecting oversized `$in` filters.
+	// Web still authoritatively applies the complete source filter while hydrating
+	// candidates, so omit only the oversized retrieval hint.
+	if (filters.sourceIds?.length && filters.sourceIds.length <= METADATA_IN_FILTER_LIMIT) {
+		metadata.source_id = { $in: filters.sourceIds };
+	}
 	if (filters.kinds?.length) metadata.kind = { $in: filters.kinds };
 	if (filters.resourcePlatforms?.length) {
 		metadata.resource_platform = {
