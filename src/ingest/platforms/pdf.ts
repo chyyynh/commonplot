@@ -66,19 +66,9 @@ type PrivatePdfTranslationCandidate = Readonly<{
 export type PdfTranslationChunk = Readonly<{ index: number; total: number }>;
 export type PdfTranslationAdmission = 'not-pdf' | 'private-upload' | 'unsupported';
 
-export function isPrivateUploadedPdfTranslation(candidate: PrivatePdfTranslationCandidate): boolean {
-	return (
-		candidate.scope === 'private' &&
-		candidate.kind === 'blog' &&
-		candidate.resourcePlatform === null &&
-		candidate.fileType === PDF_MIME &&
-		candidate.url === null
-	);
-}
-
 export function pdfTranslationAdmission(candidate: PrivatePdfTranslationCandidate): PdfTranslationAdmission {
 	if (candidate.fileType !== PDF_MIME || candidate.resourcePlatform !== null) return 'not-pdf';
-	return isPrivateUploadedPdfTranslation(candidate) ? 'private-upload' : 'unsupported';
+	return candidate.scope === 'private' && candidate.kind === 'blog' && candidate.url === null ? 'private-upload' : 'unsupported';
 }
 
 export function privateUploadedPdfTranslationSqlAdmission() {

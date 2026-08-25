@@ -15,16 +15,13 @@ function resourcePostMetadata(resource: ResourceImageFields): PostKindMetadata |
 	return resource.kindMetadata && 'attachments' in resource.kindMetadata ? (resource.kindMetadata as PostKindMetadata) : null;
 }
 
-function resourcePreviewImageCandidates(resource: ResourceImageFields): string[] {
-	const metadata = resourcePostMetadata(resource);
-	const attachments = metadata?.attachments.map((item) => item.url) ?? [];
-	return [attachments[0], resource.ogImageUrl, ...attachments.slice(1)].filter((url): url is string => typeof url === 'string');
-}
-
 function resourceImageCandidates(resource: ResourceImageFields): string[] {
 	const metadata = resourcePostMetadata(resource);
+	const attachments = metadata?.attachments.map((item) => item.url) ?? [];
 	return [
-		...resourcePreviewImageCandidates(resource),
+		attachments[0],
+		resource.ogImageUrl,
+		...attachments.slice(1),
 		...(resource.creators?.map((creator) => creator.avatarUrl) ?? []),
 		metadata?.quote?.creator.avatarUrl,
 	].filter((url): url is string => typeof url === 'string');

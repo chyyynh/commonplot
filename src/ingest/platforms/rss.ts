@@ -39,11 +39,6 @@ function optionalString(value: unknown): string | undefined {
 	return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function decodedString(value: unknown): string | undefined {
-	const text = optionalString(value);
-	return text ? decode(text).trim() || undefined : undefined;
-}
-
 function feedItems(parsed: ParsedFeed): RawFeedItem[] {
 	if (parsed.format === 'rss') {
 		const language = optionalString(parsed.feed.language);
@@ -204,9 +199,10 @@ async function loadFeed(feedUrl: string): Promise<{
 
 	const items = feedItems(parsed);
 	const entries = normalizedFeedEntries(items);
+	const title = optionalString(parsed.feed.title);
 	return {
 		effectiveUrl,
-		title: decodedString(parsed.feed.title) ?? null,
+		title: title ? decode(title).trim() || null : null,
 		itemCount: items.length,
 		entries,
 	};
