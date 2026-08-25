@@ -329,6 +329,7 @@ export async function searchRelatedResourceIds(env: CoreEnv, db: NodePgDatabase,
 			reranking: { enabled: false },
 			retrieval: {
 				retrieval_type: 'vector',
+				match_threshold: 0,
 				max_num_results: input.limit + 1,
 				metadata_only: true,
 				return_on_failure: false,
