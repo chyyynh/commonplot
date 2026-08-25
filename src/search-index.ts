@@ -69,13 +69,6 @@ function requiredDocumentText(value: string | null, field: string, resourceId: s
 	return text;
 }
 
-function documentEffectiveAt(row: CorpusDocument): string | undefined {
-	if (row.effective_at === null) return undefined;
-	const date = new Date(row.effective_at);
-	if (Number.isNaN(date.getTime())) throw new Error(`AI Search document ${row.id} has invalid effective date`);
-	return date.toISOString();
-}
-
 function serializeTranslation(translation: CorpusTranslationRow, originalLang: string): string {
 	const contentLimit = translation.lang === originalLang ? ORIGINAL_CONTENT_MAX_CHARS : TRANSLATED_CONTENT_MAX_CHARS;
 	return [
@@ -151,24 +144,23 @@ async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly str
 	return result.rows;
 }
 
-function corpusItemMetadata(document: CorpusDocument): Record<string, unknown> {
-	const effectiveAt = documentEffectiveAt(document);
-	return {
-		...(effectiveAt ? { effective_at: effectiveAt } : {}),
-		...(document.source_id ? { source_id: document.source_id } : {}),
-		kind: document.kind,
-		resource_platform: document.resource_platform ?? NULL_RESOURCE_PLATFORM_METADATA,
-	};
-}
-
 export async function upsertCorpusItems(env: CoreEnv, db: NodePgDatabase, resourceIds: readonly string[]): Promise<number> {
 	const documents = await loadCorpusDocuments(db, resourceIds);
 	await Promise.all(
-		documents.map((document) =>
-			env.AI_SEARCH.items.upload(aiSearchItemKey(document.id), serializeDocument(document), {
-				metadata: corpusItemMetadata(document),
-			}),
-		),
+		documents.map((document) => {
+			const effectiveAt = document.effective_at === null ? null : new Date(document.effective_at);
+			if (effectiveAt && Number.isNaN(effectiveAt.getTime())) {
+				throw new Error(`AI Search document ${document.id} has invalid effective date`);
+			}
+			return env.AI_SEARCH.items.upload(aiSearchItemKey(document.id), serializeDocument(document), {
+				metadata: {
+					...(effectiveAt ? { effective_at: effectiveAt.toISOString() } : {}),
+					...(document.source_id ? { source_id: document.source_id } : {}),
+					kind: document.kind,
+					resource_platform: document.resource_platform ?? NULL_RESOURCE_PLATFORM_METADATA,
+				},
+			});
+		}),
 	);
 	return documents.length;
 }
