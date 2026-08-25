@@ -74,6 +74,7 @@ async function reconcilePendingBlobProcessing(env: CoreEnv, db: NodePgDatabase):
 }
 
 const ResourceSearchSyncMessageSchema = z.object({ resourceId: z.uuid() }).strict();
+const ResourceWorkflowOutputSchema = z.object({ resourceId: z.uuid() });
 
 async function runFiveMinuteCycle(env: CoreEnv): Promise<void> {
 	const db = await connectCoreDb(env);
@@ -189,7 +190,12 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 			ids.map(async (instanceId) => {
 				try {
 					const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.get(instanceId);
-					return await instance.status();
+					const state = await instance.status();
+					const output = ResourceWorkflowOutputSchema.safeParse(state.output);
+					return {
+						status: state.status,
+						...(output.success ? { resourceId: output.data.resourceId } : {}),
+					};
 				} catch (error) {
 					console.error({
 						tag: 'RESOURCE_WORKFLOW',
