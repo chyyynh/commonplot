@@ -203,17 +203,13 @@ function renderTwitterArticleBlock(block: TwitterArticleContent): string {
 	}
 }
 
-function articleBlockIsListItem(block: TwitterArticleContent): boolean {
-	return block.type === 'unordered-list-item' || block.type === 'ordered-list-item';
-}
-
 export function renderTwitterArticleMarkdown(article: TwitterArticle): string {
 	let markdown = '';
 	let previous: TwitterArticleContent | undefined;
 	for (const block of article.contents ?? []) {
 		const rendered = renderTwitterArticleBlock(block);
 		if (!rendered) continue;
-		const sameList = previous?.type === block.type && articleBlockIsListItem(block);
+		const sameList = previous?.type === block.type && (block.type === 'unordered-list-item' || block.type === 'ordered-list-item');
 		markdown += `${markdown ? (sameList ? '\n' : '\n\n') : ''}${rendered}`;
 		previous = block;
 	}

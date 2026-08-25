@@ -302,10 +302,6 @@ async function generateHnDiscussionDigest(
 	return digest;
 }
 
-function withoutPreviousDiscussion(content: string): string {
-	return content.split(`\n\n---\n\n${HN_DISCUSSION_HEADING}`, 1)[0].trim();
-}
-
 async function buildHackerNewsAnnotation(
 	title: string,
 	env: CoreEnv,
@@ -323,7 +319,7 @@ async function buildHackerNewsAnnotation(
 }
 
 function applyHackerNewsAnnotation(content: string, annotation: string): string {
-	const carrierContent = withoutPreviousDiscussion(content);
+	const carrierContent = content.split(`\n\n---\n\n${HN_DISCUSSION_HEADING}`, 1)[0].trim();
 	if (!carrierContent) throw new Error('Hacker News resource has no content to annotate');
 	return [carrierContent, '---', annotation].join('\n\n');
 }
