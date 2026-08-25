@@ -313,7 +313,6 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 				max_num_results: input.limit,
 				metadata_only: true,
 				return_on_failure: true,
-				...(retrievalType === 'hybrid' ? { boost_by: [{ field: 'published_at', direction: 'desc' as const }] } : {}),
 				...(metadataFilters ? { filters: metadataFilters } : {}),
 			},
 		},
