@@ -24,6 +24,7 @@ const CANONICAL_SEARCH_CONFIGS = {
 		index_method: { keyword: true, vector: true },
 		indexing_options: { keyword_tokenizer: 'trigram' },
 		max_num_results: 50,
+		score_threshold: 0,
 	},
 	related: {
 		cache: false,
@@ -265,7 +266,8 @@ function canonicalSearchInstanceConfigMatches(info: AiSearchInstanceInfo, index:
 		info.chunk_overlap === corpus.chunk_overlap &&
 		info.index_method.keyword === true &&
 		info.fusion_method === corpus.fusion_method &&
-		info.indexing_options?.keyword_tokenizer === corpus.indexing_options.keyword_tokenizer
+		info.indexing_options?.keyword_tokenizer === corpus.indexing_options.keyword_tokenizer &&
+		info.score_threshold === corpus.score_threshold
 	);
 }
 
