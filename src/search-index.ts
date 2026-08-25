@@ -11,6 +11,7 @@ const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
 const TRANSLATED_CONTENT_MAX_CHARS = 4_000;
 const RELATED_SUMMARY_MAX_CHARS = 800;
 const RELATED_DOCUMENT_MAX_CHARS = 3_000;
+const RELATED_QUERY_MAX_CHARS = 1_000;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 const RESULT_LIMIT_MAX = 50;
 const RELATED_RESULT_LIMIT_MAX = RESULT_LIMIT_MAX - 1;
@@ -119,6 +120,22 @@ function serializeRelatedDocument(row: CorpusDocument): string {
 		.filter(Boolean)
 		.join('\n\n')
 		.slice(0, RELATED_DOCUMENT_MAX_CHARS);
+}
+
+function serializeRelatedQuery(row: CorpusDocument): string {
+	const original = row.translations.find((translation) => translation.lang === row.original_lang);
+	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
+	return [
+		requiredDocumentText(original.title, 'title', row.id),
+		row.tags?.join(', '),
+		...row.translations.flatMap((translation) => [
+			translation.lang === row.original_lang ? '' : translation.title?.trim(),
+			translation.keywords?.join(', '),
+		]),
+	]
+		.filter(Boolean)
+		.join('\n')
+		.slice(0, RELATED_QUERY_MAX_CHARS);
 }
 
 async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly string[]): Promise<CorpusDocument[]> {
@@ -306,7 +323,7 @@ export async function searchRelatedResourceIds(env: CoreEnv, db: NodePgDatabase,
 	const [document] = await loadCorpusDocuments(db, [input.resourceId]);
 	if (!document) return [];
 	const response = await env.RELATED_SEARCH.search({
-		query: serializeRelatedDocument(document),
+		query: serializeRelatedQuery(document),
 		ai_search_options: {
 			query_rewrite: { enabled: false },
 			reranking: { enabled: false },
