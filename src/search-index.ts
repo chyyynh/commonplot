@@ -1,12 +1,13 @@
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { z } from 'zod';
 import { RESOURCE_TYPES } from './shared/resource';
 
 // Postgres is canonical; AI Search is its derived public-corpus index.
 export const AI_SEARCH_ITEM_PREFIX = 'resources/';
 const AI_SEARCH_ITEM_SUFFIX = '.md';
 const NULL_RESOURCE_PLATFORM_METADATA = 'none';
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const ResourceIdSchema = z.uuid();
 const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
 const TRANSLATED_CONTENT_MAX_CHARS = 4_000;
 const RELATED_SUMMARY_MAX_CHARS = 800;
@@ -47,7 +48,8 @@ function aiSearchItemKey(resourceId: string): string {
 export function resourceIdFromAiSearchItemKey(key: string): string | null {
 	if (!key.startsWith(AI_SEARCH_ITEM_PREFIX) || !key.endsWith(AI_SEARCH_ITEM_SUFFIX)) return null;
 	const resourceId = key.slice(AI_SEARCH_ITEM_PREFIX.length, -AI_SEARCH_ITEM_SUFFIX.length);
-	return UUID_RE.test(resourceId) ? resourceId : null;
+	const parsed = ResourceIdSchema.safeParse(resourceId);
+	return parsed.success ? parsed.data : null;
 }
 
 type CorpusTranslationRow = {
@@ -225,7 +227,7 @@ async function deleteCorpusItem(instance: AiSearchInstance, index: 'corpus' | 'r
 }
 
 export async function syncCorpusItem(env: CoreEnv, db: NodePgDatabase, resourceId: string): Promise<void> {
-	if (!UUID_RE.test(resourceId)) return;
+	if (!ResourceIdSchema.safeParse(resourceId).success) return;
 	if ((await upsertCorpusItems(env, db, [resourceId])) === 0) {
 		await Promise.all([deleteCorpusItem(env.AI_SEARCH, 'corpus', resourceId), deleteCorpusItem(env.RELATED_SEARCH, 'related', resourceId)]);
 	}
@@ -238,7 +240,7 @@ function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSea
 		throw new Error('Invalid publishedAfter');
 	}
 	const sourceIds = filters.sourceIds === undefined ? undefined : [...new Set(filters.sourceIds.map((value) => value.trim()))];
-	if (sourceIds?.some((value) => !UUID_RE.test(value))) throw new Error('Invalid sourceIds');
+	if (sourceIds && !z.array(ResourceIdSchema).safeParse(sourceIds).success) throw new Error('Invalid sourceIds');
 	const kinds = filters.kinds === undefined ? undefined : [...new Set(filters.kinds)];
 	if (kinds?.some((value) => !Object.hasOwn(RESOURCE_TYPES, value) || ['image', 'file'].includes(value))) {
 		throw new Error('Invalid resource kinds');
@@ -326,11 +328,11 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 
 /** Search one-vector-per-resource documents so AI Search results map directly to resources. */
 export async function searchRelatedResourceIds(env: CoreEnv, db: NodePgDatabase, input: RelatedResourceSearchInput): Promise<string[]> {
-	if (!UUID_RE.test(input.resourceId)) throw new Error('Invalid related Resource ID');
+	const resourceId = ResourceIdSchema.parse(input.resourceId);
 	if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > RELATED_RESULT_LIMIT_MAX) {
 		throw new Error(`Related Resource search limit must be 1-${RELATED_RESULT_LIMIT_MAX}`);
 	}
-	const [document] = await loadCorpusDocuments(db, [input.resourceId]);
+	const [document] = await loadCorpusDocuments(db, [resourceId]);
 	if (!document) return [];
 	const response = await env.RELATED_SEARCH.search({
 		query: serializeRelatedQuery(document),
@@ -347,6 +349,6 @@ export async function searchRelatedResourceIds(env: CoreEnv, db: NodePgDatabase,
 		},
 	});
 	return resourceIdsFromSearchResponse(response)
-		.filter((resourceId) => resourceId !== input.resourceId)
+		.filter((candidateId) => candidateId !== resourceId)
 		.slice(0, input.limit);
 }

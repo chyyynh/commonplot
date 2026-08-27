@@ -29,7 +29,7 @@ type AppResourceDraftInput = Readonly<{
 type StoredPdfProcessingInput = Readonly<{ resourceId: string }>;
 
 const APP_RESOURCE_BATCH_LIMIT = 20;
-const APP_DRAFT_WORKFLOW_ID_RE = /^app-draft-v1-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const AppDraftWorkflowIdSchema = z.templateLiteral(['app-draft-v1-', z.uuidv4()]);
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
 const STORED_BLOB_WORKFLOW_REVISION = 'stored-resource-v11';
@@ -152,11 +152,8 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 			throw new Error(`Resource draft batch must contain 1-${APP_RESOURCE_BATCH_LIMIT} items`);
 		}
 		const instances = inputs.map((input) => {
-			if (!APP_DRAFT_WORKFLOW_ID_RE.test(input.instanceId)) {
-				throw new Error('Invalid app draft Workflow ID');
-			}
 			return {
-				id: input.instanceId,
+				id: AppDraftWorkflowIdSchema.parse(input.instanceId),
 				params: ResourceDraftTargetSchema.parse({
 					kind: 'draft',
 					saveTarget: input.saveTarget,
