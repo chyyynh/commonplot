@@ -112,13 +112,13 @@ const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
 	z
 		.object({
 			kind: z.literal('storedBlob'),
-			resourceId: z.string().uuid(),
+			resourceId: z.uuid(),
 		})
 		.strict(),
 	z
 		.object({
 			kind: z.literal('reacquire'),
-			resourceId: z.string().uuid(),
+			resourceId: z.uuid(),
 		})
 		.strict(),
 	ResourceDraftTargetSchema,
