@@ -5,7 +5,7 @@ import { createWorkersAI } from 'workers-ai-provider';
 import type { TranscriptResponse } from 'youtube-transcript';
 import { z } from 'zod';
 import { RESOURCE_TYPES } from '../../shared/resource';
-import { CORE_TEXT_MODEL } from '../ai-model';
+import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
 import {
 	literalCreator,
 	materializePlatformResource,
@@ -438,6 +438,7 @@ async function prepareYouTubeHighlightsFromTranscript(
 	const duration = Math.ceil(last.endTime);
 	const { finishReason, output: highlights } = await generateText({
 		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
+			...CORE_STRUCTURED_MODEL_SETTINGS,
 			gateway: {
 				id: 'core-ingest',
 				collectLog: true,

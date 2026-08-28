@@ -1,7 +1,7 @@
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { CORE_TEXT_MODEL } from './ai-model';
+import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
 	type MarkdownSegmentTranslation,
 	type MarkdownTranslationBatch,
@@ -84,6 +84,7 @@ async function translateGroup(
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	const { finishReason, output } = await generateText({
 		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
+			...CORE_STRUCTURED_MODEL_SETTINGS,
 			gateway: {
 				id: 'core-ingest',
 				collectLog: true,
