@@ -60,6 +60,16 @@ const plan = planMarkdownTranslation(markdownFixture, options);
 assert.ok(plan.segments.length > 10, 'fixture should produce independently addressable prose segments');
 assert.ok(plan.batches.length > 1, 'fixture should exercise deterministic batching');
 assert.deepEqual(planMarkdownTranslation(markdownFixture, options), plan, 'translation planning must be deterministic');
+const blockCounts = new Map();
+for (const segment of plan.segments) {
+	const block = segment.context?.match(/^Block: (b\d+)/)?.[1];
+	if (block) blockCounts.set(block, (blockCounts.get(block) ?? 0) + 1);
+	assert.ok(!segment.context?.includes('Block: Read the'), 'block context must not repeat source prose');
+}
+assert.ok(
+	[...blockCounts.values()].some((count) => count >= 3),
+	'inline Markdown fragments must retain a shared prose block',
+);
 for (const opaqueValue of [
 	'Opaque frontmatter metadata',
 	'C_L',

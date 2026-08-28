@@ -84,6 +84,8 @@ type ResolvedPlanOptions = Readonly<{
 }>;
 
 type PlanAccumulator = {
+	blockIds: WeakMap<object, string>;
+	nextBlockIndex: number;
 	segments: MarkdownTranslationSegment[];
 	targets: MarkdownTranslationTarget[];
 };
@@ -146,9 +148,24 @@ function plainText(node: Nodes): string {
 	return node.children.map((child) => plainText(child)).join('');
 }
 
-function segmentContext(value: string, context: VisitContext, maxCharacters: number): string | null {
-	if (!context.heading || context.heading === value.trim()) return null;
-	return `Heading: ${context.heading}`.slice(0, maxCharacters);
+function nearestProseBlock(ancestors: readonly Nodes[]): Nodes | null {
+	for (let index = ancestors.length - 1; index >= 0; index--) {
+		const node = ancestors[index];
+		if (node && (node.type === 'heading' || node.type === 'paragraph' || node.type === 'tableCell')) return node;
+	}
+	return null;
+}
+
+function segmentContext(value: string, context: VisitContext, maxCharacters: number, accumulator: PlanAccumulator): string | null {
+	const block = nearestProseBlock(context.ancestors);
+	if (!block) return null;
+	let blockId = accumulator.blockIds.get(block);
+	if (!blockId) {
+		blockId = `b${String(++accumulator.nextBlockIndex).padStart(6, '0')}`;
+		accumulator.blockIds.set(block, blockId);
+	}
+	const heading = context.heading && context.heading !== value.trim() ? `\nHeading: ${context.heading}` : '';
+	return `Block: ${blockId}${heading}`.slice(0, maxCharacters);
 }
 
 function normalizedAutolinkDestination(value: string): string {
@@ -233,7 +250,7 @@ function planField(
 		if (isTranslatableProse(prose)) {
 			const id = `s${String(accumulator.segments.length + 1).padStart(6, '0')}`;
 			accumulator.segments.push({
-				context: segmentContext(prose, context, options.maxContextCharacters),
+				context: segmentContext(prose, context, options.maxContextCharacters, accumulator),
 				id,
 				text: prose,
 			});
@@ -427,7 +444,7 @@ export function validateMarkdownBatchTranslations(
 export function planMarkdownTranslation(sourceMarkdown: string, options: MarkdownTranslationPlanOptions = {}): MarkdownTranslationPlan {
 	const resolvedOptions = resolvePlanOptions(options);
 	const tree = parseMarkdown(sourceMarkdown);
-	const accumulator: PlanAccumulator = { segments: [], targets: [] };
+	const accumulator: PlanAccumulator = { blockIds: new WeakMap(), nextBlockIndex: 0, segments: [], targets: [] };
 	visitNode(tree, { ancestors: [], heading: null, path: [] }, resolvedOptions, accumulator);
 	const sourceSkeleton = markdownSkeleton(tree, accumulator.targets);
 	const normalizedTree = parseMarkdown(serializeMarkdown(tree));
