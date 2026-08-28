@@ -12,12 +12,27 @@ const MIN_ARTICLE_CONTENT_CHARS = 180;
 const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
 
 // Static extractor configuration: TechCrunch places author cards and affiliate
-// chrome beside the real post body inside the same Readability candidate.
+// chrome beside the real post body inside the same Readability candidate. Its
+// nested figcaption markup is flattened before Cloudflare Markdown conversion;
+// publisher-provided alt text and captions remain intact, but are not invented.
 addTransformations({
 	patterns: [/^https?:\/\/(?:www\.)?techcrunch\.com\//i],
 	pre(document) {
 		const article = document.querySelector('.entry-content.wp-block-post-content');
 		if (article) document.body.replaceChildren(article.cloneNode(true));
+		return document;
+	},
+	post(document) {
+		for (const caption of document.querySelectorAll('figcaption')) {
+			const text = caption.textContent.replace(/\s+/g, ' ').trim();
+			if (!text) {
+				caption.remove();
+				continue;
+			}
+			const paragraph = document.createElement('p');
+			paragraph.textContent = text;
+			caption.replaceWith(paragraph);
+		}
 		return document;
 	},
 });
