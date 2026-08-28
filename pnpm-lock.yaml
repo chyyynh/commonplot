@@ -11,6 +11,9 @@ importers:
       '@extractus/article-extractor':
         specifier: ^8.1.0
         version: 8.1.0
+      '@extractus/feed-extractor':
+        specifier: 8.0.3
+        version: 8.0.3
       '@llamaindex/liteparse-wasm':
         specifier: 2.13.1
         version: 2.13.1
@@ -20,12 +23,6 @@ importers:
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@types/pg@8.20.0)(pg@8.22.0)
-      feedsmith:
-        specifier: 2.9.6
-        version: 2.9.6
-      html-entities:
-        specifier: ^2.6.0
-        version: 2.6.0
       mdast-util-from-markdown:
         specifier: ^2.0.3
         version: 2.0.3
@@ -366,6 +363,9 @@ packages:
   '@extractus/article-extractor@8.1.0':
     resolution: {integrity: sha512-FLA07C3YFFyisrob3UW3kyd88M2BW3OKLQpWFMDiH0abzAR9L5CL2B+HuB+rzo3s/gu7sdRW++82qZBmdOowMg==}
     engines: {node: '>= 20'}
+
+  '@extractus/feed-extractor@8.0.3':
+    resolution: {integrity: sha512-T6kdUtm3JbHTtFSKM4MXPAOw83imGq2i77fzeUwVraZy8rY/1ka6ngHeSno8Jh8QkEbFVeM3WG3RUXCxscs1fA==}
 
   '@img/colour@1.1.0':
     resolution: {integrity: sha512-Td76q7j57o/tLVdgS746cYARfSyxk8iEfRxewL9h4OMzYhbW4TAcppl0mT4eyqXddh6L/jwoM75mo7ixa/pCeQ==}
@@ -838,9 +838,6 @@ packages:
   fault@2.0.1:
     resolution: {integrity: sha512-WtySTkS4OKev5JtpHXnib4Gxiurzh5NCGvWrFaZ34m6JehfTUhKZvn9njTfw48t6JumVQOmrKqpmGcdwxnhqBQ==}
 
-  feedsmith@2.9.6:
-    resolution: {integrity: sha512-cBeGEyt67L6Txw5/OmFPe7nxI315QogGHK9RruEperHlo4/quL2bDLeu+c1hAryINXUGtus1pAHWKBIEHIFltg==}
-
   format@0.2.2:
     resolution: {integrity: sha512-wzsgA6WOq+09wrU1tsJ09udeR/YZRaeArL9e1wPbFg3GG2yDnC2ldKpxs4xunpFF9DgqCqOIra3bc1HWrJ37Ww==}
     engines: {node: '>=0.4.x'}
@@ -849,9 +846,6 @@ packages:
     resolution: {integrity: sha512-5xoDfX+fL7faATnagmWPpbFtwh/R77WmMMqqHGS65C3vvB0YHrgF+B1YmZ3441tMj5n63k0212XNoJwzlhffQw==}
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
-
-  html-entities@2.6.0:
-    resolution: {integrity: sha512-kig+rMn/QOVRvr7c86gQ8lWXq+Hkv6CbAH1hLu+RG338StTpE8Z0b44SDVaqVu7HGKf27frdmUYEs9hTUX/cLQ==}
 
   html-escaper@3.0.3:
     resolution: {integrity: sha512-RuMffC89BOWQoY0WKGpIhn5gX3iI54O6nRA0yC124NYVtzjmFWBIiFd8M0x+ZdX0P9R4lADg1mgP8C7PxGOWuQ==}
@@ -1425,6 +1419,10 @@ snapshots:
     transitivePeerDependencies:
       - canvas
 
+  '@extractus/feed-extractor@8.0.3':
+    dependencies:
+      fast-xml-parser: 5.10.1
+
   '@img/colour@1.1.0': {}
 
   '@img/sharp-darwin-arm64@0.35.2':
@@ -1753,17 +1751,10 @@ snapshots:
     dependencies:
       format: 0.2.2
 
-  feedsmith@2.9.6:
-    dependencies:
-      entities: 7.0.1
-      fast-xml-parser: 5.10.1
-
   format@0.2.2: {}
 
   fsevents@2.3.3:
     optional: true
-
-  html-entities@2.6.0: {}
 
   html-escaper@3.0.3: {}
 

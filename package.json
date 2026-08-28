@@ -23,11 +23,10 @@
 	},
 	"dependencies": {
 		"@extractus/article-extractor": "^8.1.0",
+		"@extractus/feed-extractor": "8.0.3",
 		"@llamaindex/liteparse-wasm": "2.13.1",
 		"ai": "7.0.58",
 		"drizzle-orm": "^0.45.2",
-		"feedsmith": "2.9.6",
-		"html-entities": "^2.6.0",
 		"mdast-util-from-markdown": "^2.0.3",
 		"mdast-util-frontmatter": "^2.0.1",
 		"mdast-util-gfm": "^3.1.0",
