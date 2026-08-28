@@ -86,7 +86,7 @@ async function translateGroup(
 	batchTotal: number,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	const { finishReason, output } = await generateText({
-		model: createWorkersAI({ binding: env.AI })('@cf/qwen/qwen3-30b-a3b-fp8', {
+		model: createWorkersAI({ binding: env.AI })('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
 			gateway: {
 				id: 'core-ingest',
 				collectLog: true,
@@ -109,7 +109,7 @@ async function translateGroup(
 			targetLocale: 'zh-Hant',
 			editorialVariant: 'zh-TW',
 			segments: group.segments.map(({ context, id, text }) => ({ context, id, text })),
-		})}\n/no_think`,
+		})}`,
 		system: ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT,
 		output: Output.object({ schema: ZhHantMarkdownSegmentTranslationsSchema }),
 		maxOutputTokens: 8000,
