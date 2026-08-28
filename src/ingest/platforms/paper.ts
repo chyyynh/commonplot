@@ -122,19 +122,19 @@ async function resolveCitoidPaperIdentifiers(value: string): Promise<PaperIdenti
 
 function localPaperIdentifiers(input: {
 	canonicalUrl: string | null;
+	documentTitle: string | null;
 	identifierText: string | null;
 	seedIdentifiers: readonly PaperIdentifier[];
 	sourceUrl: string | null;
 }): PaperIdentifier[] {
-	const exact =
-		resolveExactPaperInput(input.sourceUrl)?.identity ??
-		(input.canonicalUrl === input.sourceUrl ? null : resolveExactPaperInput(input.canonicalUrl)?.identity);
+	const exact = [input.sourceUrl, input.canonicalUrl === input.sourceUrl ? null : input.canonicalUrl, input.documentTitle].flatMap(
+		(value) => {
+			const resolved = resolveExactPaperInput(value);
+			return resolved ? paperIdentifiersFromIdentity(resolved.identity) : [];
+		},
+	);
 	const fromText = input.identifierText?.trim() ? paperIdentityFromText(input.identifierText) : null;
-	return choosePreferredIdentifiers([
-		...(exact ? paperIdentifiersFromIdentity(exact) : []),
-		...(fromText ? paperIdentifiersFromIdentity(fromText) : []),
-		...input.seedIdentifiers,
-	]);
+	return choosePreferredIdentifiers([...exact, ...(fromText ? paperIdentifiersFromIdentity(fromText) : []), ...input.seedIdentifiers]);
 }
 
 async function stagePaperEnrichment(
@@ -282,6 +282,7 @@ export async function stagePaperProcessing(
 ) {
 	const identifiers = localPaperIdentifiers({
 		canonicalUrl: input.canonicalUrl,
+		documentTitle: input.acquiredContent.fileType === PDF_MIME ? input.acquiredContent.title : null,
 		identifierText: input.acquiredContent.fileType === PDF_MIME ? (input.acquiredContent.paperIdentifierText ?? null) : null,
 		seedIdentifiers: input.seedIdentifiers,
 		sourceUrl: input.sourceUrl,
