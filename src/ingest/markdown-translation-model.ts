@@ -9,18 +9,13 @@ import {
 	validateMarkdownBatchTranslations,
 } from './markdown-translation';
 
-const ZhHantMarkdownSegmentTranslationsSchema = z
-	.object({
-		segments: z.array(
-			z
-				.object({
-					id: z.string().min(1),
-					text: z.string().min(1),
-				})
-				.strict(),
-		),
-	})
-	.strict();
+function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslationSegment[]) {
+	return z
+		.object({
+			translations: z.object(Object.fromEntries(segments.map(({ id }) => [id, z.string().min(1)]))).strict(),
+		})
+		.strict();
+}
 
 const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯編輯。目標語言是自然、準確、符合台灣讀者習慣的繁體中文。
 
@@ -37,9 +32,9 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - 若 text 已是繁體中文，保留自然表達；若是簡體中文，轉為自然的台灣繁體中文
 
 輸出契約：
-- 只輸出符合 schema 的結果；segments 的數量、順序與 id 必須和輸入完全相同
-- 不得遺漏、新增、合併、拆分或重新排序 segment
-- 每個 text 只輸出含原有 XML placeholders 的譯文純文字；不要輸出 Markdown、額外 HTML、code block、說明、前後空白或額外段落。`;
+- 只輸出符合 schema 的結果；translations 的每個 key 對應輸入的 segment id
+- 不得遺漏、新增、合併或拆分 segment
+- 每個 value 只輸出含原有 XML placeholders 的譯文純文字；不要輸出 Markdown、額外 HTML、code block、說明、前後空白或額外段落。`;
 
 type TranslationRecoveryStrategy = 'batch' | 'halves' | 'individual';
 
@@ -111,13 +106,16 @@ async function translateGroup(
 			segments: group.segments.map(({ context, id, text }) => ({ context, id, text })),
 		})}`,
 		system: ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT,
-		output: Output.object({ schema: ZhHantMarkdownSegmentTranslationsSchema }),
+		output: Output.object({ schema: zhHantMarkdownTranslationsSchema(group.segments) }),
 		maxOutputTokens: 8000,
 		temperature: 0.2,
 		maxRetries: 0,
 	});
 	if (finishReason === 'length') throw new Error('Markdown segment translation hit its output token cap');
-	return validateMarkdownBatchTranslations({ segments: group.segments }, output.segments);
+	return validateMarkdownBatchTranslations(
+		{ segments: group.segments },
+		group.segments.map(({ id }) => ({ id, text: output.translations[id] ?? '' })),
+	);
 }
 
 export async function translateMarkdownBatchToZhHant(
