@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { extractFromHtml } from '@extractus/article-extractor';
+import { addTransformations, extractFromHtml } from '@extractus/article-extractor';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
 import { type GenericAcquiredMaterial, literalCreator, type PlatformResourceUrl } from './materialize';
 import { acquireFetchedPdfResponse, PDF_MIME } from './pdf';
@@ -10,6 +10,17 @@ const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
 const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
+
+// Static extractor configuration: TechCrunch places author cards and affiliate
+// chrome beside the real post body inside the same Readability candidate.
+addTransformations({
+	patterns: [/^https?:\/\/(?:www\.)?techcrunch\.com\//i],
+	pre(document) {
+		const article = document.querySelector('.entry-content.wp-block-post-content');
+		if (article) document.body.replaceChildren(article.cloneNode(true));
+		return document;
+	},
+});
 
 type ExtractedHtmlArticle = {
 	html: string;
