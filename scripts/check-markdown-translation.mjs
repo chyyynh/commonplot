@@ -148,7 +148,7 @@ const linkBatch = plan.batches.find((batch) => batch.segments.some((segment) => 
 assert.ok(linkBatch, 'fixture must contain a translated link block');
 const linkSegment = linkBatch.segments.find((segment) => segment.text.includes('research report'));
 assert.ok(linkSegment, 'fixture must expose the translated link label inside opaque tokens');
-const protectedToken = linkSegment.text.match(/NEWSENCE(?:OPEN|ATOM)\d{6}TOKEN/u)?.[0];
+const protectedToken = linkSegment.text.match(/<(?:pc|ph) id="[0-9]{6}"\/?>(?!<)/u)?.[0];
 assert.ok(protectedToken, 'translated link block must contain an opaque inline token');
 const linkTranslations = linkBatch.segments.map((segment) => ({
 	id: segment.id,
@@ -163,7 +163,7 @@ assert.throws(
 const reorderedPlan = planMarkdownTranslation('The market [expects](https://example.com/forecast) electric vehicles.');
 const reorderedSegment = reorderedPlan.segments[0];
 assert.ok(reorderedSegment, 'reordered-inline fixture must produce a segment');
-const [openToken, closeToken] = reorderedSegment.text.match(/NEWSENCE(?:OPEN|CLOSE)\d{6}TOKEN/gu) ?? [];
+const [openToken, closeToken] = reorderedSegment.text.match(/<pc id="[0-9]{6}">|<\/pc>/gu) ?? [];
 assert.ok(openToken && closeToken, 'reordered-inline fixture must protect its link');
 const reorderedMarkdown = compileMarkdownTranslation(reorderedPlan, [
 	{ id: reorderedSegment.id, text: `${openToken}預期${closeToken}市場將以電動車為主。` },

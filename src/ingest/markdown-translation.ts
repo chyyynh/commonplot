@@ -16,7 +16,7 @@ const MINIMUM_SPLIT_BOUNDARY_RATIO = 0.65;
 const TRANSLATABLE_CHARACTER = /[\p{L}\p{N}]/u;
 const URL_OR_EMAIL = /^(?:https?:\/\/|mailto:|www\.)\S+$|^[^\s@]+@[^\s@]+\.[^\s@]+$/iu;
 const TRANSLATED_PROSE_SENTINEL = '<translated-prose>';
-const INLINE_TOKEN_PATTERN = /NEWSENCE(?:OPEN|CLOSE|ATOM)\d{6}TOKEN/gu;
+const INLINE_TOKEN_PATTERN = /<ph id="[0-9]{6}"\/>|<pc id="[0-9]{6}">|<\/pc>/gu;
 const FRONTMATTER_PRESETS: Array<'toml' | 'yaml'> = ['yaml', 'toml'];
 
 interface TomlFrontmatter extends Literal {
@@ -313,7 +313,8 @@ function inlineTokens(value: string): string[] {
 }
 
 function nextInlineToken(kind: 'ATOM' | 'CLOSE' | 'OPEN', index: number): string {
-	return `NEWSENCE${kind}${String(index).padStart(6, '0')}TOKEN`;
+	if (kind === 'CLOSE') return '</pc>';
+	return kind === 'ATOM' ? `<ph id="${String(index).padStart(6, '0')}"/>` : `<pc id="${String(index).padStart(6, '0')}">`;
 }
 
 function isAutolink(node: PhrasingContent): boolean {
@@ -370,22 +371,17 @@ type ProtectedContainer = Extract<ProtectedInline, { kind: 'container' }>;
 type DecodeFrame = { children: PhrasingContent[]; inline: ProtectedContainer | null };
 type InlineRegistry = Readonly<{
 	atoms: ReadonlyMap<string, ProtectedAtom>;
-	closings: ReadonlyMap<string, ProtectedContainer>;
 	openings: ReadonlyMap<string, ProtectedContainer>;
 }>;
 
 function inlineRegistry(protectedInlines: readonly ProtectedInline[]): InlineRegistry {
 	const atoms = new Map<string, Extract<ProtectedInline, { kind: 'atom' }>>();
 	const openings = new Map<string, Extract<ProtectedInline, { kind: 'container' }>>();
-	const closings = new Map<string, Extract<ProtectedInline, { kind: 'container' }>>();
 	for (const inline of protectedInlines) {
 		if (inline.kind === 'atom') atoms.set(inline.token, inline);
-		else {
-			openings.set(inline.open, inline);
-			closings.set(inline.close, inline);
-		}
+		else openings.set(inline.open, inline);
 	}
-	return { atoms, closings, openings };
+	return { atoms, openings };
 }
 
 function restoreContainer(inline: ProtectedContainer, children: PhrasingContent[]): PhrasingContent {
@@ -412,12 +408,11 @@ function appendDecodedToken(token: string, frames: DecodeFrame[], registry: Inli
 		frames.push({ children: [], inline: opening });
 		return;
 	}
-	const closing = registry.closings.get(token);
 	const completed = frames.pop();
-	if (!closing || !completed?.inline || completed.inline !== closing || !frames.length) {
+	if (token !== '</pc>' || !completed?.inline || !frames.length) {
 		throw new MarkdownTranslationInvariantError('markdown-structure-changed', 'Translated prose has invalid inline tokens');
 	}
-	frames.at(-1)!.children.push(restoreContainer(closing, completed.children));
+	frames.at(-1)!.children.push(restoreContainer(completed.inline, completed.children));
 }
 
 function decodePhrasing(text: string, protectedInlines: readonly ProtectedInline[]): PhrasingContent[] {

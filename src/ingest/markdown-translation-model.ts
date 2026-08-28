@@ -27,7 +27,7 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 輸入契約：
 - 每個 segment 的 text 是一個完整段落、標題、表格儲存格，或超長純文字段落的一個完整句界切片
 - 只翻譯 text 中的自然語言；context 只供消歧義，不屬於輸出
-- NEWSENCEOPEN...TOKEN、NEWSENCECLOSE...TOKEN、NEWSENCEATOM...TOKEN 代表原文的格式、連結、圖片、程式碼、公式或 HTML，必須逐字保留
+- <pc id="...">...</pc> 與 <ph id="..."/> 是 XML placeholders，代表原文的格式、連結、圖片、程式碼、公式或 HTML；標籤、id、數量、順序與巢狀結構必須逐字保留
 
 翻譯準則：
 - 每個 segment 只翻譯一次並完整輸出，不要把相鄰 segment 或 context 的內容重複寫入
@@ -39,7 +39,7 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 輸出契約：
 - 只輸出符合 schema 的結果；segments 的數量、順序與 id 必須和輸入完全相同
 - 不得遺漏、新增、合併、拆分或重新排序 segment
-- 每個 text 只輸出含原有 tokens 的譯文純文字；不要輸出 Markdown、HTML、code block、說明、前後空白或額外段落。`;
+- 每個 text 只輸出含原有 XML placeholders 的譯文純文字；不要輸出 Markdown、額外 HTML、code block、說明、前後空白或額外段落。`;
 
 type TranslationRecoveryStrategy = 'batch' | 'halves' | 'individual';
 
