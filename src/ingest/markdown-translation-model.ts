@@ -80,7 +80,7 @@ async function translateGroup(
 	batchTotal: number,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	const { finishReason, output } = await generateText({
-		model: createWorkersAI({ binding: env.AI })('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+		model: createWorkersAI({ binding: env.AI })('@cf/qwen/qwen3.8-27b', {
 			gateway: {
 				id: 'core-ingest',
 				collectLog: true,
@@ -105,9 +105,14 @@ async function translateGroup(
 			segments: group.segments.map(({ context, id, text }) => ({ context, id, text })),
 		})}`,
 		system: ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT,
-		output: Output.object({ schema: zhHantMarkdownTranslationsSchema(group.segments) }),
+		output: Output.object({
+			name: 'translation_batch',
+			description: 'Taiwan Traditional Chinese translations keyed by the exact input segment IDs.',
+			schema: zhHantMarkdownTranslationsSchema(group.segments),
+		}),
 		maxOutputTokens: 8000,
 		temperature: 0.2,
+		reasoning: 'none',
 		maxRetries: 0,
 	});
 	if (finishReason === 'length') throw new Error('Markdown segment translation hit its output token cap');

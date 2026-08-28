@@ -367,13 +367,6 @@ function splitWhitespace(value: string): Readonly<{ leading: string; prose: stri
 	};
 }
 
-function targetContext(block: ProseBlock, heading: string | null, targetCount: number, maxCharacters: number): string | null {
-	const parts: string[] = [];
-	if (heading && block.type !== 'heading') parts.push(`Heading: ${heading}`);
-	if (targetCount > 1) parts.push(`${block.type === 'heading' ? 'Heading' : 'Paragraph'}: ${translatablePlainText(block).trim()}`);
-	return parts.length ? parts.join('\n').slice(0, maxCharacters) : null;
-}
-
 function planTarget(
 	target: ProseTargetCandidate,
 	context: string | null,
@@ -399,7 +392,8 @@ function planProseBlock(block: ProseBlock, context: VisitContext, options: Resol
 	const targets: ProseTargetCandidate[] = [];
 	collectProseTargets(block.children, context.path, [block], targets);
 	if (!targets.length) return;
-	const translationContext = targetContext(block, context.heading, targets.length, options.maxContextCharacters);
+	const translationContext =
+		context.heading && block.type !== 'heading' ? `Heading: ${context.heading}`.slice(0, options.maxContextCharacters) : null;
 	for (const target of targets) planTarget(target, translationContext, options, accumulator);
 }
 
