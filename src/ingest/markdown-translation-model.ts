@@ -20,9 +20,8 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯編輯。目標語言是自然、準確、符合台灣讀者習慣的繁體中文。
 
 輸入契約：
-- 每個 segment 的 text 是一個完整段落、標題、表格儲存格，或超長純文字段落的一個完整句界切片
+- 每個 segment 的 text 是 Markdown AST 中可翻譯的純文字槽；同一段落的格式、連結與相鄰文字可能位於其他槽
 - 只翻譯 text 中的自然語言；context 只供消歧義，不屬於輸出
-- <pc id="...">...</pc> 與 <ph id="..."/> 是 XML placeholders，代表原文的格式、連結、圖片、程式碼、公式或 HTML；標籤、id、數量、順序與巢狀結構必須逐字保留
 
 翻譯準則：
 - 每個 segment 只翻譯一次並完整輸出，不要把相鄰 segment 或 context 的內容重複寫入
@@ -34,7 +33,7 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 輸出契約：
 - 只輸出符合 schema 的結果；translations 的每個 key 對應輸入的 segment id
 - 不得遺漏、新增、合併或拆分 segment
-- 每個 value 只輸出含原有 XML placeholders 的譯文純文字；不要輸出 Markdown、額外 HTML、code block、說明、前後空白或額外段落。`;
+- 每個 value 只輸出該文字槽的譯文純文字；不要重複 context 或相鄰槽，不要輸出 Markdown、HTML、code block、說明、前後空白或額外段落。`;
 
 type TranslationRecoveryStrategy = 'batch' | 'halves' | 'individual';
 

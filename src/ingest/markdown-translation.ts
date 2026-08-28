@@ -16,7 +16,6 @@ const MINIMUM_SPLIT_BOUNDARY_RATIO = 0.65;
 const TRANSLATABLE_CHARACTER = /[\p{L}\p{N}]/u;
 const URL_OR_EMAIL = /^(?:https?:\/\/|mailto:|www\.)\S+$|^[^\s@]+@[^\s@]+\.[^\s@]+$/iu;
 const TRANSLATED_PROSE_SENTINEL = '<translated-prose>';
-const INLINE_TOKEN_PATTERN = /<ph id="[0-9]{6}"\/>|<pc id="[0-9]{6}">|<\/pc>/gu;
 const FRONTMATTER_PRESETS: Array<'toml' | 'yaml'> = ['yaml', 'toml'];
 
 interface TomlFrontmatter extends Literal {
@@ -37,25 +36,15 @@ declare module 'mdast' {
 type ProseBlock = Heading | Paragraph | TableCell;
 
 type MarkdownTranslationTarget = Readonly<{
-	boundaries: readonly string[] | null;
+	boundaries: readonly string[];
+	field: 'alt' | 'value';
 	path: readonly number[];
 	segmentIds: readonly string[];
 }>;
 
-type ProtectedInline =
-	| Readonly<{ kind: 'atom'; node: PhrasingContent; token: string }>
-	| Readonly<{
-			close: string;
-			kind: 'container';
-			mode: 'alt' | 'children';
-			node: PhrasingContent;
-			open: string;
-	  }>;
-
 export type MarkdownTranslationSegment = Readonly<{
 	context: string | null;
 	id: string;
-	protectedInlines: readonly ProtectedInline[];
 	text: string;
 }>;
 
@@ -94,7 +83,6 @@ type ResolvedPlanOptions = Readonly<{
 }>;
 
 type PlanAccumulator = {
-	nextInlineIndex: number;
 	segments: MarkdownTranslationSegment[];
 	targets: MarkdownTranslationTarget[];
 };
@@ -187,12 +175,12 @@ function isProseBlock(node: Nodes): node is ProseBlock {
 	return node.type === 'heading' || node.type === 'paragraph' || node.type === 'tableCell';
 }
 
-function plainText(node: Nodes): string {
-	if (node.type === 'text' || node.type === 'inlineCode' || node.type === 'code') return node.value;
+function translatablePlainText(node: Nodes, ancestors: readonly Nodes[] = []): string {
+	if (node.type === 'text') return isProtectedLinkText(node.value, ancestors) ? '' : node.value;
 	if (node.type === 'image' || node.type === 'imageReference') return node.alt ?? '';
 	if (node.type === 'break') return '\n';
 	if (!isParent(node)) return '';
-	return node.children.map((child) => plainText(child)).join('');
+	return node.children.map((child) => translatablePlainText(child, [...ancestors, node])).join('');
 }
 
 function normalizedAutolinkDestination(value: string): string {
@@ -208,13 +196,6 @@ function isProtectedLinkText(value: string, ancestors: readonly Nodes[]): boolea
 function isTranslatableProse(value: string): boolean {
 	const trimmed = value.trim();
 	return Boolean(trimmed && TRANSLATABLE_CHARACTER.test(trimmed) && !URL_OR_EMAIL.test(trimmed));
-}
-
-function containsTranslatableProse(node: Nodes, ancestors: readonly Nodes[] = []): boolean {
-	if (node.type === 'text') return !isProtectedLinkText(node.value, ancestors) && isTranslatableProse(node.value);
-	if (node.type === 'image' || node.type === 'imageReference') return Boolean(node.alt && isTranslatableProse(node.alt));
-	if (!isParent(node)) return false;
-	return node.children.some((child) => containsTranslatableProse(child, [...ancestors, node]));
 }
 
 function safeSplitIndex(value: string, proposed: number): number {
@@ -276,22 +257,17 @@ function translatedPathKey(path: readonly number[]): string {
 	return path.join('.');
 }
 
-function structuralNode(
-	node: Nodes,
-	path: readonly number[],
-	translatedBlocks: ReadonlySet<string>,
-	ancestors: readonly Nodes[] = [],
-	insideTranslatedBlock = false,
-): unknown | null {
-	const translated = insideTranslatedBlock || translatedBlocks.has(translatedPathKey(path));
-	if (translated && node.type === 'text' && !isProtectedLinkText(node.value, ancestors)) return null;
+function structuralNode(node: Nodes, path: readonly number[], translatedNodes: ReadonlySet<string>): unknown {
+	const translated = translatedNodes.has(translatedPathKey(path));
 	const structure: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(node)) {
 		if (key === 'data' || key === 'position') continue;
 		if (key === 'children' && isParent(node)) {
-			structure.children = node.children
-				.map((child, index) => structuralNode(child, [...path, index], translatedBlocks, [...ancestors, node], translated))
-				.filter((child) => child !== null);
+			structure.children = node.children.map((child, index) => structuralNode(child, [...path, index], translatedNodes));
+			continue;
+		}
+		if (translated && key === 'value' && node.type === 'text') {
+			structure.value = TRANSLATED_PROSE_SENTINEL;
 			continue;
 		}
 		if (translated && key === 'alt' && (node.type === 'image' || node.type === 'imageReference')) {
@@ -303,134 +279,37 @@ function structuralNode(
 	return structure;
 }
 
-function markdownSkeleton(tree: Root, translatedBlockPaths: readonly (readonly number[])[]): string {
-	const translatedBlocks = new Set(translatedBlockPaths.map(translatedPathKey));
-	return JSON.stringify(structuralNode(tree, [], translatedBlocks));
+function markdownSkeleton(tree: Root, translatedNodePaths: readonly (readonly number[])[]): string {
+	const translatedNodes = new Set(translatedNodePaths.map(translatedPathKey));
+	return JSON.stringify(structuralNode(tree, [], translatedNodes));
 }
 
-function inlineTokens(value: string): string[] {
-	return value.match(INLINE_TOKEN_PATTERN) ?? [];
-}
-
-function nextInlineToken(kind: 'ATOM' | 'CLOSE' | 'OPEN', index: number): string {
-	if (kind === 'CLOSE') return '</pc>';
-	return kind === 'ATOM' ? `<ph id="${String(index).padStart(6, '0')}"/>` : `<pc id="${String(index).padStart(6, '0')}">`;
-}
-
-function isAutolink(node: PhrasingContent): boolean {
-	return (
-		node.type === 'link' &&
-		node.children.length === 1 &&
-		node.children[0]?.type === 'text' &&
-		normalizedAutolinkDestination(node.children[0].value) === normalizedAutolinkDestination(node.url)
-	);
-}
-
-function encodePhrasing(
-	children: readonly PhrasingContent[],
-	firstInlineIndex: number,
-): Readonly<{
-	protectedInlines: readonly ProtectedInline[];
+type ProseTargetCandidate = Readonly<{
+	field: 'alt' | 'value';
+	path: readonly number[];
 	text: string;
-}> {
-	const protectedInlines: ProtectedInline[] = [];
-	const encodeText = (value: string): string => {
-		if (inlineTokens(value).length) {
-			throw new MarkdownTranslationInvariantError('invalid-plan', 'Source prose contains a reserved translation token');
-		}
-		return value;
-	};
-	const encodeNode = (node: PhrasingContent): string => {
-		if (node.type === 'text') return encodeText(node.value);
-		const index = firstInlineIndex + protectedInlines.length;
-		if (isAutolink(node) || (!isParent(node) && node.type !== 'image' && node.type !== 'imageReference')) {
-			const token = nextInlineToken('ATOM', index);
-			protectedInlines.push({ kind: 'atom', node: structuredClone(node), token });
-			return token;
-		}
-		const open = nextInlineToken('OPEN', index);
-		const close = nextInlineToken('CLOSE', index);
-		const image = node.type === 'image' || node.type === 'imageReference';
-		const mode = image ? 'alt' : 'children';
-		protectedInlines.push({ close, kind: 'container', mode, node: structuredClone(node), open });
-		const content = image ? encodeText(node.alt ?? '') : isParent(node) ? node.children.map(encodeNode).join('') : '';
-		return `${open}${content}${close}`;
-	};
-	return { protectedInlines, text: children.map(encodeNode).join('') };
-}
-
-function appendText(children: PhrasingContent[], value: string): void {
-	if (!value) return;
-	const previous = children.at(-1);
-	if (previous?.type === 'text') previous.value += value;
-	else children.push({ type: 'text', value });
-}
-
-type ProtectedAtom = Extract<ProtectedInline, { kind: 'atom' }>;
-type ProtectedContainer = Extract<ProtectedInline, { kind: 'container' }>;
-type DecodeFrame = { children: PhrasingContent[]; inline: ProtectedContainer | null };
-type InlineRegistry = Readonly<{
-	atoms: ReadonlyMap<string, ProtectedAtom>;
-	openings: ReadonlyMap<string, ProtectedContainer>;
 }>;
 
-function inlineRegistry(protectedInlines: readonly ProtectedInline[]): InlineRegistry {
-	const atoms = new Map<string, Extract<ProtectedInline, { kind: 'atom' }>>();
-	const openings = new Map<string, Extract<ProtectedInline, { kind: 'container' }>>();
-	for (const inline of protectedInlines) {
-		if (inline.kind === 'atom') atoms.set(inline.token, inline);
-		else openings.set(inline.open, inline);
+function collectProseTargets(
+	nodes: readonly PhrasingContent[],
+	path: readonly number[],
+	ancestors: readonly Nodes[],
+	targets: ProseTargetCandidate[],
+): void {
+	for (const [index, node] of nodes.entries()) {
+		const nodePath = [...path, index];
+		if (node.type === 'text') {
+			if (!isProtectedLinkText(node.value, ancestors) && isTranslatableProse(node.value)) {
+				targets.push({ field: 'value', path: nodePath, text: node.value });
+			}
+			continue;
+		}
+		if (node.type === 'image' || node.type === 'imageReference') {
+			if (node.alt && isTranslatableProse(node.alt)) targets.push({ field: 'alt', path: nodePath, text: node.alt });
+			continue;
+		}
+		if (isParent(node)) collectProseTargets(node.children, nodePath, [...ancestors, node], targets);
 	}
-	return { atoms, openings };
-}
-
-function restoreContainer(inline: ProtectedContainer, children: PhrasingContent[]): PhrasingContent {
-	const node = structuredClone(inline.node);
-	if (inline.mode === 'alt' && (node.type === 'image' || node.type === 'imageReference')) {
-		node.alt = children.map((child) => plainText(child)).join('');
-		return node;
-	}
-	if (inline.mode === 'children' && isParent(node)) {
-		node.children = children;
-		return node;
-	}
-	throw new MarkdownTranslationInvariantError('invalid-plan', 'Protected inline node cannot contain translated prose');
-}
-
-function appendDecodedToken(token: string, frames: DecodeFrame[], registry: InlineRegistry): void {
-	const atom = registry.atoms.get(token);
-	if (atom) {
-		frames.at(-1)!.children.push(structuredClone(atom.node));
-		return;
-	}
-	const opening = registry.openings.get(token);
-	if (opening) {
-		frames.push({ children: [], inline: opening });
-		return;
-	}
-	const completed = frames.pop();
-	if (token !== '</pc>' || !completed?.inline || !frames.length) {
-		throw new MarkdownTranslationInvariantError('markdown-structure-changed', 'Translated prose has invalid inline tokens');
-	}
-	frames.at(-1)!.children.push(restoreContainer(completed.inline, completed.children));
-}
-
-function decodePhrasing(text: string, protectedInlines: readonly ProtectedInline[]): PhrasingContent[] {
-	const registry = inlineRegistry(protectedInlines);
-	const frames: DecodeFrame[] = [{ children: [], inline: null }];
-	let cursor = 0;
-	for (const match of text.matchAll(INLINE_TOKEN_PATTERN)) {
-		const token = match[0];
-		const index = match.index;
-		appendText(frames.at(-1)!.children, text.slice(cursor, index));
-		appendDecodedToken(token, frames, registry);
-		cursor = index + token.length;
-	}
-	appendText(frames.at(-1)!.children, text.slice(cursor));
-	if (frames.length !== 1) {
-		throw new MarkdownTranslationInvariantError('markdown-structure-changed', 'Translated prose has unclosed inline tokens');
-	}
-	return frames[0]!.children;
 }
 
 function segmentInputCharacters(segment: MarkdownTranslationSegment): number {
@@ -467,16 +346,11 @@ function batchSegments(segments: readonly MarkdownTranslationSegment[], options:
 	return batches;
 }
 
-function addSegment(
-	input: Readonly<{ protectedInlines: readonly ProtectedInline[]; text: string }>,
-	context: string | null,
-	accumulator: PlanAccumulator,
-): MarkdownTranslationSegment {
+function addSegment(text: string, context: string | null, accumulator: PlanAccumulator): MarkdownTranslationSegment {
 	const segment = {
 		context,
 		id: `s${String(accumulator.segments.length + 1).padStart(6, '0')}`,
-		protectedInlines: input.protectedInlines,
-		text: input.text,
+		text,
 	};
 	accumulator.segments.push(segment);
 	return segment;
@@ -493,34 +367,40 @@ function splitWhitespace(value: string): Readonly<{ leading: string; prose: stri
 	};
 }
 
-function planProseBlock(block: ProseBlock, context: VisitContext, options: ResolvedPlanOptions, accumulator: PlanAccumulator): void {
-	if (!containsTranslatableProse(block)) return;
-	const heading = context.heading && block.type !== 'heading' ? `Heading: ${context.heading}`.slice(0, options.maxContextCharacters) : null;
-	const encoded = encodePhrasing(block.children, accumulator.nextInlineIndex + 1);
-	accumulator.nextInlineIndex += encoded.protectedInlines.length;
-	if (encoded.text.length <= options.maxSegmentCharacters) {
-		const segment = addSegment(encoded, heading, accumulator);
-		accumulator.targets.push({ boundaries: null, path: context.path, segmentIds: [segment.id] });
-	} else if (block.children.length === 1 && block.children[0]?.type === 'text') {
-		const boundaries = [''];
-		const segmentIds: string[] = [];
-		for (const chunk of splitProse(block.children[0].value, options.maxSegmentCharacters)) {
-			const { leading, prose, trailing } = splitWhitespace(chunk);
-			boundaries[boundaries.length - 1] += leading;
-			if (!prose) {
-				boundaries[boundaries.length - 1] += trailing;
-				continue;
-			}
-			segmentIds.push(addSegment({ protectedInlines: [], text: prose }, heading, accumulator).id);
+function targetContext(block: ProseBlock, heading: string | null, targetCount: number, maxCharacters: number): string | null {
+	const parts: string[] = [];
+	if (heading && block.type !== 'heading') parts.push(`Heading: ${heading}`);
+	if (targetCount > 1) parts.push(`${block.type === 'heading' ? 'Heading' : 'Paragraph'}: ${translatablePlainText(block).trim()}`);
+	return parts.length ? parts.join('\n').slice(0, maxCharacters) : null;
+}
+
+function planTarget(
+	target: ProseTargetCandidate,
+	context: string | null,
+	options: ResolvedPlanOptions,
+	accumulator: PlanAccumulator,
+): void {
+	const boundaries = [''];
+	const segmentIds: string[] = [];
+	for (const chunk of splitProse(target.text, options.maxSegmentCharacters)) {
+		const { leading, prose, trailing } = splitWhitespace(chunk);
+		boundaries[boundaries.length - 1] += leading;
+		if (prose) {
+			segmentIds.push(addSegment(prose, context, accumulator).id);
 			boundaries.push(trailing);
+		} else {
+			boundaries[boundaries.length - 1] += trailing;
 		}
-		accumulator.targets.push({ boundaries, path: context.path, segmentIds });
-	} else {
-		throw new MarkdownTranslationInvariantError(
-			'invalid-plan',
-			'Markdown prose block with inline structure exceeds the safe translation segment size',
-		);
 	}
+	if (segmentIds.length) accumulator.targets.push({ boundaries, field: target.field, path: target.path, segmentIds });
+}
+
+function planProseBlock(block: ProseBlock, context: VisitContext, options: ResolvedPlanOptions, accumulator: PlanAccumulator): void {
+	const targets: ProseTargetCandidate[] = [];
+	collectProseTargets(block.children, context.path, [block], targets);
+	if (!targets.length) return;
+	const translationContext = targetContext(block, context.heading, targets.length, options.maxContextCharacters);
+	for (const target of targets) planTarget(target, translationContext, options, accumulator);
 }
 
 function visitNode(node: Nodes, context: VisitContext, options: ResolvedPlanOptions, accumulator: PlanAccumulator): void {
@@ -531,7 +411,7 @@ function visitNode(node: Nodes, context: VisitContext, options: ResolvedPlanOpti
 	if (!isParent(node)) return;
 	let heading = context.heading;
 	for (const [index, child] of node.children.entries()) {
-		const childHeading = child.type === 'heading' ? plainText(child).trim() || heading : heading;
+		const childHeading = child.type === 'heading' ? translatablePlainText(child).trim() || heading : heading;
 		visitNode(child, { heading: childHeading, path: [...context.path, index] }, options, accumulator);
 		if (child.type === 'heading') heading = childHeading;
 	}
@@ -574,12 +454,6 @@ function orderedTranslationMap(
 		if (!result.text.trim() || result.text !== result.text.trim() || /\r?\n[\t ]*\r?\n/u.test(result.text) || result.text.includes('\0')) {
 			throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${result.id} must contain safe, trimmed prose`);
 		}
-		if (JSON.stringify(inlineTokens(result.text)) !== JSON.stringify(inlineTokens(expected.text))) {
-			throw new MarkdownTranslationInvariantError(
-				'markdown-structure-changed',
-				`Translated segment ${result.id} changed protected inline tokens`,
-			);
-		}
 		values.set(result.id, result.text);
 	}
 	return values;
@@ -596,7 +470,7 @@ export function validateMarkdownBatchTranslations(
 export function planMarkdownTranslation(sourceMarkdown: string, options: MarkdownTranslationPlanOptions = {}): MarkdownTranslationPlan {
 	const resolvedOptions = resolvePlanOptions(options);
 	const tree = parseMarkdown(sourceMarkdown);
-	const accumulator: PlanAccumulator = { nextInlineIndex: 0, segments: [], targets: [] };
+	const accumulator: PlanAccumulator = { segments: [], targets: [] };
 	visitNode(tree, { heading: null, path: [] }, resolvedOptions, accumulator);
 	const targetPaths = accumulator.targets.map((target) => target.path);
 	const sourceSkeleton = markdownSkeleton(tree, targetPaths);
@@ -618,39 +492,24 @@ export function planMarkdownTranslation(sourceMarkdown: string, options: Markdow
 
 export function compileMarkdownTranslation(plan: MarkdownTranslationPlan, translations: readonly MarkdownSegmentTranslation[]): string {
 	const values = orderedTranslationMap(plan.segments, translations);
-	const segmentsById = new Map(plan.segments.map((segment) => [segment.id, segment]));
 	const tree = parseMarkdown(plan.sourceMarkdown);
 	for (const target of plan.targets) {
-		const block = nodeAtPath(tree, target.path);
-		if (!isProseBlock(block)) throw new MarkdownTranslationInvariantError('invalid-plan', 'Translation target is not a prose block');
 		const translatedParts = target.segmentIds.map((id) => {
 			const translated = values.get(id);
 			if (translated === undefined) throw new MarkdownTranslationInvariantError('missing-segment', `Missing segment ${id}`);
-			const segment = segmentsById.get(id);
-			if (!segment) throw new MarkdownTranslationInvariantError('invalid-plan', `Missing planned segment ${id}`);
-			return decodePhrasing(translated, segment.protectedInlines);
+			return translated;
 		});
-		if (!target.boundaries) {
-			if (translatedParts.length !== 1) {
-				throw new MarkdownTranslationInvariantError('invalid-plan', 'Complete Markdown block must have exactly one segment');
-			}
-			block.children = translatedParts[0] ?? [];
-			continue;
-		}
 		if (target.boundaries.length !== translatedParts.length + 1) {
 			throw new MarkdownTranslationInvariantError('invalid-plan', 'Split prose boundaries do not match its segments');
 		}
 		let text = target.boundaries[0] ?? '';
-		for (const [index, children] of translatedParts.entries()) {
-			if (children.length !== 1 || children[0]?.type !== 'text') {
-				throw new MarkdownTranslationInvariantError(
-					'markdown-structure-changed',
-					`Split prose segment ${target.segmentIds[index]} changed structure`,
-				);
-			}
-			text += children[0].value + (target.boundaries[index + 1] ?? '');
+		for (const [index, translated] of translatedParts.entries()) {
+			text += translated + (target.boundaries[index + 1] ?? '');
 		}
-		block.children = [{ type: 'text', value: text }];
+		const node = nodeAtPath(tree, target.path);
+		if (target.field === 'value' && node.type === 'text') node.value = text;
+		else if (target.field === 'alt' && (node.type === 'image' || node.type === 'imageReference')) node.alt = text;
+		else throw new MarkdownTranslationInvariantError('invalid-plan', 'Translation target path does not match its field');
 	}
 	const translatedMarkdown = serializeMarkdown(tree);
 	const translatedSkeleton = markdownSkeleton(

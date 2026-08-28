@@ -64,7 +64,7 @@ assert.ok(plan.batches.length > 1, 'fixture should exercise deterministic batchi
 assert.deepEqual(planMarkdownTranslation(markdownFixture, options), plan, 'translation planning must be deterministic');
 for (const hiddenDestination of ['https://example.com/report?q=1', 'https://example.com/opaque', 'https://cdn.example.com/chart.png']) {
 	assert.ok(
-		plan.segments.every((segment) => !segment.text.includes(hiddenDestination)),
+		plan.segments.every((segment) => !segment.text.includes(hiddenDestination) && !segment.context?.includes(hiddenDestination)),
 		`protected destination leaked into model input: ${hiddenDestination}`,
 	);
 }
@@ -147,30 +147,24 @@ assert.throws(
 const linkBatch = plan.batches.find((batch) => batch.segments.some((segment) => segment.text.includes('research report')));
 assert.ok(linkBatch, 'fixture must contain a translated link block');
 const linkSegment = linkBatch.segments.find((segment) => segment.text.includes('research report'));
-assert.ok(linkSegment, 'fixture must expose the translated link label inside opaque tokens');
-const protectedToken = linkSegment.text.match(/<(?:pc|ph) id="[0-9]{6}"\/?>(?!<)/u)?.[0];
-assert.ok(protectedToken, 'translated link block must contain an opaque inline token');
-const linkTranslations = linkBatch.segments.map((segment) => ({
-	id: segment.id,
-	text: segment.id === linkSegment.id ? segment.text.replace(protectedToken, 'BROKEN') : segment.text,
-}));
-assert.throws(
-	() => validateMarkdownBatchTranslations(linkBatch, linkTranslations),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
-	'changed inline tokens must fail closed',
+assert.ok(linkSegment, 'fixture must expose the link label as a text-only translation slot');
+assert.ok(
+	plan.segments.every((segment) => !/<(?:pc|ph)\b/u.test(segment.text)),
+	'Markdown structure must not be serialized into model-editable placeholders',
 );
+assert.ok(translatedMarkdown.includes('[研究報告](https://example.com/report?q=1'), 'translated link label must keep its destination');
 
 const reorderedPlan = planMarkdownTranslation('The market [expects](https://example.com/forecast) electric vehicles.');
-const reorderedSegment = reorderedPlan.segments[0];
-assert.ok(reorderedSegment, 'reordered-inline fixture must produce a segment');
-const [openToken, closeToken] = reorderedSegment.text.match(/<pc id="[0-9]{6}">|<\/pc>/gu) ?? [];
-assert.ok(openToken && closeToken, 'reordered-inline fixture must protect its link');
-const reorderedMarkdown = compileMarkdownTranslation(reorderedPlan, [
-	{ id: reorderedSegment.id, text: `${openToken}預期${closeToken}市場將以電動車為主。` },
-]);
+const reorderedMarkdown = compileMarkdownTranslation(
+	reorderedPlan,
+	reorderedPlan.segments.map((segment) => ({
+		id: segment.id,
+		text: segment.text.replace('The market', '市場').replace('expects', '預期').replace('electric vehicles.', '電動車。'),
+	})),
+);
 assert.ok(
-	reorderedMarkdown.includes(`[預期](https://example.com/forecast)市場將以電動車為主。`),
-	'inline markup must survive target-language word-order changes',
+	reorderedMarkdown.includes(`市場 [預期](https://example.com/forecast) 電動車。`),
+	'inline markup must be reconstructed around translated text slots',
 );
 
 const malformedMarkdown = `## Malformed but parseable\n\nAn **unclosed delimiter and a [broken link label must remain ordinary prose.`;
