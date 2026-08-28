@@ -7,6 +7,7 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
 import { canonicalizeResourceLang, type RESOURCE_TYPES } from '../shared/resource';
+import { CORE_TEXT_MODEL, CORE_TEXT_MODEL_SETTINGS } from './ai-model';
 import {
 	compileMarkdownTranslation,
 	type MarkdownSegmentTranslation,
@@ -231,8 +232,8 @@ async function generateZhHantMetadataTranslation(
 ${content.slice(0, METADATA_CONTENT_MAX_LENGTH)}`;
 	const request = metadataTranslationRequest(task);
 	const { finishReason, output } = await generateText({
-		model: createWorkersAI({ binding: env.AI })('@cf/qwen/qwen3.8-27b', {
-			chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
+		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
+			...CORE_TEXT_MODEL_SETTINGS,
 			gateway: {
 				id: 'core-ingest',
 				collectLog: true,

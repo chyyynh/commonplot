@@ -5,6 +5,7 @@ import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { type ForumKindMetadata, RESOURCE_TYPES } from '../../shared/resource';
+import { CORE_TEXT_MODEL, CORE_TEXT_MODEL_SETTINGS } from '../ai-model';
 import {
 	literalCreator,
 	materializePlatformResource,
@@ -278,7 +279,8 @@ async function generateHnDiscussionDigest(
 	if (discussion.commentCount < 4) return null;
 
 	const { finishReason, text } = await generateText({
-		model: createWorkersAI({ binding: env.AI })('@cf/qwen/qwen3-30b-a3b-fp8', {
+		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
+			...CORE_TEXT_MODEL_SETTINGS,
 			gateway: {
 				id: 'core-ingest',
 				collectLog: true,
@@ -291,9 +293,10 @@ async function generateHnDiscussionDigest(
 			},
 			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
 		}),
-		prompt: `${buildDiscussionPrompt(title, discussion.hnText, discussion.commentInput, discussion.commentCount)}\n/no_think`,
+		prompt: buildDiscussionPrompt(title, discussion.hnText, discussion.commentInput, discussion.commentCount),
 		system: HN_DISCUSSION_SYSTEM,
 		temperature: 0.3,
+		reasoning: 'none',
 		maxRetries: 0,
 	});
 	if (finishReason === 'length') throw new Error('Hacker News discussion digest hit its output token cap');

@@ -5,6 +5,7 @@ import { createWorkersAI } from 'workers-ai-provider';
 import type { TranscriptResponse } from 'youtube-transcript';
 import { z } from 'zod';
 import { RESOURCE_TYPES } from '../../shared/resource';
+import { CORE_TEXT_MODEL, CORE_TEXT_MODEL_SETTINGS } from '../ai-model';
 import {
 	literalCreator,
 	materializePlatformResource,
@@ -413,7 +414,6 @@ const YouTubeHighlightSchema = z
 	})
 	.refine(({ startTime, endTime }) => endTime > startTime, { message: 'Highlight endTime must be after startTime' });
 const YouTubeHighlightsSchema = z.object({ highlights: z.array(YouTubeHighlightSchema).min(5).max(8) });
-const YOUTUBE_HIGHLIGHTS_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
 const HIGHLIGHTS_SYSTEM_PROMPT = `你是專業的影片內容分析師。分析 YouTube 影片逐字稿，找出 5-8 個最重要的主題段落。
 
 規則：
@@ -437,7 +437,8 @@ async function prepareYouTubeHighlightsFromTranscript(
 	const last = transcript[transcript.length - 1];
 	const duration = Math.ceil(last.endTime);
 	const { finishReason, output: highlights } = await generateText({
-		model: createWorkersAI({ binding: env.AI })(YOUTUBE_HIGHLIGHTS_MODEL, {
+		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
+			...CORE_TEXT_MODEL_SETTINGS,
 			gateway: {
 				id: 'core-ingest',
 				collectLog: true,
@@ -452,9 +453,10 @@ async function prepareYouTubeHighlightsFromTranscript(
 		}),
 		prompt: `影片總長度：${duration} 秒\n\n逐字稿：\n${transcriptText}`,
 		system: HIGHLIGHTS_SYSTEM_PROMPT,
-		output: Output.object({ schema: YouTubeHighlightsSchema }),
+		output: Output.object({ name: 'youtube_highlights', schema: YouTubeHighlightsSchema }),
 		maxOutputTokens: 2000,
 		temperature: 0.3,
+		reasoning: 'none',
 		maxRetries: 0,
 	});
 	if (finishReason === 'length') throw new Error(`YouTube highlights hit the output token cap for ${videoId}`);
@@ -463,7 +465,7 @@ async function prepareYouTubeHighlightsFromTranscript(
 	console.info({ tag: 'AI', msg: 'YouTube highlights generated', videoId, count: highlights.highlights.length });
 	return {
 		version: '1.0',
-		model: YOUTUBE_HIGHLIGHTS_MODEL,
+		model: CORE_TEXT_MODEL,
 		highlights: highlights.highlights,
 		generatedAt: new Date().toISOString(),
 	};

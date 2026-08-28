@@ -1,6 +1,7 @@
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
+import { CORE_TEXT_MODEL, CORE_TEXT_MODEL_SETTINGS } from './ai-model';
 import {
 	type MarkdownSegmentTranslation,
 	type MarkdownTranslationBatch,
@@ -80,8 +81,8 @@ async function translateGroup(
 	batchTotal: number,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	const { finishReason, output } = await generateText({
-		model: createWorkersAI({ binding: env.AI })('@cf/qwen/qwen3.8-27b', {
-			chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
+		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
+			...CORE_TEXT_MODEL_SETTINGS,
 			gateway: {
 				id: 'core-ingest',
 				collectLog: true,

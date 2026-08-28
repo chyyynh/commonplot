@@ -3,6 +3,7 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import type { RESOURCE_TYPES, ResourceCreator } from '../shared/resource';
 import type { ProcessingResource } from './acquisition';
+import { CORE_TEXT_MODEL, CORE_TEXT_MODEL_SETTINGS } from './ai-model';
 
 const ANALYSIS_CONTENT_MAX_LENGTH = 10_000;
 const ENTITY_NAME_MAX_LENGTH = 255;
@@ -144,7 +145,8 @@ export async function analyzeResource(
 內容:
 ${resource.content.trim().substring(0, ANALYSIS_CONTENT_MAX_LENGTH)}`;
 	const { finishReason, output: analysis } = await generateText({
-		model: createWorkersAI({ binding: env.AI })('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
+			...CORE_TEXT_MODEL_SETTINGS,
 			gateway: {
 				id: 'core-ingest',
 				collectLog: true,
@@ -159,9 +161,10 @@ ${resource.content.trim().substring(0, ANALYSIS_CONTENT_MAX_LENGTH)}`;
 		}),
 		prompt,
 		system: RESOURCE_ANALYSIS_SYSTEM_PROMPT,
-		output: Output.object({ schema: ResourceAnalysisSchema }),
+		output: Output.object({ name: 'resource_analysis', schema: ResourceAnalysisSchema }),
 		maxOutputTokens: 500,
 		temperature: 0.3,
+		reasoning: 'none',
 		maxRetries: 0,
 	});
 	if (finishReason === 'length') throw new Error('Resource analysis hit its output token cap');
