@@ -84,7 +84,6 @@ type ResolvedPlanOptions = Readonly<{
 }>;
 
 type PlanAccumulator = {
-	blockText: WeakMap<object, string>;
 	segments: MarkdownTranslationSegment[];
 	targets: MarkdownTranslationTarget[];
 };
@@ -147,30 +146,9 @@ function plainText(node: Nodes): string {
 	return node.children.map((child) => plainText(child)).join('');
 }
 
-function nearestProseBlock(ancestors: readonly Nodes[]): Nodes | null {
-	for (let index = ancestors.length - 1; index >= 0; index--) {
-		const node = ancestors[index];
-		if (node && (node.type === 'heading' || node.type === 'paragraph' || node.type === 'tableCell')) return node;
-	}
-	return null;
-}
-
-function cachedPlainText(node: Nodes, accumulator: PlanAccumulator): string {
-	const cached = accumulator.blockText.get(node);
-	if (cached !== undefined) return cached;
-	const value = plainText(node).trim();
-	accumulator.blockText.set(node, value);
-	return value;
-}
-
-function segmentContext(value: string, context: VisitContext, maxCharacters: number, accumulator: PlanAccumulator): string | null {
-	const block = nearestProseBlock(context.ancestors);
-	const blockText = block ? cachedPlainText(block, accumulator) : '';
-	const parts: string[] = [];
-	if (context.heading && context.heading !== blockText) parts.push(`Heading: ${context.heading}`);
-	if (blockText && blockText !== value.trim()) parts.push(`Block: ${blockText}`);
-	const combined = parts.join('\n').trim();
-	return combined ? combined.slice(0, maxCharacters) : null;
+function segmentContext(value: string, context: VisitContext, maxCharacters: number): string | null {
+	if (!context.heading || context.heading === value.trim()) return null;
+	return `Heading: ${context.heading}`.slice(0, maxCharacters);
 }
 
 function normalizedAutolinkDestination(value: string): string {
@@ -255,7 +233,7 @@ function planField(
 		if (isTranslatableProse(prose)) {
 			const id = `s${String(accumulator.segments.length + 1).padStart(6, '0')}`;
 			accumulator.segments.push({
-				context: segmentContext(prose, context, options.maxContextCharacters, accumulator),
+				context: segmentContext(prose, context, options.maxContextCharacters),
 				id,
 				text: prose,
 			});
@@ -449,7 +427,7 @@ export function validateMarkdownBatchTranslations(
 export function planMarkdownTranslation(sourceMarkdown: string, options: MarkdownTranslationPlanOptions = {}): MarkdownTranslationPlan {
 	const resolvedOptions = resolvePlanOptions(options);
 	const tree = parseMarkdown(sourceMarkdown);
-	const accumulator: PlanAccumulator = { blockText: new WeakMap(), segments: [], targets: [] };
+	const accumulator: PlanAccumulator = { segments: [], targets: [] };
 	visitNode(tree, { ancestors: [], heading: null, path: [] }, resolvedOptions, accumulator);
 	const sourceSkeleton = markdownSkeleton(tree, accumulator.targets);
 	const normalizedTree = parseMarkdown(serializeMarkdown(tree));
