@@ -28,6 +28,7 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - 每個 segment 的 text 是一個完整 Markdown 段落、標題、表格儲存格，或超長純文字段落的一個完整句界切片
 - 只翻譯 text 中的自然語言；context 只供消歧義，不屬於輸出
 - text 中的 Markdown 結構、連結目的地、圖片 URL、程式碼、公式與 HTML 必須逐字保留
+- NEWSENCEPROTECTED...TOKEN 是受保護的原文符號，必須逐字保留
 
 翻譯準則：
 - 每個 segment 只翻譯一次並完整輸出，不要把相鄰 segment 或 context 的內容重複寫入

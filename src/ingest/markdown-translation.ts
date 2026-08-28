@@ -48,10 +48,16 @@ type ProtectedDestination = Readonly<{
 	url: string;
 }>;
 
+type ProtectedLiteral = Readonly<{
+	placeholder: string;
+	value: string;
+}>;
+
 export type MarkdownTranslationSegment = Readonly<{
 	context: string | null;
 	id: string;
 	protectedDestinations: readonly ProtectedDestination[];
+	protectedLiterals: readonly ProtectedLiteral[];
 	referenceContext: string;
 	sourceSkeleton: string;
 	text: string;
@@ -129,11 +135,22 @@ export class MarkdownTranslationInvariantError extends Error {
 	}
 }
 
-function parseMarkdown(markdown: string): Root {
+function parseMarkdownOnce(markdown: string): Root {
 	return fromMarkdown(markdown, {
 		extensions: [frontmatter(FRONTMATTER_PRESETS), math(), gfm()],
 		mdastExtensions: [frontmatterFromMarkdown(FRONTMATTER_PRESETS), mathFromMarkdown(), ...gfmFromMarkdown()],
 	});
+}
+
+function parseMarkdown(markdown: string): Root {
+	const tree = parseMarkdownOnce(markdown);
+	const offsets = ambiguousCurrencyDelimiterOffsets(tree, markdown);
+	if (!offsets.length) return tree;
+	let escaped = markdown;
+	for (const offset of offsets.sort((left, right) => right - left)) {
+		escaped = `${escaped.slice(0, offset)}\\${escaped.slice(offset)}`;
+	}
+	return parseMarkdownOnce(escaped);
 }
 
 function serializeMarkdown(tree: Root): string {
@@ -144,6 +161,30 @@ function serializeMarkdown(tree: Root): string {
 
 function isParent(node: Nodes): node is Parents {
 	return 'children' in node && Array.isArray(node.children);
+}
+
+function ambiguousCurrencyDelimiterOffsets(tree: Root, source: string): number[] {
+	const offsets: number[] = [];
+	const visit = (node: Nodes): void => {
+		if (node.type === 'inlineMath' && (node.value.includes('](') || node.value.length > 160)) {
+			const start = node.position?.start.offset;
+			const end = node.position?.end.offset;
+			if (
+				start !== undefined &&
+				end !== undefined &&
+				source[start] === '$' &&
+				source[end - 1] === '$' &&
+				source.slice(start, start + 2) !== '$$'
+			) {
+				offsets.push(start, end - 1);
+			}
+		}
+		if (isParent(node)) {
+			for (const child of node.children) visit(child);
+		}
+	};
+	visit(tree);
+	return offsets;
 }
 
 function isProseBlock(node: Nodes): node is ProseBlock {
@@ -289,10 +330,12 @@ function serializePhrasing(children: readonly PhrasingContent[]): string {
 
 function protectDestinations(children: readonly PhrasingContent[]): Readonly<{
 	destinations: readonly ProtectedDestination[];
+	literals: readonly ProtectedLiteral[];
 	text: string;
 }> {
 	const protectedChildren = structuredClone(children);
 	const destinations: ProtectedDestination[] = [];
+	const literals: ProtectedLiteral[] = [];
 	const protectNode = (node: Nodes): void => {
 		if (node.type === 'link' || node.type === 'image') {
 			const placeholder = `https://newsence.invalid/protected/${String(destinations.length + 1).padStart(4, '0')}`;
@@ -308,12 +351,19 @@ function protectDestinations(children: readonly PhrasingContent[]): Readonly<{
 			node.title = null;
 			if (displayUrl && node.type === 'link' && node.children[0]?.type === 'text') node.children[0].value = placeholder;
 		}
+		if (node.type === 'text') {
+			node.value = node.value.replaceAll('$', () => {
+				const placeholder = `NEWSENCEPROTECTED${String(literals.length + 1).padStart(4, '0')}TOKEN`;
+				literals.push({ placeholder, value: '$' });
+				return placeholder;
+			});
+		}
 		if (isParent(node)) {
 			for (const child of node.children) protectNode(child);
 		}
 	};
 	for (const child of protectedChildren) protectNode(child);
-	return { destinations, text: serializePhrasing(protectedChildren) };
+	return { destinations, literals, text: serializePhrasing(protectedChildren) };
 }
 
 function parsePhrasing(markdown: string, references: string): PhrasingContent[] {
@@ -386,13 +436,14 @@ function addSegment(
 	context: string | null,
 	accumulator: PlanAccumulator,
 ): MarkdownTranslationSegment {
-	const protectedInput = typeof input === 'string' ? { destinations: [], text: input } : protectDestinations(input);
+	const protectedInput = typeof input === 'string' ? { destinations: [], literals: [], text: input } : protectDestinations(input);
 	const text = protectedInput.text;
 	const sourceSkeleton = phrasingSkeleton(text, accumulator.referenceContext);
 	const segment = {
 		context,
 		id: `s${String(accumulator.segments.length + 1).padStart(6, '0')}`,
 		protectedDestinations: protectedInput.destinations,
+		protectedLiterals: protectedInput.literals,
 		referenceContext: accumulator.referenceContext,
 		sourceSkeleton,
 		text,
@@ -494,6 +545,14 @@ function restoreDestinations(children: PhrasingContent[], segment: MarkdownTrans
 	}
 }
 
+function restoreLiterals(markdown: string, segment: MarkdownTranslationSegment): string {
+	let restored = markdown;
+	for (const literal of segment.protectedLiterals) {
+		restored = restored.replaceAll(literal.placeholder, `\\${literal.value}`);
+	}
+	return restored;
+}
+
 function orderedTranslationMap(
 	segments: readonly MarkdownTranslationSegment[],
 	translations: readonly MarkdownSegmentTranslation[],
@@ -519,6 +578,14 @@ function orderedTranslationMap(
 		}
 		if (!result.text.trim() || result.text !== result.text.trim() || result.text.includes('\0')) {
 			throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${result.id} must contain safe, trimmed Markdown`);
+		}
+		for (const literal of expected.protectedLiterals) {
+			if (result.text.split(literal.placeholder).length !== 2) {
+				throw new MarkdownTranslationInvariantError(
+					'markdown-structure-changed',
+					`Translated segment ${result.id} changed a protected literal`,
+				);
+			}
 		}
 		if (phrasingSkeleton(result.text, expected.referenceContext) !== expected.sourceSkeleton) {
 			throw new MarkdownTranslationInvariantError(
@@ -574,7 +641,7 @@ export function compileMarkdownTranslation(plan: MarkdownTranslationPlan, transl
 			if (translated === undefined) throw new MarkdownTranslationInvariantError('missing-segment', `Missing segment ${id}`);
 			const segment = segmentsById.get(id);
 			if (!segment) throw new MarkdownTranslationInvariantError('invalid-plan', `Missing planned segment ${id}`);
-			const children = parsePhrasing(translated, segment.referenceContext);
+			const children = parsePhrasing(restoreLiterals(translated, segment), segment.referenceContext);
 			restoreDestinations(children, segment);
 			return children;
 		});

@@ -45,6 +45,8 @@ console.log(markdown);
 
 Contact user@example.com and see the source.[^source]
 
+The quoted price is ($57) under [the terms](https://example.com/price), but later became ($60).
+
 [^source]: Footnote prose with a [reference][docs].
 
 [docs]: https://example.com/docs "Documentation title"
@@ -66,6 +68,10 @@ for (const hiddenDestination of ['https://example.com/report?q=1', 'https://exam
 		`protected destination leaked into model input: ${hiddenDestination}`,
 	);
 }
+assert.ok(
+	plan.segments.every((segment) => !segment.text.includes('$57')),
+	'protected literal leaked into model input',
+);
 for (const batch of plan.batches) {
 	assert.ok(batch.inputCharacters <= options.maxBatchCharacters, `${batch.id} exceeded its input character budget`);
 }
@@ -97,6 +103,8 @@ for (const protectedValue of [
 	'SELECT * FROM protected_code;',
 	'<aside data-kind="note">Opaque HTML must stay untouched.</aside>',
 	'user@example.com',
+	'$57',
+	'$60',
 ]) {
 	assert.ok(translatedMarkdown.includes(protectedValue), `protected Markdown value changed: ${protectedValue}`);
 }
@@ -150,6 +158,18 @@ assert.throws(
 	() => validateMarkdownBatchTranslations(linkBatch, linkTranslations),
 	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
 	'changed link destinations must fail closed',
+);
+
+const literalBatch = plan.batches.find((batch) => batch.segments.some((segment) => segment.protectedLiterals.length));
+assert.ok(literalBatch, 'fixture must contain protected Markdown literals');
+const literalTranslations = literalBatch.segments.map((segment) => ({
+	id: segment.id,
+	text: segment.text.replace(segment.protectedLiterals[0]?.placeholder ?? 'missing-placeholder', ''),
+}));
+assert.throws(
+	() => validateMarkdownBatchTranslations(literalBatch, literalTranslations),
+	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
+	'changed protected literals must fail closed',
 );
 
 const malformedMarkdown = `## Malformed but parseable\n\nAn **unclosed delimiter and a [broken link label must remain ordinary prose.`;
