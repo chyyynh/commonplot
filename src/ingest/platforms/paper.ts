@@ -16,7 +16,7 @@ import { type GenericAcquiredMaterial, literalCreator } from './materialize';
 import { fetchOpenAlexPdf, type PaperMetadata, resolveOpenAlexPaper } from './openalex';
 import { acquireFetchedPdfResponse, PDF_MIME } from './pdf';
 
-const IDENTIFIER_SCAN_CHARS = 3_000;
+const CITOID_IDENTIFIER_SCAN_CHARS = 3_000;
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
 const CITOID_BASE = 'https://en.wikipedia.org/api/rest_v1/data/citation/zotero/';
 const CITOID_TIMEOUT_MS = 8_000;
@@ -112,7 +112,7 @@ async function resolveCitoidPaperIdentifiers(value: string): Promise<PaperIdenti
 			academicItem.DOI ? `DOI: ${academicItem.DOI}` : '',
 			academicItem.archiveID ?? '',
 			academicItem.url ?? '',
-			academicItem.extra?.slice(0, IDENTIFIER_SCAN_CHARS) ?? '',
+			academicItem.extra?.slice(0, CITOID_IDENTIFIER_SCAN_CHARS) ?? '',
 		]
 			.filter(Boolean)
 			.join('\n'),
@@ -129,7 +129,7 @@ function localPaperIdentifiers(input: {
 	const exact =
 		resolveExactPaperInput(input.sourceUrl)?.identity ??
 		(input.canonicalUrl === input.sourceUrl ? null : resolveExactPaperInput(input.canonicalUrl)?.identity);
-	const fromText = input.identifierText?.trim() ? paperIdentityFromText(input.identifierText.slice(0, IDENTIFIER_SCAN_CHARS)) : null;
+	const fromText = input.identifierText?.trim() ? paperIdentityFromText(input.identifierText) : null;
 	return choosePreferredIdentifiers([
 		...(exact ? paperIdentifiersFromIdentity(exact) : []),
 		...(fromText ? paperIdentifiersFromIdentity(fromText) : []),
@@ -153,7 +153,7 @@ async function stagePaperEnrichment(
 
 	try {
 		const resolution = await step.do(
-			'resolve-paper-openalex-with-citations-v2',
+			'resolve-paper-openalex-with-citations-v3',
 			{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 			async () => {
 				const startedAt = Date.now();
@@ -231,7 +231,7 @@ async function stageOpenAlexPdfAcquisition(
 
 	const contentStream = await step
 		.do(
-			'acquire-openalex-content-pdf-v2',
+			'acquire-openalex-content-pdf-v3',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 			async () => {
 				const response = await fetchOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
@@ -282,7 +282,7 @@ export async function stagePaperProcessing(
 ) {
 	const identifiers = localPaperIdentifiers({
 		canonicalUrl: input.canonicalUrl,
-		identifierText: input.acquiredContent.fileType === PDF_MIME ? input.acquiredContent.markdown : null,
+		identifierText: input.acquiredContent.fileType === PDF_MIME ? (input.acquiredContent.paperIdentifierText ?? null) : null,
 		seedIdentifiers: input.seedIdentifiers,
 		sourceUrl: input.sourceUrl,
 	});

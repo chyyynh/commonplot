@@ -306,7 +306,15 @@ export async function resolveOpenAlexPaper(input: {
 	const json = await fetchOpenAlexJson(lookupPath, apiKey);
 	if (!json) return null;
 	const work = OpenAlexWorkSchema.parse(json);
-	const relations = await fetchOpenAlexRelations({ apiKey, work });
+	const relations = await fetchOpenAlexRelations({ apiKey, work }).catch((error) => {
+		console.warn({
+			tag: 'OPENALEX',
+			event: 'relations_unavailable',
+			openalex_id: normalizeOpenAlexId(work.id),
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return undefined;
+	});
 	return normalizeOpenAlexWork(work, identifiers, relations);
 }
 

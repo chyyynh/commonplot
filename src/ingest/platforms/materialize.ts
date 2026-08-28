@@ -39,6 +39,7 @@ type AcquiredMaterialFields = {
 	fileType: string | null;
 	title: string;
 	markdown: string;
+	paperIdentifierText?: string | null;
 	previewImageUrl?: string | null;
 	subjectUrl?: string;
 	source: string;

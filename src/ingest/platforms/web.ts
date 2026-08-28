@@ -177,7 +177,7 @@ export async function stageWebAcquisition(
 	platformUrl: (url: URL) => PlatformResourceUrl | null,
 ) {
 	const result = await step.do(
-		'acquire-web-v1',
+		'acquire-web-v2',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => {
 			const acquired = await acquireWebResource(input.url, env, platformUrl, input.processingId);

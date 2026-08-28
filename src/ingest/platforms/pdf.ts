@@ -18,6 +18,7 @@ import type { GenericAcquiredMaterial } from './materialize';
 export const PDF_MIME = 'application/pdf';
 
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
+const MAX_PAPER_IDENTIFIER_TEXT_CHARS = 20_000;
 const PDF_TRANSLATION_CHUNK_MAX_LENGTH = 12_000;
 const LETTER_OR_NUMBER = /[\p{L}\p{N}]/u;
 const SYMBOL_OR_PUNCTUATION = /[\p{P}\p{S}]/u;
@@ -37,6 +38,7 @@ initSync({ module: wasmModule });
 
 type ParsedPdf = Readonly<{
 	markdown: string;
+	paperIdentifierText: string | null;
 	parsedPages: number;
 	problemPageCount: number;
 	problemPageSample: number[];
@@ -48,6 +50,7 @@ type ParsedPdf = Readonly<{
 type ParsedPdfAccumulator = {
 	coveredPages: Set<number>;
 	markdown: string[];
+	paperIdentifierText: string[];
 	parsedPages: number;
 	problemPages: Set<number>;
 	qualityReasons: Set<string>;
@@ -152,6 +155,9 @@ function accumulateLiteParseResult(accumulator: ParsedPdfAccumulator, result: Pa
 			accumulator.problemPages.add(page.pageNum);
 			accumulator.qualityReasons.add('garbled-text');
 		}
+		if (page.pageNum === 1) {
+			if (usable) accumulator.paperIdentifierText.push(usable);
+		}
 	}
 	for (const error of result.pageErrors) {
 		accumulator.coveredPages.add(error.pageNum);
@@ -173,6 +179,7 @@ function finishParsedPdf(accumulator: ParsedPdfAccumulator, totalPages: number):
 	}
 	return {
 		markdown: accumulator.markdown.join('\n\n').trim(),
+		paperIdentifierText: accumulator.paperIdentifierText.join('\n').trim().slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS) || null,
 		parsedPages: accumulator.parsedPages,
 		problemPageCount: accumulator.problemPages.size + unparsedPages,
 		problemPageSample,
@@ -182,7 +189,7 @@ function finishParsedPdf(accumulator: ParsedPdfAccumulator, totalPages: number):
 	};
 }
 
-async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<string> {
+async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<ParsedPdf> {
 	const parser = new LiteParse(LITEPARSE_CONFIG);
 	let session: Awaited<ReturnType<LiteParse['openBatchSession']>> | undefined;
 	try {
@@ -190,6 +197,7 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<st
 		const accumulator: ParsedPdfAccumulator = {
 			coveredPages: new Set(),
 			markdown: [],
+			paperIdentifierText: [],
 			parsedPages: 0,
 			problemPages: new Set(),
 			qualityReasons: new Set(),
@@ -213,7 +221,7 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<st
 			unparsed_pages: result.unparsedPages,
 		});
 		if (!result.markdown) throw new NonRetryableError(`${sourceLabel} has no usable text; OCR is required`);
-		return result.markdown;
+		return result;
 	} finally {
 		try {
 			session?.free();
@@ -376,12 +384,13 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 	const obj = await env.R2.get(resource.storageKey);
 	if (!obj) throw new Error(`PDF source object missing: ${resource.storageKey}`);
 	if (obj.size > MAX_PDF_BYTES) throw new Error(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
-	const markdown = await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()), `Stored PDF ${resource.resourceId}`);
+	const parsed = await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()), `Stored PDF ${resource.resourceId}`);
 	return {
 		resourcePlatform: null,
 		fileType: PDF_MIME,
 		title: resource.title,
-		markdown,
+		markdown: parsed.markdown,
+		paperIdentifierText: parsed.paperIdentifierText,
 		source: resource.source,
 		originalLang: resource.originalLang,
 		publishedDate: resource.publishedDate,
@@ -402,7 +411,7 @@ export async function acquireFetchedPdfResponse(response: Response, finalUrl: st
 			},
 		}),
 	);
-	const markdown = await parsePdfBytes(await new Response(body).bytes(), 'Fetched PDF');
+	const parsed = await parsePdfBytes(await new Response(body).bytes(), 'Fetched PDF');
 	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
 	let fileName = encodedName || 'document.pdf';
 	if (encodedName) {
@@ -419,11 +428,12 @@ export async function acquireFetchedPdfResponse(response: Response, finalUrl: st
 		resourcePlatform: null,
 		fileType: PDF_MIME,
 		title,
-		markdown,
+		markdown: parsed.markdown,
+		paperIdentifierText: parsed.paperIdentifierText,
 		source,
 		originalLang: null,
 		publishedDate: null,
-		summary: markdown.slice(0, 500) || null,
+		summary: parsed.markdown.slice(0, 500) || null,
 		creators: [],
 		kindMetadata: { siteName: source },
 	};
@@ -449,7 +459,7 @@ export async function stageStoredPdfAcquisition(
 		},
 	);
 	const contentStream = await step.do(
-		'acquire-stored-pdf-v3',
+		'acquire-stored-pdf-v4',
 		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await acquireStoredPdf(env, resource)).body!,
 	);
