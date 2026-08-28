@@ -123,9 +123,19 @@ export const RESOURCE_TYPES = {
 export type ForumKindMetadata = z.infer<(typeof RESOURCE_TYPES)['forum']['metadata']>;
 export type PostKindMetadata = z.infer<(typeof RESOURCE_TYPES)['post']['metadata']>;
 export type PaperKindMetadata = z.infer<(typeof RESOURCE_TYPES)['paper']['metadata']>;
+export type ResourceKind = keyof typeof RESOURCE_TYPES;
+export type ResourcePlatform = (typeof RESOURCE_TYPES)[ResourceKind]['platforms'][number]['name'];
+export type ResourcePlatformKind = {
+	[TKind in ResourceKind]: (typeof RESOURCE_TYPES)[TKind]['platforms'][number] extends never ? never : TKind;
+}[ResourceKind];
+export type ResourceKindForPlatform<TPlatform extends ResourcePlatform> = {
+	[TKind in ResourcePlatformKind]: TPlatform extends (typeof RESOURCE_TYPES)[TKind]['platforms'][number]['name'] ? TKind : never;
+}[ResourcePlatformKind];
+export type ResourceKindMetadataFor<TKind extends ResourceKind> = z.infer<(typeof RESOURCE_TYPES)[TKind]['metadata']>;
+export type ResourcePlatformKindMetadata<TPlatform extends ResourcePlatform> = ResourceKindMetadataFor<ResourceKindForPlatform<TPlatform>>;
 export type ResourceKindMetadata = {
-	[K in keyof typeof RESOURCE_TYPES]: z.infer<(typeof RESOURCE_TYPES)[K]['metadata']>;
-}[keyof typeof RESOURCE_TYPES];
+	[K in ResourceKind]: ResourceKindMetadataFor<K>;
+}[ResourceKind];
 
 export const ResourceCreatorsSchema = z.array(ResourceCreatorSchema);
 

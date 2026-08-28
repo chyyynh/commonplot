@@ -1,10 +1,13 @@
 import type { PaperIdentifier } from '../../shared/paper-identity.ts';
 import {
 	canonicalizeOptionalResourceLang,
-	type RESOURCE_TYPES,
 	type ResourceCreator,
 	type ResourceIdentifier,
+	type ResourceKind,
+	type ResourceKindForPlatform,
 	type ResourceKindMetadata,
+	type ResourcePlatform,
+	type ResourcePlatformKindMetadata,
 } from '../../shared/resource.ts';
 
 export type ResolvedResourceSubject = Readonly<{
@@ -13,8 +16,8 @@ export type ResolvedResourceSubject = Readonly<{
 }>;
 
 type MaterializedResource = Readonly<{
-	kind: Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'>;
-	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null;
+	kind: Exclude<ResourceKind, 'image' | 'file'>;
+	resourcePlatform: ResourcePlatform | null;
 }> & {
 	originalLang: string;
 	title: string;
@@ -34,7 +37,7 @@ type MaterializedResource = Readonly<{
 
 export type ResolvedResource = MaterializedResource;
 
-type AcquiredMaterialFields = {
+type AcquiredMaterialFields<TKindMetadata extends ResourceKindMetadata = ResourceKindMetadata> = {
 	canonicalUrl?: string;
 	fileType: string | null;
 	title: string;
@@ -47,25 +50,24 @@ type AcquiredMaterialFields = {
 	publishedDate: string | null;
 	summary: string | null;
 	creators: ResourceCreator[];
-	kindMetadata: ResourceKindMetadata;
+	kindMetadata: TKindMetadata;
 };
 
 export type GenericAcquiredMaterial = AcquiredMaterialFields & {
 	resourcePlatform: null;
 };
 
-export type PlatformAcquiredMaterial<
-	T extends
-		(typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] = (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'],
-> = AcquiredMaterialFields & {
+export type PlatformAcquiredMaterial<TPlatform extends ResourcePlatform = ResourcePlatform> = AcquiredMaterialFields<
+	ResourcePlatformKindMetadata<TPlatform>
+> & {
 	platformId: string;
-	resourcePlatform: T;
+	resourcePlatform: TPlatform;
 };
 
 export type PlatformResourceUrl = Readonly<{
 	canonicalUrl: string;
 	platformId: string;
-	resourcePlatform: PlatformAcquiredMaterial['resourcePlatform'];
+	resourcePlatform: ResourcePlatform;
 }>;
 
 export function literalCreator(
@@ -135,10 +137,10 @@ export function materializeGenericResource(
 	);
 }
 
-export function materializePlatformResource(
-	acquired: PlatformAcquiredMaterial,
+export function materializePlatformResource<TPlatform extends ResourcePlatform>(
+	acquired: PlatformAcquiredMaterial<TPlatform>,
 	hints: ResourceAcquisitionHints,
-	identity: Pick<MaterializedResource, 'kind' | 'url'>,
+	identity: Pick<MaterializedResource, 'url'> & { kind: ResourceKindForPlatform<TPlatform> },
 	subject: ResolvedResourceSubject | null = null,
 ): ResolvedResource {
 	let publishedDate = hints.publishedDate;

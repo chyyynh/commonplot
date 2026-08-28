@@ -65,9 +65,7 @@ interface TwitterMetadata extends TwitterAuthorFields {
 	quotedTweet?: QuotedTweetData;
 }
 
-type TwitterAcquiredMaterial = Omit<PlatformAcquiredMaterial<'twitter'>, 'kindMetadata' | 'platformId'> & {
-	kindMetadata: PostKindMetadata;
-};
+type TwitterAcquiredMaterial = Omit<PlatformAcquiredMaterial<'twitter'>, 'platformId'>;
 type TwitterResourceFields = Pick<TwitterAcquiredMaterial, 'creators' | 'kindMetadata' | 'subjectUrl'>;
 
 function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {

@@ -73,10 +73,7 @@ type HackerNewsDiscussionInput = {
 	threadCount: number;
 };
 
-type HackerNewsAcquisition = Omit<PlatformAcquiredMaterial<'hackernews'>, 'kindMetadata'> & {
-	discussion: HackerNewsDiscussionInput;
-	kindMetadata: ForumKindMetadata;
-};
+type HackerNewsAcquisition = PlatformAcquiredMaterial<'hackernews'> & { discussion: HackerNewsDiscussionInput };
 
 async function fetchHnItem(itemId: number | string): Promise<HackerNewsItem | null> {
 	const response = await fetch(`${HN_ITEM_API}/${itemId}.json`, { signal: AbortSignal.timeout(15_000) });
