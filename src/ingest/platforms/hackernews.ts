@@ -244,7 +244,7 @@ export async function stageHackerNewsAcquisition(
 		async () => Response.json(await scrapeHackerNews(env, input.itemId, input.processingId)).body!,
 	);
 	const acquired = await new Response(contentStream).json<HackerNewsAcquisition>();
-	const annotation = await step.do(
+	const digest = await step.do(
 		'build-hacker-news-annotation-ranked-v3',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
 		async () => {
@@ -295,18 +295,13 @@ Rules:
 				maxRetries: 0,
 			});
 			if (finishReason === 'length') throw new Error('Hacker News discussion digest hit its output token cap');
-			const digest = text.trim();
-			if (!digest) throw new Error('Hacker News discussion digest returned no text');
-			return `${HN_DISCUSSION_HEADING}\n\n${digest}`;
+			const generatedDigest = text.trim();
+			if (!generatedDigest) throw new Error('Hacker News discussion digest returned no text');
+			return generatedDigest;
 		},
 	);
 	const { discussion: _discussion, ...resource } = acquired;
-	let markdown = resource.markdown;
-	if (annotation) {
-		const carrierContent = markdown.split(`\n\n---\n\n${HN_DISCUSSION_HEADING}`, 1)[0].trim();
-		if (!carrierContent) throw new Error('Hacker News resource has no content to annotate');
-		markdown = [carrierContent, '---', annotation].join('\n\n');
-	}
+	const markdown = digest ? [resource.markdown, '---', digest].join('\n\n') : resource.markdown;
 	return materializePlatformResource(
 		{ ...resource, markdown },
 		input.hints,
@@ -315,6 +310,5 @@ Rules:
 	);
 }
 
-const HN_DISCUSSION_HEADING = '## Hacker News community perspectives';
 const HN_DISCUSSION_SYSTEM =
 	'You are a professional tech news editor. Synthesize Hacker News comments into community perspectives. Use only the provided material. Return only the finished digest, never your analysis process.';
