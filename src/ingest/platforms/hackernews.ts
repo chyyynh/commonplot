@@ -73,7 +73,10 @@ type HackerNewsDiscussionInput = {
 	threadCount: number;
 };
 
-type HackerNewsAcquisition = PlatformAcquiredMaterial<'hackernews'> & { discussion: HackerNewsDiscussionInput };
+type HackerNewsAcquisition = Omit<PlatformAcquiredMaterial<'hackernews'>, 'kindMetadata'> & {
+	discussion: HackerNewsDiscussionInput;
+	kindMetadata: ForumKindMetadata;
+};
 
 async function fetchHnItem(itemId: number | string): Promise<HackerNewsItem | null> {
 	const response = await fetch(`${HN_ITEM_API}/${itemId}.json`, { signal: AbortSignal.timeout(15_000) });
@@ -251,6 +254,12 @@ export async function stageHackerNewsAcquisition(
 			const discussion = acquired.discussion;
 			if (discussion.commentCount < 4 || discussion.threadCount < 2) return null;
 			const hnPostSection = discussion.hnText ? `HN post text:\n${discussion.hnText}\n\n` : '';
+			const digestFocus =
+				acquired.kindMetadata.itemType === 'ask'
+					? 'Synthesize the answers, experiences, and advice offered in response to the question.'
+					: acquired.kindMetadata.itemType === 'show'
+						? 'Synthesize the community feedback, questions, use cases, and technical observations about the project.'
+						: 'Synthesize the arguments, context, reactions, and disagreements in the discussion.';
 			const { finishReason, text } = await generateText({
 				model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
 					...CORE_TEXT_MODEL_SETTINGS,
@@ -272,7 +281,7 @@ ${discussion.commentInput}
 
 The Thread blocks follow Hacker News' ranked top-level order. Each Direct reply belongs to the Top-level comment immediately above it.
 
-Write a 220-360 word community digest in English using 3-5 short paragraphs. Each paragraph should synthesize one distinct perspective found across the sampled threads. Prioritize viewpoints that recur across multiple top-level threads, meaningful disagreements, useful context, and genuine areas of agreement. Include supporting, skeptical, and supplementary perspectives only when the comments contain them.
+${digestFocus} Write the digest in English and choose the structure and level of detail that best represent the sampled discussion. Prioritize viewpoints that recur across multiple top-level threads, meaningful disagreements, useful context, and genuine areas of agreement. Include supporting, skeptical, and supplementary perspectives only when the comments contain them.
 
 Rules:
 - Write in English
@@ -285,7 +294,6 @@ Rules:
 - Maintain a neutral, objective tone
 - Output only the paragraphs, without a code block`,
 				system: HN_DISCUSSION_SYSTEM,
-				maxOutputTokens: 900,
 				temperature: 0.3,
 				reasoning: 'none',
 				maxRetries: 0,
@@ -313,4 +321,4 @@ Rules:
 
 const HN_DISCUSSION_HEADING = '## Hacker News community perspectives';
 const HN_DISCUSSION_SYSTEM =
-	'You are a professional tech news editor. Synthesize Hacker News comments into concise community perspectives. Use only the provided material. Return only the finished digest, never your analysis process.';
+	'You are a professional tech news editor. Synthesize Hacker News comments into community perspectives. Use only the provided material. Return only the finished digest, never your analysis process.';
