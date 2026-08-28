@@ -68,10 +68,6 @@ for (const hiddenDestination of ['https://example.com/report?q=1', 'https://exam
 		`protected destination leaked into model input: ${hiddenDestination}`,
 	);
 }
-assert.ok(
-	plan.segments.every((segment) => !segment.text.includes('$57')),
-	'protected literal leaked into model input',
-);
 for (const batch of plan.batches) {
 	assert.ok(batch.inputCharacters <= options.maxBatchCharacters, `${batch.id} exceeded its input character budget`);
 }
@@ -150,26 +146,31 @@ assert.throws(
 
 const linkBatch = plan.batches.find((batch) => batch.segments.some((segment) => segment.text.includes('research report')));
 assert.ok(linkBatch, 'fixture must contain a translated link block');
+const linkSegment = linkBatch.segments.find((segment) => segment.text.includes('research report'));
+assert.ok(linkSegment, 'fixture must expose the translated link label inside opaque tokens');
+const protectedToken = linkSegment.text.match(/NEWSENCE(?:OPEN|ATOM)\d{6}TOKEN/u)?.[0];
+assert.ok(protectedToken, 'translated link block must contain an opaque inline token');
 const linkTranslations = linkBatch.segments.map((segment) => ({
 	id: segment.id,
-	text: segment.text.replace(segment.protectedDestinations[0]?.placeholder ?? 'missing-placeholder', 'https://example.com/changed'),
+	text: segment.id === linkSegment.id ? segment.text.replace(protectedToken, 'BROKEN') : segment.text,
 }));
 assert.throws(
 	() => validateMarkdownBatchTranslations(linkBatch, linkTranslations),
 	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
-	'changed link destinations must fail closed',
+	'changed inline tokens must fail closed',
 );
 
-const literalBatch = plan.batches.find((batch) => batch.segments.some((segment) => segment.protectedLiterals.length));
-assert.ok(literalBatch, 'fixture must contain protected Markdown literals');
-const literalTranslations = literalBatch.segments.map((segment) => ({
-	id: segment.id,
-	text: segment.text.replace(segment.protectedLiterals[0]?.placeholder ?? 'missing-placeholder', ''),
-}));
-assert.throws(
-	() => validateMarkdownBatchTranslations(literalBatch, literalTranslations),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
-	'changed protected literals must fail closed',
+const reorderedPlan = planMarkdownTranslation('The market [expects](https://example.com/forecast) electric vehicles.');
+const reorderedSegment = reorderedPlan.segments[0];
+assert.ok(reorderedSegment, 'reordered-inline fixture must produce a segment');
+const [openToken, closeToken] = reorderedSegment.text.match(/NEWSENCE(?:OPEN|CLOSE)\d{6}TOKEN/gu) ?? [];
+assert.ok(openToken && closeToken, 'reordered-inline fixture must protect its link');
+const reorderedMarkdown = compileMarkdownTranslation(reorderedPlan, [
+	{ id: reorderedSegment.id, text: `${openToken}預期${closeToken}市場將以電動車為主。` },
+]);
+assert.ok(
+	reorderedMarkdown.includes(`[預期](https://example.com/forecast)市場將以電動車為主。`),
+	'inline markup must survive target-language word-order changes',
 );
 
 const malformedMarkdown = `## Malformed but parseable\n\nAn **unclosed delimiter and a [broken link label must remain ordinary prose.`;
