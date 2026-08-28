@@ -197,15 +197,15 @@ ${task === 'paper-title-summary' ? '- summary: 將作者原始摘要完整翻譯
 			return {
 				schema: ZhHantMetadataTranslationSchema,
 				maxOutputTokens: 700,
-				system: `你是專業的新聞翻譯和摘要編輯。請只輸出符合 schema 的繁體中文結果。
+				system: `你是專業的新聞翻譯編輯。請只輸出符合 schema 的台灣繁體中文結果。
 
 任務：
 - title: 將標題翻譯成自然流暢的繁體中文
-- summary: 根據原文標題、摘要與內容，產生 1-2 句繁體中文摘要
+- summary: 若原文提供摘要，忠實完整翻譯該摘要；只有原文摘要缺失時，才根據內容產生 1-2 句繁體中文摘要
 
 規則：
-- 忠實保留原文語氣，不要新增資訊
-- 若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然繁體中文
+- 忠實保留原文語氣、限定與不確定性，不要推論或新增資訊
+- 使用台灣常用詞彙與標點；若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然的台灣繁體中文
 - 不要使用 Markdown。`,
 			};
 	}
@@ -231,7 +231,8 @@ async function generateZhHantMetadataTranslation(
 ${content.slice(0, METADATA_CONTENT_MAX_LENGTH)}`;
 	const request = metadataTranslationRequest(task);
 	const { finishReason, output } = await generateText({
-		model: createWorkersAI({ binding: env.AI })('@cf/meta/llama-3.3-70b-instruct-fp8-fast', {
+		model: createWorkersAI({ binding: env.AI })('@cf/qwen/qwen3.8-27b', {
+			chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
 			gateway: {
 				id: 'core-ingest',
 				collectLog: true,
@@ -246,9 +247,14 @@ ${content.slice(0, METADATA_CONTENT_MAX_LENGTH)}`;
 		}),
 		prompt,
 		system: request.system,
-		output: Output.object({ schema: request.schema }),
+		output: Output.object({
+			name: 'resource_translation_metadata',
+			description: 'Faithful Taiwan Traditional Chinese localization of the requested resource metadata fields.',
+			schema: request.schema,
+		}),
 		maxOutputTokens: request.maxOutputTokens,
 		temperature: 0.3,
+		reasoning: 'none',
 		maxRetries: 0,
 	});
 	if (finishReason === 'length') throw new Error('Resource metadata localization hit its output token cap');

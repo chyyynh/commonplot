@@ -81,6 +81,7 @@ async function translateGroup(
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	const { finishReason, output } = await generateText({
 		model: createWorkersAI({ binding: env.AI })('@cf/qwen/qwen3.8-27b', {
+			chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
 			gateway: {
 				id: 'core-ingest',
 				collectLog: true,

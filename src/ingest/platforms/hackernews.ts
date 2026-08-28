@@ -291,7 +291,7 @@ async function generateHnDiscussionDigest(
 			},
 			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
 		}),
-		prompt: buildDiscussionPrompt(title, discussion.hnText, discussion.commentInput, discussion.commentCount),
+		prompt: `${buildDiscussionPrompt(title, discussion.hnText, discussion.commentInput, discussion.commentCount)}\n/no_think`,
 		system: HN_DISCUSSION_SYSTEM,
 		temperature: 0.3,
 		maxRetries: 0,
