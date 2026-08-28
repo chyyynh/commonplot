@@ -13,8 +13,8 @@ const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_conten
 
 // Static extractor configuration: TechCrunch places author cards and affiliate
 // chrome beside the real post body inside the same Readability candidate. Its
-// nested figcaption markup is flattened before Cloudflare Markdown conversion;
-// publisher-provided alt text and captions remain intact, but are not invented.
+// figcaptions are omitted because CommonMark would flatten them into body text;
+// publisher-provided image alt text remains intact, but is not invented.
 addTransformations({
 	patterns: [/^https?:\/\/(?:www\.)?techcrunch\.com\//i],
 	pre(document) {
@@ -23,16 +23,7 @@ addTransformations({
 		return document;
 	},
 	post(document) {
-		for (const caption of document.querySelectorAll('figcaption')) {
-			const text = caption.textContent.replace(/\s+/g, ' ').trim();
-			if (!text) {
-				caption.remove();
-				continue;
-			}
-			const paragraph = document.createElement('p');
-			paragraph.textContent = text;
-			caption.replaceWith(paragraph);
-		}
+		for (const caption of document.querySelectorAll('figcaption')) caption.remove();
 		return document;
 	},
 });
