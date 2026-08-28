@@ -51,47 +51,26 @@ Contact user@example.com and see the source.[^source]
 `;
 
 const options = {
-	maxBatchCharacters: 320,
+	maxBatchCharacters: 900,
 	maxBatchSegments: 4,
-	maxContextCharacters: 48,
-	maxSegmentCharacters: 120,
+	maxContextCharacters: 100,
+	maxSegmentCharacters: 700,
 };
 const plan = planMarkdownTranslation(markdownFixture, options);
-assert.ok(plan.segments.length > 10, 'fixture should produce independently addressable prose segments');
+assert.ok(plan.segments.length > 10, 'fixture should produce independently addressable prose blocks');
 assert.ok(plan.batches.length > 1, 'fixture should exercise deterministic batching');
 assert.deepEqual(planMarkdownTranslation(markdownFixture, options), plan, 'translation planning must be deterministic');
-const blockCounts = new Map();
-for (const segment of plan.segments) {
-	const block = segment.context?.match(/^Block: (b\d+)/)?.[1];
-	if (block) blockCounts.set(block, (blockCounts.get(block) ?? 0) + 1);
-	assert.ok(!segment.context?.includes('Block: Read the'), 'block context must not repeat source prose');
-}
-assert.ok(
-	[...blockCounts.values()].some((count) => count >= 3),
-	'inline Markdown fragments must retain a shared prose block',
-);
-for (const opaqueValue of [
-	'Opaque frontmatter metadata',
-	'C_L',
-	'E = mc^2',
-	'Original title',
-	'https://example.com/report?q=1',
-	'pnpm test',
-	'protected_code',
-	'Opaque HTML must stay untouched.',
-]) {
-	assert.ok(
-		plan.segments.every((segment) => !segment.text.includes(opaqueValue)),
-		`opaque value crossed the translatable segment boundary: ${opaqueValue}`,
-	);
-}
 for (const batch of plan.batches) {
 	assert.ok(batch.inputCharacters <= options.maxBatchCharacters, `${batch.id} exceeded its input character budget`);
 }
 
-const translations = plan.segments.map((segment, index) => ({
+const translations = plan.segments.map((segment) => ({
 	id: segment.id,
-	text: `譯文${index + 1}：星號 *、括號 [、井字號 # 與反斜線 \\ 都只是文字`,
+	text: segment.text
+		.replace('Format-safe translation', '格式安全翻譯')
+		.replace('research report', '研究報告')
+		.replace('A descriptive chart', '描述性圖表')
+		.replace('Footnote prose', '註腳文字'),
 }));
 const translatedMarkdown = compileMarkdownTranslation(plan, translations);
 
@@ -155,6 +134,18 @@ assert.throws(
 	'blank lines inside a prose segment must retry before reconstruction',
 );
 
+const linkBatch = plan.batches.find((batch) => batch.segments.some((segment) => segment.text.includes('example.com/report')));
+assert.ok(linkBatch, 'fixture must contain a translated link block');
+const linkTranslations = linkBatch.segments.map((segment) => ({
+	id: segment.id,
+	text: segment.text.replace('https://example.com/report?q=1', 'https://example.com/changed'),
+}));
+assert.throws(
+	() => validateMarkdownBatchTranslations(linkBatch, linkTranslations),
+	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
+	'changed link destinations must fail closed',
+);
+
 const malformedMarkdown = `## Malformed but parseable\n\nAn **unclosed delimiter and a [broken link label must remain ordinary prose.`;
 const malformedPlan = planMarkdownTranslation(malformedMarkdown);
 const malformedTranslation = compileMarkdownTranslation(
@@ -173,12 +164,12 @@ const longPlan = planMarkdownTranslation(longMarkdown, {
 });
 assert.ok(longPlan.batches.length > 1, 'long bodies must translate through multiple batches');
 assert.equal(
-	longPlan.segments
-		.map((segment) => segment.text)
-		.join('')
-		.replaceAll(' ', ''),
-	longMarkdown.replace(/^# /, '').replaceAll('\n', '').trim().replaceAll(' ', ''),
-	'long prose segmentation must not drop content',
+	compileMarkdownTranslation(
+		longPlan,
+		longPlan.segments.map((segment) => ({ id: segment.id, text: segment.text })),
+	),
+	longMarkdown.trimEnd(),
+	'long prose segmentation and reconstruction must not drop content',
 );
 
 console.info({

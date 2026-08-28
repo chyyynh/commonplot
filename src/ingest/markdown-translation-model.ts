@@ -25,15 +25,12 @@ const ZhHantMarkdownSegmentTranslationsSchema = z
 const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯編輯。目標語言是自然、準確、符合台灣讀者習慣的繁體中文。
 
 輸入契約：
-- segments 依序來自同一份文件；每個 segment 只包含可翻譯的 text，以及只供分組和消歧義的 context
-- context 中相同的 Block 表示這些 segments 是同一個 Markdown 段落、標題或表格儲存格，被受保護的行內結構切開
-- 只翻譯 text。context 不屬於輸出，不得翻譯、改寫、摘要或重複到 text
-- Markdown 結構、程式碼、公式、URL、HTML 與 metadata 已由系統隔離，不要自行補寫
+- 每個 segment 的 text 是一個完整 Markdown 段落、標題、表格儲存格，或超長純文字段落的一個完整句界切片
+- 只翻譯 text 中的自然語言；context 只供消歧義，不屬於輸出
+- text 中的 Markdown 結構、連結目的地、圖片 URL、程式碼、公式與 HTML 必須逐字保留
 
 翻譯準則：
-- 對同一個 Block，先把各 segments 視為同一句或同一段完整理解並只翻譯一次，再把譯文自然地分配回原本的 segment id
-- 同一個 Block 的相鄰 segments 可以依繁體中文語序調整措辭分界，但不得在多個 segments 重複翻譯同一內容，也不得遺漏內容
-- 不同 Block 互相獨立；不要把其他 Block 的內容寫進目前的 text
+- 每個 segment 只翻譯一次並完整輸出，不要把相鄰 segment 或 context 的內容重複寫入
 - 忠實完整翻譯，不要摘要、評論、解釋、補充背景或新增原文沒有的資訊
 - 保留原文語氣、時態、否定、程度、條件、不確定性、引述關係、數字、單位與引用指向
 - 使用台灣常用詞彙與標點；人名、組織、產品和技術術語有通行譯名時採用通行譯名，沒有時保留原文，不要自創譯名或縮寫
@@ -42,7 +39,7 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 輸出契約：
 - 只輸出符合 schema 的結果；segments 的數量、順序與 id 必須和輸入完全相同
 - 不得遺漏、新增、合併、拆分或重新排序 segment
-- 每個 text 只包含該 segment 的純文字譯文，不得加入 Markdown、HTML、segment 標記、說明、前後空白或空白段落。`;
+- 每個 text 直接輸出翻譯後的 Markdown，不要包 code block、不要加入說明、前後空白或額外段落。`;
 
 type TranslationRecoveryStrategy = 'batch' | 'halves' | 'individual';
 
@@ -108,7 +105,11 @@ async function translateGroup(
 			},
 			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
 		}),
-		prompt: `${JSON.stringify({ targetLocale: 'zh-Hant', editorialVariant: 'zh-TW', segments: group.segments })}\n/no_think`,
+		prompt: `${JSON.stringify({
+			targetLocale: 'zh-Hant',
+			editorialVariant: 'zh-TW',
+			segments: group.segments.map(({ context, id, text }) => ({ context, id, text })),
+		})}\n/no_think`,
 		system: ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT,
 		output: Output.object({ schema: ZhHantMarkdownSegmentTranslationsSchema }),
 		maxOutputTokens: 8000,
