@@ -60,6 +60,12 @@ const plan = planMarkdownTranslation(markdownFixture, options);
 assert.ok(plan.segments.length > 10, 'fixture should produce independently addressable prose blocks');
 assert.ok(plan.batches.length > 1, 'fixture should exercise deterministic batching');
 assert.deepEqual(planMarkdownTranslation(markdownFixture, options), plan, 'translation planning must be deterministic');
+for (const hiddenDestination of ['https://example.com/report?q=1', 'https://example.com/opaque', 'https://cdn.example.com/chart.png']) {
+	assert.ok(
+		plan.segments.every((segment) => !segment.text.includes(hiddenDestination)),
+		`protected destination leaked into model input: ${hiddenDestination}`,
+	);
+}
 for (const batch of plan.batches) {
 	assert.ok(batch.inputCharacters <= options.maxBatchCharacters, `${batch.id} exceeded its input character budget`);
 }
@@ -134,11 +140,11 @@ assert.throws(
 	'blank lines inside a prose segment must retry before reconstruction',
 );
 
-const linkBatch = plan.batches.find((batch) => batch.segments.some((segment) => segment.text.includes('example.com/report')));
+const linkBatch = plan.batches.find((batch) => batch.segments.some((segment) => segment.text.includes('research report')));
 assert.ok(linkBatch, 'fixture must contain a translated link block');
 const linkTranslations = linkBatch.segments.map((segment) => ({
 	id: segment.id,
-	text: segment.text.replace('https://example.com/report?q=1', 'https://example.com/changed'),
+	text: segment.text.replace(segment.protectedDestinations[0]?.placeholder ?? 'missing-placeholder', 'https://example.com/changed'),
 }));
 assert.throws(
 	() => validateMarkdownBatchTranslations(linkBatch, linkTranslations),

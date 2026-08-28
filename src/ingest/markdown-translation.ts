@@ -41,9 +41,17 @@ type MarkdownTranslationTarget = Readonly<{
 	segmentIds: readonly string[];
 }>;
 
+type ProtectedDestination = Readonly<{
+	displayUrl: string | null;
+	placeholder: string;
+	title: string | null;
+	url: string;
+}>;
+
 export type MarkdownTranslationSegment = Readonly<{
 	context: string | null;
 	id: string;
+	protectedDestinations: readonly ProtectedDestination[];
 	referenceContext: string;
 	sourceSkeleton: string;
 	text: string;
@@ -279,6 +287,35 @@ function serializePhrasing(children: readonly PhrasingContent[]): string {
 	return serializeMarkdown(phrasingRoot(children));
 }
 
+function protectDestinations(children: readonly PhrasingContent[]): Readonly<{
+	destinations: readonly ProtectedDestination[];
+	text: string;
+}> {
+	const protectedChildren = structuredClone(children);
+	const destinations: ProtectedDestination[] = [];
+	const protectNode = (node: Nodes): void => {
+		if (node.type === 'link' || node.type === 'image') {
+			const placeholder = `https://newsence.invalid/protected/${String(destinations.length + 1).padStart(4, '0')}`;
+			const displayUrl =
+				node.type === 'link' &&
+				node.children.length === 1 &&
+				node.children[0]?.type === 'text' &&
+				normalizedAutolinkDestination(node.children[0].value) === normalizedAutolinkDestination(node.url)
+					? node.children[0].value
+					: null;
+			destinations.push({ displayUrl, placeholder, title: node.title ?? null, url: node.url });
+			node.url = placeholder;
+			node.title = null;
+			if (displayUrl && node.type === 'link' && node.children[0]?.type === 'text') node.children[0].value = placeholder;
+		}
+		if (isParent(node)) {
+			for (const child of node.children) protectNode(child);
+		}
+	};
+	for (const child of protectedChildren) protectNode(child);
+	return { destinations, text: serializePhrasing(protectedChildren) };
+}
+
 function parsePhrasing(markdown: string, references: string): PhrasingContent[] {
 	const tree = parseMarkdown(references ? `${markdown}\n\n${references}` : markdown);
 	const block = tree.children[0];
@@ -344,11 +381,18 @@ function batchSegments(segments: readonly MarkdownTranslationSegment[], options:
 	return batches;
 }
 
-function addSegment(text: string, context: string | null, accumulator: PlanAccumulator): MarkdownTranslationSegment {
+function addSegment(
+	input: string | readonly PhrasingContent[],
+	context: string | null,
+	accumulator: PlanAccumulator,
+): MarkdownTranslationSegment {
+	const protectedInput = typeof input === 'string' ? { destinations: [], text: input } : protectDestinations(input);
+	const text = protectedInput.text;
 	const sourceSkeleton = phrasingSkeleton(text, accumulator.referenceContext);
 	const segment = {
 		context,
 		id: `s${String(accumulator.segments.length + 1).padStart(6, '0')}`,
+		protectedDestinations: protectedInput.destinations,
 		referenceContext: accumulator.referenceContext,
 		sourceSkeleton,
 		text,
@@ -373,7 +417,7 @@ function planProseBlock(block: ProseBlock, context: VisitContext, options: Resol
 	const heading = context.heading && block.type !== 'heading' ? `Heading: ${context.heading}`.slice(0, options.maxContextCharacters) : null;
 	const serialized = serializePhrasing(block.children);
 	if (serialized.length <= options.maxSegmentCharacters) {
-		const segment = addSegment(serialized, heading, accumulator);
+		const segment = addSegment(block.children, heading, accumulator);
 		accumulator.targets.push({ boundaries: null, path: context.path, segmentIds: [segment.id] });
 	} else if (block.children.length === 1 && block.children[0]?.type === 'text') {
 		const boundaries = [''];
@@ -420,6 +464,34 @@ function nodeAtPath(tree: Root, path: readonly number[]): Nodes {
 		current = child;
 	}
 	return current;
+}
+
+function restoreDestinations(children: PhrasingContent[], segment: MarkdownTranslationSegment): void {
+	const destinations = new Map(segment.protectedDestinations.map((destination) => [destination.placeholder, destination]));
+	const restored = new Set<string>();
+	const restoreNode = (node: Nodes): void => {
+		if (node.type === 'link' || node.type === 'image') {
+			const destination = destinations.get(node.url);
+			if (destination) {
+				node.url = destination.url;
+				node.title = destination.title;
+				if (destination.displayUrl && node.type === 'link' && node.children[0]?.type === 'text') {
+					node.children[0].value = destination.displayUrl;
+				}
+				restored.add(destination.placeholder);
+			}
+		}
+		if (isParent(node)) {
+			for (const child of node.children) restoreNode(child);
+		}
+	};
+	for (const child of children) restoreNode(child);
+	if (restored.size !== destinations.size) {
+		throw new MarkdownTranslationInvariantError(
+			'markdown-structure-changed',
+			`Translated segment ${segment.id} lost a protected destination`,
+		);
+	}
 }
 
 function orderedTranslationMap(
@@ -502,7 +574,9 @@ export function compileMarkdownTranslation(plan: MarkdownTranslationPlan, transl
 			if (translated === undefined) throw new MarkdownTranslationInvariantError('missing-segment', `Missing segment ${id}`);
 			const segment = segmentsById.get(id);
 			if (!segment) throw new MarkdownTranslationInvariantError('invalid-plan', `Missing planned segment ${id}`);
-			return parsePhrasing(translated, segment.referenceContext);
+			const children = parsePhrasing(translated, segment.referenceContext);
+			restoreDestinations(children, segment);
+			return children;
 		});
 		if (!target.boundaries) {
 			if (translatedParts.length !== 1) {
