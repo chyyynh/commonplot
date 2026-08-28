@@ -3,7 +3,7 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import type { RESOURCE_TYPES, ResourceCreator } from '../shared/resource';
 import type { ProcessingResource } from './acquisition';
-import { CORE_TEXT_MODEL, CORE_TEXT_MODEL_SETTINGS } from './ai-model';
+import { CORE_TEXT_MODEL } from './ai-model';
 
 const ANALYSIS_CONTENT_MAX_LENGTH = 10_000;
 const ENTITY_NAME_MAX_LENGTH = 255;
@@ -146,7 +146,6 @@ export async function analyzeResource(
 ${resource.content.trim().substring(0, ANALYSIS_CONTENT_MAX_LENGTH)}`;
 	const { finishReason, output: analysis } = await generateText({
 		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
-			...CORE_TEXT_MODEL_SETTINGS,
 			gateway: {
 				id: 'core-ingest',
 				collectLog: true,

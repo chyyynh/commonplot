@@ -4,7 +4,7 @@ import { generateText } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { type ForumKindMetadata, RESOURCE_TYPES } from '../../shared/resource';
-import { CORE_TEXT_MODEL, CORE_TEXT_MODEL_SETTINGS } from '../ai-model';
+import { CORE_TEXT_MODEL } from '../ai-model';
 import {
 	literalCreator,
 	materializePlatformResource,
@@ -259,7 +259,6 @@ export async function stageHackerNewsAcquisition(
 						: 'Synthesize the arguments, context, reactions, and disagreements in the discussion.';
 			const { finishReason, text } = await generateText({
 				model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
-					...CORE_TEXT_MODEL_SETTINGS,
 					gateway: {
 						id: 'core-ingest',
 						collectLog: true,
