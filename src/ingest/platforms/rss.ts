@@ -25,10 +25,6 @@ type FeedSource = {
 	handle: string;
 };
 
-function optionalString(value: unknown): string | undefined {
-	return typeof value === 'string' && value.trim() ? value.trim() : undefined;
-}
-
 function feedEntryUrl(item: ExtractedFeedEntry): string | null {
 	const itemUrl = item.link ? URL.parse(item.link) : null;
 	const itemPlatform =
@@ -59,11 +55,10 @@ function normalizeFeedEntries(items: ExtractedFeedEntry[], feedLanguage?: string
 	for (const item of items) {
 		const url = feedEntryUrl(item);
 		if (!url || entries.has(url)) continue;
-		const published = optionalString(item.published);
-		const date = published ? new Date(published) : null;
+		const date = item.published ? new Date(item.published) : null;
 		entries.set(url, {
 			url,
-			summary: optionalString(item.description)?.slice(0, FEED_SUMMARY_MAX_CHARS) ?? null,
+			summary: item.description?.slice(0, FEED_SUMMARY_MAX_CHARS) || null,
 			publishedDate: date && !Number.isNaN(date.getTime()) ? date : null,
 			originalLang: feedLanguage,
 		});
@@ -140,10 +135,10 @@ async function loadFeed(feedUrl: string): Promise<{
 	}
 
 	const items = (parsed.entries ?? []).slice(0, MAX_FEED_ITEMS);
-	const entries = normalizeFeedEntries(items, optionalString(parsed.language));
+	const entries = normalizeFeedEntries(items, parsed.language?.trim() || undefined);
 	return {
 		effectiveUrl,
-		title: optionalString(parsed.title) ?? null,
+		title: parsed.title?.trim() || null,
 		itemCount: items.length,
 		entries,
 	};
@@ -159,19 +154,6 @@ export async function resolveFeedMonitoredSource(url: URL) {
 		siteUrl: feedUrl.origin,
 		avatarUrl: null,
 	};
-}
-
-async function loadFeedSources(db: NodePgDatabase): Promise<FeedSource[]> {
-	const result = await db.execute<FeedSource>(sql`
-		SELECT id::text AS id, name, handle
-		FROM sources
-		WHERE enabled = true
-		  AND monitor_kind = 'feed'
-		  AND (handle NOT LIKE 'https://www.youtube.com/feeds/videos.xml?channel_id=%'
-		    OR scraped_at IS NULL
-		    OR scraped_at < NOW() - INTERVAL '30 minutes')
-	`);
-	return result.rows;
 }
 
 async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: FeedSource): Promise<void> {
@@ -208,7 +190,15 @@ export async function handleRSSCron(env: CoreEnv, db: NodePgDatabase): Promise<v
 	// Every feed source uses the same parser. A YouTube channel handle is an Atom
 	// feed URL, so there is nothing for a separate monitor to do.
 	// Its entries still resolve to resource_platform='youtube' at acquisition.
-	const feeds = await loadFeedSources(db);
+	const { rows: feeds } = await db.execute<FeedSource>(sql`
+		SELECT id::text AS id, name, handle
+		FROM sources
+		WHERE enabled = true
+		  AND monitor_kind = 'feed'
+		  AND (handle NOT LIKE 'https://www.youtube.com/feeds/videos.xml?channel_id=%'
+		    OR scraped_at IS NULL
+		    OR scraped_at < NOW() - INTERVAL '30 minutes')
+	`);
 	for (let index = 0; index < feeds.length; index += FEED_CONCURRENCY) {
 		const batch = feeds.slice(index, index + FEED_CONCURRENCY);
 		const results = await Promise.allSettled(batch.map((feed) => processFeed(env, db, feed)));
