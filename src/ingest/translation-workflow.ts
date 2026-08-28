@@ -7,7 +7,14 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
 import { canonicalizeResourceLang, type RESOURCE_TYPES } from '../shared/resource';
-import { pdfTranslationAdmission, privateUploadedPdfTranslationSqlAdmission, stagePrivatePdfMarkdownTranslation } from './platforms/pdf';
+import {
+	compileMarkdownTranslation,
+	type MarkdownSegmentTranslation,
+	MarkdownTranslationInvariantError,
+	planMarkdownTranslation,
+} from './markdown-translation';
+import { translateMarkdownBatchToZhHant } from './markdown-translation-model';
+import { pdfTranslationAdmission, privateUploadedPdfTranslationSqlAdmission } from './platforms/pdf';
 
 type ResourceTranslationPayload = { resourceId: string; translationRevision: string };
 const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const;
@@ -53,15 +60,6 @@ type ResourceTranslationInputRow = {
 };
 
 const METADATA_CONTENT_MAX_LENGTH = 10000;
-/**
- * Ceiling for translating a body in one call. Measured on qwen3-30b: ~0.165
- * input and ~0.29 output tokens per source character at ~108 output tokens/s,
- * so 36k characters is ~18k of the 32k context and ~97s against the 180s step
- * timeout. It covers 98% of the corpus; longer corpus bodies (overwhelmingly
- * Hacker News comment dumps) keep their original text, while private uploaded
- * PDFs use deterministic platform-owned chunks.
- */
-const CONTENT_TRANSLATION_MAX_LENGTH = 36000;
 const PARTIAL_CONTENT_TRANSLATION_RATIO = 0.2;
 const MIN_TRANSLATABLE_TEXT_LENGTH = 20;
 const INLINE_POST_CONTENT_TRANSLATION_MAX_LENGTH = 1000;
@@ -84,7 +82,7 @@ type ZhHantMetadataTranslationTask = 'article-title-summary' | 'paper-title' | '
 
 type ZhHantTranslationPlan = {
 	metadata: ZhHantMetadataTranslationTask | null;
-	content: 'translate' | 'translate-private-file' | 'skip-too-long' | null;
+	content: 'translate' | null;
 };
 
 function isBlank(value: string | null | undefined): boolean {
@@ -145,11 +143,7 @@ function planZhHantTranslation(resource: ResourceTranslationInput): ZhHantTransl
 		return { metadata, content: null };
 	}
 	if (metadata === 'post-title-content') return { metadata, content: null };
-	return {
-		metadata,
-		content:
-			content.length <= CONTENT_TRANSLATION_MAX_LENGTH ? 'translate' : privateUploadedPdf ? 'translate-private-file' : 'skip-too-long',
-	};
+	return { metadata, content: 'translate' };
 }
 
 function metadataTranslationRequest(task: ZhHantMetadataTranslationTask) {
@@ -261,51 +255,6 @@ ${content.slice(0, METADATA_CONTENT_MAX_LENGTH)}`;
 	return output;
 }
 
-const RESOURCE_CONTENT_TRANSLATION_SYSTEM_PROMPT = `你是專業的新聞全文翻譯編輯。請將原文完整翻譯成自然流暢的繁體中文。
-
-規則：
-- 忠實翻譯原文，不要摘要、不要評論、不要新增資訊
-- 保留 Markdown 結構、標題層級、列表、引用、連結和程式碼區塊
-- 專有名詞保留常見英文名稱；必要時可在中文後保留英文
-- 若原文已是繁體中文，直接保留原文；若是簡體中文，轉為自然繁體中文
-- 直接輸出翻譯後的 Markdown，不要包 code block。`;
-
-async function translateZhHantContent(
-	content: string,
-	env: CoreEnv,
-	resourceId: string,
-	chunk: Readonly<{ index: number; total: number }> | null = null,
-): Promise<string> {
-	const { finishReason, text } = await generateText({
-		model: createWorkersAI({ binding: env.AI })('@cf/qwen/qwen3-30b-a3b-fp8', {
-			gateway: {
-				id: 'core-ingest',
-				collectLog: true,
-				retries: { maxAttempts: 1 },
-				metadata: {
-					...(chunk ? { chunk_count: chunk.total, chunk_index: chunk.index } : {}),
-					feature: 'resource-content-translation',
-					environment: env.AI_GATEWAY_ENVIRONMENT,
-					resource_id: resourceId,
-				},
-			},
-			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
-		}),
-		prompt: `${chunk ? `原文 Markdown（第 ${chunk.index}/${chunk.total} 段；只翻譯本段，不要補寫前後文）` : '原文 Markdown'}:\n${content.trim()}\n\n/no_think`,
-		// Translation does not benefit from reasoning. A 12k-character chunk
-		// produces roughly 3.5k output tokens; 8k leaves capacity headroom while
-		// the finish-reason guard still owns any unexpected expansion.
-		maxOutputTokens: 8000,
-		temperature: 0.2,
-		system: RESOURCE_CONTENT_TRANSLATION_SYSTEM_PROMPT,
-		maxRetries: 0,
-	});
-	if (finishReason === 'length') throw new Error('Resource content translation hit its output token cap');
-	const output = text.trim();
-	if (!output) throw new Error('Resource content translation returned no text');
-	return output;
-}
-
 async function translatePlannedContent(
 	content: string,
 	plan: ZhHantTranslationPlan['content'],
@@ -313,18 +262,93 @@ async function translatePlannedContent(
 	resourceId: string,
 	step: WorkflowStep,
 ): Promise<string | null> {
-	if (plan === 'translate') {
-		return step.do(
-			'translate-zh-hant-content',
-			{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
-			() => translateZhHantContent(content, env, resourceId),
-		);
+	if (plan !== 'translate') return null;
+	let markdownPlan: ReturnType<typeof planMarkdownTranslation>;
+	try {
+		markdownPlan = planMarkdownTranslation(content);
+	} catch (error) {
+		console.error({
+			tag: 'RESOURCE_TRANSLATION',
+			event: 'markdown_validation_failed',
+			reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
+			resource_id: resourceId,
+		});
+		console.info({
+			tag: 'RESOURCE_TRANSLATION',
+			event: 'content_translation_outcome',
+			outcome: 'original-fallback',
+			reason: 'source-markdown-invalid',
+			resource_id: resourceId,
+		});
+		throw error;
 	}
-	if (plan !== 'translate-private-file') return null;
-	return stagePrivatePdfMarkdownTranslation(step, content, (markdown, chunk) => translateZhHantContent(markdown, env, resourceId, chunk));
+	console.info({
+		tag: 'RESOURCE_TRANSLATION',
+		event: 'markdown_translation_planned',
+		batch_count: markdownPlan.batches.length,
+		resource_id: resourceId,
+		segment_count: markdownPlan.segments.length,
+		source_characters: content.length,
+	});
+	if (!markdownPlan.segments.length) {
+		console.info({
+			tag: 'RESOURCE_TRANSLATION',
+			event: 'content_translation_outcome',
+			outcome: 'original-fallback',
+			reason: 'no-translatable-prose',
+			resource_id: resourceId,
+		});
+		return null;
+	}
+	const translatedSegments: MarkdownSegmentTranslation[] = [];
+	for (const [index, batch] of markdownPlan.batches.entries()) {
+		try {
+			const translatedBatch = await step.do(
+				`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v1`,
+				{ retries: { limit: 3, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
+				(context) => translateMarkdownBatchToZhHant(batch, env, resourceId, index + 1, markdownPlan.batches.length, context.attempt),
+			);
+			translatedSegments.push(...translatedBatch);
+		} catch (error) {
+			console.info({
+				tag: 'RESOURCE_TRANSLATION',
+				event: 'content_translation_outcome',
+				outcome: 'original-fallback',
+				reason: 'batch-recovery-exhausted',
+				batch_id: batch.id,
+				resource_id: resourceId,
+			});
+			throw error;
+		}
+	}
+	try {
+		const translated = compileMarkdownTranslation(markdownPlan, translatedSegments);
+		console.info({
+			tag: 'RESOURCE_TRANSLATION',
+			event: 'markdown_translation_compiled',
+			resource_id: resourceId,
+			translated_characters: translated.length,
+		});
+		return translated;
+	} catch (error) {
+		console.error({
+			tag: 'RESOURCE_TRANSLATION',
+			event: 'markdown_validation_failed',
+			reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
+			resource_id: resourceId,
+		});
+		console.info({
+			tag: 'RESOURCE_TRANSLATION',
+			event: 'content_translation_outcome',
+			outcome: 'original-fallback',
+			reason: 'markdown-structure-invalid',
+			resource_id: resourceId,
+		});
+		throw error;
+	}
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v8';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v9';
 const RESOURCE_TRANSLATION_WORKFLOW_RETENTION = { successRetention: '1 day', errorRetention: '7 days' } as const;
 const RESOURCE_TRANSLATION_REVISION_RE = /^[0-9a-f]{32}$/;
 
@@ -510,19 +534,8 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 
 		const resource = input.resource;
 		const translationPlan = planZhHantTranslation(resource);
-		if (translationPlan.content === 'skip-too-long') {
-			console.info({
-				tag: 'RESOURCE_TRANSLATION',
-				msg: 'Body too long to translate in one call; keeping the original',
-				resource_id: resource.id,
-				chars: resource.content.trim().length,
-				limit: CONTENT_TRANSLATION_MAX_LENGTH,
-			});
-		}
 		const metadataTask = translationPlan.metadata;
-		if (!metadataTask && translationPlan.content !== 'translate' && translationPlan.content !== 'translate-private-file') {
-			return;
-		}
+		if (!metadataTask && translationPlan.content !== 'translate') return;
 		const initialContent = resource.content.trim();
 		if (!initialContent) throw new Error(`Resource ${resourceId} has no persisted original content`);
 
@@ -554,7 +567,22 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				async () =>
 					persistMachineZhHantTranslation(await connectCoreDb(this.env), resourceId, translationRevision, { content: translated }),
 			);
-			if (!persisted) return;
+			if (!persisted) {
+				console.info({
+					tag: 'RESOURCE_TRANSLATION',
+					event: 'content_translation_outcome',
+					outcome: 'superseded',
+					resource_id: resourceId,
+				});
+				return;
+			}
+			console.info({
+				tag: 'RESOURCE_TRANSLATION',
+				event: 'content_translation_outcome',
+				outcome: 'persisted',
+				resource_id: resourceId,
+				translated_characters: translated.length,
+			});
 		}
 		if (resource.scope === 'corpus') {
 			await step.do(

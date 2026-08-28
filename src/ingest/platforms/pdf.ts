@@ -19,7 +19,6 @@ export const PDF_MIME = 'application/pdf';
 
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
 const MAX_PAPER_IDENTIFIER_TEXT_CHARS = 20_000;
-const PDF_TRANSLATION_CHUNK_MAX_LENGTH = 12_000;
 const LETTER_OR_NUMBER = /[\p{L}\p{N}]/u;
 const SYMBOL_OR_PUNCTUATION = /[\p{P}\p{S}]/u;
 const WHITESPACE = /\s/u;
@@ -64,7 +63,6 @@ type PrivatePdfTranslationCandidate = Readonly<{
 	url: string | null;
 }>;
 
-export type PdfTranslationChunk = Readonly<{ index: number; total: number }>;
 export type PdfTranslationAdmission = 'not-pdf' | 'private-upload' | 'unsupported';
 
 export function pdfTranslationAdmission(candidate: PrivatePdfTranslationCandidate): PdfTranslationAdmission {
@@ -229,53 +227,6 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<Pa
 			parser.free();
 		}
 	}
-}
-
-function splitPdfMarkdownForTranslation(markdown: string, maxLength = PDF_TRANSLATION_CHUNK_MAX_LENGTH): string[] {
-	let remaining = markdown.trim();
-	if (!remaining) return [];
-	const chunks: string[] = [];
-	const minimumBoundary = Math.floor(maxLength * 0.9);
-	const separators = ['\n\n', '\n', '. ', '。', '！', '？', '; ', '；', ', ', '，', ' '] as const;
-	while (remaining.length > maxLength) {
-		let end = maxLength;
-		let consumedSeparator = 0;
-		for (const separator of separators) {
-			const boundary = remaining.lastIndexOf(separator, maxLength - separator.length);
-			if (boundary < minimumBoundary) continue;
-			end = boundary + (separator.trim() ? separator.length : 0);
-			consumedSeparator = separator.trim() ? 0 : separator.length;
-			break;
-		}
-		chunks.push(remaining.slice(0, end).trim());
-		remaining = remaining.slice(end + consumedSeparator).trimStart();
-	}
-	if (remaining) chunks.push(remaining.trimEnd());
-	return chunks;
-}
-
-/**
- * PDF owns its page-derived Markdown chunk boundaries and durable step names.
- * The generic translation Workflow supplies only the language-model operation.
- */
-export async function stagePrivatePdfMarkdownTranslation(
-	step: WorkflowStep,
-	markdown: string,
-	translate: (markdownChunk: string, chunk: PdfTranslationChunk) => Promise<string>,
-): Promise<string> {
-	const chunks = splitPdfMarkdownForTranslation(markdown);
-	const translated: string[] = [];
-	for (const [index, markdownChunk] of chunks.entries()) {
-		const chunk = { index: index + 1, total: chunks.length };
-		translated.push(
-			await step.do(
-				`translate-private-pdf-zh-hant-${String(chunk.index).padStart(4, '0')}-of-${String(chunk.total).padStart(4, '0')}-v2`,
-				{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
-				() => translate(markdownChunk, chunk),
-			),
-		);
-	}
-	return translated.join('\n\n');
 }
 
 type StoredPdfInput = {
