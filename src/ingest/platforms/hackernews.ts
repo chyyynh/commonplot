@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { generateText } from 'ai';
+import { generateText, Output } from 'ai';
 import { decode } from 'html-entities';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
@@ -16,6 +16,7 @@ import {
 } from './materialize';
 
 const HN_ALGOLIA_API = 'https://hn.algolia.com/api/v1/items';
+const HackerNewsDigestSchema = z.object({ digest: z.string().min(1) });
 
 export function parseHackerNewsResourceUrl(url: URL) {
 	const itemId = RESOURCE_TYPES.forum.platforms[0].identifier.safeParse(url.searchParams.get('id'));
@@ -248,7 +249,7 @@ function collectAllComments(children: HnComment[]): HnCollectedComment[] {
 
 const HN_DISCUSSION_HEADING = '## Hacker News community perspectives';
 const HN_DISCUSSION_SYSTEM =
-	'You are a professional tech news editor. Synthesize Hacker News comments into concise community perspectives. Use only the provided material. Output Markdown directly.';
+	'You are a professional tech news editor. Synthesize Hacker News comments into concise community perspectives. Use only the provided material. Return only the finished digest, never your analysis process.';
 
 function buildDiscussionPrompt(title: string, hnText: string | null, commentInput: string, commentCount: number): string {
 	const hnPostText = hnText ? htmlToText(hnText).slice(0, 1200) : '';
@@ -278,7 +279,7 @@ async function generateHnDiscussionDigest(
 ): Promise<string | null> {
 	if (discussion.commentCount < 4) return null;
 
-	const { finishReason, text } = await generateText({
+	const { finishReason, output } = await generateText({
 		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
 			...CORE_TEXT_MODEL_SETTINGS,
 			gateway: {
@@ -295,12 +296,18 @@ async function generateHnDiscussionDigest(
 		}),
 		prompt: buildDiscussionPrompt(title, discussion.hnText, discussion.commentInput, discussion.commentCount),
 		system: HN_DISCUSSION_SYSTEM,
+		output: Output.object({
+			name: 'hacker_news_discussion_digest',
+			description: 'The finished community digest without analysis narration, headings, lists, or usernames.',
+			schema: HackerNewsDigestSchema,
+		}),
+		maxOutputTokens: 900,
 		temperature: 0.3,
 		reasoning: 'none',
 		maxRetries: 0,
 	});
 	if (finishReason === 'length') throw new Error('Hacker News discussion digest hit its output token cap');
-	const digest = text.trim();
+	const digest = output.digest.trim();
 	if (!digest) throw new Error('Hacker News discussion digest returned no text');
 	return digest;
 }
