@@ -1,7 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { AI_SEARCH_ITEM_PREFIX, resourceIdFromAiSearchItemKey, upsertCorpusItems } from '../search-index';
+import { AI_SEARCH_ITEM_PREFIX, resourceIdFromAiSearchItemKey, SEARCHABLE_CORPUS_RESOURCE_SQL, upsertCorpusItems } from '../search-index';
 import { connectCoreDb } from '../shared/db';
 
 // Cloudflare AI Search allows at most five custom metadata fields per instance.
@@ -71,7 +71,7 @@ async function loadCorpusCount(db: NodePgDatabase): Promise<number> {
 		FROM resources r
 		WHERE r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND r.kind NOT IN ('image', 'file')
+		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 	`);
 	const [row] = result.rows;
 	const count = Number(row?.count);
@@ -85,7 +85,7 @@ async function listCorpusIdsAfter(db: NodePgDatabase, cursor: string | null): Pr
 		FROM resources r
 		WHERE r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND r.kind NOT IN ('image', 'file')
+		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		  AND (${cursor}::uuid IS NULL OR r.id > ${cursor}::uuid)
 		ORDER BY r.id
 		LIMIT ${REINDEX_PAGE_SIZE}
@@ -115,7 +115,7 @@ async function listCorpusDeltaAfter(db: NodePgDatabase, startedAt: string, curso
 		  LEFT JOIN resource_translations translation ON translation.resource_id = r.id
 		  WHERE r.scope = 'corpus'
 		    AND r.enrichment_status = 'enriched'
-		    AND r.kind NOT IN ('image', 'file')
+		    AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		  GROUP BY r.id, r.updated_at
 		)
 		SELECT id::text, to_char(updated_at, ${UTC_TIMESTAMP_FORMAT}) AS updated_at
@@ -140,7 +140,7 @@ async function loadEligibleCorpusIds(db: NodePgDatabase, resourceIds: readonly s
 		WHERE ${inArray(sql`r.id`, resourceIds)}
 		  AND r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND r.kind NOT IN ('image', 'file')
+		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 	`);
 	return new Set(result.rows.map((row) => row.id));
 }

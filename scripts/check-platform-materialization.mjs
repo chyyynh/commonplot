@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
-import { materializeGenericResource, materializePlatformResource } from '../src/ingest/platforms/materialize.ts';
+import {
+	materializeGenericResource,
+	materializePlatformResource,
+	resolveGenericResourceIdentity,
+} from '../src/ingest/platforms/materialize.ts';
 import {
 	hostedResourceImageFields,
 	normalizedExternalMediaUrl,
@@ -15,7 +19,7 @@ function materialize(input = {}) {
 	const url = input.url === undefined ? base.url : input.url;
 	const acquired = {
 		...(url ? { canonicalUrl: url } : {}),
-		fileType: null,
+		fileType: input.fileType ?? null,
 		title: 'Example',
 		markdown: 'Example content',
 		source: 'Example',
@@ -23,7 +27,7 @@ function materialize(input = {}) {
 		publishedDate: null,
 		summary: null,
 		creators: [],
-		kindMetadata: null,
+		kindMetadata: input.kindMetadata ?? null,
 	};
 	const hints = { originalLang: 'en', publishedDate: null, summary: null };
 	if (input.resourcePlatform) {
@@ -34,10 +38,7 @@ function materialize(input = {}) {
 			input.subject ?? null,
 		);
 	}
-	const identity =
-		input.kind === 'paper'
-			? { kind: 'paper', resourceIdentifiers: input.resourceIdentifiers ?? [] }
-			: { kind: 'blog', resourceIdentifiers: [] };
+	const identity = resolveGenericResourceIdentity(acquired.fileType, input.resourceIdentifiers ?? []);
 	return materializeGenericResource({ ...acquired, resourcePlatform: null }, hints, {
 		canonicalUrl: url,
 		identity,
@@ -50,6 +51,22 @@ const cases = [
 		name: 'generic blog',
 		input: {},
 		expected: { kind: 'blog', resourcePlatform: null, resourceIdentifiers: [] },
+	},
+	{
+		name: 'unresolved PDF remains a readable PDF file',
+		input: {
+			fileType: 'application/pdf',
+			kindMetadata: { siteName: 'example.com' },
+			resourceIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/unresolved' }],
+		},
+		expected: {
+			kind: 'file',
+			resourcePlatform: null,
+			resourceIdentifiers: [],
+			fileType: 'application/pdf',
+			content: 'Example content',
+			kindMetadata: null,
+		},
 	},
 	{
 		name: 'resolved paper keeps its DOI URL',

@@ -17,7 +17,14 @@ const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 const RESULT_LIMIT_MAX = 50;
 const RELATED_RESULT_LIMIT_MAX = RESULT_LIMIT_MAX - 1;
 const METADATA_IN_FILTER_LIMIT = 50;
-const SEARCHABLE_RESOURCE_KIND_COUNT = Object.keys(RESOURCE_TYPES).filter((kind) => kind !== 'image' && kind !== 'file').length;
+const SEARCHABLE_RESOURCE_KIND_COUNT = Object.keys(RESOURCE_TYPES).filter((kind) => kind !== 'image').length;
+
+export const SEARCHABLE_CORPUS_RESOURCE_SQL = sql`(
+	r.kind <> 'image'
+	AND (r.kind <> 'file' OR r.file_type = 'application/pdf')
+)`;
+
+type SearchableResourceKind = Exclude<keyof typeof RESOURCE_TYPES, 'image'>;
 
 export type PublicResourceSearchInput = {
 	query: string;
@@ -25,7 +32,7 @@ export type PublicResourceSearchInput = {
 	mode?: 'hybrid' | 'vector';
 	filters?: {
 		publishedAfter?: Date;
-		kinds?: Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'>[];
+		kinds?: SearchableResourceKind[];
 		resourcePlatforms?: ((typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null)[];
 		sourceIds?: string[];
 	};
@@ -63,7 +70,7 @@ type CorpusTranslationRow = {
 type CorpusDocument = {
 	id: string;
 	source_id: string | null;
-	kind: Exclude<keyof typeof RESOURCE_TYPES, 'image' | 'file'>;
+	kind: SearchableResourceKind;
 	resource_platform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null;
 	original_lang: string;
 	published_at: Date | string | null;
@@ -186,7 +193,7 @@ async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly str
 		WHERE ${inArray(sql`r.id`, resourceIds)}
 		  AND r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
-		  AND r.kind NOT IN ('image', 'file')
+		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		`);
 	return result.rows;
 }
@@ -242,7 +249,7 @@ function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSea
 	const sourceIds = filters.sourceIds === undefined ? undefined : [...new Set(filters.sourceIds.map((value) => value.trim()))];
 	if (sourceIds && !z.array(ResourceIdSchema).safeParse(sourceIds).success) throw new Error('Invalid sourceIds');
 	const kinds = filters.kinds === undefined ? undefined : [...new Set(filters.kinds)];
-	if (kinds?.some((value) => !Object.hasOwn(RESOURCE_TYPES, value) || ['image', 'file'].includes(value))) {
+	if (kinds?.some((value) => !Object.hasOwn(RESOURCE_TYPES, value) || String(value) === 'image')) {
 		throw new Error('Invalid resource kinds');
 	}
 	const resourcePlatforms = filters.resourcePlatforms === undefined ? undefined : [...new Set(filters.resourcePlatforms)];

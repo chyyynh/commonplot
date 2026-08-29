@@ -67,13 +67,15 @@ export type PdfTranslationAdmission = 'not-pdf' | 'private-upload' | 'unsupporte
 
 export function pdfTranslationAdmission(candidate: PrivatePdfTranslationCandidate): PdfTranslationAdmission {
 	if (candidate.fileType !== PDF_MIME || candidate.resourcePlatform !== null) return 'not-pdf';
-	return candidate.scope === 'private' && candidate.kind === 'blog' && candidate.url === null ? 'private-upload' : 'unsupported';
+	return candidate.scope === 'private' && ['blog', 'file'].includes(candidate.kind) && candidate.url === null
+		? 'private-upload'
+		: 'unsupported';
 }
 
 export function privateUploadedPdfTranslationSqlAdmission() {
 	return sql`(
 		resource.scope = 'private'
-		AND resource.kind = 'blog'
+		AND resource.kind IN ('blog', 'file')
 		AND resource.resource_platform IS NULL
 		AND resource.file_type = ${PDF_MIME}
 		AND resource.storage_key IS NOT NULL

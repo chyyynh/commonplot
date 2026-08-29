@@ -16,7 +16,7 @@ export type ResolvedResourceSubject = Readonly<{
 }>;
 
 type MaterializedResource = Readonly<{
-	kind: Exclude<ResourceKind, 'image' | 'file'>;
+	kind: Exclude<ResourceKind, 'image'>;
 	resourcePlatform: ResourcePlatform | null;
 }> & {
 	originalLang: string;
@@ -85,6 +85,21 @@ export type ResourceAcquisitionHints = Readonly<{
 	summary: string | null;
 }>;
 
+export type GenericResourceIdentity =
+	| Readonly<{ kind: 'blog'; resourceIdentifiers: readonly [] }>
+	| Readonly<{ kind: 'file'; resourceIdentifiers: readonly [] }>
+	| Readonly<{ kind: 'paper'; resourceIdentifiers: readonly PaperIdentifier[] }>;
+
+export function resolveGenericResourceIdentity(
+	fileType: string | null,
+	resourceIdentifiers: readonly PaperIdentifier[],
+): GenericResourceIdentity {
+	if (resourceIdentifiers.some(({ scheme }) => scheme === 'openalex')) {
+		return { kind: 'paper', resourceIdentifiers };
+	}
+	return fileType === 'application/pdf' ? { kind: 'file', resourceIdentifiers: [] } : { kind: 'blog', resourceIdentifiers: [] };
+}
+
 function materializeResource(
 	acquired: AcquiredMaterialFields,
 	hints: ResourceAcquisitionHints,
@@ -117,14 +132,12 @@ export function materializeGenericResource(
 	hints: ResourceAcquisitionHints,
 	resolution: {
 		canonicalUrl: string | null;
-		identity:
-			| Readonly<{ kind: 'blog'; resourceIdentifiers: readonly [] }>
-			| Readonly<{ kind: 'paper'; resourceIdentifiers: readonly PaperIdentifier[] }>;
+		identity: GenericResourceIdentity;
 		publishedDate: string | null;
 	},
 ): ResolvedResource {
 	return materializeResource(
-		acquired,
+		resolution.identity.kind === 'file' ? { ...acquired, kindMetadata: null } : acquired,
 		hints,
 		{
 			kind: resolution.identity.kind,

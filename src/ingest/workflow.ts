@@ -311,7 +311,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			preparedResource.originalLang !== 'zh-Hant' &&
 			preparedResource.kind !== 'video' &&
 			(scope === 'corpus' ||
-				(preparedResource.kind === 'blog' &&
+				((preparedResource.kind === 'blog' || preparedResource.kind === 'file') &&
 					preparedResource.resourcePlatform === null &&
 					preparedResource.fileType === 'application/pdf' &&
 					preparedResource.url === null));

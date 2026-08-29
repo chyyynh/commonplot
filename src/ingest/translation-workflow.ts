@@ -126,8 +126,10 @@ function planZhHantTranslation(resource: ResourceTranslationInput): ZhHantTransl
 	const translation = resource.zhHantTranslation;
 	const pdfAdmission = pdfTranslationAdmission(resource);
 	const privateUploadedPdf = pdfAdmission === 'private-upload';
+	const translatableKind =
+		(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(resource.kind) || (resource.kind === 'file' && privateUploadedPdf);
 	if (
-		!(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(resource.kind) ||
+		!translatableKind ||
 		(!resource.url && !privateUploadedPdf) ||
 		pdfAdmission === 'unsupported' ||
 		isBlank(resource.title) ||
