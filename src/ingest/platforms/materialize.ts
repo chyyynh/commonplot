@@ -98,7 +98,7 @@ function materializeResource(
 ): ResolvedResource {
 	return {
 		...identity,
-		originalLang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeOptionalResourceLang(hints.originalLang) ?? 'en',
+		originalLang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeOptionalResourceLang(hints.originalLang) ?? 'und',
 		title: acquired.title.trim(),
 		summary: acquired.summary ?? hints.summary,
 		content: acquired.markdown,

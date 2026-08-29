@@ -183,6 +183,25 @@ const cases = [
 	},
 ];
 
+const unknownLanguage = materializeGenericResource(
+	{
+		canonicalUrl: base.url,
+		fileType: null,
+		kindMetadata: null,
+		markdown: '未知語言內容',
+		originalLang: null,
+		publishedDate: null,
+		resourcePlatform: null,
+		source: 'Example',
+		summary: null,
+		title: 'Example',
+		creators: [],
+	},
+	{ originalLang: null, publishedDate: null, summary: null },
+	{ canonicalUrl: base.url, publishedDate: null, resourceIdentifiers: [] },
+);
+assert.equal(unknownLanguage.originalLang, 'und', 'unknown acquisition language must stay provisional until analysis');
+
 for (const testCase of cases) {
 	const actual = materialize(testCase.input);
 	assert.deepEqual(Object.fromEntries(Object.keys(testCase.expected).map((key) => [key, actual[key]])), testCase.expected, testCase.name);

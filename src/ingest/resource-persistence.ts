@@ -47,7 +47,8 @@ export function prepareResolvedResource(
 	analysis: ResourceAnalysis,
 	hostedImages: readonly HostedResourceImage[],
 ) {
-	const originalLang = canonicalizeResourceLang(resource.originalLang);
+	const acquiredOriginalLang = canonicalizeResourceLang(resource.originalLang);
+	const originalLang = acquiredOriginalLang === 'und' ? canonicalizeResourceLang(analysis.originalLang) : acquiredOriginalLang;
 	const title = resource.title.trim();
 	const content = resource.content.trim();
 	const sourceName = resource.source.trim();
@@ -302,6 +303,9 @@ async function writeCanonicalResource(
 	}
 	if (originalChanged) {
 		await db.execute(sql`DELETE FROM resource_translations WHERE resource_id = ${resourceId}::uuid AND source = 'machine'`);
+	}
+	if (previousOriginalLang === 'und' && originalLang !== 'und') {
+		await db.execute(sql`DELETE FROM resource_translations WHERE resource_id = ${resourceId}::uuid AND lang = 'und'`);
 	}
 	await db.execute(sql`
 		UPDATE resource_translations

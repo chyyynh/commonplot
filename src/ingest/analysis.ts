@@ -1,7 +1,7 @@
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import type { RESOURCE_TYPES, ResourceCreator } from '../shared/resource';
+import { canonicalizeResourceLang, type RESOURCE_TYPES, type ResourceCreator } from '../shared/resource';
 import type { ProcessingResource } from './acquisition';
 import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 
@@ -40,6 +40,10 @@ const ResourceAnalysisSchema = z.object({
 	tags: z.array(z.string().min(1)).min(1),
 	keywords: z.array(z.string().min(1)).min(1),
 	entities: ResourceEntitiesSchema,
+	originalLang: z
+		.string()
+		.trim()
+		.regex(/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/),
 });
 
 export type ResourceAnalysis = z.infer<typeof ResourceAnalysisSchema>;
@@ -51,6 +55,13 @@ const RESOURCE_ANALYSIS_SYSTEM_PROMPT = `你是專業的新聞分類和實體分
 任務：
 - 產生 tags、keywords
 - 擷取重要 named entities
+- 判斷標題與內容的主要原文語言，使用 BCP-47 language tag
+
+語言規則：
+- 依內容判斷，不要依來源、平台或作者推測
+- 繁體中文使用 zh-Hant，簡體中文使用 zh-Hans
+- 英文使用 en，日文使用 ja；其他語言使用對應的 canonical language tag
+- 多語內容選擇佔比最高的主要語言
 
 標籤規則：
 - AI相關: AI, MachineLearning, DeepLearning, NLP, ComputerVision, LLM, GenerativeAI
@@ -172,6 +183,7 @@ ${resource.content.trim().substring(0, ANALYSIS_CONTENT_MAX_LENGTH)}`;
 		entities: analysis.entities,
 		tags: analysis.tags.slice(0, 5),
 		keywords: keywordHints.length ? [...keywordHints] : analysis.keywords.slice(0, 8),
+		originalLang: canonicalizeResourceLang(analysis.originalLang),
 	};
 }
 
