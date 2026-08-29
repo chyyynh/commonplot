@@ -85,6 +85,7 @@ export function shouldEnqueueResourceTranslation(candidate: ResourceTranslationC
 		(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(candidate.kind) || (candidate.kind === 'file' && privateUploadedPdf);
 	return (
 		candidate.originalLang !== 'zh-Hant' &&
+		(candidate.scope === 'corpus' || privateUploadedPdf) &&
 		translatableKind &&
 		(Boolean(candidate.url) || privateUploadedPdf) &&
 		pdfAdmission !== 'unsupported'
