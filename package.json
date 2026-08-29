@@ -25,7 +25,7 @@
 		"lint:fix": "biome check --write ."
 	},
 	"dependencies": {
-		"@extractus/article-extractor": "^8.1.0",
+		"@extractus/article-extractor": "^9.0.1",
 		"@extractus/feed-extractor": "8.0.3",
 		"@llamaindex/liteparse-wasm": "2.13.1",
 		"@llamaindex/llama-cloud": "2.15.0",
