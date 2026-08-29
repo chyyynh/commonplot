@@ -53,8 +53,7 @@ function aiSearchItemKey(resourceId: string): string {
 export function resourceIdFromAiSearchItemKey(key: string): string | null {
 	if (!key.startsWith(AI_SEARCH_ITEM_PREFIX) || !key.endsWith(AI_SEARCH_ITEM_SUFFIX)) return null;
 	const resourceId = key.slice(AI_SEARCH_ITEM_PREFIX.length, -AI_SEARCH_ITEM_SUFFIX.length);
-	const parsed = ResourceIdSchema.safeParse(resourceId);
-	return parsed.success ? parsed.data : null;
+	return z.validate(ResourceIdSchema, resourceId) ? resourceId : null;
 }
 
 type CorpusTranslationRow = {
@@ -232,7 +231,7 @@ async function deleteCorpusItem(instance: AiSearchInstance, index: 'corpus' | 'r
 }
 
 export async function syncCorpusItem(env: CoreEnv, db: NodePgDatabase, resourceId: string): Promise<void> {
-	if (!ResourceIdSchema.safeParse(resourceId).success) return;
+	if (!z.validate(ResourceIdSchema, resourceId)) return;
 	if ((await upsertCorpusItems(env, db, [resourceId])) === 0) {
 		await Promise.all([deleteCorpusItem(env.AI_SEARCH, 'corpus', resourceId), deleteCorpusItem(env.RELATED_SEARCH, 'related', resourceId)]);
 	}

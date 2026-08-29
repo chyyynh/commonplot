@@ -20,7 +20,8 @@ type ResourceTranslationPayload = { resourceId: string; translationRevision: str
 const PDF_MIME = 'application/pdf';
 const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const;
 const RESOURCE_TRANSLATION_SOURCES = ['original', 'machine', 'human'] as const;
-type ResourceTranslationSource = (typeof RESOURCE_TRANSLATION_SOURCES)[number];
+const ResourceTranslationSourceSchema = z.enum(RESOURCE_TRANSLATION_SOURCES);
+type ResourceTranslationSource = z.infer<typeof ResourceTranslationSourceSchema>;
 type ResourceTranslationKind = keyof typeof RESOURCE_TYPES;
 type ResourceTranslationPlatform = (typeof RESOURCE_TYPES)[ResourceTranslationKind]['platforms'][number]['name'] | null;
 
@@ -392,18 +393,15 @@ async function translatePlannedContent(
 
 const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v9';
 const RESOURCE_TRANSLATION_WORKFLOW_RETENTION = { successRetention: '1 day', errorRetention: '7 days' } as const;
-const RESOURCE_TRANSLATION_REVISION_RE = /^[0-9a-f]{32}$/;
+const ResourceTranslationRevisionSchema = z.string().regex(/^[0-9a-f]{32}$/);
 
 function isResourceTranslationRevision(value: unknown): value is string {
-	return typeof value === 'string' && RESOURCE_TRANSLATION_REVISION_RE.test(value);
+	return z.validate(ResourceTranslationRevisionSchema, value);
 }
 
 function parseTranslationSource(value: unknown): ResourceTranslationSource | null {
 	if (value === null || value === undefined) return null;
-	if (typeof value !== 'string' || !(RESOURCE_TRANSLATION_SOURCES as readonly string[]).includes(value)) {
-		throw new Error(`Invalid translation source: ${String(value)}`);
-	}
-	return value as ResourceTranslationSource;
+	return ResourceTranslationSourceSchema.parse(value);
 }
 
 async function loadResourceTranslationInput(
