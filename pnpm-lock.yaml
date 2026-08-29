@@ -17,6 +17,9 @@ importers:
       '@llamaindex/liteparse-wasm':
         specifier: 2.13.1
         version: 2.13.1
+      '@llamaindex/llama-cloud':
+        specifier: 2.15.0
+        version: 2.15.0
       ai:
         specifier: 7.0.58
         version: 7.0.58(zod@4.4.3)
@@ -542,6 +545,9 @@ packages:
   '@llamaindex/liteparse-wasm@2.13.1':
     resolution: {integrity: sha512-TJrL7WYjR7VyNvev7uwxp5xFZOGEwUnsEEYERKI6qZXWdGK/UoTvMX4EzdCc/Pmof/LDUizWVypfU2/7jgEV8g==}
     engines: {node: '>=18.0.0'}
+
+  '@llamaindex/llama-cloud@2.15.0':
+    resolution: {integrity: sha512-cC4p3evDD3mrOjakshCqF/hq5LWcBfEyG5Lmq898PRTrJ/bL0duzZCJfmUkqVWSR5APvnuo2W5reAvyDHKUnzg==}
 
   '@mozilla/readability@0.6.0':
     resolution: {integrity: sha512-juG5VWh4qAivzTAeMzvY9xs9HY5rAcr2E4I7tiSSCokRFi7XIZCAu92ZkSTsIj1OPceCifL3cpfteP3pDT9/QQ==}
@@ -1539,6 +1545,8 @@ snapshots:
       '@jridgewell/sourcemap-codec': 1.5.5
 
   '@llamaindex/liteparse-wasm@2.13.1': {}
+
+  '@llamaindex/llama-cloud@2.15.0': {}
 
   '@mozilla/readability@0.6.0': {}
 

@@ -9,6 +9,7 @@ import {
 import { isPaperIdentifier } from '../shared/resource';
 import { parseHackerNewsResourceUrl, stageHackerNewsAcquisition } from './platforms/hackernews';
 import { parseLessWrongResourceUrl, stageLessWrongAcquisition } from './platforms/lesswrong';
+import type { PdfWorkflowIdentity } from './platforms/llama-parse';
 import {
 	type GenericAcquiredMaterial,
 	materializeGenericResource,
@@ -65,11 +66,13 @@ async function resolveGenericAcquiredResource(
 	step: WorkflowStep,
 	acquired: GenericAcquiredMaterial,
 	input: {
+		allowProviderPdfFallback: boolean;
 		hints: ResourceAcquisitionHints;
 		paperIdentifiers: readonly PaperIdentifier[];
 		processingId: string;
 		sourceUrl: string | null;
 		allowCitoidLookup: boolean;
+		workflow: PdfWorkflowIdentity;
 	},
 ): Promise<ResolvedResource> {
 	let publishedDate = input.hints.publishedDate;
@@ -81,12 +84,14 @@ async function resolveGenericAcquiredResource(
 	const canonicalUrl = acquired.canonicalUrl?.trim() || input.sourceUrl;
 	const paper = await stagePaperProcessing(env, step, {
 		acquiredContent: acquired,
+		allowProviderPdfFallback: input.allowProviderPdfFallback,
 		canonicalUrl,
 		processingId: input.processingId,
 		publishedDate,
 		seedIdentifiers: input.paperIdentifiers,
 		sourceUrl: input.sourceUrl,
 		allowCitoidLookup: input.allowCitoidLookup,
+		workflow: input.workflow,
 	});
 	if (!paper.acquiredContent.markdown.trim()) {
 		throw new Error(`Processing ${input.processingId} has no extractable content`);
@@ -107,20 +112,28 @@ export async function stageUrlAcquisition(
 		paperIdentifiers?: readonly PaperIdentifier[];
 		processingId: string;
 		url: string;
+		workflow: PdfWorkflowIdentity;
 	},
 ): Promise<ProcessingResource> {
 	const parsedUrl = URL.parse(input.url);
 	if (!parsedUrl) throw new Error(`Processing ${input.processingId} has an invalid URL`);
 	let detected = resolvePlatformResourceUrl(parsedUrl);
 	if (!detected) {
-		const web = await stageWebAcquisition(env, step, { processingId: input.processingId, url: input.url }, resolvePlatformResourceUrl);
+		const web = await stageWebAcquisition(
+			env,
+			step,
+			{ processingId: input.processingId, url: input.url, workflow: input.workflow },
+			resolvePlatformResourceUrl,
+		);
 		if (!('platform' in web)) {
 			return resolveGenericAcquiredResource(env, step, web, {
+				allowProviderPdfFallback: true,
 				hints: input.hints,
 				paperIdentifiers: input.paperIdentifiers ?? [],
 				processingId: input.processingId,
 				sourceUrl: input.url,
 				allowCitoidLookup: input.allowCitoidLookup,
+				workflow: input.workflow,
 			});
 		}
 		detected = web.platform;
@@ -155,9 +168,11 @@ export async function stageStoredResourceAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	target: Readonly<{ resourceId: string }>,
+	workflow: PdfWorkflowIdentity,
 ): Promise<ProcessingResource> {
 	const acquired = await stageStoredPdfAcquisition(env, step, target);
 	const resource = await resolveGenericAcquiredResource(env, step, acquired, {
+		allowProviderPdfFallback: false,
 		hints: {
 			originalLang: acquired.originalLang,
 			publishedDate: acquired.publishedDate,
@@ -167,6 +182,7 @@ export async function stageStoredResourceAcquisition(
 		processingId: target.resourceId,
 		sourceUrl: null,
 		allowCitoidLookup: false,
+		workflow,
 	});
 	if (resource.kind !== 'paper') return resource;
 

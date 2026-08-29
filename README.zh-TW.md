@@ -128,7 +128,16 @@ AI 分析透過 Workers AI binding 與 AI Gateway 執行，不需要外部 LLM s
 wrangler secret put KAITO_API_KEY            # Twitter 監控
 wrangler secret put YOUTUBE_API_KEY          # YouTube 監控
 wrangler secret put OPENALEX_API_KEY          # 論文 metadata enrichment
+wrangler secret put LLAMA_CLOUD_API_KEY       # 付費 public PDF fallback
+wrangler secret put LLAMA_CLOUD_PROJECT_ID    # 此 deployment 專用的 Llama Cloud project
 ```
+
+LlamaParse 是 local-first fallback，預設由
+`LLAMA_PARSE_FALLBACK_ENABLED=false` 關閉。只有在設定獨立的 development
+key／project、明確授權付費 smoke，並記錄實際 credits 後才能開啟。Core 只會在
+LiteParse 出現 hard defect、且已知完整頁數不超過 100 頁時送出符合條件的公開
+PDF；app-owned 私人 PDF 不會離開 Core。Provider adapter 固定使用美國 API、
+`cost_effective` tier 與具日期的 parser version。
 
 ### 5. 部署
 
@@ -203,6 +212,9 @@ Secrets（透過 `wrangler secret put` 設定）：
 | `KAITO_API_KEY`                | 是   | 啟用 Twitter 監控             |
 | `YOUTUBE_API_KEY`              | 是   | 啟用 YouTube 頻道監控         |
 | `OPENALEX_API_KEY`             | 是   | 啟用精確論文 metadata enrichment |
+| `LLAMA_CLOUD_API_KEY`          | 是   | 此 deployment 的 LlamaParse API key |
+| `LLAMA_CLOUD_PROJECT_ID`       | 是   | 此 deployment 隔離使用的 Llama Cloud project |
+| `LLAMA_PARSE_FALLBACK_ENABLED` | 否   | 付費 public PDF fallback kill switch；預設 `false` |
 
 ## Canonical resource identity
 

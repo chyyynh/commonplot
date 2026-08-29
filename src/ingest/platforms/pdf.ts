@@ -11,7 +11,7 @@ import type { GenericAcquiredMaterial } from './materialize';
 
 export const PDF_MIME = 'application/pdf';
 
-const MAX_PDF_BYTES = 25 * 1024 * 1024;
+export const MAX_PDF_BYTES = 25 * 1024 * 1024;
 const MAX_PAPER_IDENTIFIER_TEXT_CHARS = 20_000;
 const LETTER_OR_NUMBER = /[\p{L}\p{N}]/u;
 const SYMBOL_OR_PUNCTUATION = /[\p{P}\p{S}]/u;

@@ -198,12 +198,12 @@ async function resolveProcessingCall(
 	env: CoreEnv,
 	step: WorkflowStep,
 	target: ResourceProcessingTarget,
-	instanceId: string,
+	workflow: Readonly<{ instanceId: string; startedAt: string }>,
 ): Promise<ResolvedProcessingCall> {
 	if (target.kind === 'draft') {
 		return {
 			keywordHints: target.sourceHints?.keywords ?? [],
-			processingId: instanceId,
+			processingId: workflow.instanceId,
 			resource: await stageUrlAcquisition(env, step, {
 				hints: {
 					originalLang: target.sourceHints?.originalLang ?? null,
@@ -211,8 +211,9 @@ async function resolveProcessingCall(
 					summary: target.sourceHints?.summary ?? null,
 				},
 				allowCitoidLookup: target.relation?.kind !== 'source',
-				processingId: instanceId,
+				processingId: workflow.instanceId,
 				url: target.url,
+				workflow,
 			}),
 			persistenceTarget: {
 				kind: 'draft',
@@ -223,7 +224,7 @@ async function resolveProcessingCall(
 	}
 
 	if (target.kind === 'storedBlob') {
-		const resource = await stageStoredResourceAcquisition(env, step, target);
+		const resource = await stageStoredResourceAcquisition(env, step, target, workflow);
 		const resolvedPaper = resource.kind === 'paper';
 		return {
 			keywordHints: [],
@@ -252,6 +253,7 @@ async function resolveProcessingCall(
 			paperIdentifiers: snapshot.paperIdentifiers,
 			processingId: target.resourceId,
 			url: snapshot.url,
+			workflow,
 		}),
 		persistenceTarget: {
 			kind: 'existing',
@@ -264,7 +266,10 @@ async function resolveProcessingCall(
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep) {
 		const target = ResourceProcessingTargetSchema.parse(event.payload);
-		const call = await resolveProcessingCall(this.env, step, target, event.instanceId);
+		const call = await resolveProcessingCall(this.env, step, target, {
+			instanceId: event.instanceId,
+			startedAt: event.timestamp.toISOString(),
+		});
 		const resource = call.resource;
 		const processingId = call.processingId;
 

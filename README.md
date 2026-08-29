@@ -133,7 +133,17 @@ AI analysis uses the Workers AI binding through AI Gateway, so no external LLM s
 wrangler secret put KAITO_API_KEY            # Twitter monitoring
 wrangler secret put YOUTUBE_API_KEY          # YouTube monitoring
 wrangler secret put OPENALEX_API_KEY          # Paper metadata enrichment
+wrangler secret put LLAMA_CLOUD_API_KEY       # Paid public-PDF fallback
+wrangler secret put LLAMA_CLOUD_PROJECT_ID    # Deployment-specific Llama Cloud project
 ```
+
+LlamaParse is a local-first fallback and is disabled by default with
+`LLAMA_PARSE_FALLBACK_ENABLED=false`. Enable it only after configuring a
+separate development key/project, authorizing a paid smoke run, and recording
+the observed credits. Core sends only eligible public PDFs after a LiteParse
+hard defect, with a known complete page count of at most 100. App-owned private
+PDFs never leave Core. The provider adapter is locked to the US API, the
+`cost_effective` tier, and a dated parser version.
 
 ### 5. Deploy
 
@@ -210,6 +220,9 @@ Secrets (via `wrangler secret put`):
 | `KAITO_API_KEY`                | Yes      | Enables Twitter monitoring               |
 | `YOUTUBE_API_KEY`              | Yes      | Enables YouTube channel monitoring       |
 | `OPENALEX_API_KEY`             | Yes      | Enables exact paper metadata enrichment  |
+| `LLAMA_CLOUD_API_KEY`          | Yes      | LlamaParse API key for this deployment   |
+| `LLAMA_CLOUD_PROJECT_ID`       | Yes      | Isolated Llama Cloud project for this deployment |
+| `LLAMA_PARSE_FALLBACK_ENABLED` | No       | Paid public-PDF fallback kill switch; defaults to `false` |
 
 ### Canonical AI Search v6
 

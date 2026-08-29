@@ -2,8 +2,9 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { addTransformations, extractFromHtml } from '@extractus/article-extractor';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
+import { type PdfWorkflowIdentity, resolvePublicPdfAcquisition } from './llama-parse';
 import { type GenericAcquiredMaterial, literalCreator, type PlatformResourceUrl } from './materialize';
-import { acquireFetchedPdfResponse, isLocalPdfAcquisition, type LocalPdfAcquisition, PDF_MIME, requireUsableLocalPdf } from './pdf';
+import { acquireFetchedPdfResponse, isLocalPdfAcquisition, type LocalPdfAcquisition, PDF_MIME } from './pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
@@ -188,7 +189,7 @@ async function acquireWebResource(
 export async function stageWebAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { processingId: string; url: string },
+	input: { processingId: string; url: string; workflow: PdfWorkflowIdentity },
 	platformUrl: (url: URL) => PlatformResourceUrl | null,
 ) {
 	const result = await step.do(
@@ -201,5 +202,13 @@ export async function stageWebAcquisition(
 	);
 	if ('platform' in result) return result;
 	const acquired = await new Response(result).json<GenericAcquiredMaterial | LocalPdfAcquisition>();
-	return isLocalPdfAcquisition(acquired) ? requireUsableLocalPdf(acquired, 'Fetched PDF') : acquired;
+	return isLocalPdfAcquisition(acquired)
+		? resolvePublicPdfAcquisition(env, step, {
+				local: acquired,
+				processingId: input.processingId,
+				source: { kind: 'web', url: acquired.material.canonicalUrl ?? input.url },
+				summary: 'derive',
+				workflow: input.workflow,
+			})
+		: acquired;
 }
