@@ -16,7 +16,6 @@ const RELATED_QUERY_MAX_CHARS = 1_000;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 const RESULT_LIMIT_MAX = 50;
 const RELATED_RESULT_LIMIT_MAX = RESULT_LIMIT_MAX - 1;
-const METADATA_IN_FILTER_LIMIT = 50;
 const SEARCHABLE_RESOURCE_KIND_COUNT = Object.keys(RESOURCE_TYPES).filter((kind) => kind !== 'image').length;
 
 export const SEARCHABLE_CORPUS_RESOURCE_SQL = sql`(
@@ -34,7 +33,6 @@ export type PublicResourceSearchInput = {
 		publishedAfter?: Date;
 		kinds?: SearchableResourceKind[];
 		resourcePlatforms?: ((typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null)[];
-		sourceIds?: string[];
 	};
 };
 
@@ -246,8 +244,6 @@ function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSea
 	if (publishedAfter && (!(publishedAfter instanceof Date) || Number.isNaN(publishedAfter.getTime()))) {
 		throw new Error('Invalid publishedAfter');
 	}
-	const sourceIds = filters.sourceIds === undefined ? undefined : [...new Set(filters.sourceIds.map((value) => value.trim()))];
-	if (sourceIds && !z.array(ResourceIdSchema).safeParse(sourceIds).success) throw new Error('Invalid sourceIds');
 	const kinds = filters.kinds === undefined ? undefined : [...new Set(filters.kinds)];
 	if (kinds?.some((value) => !Object.hasOwn(RESOURCE_TYPES, value) || String(value) === 'image')) {
 		throw new Error('Invalid resource kinds');
@@ -262,21 +258,14 @@ function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSea
 	}
 	return {
 		publishedAfter,
-		excludeAll: sourceIds?.length === 0 || kinds?.length === 0 || resourcePlatforms?.length === 0,
+		excludeAll: kinds?.length === 0 || resourcePlatforms?.length === 0,
 		kinds,
 		resourcePlatforms,
-		sourceIds,
 	};
 }
 
 function aiSearchFilters(filters: NormalizedSearchFilters): VectorizeVectorMetadataFilter | undefined {
 	const metadata: VectorizeVectorMetadataFilter = {};
-	// AI Search currently stalls instead of rejecting oversized `$in` filters.
-	// Web still authoritatively applies the complete source filter while hydrating
-	// candidates, so omit only the oversized retrieval hint.
-	if (filters.sourceIds?.length && filters.sourceIds.length <= METADATA_IN_FILTER_LIMIT) {
-		metadata.source_id = { $in: filters.sourceIds };
-	}
 	if (filters.kinds?.length && filters.kinds.length < SEARCHABLE_RESOURCE_KIND_COUNT) {
 		metadata.kind = { $in: filters.kinds };
 	}

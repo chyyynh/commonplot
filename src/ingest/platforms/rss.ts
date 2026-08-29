@@ -19,7 +19,7 @@ type FeedEntry = {
 	originalLang?: string;
 };
 
-type FeedSource = {
+type MonitoredFeedSource = {
 	id: string;
 	name: string;
 	handle: string;
@@ -134,7 +134,7 @@ async function loadFeed(feedUrl: string): Promise<{
 	};
 }
 
-async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: FeedSource): Promise<void> {
+async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeedSource): Promise<void> {
 	const { entries, itemCount } = await loadFeed(feed.handle);
 	const skipped = itemCount - entries.length;
 	if (skipped) console.warn({ tag: 'RSS', msg: 'Skipped invalid or duplicate feed items', feed: feed.name, count: skipped });
@@ -168,7 +168,7 @@ export async function handleRSSCron(env: CoreEnv, db: NodePgDatabase): Promise<v
 	// Every feed source uses the same parser. A YouTube channel handle is an Atom
 	// feed URL, so there is nothing for a separate monitor to do.
 	// Its entries still resolve to resource_platform='youtube' at acquisition.
-	const { rows: feeds } = await db.execute<FeedSource>(sql`
+	const { rows: feeds } = await db.execute<MonitoredFeedSource>(sql`
 		SELECT id::text AS id, name, handle
 		FROM sources
 		WHERE enabled = true
