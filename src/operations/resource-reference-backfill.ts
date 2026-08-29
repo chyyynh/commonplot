@@ -1,8 +1,7 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import { bibliographyFromMarkdown } from '../ingest/bibliography';
-import { replaceResourceReferences } from '../ingest/resource-references';
+import { syncResourceReferences } from '../ingest/resource-references';
 
 const ResourceReferenceBackfillInputSchema = z
 	.object({ afterResourceId: z.uuid().nullable().optional(), limit: z.number().int().min(1).max(50).default(25) })
@@ -41,9 +40,7 @@ export async function backfillResourceReferences(db: NodePgDatabase, rawInput: R
 				`);
 				const authoritativeOriginal = original.rows[0];
 				if (!authoritativeOriginal) throw new Error('Paper is no longer eligible for reference backfill');
-				const references = bibliographyFromMarkdown(authoritativeOriginal.content ?? '');
-				await replaceResourceReferences(tx, candidate.resource_id, references);
-				return references.length;
+				return syncResourceReferences(tx, candidate.resource_id, 'paper', authoritativeOriginal.content);
 			});
 			console.info({
 				tag: 'RESOURCE_REFERENCES',

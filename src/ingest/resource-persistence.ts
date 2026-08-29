@@ -11,9 +11,8 @@ import {
 } from '../shared/resource';
 import type { ProcessingResource } from './acquisition';
 import { type ResourceAnalysis, toStoredResourceEntities } from './analysis';
-import { bibliographyFromMarkdown } from './bibliography';
-import type { YouTubeResourceData } from './platforms/youtube';
-import { replaceResourceReferences } from './resource-references';
+import { persistYouTubeData, prepareYouTubeData } from './platforms/youtube-persistence';
+import { syncResourceReferences } from './resource-references';
 
 export type ResourceDraftRelation =
 	| Readonly<{ kind: 'source'; sourceId: string }>
@@ -73,6 +72,11 @@ export function prepareResolvedResource(
 	if (resource.resourcePlatform !== null && !identifiers.some(({ scheme }) => scheme === resource.resourcePlatform)) {
 		throw new TypeError('Platform Resource requires its exact identifier');
 	}
+	const isYouTubeResource =
+		resource.kind === 'video' && resource.resourcePlatform === 'youtube' && identifiers.some(({ scheme }) => scheme === 'youtube');
+	if ((resource.youtube !== undefined) !== isYouTubeResource) {
+		throw new TypeError('YouTube data requires a YouTube video Resource');
+	}
 	const url = httpUrl(resource.url, 'Resource URL');
 	const normalizedUrl = httpUrl(resource.normalizedUrl ?? resource.url, 'Normalized Resource URL');
 	if ((url === null) !== (normalizedUrl === null)) {
@@ -80,43 +84,45 @@ export function prepareResolvedResource(
 	}
 	const publishedDate = resource.publishedDate ? new Date(resource.publishedDate) : null;
 	if (publishedDate && Number.isNaN(publishedDate.getTime())) throw new TypeError('Resource publication date is invalid');
-	const youtubeVideoId = identifiers.find(({ scheme }) => scheme === 'youtube')?.value;
-	if (resource.youtube && (resource.kind !== 'video' || resource.resourcePlatform !== 'youtube' || !youtubeVideoId)) {
-		throw new TypeError('YouTube data requires a YouTube video Resource');
-	}
-	const highlightsGeneratedAt = resource.youtube?.highlights ? new Date(resource.youtube.highlights.generatedAt) : null;
-	if (highlightsGeneratedAt && Number.isNaN(highlightsGeneratedAt.getTime())) {
-		throw new TypeError('YouTube highlights generation date is invalid');
-	}
 	const subject = resource.subject
 		? {
 				identifiers: ResourceIdentifiersSchema.parse(resource.subject.identifiers),
 				normalizedUrl: httpUrl(resource.subject.normalizedUrl, 'Normalized subject URL')!,
 			}
 		: null;
-	return {
+	const prepared = {
 		content,
 		creators: media.creators,
 		entities: toStoredResourceEntities(analysis.entities, resource.resourcePlatform, resource.source, resource.creators),
 		fileType: resource.fileType ?? null,
-		highlightsGeneratedAt,
 		identifiers,
 		keywords: [...analysis.keywords],
-		kind: resource.kind,
 		kindMetadata: media.kindMetadata,
 		normalizedUrl,
 		ogImageUrl: media.ogImageUrl,
 		originalLang,
 		publishedDate,
-		resourcePlatform: resource.resourcePlatform,
 		sourceName,
 		subject,
 		summary: resource.summary,
 		tags: [...analysis.tags],
 		title,
 		url,
-		youtube: resource.youtube ?? null,
 	};
+	if (resource.resourcePlatform === 'youtube') {
+		return {
+			...prepared,
+			kind: resource.kind,
+			resourcePlatform: resource.resourcePlatform,
+			youtube: prepareYouTubeData(resource.youtube),
+		} as const;
+	}
+	return {
+		...prepared,
+		kind: resource.kind,
+		resourcePlatform: resource.resourcePlatform,
+		youtube: null,
+	} as const;
 }
 
 async function lockResource(db: NodePgDatabase, resourceId: string): Promise<LockedResource> {
@@ -197,33 +203,6 @@ async function existingSubject(db: NodePgDatabase, parentId: string, subject: No
 	if (!existingId || existingId === parentId) return null;
 	const existing = await lockResource(db, existingId);
 	return existing.scope === 'corpus' && existing.enrichment_status === 'enriched' ? existing.id : null;
-}
-
-async function persistYouTube(db: NodePgDatabase, resourceId: string, input: YouTubeResourceData, highlightsGeneratedAt: Date | null) {
-	await db.execute(sql`
-		INSERT INTO youtube_transcripts (
-			resource_id, transcript, language, chapters, chapters_from_description,
-			fetched_at, ai_highlights, highlights_generated_at
-		) VALUES (
-			${resourceId}::uuid, ${JSON.stringify(input.transcript.segments)}::jsonb, ${input.transcript.language},
-			${JSON.stringify(input.transcript.chapters)}::jsonb, ${input.transcript.chaptersFromDescription},
-			NOW(), ${input.highlights ? JSON.stringify(input.highlights) : null}::jsonb, ${highlightsGeneratedAt}
-		)
-		ON CONFLICT (resource_id) DO UPDATE SET
-			transcript = EXCLUDED.transcript,
-			language = EXCLUDED.language,
-			chapters = EXCLUDED.chapters,
-			chapters_from_description = EXCLUDED.chapters_from_description,
-			fetched_at = NOW(),
-			ai_highlights = CASE
-				WHEN jsonb_array_length(EXCLUDED.chapters) > 0 THEN NULL
-				ELSE COALESCE(EXCLUDED.ai_highlights, youtube_transcripts.ai_highlights)
-			END,
-			highlights_generated_at = CASE
-				WHEN jsonb_array_length(EXCLUDED.chapters) > 0 THEN NULL
-				ELSE COALESCE(EXCLUDED.highlights_generated_at, youtube_transcripts.highlights_generated_at)
-			END
-	`);
 }
 
 async function writeCanonicalResource(
@@ -328,8 +307,8 @@ async function writeCanonicalResource(
 				updated_at = NOW()
 		`);
 	}
-	if (resource.youtube) {
-		await persistYouTube(db, resourceId, resource.youtube, resource.highlightsGeneratedAt);
+	if (resource.resourcePlatform === 'youtube') {
+		await persistYouTubeData(db, resourceId, resource.youtube);
 	}
 	const original = await db.execute<{ content: string | null; revision: string }>(sql`
 		SELECT original.content,
@@ -341,11 +320,7 @@ async function writeCanonicalResource(
 	`);
 	const authoritativeOriginal = original.rows[0];
 	if (!authoritativeOriginal) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
-	await replaceResourceReferences(
-		db,
-		resourceId,
-		resource.kind === 'paper' ? bibliographyFromMarkdown(authoritativeOriginal.content ?? '') : [],
-	);
+	await syncResourceReferences(db, resourceId, resource.kind, authoritativeOriginal.content);
 	return authoritativeOriginal.revision;
 }
 

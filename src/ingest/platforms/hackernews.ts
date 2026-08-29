@@ -9,7 +9,7 @@ import {
 	literalCreator,
 	materializePlatformResource,
 	type PlatformAcquiredMaterial,
-	type ResolvedResource,
+	type ResolvedPlatformResource,
 	type ResolvedResourceSubjectIdentity,
 	type ResourceAcquisitionHints,
 } from './materialize';
@@ -239,7 +239,7 @@ export async function stageHackerNewsAcquisition(
 		processingId: string;
 		resolveSubject: (url: string | null | undefined) => ResolvedResourceSubjectIdentity | null;
 	},
-): Promise<ResolvedResource> {
+): Promise<ResolvedPlatformResource<'hackernews'>> {
 	const contentStream = await step.do(
 		'acquire-hackernews-ranked-v3',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },

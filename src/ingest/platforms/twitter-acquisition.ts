@@ -5,7 +5,7 @@ import {
 	literalCreator,
 	materializePlatformResource,
 	type PlatformAcquiredMaterial,
-	type ResolvedResource,
+	type ResolvedPlatformResource,
 	type ResolvedResourceSubjectIdentity,
 	type ResourceAcquisitionHints,
 } from './materialize';
@@ -366,7 +366,7 @@ export async function stageTwitterAcquisition(
 		resolveSubject: (url: string | null | undefined) => ResolvedResourceSubjectIdentity | null;
 		tweetId: string;
 	},
-): Promise<ResolvedResource> {
+): Promise<ResolvedPlatformResource<'twitter'>> {
 	const contentStream = await step.do(
 		'acquire-twitter-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },

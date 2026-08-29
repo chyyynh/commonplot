@@ -10,7 +10,7 @@ import {
 	literalCreator,
 	materializePlatformResource,
 	type PlatformAcquiredMaterial,
-	type ResolvedResource,
+	type ResolvedPlatformResource,
 	type ResourceAcquisitionHints,
 } from './materialize';
 
@@ -108,7 +108,7 @@ const YouTubeChannelsResponseSchema = z.object({
 type YouTubeThumbnails = z.infer<typeof YouTubeThumbnailsSchema>;
 type YouTubeVideosResponse = z.infer<typeof YouTubeVideosResponseSchema>;
 type YouTubeAcquisition = PlatformAcquiredMaterial<'youtube'> & { transcript: YouTubeTranscript };
-type YouTubeResolvedResource = ResolvedResource & { youtube: YouTubeResourceData };
+type YouTubeResolvedResource = ResolvedPlatformResource<'youtube'> & { youtube: YouTubeResourceData };
 
 function bestThumbnailUrl(thumbnails: YouTubeThumbnails): string | null {
 	return (

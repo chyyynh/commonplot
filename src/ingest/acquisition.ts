@@ -6,14 +6,15 @@ import {
 	paperIdentityFromIdentifiers,
 	resolveExactPaperInput,
 } from '../shared/paper-identity';
-import { isPaperIdentifier } from '../shared/resource';
+import { isPaperIdentifier, type ResourcePlatform } from '../shared/resource';
 import { parseHackerNewsResourceUrl, stageHackerNewsAcquisition } from './platforms/hackernews';
 import { parseLessWrongResourceUrl, stageLessWrongAcquisition } from './platforms/lesswrong';
 import {
 	type GenericAcquiredMaterial,
 	materializeGenericResource,
 	type PlatformResourceUrl,
-	type ResolvedResource,
+	type ResolvedPlatformlessResource,
+	type ResolvedPlatformResource,
 	type ResolvedResourceSubjectIdentity,
 	type ResourceAcquisitionHints,
 } from './platforms/materialize';
@@ -23,7 +24,16 @@ import { parseTwitterResourceUrl, stageTwitterAcquisition } from './platforms/tw
 import { stageWebAcquisition } from './platforms/web';
 import { parseYouTubeResourceUrl, stageYouTubeAcquisition, type YouTubeResourceData } from './platforms/youtube';
 
-export type ProcessingResource = ResolvedResource & { youtube?: YouTubeResourceData };
+type NonYouTubePlatform = Exclude<ResourcePlatform, 'youtube'>;
+type NonYouTubeResolvedResource =
+	| ResolvedPlatformlessResource
+	| {
+			[TPlatform in NonYouTubePlatform]: ResolvedPlatformResource<TPlatform>;
+	  }[NonYouTubePlatform];
+
+export type ProcessingResource =
+	| (NonYouTubeResolvedResource & { youtube?: never })
+	| (ResolvedPlatformResource<'youtube'> & { youtube: YouTubeResourceData });
 
 export function resolvePlatformResourceUrl(url: URL): PlatformResourceUrl | null {
 	const hostname = url.hostname.toLowerCase();
@@ -71,7 +81,7 @@ async function resolveGenericAcquiredResource(
 		sourceUrl: string | null;
 		allowCitoidLookup: boolean;
 	},
-): Promise<ResolvedResource> {
+): Promise<ResolvedPlatformlessResource> {
 	let publishedDate = input.hints.publishedDate;
 	if (acquired.publishedDate?.trim()) {
 		const parsed = new Date(acquired.publishedDate);
@@ -168,7 +178,7 @@ export async function stageStoredResourceAcquisition(
 		paidPdfFallback: PaidPdfFallbackGrant | null;
 		resourceId: string;
 	}>,
-): Promise<ProcessingResource> {
+): Promise<ResolvedPlatformlessResource> {
 	const acquired = await stageStoredPdfAcquisition(env, step, target);
 	const resource = await resolveGenericAcquiredResource(env, step, acquired, {
 		hints: {

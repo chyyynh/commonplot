@@ -39,6 +39,11 @@ export type ResolvedResource = Readonly<{
 	subject: ResolvedResourceSubject | null;
 };
 
+export type ResolvedPlatformResource<TPlatform extends ResourcePlatform> = ResolvedResource &
+	Readonly<{ kind: ResourceKindForPlatform<TPlatform>; resourcePlatform: TPlatform }>;
+
+export type ResolvedPlatformlessResource = ResolvedResource & Readonly<{ kind: 'blog' | 'file' | 'paper'; resourcePlatform: null }>;
+
 type AcquiredMaterialFields<TKindMetadata extends ResourceKindMetadata = ResourceKindMetadata> = {
 	fileType: string | null;
 	title: string;
@@ -87,15 +92,17 @@ export type ResourceAcquisitionHints = Readonly<{
 	summary: string | null;
 }>;
 
-function materializeResource(
+type ResolvedResourceIdentity = Pick<ResolvedResource, 'kind' | 'resourcePlatform' | 'url'>;
+
+function materializeResource<TIdentity extends ResolvedResourceIdentity>(
 	acquired: AcquiredMaterialFields,
 	hints: ResourceAcquisitionHints,
-	identity: Pick<ResolvedResource, 'kind' | 'resourcePlatform' | 'url'> & {
+	identity: TIdentity & {
 		resourceIdentifiers: readonly ResourceIdentifier[];
 	},
 	publishedDate: string | null,
 	subject: ResolvedResourceSubject | null,
-): ResolvedResource {
+): ResolvedResource & TIdentity {
 	return {
 		...identity,
 		originalLang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeOptionalResourceLang(hints.originalLang) ?? 'und',
@@ -122,7 +129,7 @@ export function materializeGenericResource(
 		publishedDate: string | null;
 		resourceIdentifiers: readonly PaperIdentifier[];
 	},
-): ResolvedResource {
+): ResolvedPlatformlessResource {
 	const isPaper = resolution.resourceIdentifiers.some(({ scheme }) => scheme === 'openalex');
 	const kind = isPaper ? 'paper' : acquired.fileType === 'application/pdf' ? 'file' : 'blog';
 	return materializeResource(
@@ -144,7 +151,7 @@ export function materializePlatformResource<TPlatform extends ResourcePlatform>(
 	hints: ResourceAcquisitionHints,
 	identity: Pick<ResolvedResource, 'url'> & { kind: ResourceKindForPlatform<TPlatform> },
 	subject: ResolvedResourceSubjectIdentity | null = null,
-): ResolvedResource {
+): ResolvedPlatformResource<TPlatform> {
 	let publishedDate = hints.publishedDate;
 	if (acquired.publishedDate?.trim()) {
 		const parsed = new Date(acquired.publishedDate);

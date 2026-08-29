@@ -6,7 +6,7 @@ import {
 	literalCreator,
 	materializePlatformResource,
 	type PlatformAcquiredMaterial,
-	type ResolvedResource,
+	type ResolvedPlatformResource,
 	type ResourceAcquisitionHints,
 } from './materialize';
 
@@ -100,7 +100,7 @@ export async function stageLessWrongAcquisition(
 	step: WorkflowStep,
 	postId: string,
 	hints: ResourceAcquisitionHints,
-): Promise<ResolvedResource> {
+): Promise<ResolvedPlatformResource<'lesswrong'>> {
 	const contentStream = await step.do(
 		'acquire-lesswrong-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
