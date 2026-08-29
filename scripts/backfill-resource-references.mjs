@@ -21,7 +21,21 @@ if (!connectionString) {
 }
 const parsedLimit = Number(process.env.RESOURCE_REFERENCE_BACKFILL_LIMIT ?? '25');
 const afterResourceId = process.env.RESOURCE_REFERENCE_BACKFILL_AFTER?.trim() || null;
-const client = new Client({ connectionString, application_name: 'newsence-resource-reference-backfill' });
+const connectionUrl = new URL(connectionString);
+const usesSystemCertificateStore = connectionUrl.searchParams.get('sslrootcert') === 'system';
+if (usesSystemCertificateStore) {
+	// `sslrootcert=system` is a libpq/Prisma convention. node-postgres treats
+	// `system` as a file path, so use Node's trusted roots and hostname check.
+	connectionUrl.searchParams.delete('sslrootcert');
+	connectionUrl.searchParams.delete('sslmode');
+}
+const client = new Client({
+	application_name: 'newsence-resource-reference-backfill',
+	connectionString: connectionUrl.href,
+	connectionTimeoutMillis: 10_000,
+	query_timeout: 30_000,
+	...(usesSystemCertificateStore ? { ssl: { rejectUnauthorized: true } } : {}),
+});
 
 try {
 	await client.connect();
