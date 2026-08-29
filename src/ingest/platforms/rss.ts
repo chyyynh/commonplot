@@ -67,8 +67,6 @@ function normalizeFeedEntries(items: ExtractedFeedEntry[], feedLanguage?: string
 }
 
 async function loadFeed(feedUrl: string): Promise<{
-	effectiveUrl: URL;
-	title: string | null;
 	itemCount: number;
 	entries: FeedEntry[];
 }> {
@@ -128,31 +126,11 @@ async function loadFeed(feedUrl: string): Promise<{
 	} catch {
 		throw new Error('URL did not return a readable feed.');
 	}
-	effectiveUrl.hash = '';
-	effectiveUrl.hostname = effectiveUrl.hostname.toLowerCase();
-	if (effectiveUrl.pathname.length > 1 && effectiveUrl.pathname.endsWith('/')) {
-		effectiveUrl.pathname = effectiveUrl.pathname.slice(0, -1);
-	}
-
 	const items = (parsed.entries ?? []).slice(0, MAX_FEED_ITEMS);
 	const entries = normalizeFeedEntries(items, parsed.language?.trim() || undefined);
 	return {
-		effectiveUrl,
-		title: parsed.title?.trim() || null,
 		itemCount: items.length,
 		entries,
-	};
-}
-
-export async function resolveFeedMonitoredSource(url: URL) {
-	const { effectiveUrl: feedUrl, title } = await loadFeed(url.toString());
-	const feedHost = feedUrl.hostname.toLowerCase().replace(/^www\./, '');
-	return {
-		monitorKind: 'feed' as const,
-		handle: feedUrl.toString(),
-		name: title ?? feedHost,
-		siteUrl: feedUrl.origin,
-		avatarUrl: null,
 	};
 }
 

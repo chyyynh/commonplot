@@ -61,19 +61,6 @@ for (const [input, expected] of platformUrlCases) {
 	assert.deepEqual(actual ? [actual.resourcePlatform, actual.platformId, actual.canonicalUrl] : null, expected, input);
 }
 
-const twitterUsernameCases = [
-	['openai', 'openai'],
-	['@OpenAI', 'OpenAI'],
-	['https://x.com/openai', 'openai'],
-	['https://twitter.com/OpenAI/status/123', 'OpenAI'],
-	['https://x.com/home', null],
-	['https://x.com/search?q=openai', null],
-	['https://example.com/openai', null],
-];
-for (const [input, expected] of twitterUsernameCases) {
-	assert.equal(twitter.parseTwitterProfileInput(input, URL.parse(input)), expected);
-}
-
 const canonicalIdentifiers = [
 	{ preferred: true, scheme: 'doi', value: '10.1000/example' },
 	{ preferred: true, scheme: 'youtube', value: 'dQw4w9WgXcQ' },
@@ -128,6 +115,5 @@ assert.equal(resource.ResourceIdentifiersSchema.safeParse([{ preferred: true, sc
 console.info({
 	event: 'resource_contract_smoke_passed',
 	identifierContractCases: 5,
-	twitterUsernameCases: twitterUsernameCases.length,
 	urlCases: platformUrlCases.length,
 });

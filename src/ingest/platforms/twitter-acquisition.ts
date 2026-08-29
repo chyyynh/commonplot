@@ -11,9 +11,6 @@ import {
 } from './materialize';
 import { parseTwitterArticleResponse, parseTwitterTweetsResponse, renderTwitterArticleMarkdown, type Tweet } from './twitter-data';
 
-const TWITTER_PROFILE_NAME = /^[A-Za-z0-9_]{1,15}$/;
-const TWITTER_NON_PROFILE_PATHS = new Set(['home', 'i', 'intent', 'search', 'share']);
-
 function isTwitterHostname(hostname: string): boolean {
 	const lower = hostname.toLowerCase();
 	return lower === 'twitter.com' || lower.endsWith('.twitter.com') || lower === 'x.com' || lower.endsWith('.x.com');
@@ -29,13 +26,6 @@ export function parseTwitterResourceUrl(url: URL) {
 				canonicalUrl: `https://x.com/i/status/${tweetId.data}`,
 			}
 		: null;
-}
-
-export function parseTwitterProfileInput(input: string, url: URL | null): string | null {
-	const candidate = url ? url.pathname.split('/').filter(Boolean)[0] : input.trim().replace(/^@/, '');
-	if (url && !isTwitterHostname(url.hostname)) return null;
-	if (!candidate || TWITTER_NON_PROFILE_PATHS.has(candidate.toLowerCase())) return null;
-	return TWITTER_PROFILE_NAME.test(candidate) ? candidate : null;
 }
 
 interface TwitterMedia {

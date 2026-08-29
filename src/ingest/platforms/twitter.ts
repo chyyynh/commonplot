@@ -3,7 +3,6 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
 import { markSourcesScraped, recordSourceFailure } from '../source-monitor-state';
 import { enqueueSourceDrafts, type SourceResourceDraft } from '../workflow';
-import { parseTwitterProfileInput } from './twitter-acquisition';
 import { parseTwitterAdvancedSearchPage, type Tweet } from './twitter-data';
 
 // Twitter Monitor
@@ -19,23 +18,6 @@ type TwitterSource = {
 	scrapedAt: Date | null;
 	createdAt: Date;
 };
-
-export function resolveTwitterMonitoredSource(input: string, url: URL | null) {
-	const host = url?.hostname.toLowerCase().replace(/^(www|m)\./, '');
-	if (url && host !== 'x.com' && host !== 'twitter.com') return null;
-	const handle = parseTwitterProfileInput(input, url)?.toLowerCase() ?? null;
-	if (!handle) {
-		if (url && (host === 'x.com' || host === 'twitter.com')) throw new Error('Enter a valid X/Twitter handle or profile URL.');
-		return null;
-	}
-	return {
-		monitorKind: 'twitter' as const,
-		handle,
-		name: `@${handle}`,
-		siteUrl: `https://x.com/${handle}`,
-		avatarUrl: null,
-	};
-}
 
 async function loadTwitterSources(db: NodePgDatabase): Promise<TwitterSource[]> {
 	const result = await db.execute<TwitterSource>(sql`

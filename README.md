@@ -284,9 +284,8 @@ representation (MIME/filename/size/pages), or lifecycle origin (`source`,
 the acquired response without an R2 write; uploaded PDF extraction reads the
 app-owned blob. Neither representation is an additional identity value.
 
-Web submits one monitor input and Core detects a feed URL, YouTube channel, or
-X/Twitter account. `Source.monitorKind` stores only the operational `feed` or
-`twitter` cron route. Feed entries acquire their canonical URL, where normal
+Curated sources store only their operational `feed` or `twitter` cron route in
+`Source.monitorKind`. Feed entries acquire their canonical URL, where normal
 resource detection selects LessWrong and YouTube adapters when applicable.
 
 Minimum to add a new ingest source:

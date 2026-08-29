@@ -3,9 +3,8 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import type {} from './env';
-import { handleRSSCron, resolveFeedMonitoredSource } from './ingest/platforms/rss';
-import { handleTwitterCron, resolveTwitterMonitoredSource } from './ingest/platforms/twitter';
-import { resolveYouTubeMonitoredSource } from './ingest/platforms/youtube';
+import { handleRSSCron } from './ingest/platforms/rss';
+import { handleTwitterCron } from './ingest/platforms/twitter';
 import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import { type ResourceDraftTarget, ResourceDraftTargetSchema, ResourceProcessingV2Workflow } from './ingest/workflow';
 import { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
@@ -211,22 +210,5 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 				}
 			}),
 		);
-	}
-
-	/** Resolve a feed/account/channel monitor into a source row candidate (#237). */
-	async resolveMonitoredSource(input: string) {
-		const raw = typeof input === 'string' ? input.trim() : '';
-		if (!raw) throw new Error('Source input is required.');
-		const parsedUrl = URL.parse(raw);
-		const url =
-			parsedUrl && (parsedUrl.protocol === 'http:' || parsedUrl.protocol === 'https:') && !parsedUrl.username && !parsedUrl.password
-				? parsedUrl
-				: null;
-		const youtube = await resolveYouTubeMonitoredSource(this.env.YOUTUBE_API_KEY, raw, url);
-		if (youtube) return youtube;
-		const twitter = resolveTwitterMonitoredSource(raw, url);
-		if (twitter) return twitter;
-		if (url) return resolveFeedMonitoredSource(url);
-		throw new Error('Enter a feed URL, YouTube channel URL or ID, or X/Twitter handle.');
 	}
 }

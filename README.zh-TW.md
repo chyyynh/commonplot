@@ -225,8 +225,7 @@ Secrets（透過 `wrangler secret put` 設定）：
 一般 PDF 是 `blog`；HN/Twitter carrier 保持原 identity，學術辨識後透過
 `subject_resource_id` 指向另一筆 canonical `paper / null` resource。
 
-Web 只送一個 monitor 輸入，由 Core 自動辨識 feed URL、YouTube 頻道或
-X/Twitter 帳號。`Source.monitorKind` 只保存 `feed | twitter` 這個 cron
+Curated source 的 `Source.monitorKind` 只保存 `feed | twitter` 這個 cron
 路由；feed entry 進入正常 resource 偵測後，才選擇 LessWrong 或 YouTube
 adapter。
 
