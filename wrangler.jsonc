@@ -161,8 +161,6 @@
 		"required": ["KAITO_API_KEY", "YOUTUBE_API_KEY", "OPENALEX_API_KEY", "LLAMA_CLOUD_API_KEY", "LLAMA_CLOUD_PROJECT_ID"]
 	},
 	"vars": {
-		"AI_GATEWAY_ENVIRONMENT": "production",
-		/** Paid public-PDF fallback kill switch. Private blob egress has no code path. */
-		"LLAMA_PARSE_FALLBACK_ENABLED": "false"
+		"AI_GATEWAY_ENVIRONMENT": "production"
 	}
 }

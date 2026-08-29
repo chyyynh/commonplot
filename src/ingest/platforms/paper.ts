@@ -12,10 +12,9 @@ import {
 	resolveExactPaperInput,
 } from '../../shared/paper-identity';
 import type { PaperKindMetadata } from '../../shared/resource';
-import { type PdfWorkflowIdentity, resolvePublicPdfAcquisition } from './llama-parse';
 import { type GenericAcquiredMaterial, literalCreator } from './materialize';
-import { fetchOpenAlexPdf, type PaperMetadata, resolveOpenAlexPaper } from './openalex';
-import { acquireFetchedPdfResponse, type LocalPdfAcquisition, PDF_MIME } from './pdf';
+import { type PaperMetadata, resolveOpenAlexPaper } from './openalex';
+import { PDF_MIME, stageOpenAlexPdfRepresentation } from './pdf';
 
 const CITOID_IDENTIFIER_SCAN_CHARS = 3_000;
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
@@ -238,75 +237,17 @@ async function stagePaperEnrichment(
 	});
 }
 
-type PdfRepresentation = Readonly<{
-	fileType: typeof PDF_MIME;
-	markdown: string;
-	paperIdentifierText: string | null;
-}>;
-
-async function stageOpenAlexPdfAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: {
-		contentPdfUrl: string;
-		processingId: string;
-		workflow: PdfWorkflowIdentity;
-	},
-): Promise<PdfRepresentation | null> {
-	let local: LocalPdfAcquisition;
-	try {
-		const contentStream = await step.do(
-			'acquire-openalex-content-pdf-v5',
-			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '180 seconds' },
-			async () => {
-				const response = await fetchOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
-				return Response.json(await acquireFetchedPdfResponse(response, input.contentPdfUrl)).body!;
-			},
-		);
-		local = await new Response(contentStream).json<LocalPdfAcquisition>();
-	} catch (error) {
-		console.error({
-			tag: 'OPENALEX_CONTENT',
-			event: 'pdf_acquisition_failed',
-			processing_id: input.processingId,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return null;
-	}
-	const acquired = await resolvePublicPdfAcquisition(env, step, {
-		local,
-		processingId: input.processingId,
-		source: { kind: 'openalex', url: input.contentPdfUrl },
-		summary: 'preserve',
-		workflow: input.workflow,
-	});
-	console.info({
-		tag: 'OPENALEX_CONTENT',
-		event: 'pdf_acquired',
-		processing_id: input.processingId,
-		chars: acquired.markdown.length,
-		local_parse_outcome: local.parse.status,
-	});
-	return {
-		fileType: PDF_MIME,
-		markdown: acquired.markdown,
-		paperIdentifierText: acquired.paperIdentifierText ?? null,
-	};
-}
-
 export async function stagePaperProcessing(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
 		acquiredContent: GenericAcquiredMaterial;
-		allowProviderPdfFallback: boolean;
 		canonicalUrl: string | null;
 		processingId: string;
 		publishedDate: string | null;
 		seedIdentifiers: readonly PaperIdentifier[];
 		sourceUrl: string | null;
 		allowCitoidLookup: boolean;
-		workflow: PdfWorkflowIdentity;
 	},
 ) {
 	const identifiers = localPaperIdentifiers({
@@ -323,12 +264,11 @@ export async function stagePaperProcessing(
 	});
 	const enriched = applyPaperMetadata(input.acquiredContent, resolution.metadata, input.publishedDate);
 	const pdfRepresentation =
-		input.acquiredContent.fileType === PDF_MIME || !resolution.contentPdfUrl || !input.allowProviderPdfFallback
+		input.acquiredContent.fileType === PDF_MIME || !resolution.contentPdfUrl
 			? null
-			: await stageOpenAlexPdfAcquisition(env, step, {
+			: await stageOpenAlexPdfRepresentation(env, step, {
 					contentPdfUrl: resolution.contentPdfUrl,
 					processingId: input.processingId,
-					workflow: input.workflow,
 				});
 	const acquiredContent = pdfRepresentation
 		? {

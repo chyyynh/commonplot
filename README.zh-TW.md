@@ -132,12 +132,13 @@ wrangler secret put LLAMA_CLOUD_API_KEY       # 付費 public PDF fallback
 wrangler secret put LLAMA_CLOUD_PROJECT_ID    # 此 deployment 專用的 Llama Cloud project
 ```
 
-LlamaParse 是 local-first fallback，預設由
-`LLAMA_PARSE_FALLBACK_ENABLED=false` 關閉。只有在設定獨立的 development
-key／project、明確授權付費 smoke，並記錄實際 credits 後才能開啟。Core 只會在
-LiteParse 出現 hard defect、且已知完整頁數不超過 100 頁時送出符合條件的公開
-PDF；app-owned 私人 PDF 不會離開 Core。Provider adapter 固定使用美國 API、
-`cost_effective` tier 與具日期的 parser version。
+LlamaParse 是 local-first fallback。Web 負責產品 kill switch 與 Autumn
+資格，並在 authenticated URL workflow 附上單份文件的頁數 grant。Core 只在
+LiteParse 出現 hard defect 時執行已授權的公開 PDF fallback，且獨立強制 100 頁
+安全上限。App-owned 私人 PDF 與帶 OpenAlex key 的 content URL 不會離開
+Core。Provider adapter 固定使用美國 API、`cost_effective` tier 與具日期的
+parser version。只有在明確授權 development smoke 並記錄實際 credits 後，
+才可開啟 Web grant。
 
 ### 5. 部署
 
@@ -214,7 +215,6 @@ Secrets（透過 `wrangler secret put` 設定）：
 | `OPENALEX_API_KEY`             | 是   | 啟用精確論文 metadata enrichment |
 | `LLAMA_CLOUD_API_KEY`          | 是   | 此 deployment 的 LlamaParse API key |
 | `LLAMA_CLOUD_PROJECT_ID`       | 是   | 此 deployment 隔離使用的 Llama Cloud project |
-| `LLAMA_PARSE_FALLBACK_ENABLED` | 否   | 付費 public PDF fallback kill switch；預設 `false` |
 
 ## Canonical resource identity
 

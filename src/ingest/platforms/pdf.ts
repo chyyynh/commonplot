@@ -8,14 +8,18 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
 import { canonicalizeResourceLang, type ResourceCreator, ResourceCreatorsSchema } from '../../shared/resource';
 import type { GenericAcquiredMaterial } from './materialize';
+import { fetchOpenAlexPdf } from './openalex';
+import { LLAMA_PARSE_MAX_PAGES, type PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
+import { stageLlamaParseFallback } from './pdf-llamaparse';
+import { usablePdfMarkdown } from './pdf-text';
 
 export const PDF_MIME = 'application/pdf';
 
-export const MAX_PDF_BYTES = 25 * 1024 * 1024;
+const MAX_PDF_BYTES = 25 * 1024 * 1024;
+export const MAX_PAID_PDF_PAGES = LLAMA_PARSE_MAX_PAGES;
+export type { PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
+
 const MAX_PAPER_IDENTIFIER_TEXT_CHARS = 20_000;
-const LETTER_OR_NUMBER = /[\p{L}\p{N}]/u;
-const SYMBOL_OR_PUNCTUATION = /[\p{P}\p{S}]/u;
-const WHITESPACE = /\s/u;
 
 const LITEPARSE_CONFIG = {
 	continueOnPageError: true,
@@ -30,22 +34,22 @@ const LITEPARSE_CONFIG = {
 initSync({ module: wasmModule });
 
 type PdfQualityReason = 'complex-layout' | 'empty-batch' | 'garbled-text' | 'needs-ocr' | 'parse-failed' | 'unparsed';
-export type PdfHardDefect = 'empty-output' | 'garbled-text' | 'needs-ocr' | 'parse-failed' | 'unparsed';
+type PdfHardDefect = 'empty-output' | 'garbled-text' | 'needs-ocr' | 'parse-failed' | 'unparsed';
 
-export type LocalPdfParseOutcome = Readonly<{
+type LocalPdfParseOutcome = Readonly<{
 	hardDefects: PdfHardDefect[];
 	parserVersion: string;
 	status: 'usable' | 'hard-defect';
 	totalPages: number | null;
 }>;
 
-export type LocalPdfAcquisition = Readonly<{
+export type PdfAcquisitionDraft = Readonly<{
 	kind: 'local-pdf';
 	material: GenericAcquiredMaterial;
 	parse: LocalPdfParseOutcome;
 }>;
 
-export function isLocalPdfAcquisition(value: GenericAcquiredMaterial | LocalPdfAcquisition): value is LocalPdfAcquisition {
+export function isPdfAcquisitionDraft(value: GenericAcquiredMaterial | PdfAcquisitionDraft): value is PdfAcquisitionDraft {
 	return 'kind' in value && value.kind === 'local-pdf';
 }
 
@@ -76,51 +80,6 @@ type LocalPdfParseResult = Readonly<{
 }>;
 
 const HARD_PDF_QUALITY_REASONS = new Set<PdfQualityReason>(['garbled-text', 'needs-ocr', 'parse-failed', 'unparsed']);
-
-function isUnsafePdfTextCharacter(character: string): boolean {
-	const codePoint = character.codePointAt(0);
-	return (
-		codePoint === 0xfffd ||
-		codePoint === 0x0b ||
-		codePoint === 0x0c ||
-		(codePoint !== undefined && (codePoint <= 0x08 || (codePoint >= 0x0e && codePoint <= 0x1f) || (codePoint >= 0x7f && codePoint <= 0x9f)))
-	);
-}
-
-/** Drop decoded PDF stream garbage without rejecting ordinary prose, code, or equations. */
-function usablePdfMarkdown(markdown: string, parserMarkedGarbled: boolean): string {
-	let clean = '';
-	let checked = 0;
-	let unsafe = 0;
-	let significant = 0;
-	let symbols = 0;
-	let run = 0;
-	let longestRun = 0;
-	for (const character of markdown) {
-		checked++;
-		if (isUnsafePdfTextCharacter(character)) {
-			unsafe++;
-			continue;
-		}
-		clean += character;
-		if (WHITESPACE.test(character)) {
-			run = 0;
-			continue;
-		}
-		run++;
-		longestRun = Math.max(longestRun, run);
-		if (LETTER_OR_NUMBER.test(character)) significant++;
-		else if (SYMBOL_OR_PUNCTUATION.test(character)) {
-			significant++;
-			symbols++;
-		}
-	}
-	const unsafeGarbage = unsafe >= 3 && unsafe / Math.max(1, checked) >= 0.002;
-	const printableGarbage = significant >= 256 && symbols / significant >= 0.45 && longestRun >= 80;
-	if (parserMarkedGarbled || unsafeGarbage || printableGarbage) return '';
-	clean = clean.trim();
-	return LETTER_OR_NUMBER.test(clean) ? clean : '';
-}
 
 function accumulateLiteParseResult(accumulator: ParsedPdfAccumulator, result: ParseResult): void {
 	for (const page of result.pages) {
@@ -252,9 +211,81 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<Lo
 	}
 }
 
-export function requireUsableLocalPdf(acquisition: LocalPdfAcquisition, sourceLabel: string): GenericAcquiredMaterial {
+function requireUsablePdf(acquisition: PdfAcquisitionDraft, sourceLabel: string): GenericAcquiredMaterial {
 	if (!acquisition.material.markdown) throw new NonRetryableError(`${sourceLabel} has no usable text; OCR is required`);
 	return acquisition.material;
+}
+
+/** Finish a direct public PDF after the retrying fetch/local-parse step has ended. */
+export async function completeFetchedPdfAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: {
+		acquisition: PdfAcquisitionDraft;
+		grant: PaidPdfFallbackGrant | null;
+		processingId: string;
+		sourceUrl: string;
+	},
+): Promise<GenericAcquiredMaterial> {
+	const cloudMarkdown = await stageLlamaParseFallback(env, step, {
+		grant: input.grant,
+		local: input.acquisition.parse,
+		processingId: input.processingId,
+		sourceUrl: input.sourceUrl,
+	});
+	if (!cloudMarkdown) return requireUsablePdf(input.acquisition, 'Fetched PDF');
+	return {
+		...input.acquisition.material,
+		markdown: cloudMarkdown,
+		paperIdentifierText: cloudMarkdown.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS),
+		summary: cloudMarkdown.slice(0, 500) || null,
+	};
+}
+
+type PdfRepresentation = Readonly<{
+	fileType: typeof PDF_MIME;
+	markdown: string;
+	paperIdentifierText: string | null;
+}>;
+
+/** OpenAlex content URLs need our API key, so this optional representation is always local-only. */
+export async function stageOpenAlexPdfRepresentation(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: { contentPdfUrl: string; processingId: string },
+): Promise<PdfRepresentation | null> {
+	try {
+		const contentStream = await step.do(
+			'acquire-openalex-content-pdf-v6',
+			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '180 seconds' },
+			async () => {
+				const response = await fetchOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
+				return Response.json(await acquireFetchedPdfResponse(response, input.contentPdfUrl)).body!;
+			},
+		);
+		const local = await new Response(contentStream).json<PdfAcquisitionDraft>();
+		const acquired = requireUsablePdf(local, 'OpenAlex content PDF');
+		console.info({
+			tag: 'OPENALEX_CONTENT',
+			event: 'pdf_acquired',
+			processing_id: input.processingId,
+			chars: acquired.markdown.length,
+			local_parse_outcome: local.parse.status,
+		});
+		return {
+			fileType: PDF_MIME,
+			markdown: acquired.markdown,
+			paperIdentifierText: acquired.paperIdentifierText ?? null,
+		};
+	} catch (error) {
+		console.error({
+			tag: 'OPENALEX_CONTENT',
+			event: 'pdf_acquisition_failed',
+			processing_id: input.processingId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	}
 }
 
 type StoredPdfInput = {
@@ -342,7 +373,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 	};
 }
 
-async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise<LocalPdfAcquisition> {
+async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise<PdfAcquisitionDraft> {
 	const obj = await env.R2.get(resource.storageKey);
 	if (!obj) throw new NonRetryableError(`PDF source object missing: ${resource.storageKey}`);
 	if (obj.size > MAX_PDF_BYTES) throw new NonRetryableError(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
@@ -367,7 +398,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 	};
 }
 
-export async function acquireFetchedPdfResponse(response: Response, finalUrl: string): Promise<LocalPdfAcquisition> {
+export async function acquireFetchedPdfResponse(response: Response, finalUrl: string): Promise<PdfAcquisitionDraft> {
 	let pdfBytes = 0;
 	const body = response.body?.pipeThrough(
 		new TransformStream<Uint8Array, Uint8Array>({
@@ -434,6 +465,6 @@ export async function stageStoredPdfAcquisition(
 		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await acquireStoredPdf(env, resource)).body!,
 	);
-	const acquisition = await new Response(contentStream).json<LocalPdfAcquisition>();
-	return requireUsableLocalPdf(acquisition, `Stored PDF ${target.resourceId}`);
+	const acquisition = await new Response(contentStream).json<PdfAcquisitionDraft>();
+	return requireUsablePdf(acquisition, `Stored PDF ${target.resourceId}`);
 }

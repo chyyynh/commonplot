@@ -137,13 +137,14 @@ wrangler secret put LLAMA_CLOUD_API_KEY       # Paid public-PDF fallback
 wrangler secret put LLAMA_CLOUD_PROJECT_ID    # Deployment-specific Llama Cloud project
 ```
 
-LlamaParse is a local-first fallback and is disabled by default with
-`LLAMA_PARSE_FALLBACK_ENABLED=false`. Enable it only after configuring a
-separate development key/project, authorizing a paid smoke run, and recording
-the observed credits. Core sends only eligible public PDFs after a LiteParse
-hard defect, with a known complete page count of at most 100. App-owned private
-PDFs never leave Core. The provider adapter is locked to the US API, the
-`cost_effective` tier, and a dated parser version.
+LlamaParse is a local-first fallback. Web owns the product kill switch and
+Autumn eligibility, then attaches a per-document page grant to authenticated
+URL workflows. Core executes only granted public-PDF fallbacks after a
+LiteParse hard defect and independently enforces the 100-page safety cap.
+App-owned private PDFs and OpenAlex key-bearing content URLs never leave Core.
+The provider adapter is locked to the US API, the `cost_effective` tier, and a
+dated parser version. Enable Web grants only after an authorized development
+smoke records the observed credits.
 
 ### 5. Deploy
 
@@ -222,7 +223,6 @@ Secrets (via `wrangler secret put`):
 | `OPENALEX_API_KEY`             | Yes      | Enables exact paper metadata enrichment  |
 | `LLAMA_CLOUD_API_KEY`          | Yes      | LlamaParse API key for this deployment   |
 | `LLAMA_CLOUD_PROJECT_ID`       | Yes      | Isolated Llama Cloud project for this deployment |
-| `LLAMA_PARSE_FALLBACK_ENABLED` | No       | Paid public-PDF fallback kill switch; defaults to `false` |
 
 ### Canonical AI Search v6
 

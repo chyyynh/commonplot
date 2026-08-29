@@ -4,26 +4,26 @@ import {
 	LLAMA_PARSE_MAX_PAGES,
 	llamaParseFallbackReason,
 	wholeDocumentMarkdown,
-} from '../src/ingest/platforms/llama-parse-policy.ts';
+} from '../src/ingest/platforms/pdf-fallback-policy.ts';
 
 const admission = (overrides = {}) =>
 	llamaParseFallbackReason({
-		enabled: 'true',
-		hasApiKey: true,
-		hasProjectId: true,
+		grant: { maxPages: LLAMA_PARSE_MAX_PAGES },
+		hasCredentials: true,
 		local: { hardDefects: ['needs-ocr'], totalPages: 3 },
-		scope: 'public',
+		sourceUrl: 'https://papers.example.org/work.pdf',
 		...overrides,
 	});
 
 assert.equal(admission(), 'admitted');
 assert.equal(admission({ local: { hardDefects: [], totalPages: 3 } }), 'local-usable');
 assert.equal(admission({ local: { hardDefects: ['complex-layout'], totalPages: 3 } }), 'local-usable');
-assert.equal(admission({ enabled: 'false' }), 'disabled');
-assert.equal(admission({ hasApiKey: false }), 'missing-credentials');
+assert.equal(admission({ grant: null }), 'not-authorized');
+assert.equal(admission({ grant: { maxPages: LLAMA_PARSE_MAX_PAGES + 1 } }), 'invalid-grant');
+assert.equal(admission({ hasCredentials: false }), 'missing-credentials');
 assert.equal(admission({ local: { hardDefects: ['parse-failed'], totalPages: null } }), 'page-count-unknown');
 assert.equal(admission({ local: { hardDefects: ['unparsed'], totalPages: LLAMA_PARSE_MAX_PAGES + 1 } }), 'page-limit-exceeded');
-assert.equal(admission({ scope: 'private' }), 'private-source');
+assert.equal(admission({ sourceUrl: 'https://localhost/work.pdf' }), 'source-ineligible');
 
 assert.equal(isAllowedPublicPdfUrl('https://papers.example.org/work.pdf'), true);
 for (const url of [
@@ -31,6 +31,7 @@ for (const url of [
 	'https://localhost/work.pdf',
 	'https://127.0.0.1/work.pdf',
 	'https://[::1]/work.pdf',
+	'https://papers.example.org./work.pdf',
 	'https://service.internal/work.pdf',
 	'https://intranet/work.pdf',
 	'https://user:pass@papers.example.org/work.pdf',
@@ -50,5 +51,6 @@ assert.equal(
 );
 assert.equal(wholeDocumentMarkdown([{ markdown: 'first', page_number: 1, success: true }], 2), null);
 assert.equal(wholeDocumentMarkdown([{ markdown: 'first', page_number: 1, success: false }], 1), null);
+assert.equal(wholeDocumentMarkdown([{ markdown: '\u0000\u0001\u0002broken', page_number: 1, success: true }], 1), null);
 
 console.info({ event: 'llama_parse_policy_contract_smoke_passed' });

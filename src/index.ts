@@ -22,6 +22,7 @@ export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchInde
 
 type AppResourceDraftInput = Readonly<{
 	instanceId: string;
+	paidPdfFallback?: ResourceDraftTarget['paidPdfFallback'];
 	url: string;
 	saveTarget: Exclude<ResourceDraftTarget['saveTarget'], undefined>;
 }>;
@@ -156,6 +157,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 				id: AppDraftWorkflowIdSchema.parse(input.instanceId),
 				params: ResourceDraftTargetSchema.parse({
 					kind: 'draft',
+					...(input.paidPdfFallback ? { paidPdfFallback: input.paidPdfFallback } : {}),
 					saveTarget: input.saveTarget,
 					url: input.url,
 				}),
@@ -165,11 +167,12 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	/** Reacquire a URL-backed resource through the enrichment workflow. */
-	async resyncResource(resourceId: string) {
+	async resyncResource(resourceId: string, paidPdfFallback?: ResourceDraftTarget['paidPdfFallback']) {
 		const id = z.uuid().parse(resourceId);
+		const grant = ResourceDraftTargetSchema.shape.paidPdfFallback.parse(paidPdfFallback);
 		const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
 			id: `resource-resync-v3-${id}-${crypto.randomUUID()}`,
-			params: { kind: 'reacquire', resourceId: id },
+			params: { kind: 'reacquire', ...(grant ? { paidPdfFallback: grant } : {}), resourceId: id },
 		});
 		return instance.id;
 	}

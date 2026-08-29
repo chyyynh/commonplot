@@ -15,6 +15,7 @@ import {
 import { type ProcessingResource, stageStoredResourceAcquisition, stageUrlAcquisition } from './acquisition';
 import { analyzeResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
+import { MAX_PAID_PDF_PAGES } from './platforms/pdf';
 import {
 	persistResolvedResource,
 	prepareResolvedResource,
@@ -28,9 +29,12 @@ const ResourceDraftRelationSchema: z.ZodType<ResourceDraftRelation> = z.discrimi
 	z.object({ kind: z.literal('subject'), parentResourceId: z.uuid() }).strict(),
 ]);
 
+const PaidPdfFallbackGrantSchema = z.object({ maxPages: z.number().int().min(1).max(MAX_PAID_PDF_PAGES) }).strict();
+
 export const ResourceDraftTargetSchema = z
 	.object({
 		kind: z.literal('draft'),
+		paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
 		relation: ResourceDraftRelationSchema.optional(),
 		saveTarget: z.record(z.string(), z.json()).optional(),
 		url: z
@@ -118,6 +122,7 @@ const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
 	z
 		.object({
 			kind: z.literal('reacquire'),
+			paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
 			resourceId: z.uuid(),
 		})
 		.strict(),
@@ -198,12 +203,12 @@ async function resolveProcessingCall(
 	env: CoreEnv,
 	step: WorkflowStep,
 	target: ResourceProcessingTarget,
-	workflow: Readonly<{ instanceId: string; startedAt: string }>,
+	instanceId: string,
 ): Promise<ResolvedProcessingCall> {
 	if (target.kind === 'draft') {
 		return {
 			keywordHints: target.sourceHints?.keywords ?? [],
-			processingId: workflow.instanceId,
+			processingId: instanceId,
 			resource: await stageUrlAcquisition(env, step, {
 				hints: {
 					originalLang: target.sourceHints?.originalLang ?? null,
@@ -211,9 +216,9 @@ async function resolveProcessingCall(
 					summary: target.sourceHints?.summary ?? null,
 				},
 				allowCitoidLookup: target.relation?.kind !== 'source',
-				processingId: workflow.instanceId,
+				paidPdfFallback: target.paidPdfFallback ?? null,
+				processingId: instanceId,
 				url: target.url,
-				workflow,
 			}),
 			persistenceTarget: {
 				kind: 'draft',
@@ -224,7 +229,7 @@ async function resolveProcessingCall(
 	}
 
 	if (target.kind === 'storedBlob') {
-		const resource = await stageStoredResourceAcquisition(env, step, target, workflow);
+		const resource = await stageStoredResourceAcquisition(env, step, target);
 		const resolvedPaper = resource.kind === 'paper';
 		return {
 			keywordHints: [],
@@ -251,9 +256,9 @@ async function resolveProcessingCall(
 			},
 			allowCitoidLookup: false,
 			paperIdentifiers: snapshot.paperIdentifiers,
+			paidPdfFallback: target.paidPdfFallback ?? null,
 			processingId: target.resourceId,
 			url: snapshot.url,
-			workflow,
 		}),
 		persistenceTarget: {
 			kind: 'existing',
@@ -266,10 +271,7 @@ async function resolveProcessingCall(
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep) {
 		const target = ResourceProcessingTargetSchema.parse(event.payload);
-		const call = await resolveProcessingCall(this.env, step, target, {
-			instanceId: event.instanceId,
-			startedAt: event.timestamp.toISOString(),
-		});
+		const call = await resolveProcessingCall(this.env, step, target, event.instanceId);
 		const resource = call.resource;
 		const processingId = call.processingId;
 
