@@ -57,7 +57,6 @@ export type ResourceCreator = Readonly<z.infer<typeof ResourceCreatorSchema>>;
 const ResourceMediaAttachmentSchema = z.object({
 	kind: z.enum(['image', 'video', 'animated']),
 	url: optionalHttpUrl,
-	videoUrl: optionalHttpUrl.optional(),
 	width: z.number().int().positive().optional(),
 	height: z.number().int().positive().optional(),
 });
@@ -86,7 +85,6 @@ export const RESOURCE_TYPES = {
 	forum: {
 		platforms: [{ name: 'hackernews', identifier: z.string().regex(/^[1-9]\d*$/) }],
 		metadata: z.object({
-			itemType: z.enum(['story', 'ask', 'show', 'job']).optional(),
 			points: z.number().int().nonnegative().optional(),
 			commentCount: z.number().int().nonnegative().optional(),
 		}),

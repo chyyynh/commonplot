@@ -70,6 +70,7 @@ type HackerNewsDiscussionInput = {
 	commentInput: string;
 	commentCount: number;
 	hnText: string | null;
+	itemType?: 'story' | 'ask' | 'show' | 'job';
 	threadCount: number;
 };
 
@@ -190,7 +191,7 @@ async function scrapeHackerNews(env: CoreEnv, itemId: string, processingId: stri
 	});
 	const sampledCommentCount = threadBlocks.reduce((total, block) => total + block.commentCount, 0);
 	const totalCommentCount = item.descendants ?? item.kids?.length ?? sampledCommentCount;
-	let itemType: ForumKindMetadata['itemType'];
+	let itemType: HackerNewsDiscussionInput['itemType'];
 	if (item.type === 'job') itemType = 'job';
 	else if (/^Ask HN:/i.test(title)) itemType = 'ask';
 	else if (/^Show HN:/i.test(title)) itemType = 'show';
@@ -218,11 +219,12 @@ async function scrapeHackerNews(env: CoreEnv, itemId: string, processingId: stri
 		summary: hnText?.slice(0, 280) || null,
 		...(item.url ? { subjectUrl: item.url } : {}),
 		creators: literalCreator('submitter', item.by),
-		kindMetadata: { points: item.score, commentCount: totalCommentCount, itemType } satisfies ForumKindMetadata,
+		kindMetadata: { points: item.score, commentCount: totalCommentCount } satisfies ForumKindMetadata,
 		discussion: {
 			commentCount: sampledCommentCount,
 			commentInput: threadBlocks.map((block) => block.text).join('\n\n'),
 			hnText: hnText?.slice(0, 1200) || null,
+			...(itemType ? { itemType } : {}),
 			threadCount: threadBlocks.length,
 		},
 	};
@@ -252,9 +254,9 @@ export async function stageHackerNewsAcquisition(
 			if (discussion.commentCount < 4 || discussion.threadCount < 2) return null;
 			const hnPostSection = discussion.hnText ? `HN post text:\n${discussion.hnText}\n\n` : '';
 			const digestFocus =
-				acquired.kindMetadata.itemType === 'ask'
+				discussion.itemType === 'ask'
 					? 'Synthesize the answers, experiences, and advice offered in response to the question.'
-					: acquired.kindMetadata.itemType === 'show'
+					: discussion.itemType === 'show'
 						? 'Synthesize the community feedback, questions, use cases, and technical observations about the project.'
 						: 'Synthesize the arguments, context, reactions, and disagreements in the discussion.';
 			const { finishReason, text } = await generateText({

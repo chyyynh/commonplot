@@ -31,7 +31,6 @@ export function parseTwitterResourceUrl(url: URL) {
 interface TwitterMedia {
 	url: string;
 	type: 'photo' | 'video' | 'animated_gif';
-	videoUrl?: string;
 	width?: number;
 	height?: number;
 }
@@ -95,12 +94,6 @@ function extractTweetMedia(tweet: Tweet): TwitterMedia[] {
 			if (m.sizes?.large) {
 				result.width = m.sizes.large.w;
 				result.height = m.sizes.large.h;
-			}
-			if (m.video_info?.variants) {
-				const mp4 = m.video_info.variants
-					.filter((v): v is typeof v & { bitrate: number } => v.content_type === 'video/mp4' && Number.isFinite(v.bitrate))
-					.sort((a, b) => b.bitrate - a.bitrate)[0];
-				if (mp4) result.videoUrl = mp4.url;
 			}
 			return [result];
 		}) ?? []
@@ -414,7 +407,6 @@ function postMetadata(data: TwitterMetadata): PostKindMetadata {
 			{
 				kind: media.type === 'photo' ? 'image' : media.type === 'animated_gif' ? 'animated' : 'video',
 				url: media.url.trim(),
-				...(media.videoUrl?.trim() ? { videoUrl: media.videoUrl.trim() } : {}),
 				...(media.width === undefined ? {} : { width: media.width }),
 				...(media.height === undefined ? {} : { height: media.height }),
 			},
