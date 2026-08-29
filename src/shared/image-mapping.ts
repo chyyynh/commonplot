@@ -34,7 +34,9 @@ export function hostedResourceImageUrl(value: string | null | undefined): string
 
 export type HostedResourceImage = Readonly<{
 	deliveryUrl: string;
+	height: number | null;
 	sourceUrl: string;
+	width: number | null;
 }>;
 
 export function normalizedExternalMediaUrl(rawUrl: string | null | undefined, baseUrl?: string): string | null {
@@ -75,16 +77,24 @@ export function resourceImageSourceUrls(resource: ResourceImageFields): string[]
 	return [...new Set(normalized)];
 }
 
-function hostedImageMap(images: readonly HostedResourceImage[]): ReadonlyMap<string, string> {
-	const result = new Map<string, string>();
+function hostedImageMap(images: readonly HostedResourceImage[]): ReadonlyMap<string, HostedResourceImage> {
+	const result = new Map<string, HostedResourceImage>();
 	for (const image of images) {
 		const sourceUrl = normalizedResourceImageUrl(image.sourceUrl);
 		const deliveryUrl = hostedResourceImageUrl(image.deliveryUrl);
-		if (!sourceUrl || sourceUrl !== image.sourceUrl || !deliveryUrl || deliveryUrl !== image.deliveryUrl) {
+		const hasDimensions = image.width !== null || image.height !== null;
+		if (
+			!sourceUrl ||
+			sourceUrl !== image.sourceUrl ||
+			!deliveryUrl ||
+			deliveryUrl !== image.deliveryUrl ||
+			(hasDimensions &&
+				(!Number.isSafeInteger(image.width) || !Number.isSafeInteger(image.height) || (image.width ?? 0) <= 0 || (image.height ?? 0) <= 0))
+		) {
 			throw new TypeError('Hosted Resource image is invalid');
 		}
 		if (result.has(sourceUrl)) throw new TypeError('Hosted Resource images contain duplicate sources');
-		result.set(sourceUrl, deliveryUrl);
+		result.set(sourceUrl, image);
 	}
 	return result;
 }
@@ -119,24 +129,34 @@ function withHostedPostMetadata(metadata: PostKindMetadata, mapImageUrl: MapImag
 export function hostedResourceImageFields(
 	resource: ResourceImageFields,
 	images: readonly HostedResourceImage[],
-): { creators: ResourceCreator[]; kindMetadata: ResourceKindMetadata | null; ogImageUrl: string | null } {
+): {
+	creators: ResourceCreator[];
+	kindMetadata: ResourceKindMetadata | null;
+	ogImageHeight: number | null;
+	ogImageUrl: string | null;
+	ogImageWidth: number | null;
+} {
 	const imageMap = hostedImageMap(images);
 	const consumedSources = new Set<string>();
-	const mapImageUrl: MapImageUrl = (rawUrl) => {
+	const mapHostedImage = (rawUrl: string | null | undefined): HostedResourceImage | null => {
 		if (rawUrl === null || rawUrl === undefined) return null;
 		const sourceUrl = normalizedResourceImageUrl(rawUrl);
 		if (!sourceUrl) throw new TypeError('Resource image source URL is invalid');
-		const deliveryUrl = imageMap.get(sourceUrl);
-		if (!deliveryUrl) throw new TypeError('Hosted Resource images do not cover every source');
+		const image = imageMap.get(sourceUrl);
+		if (!image) throw new TypeError('Hosted Resource images do not cover every source');
 		consumedSources.add(sourceUrl);
-		return deliveryUrl;
+		return image;
 	};
+	const mapImageUrl: MapImageUrl = (rawUrl) => mapHostedImage(rawUrl)?.deliveryUrl ?? null;
 	const postMetadata = resourcePostMetadata(resource);
 	const kindMetadata = postMetadata ? withHostedPostMetadata(postMetadata, mapImageUrl) : (resource.kindMetadata ?? null);
+	const ogImage = mapHostedImage(resource.ogImageUrl);
 	const result = {
 		creators: resource.creators?.map((creator) => withHostedAvatar(creator, mapImageUrl)) ?? [],
 		kindMetadata,
-		ogImageUrl: mapImageUrl(resource.ogImageUrl),
+		ogImageHeight: ogImage?.height ?? null,
+		ogImageUrl: ogImage?.deliveryUrl ?? null,
+		ogImageWidth: ogImage?.width ?? null,
 	};
 	if (consumedSources.size !== imageMap.size) throw new TypeError('Hosted Resource images do not cover every source');
 	return result;

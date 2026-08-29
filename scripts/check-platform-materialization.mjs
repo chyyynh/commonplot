@@ -262,8 +262,8 @@ const imageInput = {
 	creators: [{ avatarUrl: avatar, literal: 'Author', role: 'author' }],
 	kindMetadata: {
 		attachments: [
-			{ kind: 'image', url: imageA },
-			{ kind: 'image', url: imageB },
+			{ height: 480, kind: 'image', url: imageA, width: 640 },
+			{ height: 360, kind: 'image', url: imageB, width: 640 },
 		],
 	},
 	ogImageUrl: imageB,
@@ -275,11 +275,23 @@ assert.equal(
 	'https://example.com/wp-content/uploads/preview.jpg?w=1200',
 );
 const hosted = [
-	{ deliveryUrl: `https://imagedelivery.net/account/resource-${'a'.repeat(64)}/public`, sourceUrl: imageA },
-	{ deliveryUrl: `https://imagedelivery.net/account/resource-${'b'.repeat(64)}/public`, sourceUrl: imageB },
-	{ deliveryUrl: `https://imagedelivery.net/account/resource-${'c'.repeat(64)}/public`, sourceUrl: avatar },
+	{ deliveryUrl: `https://imagedelivery.net/account/resource-${'a'.repeat(64)}/public`, height: 800, sourceUrl: imageA, width: 1200 },
+	{ deliveryUrl: `https://imagedelivery.net/account/resource-${'b'.repeat(64)}/public`, height: 1200, sourceUrl: imageB, width: 800 },
+	{ deliveryUrl: `https://imagedelivery.net/account/resource-${'c'.repeat(64)}/public`, height: null, sourceUrl: avatar, width: null },
 ];
 const canonicalImages = hostedResourceImageFields(imageInput, hosted);
+assert.deepEqual(
+	{ height: canonicalImages.ogImageHeight, url: canonicalImages.ogImageUrl, width: canonicalImages.ogImageWidth },
+	{ height: 1200, url: hosted[1].deliveryUrl, width: 800 },
+);
+assert.deepEqual(
+	canonicalImages.kindMetadata.attachments.map(({ height, width }) => ({ height, width })),
+	[
+		{ height: 480, width: 640 },
+		{ height: 360, width: 640 },
+	],
+	'attachment dimensions remain provider-owned',
+);
 assert.deepEqual(
 	resourceImageSourceUrls(canonicalImages),
 	hosted.map(({ deliveryUrl }) => deliveryUrl),

@@ -11,6 +11,9 @@ import {
 const REHOST_TIMEOUT_MS = 8_000;
 const MAX_SOURCE_REDIRECTS = 3;
 const SOURCE_USER_AGENT = 'Newsence-Media-Rehost/1.0 (+https://newsence.app)';
+const NULL_IMAGE_DIMENSIONS = { height: null, width: null } as const;
+
+type ImageDimensions = Readonly<Pick<HostedResourceImage, 'height' | 'width'>>;
 
 function failure(code: string, detail?: string): Error {
 	return new Error(detail ? `${code}: ${detail}` : code);
@@ -70,10 +73,60 @@ function deliveryUrl(image: ImageMetadata): string {
 	return hosted;
 }
 
+async function probeImageDimensions(
+	images: ImagesBinding,
+	body: ReadableStream<Uint8Array>,
+	imageId: string,
+	sourceUrl: string,
+): Promise<ImageDimensions> {
+	try {
+		const info = await images.info(body);
+		if (
+			!('width' in info) ||
+			!Number.isSafeInteger(info.width) ||
+			!Number.isSafeInteger(info.height) ||
+			info.width <= 0 ||
+			info.height <= 0
+		) {
+			return NULL_IMAGE_DIMENSIONS;
+		}
+		return { height: info.height, width: info.width };
+	} catch (error) {
+		console.warn({
+			tag: 'RESOURCE_IMAGE',
+			event: 'dimensions_unavailable',
+			image_id: imageId,
+			source_host: new URL(sourceUrl).hostname,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return NULL_IMAGE_DIMENSIONS;
+	}
+}
+
+async function probeHostedImageDimensions(images: ImagesBinding, imageId: string, sourceUrl: string): Promise<ImageDimensions> {
+	try {
+		const body = await images.hosted.image(imageId).bytes();
+		return body ? await probeImageDimensions(images, body, imageId, sourceUrl) : NULL_IMAGE_DIMENSIONS;
+	} catch (error) {
+		console.warn({
+			tag: 'RESOURCE_IMAGE',
+			event: 'dimensions_unavailable',
+			image_id: imageId,
+			source_host: new URL(sourceUrl).hostname,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return NULL_IMAGE_DIMENSIONS;
+	}
+}
+
 async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Promise<HostedResourceImage> {
 	if (normalizedResourceImageUrl(sourceUrl) !== sourceUrl) throw new TypeError('Resource image source URL is invalid');
 	const alreadyHosted = hostedResourceImageUrl(sourceUrl);
-	if (alreadyHosted) return { deliveryUrl: alreadyHosted, sourceUrl };
+	if (alreadyHosted) {
+		const imageId = new URL(alreadyHosted).pathname.split('/').at(-2);
+		if (!imageId) throw failure('images_read_error', 'hosted image ID missing');
+		return { deliveryUrl: alreadyHosted, sourceUrl, ...(await probeHostedImageDimensions(images, imageId, sourceUrl)) };
+	}
 	const imageId = `resource-${await sha256Hex(sourceUrl)}`;
 	let existing: ImageMetadata | null;
 	try {
@@ -81,31 +134,54 @@ async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Pr
 	} catch (error) {
 		throw failure('images_read_error', error instanceof Error ? error.message : String(error));
 	}
-	if (existing) return { deliveryUrl: deliveryUrl(existing), sourceUrl };
+	if (existing) {
+		return {
+			deliveryUrl: deliveryUrl(existing),
+			sourceUrl,
+			...(await probeHostedImageDimensions(images, existing.id, sourceUrl)),
+		};
+	}
 
 	const startedAt = performance.now();
-	let image: ImageMetadata;
+	let dimensions: ImageDimensions = NULL_IMAGE_DIMENSIONS;
+	let image: ImageMetadata | null = null;
+	let uploadError: unknown = failure('images_write_error');
 	try {
 		const response = await fetchImageSource(sourceUrl);
 		if (!response.body) throw failure('images_write_error', 'missing_body');
+		const [infoBody, uploadBody] = response.body.tee();
 		const filename = new URL(sourceUrl).pathname.split('/').filter(Boolean).at(-1)?.slice(0, 180) || 'resource-image';
-		image = await images.hosted
-			.upload(response.body, {
-				id: imageId,
-				filename,
-				metadata: { sourceUrl },
-				requireSignedURLs: false,
-			})
-			.catch((error) => {
-				throw failure('images_write_error', error instanceof Error ? error.message : String(error));
-			});
+		const [probedDimensions, upload] = await Promise.all([
+			probeImageDimensions(images, infoBody, imageId, sourceUrl),
+			images.hosted
+				.upload(uploadBody, {
+					id: imageId,
+					filename,
+					metadata: { sourceUrl },
+					requireSignedURLs: false,
+				})
+				.then(
+					(uploaded) => ({ error: null, image: uploaded }),
+					(error: unknown) => ({
+						error: failure('images_write_error', error instanceof Error ? error.message : String(error)),
+						image: null,
+					}),
+				),
+		]);
+		dimensions = probedDimensions;
+		image = upload.image;
+		uploadError = upload.error;
 	} catch (error) {
+		uploadError = error;
+	}
+	if (!image) {
 		const raced = await images.hosted
 			.image(imageId)
 			.details()
 			.catch(() => null);
-		if (!raced) throw error;
+		if (!raced) throw uploadError;
 		image = raced;
+		dimensions = await probeHostedImageDimensions(images, image.id, sourceUrl);
 	}
 	console.info({
 		tag: 'RESOURCE_IMAGE',
@@ -114,7 +190,7 @@ async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Pr
 		image_id: image.id,
 		source_host: new URL(sourceUrl).hostname,
 	});
-	return { deliveryUrl: deliveryUrl(image), sourceUrl };
+	return { deliveryUrl: deliveryUrl(image), sourceUrl, ...dimensions };
 }
 
 export async function stageResourceImages(
@@ -125,7 +201,7 @@ export async function stageResourceImages(
 ): Promise<HostedResourceImage[]> {
 	if (sourceUrls.length === 0) return [];
 	const images = await step.do(
-		'rehost-resource-images-v2',
+		'rehost-resource-images-v3',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '10 minutes' },
 		async () => {
 			const hosted: HostedResourceImage[] = [];
