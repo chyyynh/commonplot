@@ -88,16 +88,24 @@ if (
 ) {
 	errors.push('Prisma ResourceReference must preserve the ordered 600-character resource_references contract');
 }
+const normalizedResourceReferencesMigration = resourceReferencesMigrationSource.replace(/\s+/g, ' ');
 if (
-	!/PRIMARY KEY \("resource_id", "ordinal"\)/.test(resourceReferencesMigrationSource) ||
-	!/ON DELETE CASCADE ON UPDATE CASCADE/.test(resourceReferencesMigrationSource) ||
-	!/CHAR_LENGTH\("text"\) <= 600/.test(resourceReferencesMigrationSource)
+	!/PRIMARY KEY \("resource_id", "ordinal"\)/.test(normalizedResourceReferencesMigration) ||
+	!/ON DELETE CASCADE ON UPDATE CASCADE/.test(normalizedResourceReferencesMigration) ||
+	!/CHECK \("ordinal" > 0\)/.test(normalizedResourceReferencesMigration) ||
+	!/CHECK \("marker" IS NULL OR "marker" > 0\)/.test(normalizedResourceReferencesMigration) ||
+	!/CHECK \(BTRIM\("text"\) <> '' AND CHAR_LENGTH\("text"\) <= 600\)/.test(normalizedResourceReferencesMigration)
 ) {
 	errors.push('resource_references migration must enforce compound identity, cascade deletion, and text bounds');
 }
-for (const constraint of ['resource_references_ordinal_check', 'resource_references_marker_check', 'resource_references_text_check']) {
-	if (!new RegExp(`ADD CONSTRAINT ${constraint}\\b`).test(manualIndexesSource)) {
-		errors.push(`manual-indexes.sql must mirror ${constraint}`);
+const normalizedManualIndexes = manualIndexesSource.replace(/\s+/g, ' ');
+for (const [constraint, check] of [
+	['resource_references_ordinal_check', 'ordinal > 0'],
+	['resource_references_marker_check', 'marker IS NULL OR marker > 0'],
+	['resource_references_text_check', "BTRIM(text) <> '' AND CHAR_LENGTH(text) <= 600"],
+]) {
+	if (!normalizedManualIndexes.includes(`ADD CONSTRAINT ${constraint} CHECK (${check});`)) {
+		errors.push(`manual-indexes.sql must mirror ${constraint} exactly`);
 	}
 }
 
