@@ -11,7 +11,6 @@ import {
 	PDF_MIME,
 	type PdfAcquisitionDraft,
 } from './pdf';
-import { resolveArticlePublishedDate } from './web-published-date';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
@@ -61,16 +60,11 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 	const siteName = article.source?.trim();
 	if (!siteName) throw new NonRetryableError('Extracted article has no source');
 
-	const articleHtml = article.content.trim();
 	return {
-		html: articleHtml,
+		html: article.content.trim(),
 		title,
 		author: optionalText(article.author),
-		publishedDate: resolveArticlePublishedDate({
-			articleHtml,
-			extracted: optionalText(article.published),
-			pageHtml: html,
-		}),
+		publishedDate: optionalText(article.published),
 		siteName,
 		description: optionalText(article.description),
 		previewImageUrl: normalizedResourceImageUrl(article.image, url),
