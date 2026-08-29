@@ -236,16 +236,28 @@ async function writeCanonicalResource(
 		resource.keywords.map((keyword) => sql`${keyword}`),
 		sql`, `,
 	);
-	const current = await db.execute<{ content: string | null; source: string; summary: string | null; title: string | null }>(sql`
-		SELECT content, source, summary, title
+	const current = await db.execute<{
+		content: string | null;
+		lang: string;
+		source: string;
+		summary: string | null;
+		title: string | null;
+	}>(sql`
+		SELECT content, lang, source, summary, title
 		FROM resource_translations
-		WHERE resource_id = ${resourceId}::uuid AND lang = ${resource.originalLang}
-		LIMIT 1
+		WHERE resource_id = ${resourceId}::uuid
+		  AND lang IN (${previousOriginalLang}, ${resource.originalLang})
 	`);
-	const currentOriginal = current.rows[0];
+	const previousOriginal = current.rows.find(({ lang }) => lang === previousOriginalLang);
+	const incomingOriginal = current.rows.find(({ lang }) => lang === resource.originalLang);
+	const currentOriginal =
+		(previousOriginal?.source === 'human' ? previousOriginal : null) ??
+		(incomingOriginal?.source === 'human' ? incomingOriginal : null) ??
+		incomingOriginal;
 	const preserveHuman = currentOriginal?.source === 'human';
+	const originalLang = currentOriginal?.source === 'human' ? currentOriginal.lang : resource.originalLang;
 	const originalChanged =
-		previousOriginalLang !== resource.originalLang ||
+		previousOriginalLang !== originalLang ||
 		(!preserveHuman &&
 			(!currentOriginal ||
 				currentOriginal.title !== resource.title ||
@@ -259,7 +271,7 @@ async function writeCanonicalResource(
 			url = ${resource.url},
 			normalized_url = ${resource.normalizedUrl},
 			file_type = ${resource.fileType},
-			original_lang = ${resource.originalLang},
+			original_lang = ${originalLang},
 			published_date = ${resource.publishedDate},
 			scraped_date = NOW(),
 			tags = ARRAY[${tags}]::text[],
@@ -289,13 +301,13 @@ async function writeCanonicalResource(
 	await db.execute(sql`
 		UPDATE resource_translations
 		SET source = 'machine', updated_at = NOW()
-		WHERE resource_id = ${resourceId}::uuid AND lang <> ${resource.originalLang} AND source = 'original'
+		WHERE resource_id = ${resourceId}::uuid AND lang <> ${originalLang} AND source = 'original'
 	`);
 	if (!preserveHuman) {
 		await db.execute(sql`
 			INSERT INTO resource_translations (resource_id, lang, title, summary, content, keywords, source, updated_at)
 			VALUES (
-				${resourceId}::uuid, ${resource.originalLang}, ${resource.title}, ${resource.summary}, ${resource.content},
+				${resourceId}::uuid, ${originalLang}, ${resource.title}, ${resource.summary}, ${resource.content},
 				ARRAY[${keywords}]::text[], 'original', NOW()
 			)
 			ON CONFLICT (resource_id, lang) DO UPDATE SET

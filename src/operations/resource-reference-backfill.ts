@@ -63,8 +63,13 @@ export async function backfillResourceReferences(db: NodePgDatabase, rawInput: R
 			results.push({ resourceId: candidate.resource_id, extractedCount: null, error: message });
 		}
 	}
+	const pageFailed = results.some((result) => result.extractedCount === null);
 	return {
-		nextCursor: candidates.rows.length === input.limit ? (candidates.rows.at(-1)?.resource_id ?? null) : null,
+		nextCursor: pageFailed
+			? (input.afterResourceId ?? null)
+			: candidates.rows.length === input.limit
+				? (candidates.rows.at(-1)?.resource_id ?? null)
+				: null,
 		results,
 	};
 }
