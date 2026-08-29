@@ -106,6 +106,13 @@ if (
 ) {
 	errors.push('manual-indexes.sql must require canonical source_name for non-blob Resources');
 }
+if (
+	!normalizedManualIndexes.includes(
+		'ADD CONSTRAINT resources_og_image_dimensions_check CHECK ( (og_image_width IS NULL AND og_image_height IS NULL) OR ( og_image_url IS NOT NULL AND og_image_width IS NOT NULL AND og_image_height IS NOT NULL AND og_image_width > 0 AND og_image_height > 0 ) );',
+	)
+) {
+	errors.push('manual-indexes.sql must require canonical OG image dimensions to be a positive pair');
+}
 for (const [constraint, check] of [
 	['resource_references_ordinal_check', 'ordinal > 0'],
 	['resource_references_marker_check', 'marker IS NULL OR marker > 0'],
