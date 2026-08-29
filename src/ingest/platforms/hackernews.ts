@@ -10,7 +10,7 @@ import {
 	materializePlatformResource,
 	type PlatformAcquiredMaterial,
 	type ResolvedResource,
-	type ResolvedResourceSubject,
+	type ResolvedResourceSubjectIdentity,
 	type ResourceAcquisitionHints,
 } from './materialize';
 
@@ -235,7 +235,7 @@ export async function stageHackerNewsAcquisition(
 		hints: ResourceAcquisitionHints;
 		itemId: string;
 		processingId: string;
-		resolveSubject: (url: string | null | undefined) => ResolvedResourceSubject | null;
+		resolveSubject: (url: string | null | undefined) => ResolvedResourceSubjectIdentity | null;
 	},
 ): Promise<ResolvedResource> {
 	const contentStream = await step.do(

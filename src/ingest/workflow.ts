@@ -341,9 +341,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						const subjectTarget = ResourceDraftTargetSchema.parse({
 							kind: 'draft',
 							relation: { kind: 'subject', parentResourceId: persistedResourceId },
+							// Carrier-resolved hints only; the subject page still wins when it states its own date.
+							...(subject.publishedDate ? { sourceHints: { publishedDate: subject.publishedDate } } : {}),
 							url: subject.normalizedUrl,
 						});
-						const id = `subject-draft-v3-${await sha256Hex(JSON.stringify(subjectTarget))}`;
+						const id = `subject-draft-v4-${await sha256Hex(JSON.stringify(subjectTarget))}`;
 						await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: subjectTarget }]);
 						return id;
 					},

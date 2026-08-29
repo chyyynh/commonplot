@@ -14,7 +14,7 @@ import {
 	materializeGenericResource,
 	type PlatformResourceUrl,
 	type ResolvedResource,
-	type ResolvedResourceSubject,
+	type ResolvedResourceSubjectIdentity,
 	type ResourceAcquisitionHints,
 } from './platforms/materialize';
 import { stagePaperProcessing } from './platforms/paper';
@@ -40,7 +40,7 @@ export function resolvePlatformResourceUrl(url: URL): PlatformResourceUrl | null
 
 const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
 
-function resolveResourceSubject(value: string | null | undefined): ResolvedResourceSubject | null {
+function resolveResourceSubject(value: string | null | undefined): ResolvedResourceSubjectIdentity | null {
 	const url = value?.trim() ? URL.parse(value) : null;
 	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null;
 

@@ -10,10 +10,14 @@ import {
 	type ResourcePlatformKindMetadata,
 } from '../../shared/resource.ts';
 
-export type ResolvedResourceSubject = Readonly<{
+export type ResolvedResourceSubjectIdentity = Readonly<{
 	identifiers: ResourceIdentifier[];
 	normalizedUrl: string;
 }>;
+
+// A subject page usually publishes no date of its own, so the carrier's
+// publication time travels with the subject as an acquisition hint.
+export type ResolvedResourceSubject = ResolvedResourceSubjectIdentity & Readonly<{ publishedDate: string | null }>;
 
 export type ResolvedResource = Readonly<{
 	kind: Exclude<ResourceKind, 'image'>;
@@ -139,7 +143,7 @@ export function materializePlatformResource<TPlatform extends ResourcePlatform>(
 	acquired: PlatformAcquiredMaterial<TPlatform>,
 	hints: ResourceAcquisitionHints,
 	identity: Pick<ResolvedResource, 'url'> & { kind: ResourceKindForPlatform<TPlatform> },
-	subject: ResolvedResourceSubject | null = null,
+	subject: ResolvedResourceSubjectIdentity | null = null,
 ): ResolvedResource {
 	let publishedDate = hints.publishedDate;
 	if (acquired.publishedDate?.trim()) {
@@ -155,6 +159,6 @@ export function materializePlatformResource<TPlatform extends ResourcePlatform>(
 			resourcePlatform: acquired.resourcePlatform,
 		},
 		publishedDate,
-		subject,
+		subject && { ...subject, publishedDate },
 	);
 }

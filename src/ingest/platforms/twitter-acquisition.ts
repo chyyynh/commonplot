@@ -6,7 +6,7 @@ import {
 	materializePlatformResource,
 	type PlatformAcquiredMaterial,
 	type ResolvedResource,
-	type ResolvedResourceSubject,
+	type ResolvedResourceSubjectIdentity,
 	type ResourceAcquisitionHints,
 } from './materialize';
 import { parseTwitterArticleResponse, parseTwitterTweetsResponse, renderTwitterArticleMarkdown, type Tweet } from './twitter-data';
@@ -370,7 +370,7 @@ export async function stageTwitterAcquisition(
 	input: {
 		hints: ResourceAcquisitionHints;
 		processingId: string;
-		resolveSubject: (url: string | null | undefined) => ResolvedResourceSubject | null;
+		resolveSubject: (url: string | null | undefined) => ResolvedResourceSubjectIdentity | null;
 		tweetId: string;
 	},
 ): Promise<ResolvedResource> {

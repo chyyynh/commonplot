@@ -20,7 +20,7 @@ function materialize(input = {}) {
 		markdown: 'Example content',
 		source: 'Example',
 		originalLang: 'en',
-		publishedDate: null,
+		publishedDate: input.publishedDate ?? null,
 		summary: null,
 		creators: [],
 		kindMetadata: input.kindMetadata ?? null,
@@ -204,22 +204,36 @@ assert.deepEqual(
 	'carrier identity drops legacy academic identifiers',
 );
 
+const paperSubject = {
+	identifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
+	normalizedUrl: 'https://doi.org/10.1000/example',
+};
+
 assert.deepEqual(
 	materialize({
 		kind: 'forum',
 		platformId: '127',
 		resourcePlatform: 'hackernews',
 		url: 'https://news.ycombinator.com/item?id=127',
-		subject: {
-			identifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
-			normalizedUrl: 'https://doi.org/10.1000/example',
-		},
+		subject: paperSubject,
 	}).subject,
-	{
-		identifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
-		normalizedUrl: 'https://doi.org/10.1000/example',
-	},
+	{ ...paperSubject, publishedDate: null },
 	'materialization keeps the already-resolved paper subject',
+);
+
+// A subject page routinely publishes no date of its own; the carrier's date
+// travels with it so the subject can still be placed chronologically.
+assert.deepEqual(
+	materialize({
+		kind: 'forum',
+		platformId: '128',
+		resourcePlatform: 'hackernews',
+		publishedDate: '2026-08-29T14:02:10.000Z',
+		url: 'https://news.ycombinator.com/item?id=128',
+		subject: paperSubject,
+	}).subject,
+	{ ...paperSubject, publishedDate: '2026-08-29T14:02:10.000Z' },
+	'subject inherits the carrier publication date',
 );
 
 const imageA = 'https://images.example.com/a.jpg';
@@ -253,4 +267,4 @@ assert.deepEqual(
 );
 assert.throws(() => hostedResourceImageFields(imageInput, hosted.slice(0, 1)), /do not cover every source/);
 
-console.info(`Platform materialization contract checks passed (${cases.length + 6} cases).`);
+console.info(`Platform materialization contract checks passed (${cases.length + 7} cases).`);
