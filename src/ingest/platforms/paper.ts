@@ -14,7 +14,7 @@ import {
 import type { PaperKindMetadata } from '../../shared/resource';
 import { type GenericAcquiredMaterial, literalCreator } from './materialize';
 import { fetchOpenAlexPdf, type PaperMetadata, resolveOpenAlexPaper } from './openalex';
-import { acquireFetchedPdfResponse, PDF_MIME } from './pdf';
+import { acquireFetchedPdfResponse, type LocalPdfAcquisition, PDF_MIME, requireUsableLocalPdf } from './pdf';
 
 const CITOID_IDENTIFIER_SCAN_CHARS = 3_000;
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
@@ -251,38 +251,38 @@ async function stageOpenAlexPdfAcquisition(
 		processingId: string;
 	},
 ): Promise<PdfRepresentation | null> {
-	const contentStream = await step
-		.do(
-			'acquire-openalex-content-pdf-v4',
+	try {
+		const contentStream = await step.do(
+			'acquire-openalex-content-pdf-v5',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '180 seconds' },
 			async () => {
 				const response = await fetchOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
-				const acquired = await acquireFetchedPdfResponse(response, input.contentPdfUrl);
-				return Response.json({
-					fileType: PDF_MIME,
-					markdown: acquired.markdown,
-					paperIdentifierText: acquired.paperIdentifierText ?? null,
-				}).body!;
+				return Response.json(await acquireFetchedPdfResponse(response, input.contentPdfUrl)).body!;
 			},
-		)
-		.catch((error) => {
-			console.error({
-				tag: 'OPENALEX_CONTENT',
-				event: 'pdf_acquisition_failed',
-				processing_id: input.processingId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return null;
+		);
+		const local = await new Response(contentStream).json<LocalPdfAcquisition>();
+		const acquired = requireUsableLocalPdf(local, 'OpenAlex content PDF');
+		console.info({
+			tag: 'OPENALEX_CONTENT',
+			event: 'pdf_acquired',
+			processing_id: input.processingId,
+			chars: acquired.markdown.length,
+			local_parse_outcome: local.parse.status,
 		});
-	if (!contentStream) return null;
-	const acquired = await new Response(contentStream).json<PdfRepresentation>();
-	console.info({
-		tag: 'OPENALEX_CONTENT',
-		event: 'pdf_acquired',
-		processing_id: input.processingId,
-		chars: acquired.markdown.length,
-	});
-	return acquired;
+		return {
+			fileType: PDF_MIME,
+			markdown: acquired.markdown,
+			paperIdentifierText: acquired.paperIdentifierText ?? null,
+		};
+	} catch (error) {
+		console.error({
+			tag: 'OPENALEX_CONTENT',
+			event: 'pdf_acquisition_failed',
+			processing_id: input.processingId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	}
 }
 
 export async function stagePaperProcessing(

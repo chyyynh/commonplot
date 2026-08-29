@@ -30,6 +30,24 @@ const LITEPARSE_CONFIG = {
 initSync({ module: wasmModule });
 
 type PdfQualityReason = 'complex-layout' | 'empty-batch' | 'garbled-text' | 'needs-ocr' | 'parse-failed' | 'unparsed';
+export type PdfHardDefect = 'empty-output' | 'garbled-text' | 'needs-ocr' | 'parse-failed' | 'unparsed';
+
+export type LocalPdfParseOutcome = Readonly<{
+	hardDefects: PdfHardDefect[];
+	parserVersion: string;
+	status: 'usable' | 'hard-defect';
+	totalPages: number | null;
+}>;
+
+export type LocalPdfAcquisition = Readonly<{
+	kind: 'local-pdf';
+	material: GenericAcquiredMaterial;
+	parse: LocalPdfParseOutcome;
+}>;
+
+export function isLocalPdfAcquisition(value: GenericAcquiredMaterial | LocalPdfAcquisition): value is LocalPdfAcquisition {
+	return 'kind' in value && value.kind === 'local-pdf';
+}
 
 type ParsedPdf = Readonly<{
 	markdown: string;
@@ -50,6 +68,14 @@ type ParsedPdfAccumulator = {
 	problemPages: Set<number>;
 	qualityReasons: Set<PdfQualityReason>;
 };
+
+type LocalPdfParseResult = Readonly<{
+	markdown: string;
+	paperIdentifierText: string | null;
+	parse: LocalPdfParseOutcome;
+}>;
+
+const HARD_PDF_QUALITY_REASONS = new Set<PdfQualityReason>(['garbled-text', 'needs-ocr', 'parse-failed', 'unparsed']);
 
 function isUnsafePdfTextCharacter(character: string): boolean {
 	const codePoint = character.codePointAt(0);
@@ -151,7 +177,29 @@ function finishParsedPdf(accumulator: ParsedPdfAccumulator, totalPages: number):
 	};
 }
 
-async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<ParsedPdf> {
+function parsedPdfOutcome(parsed: ParsedPdf): LocalPdfParseOutcome {
+	const hardDefects: PdfHardDefect[] = [
+		...(parsed.markdown ? [] : (['empty-output'] as const)),
+		...parsed.qualityReasons.filter((reason): reason is Exclude<PdfHardDefect, 'empty-output'> => HARD_PDF_QUALITY_REASONS.has(reason)),
+	];
+	return {
+		hardDefects,
+		parserVersion: liteParsePackage.version,
+		status: hardDefects.length ? 'hard-defect' : 'usable',
+		totalPages: parsed.totalPages,
+	};
+}
+
+function failedPdfOutcome(totalPages: number | null): LocalPdfParseOutcome {
+	return {
+		hardDefects: ['parse-failed'],
+		parserVersion: liteParsePackage.version,
+		status: 'hard-defect',
+		totalPages,
+	};
+}
+
+async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<LocalPdfParseResult> {
 	const parser = new LiteParse(LITEPARSE_CONFIG);
 	let session: Awaited<ReturnType<LiteParse['openBatchSession']>> | undefined;
 	try {
@@ -170,10 +218,13 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<Pa
 			accumulateLiteParseResult(accumulator, batch.result);
 		}
 		const result = finishParsedPdf(accumulator, session.totalPages);
+		const parse = parsedPdfOutcome(result);
 		console.info({
 			tag: 'PDF_PARSE',
 			event: 'liteparse_completed',
-			parser_version: liteParsePackage.version,
+			hard_defects: parse.hardDefects,
+			outcome: parse.status,
+			parser_version: parse.parserVersion,
 			parsed_pages: result.parsedPages,
 			problem_page_count: result.problemPageCount,
 			problem_page_sample: result.problemPageSample,
@@ -182,7 +233,16 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<Pa
 			total_pages: result.totalPages,
 			unparsed_pages: result.unparsedPages,
 		});
-		return result;
+		return { markdown: result.markdown, paperIdentifierText: result.paperIdentifierText, parse };
+	} catch (error) {
+		console.error({
+			tag: 'PDF_PARSE',
+			event: 'liteparse_failed',
+			parser_version: liteParsePackage.version,
+			source: sourceLabel,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return { markdown: '', paperIdentifierText: null, parse: failedPdfOutcome(session?.totalPages ?? null) };
 	} finally {
 		try {
 			session?.free();
@@ -192,9 +252,9 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<Pa
 	}
 }
 
-function requireUsablePdf(parsed: ParsedPdf, sourceLabel: string): ParsedPdf {
-	if (!parsed.markdown) throw new NonRetryableError(`${sourceLabel} has no usable text; OCR is required`);
-	return parsed;
+export function requireUsableLocalPdf(acquisition: LocalPdfAcquisition, sourceLabel: string): GenericAcquiredMaterial {
+	if (!acquisition.material.markdown) throw new NonRetryableError(`${sourceLabel} has no usable text; OCR is required`);
+	return acquisition.material;
 }
 
 type StoredPdfInput = {
@@ -282,28 +342,32 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 	};
 }
 
-async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise<GenericAcquiredMaterial> {
+async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise<LocalPdfAcquisition> {
 	const obj = await env.R2.get(resource.storageKey);
 	if (!obj) throw new NonRetryableError(`PDF source object missing: ${resource.storageKey}`);
 	if (obj.size > MAX_PDF_BYTES) throw new NonRetryableError(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
 	const sourceLabel = `Stored PDF ${resource.resourceId}`;
-	const parsed = requireUsablePdf(await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()), sourceLabel), sourceLabel);
+	const parsed = await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()), sourceLabel);
 	return {
-		resourcePlatform: null,
-		fileType: PDF_MIME,
-		title: resource.title,
-		markdown: parsed.markdown,
-		paperIdentifierText: parsed.paperIdentifierText,
-		source: resource.source,
-		originalLang: resource.originalLang,
-		publishedDate: resource.publishedDate,
-		summary: resource.summary,
-		creators: resource.creators,
-		kindMetadata: null,
+		kind: 'local-pdf',
+		material: {
+			resourcePlatform: null,
+			fileType: PDF_MIME,
+			title: resource.title,
+			markdown: parsed.markdown,
+			paperIdentifierText: parsed.paperIdentifierText,
+			source: resource.source,
+			originalLang: resource.originalLang,
+			publishedDate: resource.publishedDate,
+			summary: resource.summary,
+			creators: resource.creators,
+			kindMetadata: null,
+		},
+		parse: parsed.parse,
 	};
 }
 
-export async function acquireFetchedPdfResponse(response: Response, finalUrl: string): Promise<GenericAcquiredMaterial> {
+export async function acquireFetchedPdfResponse(response: Response, finalUrl: string): Promise<LocalPdfAcquisition> {
 	let pdfBytes = 0;
 	const body = response.body?.pipeThrough(
 		new TransformStream<Uint8Array, Uint8Array>({
@@ -314,7 +378,7 @@ export async function acquireFetchedPdfResponse(response: Response, finalUrl: st
 			},
 		}),
 	);
-	const parsed = requireUsablePdf(await parsePdfBytes(await new Response(body).bytes(), 'Fetched PDF'), 'Fetched PDF');
+	const parsed = await parsePdfBytes(await new Response(body).bytes(), 'Fetched PDF');
 	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
 	let fileName = encodedName || 'document.pdf';
 	if (encodedName) {
@@ -325,20 +389,24 @@ export async function acquireFetchedPdfResponse(response: Response, finalUrl: st
 		}
 	}
 	const title = fileName.replace(/\.[a-z0-9]+$/i, '').trim();
-	if (!title) throw new Error(`File name has no title: ${fileName}`);
+	if (!title) throw new NonRetryableError(`File name has no title: ${fileName}`);
 	const source = new URL(finalUrl).hostname.replace(/^www\./, '');
 	return {
-		resourcePlatform: null,
-		fileType: PDF_MIME,
-		title,
-		markdown: parsed.markdown,
-		paperIdentifierText: parsed.paperIdentifierText,
-		source,
-		originalLang: null,
-		publishedDate: null,
-		summary: parsed.markdown.slice(0, 500) || null,
-		creators: [],
-		kindMetadata: null,
+		kind: 'local-pdf',
+		material: {
+			resourcePlatform: null,
+			fileType: PDF_MIME,
+			title,
+			markdown: parsed.markdown,
+			paperIdentifierText: parsed.paperIdentifierText,
+			source,
+			originalLang: null,
+			publishedDate: null,
+			summary: parsed.markdown.slice(0, 500) || null,
+			creators: [],
+			kindMetadata: null,
+		},
+		parse: parsed.parse,
 	};
 }
 
@@ -362,9 +430,10 @@ export async function stageStoredPdfAcquisition(
 		},
 	);
 	const contentStream = await step.do(
-		'acquire-stored-pdf-v4',
+		'acquire-stored-pdf-v5',
 		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await acquireStoredPdf(env, resource)).body!,
 	);
-	return new Response(contentStream).json<GenericAcquiredMaterial>();
+	const acquisition = await new Response(contentStream).json<LocalPdfAcquisition>();
+	return requireUsableLocalPdf(acquisition, `Stored PDF ${target.resourceId}`);
 }

@@ -3,7 +3,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { addTransformations, extractFromHtml } from '@extractus/article-extractor';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
 import { type GenericAcquiredMaterial, literalCreator, type PlatformResourceUrl } from './materialize';
-import { acquireFetchedPdfResponse, PDF_MIME } from './pdf';
+import { acquireFetchedPdfResponse, isLocalPdfAcquisition, type LocalPdfAcquisition, PDF_MIME, requireUsableLocalPdf } from './pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
@@ -65,6 +65,7 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 }
 
 type PlatformResolution = { platform: PlatformResourceUrl };
+type WebAcquisition = GenericAcquiredMaterial | LocalPdfAcquisition | PlatformResolution;
 
 async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, processingId: string): Promise<GenericAcquiredMaterial> {
 	const article = await extractHtmlArticle(html, url);
@@ -116,7 +117,7 @@ async function acquireWebResource(
 	env: CoreEnv,
 	platformUrl: (url: URL) => PlatformResourceUrl | null,
 	processingId: string,
-): Promise<GenericAcquiredMaterial | PlatformResolution> {
+): Promise<WebAcquisition> {
 	const response = await fetch(url, {
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
@@ -154,7 +155,8 @@ async function acquireWebResource(
 
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
 	if (contentType.includes(PDF_MIME) || new URL(finalUrl).pathname.toLowerCase().endsWith('.pdf')) {
-		return { ...(await acquireFetchedPdfResponse(response, finalUrl)), canonicalUrl: finalUrl };
+		const acquired = await acquireFetchedPdfResponse(response, finalUrl);
+		return { ...acquired, material: { ...acquired.material, canonicalUrl: finalUrl } };
 	}
 	if (
 		contentType &&
@@ -190,12 +192,14 @@ export async function stageWebAcquisition(
 	platformUrl: (url: URL) => PlatformResourceUrl | null,
 ) {
 	const result = await step.do(
-		'acquire-web-v2',
+		'acquire-web-v3',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => {
 			const acquired = await acquireWebResource(input.url, env, platformUrl, input.processingId);
 			return 'platform' in acquired ? acquired : Response.json(acquired).body!;
 		},
 	);
-	return 'platform' in result ? result : new Response(result).json<GenericAcquiredMaterial>();
+	if ('platform' in result) return result;
+	const acquired = await new Response(result).json<GenericAcquiredMaterial | LocalPdfAcquisition>();
+	return isLocalPdfAcquisition(acquired) ? requireUsableLocalPdf(acquired, 'Fetched PDF') : acquired;
 }
