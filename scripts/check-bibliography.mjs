@@ -103,6 +103,20 @@ assert.equal(normalized[0]?.doi, '10.1000/example');
 assert.equal(normalized[1]?.arxivId, '2401.12345');
 assert.equal(normalized[2]?.url, null);
 
+const arxivSeparators = bibliographyFromMarkdown(
+	'# References\n\n[1] arXiv 2401.12345v9. [2] arXiv.2402.12345v2. [3] arXiv:hep-th/9901001v3.',
+);
+assert.deepEqual(
+	arxivSeparators.map(({ arxivId }) => arxivId),
+	['2401.12345', '2402.12345', 'hep-th/9901001'],
+);
+
+const balancedDoiPunctuation = bibliographyFromMarkdown(
+	'# References\n\n[1] DOI 10.1002/(SICI)1099-0844(199912)17:4. [2] A. Two. 2021. [3] B. Three. 2022.',
+);
+assert.equal(balancedDoiPunctuation[0]?.doi, '10.1002/(sici)1099-0844(199912)17:4');
+assert.equal(balancedDoiPunctuation[0]?.url, 'https://doi.org/10.1002/(sici)1099-0844(199912)17:4');
+
 const longText = bibliographyFromMarkdown(`# References\n\n[1] ${'a'.repeat(700)} [2] B. Two. 2021. [3] C. Three. 2022.`)[0]?.text;
 assert.equal(longText?.length, MAX_REFERENCE_TEXT_CHARS);
 assert.ok(longText?.endsWith('…'));
@@ -110,5 +124,5 @@ assert.ok(longText?.endsWith('…'));
 console.info({
 	event: 'bibliography_contract_smoke_passed',
 	historicalBehaviorCases: 12,
-	additionalContractCases: 4,
+	additionalContractCases: 6,
 });

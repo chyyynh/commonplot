@@ -1,4 +1,4 @@
-import { normalizeArxivId, normalizeDoi } from '../shared/paper-identity.ts';
+import { paperIdentityFromText } from '../shared/paper-identity.ts';
 
 const HEADING_LINE = /^ {0,3}(#{1,4})\s+(.+?)\s*$/;
 const REFERENCES_HEADING =
@@ -10,8 +10,6 @@ export const MAX_REFERENCE_TEXT_CHARS = 600;
 const MIN_ENTRIES = 3;
 const MAX_MARKER_GAP = { anywhere: 4, lineStart: 24 } as const;
 
-const DOI_PATTERN = /\b10\.\d{4,9}\/[^\s"'<>)\]},]+/i;
-const ARXIV_PATTERN = /arxiv[.:\s]*((?:\d{4}\.\d{4,5}|[a-z][a-z0-9.-]*\/\d{7})(?:v\d+)?)/i;
 const URL_PATTERN = /https?:\/\/[^\s"'<>)\]]+/i;
 
 const ENTRY_STYLES = [
@@ -95,8 +93,7 @@ function validatedHttpUrl(value: string | undefined): string | null {
 }
 
 function entryLinks(raw: string): Pick<ResourceReference, 'arxivId' | 'doi' | 'url'> {
-	const doi = normalizeDoi(DOI_PATTERN.exec(raw)?.[0]);
-	const arxivId = normalizeArxivId(ARXIV_PATTERN.exec(raw)?.[1]);
+	const { arxivId = null, doi = null } = paperIdentityFromText(raw) ?? {};
 	return {
 		arxivId,
 		doi,

@@ -96,6 +96,21 @@ assert.deepEqual(paper.paperIdentityFromText('DOI: 10.1000/EXAMPLE\narXiv:2401.0
 	doi: '10.1000/example',
 	arxivId: '2401.00001',
 });
+assert.deepEqual(paper.paperIdentityFromText('arXiv preprint arXiv 2401.00001v2'), {
+	arxivId: '2401.00001',
+});
+assert.deepEqual(
+	paper.paperIdentifiersFromIdentity({
+		doi: 'DOI: 10.1000/EXAMPLE',
+		arxivId: 'arXiv:2401.00001v2',
+		openAlexId: 'https://openalex.org/w2741809807',
+	}),
+	[
+		{ preferred: true, scheme: 'doi', value: '10.1000/example' },
+		{ preferred: true, scheme: 'arxiv', value: '2401.00001' },
+		{ preferred: true, scheme: 'openalex', value: 'W2741809807' },
+	],
+);
 assert.deepEqual(
 	paper.normalizePaperIdentifiers([
 		{ scheme: 'arxiv', value: 'arXiv:2405.06478', preferred: true },

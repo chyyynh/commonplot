@@ -1,7 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import LlamaCloud, { APIConnectionError, APIError, NotFoundError, toFile } from '@llamaindex/llama-cloud';
-import type { ParsingGetResponse } from '@llamaindex/llama-cloud/resources/parsing';
 import { VERSION as LLAMA_CLOUD_SDK_VERSION } from '@llamaindex/llama-cloud/version';
 import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
 import {
@@ -36,7 +35,11 @@ type ProviderJob = Readonly<{
 }>;
 type ProviderSource = Readonly<{ kind: 'private-upload'; storageKey: string }> | Readonly<{ kind: 'public-url'; url: string }>;
 type ParseSource = Readonly<{ file_id: string }> | Readonly<{ source_url: string }>;
-type ProviderResult = Readonly<{ finishedAt: number; result: ParsingGetResponse }>;
+type ProviderResult = Readonly<{
+	billedCredits: number | null;
+	finishedAt: number;
+	pages: readonly Readonly<{ markdown?: string; page_number: number; success: boolean }>[] | null;
+}>;
 
 function client(apiKey: string): LlamaCloud {
 	return new LlamaCloud({ apiKey, baseURL: LLAMA_CLOUD_BASE_URL, maxRetries: 0, timeout: 30_000, logLevel: 'off' });
@@ -231,13 +234,22 @@ function stageReadJob(step: WorkflowStep, credentials: ProviderCredentials, job:
 }
 
 async function stageReadResult(step: WorkflowStep, credentials: ProviderCredentials, jobId: string): Promise<ProviderResult> {
-	const stream = await step.do('llamaparse-read-result-v2', { ...READ_STEP, sensitive: 'output', timeout: '90 seconds' }, async () => {
+	const stream = await step.do('llamaparse-read-result-v3', { ...READ_STEP, sensitive: 'output', timeout: '90 seconds' }, async () => {
 		const result = await client(credentials.apiKey).parsing.get(
 			jobId,
 			{ expand: ['markdown', 'usage'], project_id: credentials.projectId },
 			{ maxRetries: 0, timeout: 60_000 },
 		);
-		return Response.json({ finishedAt: Date.now(), result }).body!;
+		return Response.json({
+			billedCredits: result.job.usage?.credits ?? null,
+			finishedAt: Date.now(),
+			pages:
+				result.markdown?.pages.map((page) => ({
+					...(page.success ? { markdown: page.markdown } : {}),
+					page_number: page.page_number,
+					success: page.success,
+				})) ?? null,
+		}).body!;
 	});
 	return new Response(stream).json<ProviderResult>();
 }
@@ -378,9 +390,9 @@ export async function stagePaidLlamaParseFallback(
 			logFallback({ error, file, job, local: input.local, outcome: 'provider-failed' });
 			return null;
 		}
-		const markdown = wholeDocumentMarkdown(result.result.markdown?.pages, input.local.totalPages!);
+		const markdown = wholeDocumentMarkdown(result.pages, input.local.totalPages!);
 		logFallback({
-			billedCredits: result.result.job.usage?.credits,
+			billedCredits: result.billedCredits,
 			file,
 			job: { ...state, observedAt: result.finishedAt },
 			local: input.local,
