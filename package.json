@@ -6,6 +6,7 @@
 	"type": "module",
 	"scripts": {
 		"backfill:resource-references": "node --experimental-strip-types scripts/backfill-resource-references.mjs",
+		"backfill:subject-published-dates": "node --experimental-strip-types scripts/backfill-subject-published-dates.mjs",
 		"deploy": "wrangler deploy",
 		"deploy:dry-run": "pnpm run typecheck && wrangler deploy --dry-run",
 		"check:bibliography": "node --experimental-strip-types scripts/check-bibliography.mjs",
