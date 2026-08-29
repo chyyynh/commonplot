@@ -164,7 +164,7 @@ export function canonicalPaperUrl(identity: PaperIdentity): string {
 	if (identity.arxivId) return `https://arxiv.org/abs/${identity.arxivId}`;
 	if (identity.doi) return `https://doi.org/${identity.doi}`;
 	if (identity.openAlexId) return `https://openalex.org/${identity.openAlexId}`;
-	throw new Error('Paper identity has no DOI or arXiv id');
+	throw new Error('Paper identity has no canonical identifier');
 }
 
 /**

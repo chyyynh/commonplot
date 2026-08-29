@@ -82,7 +82,6 @@ async function resolveGenericAcquiredResource(
 	const paper = await stagePaperProcessing(env, step, {
 		acquiredContent: acquired,
 		canonicalUrl,
-		originSummary: input.hints.summary,
 		processingId: input.processingId,
 		publishedDate,
 		seedIdentifiers: input.paperIdentifiers,

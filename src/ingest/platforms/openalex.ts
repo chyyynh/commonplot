@@ -27,7 +27,7 @@ export interface PaperMetadata {
 const OPENALEX_BASE = 'https://api.openalex.org';
 const OPENALEX_CONTENT_HOST = 'content.openalex.org';
 const REQUEST_TIMEOUT_MS = 8_000;
-const CONTENT_REQUEST_TIMEOUT_MS = 120_000;
+const CONTENT_REQUEST_TIMEOUT_MS = 90_000;
 const MAX_RELATION_ITEMS = 100;
 const WORK_FIELDS = [
 	'id',

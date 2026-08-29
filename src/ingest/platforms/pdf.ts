@@ -29,13 +29,15 @@ const LITEPARSE_CONFIG = {
 
 initSync({ module: wasmModule });
 
+type PdfQualityReason = 'complex-layout' | 'empty-batch' | 'garbled-text' | 'needs-ocr' | 'parse-failed' | 'unparsed';
+
 type ParsedPdf = Readonly<{
 	markdown: string;
 	paperIdentifierText: string | null;
 	parsedPages: number;
 	problemPageCount: number;
 	problemPageSample: number[];
-	qualityReasons: string[];
+	qualityReasons: PdfQualityReason[];
 	totalPages: number;
 	unparsedPages: number;
 }>;
@@ -43,10 +45,10 @@ type ParsedPdf = Readonly<{
 type ParsedPdfAccumulator = {
 	coveredPages: Set<number>;
 	markdown: string[];
-	paperIdentifierText: string[];
+	paperIdentifierText: string | null;
 	parsedPages: number;
 	problemPages: Set<number>;
-	qualityReasons: Set<string>;
+	qualityReasons: Set<PdfQualityReason>;
 };
 
 type PrivatePdfTranslationCandidate = Readonly<{
@@ -149,9 +151,7 @@ function accumulateLiteParseResult(accumulator: ParsedPdfAccumulator, result: Pa
 			accumulator.problemPages.add(page.pageNum);
 			accumulator.qualityReasons.add('garbled-text');
 		}
-		if (page.pageNum === 1) {
-			if (usable) accumulator.paperIdentifierText.push(usable);
-		}
+		if (page.pageNum === 1 && usable && accumulator.paperIdentifierText === null) accumulator.paperIdentifierText = usable;
 	}
 	for (const error of result.pageErrors) {
 		accumulator.coveredPages.add(error.pageNum);
@@ -173,7 +173,7 @@ function finishParsedPdf(accumulator: ParsedPdfAccumulator, totalPages: number):
 	}
 	return {
 		markdown: accumulator.markdown.join('\n\n').trim(),
-		paperIdentifierText: accumulator.paperIdentifierText.join('\n').trim().slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS) || null,
+		paperIdentifierText: accumulator.paperIdentifierText?.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS) ?? null,
 		parsedPages: accumulator.parsedPages,
 		problemPageCount: accumulator.problemPages.size + unparsedPages,
 		problemPageSample,
@@ -191,7 +191,7 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<Pa
 		const accumulator: ParsedPdfAccumulator = {
 			coveredPages: new Set(),
 			markdown: [],
-			paperIdentifierText: [],
+			paperIdentifierText: null,
 			parsedPages: 0,
 			problemPages: new Set(),
 			qualityReasons: new Set(),
@@ -214,7 +214,6 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<Pa
 			total_pages: result.totalPages,
 			unparsed_pages: result.unparsedPages,
 		});
-		if (!result.markdown) throw new NonRetryableError(`${sourceLabel} has no usable text; OCR is required`);
 		return result;
 	} finally {
 		try {
@@ -223,6 +222,11 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<Pa
 			parser.free();
 		}
 	}
+}
+
+function requireUsablePdf(parsed: ParsedPdf, sourceLabel: string): ParsedPdf {
+	if (!parsed.markdown) throw new NonRetryableError(`${sourceLabel} has no usable text; OCR is required`);
+	return parsed;
 }
 
 type StoredPdfInput = {
@@ -314,7 +318,8 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 	const obj = await env.R2.get(resource.storageKey);
 	if (!obj) throw new Error(`PDF source object missing: ${resource.storageKey}`);
 	if (obj.size > MAX_PDF_BYTES) throw new Error(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
-	const parsed = await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()), `Stored PDF ${resource.resourceId}`);
+	const sourceLabel = `Stored PDF ${resource.resourceId}`;
+	const parsed = requireUsablePdf(await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()), sourceLabel), sourceLabel);
 	return {
 		resourcePlatform: null,
 		fileType: PDF_MIME,
@@ -341,7 +346,7 @@ export async function acquireFetchedPdfResponse(response: Response, finalUrl: st
 			},
 		}),
 	);
-	const parsed = await parsePdfBytes(await new Response(body).bytes(), 'Fetched PDF');
+	const parsed = requireUsablePdf(await parsePdfBytes(await new Response(body).bytes(), 'Fetched PDF'), 'Fetched PDF');
 	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
 	let fileName = encodedName || 'document.pdf';
 	if (encodedName) {

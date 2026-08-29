@@ -22,15 +22,13 @@ const CITOID_BASE = 'https://en.wikipedia.org/api/rest_v1/data/citation/zotero/'
 const CITOID_TIMEOUT_MS = 8_000;
 const CITOID_USER_AGENT = 'Newsence/1.0 (https://www.newsence.app; bibliographic metadata resolver)';
 const CitoidResponseSchema = z.array(
-	z
-		.object({
-			itemType: z.string().nullish(),
-			DOI: z.string().nullish(),
-			archiveID: z.string().nullish(),
-			url: z.string().nullish(),
-			extra: z.string().nullish(),
-		})
-		.passthrough(),
+	z.object({
+		itemType: z.string().nullish(),
+		DOI: z.string().nullish(),
+		archiveID: z.string().nullish(),
+		url: z.string().nullish(),
+		extra: z.string().nullish(),
+	}),
 );
 const ACADEMIC_ITEM_TYPES = new Set(['journalArticle', 'conferencePaper', 'preprint', 'thesis', 'manuscript']);
 
@@ -137,62 +135,76 @@ function localPaperIdentifiers(input: {
 	return choosePreferredIdentifiers([...exact, ...(fromText ? paperIdentifiersFromIdentity(fromText) : []), ...input.seedIdentifiers]);
 }
 
-async function stagePaperEnrichment(
+async function stageCitoidPaperIdentifiers(
+	step: WorkflowStep,
+	candidate: {
+		citoidUrl: string;
+		processingId: string;
+	},
+): Promise<PaperIdentifier[]> {
+	try {
+		return await step.do(
+			'resolve-paper-citoid-identifiers-v1',
+			{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+			async () =>
+				resolveCitoidPaperIdentifiers(candidate.citoidUrl).catch((error) => {
+					if (error instanceof Error && error.message.includes('HTTP 429')) throw error;
+					console.warn({
+						tag: 'CITOID',
+						event: 'lookup_failed',
+						processing_id: candidate.processingId,
+						error: error instanceof Error ? error.message : String(error),
+					});
+					return [];
+				}),
+		);
+	} catch (error) {
+		console.warn({
+			tag: 'CITOID',
+			event: 'lookup_failed',
+			processing_id: candidate.processingId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return [];
+	}
+}
+
+async function stageOpenAlexPaperEnrichment(
 	env: CoreEnv,
 	step: WorkflowStep,
 	candidate: {
-		citoidUrl: string | null;
 		identifiers: readonly PaperIdentifier[];
 		processingId: string;
 	},
 ) {
-	if (!candidate.identifiers.length && !candidate.citoidUrl) {
-		return { contentPdfUrl: null, identifiers: [], metadata: null };
-	}
+	if (candidate.identifiers.length === 0) return { contentPdfUrl: null, identifiers: [], metadata: null };
 	const attemptStartedAt = Date.now();
-
 	try {
-		const resolution = await step.do(
-			'resolve-paper-openalex-with-citations-v3',
+		const resolved = await step.do(
+			'resolve-paper-openalex-with-citations-v4',
 			{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 			async () => {
 				const startedAt = Date.now();
-				const citoid = candidate.citoidUrl
-					? await resolveCitoidPaperIdentifiers(candidate.citoidUrl).catch((error) => {
-							if (error instanceof Error && error.message.includes('HTTP 429')) throw error;
-							console.warn({
-								tag: 'CITOID',
-								event: 'lookup_failed',
-								error: error instanceof Error ? error.message : String(error),
-							});
-							return [];
-						})
-					: [];
-				const bibliographic = choosePreferredIdentifiers([...candidate.identifiers, ...citoid]);
-				if (bibliographic.length === 0) {
-					return null;
-				}
-				const resolved = await resolveOpenAlexPaper({
+				const paper = await resolveOpenAlexPaper({
 					apiKey: env.OPENALEX_API_KEY,
-					identifiers: bibliographic,
+					identifiers: candidate.identifiers,
 				});
-				const paper = resolved?.metadata ?? null;
 				console.info({
 					tag: 'PAPER_PROVIDER',
 					event: 'academic_enrichment',
 					provider: 'openalex',
 					processing_id: candidate.processingId,
-					identity_schemes: [...new Set(bibliographic.map(({ scheme }) => scheme))],
+					identity_schemes: [...new Set(candidate.identifiers.map(({ scheme }) => scheme))],
 					outcome: paper ? 'resolved' : 'not_found',
 					latency_ms: Date.now() - startedAt,
 				});
-				return { identifiers: bibliographic, resolved };
+				return paper;
 			},
 		);
 		return {
-			contentPdfUrl: resolution?.resolved?.contentPdfUrl ?? null,
-			identifiers: resolution?.resolved?.identifiers ?? resolution?.identifiers ?? [],
-			metadata: resolution?.resolved?.metadata ?? null,
+			contentPdfUrl: resolved?.contentPdfUrl ?? null,
+			identifiers: resolved?.identifiers ?? [...candidate.identifiers],
+			metadata: resolved?.metadata ?? null,
 		};
 	} catch (error) {
 		console.warn({
@@ -203,46 +215,53 @@ async function stagePaperEnrichment(
 			latency_ms: Date.now() - attemptStartedAt,
 			error: error instanceof Error ? error.message : String(error),
 		});
-		return {
-			contentPdfUrl: null,
-			identifiers: [],
-			metadata: null,
-		};
+		return { contentPdfUrl: null, identifiers: [], metadata: null };
 	}
 }
+
+async function stagePaperEnrichment(
+	env: CoreEnv,
+	step: WorkflowStep,
+	candidate: {
+		citoidUrl: string | null;
+		identifiers: readonly PaperIdentifier[];
+		processingId: string;
+	},
+) {
+	const citoidIdentifiers = candidate.citoidUrl
+		? await stageCitoidPaperIdentifiers(step, { citoidUrl: candidate.citoidUrl, processingId: candidate.processingId })
+		: [];
+	return stageOpenAlexPaperEnrichment(env, step, {
+		identifiers: choosePreferredIdentifiers([...candidate.identifiers, ...citoidIdentifiers]),
+		processingId: candidate.processingId,
+	});
+}
+
+type PdfRepresentation = Readonly<{
+	fileType: typeof PDF_MIME;
+	markdown: string;
+	paperIdentifierText: string | null;
+}>;
 
 async function stageOpenAlexPdfAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		acquiredContent: GenericAcquiredMaterial;
-		canonicalUrl: string | null;
 		contentPdfUrl: string;
-		metadata: PaperMetadata | null;
-		originSummary: string | null;
-		publishedDate: string | null;
 		processingId: string;
 	},
-): Promise<GenericAcquiredMaterial | null> {
-	const sourceName = input.acquiredContent.source.trim() || (input.canonicalUrl ? new URL(input.canonicalUrl).hostname : 'OpenAlex');
-	const description = input.metadata?.abstract?.trim() || input.acquiredContent.summary || input.originSummary;
-	const publishedDate = input.metadata?.publicationDate?.trim() || input.publishedDate;
-	const title = input.metadata?.title?.trim() || input.acquiredContent.title;
-
+): Promise<PdfRepresentation | null> {
 	const contentStream = await step
 		.do(
-			'acquire-openalex-content-pdf-v3',
-			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+			'acquire-openalex-content-pdf-v4',
+			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '180 seconds' },
 			async () => {
 				const response = await fetchOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
 				const acquired = await acquireFetchedPdfResponse(response, input.contentPdfUrl);
 				return Response.json({
-					...acquired,
-					title,
-					source: sourceName,
-					publishedDate,
-					summary: description,
-					kindMetadata: { siteName: sourceName },
+					fileType: PDF_MIME,
+					markdown: acquired.markdown,
+					paperIdentifierText: acquired.paperIdentifierText ?? null,
 				}).body!;
 			},
 		)
@@ -256,7 +275,7 @@ async function stageOpenAlexPdfAcquisition(
 			return null;
 		});
 	if (!contentStream) return null;
-	const acquired = await new Response(contentStream).json<GenericAcquiredMaterial>();
+	const acquired = await new Response(contentStream).json<PdfRepresentation>();
 	console.info({
 		tag: 'OPENALEX_CONTENT',
 		event: 'pdf_acquired',
@@ -272,7 +291,6 @@ export async function stagePaperProcessing(
 	input: {
 		acquiredContent: GenericAcquiredMaterial;
 		canonicalUrl: string | null;
-		originSummary: string | null;
 		processingId: string;
 		publishedDate: string | null;
 		seedIdentifiers: readonly PaperIdentifier[];
@@ -292,18 +310,21 @@ export async function stagePaperProcessing(
 		identifiers,
 		processingId: input.processingId,
 	});
-	const acquiredContent =
+	const enriched = applyPaperMetadata(input.acquiredContent, resolution.metadata, input.publishedDate);
+	const pdfRepresentation =
 		input.acquiredContent.fileType === PDF_MIME || !resolution.contentPdfUrl
-			? input.acquiredContent
-			: ((await stageOpenAlexPdfAcquisition(env, step, {
-					acquiredContent: input.acquiredContent,
-					canonicalUrl: input.canonicalUrl,
+			? null
+			: await stageOpenAlexPdfAcquisition(env, step, {
 					contentPdfUrl: resolution.contentPdfUrl,
-					metadata: resolution.metadata,
-					originSummary: input.originSummary,
 					processingId: input.processingId,
-					publishedDate: input.publishedDate,
-				})) ?? input.acquiredContent);
+				});
+	const acquiredContent = pdfRepresentation
+		? {
+				...enriched.acquiredContent,
+				...pdfRepresentation,
+				source: enriched.acquiredContent.source.trim() || (input.canonicalUrl ? new URL(input.canonicalUrl).hostname : 'OpenAlex'),
+			}
+		: enriched.acquiredContent;
 	const resourceIdentifiers = choosePreferredIdentifiers([...identifiers, ...resolution.identifiers]);
-	return { ...applyPaperMetadata(acquiredContent, resolution.metadata, input.publishedDate), resourceIdentifiers };
+	return { acquiredContent, publishedDate: enriched.publishedDate, resourceIdentifiers };
 }
