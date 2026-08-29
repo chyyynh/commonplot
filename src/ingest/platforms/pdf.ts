@@ -51,38 +51,6 @@ type ParsedPdfAccumulator = {
 	qualityReasons: Set<PdfQualityReason>;
 };
 
-type PrivatePdfTranslationCandidate = Readonly<{
-	fileType: string | null;
-	kind: string;
-	resourcePlatform: string | null;
-	scope: 'corpus' | 'private';
-	url: string | null;
-}>;
-
-export type PdfTranslationAdmission = 'not-pdf' | 'private-upload' | 'unsupported';
-
-export function pdfTranslationAdmission(candidate: PrivatePdfTranslationCandidate): PdfTranslationAdmission {
-	if (candidate.fileType !== PDF_MIME || candidate.resourcePlatform !== null) return 'not-pdf';
-	return candidate.scope === 'private' && ['blog', 'file'].includes(candidate.kind) && candidate.url === null
-		? 'private-upload'
-		: 'unsupported';
-}
-
-export function privateUploadedPdfTranslationSqlAdmission() {
-	return sql`(
-		resource.scope = 'private'
-		AND resource.kind IN ('blog', 'file')
-		AND resource.resource_platform IS NULL
-		AND resource.file_type = ${PDF_MIME}
-		AND resource.storage_key IS NOT NULL
-		AND EXISTS (
-			SELECT 1
-			FROM user_files file
-			WHERE file.resource_id = resource.id
-		)
-	)`;
-}
-
 function isUnsafePdfTextCharacter(character: string): boolean {
 	const codePoint = character.codePointAt(0);
 	return (

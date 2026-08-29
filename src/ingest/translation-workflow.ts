@@ -15,38 +15,42 @@ import {
 	planMarkdownTranslation,
 } from './markdown-translation';
 import { translateMarkdownBatchToZhHant } from './markdown-translation-model';
-import { pdfTranslationAdmission, privateUploadedPdfTranslationSqlAdmission } from './platforms/pdf';
 
 type ResourceTranslationPayload = { resourceId: string; translationRevision: string };
+const PDF_MIME = 'application/pdf';
 const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const;
 const RESOURCE_TRANSLATION_SOURCES = ['original', 'machine', 'human'] as const;
 type ResourceTranslationSource = (typeof RESOURCE_TRANSLATION_SOURCES)[number];
+type ResourceTranslationKind = keyof typeof RESOURCE_TYPES;
+type ResourceTranslationPlatform = (typeof RESOURCE_TYPES)[ResourceTranslationKind]['platforms'][number]['name'] | null;
 
-type ResourceTranslationInput = {
+type ResourceTranslationCandidate = Readonly<{
 	fileType: string | null;
-	id: string;
+	kind: ResourceTranslationKind;
 	originalLang: string;
+	resourcePlatform: ResourceTranslationPlatform;
 	scope: 'corpus' | 'private';
+	url: string | null;
+}>;
+
+type ResourceTranslationInput = ResourceTranslationCandidate & {
+	id: string;
 	title: string;
 	summary: string | null;
 	content: string;
-	url: string | null;
 	zhHantTranslation: {
 		title: string | null;
 		summary: string | null;
 		content: string | null;
 		source: ResourceTranslationSource;
 	} | null;
-} & {
-	kind: keyof typeof RESOURCE_TYPES;
-	resourcePlatform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null;
 };
 
 type ResourceTranslationInputRow = {
 	file_type: string | null;
 	id: string;
-	kind: keyof typeof RESOURCE_TYPES;
-	resource_platform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null;
+	kind: ResourceTranslationKind;
+	resource_platform: ResourceTranslationPlatform;
 	original_lang: string;
 	scope: 'corpus' | 'private';
 	title: string | null;
@@ -64,6 +68,43 @@ const METADATA_CONTENT_MAX_LENGTH = 10000;
 const PARTIAL_CONTENT_TRANSLATION_RATIO = 0.2;
 const MIN_TRANSLATABLE_TEXT_LENGTH = 20;
 const INLINE_POST_CONTENT_TRANSLATION_MAX_LENGTH = 1000;
+
+type PdfTranslationAdmission = 'not-pdf' | 'private-upload' | 'unsupported';
+
+function pdfTranslationAdmission(candidate: ResourceTranslationCandidate): PdfTranslationAdmission {
+	if (candidate.fileType !== PDF_MIME || candidate.resourcePlatform !== null) return 'not-pdf';
+	return candidate.scope === 'private' && (candidate.kind === 'blog' || candidate.kind === 'file') && candidate.url === null
+		? 'private-upload'
+		: 'unsupported';
+}
+
+export function shouldEnqueueResourceTranslation(candidate: ResourceTranslationCandidate): boolean {
+	const pdfAdmission = pdfTranslationAdmission(candidate);
+	const privateUploadedPdf = pdfAdmission === 'private-upload';
+	const translatableKind =
+		(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(candidate.kind) || (candidate.kind === 'file' && privateUploadedPdf);
+	return (
+		candidate.originalLang !== 'zh-Hant' &&
+		translatableKind &&
+		(Boolean(candidate.url) || privateUploadedPdf) &&
+		pdfAdmission !== 'unsupported'
+	);
+}
+
+function privateUploadedPdfTranslationSqlAdmission() {
+	return sql`(
+		resource.scope = 'private'
+		AND resource.kind IN ('blog', 'file')
+		AND resource.resource_platform IS NULL
+		AND resource.file_type = ${PDF_MIME}
+		AND resource.storage_key IS NOT NULL
+		AND EXISTS (
+			SELECT 1
+			FROM user_files file
+			WHERE file.resource_id = resource.id
+		)
+	)`;
+}
 
 const ZhHantMetadataTranslationSchema = z.object({
 	title: z.string().min(1),
@@ -124,17 +165,10 @@ function needsMachineContentTranslation(resource: ResourceTranslationInput): boo
 
 function planZhHantTranslation(resource: ResourceTranslationInput): ZhHantTranslationPlan {
 	const translation = resource.zhHantTranslation;
-	const pdfAdmission = pdfTranslationAdmission(resource);
-	const privateUploadedPdf = pdfAdmission === 'private-upload';
-	const translatableKind =
-		(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(resource.kind) || (resource.kind === 'file' && privateUploadedPdf);
 	if (
-		!translatableKind ||
-		(!resource.url && !privateUploadedPdf) ||
-		pdfAdmission === 'unsupported' ||
+		!shouldEnqueueResourceTranslation(resource) ||
 		isBlank(resource.title) ||
 		isBlank(resource.content) ||
-		resource.originalLang === 'zh-Hant' ||
 		translation?.source === 'human'
 	) {
 		return { metadata: null, content: null };

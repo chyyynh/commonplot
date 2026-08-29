@@ -21,7 +21,7 @@ import {
 	type ResourceDraftRelation,
 	type ResourcePersistenceTarget,
 } from './resource-persistence';
-import { enqueueResourceTranslation } from './translation-workflow';
+import { enqueueResourceTranslation, shouldEnqueueResourceTranslation } from './translation-workflow';
 
 const ResourceDraftRelationSchema: z.ZodType<ResourceDraftRelation> = z.discriminatedUnion('kind', [
 	z.object({ kind: z.literal('source'), sourceId: z.uuid() }).strict(),
@@ -315,15 +315,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				),
 			);
 		}
-		const shouldTranslate =
-			preparedResource.originalLang !== 'zh-Hant' &&
-			preparedResource.kind !== 'video' &&
-			(scope === 'corpus' ||
-				((preparedResource.kind === 'blog' || preparedResource.kind === 'file') &&
-					preparedResource.resourcePlatform === null &&
-					preparedResource.fileType === 'application/pdf' &&
-					preparedResource.url === null));
-		if (shouldTranslate) {
+		if (shouldEnqueueResourceTranslation({ ...preparedResource, scope })) {
 			followUps.push(
 				step.do(
 					'enqueue-resource-translation-v2',
