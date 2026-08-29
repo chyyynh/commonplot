@@ -5,13 +5,14 @@ export const LLAMA_PARSE_MAX_PAGES = 100;
 const PAID_FALLBACK_DEFECTS = new Set(['empty-output', 'garbled-text', 'needs-ocr', 'parse-failed', 'unparsed']);
 
 export type PaidPdfFallbackGrant = Readonly<{ maxPages: number }>;
+export type LlamaParseSource = Readonly<{ kind: 'private-upload' }> | Readonly<{ kind: 'public-url'; url: string }>;
 
-type LocalPdfFallbackSummary = Readonly<{
+type LocalPdfSummary = Readonly<{
 	hardDefects: readonly string[];
 	totalPages: number | null;
 }>;
 
-export type LlamaParseFallbackReason =
+export type LlamaParseAdmissionReason =
 	| 'admitted'
 	| 'invalid-grant'
 	| 'local-usable'
@@ -38,12 +39,12 @@ export function isAllowedPublicPdfUrl(value: string): boolean {
 	return !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(hostname) && !hostname.includes(':');
 }
 
-export function llamaParseFallbackReason(input: {
+export function llamaParseAdmissionReason(input: {
 	grant: PaidPdfFallbackGrant | null;
 	hasCredentials: boolean;
-	local: LocalPdfFallbackSummary;
-	sourceUrl: string;
-}): LlamaParseFallbackReason {
+	local: LocalPdfSummary;
+	source: LlamaParseSource;
+}): LlamaParseAdmissionReason {
 	if (!input.local.hardDefects.some((reason) => PAID_FALLBACK_DEFECTS.has(reason))) return 'local-usable';
 	if (!input.grant) return 'not-authorized';
 	if (!Number.isInteger(input.grant.maxPages) || input.grant.maxPages < 1 || input.grant.maxPages > LLAMA_PARSE_MAX_PAGES)
@@ -51,7 +52,8 @@ export function llamaParseFallbackReason(input: {
 	if (!input.hasCredentials) return 'missing-credentials';
 	if (input.local.totalPages === null) return 'page-count-unknown';
 	if (input.local.totalPages < 1 || input.local.totalPages > input.grant.maxPages) return 'page-limit-exceeded';
-	return isAllowedPublicPdfUrl(input.sourceUrl) ? 'admitted' : 'source-ineligible';
+	if (input.source.kind === 'private-upload') return 'admitted';
+	return isAllowedPublicPdfUrl(input.source.url) ? 'admitted' : 'source-ineligible';
 }
 
 type MarkdownPage = Readonly<{ markdown?: string; page_number: number; success: boolean }>;

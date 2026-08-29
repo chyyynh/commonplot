@@ -116,6 +116,7 @@ const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
 	z
 		.object({
 			kind: z.literal('storedBlob'),
+			paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
 			resourceId: z.uuid(),
 		})
 		.strict(),
@@ -229,7 +230,10 @@ async function resolveProcessingCall(
 	}
 
 	if (target.kind === 'storedBlob') {
-		const resource = await stageStoredResourceAcquisition(env, step, target);
+		const resource = await stageStoredResourceAcquisition(env, step, {
+			paidPdfFallback: target.paidPdfFallback ?? null,
+			resourceId: target.resourceId,
+		});
 		const resolvedPaper = resource.kind === 'paper';
 		return {
 			keywordHints: [],

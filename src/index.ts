@@ -26,23 +26,27 @@ type AppResourceDraftInput = Readonly<{
 	saveTarget: Exclude<ResourceDraftTarget['saveTarget'], undefined>;
 }>;
 
-type StoredPdfProcessingInput = Readonly<{ resourceId: string }>;
+type StoredPdfProcessingInput = Readonly<{
+	paidPdfFallback?: ResourceDraftTarget['paidPdfFallback'];
+	resourceId: string;
+}>;
 
 const APP_RESOURCE_BATCH_LIMIT = 20;
 const AppDraftWorkflowIdSchema = z.templateLiteral(['app-draft-v1-', z.uuidv4()]);
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
-const STORED_BLOB_WORKFLOW_REVISION = 'stored-resource-v11';
+const STORED_BLOB_WORKFLOW_REVISION = 'stored-resource-v12';
 const STORED_BLOB_WORKFLOW_RETENTION = {
 	successRetention: '5 minutes',
 	errorRetention: '1 hour',
 } as const;
 
-function storedBlobWorkflowInstance(resourceId: string) {
+function storedBlobWorkflowInstance(resourceId: string, paidPdfFallback?: ResourceDraftTarget['paidPdfFallback']) {
 	const id = z.uuid().parse(resourceId);
+	const grant = ResourceDraftTargetSchema.shape.paidPdfFallback.parse(paidPdfFallback);
 	return {
 		id: `${STORED_BLOB_WORKFLOW_REVISION}-${id}`,
-		params: { kind: 'storedBlob' as const, resourceId: id },
+		params: { kind: 'storedBlob' as const, ...(grant ? { paidPdfFallback: grant } : {}), resourceId: id },
 		retention: STORED_BLOB_WORKFLOW_RETENTION,
 	};
 }
@@ -69,7 +73,9 @@ async function reconcilePendingBlobProcessing(env: CoreEnv, db: NodePgDatabase):
 	`);
 	const resourceIds = result.rows.map((row) => row.resource_id);
 	if (!resourceIds.length) return;
-	const created = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(resourceIds.map(storedBlobWorkflowInstance));
+	const created = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(
+		resourceIds.map((resourceId) => storedBlobWorkflowInstance(resourceId)),
+	);
 	console.info({
 		tag: 'RESOURCE_WORKFLOW',
 		event: 'pending_blob_reconciliation_completed',
@@ -141,7 +147,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 
 	/** Enqueue an app-owned blob after its R2 object and private ownership row exist. */
 	async enqueueResourceProcessing(input: StoredPdfProcessingInput) {
-		const instance = storedBlobWorkflowInstance(input.resourceId);
+		const instance = storedBlobWorkflowInstance(input.resourceId, input.paidPdfFallback);
 		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([instance]);
 		return instance.id;
 	}

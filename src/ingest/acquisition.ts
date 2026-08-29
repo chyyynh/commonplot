@@ -164,7 +164,10 @@ export async function stageUrlAcquisition(
 export async function stageStoredResourceAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	target: Readonly<{ resourceId: string }>,
+	target: Readonly<{
+		paidPdfFallback: PaidPdfFallbackGrant | null;
+		resourceId: string;
+	}>,
 ): Promise<ProcessingResource> {
 	const acquired = await stageStoredPdfAcquisition(env, step, target);
 	const resource = await resolveGenericAcquiredResource(env, step, acquired, {

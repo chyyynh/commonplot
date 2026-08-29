@@ -133,18 +133,20 @@ AI analysis uses the Workers AI binding through AI Gateway, so no external LLM s
 wrangler secret put KAITO_API_KEY            # Twitter monitoring
 wrangler secret put YOUTUBE_API_KEY          # YouTube monitoring
 wrangler secret put OPENALEX_API_KEY          # Paper metadata enrichment
-wrangler secret put LLAMA_CLOUD_API_KEY       # Paid public-PDF fallback
+wrangler secret put LLAMA_CLOUD_API_KEY       # Paid PDF fallback
 wrangler secret put LLAMA_CLOUD_PROJECT_ID    # Deployment-specific Llama Cloud project
 ```
 
 LlamaParse is a local-first fallback. Web owns the product kill switch and
 Autumn eligibility, then attaches a per-document page grant to authenticated
-URL workflows. Core executes only granted public-PDF fallbacks after a
-LiteParse hard defect and independently enforces the 100-page safety cap.
-App-owned private PDFs and OpenAlex key-bearing content URLs never leave Core.
-The provider adapter is locked to the US API, the `cost_effective` tier, and a
-dated parser version. Enable Web grants only after an authorized development
-smoke records the observed credits.
+URL and newly uploaded PDF workflows. Core executes only granted fallbacks
+after a LiteParse hard defect and independently enforces the 100-page and
+25 MiB safety caps. Private uploads use a temporary Llama Cloud file that Core
+deletes when the fallback finishes or aborts; ambiguous provider mutations fail
+loudly with a stable external ID for operator cleanup. OpenAlex key-bearing
+content URLs remain local-only. The provider adapter is locked to the US API,
+the `cost_effective` tier, and a dated parser version. Enable Web grants only
+after an authorized development smoke records the observed credits.
 
 ### 5. Deploy
 

@@ -124,7 +124,8 @@
 	 * R2 buckets.
 	 *
 	 * `R2` — shared resource blob storage. The app worker owns uploaded
-	 *   blob lifecycle; Core only reads uploaded PDFs for LiteParse extraction.
+	 *   blob lifecycle. Core reads uploaded PDFs for local extraction and, only
+	 *   with a Web-issued grant after a hard defect, temporary provider upload.
 	 */
 	"r2_buckets": [
 		{

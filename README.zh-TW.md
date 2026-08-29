@@ -128,15 +128,17 @@ AI 分析透過 Workers AI binding 與 AI Gateway 執行，不需要外部 LLM s
 wrangler secret put KAITO_API_KEY            # Twitter 監控
 wrangler secret put YOUTUBE_API_KEY          # YouTube 監控
 wrangler secret put OPENALEX_API_KEY          # 論文 metadata enrichment
-wrangler secret put LLAMA_CLOUD_API_KEY       # 付費 public PDF fallback
+wrangler secret put LLAMA_CLOUD_API_KEY       # 付費 PDF fallback
 wrangler secret put LLAMA_CLOUD_PROJECT_ID    # 此 deployment 專用的 Llama Cloud project
 ```
 
 LlamaParse 是 local-first fallback。Web 負責產品 kill switch 與 Autumn
-資格，並在 authenticated URL workflow 附上單份文件的頁數 grant。Core 只在
-LiteParse 出現 hard defect 時執行已授權的公開 PDF fallback，且獨立強制 100 頁
-安全上限。App-owned 私人 PDF 與帶 OpenAlex key 的 content URL 不會離開
-Core。Provider adapter 固定使用美國 API、`cost_effective` tier 與具日期的
+資格，並在 authenticated URL 與新上傳 PDF workflow 附上單份文件的頁數
+grant。Core 只在 LiteParse 出現 hard defect 時執行已授權的 fallback，且獨立
+強制 100 頁與 25 MiB 安全上限。私人上傳使用暫時的 Llama Cloud file，Core
+會在 fallback 完成或中止時刪除；不明確的 provider mutation 會直接失敗，並
+留下穩定的 external ID 供 operator 清理。帶 OpenAlex key 的 content URL 仍
+只在本地處理。Provider adapter 固定使用美國 API、`cost_effective` tier 與具日期的
 parser version。只有在明確授權 development smoke 並記錄實際 credits 後，
 才可開啟 Web grant。
 

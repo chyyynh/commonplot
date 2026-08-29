@@ -2,28 +2,31 @@ import assert from 'node:assert/strict';
 import {
 	isAllowedPublicPdfUrl,
 	LLAMA_PARSE_MAX_PAGES,
-	llamaParseFallbackReason,
+	llamaParseAdmissionReason,
 	wholeDocumentMarkdown,
 } from '../src/ingest/platforms/pdf-fallback-policy.ts';
 
 const admission = (overrides = {}) =>
-	llamaParseFallbackReason({
+	llamaParseAdmissionReason({
 		grant: { maxPages: LLAMA_PARSE_MAX_PAGES },
 		hasCredentials: true,
 		local: { hardDefects: ['needs-ocr'], totalPages: 3 },
-		sourceUrl: 'https://papers.example.org/work.pdf',
+		source: { kind: 'public-url', url: 'https://papers.example.org/work.pdf' },
 		...overrides,
 	});
 
 assert.equal(admission(), 'admitted');
+assert.equal(admission({ source: { kind: 'private-upload' } }), 'admitted');
 assert.equal(admission({ local: { hardDefects: [], totalPages: 3 } }), 'local-usable');
 assert.equal(admission({ local: { hardDefects: ['complex-layout'], totalPages: 3 } }), 'local-usable');
 assert.equal(admission({ grant: null }), 'not-authorized');
 assert.equal(admission({ grant: { maxPages: LLAMA_PARSE_MAX_PAGES + 1 } }), 'invalid-grant');
 assert.equal(admission({ hasCredentials: false }), 'missing-credentials');
 assert.equal(admission({ local: { hardDefects: ['parse-failed'], totalPages: null } }), 'page-count-unknown');
+assert.equal(admission({ local: { hardDefects: ['unparsed'], totalPages: LLAMA_PARSE_MAX_PAGES } }), 'admitted');
 assert.equal(admission({ local: { hardDefects: ['unparsed'], totalPages: LLAMA_PARSE_MAX_PAGES + 1 } }), 'page-limit-exceeded');
-assert.equal(admission({ sourceUrl: 'https://localhost/work.pdf' }), 'source-ineligible');
+assert.equal(admission({ local: { hardDefects: ['unparsed'], totalPages: 0 } }), 'page-limit-exceeded');
+assert.equal(admission({ source: { kind: 'public-url', url: 'https://localhost/work.pdf' } }), 'source-ineligible');
 
 assert.equal(isAllowedPublicPdfUrl('https://papers.example.org/work.pdf'), true);
 for (const url of [

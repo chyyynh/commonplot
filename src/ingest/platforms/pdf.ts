@@ -9,13 +9,12 @@ import { connectCoreDb } from '../../shared/db';
 import { canonicalizeResourceLang, type ResourceCreator, ResourceCreatorsSchema } from '../../shared/resource';
 import type { GenericAcquiredMaterial } from './materialize';
 import { fetchOpenAlexPdf } from './openalex';
+import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
 import { LLAMA_PARSE_MAX_PAGES, type PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
-import { stageLlamaParseFallback } from './pdf-llamaparse';
+import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
 import { usablePdfMarkdown } from './pdf-text';
 
-export const PDF_MIME = 'application/pdf';
-
-const MAX_PDF_BYTES = 25 * 1024 * 1024;
+export { PDF_MIME } from './pdf-constants';
 export const MAX_PAID_PDF_PAGES = LLAMA_PARSE_MAX_PAGES;
 export type { PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
 
@@ -227,11 +226,11 @@ export async function completeFetchedPdfAcquisition(
 		sourceUrl: string;
 	},
 ): Promise<GenericAcquiredMaterial> {
-	const cloudMarkdown = await stageLlamaParseFallback(env, step, {
+	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
 		grant: input.grant,
 		local: input.acquisition.parse,
 		processingId: input.processingId,
-		sourceUrl: input.sourceUrl,
+		source: { kind: 'public-url', url: input.sourceUrl },
 	});
 	if (!cloudMarkdown) return requireUsablePdf(input.acquisition, 'Fetched PDF');
 	return {
@@ -445,7 +444,10 @@ export async function acquireFetchedPdfResponse(response: Response, finalUrl: st
 export async function stageStoredPdfAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	target: Readonly<{ resourceId: string }>,
+	target: Readonly<{
+		paidPdfFallback: PaidPdfFallbackGrant | null;
+		resourceId: string;
+	}>,
 ): Promise<GenericAcquiredMaterial> {
 	const resource = await step.do(
 		'load-stored-pdf-input-v1',
@@ -467,5 +469,19 @@ export async function stageStoredPdfAcquisition(
 		async () => Response.json(await acquireStoredPdf(env, resource)).body!,
 	);
 	const acquisition = await new Response(contentStream).json<PdfAcquisitionDraft>();
-	return requireUsablePdf(acquisition, `Stored PDF ${target.resourceId}`);
+	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
+		grant: target.paidPdfFallback,
+		local: acquisition.parse,
+		processingId: target.resourceId,
+		source: {
+			kind: 'private-upload',
+			storageKey: resource.storageKey,
+		},
+	});
+	if (!cloudMarkdown) return requireUsablePdf(acquisition, `Stored PDF ${target.resourceId}`);
+	return {
+		...acquisition.material,
+		markdown: cloudMarkdown,
+		paperIdentifierText: cloudMarkdown.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS),
+	};
 }
