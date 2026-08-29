@@ -11,7 +11,9 @@ import {
 } from '../shared/resource';
 import type { ProcessingResource } from './acquisition';
 import { type ResourceAnalysis, toStoredResourceEntities } from './analysis';
+import { bibliographyFromMarkdown } from './bibliography';
 import type { YouTubeResourceData } from './platforms/youtube';
+import { replaceResourceReferences } from './resource-references';
 
 export type ResourceDraftRelation =
 	| Readonly<{ kind: 'source'; sourceId: string }>
@@ -308,14 +310,22 @@ async function writeCanonicalResource(
 	if (resource.youtube) {
 		await persistYouTube(db, resourceId, resource.youtube, resource.highlightsGeneratedAt);
 	}
-	const revision = await db.execute<{ revision: string }>(sql`
-		SELECT MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS revision
+	const original = await db.execute<{ content: string | null; revision: string }>(sql`
+		SELECT original.content,
+		       MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS revision
 		FROM resource_translations original
 		JOIN resources resource ON resource.id = original.resource_id
 		WHERE resource.id = ${resourceId}::uuid AND original.lang = resource.original_lang
 		LIMIT 1
 	`);
-	return revision.rows[0]?.revision ?? null;
+	const authoritativeOriginal = original.rows[0];
+	if (!authoritativeOriginal) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
+	await replaceResourceReferences(
+		db,
+		resourceId,
+		resource.kind === 'paper' ? bibliographyFromMarkdown(authoritativeOriginal.content ?? '') : [],
+	);
+	return authoritativeOriginal.revision;
 }
 
 async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relation: ResourceDraftRelation) {
@@ -357,7 +367,6 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 		if (target.kind === 'draft' && target.relation) {
 			await applyDraftRelation(tx, root.id, target.relation);
 		}
-		if (!translationRevision) throw new Error(`Resource ${root.id} has no original translation`);
 		return {
 			resourceId: root.id,
 			scope: root.scope,

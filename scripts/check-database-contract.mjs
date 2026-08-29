@@ -8,9 +8,14 @@ import { RESOURCE_TYPES } from '../src/shared/resource.ts';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const prismaPath = resolve(root, '../../web-tanstack/prisma/schema.prisma');
 const manualIndexesPath = resolve(root, '../../web-tanstack/prisma/manual-indexes.sql');
+const resourceReferencesMigrationPath = resolve(
+	root,
+	'../../web-tanstack/prisma/migrations/20260829123000_add_resource_references/migration.sql',
+);
 
 const prismaSource = readFileSync(prismaPath, 'utf8');
 const manualIndexesSource = readFileSync(manualIndexesPath, 'utf8');
+const resourceReferencesMigrationSource = readFileSync(resourceReferencesMigrationPath, 'utf8');
 const errors = [];
 
 function parseDomainConstraint(source, constraintName, columnName) {
@@ -72,6 +77,28 @@ if (!/^\s*kind\s+String\s*$/m.test(resourceModelBody)) {
 }
 if (!/^\s*resourcePlatform\s+String\?\s+@map\("resource_platform"\)\s*$/m.test(resourceModelBody)) {
 	errors.push('Prisma Resource.resourcePlatform must be nullable, mapped to resource_platform, and have no default');
+}
+
+const resourceReferenceModelBody = prismaSource.match(/model ResourceReference \{([\s\S]*?)\n\}/)?.[1] ?? '';
+if (
+	!/^\s*resourceId\s+String\s+@map\("resource_id"\)\s+@db\.Uuid\s*$/m.test(resourceReferenceModelBody) ||
+	!/^\s*ordinal\s+Int\s*$/m.test(resourceReferenceModelBody) ||
+	!/^\s*text\s+String\s+@db\.VarChar\(600\)\s*$/m.test(resourceReferenceModelBody) ||
+	!/^\s*@@id\(\[resourceId, ordinal\]\)\s*$/m.test(resourceReferenceModelBody)
+) {
+	errors.push('Prisma ResourceReference must preserve the ordered 600-character resource_references contract');
+}
+if (
+	!/PRIMARY KEY \("resource_id", "ordinal"\)/.test(resourceReferencesMigrationSource) ||
+	!/ON DELETE CASCADE ON UPDATE CASCADE/.test(resourceReferencesMigrationSource) ||
+	!/CHAR_LENGTH\("text"\) <= 600/.test(resourceReferencesMigrationSource)
+) {
+	errors.push('resource_references migration must enforce compound identity, cascade deletion, and text bounds');
+}
+for (const constraint of ['resource_references_ordinal_check', 'resource_references_marker_check', 'resource_references_text_check']) {
+	if (!new RegExp(`ADD CONSTRAINT ${constraint}\\b`).test(manualIndexesSource)) {
+		errors.push(`manual-indexes.sql must mirror ${constraint}`);
+	}
 }
 
 const constrainedIdentity = parseResourceIdentityConstraint(manualIndexesSource);
