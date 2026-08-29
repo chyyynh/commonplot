@@ -51,22 +51,27 @@ export async function backfillSubjectPublishedDates(db: NodePgDatabase, rawInput
 	};
 	if (!input.apply) return { ...summary, applied: 0, appliedIds: [] as string[], dryRun: true, rows };
 
-	// The NULL guard is repeated here so a concurrent acquisition that resolved
-	// a real date for the subject page always wins over the inherited one.
+	// The page is re-selected here rather than passed as an id list: Drizzle
+	// inlines a JS array as a row constructor, and re-deriving it keeps the
+	// written set identical to the reported one. The NULL guard is repeated so a
+	// concurrent acquisition that resolved a real date always wins.
 	const updated = await db.execute<{ resource_id: string }>(sql`
 		UPDATE resources subject
 		SET published_date = carrier.inherited_date,
 		    updated_at = NOW()
 		FROM (
-			SELECT subject_resource_id AS id, MIN(published_date) AS inherited_date
-			FROM resources
-			WHERE subject_resource_id IS NOT NULL
-			  AND published_date IS NOT NULL
-			GROUP BY subject_resource_id
+			SELECT candidate.id, MIN(carrier_resource.published_date) AS inherited_date
+			FROM resources candidate
+			JOIN resources carrier_resource
+			  ON carrier_resource.subject_resource_id = candidate.id
+			 AND carrier_resource.published_date IS NOT NULL
+			WHERE candidate.published_date IS NULL
+			GROUP BY candidate.id
+			ORDER BY MIN(carrier_resource.published_date) DESC, candidate.id ASC
+			LIMIT ${input.limit}
 		) carrier
 		WHERE subject.id = carrier.id
 		  AND subject.published_date IS NULL
-		  AND subject.id = ANY(${rows.map((row) => row.resource_id)}::uuid[])
 		RETURNING subject.id::text AS resource_id
 	`);
 	// Returned so the caller can record exactly which rows changed; the write is
