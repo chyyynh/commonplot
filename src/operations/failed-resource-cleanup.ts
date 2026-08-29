@@ -9,15 +9,10 @@ import { z } from 'zod';
 // and every read surface requires `enriched`, so they are invisible but still
 // occupy canonical URLs and hold carriers' subject pointers hostage.
 //
-// Deleting one cascades its translations, identifiers, references and system
-// saves, and sets `subject_resource_id` back to NULL on any carrier pointing at
-// it — which also clears the carrier's `subjectAttached` guard, so a later
-// resync re-attempts the subject with today's acquisition code.
-
-// Corpus publication is owned by this internal account. A save from any other
-// account means a real person kept the resource, which this cleanup must not
-// silently destroy.
-const SYSTEM_ACCOUNT_EMAIL = 'opennews-system@internal.newsence.invalid';
+// Deleting one cascades its translations, identifiers, references and saves,
+// and sets `subject_resource_id` back to NULL on any carrier pointing at it —
+// which also clears the carrier's `subjectAttached` guard, so a later resync
+// re-attempts the subject with today's acquisition code.
 
 const FailedResourceCleanupInputSchema = z.object({ apply: z.boolean().default(false) }).strict();
 
@@ -26,8 +21,7 @@ export type FailedResourceCleanupInput = z.input<typeof FailedResourceCleanupInp
 type SummaryRow = {
 	carriers_losing_subject: number;
 	failed_rows: number;
-	other_user_saves: number;
-	system_saves: number;
+	saves: number;
 	with_content: number;
 };
 
@@ -48,15 +42,7 @@ export async function deleteFailedResources(db: NodePgDatabase, rawInput: Failed
 			(SELECT COUNT(*)::int
 			   FROM resource_saves save
 			   JOIN resources resource ON resource.id = save.resource_id
-			   JOIN "user" account ON account.id = save.user_id
-			  WHERE resource.enrichment_status = 'failed'
-			    AND account.email = ${SYSTEM_ACCOUNT_EMAIL}) AS system_saves,
-			(SELECT COUNT(*)::int
-			   FROM resource_saves save
-			   JOIN resources resource ON resource.id = save.resource_id
-			   JOIN "user" account ON account.id = save.user_id
-			  WHERE resource.enrichment_status = 'failed'
-			    AND account.email <> ${SYSTEM_ACCOUNT_EMAIL}) AS other_user_saves
+			  WHERE resource.enrichment_status = 'failed') AS saves
 	`);
 	const counts = summary.rows[0];
 	if (!counts) throw new Error('Failed-resource cleanup could not read its summary');
@@ -74,18 +60,17 @@ export async function deleteFailedResources(db: NodePgDatabase, rawInput: Failed
 	if (!input.apply) return { ...report, deleted: 0, deletedIds: [] as string[], dryRun: true };
 
 	const deleted = await db.transaction(async (tx) => {
-		// Re-checked inside the transaction: a save that arrived between the
-		// report and the write would otherwise be cascaded away unnoticed.
+		// Every save belongs to a person, so any save at all means someone kept the
+		// resource. Re-checked inside the transaction: a save that arrived between
+		// the report and the write would otherwise be cascaded away unnoticed.
 		const guard = await tx.execute<{ blocking_saves: number }>(sql`
 			SELECT COUNT(*)::int AS blocking_saves
 			FROM resource_saves save
 			JOIN resources resource ON resource.id = save.resource_id
-			JOIN "user" account ON account.id = save.user_id
 			WHERE resource.enrichment_status = 'failed'
-			  AND account.email <> ${SYSTEM_ACCOUNT_EMAIL}
 		`);
 		const blocking = guard.rows[0]?.blocking_saves ?? 0;
-		if (blocking > 0) throw new Error(`Refusing to delete: ${blocking} save(s) belong to a real account`);
+		if (blocking > 0) throw new Error(`Refusing to delete: ${blocking} save(s) would be destroyed`);
 		return tx.execute<{ resource_id: string }>(sql`
 			DELETE FROM resources
 			WHERE enrichment_status = 'failed'
