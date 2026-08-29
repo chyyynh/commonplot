@@ -50,7 +50,9 @@ export function prepareResolvedResource(
 	const originalLang = canonicalizeResourceLang(resource.originalLang);
 	const title = resource.title.trim();
 	const content = resource.content.trim();
+	const sourceName = resource.source.trim();
 	if (!title || !content) throw new TypeError('Resolved Resource requires title and content');
+	if (!sourceName) throw new TypeError('Resolved Resource requires a source name');
 	const creators = ResourceCreatorsSchema.parse(resource.creators);
 	const kindMetadata = RESOURCE_TYPES[resource.kind].metadata.parse(resource.kindMetadata);
 	const media = hostedResourceImageFields({ creators, kindMetadata, ogImageUrl: resource.previewImageUrl }, hostedImages);
@@ -106,6 +108,7 @@ export function prepareResolvedResource(
 		originalLang,
 		publishedDate,
 		resourcePlatform: resource.resourcePlatform,
+		sourceName,
 		subject,
 		summary: resource.summary,
 		tags: [...analysis.tags],
@@ -169,10 +172,11 @@ async function draftRoot(db: NodePgDatabase, resource: PreparedResource): Promis
 	}
 	const result = await db.execute<LockedResource>(sql`
 		INSERT INTO resources (
-			kind, resource_platform, scope, url, normalized_url, original_lang,
+			kind, resource_platform, scope, url, normalized_url, original_lang, source_name,
 			tags, creators, enrichment_status, updated_at
 		) VALUES (
 			${resource.kind}, ${resource.resourcePlatform}, 'corpus', ${resource.url}, ${resource.normalizedUrl}, ${resource.originalLang},
+			${resource.sourceName},
 			ARRAY[]::text[], '[]'::jsonb, 'enriched', NOW()
 		)
 		RETURNING enrichment_status, id::text, original_lang, scope, subject_resource_id::text
@@ -268,6 +272,7 @@ async function writeCanonicalResource(
 		UPDATE resources SET
 			kind = ${resource.kind},
 			resource_platform = ${resource.resourcePlatform},
+			source_name = ${resource.sourceName},
 			url = ${resource.url},
 			normalized_url = ${resource.normalizedUrl},
 			file_type = ${resource.fileType},

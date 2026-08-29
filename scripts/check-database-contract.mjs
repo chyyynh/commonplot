@@ -99,6 +99,13 @@ if (
 	errors.push('resource_references migration must enforce compound identity, cascade deletion, and text bounds');
 }
 const normalizedManualIndexes = manualIndexesSource.replace(/\s+/g, ' ');
+if (
+	!normalizedManualIndexes.includes(
+		"ADD CONSTRAINT resources_source_name_check CHECK ( (source_name IS NULL AND kind IN ('file', 'image')) OR ( source_name IS NOT NULL AND source_name = BTRIM(source_name) AND source_name <> '' ) );",
+	)
+) {
+	errors.push('manual-indexes.sql must require canonical source_name for non-blob Resources');
+}
 for (const [constraint, check] of [
 	['resource_references_ordinal_check', 'ordinal > 0'],
 	['resource_references_marker_check', 'marker IS NULL OR marker > 0'],
