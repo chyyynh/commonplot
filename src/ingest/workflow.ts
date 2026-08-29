@@ -12,7 +12,7 @@ import {
 	isPaperIdentifier,
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
-import { type ProcessingResource, stageStoredResource, stageUrlAcquisition } from './acquisition';
+import { type ProcessingResource, stageStoredResourceAcquisition, stageUrlAcquisition } from './acquisition';
 import { analyzeResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import {
@@ -223,7 +223,15 @@ async function resolveProcessingCall(
 	}
 
 	if (target.kind === 'storedBlob') {
-		return stageStoredResource(env, step, target);
+		const resource = await stageStoredResourceAcquisition(env, step, target);
+		const resolvedPaper = resource.kind === 'paper';
+		return {
+			keywordHints: [],
+			processingId: target.resourceId,
+			resource,
+			persistenceTarget: resolvedPaper ? { kind: 'draft' } : { kind: 'existing', resourceId: target.resourceId },
+			saveTarget: resolvedPaper ? { kind: 'userFilePaper', fileResourceId: target.resourceId } : null,
+		};
 	}
 
 	const snapshot = await step.do(

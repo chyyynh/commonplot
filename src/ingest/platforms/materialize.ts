@@ -15,7 +15,7 @@ export type ResolvedResourceSubject = Readonly<{
 	normalizedUrl: string;
 }>;
 
-type MaterializedResource = Readonly<{
+export type ResolvedResource = Readonly<{
 	kind: Exclude<ResourceKind, 'image'>;
 	resourcePlatform: ResourcePlatform | null;
 }> & {
@@ -35,16 +35,11 @@ type MaterializedResource = Readonly<{
 	subject: ResolvedResourceSubject | null;
 };
 
-export type ResolvedResource = MaterializedResource;
-
 type AcquiredMaterialFields<TKindMetadata extends ResourceKindMetadata = ResourceKindMetadata> = {
-	canonicalUrl?: string;
 	fileType: string | null;
 	title: string;
 	markdown: string;
-	paperIdentifierText?: string | null;
 	previewImageUrl?: string | null;
-	subjectUrl?: string;
 	source: string;
 	originalLang: string | null;
 	publishedDate: string | null;
@@ -54,6 +49,8 @@ type AcquiredMaterialFields<TKindMetadata extends ResourceKindMetadata = Resourc
 };
 
 export type GenericAcquiredMaterial = AcquiredMaterialFields & {
+	canonicalUrl?: string;
+	paperIdentifierText?: string | null;
 	resourcePlatform: null;
 };
 
@@ -62,6 +59,7 @@ export type PlatformAcquiredMaterial<TPlatform extends ResourcePlatform = Resour
 > & {
 	platformId: string;
 	resourcePlatform: TPlatform;
+	subjectUrl?: string;
 };
 
 export type PlatformResourceUrl = Readonly<{
@@ -85,25 +83,10 @@ export type ResourceAcquisitionHints = Readonly<{
 	summary: string | null;
 }>;
 
-export type GenericResourceIdentity =
-	| Readonly<{ kind: 'blog'; resourceIdentifiers: readonly [] }>
-	| Readonly<{ kind: 'file'; resourceIdentifiers: readonly [] }>
-	| Readonly<{ kind: 'paper'; resourceIdentifiers: readonly PaperIdentifier[] }>;
-
-export function resolveGenericResourceIdentity(
-	fileType: string | null,
-	resourceIdentifiers: readonly PaperIdentifier[],
-): GenericResourceIdentity {
-	if (resourceIdentifiers.some(({ scheme }) => scheme === 'openalex')) {
-		return { kind: 'paper', resourceIdentifiers };
-	}
-	return fileType === 'application/pdf' ? { kind: 'file', resourceIdentifiers: [] } : { kind: 'blog', resourceIdentifiers: [] };
-}
-
 function materializeResource(
 	acquired: AcquiredMaterialFields,
 	hints: ResourceAcquisitionHints,
-	identity: Pick<MaterializedResource, 'kind' | 'resourcePlatform' | 'url'> & {
+	identity: Pick<ResolvedResource, 'kind' | 'resourcePlatform' | 'url'> & {
 		resourceIdentifiers: readonly ResourceIdentifier[];
 	},
 	publishedDate: string | null,
@@ -132,16 +115,18 @@ export function materializeGenericResource(
 	hints: ResourceAcquisitionHints,
 	resolution: {
 		canonicalUrl: string | null;
-		identity: GenericResourceIdentity;
 		publishedDate: string | null;
+		resourceIdentifiers: readonly PaperIdentifier[];
 	},
 ): ResolvedResource {
+	const isPaper = resolution.resourceIdentifiers.some(({ scheme }) => scheme === 'openalex');
+	const kind = isPaper ? 'paper' : acquired.fileType === 'application/pdf' ? 'file' : 'blog';
 	return materializeResource(
-		resolution.identity.kind === 'file' ? { ...acquired, kindMetadata: null } : acquired,
+		kind === 'file' ? { ...acquired, kindMetadata: null } : acquired,
 		hints,
 		{
-			kind: resolution.identity.kind,
-			resourceIdentifiers: resolution.identity.resourceIdentifiers,
+			kind,
+			resourceIdentifiers: isPaper ? resolution.resourceIdentifiers : [],
 			resourcePlatform: null,
 			url: resolution.canonicalUrl,
 		},
@@ -153,7 +138,7 @@ export function materializeGenericResource(
 export function materializePlatformResource<TPlatform extends ResourcePlatform>(
 	acquired: PlatformAcquiredMaterial<TPlatform>,
 	hints: ResourceAcquisitionHints,
-	identity: Pick<MaterializedResource, 'url'> & { kind: ResourceKindForPlatform<TPlatform> },
+	identity: Pick<ResolvedResource, 'url'> & { kind: ResourceKindForPlatform<TPlatform> },
 	subject: ResolvedResourceSubject | null = null,
 ): ResolvedResource {
 	let publishedDate = hints.publishedDate;

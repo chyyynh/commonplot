@@ -1,9 +1,5 @@
 import assert from 'node:assert/strict';
-import {
-	materializeGenericResource,
-	materializePlatformResource,
-	resolveGenericResourceIdentity,
-} from '../src/ingest/platforms/materialize.ts';
+import { materializeGenericResource, materializePlatformResource } from '../src/ingest/platforms/materialize.ts';
 import {
 	hostedResourceImageFields,
 	normalizedExternalMediaUrl,
@@ -38,11 +34,10 @@ function materialize(input = {}) {
 			input.subject ?? null,
 		);
 	}
-	const identity = resolveGenericResourceIdentity(acquired.fileType, input.resourceIdentifiers ?? []);
 	return materializeGenericResource({ ...acquired, resourcePlatform: null }, hints, {
 		canonicalUrl: url,
-		identity,
 		publishedDate: null,
+		resourceIdentifiers: input.resourceIdentifiers ?? [],
 	});
 }
 
@@ -71,7 +66,6 @@ const cases = [
 	{
 		name: 'resolved paper keeps its DOI URL',
 		input: {
-			kind: 'paper',
 			url: 'https://doi.org/10.1000/example',
 			resourceIdentifiers: [
 				{ preferred: true, scheme: 'doi', value: '10.1000/example' },
@@ -90,7 +84,6 @@ const cases = [
 	{
 		name: 'resolved paper keeps provider identifiers',
 		input: {
-			kind: 'paper',
 			resourceIdentifiers: [
 				{ preferred: true, scheme: 'doi', value: '10.1000/example' },
 				{ preferred: true, scheme: 'openalex', value: 'W1' },
@@ -179,7 +172,6 @@ const cases = [
 	{
 		name: 'OpenAlex-resolved paper',
 		input: {
-			kind: 'paper',
 			url: null,
 			resourceIdentifiers: [{ preferred: true, scheme: 'openalex', value: 'W2' }],
 		},

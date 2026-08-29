@@ -6,13 +6,7 @@ import liteParsePackage from '@llamaindex/liteparse-wasm/package.json';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
-import {
-	canonicalizeResourceLang,
-	RESOURCE_TYPES,
-	type ResourceCreator,
-	ResourceCreatorsSchema,
-	type ResourceKindMetadata,
-} from '../../shared/resource';
+import { canonicalizeResourceLang, type ResourceCreator, ResourceCreatorsSchema } from '../../shared/resource';
 import type { GenericAcquiredMaterial } from './materialize';
 
 export const PDF_MIME = 'application/pdf';
@@ -233,8 +227,6 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<Pa
 
 type StoredPdfInput = {
 	creators: ResourceCreator[];
-	fileType: string;
-	kindMetadata: ResourceKindMetadata | null;
 	originalLang: string;
 	publishedDate: string | null;
 	resourceId: string;
@@ -246,10 +238,7 @@ type StoredPdfInput = {
 
 type StoredPdfRow = {
 	creators: unknown;
-	file_type: string | null;
 	id: string;
-	kind: keyof typeof RESOURCE_TYPES;
-	kind_metadata: unknown;
 	original_lang: string;
 	published_date: Date | string | null;
 	source: string | null;
@@ -262,7 +251,6 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 	const result = await db.execute<StoredPdfRow>(sql`
 		SELECT
 			resource.id::text AS id,
-			resource.kind,
 			original.title,
 			original.summary,
 			resource.original_lang,
@@ -282,9 +270,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 			) AS source,
 			resource.published_date,
 			resource.creators,
-			resource.kind_metadata,
-			resource.storage_key,
-			resource.file_type
+			resource.storage_key
 		FROM resources resource
 		JOIN resource_translations original
 		  ON original.resource_id = resource.id
@@ -292,6 +278,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 		LEFT JOIN sources monitored_source ON monitored_source.id = resource.source_id
 		WHERE resource.id = ${resourceId}::uuid
 		  AND resource.scope = 'private'
+		  AND resource.file_type = ${PDF_MIME}
 		  AND resource.storage_key IS NOT NULL
 		  AND EXISTS (SELECT 1 FROM user_files file WHERE file.resource_id = resource.id)
 		LIMIT 1
@@ -302,7 +289,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 	const source = row.source?.trim();
 	if (!title) throw new Error(`Stored PDF ${resourceId} has no title`);
 	if (!source) throw new Error(`Stored PDF ${resourceId} has no source`);
-	if (!row.storage_key || !row.file_type) throw new Error(`Stored PDF ${resourceId} has no blob representation`);
+	if (!row.storage_key) throw new Error(`Stored PDF ${resourceId} has no blob representation`);
 	const publishedDate = row.published_date instanceof Date ? row.published_date : row.published_date ? new Date(row.published_date) : null;
 	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new Error('Invalid published_date: expected date');
 	let creators: ResourceCreator[];
@@ -313,8 +300,6 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 	}
 	return {
 		creators,
-		fileType: row.file_type,
-		kindMetadata: RESOURCE_TYPES[row.kind].metadata.parse(row.kind_metadata),
 		originalLang: canonicalizeResourceLang(row.original_lang),
 		publishedDate: publishedDate?.toISOString() ?? null,
 		resourceId: row.id,
@@ -325,15 +310,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 	};
 }
 
-type StoredPdfAcquisition = Readonly<{
-	material: GenericAcquiredMaterial;
-	resource: StoredPdfInput;
-}>;
-
 async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise<GenericAcquiredMaterial> {
-	if (resource.fileType !== PDF_MIME) {
-		throw new Error(`Stored resource ${resource.resourceId} is not an R2 PDF`);
-	}
 	const obj = await env.R2.get(resource.storageKey);
 	if (!obj) throw new Error(`PDF source object missing: ${resource.storageKey}`);
 	if (obj.size > MAX_PDF_BYTES) throw new Error(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
@@ -349,7 +326,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 		publishedDate: resource.publishedDate,
 		summary: resource.summary,
 		creators: resource.creators,
-		kindMetadata: resource.kindMetadata,
+		kindMetadata: null,
 	};
 }
 
@@ -388,7 +365,7 @@ export async function acquireFetchedPdfResponse(response: Response, finalUrl: st
 		publishedDate: null,
 		summary: parsed.markdown.slice(0, 500) || null,
 		creators: [],
-		kindMetadata: { siteName: source },
+		kindMetadata: null,
 	};
 }
 
@@ -396,7 +373,7 @@ export async function stageStoredPdfAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	target: Readonly<{ resourceId: string }>,
-): Promise<StoredPdfAcquisition> {
+): Promise<GenericAcquiredMaterial> {
 	const resource = await step.do(
 		'load-stored-pdf-input-v1',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
@@ -416,8 +393,5 @@ export async function stageStoredPdfAcquisition(
 		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await acquireStoredPdf(env, resource)).body!,
 	);
-	return {
-		material: await new Response(contentStream).json<GenericAcquiredMaterial>(),
-		resource,
-	};
+	return new Response(contentStream).json<GenericAcquiredMaterial>();
 }

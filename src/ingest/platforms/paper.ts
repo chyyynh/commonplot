@@ -12,7 +12,7 @@ import {
 	resolveExactPaperInput,
 } from '../../shared/paper-identity';
 import type { PaperKindMetadata } from '../../shared/resource';
-import { type GenericAcquiredMaterial, literalCreator, resolveGenericResourceIdentity } from './materialize';
+import { type GenericAcquiredMaterial, literalCreator } from './materialize';
 import { fetchOpenAlexPdf, type PaperMetadata, resolveOpenAlexPaper } from './openalex';
 import { acquireFetchedPdfResponse, PDF_MIME } from './pdf';
 
@@ -305,6 +305,5 @@ export async function stagePaperProcessing(
 					publishedDate: input.publishedDate,
 				})) ?? input.acquiredContent);
 	const resourceIdentifiers = choosePreferredIdentifiers([...identifiers, ...resolution.identifiers]);
-	const identity = resolveGenericResourceIdentity(acquiredContent.fileType, resourceIdentifiers);
-	return { ...applyPaperMetadata(acquiredContent, resolution.metadata, input.publishedDate), identity };
+	return { ...applyPaperMetadata(acquiredContent, resolution.metadata, input.publishedDate), resourceIdentifiers };
 }
