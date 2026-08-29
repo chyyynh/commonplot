@@ -97,9 +97,11 @@ assert.deepEqual(bibliographyFromMarkdown('# Intro\n\nSomething [1] and [2] and 
 assert.deepEqual(bibliographyFromMarkdown('# References\n\n[1] A. One. [2] B. Two.'), []);
 
 const normalized = bibliographyFromMarkdown(
-	'# References\n\n[1] DOI 10.1000/EXAMPLE. [2] arXiv:2401.12345v9. [3] https://user:secret@example.test/private.',
+	'# References\n\n[1] DOI 10.1000/EXAMPLE. arXiv:2402.12345v9. [2] arXiv:2401.12345v9. [3] https://user:secret@example.test/private.',
 );
 assert.equal(normalized[0]?.doi, '10.1000/example');
+assert.equal(normalized[0]?.arxivId, '2402.12345');
+assert.equal(normalized[0]?.url, 'https://doi.org/10.1000/example');
 assert.equal(normalized[1]?.arxivId, '2401.12345');
 assert.equal(normalized[2]?.url, null);
 
