@@ -4,7 +4,12 @@ import LlamaCloud, { APIConnectionError, APIError, NotFoundError, toFile } from 
 import type { ParsingGetResponse } from '@llamaindex/llama-cloud/resources/parsing';
 import { VERSION as LLAMA_CLOUD_SDK_VERSION } from '@llamaindex/llama-cloud/version';
 import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
-import { llamaParseAdmissionReason, type PaidPdfFallbackGrant, wholeDocumentMarkdown } from './pdf-fallback-policy.ts';
+import {
+	type LocalPdfSummary,
+	llamaParseAdmissionReason,
+	type PaidPdfFallbackGrant,
+	wholeDocumentMarkdown,
+} from './pdf-fallback-policy.ts';
 
 const LLAMA_CLOUD_BASE_URL = 'https://api.cloud.llamaindex.ai';
 const LLAMA_PARSE_TIER = 'cost_effective';
@@ -19,12 +24,6 @@ const CLEANUP_STEP = { retries: { limit: 3, delay: '10 seconds', backoff: 'expon
 const CREATE_ONCE_STEP = { retries: { limit: 1, delay: '1 second' }, timeout: '60 seconds' } as const;
 const UPLOAD_STEP = { retries: { limit: 2, delay: '5 seconds' }, timeout: '180 seconds' } as const;
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
-
-type LocalPdfSummary = Readonly<{
-	hardDefects: readonly string[];
-	parserVersion: string;
-	totalPages: number | null;
-}>;
 
 type ProviderCredentials = Readonly<{ apiKey: string; projectId: string }>;
 type ProviderFile = Readonly<{ externalId: string; fileId: string }>;
@@ -281,7 +280,9 @@ function logFallback(input: {
 		tier: LLAMA_PARSE_TIER,
 		parser_version: LLAMA_PARSE_VERSION,
 		page_count: input.local.totalPages,
-		local_hard_defects: input.local.hardDefects,
+		local_fallback_reasons: input.local.fallbackReasons,
+		local_full_page_image_pages: input.local.fullPageImagePages,
+		local_parsed_pages: input.local.parsedPages,
 		outcome: input.outcome,
 		latency_ms: input.job ? Math.max(0, (input.job.observedAt || Date.now()) - input.job.startedAt) : null,
 		billed_credits: input.billedCredits ?? input.job?.billedCredits ?? null,

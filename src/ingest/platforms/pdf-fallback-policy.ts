@@ -1,16 +1,30 @@
-import { usablePdfMarkdown } from './pdf-text.ts';
-
 export const LLAMA_PARSE_MAX_PAGES = 100;
-
-const PAID_FALLBACK_DEFECTS = new Set(['empty-output', 'garbled-text', 'needs-ocr', 'parse-failed', 'unparsed']);
+const FULL_PAGE_IMAGE_FALLBACK_RATIO = 0.8;
+const POSTGRES_NUL = String.fromCharCode(0);
 
 export type PaidPdfFallbackGrant = Readonly<{ maxPages: number }>;
 export type LlamaParseSource = Readonly<{ kind: 'private-upload' }> | Readonly<{ kind: 'public-url'; url: string }>;
 
-type LocalPdfSummary = Readonly<{
-	hardDefects: readonly string[];
+export type LocalPdfSummary = Readonly<{
+	fallbackReasons: readonly string[];
+	fullPageImagePages: number;
+	parserVersion: string;
+	parsedPages: number;
 	totalPages: number | null;
 }>;
+
+/** Route image-backed PDFs only when the signal describes the document, not an isolated cover page. */
+export function localPdfNeedsFallback(local: Pick<LocalPdfSummary, 'fallbackReasons' | 'fullPageImagePages' | 'parsedPages'>): boolean {
+	return (
+		local.fallbackReasons.length > 0 ||
+		(local.parsedPages > 0 && local.fullPageImagePages / local.parsedPages >= FULL_PAGE_IMAGE_FALLBACK_RATIO)
+	);
+}
+
+/** Remove characters PostgreSQL text cannot safely persist without treating content shape as a quality score. */
+export function storageSafePdfMarkdown(markdown: string): string {
+	return markdown.split(POSTGRES_NUL).join('').trim();
+}
 
 export type LlamaParseAdmissionReason =
 	| 'admitted'
@@ -42,10 +56,10 @@ export function isAllowedPublicPdfUrl(value: string): boolean {
 export function llamaParseAdmissionReason(input: {
 	grant: PaidPdfFallbackGrant | null;
 	hasCredentials: boolean;
-	local: LocalPdfSummary;
+	local: Pick<LocalPdfSummary, 'fallbackReasons' | 'fullPageImagePages' | 'parsedPages' | 'totalPages'>;
 	source: LlamaParseSource;
 }): LlamaParseAdmissionReason {
-	if (!input.local.hardDefects.some((reason) => PAID_FALLBACK_DEFECTS.has(reason))) return 'local-usable';
+	if (!localPdfNeedsFallback(input.local)) return 'local-usable';
 	if (!input.grant) return 'not-authorized';
 	if (!Number.isInteger(input.grant.maxPages) || input.grant.maxPages < 1 || input.grant.maxPages > LLAMA_PARSE_MAX_PAGES)
 		return 'invalid-grant';
@@ -63,11 +77,5 @@ export function wholeDocumentMarkdown(pages: readonly MarkdownPage[] | null | un
 	if (pages?.length !== expectedPages || expectedPages < 1 || expectedPages > LLAMA_PARSE_MAX_PAGES) return null;
 	const ordered = [...pages].sort((left, right) => left.page_number - right.page_number);
 	if (ordered.some((page, index) => !page.success || page.page_number !== index + 1 || typeof page.markdown !== 'string')) return null;
-	const sanitized = ordered.map((page) => {
-		const raw = page.markdown ?? '';
-		const clean = usablePdfMarkdown(raw, false);
-		return raw.trim() && !clean ? null : clean;
-	});
-	if (sanitized.some((page) => page === null)) return null;
-	return sanitized.join('\n\n').trim() || null;
+	return storageSafePdfMarkdown(ordered.map((page) => page.markdown).join('\n\n')) || null;
 }

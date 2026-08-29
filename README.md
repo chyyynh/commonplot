@@ -140,7 +140,8 @@ wrangler secret put LLAMA_CLOUD_PROJECT_ID    # Deployment-specific Llama Cloud 
 LlamaParse is a local-first fallback. Web owns the product kill switch and
 Autumn eligibility, then attaches a per-document page grant to authenticated
 URL and newly uploaded PDF workflows. Core executes only granted fallbacks
-after a LiteParse hard defect and independently enforces the 100-page and
+when LiteParse's native OCR, garbling, page-error, or full-page-image signals
+show that local output is unreliable, and independently enforces the 100-page and
 25 MiB safety caps. Private uploads use a temporary Llama Cloud file that Core
 deletes when the fallback finishes or aborts; ambiguous provider mutations fail
 loudly with a stable external ID for operator cleanup. OpenAlex key-bearing

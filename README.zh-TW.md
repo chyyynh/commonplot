@@ -134,7 +134,8 @@ wrangler secret put LLAMA_CLOUD_PROJECT_ID    # 此 deployment 專用的 Llama C
 
 LlamaParse 是 local-first fallback。Web 負責產品 kill switch 與 Autumn
 資格，並在 authenticated URL 與新上傳 PDF workflow 附上單份文件的頁數
-grant。Core 只在 LiteParse 出現 hard defect 時執行已授權的 fallback，且獨立
+grant。Core 只在 LiteParse 的原生 OCR、garbling、page error 或 full-page-image
+訊號顯示本地輸出不可靠時執行已授權的 fallback，且獨立
 強制 100 頁與 25 MiB 安全上限。私人上傳使用暫時的 Llama Cloud file，Core
 會在 fallback 完成或中止時刪除；不明確的 provider mutation 會直接失敗，並
 留下穩定的 external ID 供 operator 清理。帶 OpenAlex key 的 content URL 仍

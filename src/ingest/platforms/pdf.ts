@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { initSync, LiteParse, type LiteParseInit, type ParseResult } from '@llamaindex/liteparse-wasm';
+import { initSync, LiteParse, type LiteParseInit, type ParseBatch } from '@llamaindex/liteparse-wasm';
 import wasmModule from '@llamaindex/liteparse-wasm/liteparse_wasm_bg.wasm';
 import liteParsePackage from '@llamaindex/liteparse-wasm/package.json';
 import { sql } from 'drizzle-orm';
@@ -10,9 +10,14 @@ import { canonicalizeResourceLang, type ResourceCreator, ResourceCreatorsSchema 
 import type { GenericAcquiredMaterial } from './materialize';
 import { fetchOpenAlexPdf } from './openalex';
 import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
-import { LLAMA_PARSE_MAX_PAGES, type PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
+import {
+	LLAMA_PARSE_MAX_PAGES,
+	type LocalPdfSummary,
+	localPdfNeedsFallback,
+	type PaidPdfFallbackGrant,
+	storageSafePdfMarkdown,
+} from './pdf-fallback-policy.ts';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
-import { usablePdfMarkdown } from './pdf-text';
 
 export { PDF_MIME } from './pdf-constants';
 export const MAX_PAID_PDF_PAGES = LLAMA_PARSE_MAX_PAGES;
@@ -22,7 +27,6 @@ const MAX_PAPER_IDENTIFIER_TEXT_CHARS = 20_000;
 
 const LITEPARSE_CONFIG = {
 	continueOnPageError: true,
-	extractBlocks: false,
 	imageMode: 'off',
 	includeComplexity: true,
 	ocrEnabled: false,
@@ -32,128 +36,85 @@ const LITEPARSE_CONFIG = {
 
 initSync({ module: wasmModule });
 
-type PdfQualityReason = 'complex-layout' | 'empty-batch' | 'garbled-text' | 'needs-ocr' | 'parse-failed' | 'unparsed';
-type PdfHardDefect = 'empty-output' | 'garbled-text' | 'needs-ocr' | 'parse-failed' | 'unparsed';
-
-type LocalPdfParseOutcome = Readonly<{
-	hardDefects: PdfHardDefect[];
-	parserVersion: string;
-	status: 'usable' | 'hard-defect';
-	totalPages: number | null;
-}>;
-
 export type PdfAcquisitionDraft = Readonly<{
 	kind: 'local-pdf';
 	material: GenericAcquiredMaterial;
-	parse: LocalPdfParseOutcome;
+	parse: LocalPdfSummary;
 }>;
 
 export function isPdfAcquisitionDraft(value: GenericAcquiredMaterial | PdfAcquisitionDraft): value is PdfAcquisitionDraft {
 	return 'kind' in value && value.kind === 'local-pdf';
 }
 
-type ParsedPdf = Readonly<{
-	markdown: string;
-	paperIdentifierText: string | null;
-	parsedPages: number;
-	problemPageCount: number;
-	problemPageSample: number[];
-	qualityReasons: PdfQualityReason[];
-	totalPages: number;
-	unparsedPages: number;
-}>;
-
 type ParsedPdfAccumulator = {
-	coveredPages: Set<number>;
+	fallbackReasons: Set<string>;
+	fullPageImagePages: number;
+	incomplete: boolean;
+	lastPage: number;
+	layoutComplexPages: number;
 	markdown: string[];
+	pageErrorCount: number;
 	paperIdentifierText: string | null;
 	parsedPages: number;
-	problemPages: Set<number>;
-	qualityReasons: Set<PdfQualityReason>;
 };
 
 type LocalPdfParseResult = Readonly<{
 	markdown: string;
 	paperIdentifierText: string | null;
-	parse: LocalPdfParseOutcome;
+	parse: LocalPdfSummary;
 }>;
 
-const HARD_PDF_QUALITY_REASONS = new Set<PdfQualityReason>(['garbled-text', 'needs-ocr', 'parse-failed', 'unparsed']);
-
-function accumulateLiteParseResult(accumulator: ParsedPdfAccumulator, result: ParseResult): void {
+function accumulateLiteParseBatch(accumulator: ParsedPdfAccumulator, batch: ParseBatch): void {
+	const result = batch.result;
+	const expectedPageCount = batch.endPage - batch.startPage + 1;
+	if (
+		batch.startPage !== accumulator.lastPage + 1 ||
+		expectedPageCount < 1 ||
+		result.pages.length + result.pageErrors.length !== expectedPageCount
+	) {
+		accumulator.incomplete = true;
+	}
+	accumulator.lastPage = batch.endPage;
+	const markdown = storageSafePdfMarkdown(result.text);
+	if (markdown) accumulator.markdown.push(markdown);
 	for (const page of result.pages) {
-		accumulator.coveredPages.add(page.pageNum);
 		accumulator.parsedPages++;
 		const complexity = page.complexity;
 		if (complexity?.needsOcr) {
-			accumulator.problemPages.add(page.pageNum);
-			accumulator.qualityReasons.add('needs-ocr');
+			if (complexity.reasons.length) {
+				for (const reason of complexity.reasons) accumulator.fallbackReasons.add(reason);
+			} else {
+				accumulator.fallbackReasons.add('needs-ocr');
+			}
 		}
-		if (complexity?.isGarbled) {
-			accumulator.problemPages.add(page.pageNum);
-			accumulator.qualityReasons.add('garbled-text');
+		if (complexity?.isGarbled) accumulator.fallbackReasons.add('garbled');
+		if (complexity?.fullPageImage) accumulator.fullPageImagePages++;
+		if (complexity?.layout?.isComplex) accumulator.layoutComplexPages++;
+		if (page.pageNum === 1 && accumulator.paperIdentifierText === null && !complexity?.isGarbled) {
+			accumulator.paperIdentifierText = storageSafePdfMarkdown(page.markdown) || null;
 		}
-		if (complexity?.layout?.isComplex) {
-			accumulator.problemPages.add(page.pageNum);
-			accumulator.qualityReasons.add('complex-layout');
-		}
-		const usable = usablePdfMarkdown(page.markdown, complexity?.isGarbled ?? false);
-		if (usable) accumulator.markdown.push(usable);
-		else if (page.markdown.trim()) {
-			accumulator.problemPages.add(page.pageNum);
-			accumulator.qualityReasons.add('garbled-text');
-		}
-		if (page.pageNum === 1 && usable && accumulator.paperIdentifierText === null) accumulator.paperIdentifierText = usable;
 	}
-	for (const error of result.pageErrors) {
-		accumulator.coveredPages.add(error.pageNum);
-		accumulator.problemPages.add(error.pageNum);
-		accumulator.qualityReasons.add('parse-failed');
-	}
-	if (result.pages.length === 0 && result.pageErrors.length === 0) {
-		accumulator.qualityReasons.add('empty-batch');
+	if (result.pageErrors.length) {
+		accumulator.pageErrorCount += result.pageErrors.length;
+		accumulator.fallbackReasons.add('page-error');
 	}
 }
 
-function finishParsedPdf(accumulator: ParsedPdfAccumulator, totalPages: number): ParsedPdf {
+function finishLocalPdfParse(accumulator: ParsedPdfAccumulator, totalPages: number): LocalPdfParseResult {
 	if (!Number.isInteger(totalPages) || totalPages < 1) throw new Error('LiteParse returned an invalid total page count');
-	const unparsedPages = Math.max(0, totalPages - accumulator.coveredPages.size);
-	if (unparsedPages) accumulator.qualityReasons.add('unparsed');
-	const problemPageSample = [...accumulator.problemPages].sort((left, right) => left - right).slice(0, 20);
-	for (let pageNumber = 1; pageNumber <= totalPages && problemPageSample.length < 20; pageNumber++) {
-		if (!accumulator.coveredPages.has(pageNumber)) problemPageSample.push(pageNumber);
-	}
+	if (accumulator.incomplete || accumulator.lastPage !== totalPages) accumulator.fallbackReasons.add('incomplete');
+	const markdown = storageSafePdfMarkdown(accumulator.markdown.join('\n\n'));
+	if (!markdown) accumulator.fallbackReasons.add('empty-output');
 	return {
-		markdown: accumulator.markdown.join('\n\n').trim(),
+		markdown,
 		paperIdentifierText: accumulator.paperIdentifierText?.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS) ?? null,
-		parsedPages: accumulator.parsedPages,
-		problemPageCount: accumulator.problemPages.size + unparsedPages,
-		problemPageSample,
-		qualityReasons: [...accumulator.qualityReasons].sort(),
-		totalPages,
-		unparsedPages,
-	};
-}
-
-function parsedPdfOutcome(parsed: ParsedPdf): LocalPdfParseOutcome {
-	const hardDefects: PdfHardDefect[] = [
-		...(parsed.markdown ? [] : (['empty-output'] as const)),
-		...parsed.qualityReasons.filter((reason): reason is Exclude<PdfHardDefect, 'empty-output'> => HARD_PDF_QUALITY_REASONS.has(reason)),
-	];
-	return {
-		hardDefects,
-		parserVersion: liteParsePackage.version,
-		status: hardDefects.length ? 'hard-defect' : 'usable',
-		totalPages: parsed.totalPages,
-	};
-}
-
-function failedPdfOutcome(totalPages: number | null): LocalPdfParseOutcome {
-	return {
-		hardDefects: ['parse-failed'],
-		parserVersion: liteParsePackage.version,
-		status: 'hard-defect',
-		totalPages,
+		parse: {
+			fallbackReasons: [...accumulator.fallbackReasons].sort(),
+			fullPageImagePages: accumulator.fullPageImagePages,
+			parserVersion: liteParsePackage.version,
+			parsedPages: accumulator.parsedPages,
+			totalPages,
+		},
 	};
 }
 
@@ -163,35 +124,36 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<Lo
 	try {
 		session = await parser.openBatchSession(bytes);
 		const accumulator: ParsedPdfAccumulator = {
-			coveredPages: new Set(),
+			fallbackReasons: new Set(),
+			fullPageImagePages: 0,
+			incomplete: false,
+			lastPage: 0,
+			layoutComplexPages: 0,
 			markdown: [],
+			pageErrorCount: 0,
 			paperIdentifierText: null,
 			parsedPages: 0,
-			problemPages: new Set(),
-			qualityReasons: new Set(),
 		};
 		for (;;) {
 			const batch = await session.nextBatch();
 			if (!batch) break;
-			accumulateLiteParseResult(accumulator, batch.result);
+			accumulateLiteParseBatch(accumulator, batch);
 		}
-		const result = finishParsedPdf(accumulator, session.totalPages);
-		const parse = parsedPdfOutcome(result);
+		const result = finishLocalPdfParse(accumulator, session.totalPages);
 		console.info({
 			tag: 'PDF_PARSE',
 			event: 'liteparse_completed',
-			hard_defects: parse.hardDefects,
-			outcome: parse.status,
-			parser_version: parse.parserVersion,
-			parsed_pages: result.parsedPages,
-			problem_page_count: result.problemPageCount,
-			problem_page_sample: result.problemPageSample,
-			quality_reasons: result.qualityReasons,
+			fallback_reasons: result.parse.fallbackReasons,
+			full_page_image_pages: result.parse.fullPageImagePages,
+			layout_complex_pages: accumulator.layoutComplexPages,
+			outcome: localPdfNeedsFallback(result.parse) ? 'fallback-needed' : 'usable',
+			page_error_count: accumulator.pageErrorCount,
+			parser_version: result.parse.parserVersion,
+			parsed_pages: result.parse.parsedPages,
 			source: sourceLabel,
-			total_pages: result.totalPages,
-			unparsed_pages: result.unparsedPages,
+			total_pages: result.parse.totalPages,
 		});
-		return { markdown: result.markdown, paperIdentifierText: result.paperIdentifierText, parse };
+		return result;
 	} catch (error) {
 		console.error({
 			tag: 'PDF_PARSE',
@@ -200,7 +162,17 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<Lo
 			source: sourceLabel,
 			error: error instanceof Error ? error.message : String(error),
 		});
-		return { markdown: '', paperIdentifierText: null, parse: failedPdfOutcome(session?.totalPages ?? null) };
+		return {
+			markdown: '',
+			paperIdentifierText: null,
+			parse: {
+				fallbackReasons: ['parse-failed'],
+				fullPageImagePages: 0,
+				parserVersion: liteParsePackage.version,
+				parsedPages: 0,
+				totalPages: session?.totalPages ?? null,
+			},
+		};
 	} finally {
 		try {
 			session?.free();
@@ -255,7 +227,7 @@ export async function stageOpenAlexPdfRepresentation(
 ): Promise<PdfRepresentation | null> {
 	try {
 		const contentStream = await step.do(
-			'acquire-openalex-content-pdf-v6',
+			'acquire-openalex-content-pdf-v7',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '180 seconds' },
 			async () => {
 				const response = await fetchOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
@@ -269,7 +241,7 @@ export async function stageOpenAlexPdfRepresentation(
 			event: 'pdf_acquired',
 			processing_id: input.processingId,
 			chars: acquired.markdown.length,
-			local_parse_outcome: local.parse.status,
+			local_parse_outcome: localPdfNeedsFallback(local.parse) ? 'fallback-needed' : 'usable',
 		});
 		return {
 			fileType: PDF_MIME,
@@ -464,7 +436,7 @@ export async function stageStoredPdfAcquisition(
 		},
 	);
 	const contentStream = await step.do(
-		'acquire-stored-pdf-v5',
+		'acquire-stored-pdf-v6',
 		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await acquireStoredPdf(env, resource)).body!,
 	);
