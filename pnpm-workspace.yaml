@@ -1,5 +1,10 @@
 packages:
   - .
+confirmModulesPurge: false
+storeDir: ../../.pnpm-store
+optimisticRepeatInstall: false
+verifyDepsBeforeRun: error
+virtualStoreType: project
 allowBuilds:
   esbuild: true
   sharp: true
