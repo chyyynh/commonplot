@@ -54,7 +54,7 @@ async function reconcilePendingBlobProcessing(env: CoreEnv, db: NodePgDatabase):
 		FROM resources resource
 		WHERE resource.enrichment_status = 'pending'
 		  AND resource.scope = 'private'
-		  AND resource.kind = 'blog'
+		  AND resource.kind = 'file'
 		  AND resource.resource_platform IS NULL
 		  AND resource.file_type = 'application/pdf'
 		  AND resource.storage_key IS NOT NULL

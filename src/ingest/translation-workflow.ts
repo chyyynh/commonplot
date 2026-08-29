@@ -73,9 +73,7 @@ type PdfTranslationAdmission = 'not-pdf' | 'private-upload' | 'unsupported';
 
 function pdfTranslationAdmission(candidate: ResourceTranslationCandidate): PdfTranslationAdmission {
 	if (candidate.fileType !== PDF_MIME || candidate.resourcePlatform !== null) return 'not-pdf';
-	return candidate.scope === 'private' && (candidate.kind === 'blog' || candidate.kind === 'file') && candidate.url === null
-		? 'private-upload'
-		: 'unsupported';
+	return candidate.scope === 'private' && candidate.kind === 'file' && candidate.url === null ? 'private-upload' : 'unsupported';
 }
 
 export function shouldEnqueueResourceTranslation(candidate: ResourceTranslationCandidate): boolean {
@@ -95,7 +93,7 @@ export function shouldEnqueueResourceTranslation(candidate: ResourceTranslationC
 function privateUploadedPdfTranslationSqlAdmission() {
 	return sql`(
 		resource.scope = 'private'
-		AND resource.kind IN ('blog', 'file')
+		AND resource.kind = 'file'
 		AND resource.resource_platform IS NULL
 		AND resource.file_type = ${PDF_MIME}
 		AND resource.storage_key IS NOT NULL

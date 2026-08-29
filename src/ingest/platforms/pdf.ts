@@ -341,6 +341,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 		LEFT JOIN sources monitored_source ON monitored_source.id = resource.source_id
 		WHERE resource.id = ${resourceId}::uuid
 		  AND resource.scope = 'private'
+		  AND resource.kind = 'file'
 		  AND resource.file_type = ${PDF_MIME}
 		  AND resource.storage_key IS NOT NULL
 		  AND EXISTS (SELECT 1 FROM user_files file WHERE file.resource_id = resource.id)
