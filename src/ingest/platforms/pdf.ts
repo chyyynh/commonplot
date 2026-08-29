@@ -256,19 +256,19 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 		LIMIT 1
 	`);
 	const row = result.rows[0];
-	if (!row) throw new Error(`Failed to fetch stored PDF ${resourceId}: not found or not an owned private blob`);
+	if (!row) throw new NonRetryableError(`Failed to fetch stored PDF ${resourceId}: not found or not an owned private blob`);
 	const title = row.title?.trim();
 	const source = row.source?.trim();
-	if (!title) throw new Error(`Stored PDF ${resourceId} has no title`);
-	if (!source) throw new Error(`Stored PDF ${resourceId} has no source`);
-	if (!row.storage_key) throw new Error(`Stored PDF ${resourceId} has no blob representation`);
+	if (!title) throw new NonRetryableError(`Stored PDF ${resourceId} has no title`);
+	if (!source) throw new NonRetryableError(`Stored PDF ${resourceId} has no source`);
+	if (!row.storage_key) throw new NonRetryableError(`Stored PDF ${resourceId} has no blob representation`);
 	const publishedDate = row.published_date instanceof Date ? row.published_date : row.published_date ? new Date(row.published_date) : null;
-	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new Error('Invalid published_date: expected date');
+	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new NonRetryableError('Invalid published_date: expected date');
 	let creators: ResourceCreator[];
 	try {
 		creators = ResourceCreatorsSchema.parse(row.creators);
 	} catch (error) {
-		throw new Error(`Invalid creators for ${resourceId}: ${error instanceof Error ? error.message : String(error)}`);
+		throw new NonRetryableError(`Invalid creators for ${resourceId}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	return {
 		creators,
@@ -284,8 +284,8 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 
 async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise<GenericAcquiredMaterial> {
 	const obj = await env.R2.get(resource.storageKey);
-	if (!obj) throw new Error(`PDF source object missing: ${resource.storageKey}`);
-	if (obj.size > MAX_PDF_BYTES) throw new Error(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
+	if (!obj) throw new NonRetryableError(`PDF source object missing: ${resource.storageKey}`);
+	if (obj.size > MAX_PDF_BYTES) throw new NonRetryableError(`PDF source object exceeded ${MAX_PDF_BYTES} bytes`);
 	const sourceLabel = `Stored PDF ${resource.resourceId}`;
 	const parsed = requireUsablePdf(await parsePdfBytes(new Uint8Array(await obj.arrayBuffer()), sourceLabel), sourceLabel);
 	return {

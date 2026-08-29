@@ -10,10 +10,12 @@
 	"compatibility_date": "2026-07-22",
 	"compatibility_flags": ["nodejs_compat"],
 	/**
-	 * A full AI Search rebuild performs one upload subrequest per corpus item.
-	 * Keep enough headroom for the 500k-file hybrid-search instance limit.
+	 * LiteParse is CPU-bound WASM; its longest PDF Workflow step has a three-minute
+	 * timeout. A full AI Search rebuild also performs one upload subrequest per
+	 * corpus item, so keep enough headroom for the 500k-file instance limit.
 	 */
 	"limits": {
+		"cpu_ms": 180000,
 		"subrequests": 1000000
 	},
 	/**
