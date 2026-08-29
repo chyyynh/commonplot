@@ -29,7 +29,7 @@ type LockedResource = Readonly<{
 	subject_resource_id: string | null;
 }>;
 
-export type PreparedResource = ReturnType<typeof prepareResolvedResource>;
+type PreparedResource = ReturnType<typeof prepareResolvedResource>;
 
 function httpUrl(value: string | null, field: string): string | null {
 	if (value === null) return null;

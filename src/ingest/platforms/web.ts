@@ -32,7 +32,6 @@ type ExtractedHtmlArticle = {
 	html: string;
 	title: string;
 	author: string | null;
-	language: string | null;
 	publishedDate: string | null;
 	siteName: string;
 	description: string | null;
@@ -58,7 +57,6 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 		html: article.content.trim(),
 		title,
 		author: optionalText(article.author),
-		language: null,
 		publishedDate: optionalText(article.published),
 		siteName,
 		description: optionalText(article.description),
@@ -66,11 +64,9 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 	};
 }
 
-type AcquiredWebContent = GenericAcquiredMaterial;
-
 type PlatformResolution = { platform: PlatformResourceUrl };
 
-async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, processingId: string): Promise<AcquiredWebContent> {
+async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, processingId: string): Promise<GenericAcquiredMaterial> {
 	const article = await extractHtmlArticle(html, url);
 	if (!article) throw new NonRetryableError('No readable article content found');
 
@@ -106,7 +102,7 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, proce
 		title: article.title,
 		markdown: content,
 		source: article.siteName,
-		originalLang: article.language,
+		originalLang: null,
 		publishedDate: article.publishedDate,
 		summary: article.description,
 		creators: literalCreator('author', article.author),
@@ -120,7 +116,7 @@ async function acquireWebResource(
 	env: CoreEnv,
 	platformUrl: (url: URL) => PlatformResourceUrl | null,
 	processingId: string,
-): Promise<AcquiredWebContent | PlatformResolution> {
+): Promise<GenericAcquiredMaterial | PlatformResolution> {
 	const response = await fetch(url, {
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
@@ -201,5 +197,5 @@ export async function stageWebAcquisition(
 			return 'platform' in acquired ? acquired : Response.json(acquired).body!;
 		},
 	);
-	return 'platform' in result ? result : new Response(result).json<AcquiredWebContent>();
+	return 'platform' in result ? result : new Response(result).json<GenericAcquiredMaterial>();
 }
