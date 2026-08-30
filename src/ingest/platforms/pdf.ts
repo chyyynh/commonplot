@@ -119,10 +119,11 @@ function finishLocalPdfParse(accumulator: ParsedPdfAccumulator, totalPages: numb
 }
 
 async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<LocalPdfParseResult> {
-	const parser = new LiteParse(LITEPARSE_CONFIG);
-	let session: Awaited<ReturnType<LiteParse['openBatchSession']>> | undefined;
+	using parser = new LiteParse(LITEPARSE_CONFIG);
+	let totalPages: number | null = null;
 	try {
-		session = await parser.openBatchSession(bytes);
+		using session = await parser.openBatchSession(bytes);
+		totalPages = session.totalPages;
 		const accumulator: ParsedPdfAccumulator = {
 			fallbackReasons: new Set(),
 			fullPageImagePages: 0,
@@ -139,7 +140,7 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<Lo
 			if (!batch) break;
 			accumulateLiteParseBatch(accumulator, batch);
 		}
-		const result = finishLocalPdfParse(accumulator, session.totalPages);
+		const result = finishLocalPdfParse(accumulator, totalPages);
 		console.info({
 			tag: 'PDF_PARSE',
 			event: 'liteparse_completed',
@@ -170,15 +171,9 @@ async function parsePdfBytes(bytes: Uint8Array, sourceLabel: string): Promise<Lo
 				fullPageImagePages: 0,
 				parserVersion: liteParsePackage.version,
 				parsedPages: 0,
-				totalPages: session?.totalPages ?? null,
+				totalPages,
 			},
 		};
-	} finally {
-		try {
-			session?.free();
-		} finally {
-			parser.free();
-		}
 	}
 }
 

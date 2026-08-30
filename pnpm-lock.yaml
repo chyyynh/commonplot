@@ -15,8 +15,8 @@ importers:
         specifier: 8.0.3
         version: 8.0.3
       '@llamaindex/liteparse-wasm':
-        specifier: 2.13.1
-        version: 2.13.1
+        specifier: 2.14.2
+        version: 2.14.2
       '@llamaindex/llama-cloud':
         specifier: 2.15.0
         version: 2.15.0
@@ -541,8 +541,8 @@ packages:
   '@jridgewell/trace-mapping@0.3.9':
     resolution: {integrity: sha512-3Belt6tdc8bPgAtbcmdtNJlirVoTmEb5e2gC94PnkwEW9jI6CAHUeoG85tjWP5WquqfavoMtMwiG4P926ZKKuQ==}
 
-  '@llamaindex/liteparse-wasm@2.13.1':
-    resolution: {integrity: sha512-TJrL7WYjR7VyNvev7uwxp5xFZOGEwUnsEEYERKI6qZXWdGK/UoTvMX4EzdCc/Pmof/LDUizWVypfU2/7jgEV8g==}
+  '@llamaindex/liteparse-wasm@2.14.2':
+    resolution: {integrity: sha512-Vdfown/ykrbCX8w0WBDeuOeKc1ou9HeiKCZHOXYnWtrpfNo8X7oi86GkchTZMc3Jm0vnJdQ+Xz0QLCTlr5/cDQ==}
     engines: {node: '>=18.0.0'}
 
   '@llamaindex/llama-cloud@2.15.0':
@@ -1492,7 +1492,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  '@llamaindex/liteparse-wasm@2.13.1': {}
+  '@llamaindex/liteparse-wasm@2.14.2': {}
 
   '@llamaindex/llama-cloud@2.15.0': {}
 

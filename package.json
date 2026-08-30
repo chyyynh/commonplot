@@ -27,7 +27,7 @@
 	"dependencies": {
 		"@extractus/article-extractor": "^9.0.1",
 		"@extractus/feed-extractor": "8.0.3",
-		"@llamaindex/liteparse-wasm": "2.13.1",
+		"@llamaindex/liteparse-wasm": "2.14.2",
 		"@llamaindex/llama-cloud": "2.15.0",
 		"ai": "7.0.84",
 		"drizzle-orm": "^0.45.2",
