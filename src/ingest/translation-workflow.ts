@@ -391,7 +391,7 @@ async function translatePlannedContent(
 	}
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v10';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v11';
 const ResourceTranslationRevisionSchema = z.string().regex(/^[0-9a-f]{32}$/);
 
 function isResourceTranslationRevision(value: unknown): value is string {
