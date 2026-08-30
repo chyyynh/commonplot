@@ -25,36 +25,33 @@ import {
 import { enqueueResourceTranslation, shouldEnqueueResourceTranslation } from './translation-workflow';
 
 const ResourceDraftRelationSchema: z.ZodType<ResourceDraftRelation> = z.discriminatedUnion('kind', [
-	z.object({ kind: z.literal('source'), sourceId: z.uuid() }).strict(),
-	z.object({ kind: z.literal('subject'), parentResourceId: z.uuid() }).strict(),
+	z.strictObject({ kind: z.literal('source'), sourceId: z.uuid() }),
+	z.strictObject({ kind: z.literal('subject'), parentResourceId: z.uuid() }),
 ]);
 
-const PaidPdfFallbackGrantSchema = z.object({ maxPages: z.number().int().min(1).max(MAX_PAID_PDF_PAGES) }).strict();
+const PaidPdfFallbackGrantSchema = z.strictObject({ maxPages: z.int().min(1).max(MAX_PAID_PDF_PAGES) });
 
-export const ResourceDraftTargetSchema = z
-	.object({
-		kind: z.literal('draft'),
-		paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
-		relation: ResourceDraftRelationSchema.optional(),
-		saveTarget: z.record(z.string(), z.json()).optional(),
-		url: z
-			.url({ normalize: true, protocol: /^https?$/ })
-			.max(2_048)
-			.refine((value) => {
-				const url = URL.parse(value);
-				return url !== null && !url.username && !url.password;
-			}, 'URL credentials are not allowed'),
-		sourceHints: z
-			.object({
-				summary: z.string().max(20_000).optional(),
-				originalLang: z.string().trim().min(1).max(35).optional(),
-				publishedDate: z.iso.datetime().optional(),
-				keywords: z.array(z.string().max(500)).max(100).optional(),
-			})
-			.strict()
-			.optional(),
-	})
-	.strict();
+export const ResourceDraftTargetSchema = z.strictObject({
+	kind: z.literal('draft'),
+	paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
+	relation: ResourceDraftRelationSchema.optional(),
+	saveTarget: z.record(z.string(), z.json()).optional(),
+	url: z
+		.url({ normalize: true, protocol: /^https?$/ })
+		.max(2_048)
+		.refine((value) => {
+			const url = URL.parse(value);
+			return url !== null && !url.username && !url.password;
+		}, 'URL credentials are not allowed'),
+	sourceHints: z
+		.strictObject({
+			summary: z.string().max(20_000).optional(),
+			originalLang: z.string().trim().min(1).max(35).optional(),
+			publishedDate: z.iso.datetime().optional(),
+			keywords: z.array(z.string().max(500)).max(100).optional(),
+		})
+		.optional(),
+});
 
 export type ResourceDraftTarget = z.infer<typeof ResourceDraftTargetSchema>;
 
@@ -113,20 +110,16 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, draf
 }
 
 const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
-	z
-		.object({
-			kind: z.literal('storedBlob'),
-			paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
-			resourceId: z.uuid(),
-		})
-		.strict(),
-	z
-		.object({
-			kind: z.literal('reacquire'),
-			paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
-			resourceId: z.uuid(),
-		})
-		.strict(),
+	z.strictObject({
+		kind: z.literal('storedBlob'),
+		paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
+		resourceId: z.uuid(),
+	}),
+	z.strictObject({
+		kind: z.literal('reacquire'),
+		paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
+		resourceId: z.uuid(),
+	}),
 	ResourceDraftTargetSchema,
 ]);
 

@@ -67,7 +67,7 @@ const YouTubeThumbnailsSchema = z.object({
 	standard: YouTubeThumbnailSchema.optional(),
 	maxres: YouTubeThumbnailSchema.optional(),
 });
-const YouTubeCountSchema = z.string().regex(/^\d+$/);
+const YouTubeCountSchema = z.string().regex(/^\d+$/).transform(Number);
 const YouTubeApiErrorSchema = z.object({ message: z.string() });
 const YouTubeVideoItemSchema = z.object({
 	id: z.string().min(1),
@@ -308,9 +308,7 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string): Promise<Yo
 		creators,
 		kindMetadata: {
 			...(durationSeconds === null ? {} : { durationSeconds }),
-			...(stats.viewCount ? { viewCount: Number.parseInt(stats.viewCount, 10) } : {}),
-			...(stats.likeCount ? { likeCount: Number.parseInt(stats.likeCount, 10) } : {}),
-			...(stats.commentCount ? { commentCount: Number.parseInt(stats.commentCount, 10) } : {}),
+			...stats,
 		},
 		previewImageUrl: thumbnailUrl,
 		transcript: {

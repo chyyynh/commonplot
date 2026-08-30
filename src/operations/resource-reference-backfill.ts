@@ -3,9 +3,10 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { syncResourceReferences } from '../ingest/resource-references';
 
-const ResourceReferenceBackfillInputSchema = z
-	.object({ afterResourceId: z.uuid().nullable().optional(), limit: z.number().int().min(1).max(50).default(25) })
-	.strict();
+const ResourceReferenceBackfillInputSchema = z.strictObject({
+	afterResourceId: z.uuid().nullish(),
+	limit: z.int().min(1).max(50).default(25),
+});
 
 export type ResourceReferenceBackfillInput = z.input<typeof ResourceReferenceBackfillInputSchema>;
 

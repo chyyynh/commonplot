@@ -57,8 +57,8 @@ export type ResourceCreator = Readonly<z.infer<typeof ResourceCreatorSchema>>;
 const ResourceMediaAttachmentSchema = z.object({
 	kind: z.enum(['image', 'video', 'animated']),
 	url: optionalHttpUrl,
-	width: z.number().int().positive().optional(),
-	height: z.number().int().positive().optional(),
+	width: z.int().positive().optional(),
+	height: z.int().positive().optional(),
 });
 
 export type ResourceMediaAttachment = Readonly<z.infer<typeof ResourceMediaAttachmentSchema>>;
@@ -70,10 +70,10 @@ const PaperRelationItemSchema = z.object({
 	title: z.string().trim().min(1),
 	authors: z.array(z.string().trim().min(1)),
 	venue: z.string().trim().min(1).optional(),
-	year: z.number().int().positive().optional(),
-	citedByCount: z.number().int().nonnegative().optional(),
+	year: z.int().positive().optional(),
+	citedByCount: z.int().nonnegative().optional(),
 });
-const PaperRelationSnapshotSchema = z.object({ total: z.number().int().nonnegative(), items: z.array(PaperRelationItemSchema) });
+const PaperRelationSnapshotSchema = z.object({ total: z.int().nonnegative(), items: z.array(PaperRelationItemSchema) });
 export type PaperRelationItem = Readonly<z.infer<typeof PaperRelationItemSchema>>;
 export type PaperRelationSnapshot = Readonly<z.infer<typeof PaperRelationSnapshotSchema>>;
 
@@ -85,8 +85,8 @@ export const RESOURCE_TYPES = {
 	forum: {
 		platforms: [{ name: 'hackernews', identifier: z.string().regex(/^[1-9]\d*$/) }],
 		metadata: z.object({
-			points: z.number().int().nonnegative().optional(),
-			commentCount: z.number().int().nonnegative().optional(),
+			points: z.int().nonnegative().optional(),
+			commentCount: z.int().nonnegative().optional(),
 		}),
 	},
 	post: {
@@ -96,19 +96,19 @@ export const RESOURCE_TYPES = {
 	video: {
 		platforms: [{ name: 'youtube', identifier: z.string().regex(/^[A-Za-z0-9_-]{11}$/) }],
 		metadata: z.object({
-			durationSeconds: z.number().int().positive().optional(),
-			viewCount: z.number().int().nonnegative().optional(),
-			likeCount: z.number().int().nonnegative().optional(),
-			commentCount: z.number().int().nonnegative().optional(),
+			durationSeconds: z.int().positive().optional(),
+			viewCount: z.int().nonnegative().optional(),
+			likeCount: z.int().nonnegative().optional(),
+			commentCount: z.int().nonnegative().optional(),
 		}),
 	},
 	paper: {
 		platforms: [],
 		metadata: z.object({
 			venue: z.string().trim().min(1).optional(),
-			year: z.number().int().positive().optional(),
-			citedByCount: z.number().int().nonnegative().optional(),
-			referenceCount: z.number().int().nonnegative().optional(),
+			year: z.int().positive().optional(),
+			citedByCount: z.int().nonnegative().optional(),
+			referenceCount: z.int().nonnegative().optional(),
 			pdfUrl: optionalHttpUrl.optional(),
 			references: PaperRelationSnapshotSchema.optional(),
 			citations: PaperRelationSnapshotSchema.optional(),
@@ -164,8 +164,7 @@ function canonicalIdentifierValue(scheme: z.infer<typeof ResourceIdentifierSchem
 }
 
 const ResourceIdentifierSchema = z
-	.object({ preferred: z.boolean(), scheme: ResourceIdentifierSchemeSchema, value: z.string() })
-	.strict()
+	.strictObject({ preferred: z.boolean(), scheme: ResourceIdentifierSchemeSchema, value: z.string() })
 	.refine(
 		(identifier) => canonicalIdentifierValue(identifier.scheme, identifier.value) === identifier.value,
 		'Identifier is not canonical',

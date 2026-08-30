@@ -11,11 +11,9 @@ import {
 } from './markdown-translation';
 
 function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslationSegment[]) {
-	return z
-		.object({
-			translations: z.object(Object.fromEntries(segments.map(({ id }) => [id, z.string().min(1)]))).strict(),
-		})
-		.strict();
+	return z.strictObject({
+		translations: z.strictObject(Object.fromEntries(segments.map(({ id }) => [id, z.string().min(1)]))),
+	});
 }
 
 const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯編輯。目標語言是自然、準確、符合台灣讀者習慣的繁體中文。

@@ -69,8 +69,8 @@ const TwitterTweetsResponseSchema = z.object({
 });
 
 const TwitterArticleInlineStyleSchema = z.object({
-	offset: z.number().int().nonnegative(),
-	length: z.number().int().nonnegative(),
+	offset: z.int().nonnegative(),
+	length: z.int().nonnegative(),
 	style: z.string(),
 });
 

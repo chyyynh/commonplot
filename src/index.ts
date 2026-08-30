@@ -85,7 +85,7 @@ async function reconcilePendingBlobProcessing(env: CoreEnv, db: NodePgDatabase):
 	});
 }
 
-const ResourceSearchSyncMessageSchema = z.object({ resourceId: z.uuid() }).strict();
+const ResourceSearchSyncMessageSchema = z.strictObject({ resourceId: z.uuid() });
 const ResourceWorkflowOutputSchema = z.object({ resourceId: z.uuid() });
 
 async function runFiveMinuteCycle(env: CoreEnv): Promise<void> {

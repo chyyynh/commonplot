@@ -60,13 +60,13 @@ const OpenAlexWorkSchema = z.object({
 	id: z.string(),
 	doi: z.string().nullish(),
 	title: z.string().nullish(),
-	publication_year: z.number().int().nullish(),
+	publication_year: z.int().nullish(),
 	publication_date: z.string().nullish(),
-	cited_by_count: z.number().int().nonnegative().nullish(),
-	referenced_works_count: z.number().int().nonnegative().nullish(),
+	cited_by_count: z.int().nonnegative().nullish(),
+	referenced_works_count: z.int().nonnegative().nullish(),
 	referenced_works: z.array(z.string()).nullish(),
 	authorships: z.array(z.object({ author: z.object({ display_name: z.string().nullish() }) })).nullish(),
-	abstract_inverted_index: z.record(z.string(), z.array(z.number().int().nonnegative())).nullish(),
+	abstract_inverted_index: z.record(z.string(), z.array(z.int().nonnegative())).nullish(),
 	primary_location: OpenAlexLocationSchema.nullish(),
 	best_oa_location: OpenAlexLocationSchema.nullish(),
 	locations: z.array(OpenAlexLocationSchema).nullish(),
@@ -75,7 +75,7 @@ const OpenAlexWorkSchema = z.object({
 });
 
 const OpenAlexListSchema = z.object({
-	meta: z.object({ count: z.number().int().nonnegative() }).passthrough(),
+	meta: z.looseObject({ count: z.int().nonnegative() }),
 	results: z.array(OpenAlexWorkSchema),
 });
 

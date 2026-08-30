@@ -34,28 +34,24 @@ export function parseHackerNewsResourceUrl(url: URL) {
 
 const optionalStringSchema = z
 	.string()
-	.nullable()
-	.transform((value) => value ?? undefined)
-	.optional();
+	.nullish()
+	.transform((value) => value ?? undefined);
 const optionalNonnegativeIntegerSchema = z
-	.number()
 	.int()
 	.nonnegative()
-	.nullable()
-	.transform((value) => value ?? undefined)
-	.optional();
+	.nullish()
+	.transform((value) => value ?? undefined);
 
 const HackerNewsItemSchema = z.object({
 	by: optionalStringSchema,
 	dead: z.boolean().optional(),
 	deleted: z.boolean().optional(),
 	descendants: optionalNonnegativeIntegerSchema,
-	id: z.number().int().positive(),
+	id: z.int().positive(),
 	kids: z
-		.array(z.number().int().positive())
-		.nullable()
-		.transform((value) => value ?? undefined)
-		.optional(),
+		.array(z.int().positive())
+		.nullish()
+		.transform((value) => value ?? undefined),
 	score: optionalNonnegativeIntegerSchema,
 	text: optionalStringSchema,
 	time: optionalNonnegativeIntegerSchema,
