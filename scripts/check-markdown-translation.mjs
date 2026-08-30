@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 
-const { MarkdownTranslationInvariantError, compileMarkdownTranslation, planMarkdownTranslation, validateMarkdownBatchTranslations } =
-	await import('../src/ingest/markdown-translation.ts');
+const {
+	MarkdownTranslationInvariantError,
+	compileMarkdownTranslation,
+	compileMarkdownTranslationChunks,
+	createMarkdownTranslationChunkTemplate,
+	planMarkdownTranslation,
+	validateMarkdownBatchTranslations,
+} = await import('../src/ingest/markdown-translation.ts');
 
 const markdownFixture = `---
 title: Opaque frontmatter metadata
@@ -167,8 +173,19 @@ const reorderedSegment = reorderedPlan.segments[0];
 assert.ok(reorderedSegment, 'reordered-inline fixture must produce one complete prose block');
 const reorderedInline = reorderedSegment.protectedInlines[0];
 assert.ok(reorderedInline?.kind === 'container', 'reordered-inline fixture must protect its link as a container');
+assert.deepEqual(
+	createMarkdownTranslationChunkTemplate(reorderedSegment),
+	{
+		boundaries: [
+			{ edge: 'open', slot: 1 },
+			{ edge: 'close', slot: 1 },
+		],
+		chunks: ['The market ', 'expects', ' electric vehicles.'],
+	},
+	'model input must describe inline boundaries without exposing structural tokens',
+);
 const reorderedMarkdown = compileMarkdownTranslation(reorderedPlan, [
-	{ id: reorderedSegment.id, text: `${reorderedInline.open}預期${reorderedInline.close}市場將以電動車為主。` },
+	compileMarkdownTranslationChunks(reorderedSegment, ['', '預期', '市場將以電動車為主。']),
 ]);
 assert.ok(
 	reorderedMarkdown.includes(`[預期](https://example.com/forecast)市場將以電動車為主。`),
@@ -181,22 +198,56 @@ const naturalParagraphPlan = planMarkdownTranslation(
 assert.equal(naturalParagraphPlan.segments.length, 1, 'one paragraph with multiple inline nodes must remain one semantic translation unit');
 const naturalParagraphSegment = naturalParagraphPlan.segments[0];
 assert.ok(naturalParagraphSegment, 'natural-language fixture must produce a segment');
-const [lessAttention, cirqa, fitbit, whoop] = naturalParagraphSegment.protectedInlines;
-assert.ok(
-	lessAttention?.kind === 'container' && cirqa?.kind === 'container' && fitbit?.kind === 'container' && whoop?.kind === 'container',
-	'natural-language fixture must protect every inline span',
-);
 const naturalParagraphMarkdown = compileMarkdownTranslation(naturalParagraphPlan, [
-	{
-		id: naturalParagraphSegment.id,
-		text: `這類裝置會${lessAttention.open}減少對注意力的要求${lessAttention.close}，目前包括 Garmin ${cirqa.open}Cirqa${cirqa.close}、${fitbit.open}Fitbit Air${fitbit.close}，以及${whoop.open}Whoop 系列${whoop.close}。`,
-	},
+	compileMarkdownTranslationChunks(naturalParagraphSegment, [
+		'這類裝置會',
+		'減少對注意力的要求',
+		'，目前包括 Garmin ',
+		'Cirqa',
+		'、',
+		'Fitbit Air',
+		'，以及',
+		'Whoop 系列',
+		'。',
+	]),
 ]);
 assert.ok(
 	naturalParagraphMarkdown.includes(
 		'這類裝置會[減少對注意力的要求](https://example.com/less)，目前包括 Garmin [Cirqa](https://example.com/cirqa)、[Fitbit Air](https://example.com/fitbit)，以及*Whoop 系列*。',
 	),
 	'whole-paragraph reconstruction must preserve natural Chinese punctuation and link boundaries without injected spaces',
+);
+assert.throws(
+	() => compileMarkdownTranslationChunks(naturalParagraphSegment, ['少一個文字槽']),
+	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'invalid-result',
+	'model output must preserve the exact number of structural text slots',
+);
+assert.throws(
+	() => compileMarkdownTranslationChunks(naturalParagraphSegment, Array(9).fill('')),
+	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'invalid-result',
+	'model output must not erase all prose while Core restores the structure',
+);
+
+const inlineCodePlan = planMarkdownTranslation('Add options to the existing `value` in `config`, then apply them with:');
+const inlineCodeSegment = inlineCodePlan.segments[0];
+assert.ok(inlineCodeSegment, 'inline-code fixture must produce a segment');
+assert.deepEqual(
+	createMarkdownTranslationChunkTemplate(inlineCodeSegment),
+	{
+		boundaries: [
+			{ edge: 'atom', slot: 1 },
+			{ edge: 'atom', slot: 2 },
+		],
+		chunks: ['Add options to the existing ', ' in ', ', then apply them with:'],
+	},
+	'opaque inline code must reach the model only as positional boundaries',
+);
+assert.equal(
+	compileMarkdownTranslation(inlineCodePlan, [
+		compileMarkdownTranslationChunks(inlineCodeSegment, ['將選項加入現有的', '（位於', '）中，然後套用：']),
+	]),
+	'將選項加入現有的`value`（位於`config`）中，然後套用：',
+	'Core must restore multiple atomic inline nodes without asking the model to reproduce their tokens',
 );
 
 const malformedMarkdown = `## Malformed but parseable\n\nAn **unclosed delimiter and a [broken link label must remain ordinary prose.`;

@@ -71,6 +71,16 @@ export type MarkdownSegmentTranslation = Readonly<{
 	text: string;
 }>;
 
+export type MarkdownTranslationBoundary = Readonly<{
+	edge: 'atom' | 'close' | 'open';
+	slot: number;
+}>;
+
+export type MarkdownTranslationChunkTemplate = Readonly<{
+	boundaries: readonly MarkdownTranslationBoundary[];
+	chunks: readonly string[];
+}>;
+
 export type MarkdownTranslationPlan = Readonly<{
 	batches: readonly MarkdownTranslationBatch[];
 	segments: readonly MarkdownTranslationSegment[];
@@ -312,6 +322,63 @@ function inlineTokens(value: string): string[] {
 	return value.match(INLINE_TOKEN_PATTERN) ?? [];
 }
 
+function splitMarkdownTranslationSegment(segment: MarkdownTranslationSegment): MarkdownTranslationChunkTemplate & {
+	tokens: readonly string[];
+} {
+	const tokens = inlineTokens(segment.text);
+	const chunks: string[] = [];
+	const boundaries: MarkdownTranslationBoundary[] = [];
+	const slots = new Map<string, number>();
+	let cursor = 0;
+	for (const token of tokens) {
+		const index = segment.text.indexOf(token, cursor);
+		const name = token.match(/n-[0-9]{6}/u)?.[0];
+		if (index < cursor || !name) {
+			throw new MarkdownTranslationInvariantError('invalid-plan', `Markdown segment ${segment.id} has an invalid inline token`);
+		}
+		chunks.push(segment.text.slice(cursor, index));
+		let slot = slots.get(name);
+		if (slot === undefined) {
+			slot = slots.size + 1;
+			slots.set(name, slot);
+		}
+		boundaries.push({
+			edge: token.startsWith('</') ? 'close' : token.endsWith('/>') ? 'atom' : 'open',
+			slot,
+		});
+		cursor = index + token.length;
+	}
+	chunks.push(segment.text.slice(cursor));
+	return { boundaries, chunks, tokens };
+}
+
+// The model translates only text slots. Core owns every inline token and restores it deterministically after generation.
+export function createMarkdownTranslationChunkTemplate(segment: MarkdownTranslationSegment): MarkdownTranslationChunkTemplate {
+	const { boundaries, chunks } = splitMarkdownTranslationSegment(segment);
+	return { boundaries, chunks };
+}
+
+export function compileMarkdownTranslationChunks(
+	segment: MarkdownTranslationSegment,
+	translatedChunks: readonly string[],
+): MarkdownSegmentTranslation {
+	const template = splitMarkdownTranslationSegment(segment);
+	if (translatedChunks.length !== template.chunks.length) {
+		throw new MarkdownTranslationInvariantError(
+			'invalid-result',
+			`Translated segment ${segment.id} expected ${template.chunks.length} text chunks but received ${translatedChunks.length}`,
+		);
+	}
+	if (!translatedChunks.join('').trim()) {
+		throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} has no translated prose`);
+	}
+	let text = translatedChunks[0] ?? '';
+	for (const [index, token] of template.tokens.entries()) {
+		text += token + (translatedChunks[index + 1] ?? '');
+	}
+	return { id: segment.id, text };
+}
+
 function nextInlineToken(kind: 'atom' | 'close' | 'open', index: number): string {
 	const name = `n-${String(index).padStart(6, '0')}`;
 	if (kind === 'atom') return `<${name}/>`;
@@ -449,7 +516,7 @@ function decodePhrasing(text: string, protectedInlines: readonly ProtectedInline
 }
 
 function segmentInputCharacters(segment: MarkdownTranslationSegment): number {
-	return JSON.stringify({ context: segment.context, id: segment.id, text: segment.text }).length + 1;
+	return JSON.stringify({ context: segment.context, id: segment.id, ...createMarkdownTranslationChunkTemplate(segment) }).length + 1;
 }
 
 function createBatch(segments: readonly MarkdownTranslationSegment[], index: number): MarkdownTranslationBatch {

@@ -127,6 +127,12 @@ type ZhHantTranslationPlan = {
 	content: 'translate' | null;
 };
 
+type MachineZhHantTranslationPatch = {
+	content?: string;
+	summary?: string;
+	title?: string;
+};
+
 function isBlank(value: string | null | undefined): boolean {
 	return !value?.trim();
 }
@@ -347,7 +353,7 @@ async function translatePlannedContent(
 	for (const [index, batch] of markdownPlan.batches.entries()) {
 		try {
 			const translatedBatch = await step.do(
-				`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v2`,
+				`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v3`,
 				{ retries: { limit: 3, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 				(context) => translateMarkdownBatchToZhHant(batch, env, resourceId, index + 1, markdownPlan.batches.length, context.attempt),
 			);
@@ -391,7 +397,7 @@ async function translatePlannedContent(
 	}
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v11';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v12';
 const ResourceTranslationRevisionSchema = z.string().regex(/^[0-9a-f]{32}$/);
 
 function isResourceTranslationRevision(value: unknown): value is string {
@@ -478,7 +484,7 @@ async function persistMachineZhHantTranslation(
 	db: NodePgDatabase,
 	resourceId: string,
 	translationRevision: string,
-	patch: Readonly<{ title?: string; summary?: string; content?: string }>,
+	patch: Readonly<MachineZhHantTranslationPatch>,
 ): Promise<boolean> {
 	if (!isResourceTranslationRevision(translationRevision)) throw new TypeError('Resource translation revision is invalid');
 	if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) {
@@ -576,6 +582,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		const initialContent = resource.content.trim();
 		if (!initialContent) throw new Error(`Resource ${resourceId} has no persisted original content`);
 
+		const patch: MachineZhHantTranslationPatch = {};
 		if (metadataTask) {
 			const translatedMetadata = await step.do(
 				'translate-zh-hant-title-summary',
@@ -585,40 +592,39 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				},
 				() => generateZhHantMetadataTranslation(resource, this.env, metadataTask),
 			);
-			const persisted = await step.do(
-				'persist-zh-hant-title-summary',
-				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				async () => persistMachineZhHantTranslation(await connectCoreDb(this.env), resourceId, translationRevision, translatedMetadata),
-			);
-			if (!persisted) return;
+			Object.assign(patch, translatedMetadata);
 		}
 
 		const translated = await translatePlannedContent(initialContent, translationPlan.content, this.env, resourceId, step);
-		if (translated !== null) {
-			const persisted = await step.do(
-				'persist-zh-hant-content',
-				{
-					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
-					timeout: '30 seconds',
-				},
-				async () =>
-					persistMachineZhHantTranslation(await connectCoreDb(this.env), resourceId, translationRevision, { content: translated }),
-			);
-			if (!persisted) {
+		if (translated !== null) patch.content = translated;
+		if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) return;
+
+		const persisted = await step.do(
+			'persist-zh-hant-translation-v1',
+			{
+				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
+				timeout: '30 seconds',
+			},
+			async () => persistMachineZhHantTranslation(await connectCoreDb(this.env), resourceId, translationRevision, patch),
+		);
+		if (!persisted) {
+			if (patch.content !== undefined) {
 				console.info({
 					tag: 'RESOURCE_TRANSLATION',
 					event: 'content_translation_outcome',
 					outcome: 'superseded',
 					resource_id: resourceId,
 				});
-				return;
 			}
+			return;
+		}
+		if (patch.content !== undefined) {
 			console.info({
 				tag: 'RESOURCE_TRANSLATION',
 				event: 'content_translation_outcome',
 				outcome: 'persisted',
 				resource_id: resourceId,
-				translated_characters: translated.length,
+				translated_characters: patch.content.length,
 			});
 		}
 		if (resource.scope === 'corpus') {

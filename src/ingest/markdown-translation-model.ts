@@ -3,6 +3,8 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
+	compileMarkdownTranslationChunks,
+	createMarkdownTranslationChunkTemplate,
 	type MarkdownSegmentTranslation,
 	type MarkdownTranslationBatch,
 	MarkdownTranslationInvariantError,
@@ -15,22 +17,33 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 		translations: z
 			.strictObject(
 				Object.fromEntries(
-					segments.map(({ id }) => [id, z.string().min(1).describe(`Complete Taiwan Traditional Chinese translation for ${id}.`)]),
+					segments.map((segment) => {
+						const chunkCount = createMarkdownTranslationChunkTemplate(segment).chunks.length;
+						return [
+							segment.id,
+							z.strictObject({
+								chunks: z
+									.array(z.string())
+									.length(chunkCount)
+									.describe(`Exactly ${chunkCount} translated text slots for ${segment.id}, in boundary order.`),
+							}),
+						];
+					}),
 				),
 			)
-			.describe('One complete prose-block translation for every input segment ID.'),
+			.describe('One complete set of translated text slots for every input segment ID.'),
 	});
 }
 
 const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯編輯。目標語言是自然、準確、符合台灣讀者習慣的繁體中文。
 
 輸入契約：
-- 每個 segment 的 text 是一個完整標題、段落、表格儲存格，或超長純文字段落的一個完整句界切片
-- 只翻譯 text 中的自然語言；context 只供消歧義，不屬於輸出
-- <n-000000>...</n-000000> 與 <n-000000/> 這類標記是不可修改的 opaque XML placeholders，代表連結、強調、圖片、程式碼、公式、HTML 或其他 inline 結構
+- 每個 segment 的所有 chunks 合起來，是一個完整標題、段落、表格儲存格，或超長純文字段落的一個完整句界切片
+- boundaries 是由程式保管的連結、強調、圖片、程式碼、公式、HTML 等 inline 結構；chunks[0] 在第一個 boundary 前，之後每個 chunks[i] 位於相鄰 boundaries 之間
+- boundaries 只用來理解文字位置，不屬於輸出；context 只供消歧義，也不屬於輸出
 
 翻譯準則：
-- 以整個段落的意思與論述關係翻譯，不要逐片語直譯；為了自然的台灣中文，可以調整語序、拆合子句與更換慣用句型
+- 把同一 segment 的所有 chunks 當作完整段落一起翻譯，不要逐 chunk 直譯；為了自然的台灣中文，可以調整語序、拆合子句，並把譯文移到不同 chunk
 - 維持同一批段落的敘事語氣與術語一致；每個 segment 仍須只翻譯一次並完整輸出，不要重複相鄰 segment 或 context
 - 忠實完整翻譯，不要摘要、評論、解釋、補充背景或新增原文沒有的資訊
 - 保留原文語氣、時態、否定、程度、條件、不確定性、引述關係、數字、單位與引用指向
@@ -38,14 +51,15 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - 人名、組織、產品和技術術語有通行譯名時採用通行譯名，沒有時保留原文，不要自創譯名或縮寫
 - 採用台灣慣用詞，例如「新創公司」、「機車」、「載貨自行車」、「城市移動」；避免「初創」、「摩托車」、「出行」、「貨物自行車」等非台灣慣用詞
 - 一般介面與商業詞彙應自然翻譯，不要把 configurator 等非專有名詞無故保留成英文
-- 若 text 已是繁體中文，保留自然表達；若是簡體中文，轉為自然的台灣繁體中文
-- placeholder 的標籤名稱、id、數量與成對巢狀結構必須逐字保留；可連同它包住的詞語移到自然的中文位置，但不可改變或擴張它包住的語意範圍
-- 不要沿用英文在 placeholder、中文標點或中文字之間的多餘空白，也不要為中文與英文、數字或 placeholder 的邊界額外補空格；英文單字內與連續拉丁文字之間仍保留正常空格
+- 若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然的台灣繁體中文
+- 不可改變 boundary 順序或它包住的語意範圍；需要調整中文語序時，把完整譯文合理分配到 boundary 前後的 chunks
+- 不要沿用英文在 boundary、中文標點或中文字之間的多餘空白，也不要為中文與英文、數字或 boundary 的邊界額外補空格；英文單字內與連續拉丁文字之間仍保留正常空格
 
 輸出契約：
 - 只輸出符合 schema 的結果；translations 的每個 key 對應輸入的 segment id
 - 不得遺漏、新增、合併或拆分 segment
-- 每個 value 只輸出含原有 placeholders 的完整譯文純文字；不要重複 context 或相鄰 segment，不要輸出 Markdown、額外 HTML、code block、說明、前後空白或額外段落。`;
+- 每個 value 的 chunks 數量與輸入完全相同；chunk 可以是空字串，但整個 segment 的譯文不可為空
+- chunks 只放譯文純文字；不要輸出 boundary、Markdown、HTML、XML、code block、說明、前後空白或額外段落。`;
 
 type TranslationRecoveryStrategy = 'batch' | 'halves' | 'individual';
 
@@ -91,6 +105,11 @@ async function translateGroup(
 	batchIndex: number,
 	batchTotal: number,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
+	const promptSegments = group.segments.map((segment) => ({
+		context: segment.context,
+		id: segment.id,
+		...createMarkdownTranslationChunkTemplate(segment),
+	}));
 	const { finishReason, output } = await generateText({
 		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
 			...CORE_STRUCTURED_MODEL_SETTINGS,
@@ -115,7 +134,7 @@ async function translateGroup(
 		prompt: `${JSON.stringify({
 			targetLocale: 'zh-Hant',
 			editorialVariant: 'zh-TW',
-			segments: group.segments.map(({ context, id, text }) => ({ context, id, text })),
+			segments: promptSegments,
 		})}`,
 		system: ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT,
 		output: Output.object({
@@ -131,7 +150,7 @@ async function translateGroup(
 	if (finishReason === 'length') throw new Error('Markdown segment translation hit its output token cap');
 	return validateMarkdownBatchTranslations(
 		{ segments: group.segments },
-		group.segments.map(({ id }) => ({ id, text: output.translations[id] ?? '' })),
+		group.segments.map((segment) => compileMarkdownTranslationChunks(segment, output.translations[segment.id]?.chunks ?? [])),
 	);
 }
 
@@ -167,6 +186,7 @@ export async function translateMarkdownBatchToZhHant(
 			event: 'markdown_batch_attempt_failed',
 			attempt,
 			batch_id: batch.id,
+			message: error instanceof Error ? error.message : String(error),
 			reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
 			resource_id: resourceId,
 		});
