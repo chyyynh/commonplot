@@ -392,7 +392,6 @@ async function translatePlannedContent(
 }
 
 const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v9';
-const RESOURCE_TRANSLATION_WORKFLOW_RETENTION = { successRetention: '1 day', errorRetention: '7 days' } as const;
 const ResourceTranslationRevisionSchema = z.string().regex(/^[0-9a-f]{32}$/);
 
 function isResourceTranslationRevision(value: unknown): value is string {
@@ -542,9 +541,7 @@ async function persistMachineZhHantTranslation(
 export async function enqueueResourceTranslation(env: CoreEnv, resourceId: string, translationRevision: string): Promise<string> {
 	if (!isResourceTranslationRevision(translationRevision)) throw new Error('Invalid resource translation revision');
 	const id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
-	await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([
-		{ id, params: { resourceId, translationRevision }, retention: RESOURCE_TRANSLATION_WORKFLOW_RETENTION },
-	]);
+	await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([{ id, params: { resourceId, translationRevision } }]);
 	return id;
 }
 

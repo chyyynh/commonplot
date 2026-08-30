@@ -7,8 +7,7 @@
 	"name": "newsence-core",
 	"main": "src/index.ts",
 	"workers_dev": false,
-	"compatibility_date": "2026-07-22",
-	"compatibility_flags": ["nodejs_compat"],
+	"compatibility_date": "2026-08-30",
 	/**
 	 * LiteParse is CPU-bound WASM; its longest PDF Workflow step has a three-minute
 	 * timeout. A full AI Search rebuild also performs one upload subrequest per
@@ -79,7 +78,8 @@
 		{
 			"binding": "RESOURCE_TRANSLATION_V2_WORKFLOW",
 			"name": "newsence-resource-translation-v2",
-			"class_name": "ResourceTranslationV2Workflow"
+			"class_name": "ResourceTranslationV2Workflow",
+			"default_retention": { "success_retention": "1 day", "error_retention": "7 days" }
 		},
 		{
 			"binding": "SEARCH_INDEX_REBUILD_WORKFLOW",
