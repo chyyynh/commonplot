@@ -147,24 +147,56 @@ assert.throws(
 const linkBatch = plan.batches.find((batch) => batch.segments.some((segment) => segment.text.includes('research report')));
 assert.ok(linkBatch, 'fixture must contain a translated link block');
 const linkSegment = linkBatch.segments.find((segment) => segment.text.includes('research report'));
-assert.ok(linkSegment, 'fixture must expose the link label as a text-only translation slot');
-assert.ok(
-	plan.segments.every((segment) => !/<(?:pc|ph)\b/u.test(segment.text)),
-	'Markdown structure must not be serialized into model-editable placeholders',
-);
+assert.ok(linkSegment, 'fixture must expose the translated link label inside a complete prose block');
+assert.match(linkSegment.text, /^Read the /u, 'inline formatting must not split a sentence into separate translation slots');
+const protectedToken = linkSegment.text.match(/<\/?n-[0-9]{6}>|<n-[0-9]{6}\/>/u)?.[0];
+assert.ok(protectedToken, 'complete prose blocks must protect inline Markdown with opaque tokens');
 assert.ok(translatedMarkdown.includes('[研究報告](https://example.com/report?q=1'), 'translated link label must keep its destination');
+const linkTranslations = linkBatch.segments.map((segment) => ({
+	id: segment.id,
+	text: segment.id === linkSegment.id ? segment.text.replace(protectedToken, 'BROKEN') : segment.text,
+}));
+assert.throws(
+	() => validateMarkdownBatchTranslations(linkBatch, linkTranslations),
+	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
+	'changed inline tokens must fail closed',
+);
 
 const reorderedPlan = planMarkdownTranslation('The market [expects](https://example.com/forecast) electric vehicles.');
-const reorderedMarkdown = compileMarkdownTranslation(
-	reorderedPlan,
-	reorderedPlan.segments.map((segment) => ({
-		id: segment.id,
-		text: segment.text.replace('The market', '市場').replace('expects', '預期').replace('electric vehicles.', '電動車。'),
-	})),
-);
+const reorderedSegment = reorderedPlan.segments[0];
+assert.ok(reorderedSegment, 'reordered-inline fixture must produce one complete prose block');
+const reorderedInline = reorderedSegment.protectedInlines[0];
+assert.ok(reorderedInline?.kind === 'container', 'reordered-inline fixture must protect its link as a container');
+const reorderedMarkdown = compileMarkdownTranslation(reorderedPlan, [
+	{ id: reorderedSegment.id, text: `${reorderedInline.open}預期${reorderedInline.close}市場將以電動車為主。` },
+]);
 assert.ok(
-	reorderedMarkdown.includes(`市場 [預期](https://example.com/forecast) 電動車。`),
-	'inline markup must be reconstructed around translated text slots',
+	reorderedMarkdown.includes(`[預期](https://example.com/forecast)市場將以電動車為主。`),
+	'complete prose translation must allow inline markup to move with natural target-language word order',
+);
+
+const naturalParagraphPlan = planMarkdownTranslation(
+	'These devices demand [less attention](https://example.com/less), including Garmin [Cirqa](https://example.com/cirqa), [Fitbit Air](https://example.com/fitbit), and the *Whoop series*.',
+);
+assert.equal(naturalParagraphPlan.segments.length, 1, 'one paragraph with multiple inline nodes must remain one semantic translation unit');
+const naturalParagraphSegment = naturalParagraphPlan.segments[0];
+assert.ok(naturalParagraphSegment, 'natural-language fixture must produce a segment');
+const [lessAttention, cirqa, fitbit, whoop] = naturalParagraphSegment.protectedInlines;
+assert.ok(
+	lessAttention?.kind === 'container' && cirqa?.kind === 'container' && fitbit?.kind === 'container' && whoop?.kind === 'container',
+	'natural-language fixture must protect every inline span',
+);
+const naturalParagraphMarkdown = compileMarkdownTranslation(naturalParagraphPlan, [
+	{
+		id: naturalParagraphSegment.id,
+		text: `這類裝置會${lessAttention.open}減少對注意力的要求${lessAttention.close}，目前包括 Garmin ${cirqa.open}Cirqa${cirqa.close}、${fitbit.open}Fitbit Air${fitbit.close}，以及${whoop.open}Whoop 系列${whoop.close}。`,
+	},
+]);
+assert.ok(
+	naturalParagraphMarkdown.includes(
+		'這類裝置會[減少對注意力的要求](https://example.com/less)，目前包括 Garmin [Cirqa](https://example.com/cirqa)、[Fitbit Air](https://example.com/fitbit)，以及*Whoop 系列*。',
+	),
+	'whole-paragraph reconstruction must preserve natural Chinese punctuation and link boundaries without injected spaces',
 );
 
 const malformedMarkdown = `## Malformed but parseable\n\nAn **unclosed delimiter and a [broken link label must remain ordinary prose.`;
