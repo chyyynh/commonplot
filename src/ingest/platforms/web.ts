@@ -34,15 +34,20 @@ addTransformations({
 			}
 		}
 
-		// Substack custom domains share this article-body signature. Its heading
-		// anchor chrome triggers Readability cleanup, and callouts use generic divs.
+		// Substack/Pencraft uses this article-body hierarchy on custom domains too,
+		// so detect its source DOM instead of hard-coding substack.com hostnames.
 		const substackArticle = document.querySelector('.dt-post-body .available-content .body.markup');
 		if (substackArticle) {
+			// @mozilla/readability's `unlikelyCandidates` rule contains "header", so
+			// Substack's class would make it discard the otherwise semantic h2/h3.
 			for (const heading of substackArticle.querySelectorAll('.header-anchor-post')) {
+				// This child is Substack's copy-link UI, not article content.
 				for (const anchorChrome of heading.querySelectorAll('.header-anchor-parent')) anchorChrome.remove();
 				heading.classList.remove('header-anchor-post');
 				if (!heading.getAttribute('class')?.trim()) heading.removeAttribute('class');
 			}
+			// Substack marks callouts with this data attribute. CommonMark has no
+			// callout node, so normalize it to a blockquote instead of leaking platform data to Web.
 			for (const callout of substackArticle.querySelectorAll('[data-callout="true"]')) {
 				const blockquote = document.createElement('blockquote');
 				while (callout.firstChild) blockquote.appendChild(callout.firstChild);
