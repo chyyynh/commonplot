@@ -18,17 +18,35 @@ const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) 
 const MIN_ARTICLE_CONTENT_CHARS = 180;
 const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
 
-// Readability removes aria-hidden images. Preserve the narrow case where the
-// parent figure carries the image's accessible description instead.
+// Normalize narrow source-DOM quirks before Readability so the canonical HTML
+// still contains the semantics that Workers AI converts to Markdown.
 addTransformations({
 	patterns: [/^https?:\/\//i],
 	pre(document) {
+		// Readability removes aria-hidden images. Preserve the narrow case where
+		// the parent figure carries the image's accessible description instead.
 		for (const figure of document.querySelectorAll('figure[role="img"][aria-label]')) {
 			const label = figure.getAttribute('aria-label')?.trim();
 			if (!label) continue;
 			for (const image of figure.querySelectorAll('img[aria-hidden="true"]')) {
 				if (!image.getAttribute('alt')?.trim()) image.setAttribute('alt', label);
 				image.removeAttribute('aria-hidden');
+			}
+		}
+
+		// Substack custom domains share this article-body signature. Its heading
+		// anchor chrome triggers Readability cleanup, and callouts use generic divs.
+		const substackArticle = document.querySelector('.dt-post-body .available-content .body.markup');
+		if (substackArticle) {
+			for (const heading of substackArticle.querySelectorAll('.header-anchor-post')) {
+				for (const anchorChrome of heading.querySelectorAll('.header-anchor-parent')) anchorChrome.remove();
+				heading.classList.remove('header-anchor-post');
+				if (!heading.getAttribute('class')?.trim()) heading.removeAttribute('class');
+			}
+			for (const callout of substackArticle.querySelectorAll('[data-callout="true"]')) {
+				const blockquote = document.createElement('blockquote');
+				while (callout.firstChild) blockquote.appendChild(callout.firstChild);
+				callout.parentNode?.replaceChild(blockquote, callout);
 			}
 		}
 		return document;
