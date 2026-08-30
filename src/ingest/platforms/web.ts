@@ -18,6 +18,23 @@ const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) 
 const MIN_ARTICLE_CONTENT_CHARS = 180;
 const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
 
+// Readability removes aria-hidden images. Preserve the narrow case where the
+// parent figure carries the image's accessible description instead.
+addTransformations({
+	patterns: [/^https?:\/\//i],
+	pre(document) {
+		for (const figure of document.querySelectorAll('figure[role="img"][aria-label]')) {
+			const label = figure.getAttribute('aria-label')?.trim();
+			if (!label) continue;
+			for (const image of figure.querySelectorAll('img[aria-hidden="true"]')) {
+				if (!image.getAttribute('alt')?.trim()) image.setAttribute('alt', label);
+				image.removeAttribute('aria-hidden');
+			}
+		}
+		return document;
+	},
+});
+
 // Static extractor configuration: TechCrunch places author cards and affiliate
 // chrome beside the real post body inside the same Readability candidate. Its
 // figcaptions are omitted because CommonMark would flatten them into body text;
