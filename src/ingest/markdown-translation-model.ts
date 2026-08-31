@@ -54,6 +54,7 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - 一般介面與商業詞彙應自然翻譯，不要把 configurator 等非專有名詞無故保留成英文
 - 若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然的台灣繁體中文
 - 不可改變 boundary 順序或它包住的語意範圍；需要調整中文語序時，把完整譯文合理分配到 boundary 前後的 chunks
+- 翻譯 boundary 周圍的介系詞與語意角色時，必須參考 reference，而不是逐 chunk 猜測。例如原文 chunks 是 ["Add options to the existing ", " value in ", "."]，兩個 atom reference 依序是 "SETTING_NAME" 與 "/path/file"，自然且正確的輸出是 ["將選項加入現有的", "值；該值位於", "。"]，不是把檔案路徑誤當成設定值
 - 不要沿用英文在 boundary、中文標點或中文字之間的多餘空白，也不要為中文與英文、數字或 boundary 的邊界額外補空格；英文單字內與連續拉丁文字之間仍保留正常空格
 
 輸出契約：
