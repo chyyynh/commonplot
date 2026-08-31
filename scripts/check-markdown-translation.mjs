@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 const {
 	MarkdownTranslationInvariantError,
 	compileMarkdownTranslation,
+	createSourceMarkdownSegmentTranslation,
 	createMarkdownTranslationTemplate,
 	planMarkdownTranslation,
 	validateMarkdownBatchTranslations,
@@ -419,26 +420,19 @@ const inlineHtmlPlan = planMarkdownTranslation('Before <mark>highlighted</mark> 
 const inlineHtmlSegment = inlineHtmlPlan.segments[0];
 assert.ok(inlineHtmlSegment, 'inline-HTML fixture must produce a segment');
 const inlineHtmlTemplate = createMarkdownTranslationTemplate(inlineHtmlSegment);
-const [openMarkId, closeMarkId] = inlineIdsOfKind(inlineHtmlTemplate, 'html');
-assert.ok(openMarkId && closeMarkId, 'inline-HTML fixture must expose both raw tag atoms');
+assert.deepEqual(inlineHtmlTemplate.inlines, {}, 'raw inline HTML must remain entirely outside the model contract');
+const inlineHtmlSequenceIds = Object.keys(inlineHtmlTemplate.sequences);
 assert.deepEqual(
-	inlineHtmlTemplate.inlines,
-	{
-		[openMarkId]: { canReorder: false, kind: 'html' },
-		[closeMarkId]: { canReorder: false, kind: 'html' },
-	},
-	'raw inline HTML must be fixed structural anchors',
+	inlineHtmlSequenceIds,
+	['root:slot:01', 'root:slot:02', 'root:slot:03'],
+	'fixed HTML anchors must deterministically split the surrounding prose',
 );
 const inlineHtmlTranslation = {
 	id: inlineHtmlSegment.id,
 	sequences: {
-		root: [
-			{ type: 'text', value: '之前' },
-			{ type: 'inline', value: openMarkId },
-			{ type: 'text', value: '醒目文字' },
-			{ type: 'inline', value: closeMarkId },
-			{ type: 'text', value: '之後。' },
-		],
+		'root:slot:01': [{ type: 'text', value: '之前' }],
+		'root:slot:02': [{ type: 'text', value: '醒目文字' }],
+		'root:slot:03': [{ type: 'text', value: '之後。' }],
 	},
 };
 assert.equal(
@@ -449,50 +443,92 @@ assert.equal(
 assert.throws(
 	() =>
 		compileMarkdownTranslation(inlineHtmlPlan, [
-			withRootParts(inlineHtmlTranslation, [
-				{ type: 'inline', value: openMarkId },
-				{ type: 'inline', value: closeMarkId },
-				{ type: 'text', value: '全部譯文' },
-			]),
+			{
+				...inlineHtmlTranslation,
+				sequences: { 'root:slot:01': [{ type: 'text', value: '全部譯文' }] },
+			},
 		]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'invalid-result',
-	'prose must not move out of a raw HTML tag pair',
-);
-assert.throws(
-	() =>
-		compileMarkdownTranslation(inlineHtmlPlan, [
-			withRootParts(inlineHtmlTranslation, [
-				{ type: 'text', value: '之前' },
-				{ type: 'inline', value: openMarkId },
-				{ type: 'text', value: '。' },
-				{ type: 'inline', value: closeMarkId },
-				{ type: 'text', value: '醒目文字之後。' },
-			]),
-		]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'invalid-result',
-	'punctuation alone must not stand in for substantive prose inside a fixed slot',
+	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
+	'fixed-anchor slots cannot be merged or omitted by model output',
 );
 
 const citationPlan = planMarkdownTranslation('First claim.[^a] Second claim.[^b]\n\n[^a]: First note.\n[^b]: Second note.');
-const citationSegment = citationPlan.segments.find(
-	(segment) => inlineIdsOfKind(createMarkdownTranslationTemplate(segment), 'footnoteReference').length === 2,
+const citationSegment = citationPlan.segments.find((segment) =>
+	Object.keys(createMarkdownTranslationTemplate(segment).sequences).some((id) => id.startsWith('root:slot:')),
 );
-assert.ok(citationSegment, 'citation fixture must expose two footnote references in one segment');
+assert.ok(citationSegment, 'citation fixture must expose fixed-anchor translation slots');
 const citationTemplate = createMarkdownTranslationTemplate(citationSegment);
-const [firstCitationId, secondCitationId] = inlineIdsOfKind(citationTemplate, 'footnoteReference');
-assert.ok(firstCitationId && secondCitationId, 'citation fixture must expose stable reference IDs');
-const citationTranslations = citationPlan.segments.map((segment) => targetFromSource(segment));
+assert.equal(inlineIdsOfKind(citationTemplate, 'footnoteReference').length, 0, 'footnote references must remain Core-owned');
+assert.deepEqual(
+	Object.keys(citationTemplate.sequences),
+	['root:slot:01', 'root:slot:02'],
+	'each claim must remain in its own translation slot beside its citation',
+);
+const citationTranslations = citationPlan.segments.map((segment) => createSourceMarkdownSegmentTranslation(segment));
 const citationIndex = citationPlan.segments.findIndex((segment) => segment.id === citationSegment.id);
-citationTranslations[citationIndex] = withRootParts(citationTranslations[citationIndex], [
-	{ type: 'text', value: 'First claim.' },
-	{ type: 'inline', value: secondCitationId },
-	{ type: 'text', value: ' Second claim.' },
-	{ type: 'inline', value: firstCitationId },
-]);
-assert.throws(
-	() => compileMarkdownTranslation(citationPlan, citationTranslations),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
-	'opaque citation references must remain anchored to their original claims',
+assert.ok(citationIndex >= 0, 'citation segment must belong to the plan');
+citationTranslations[citationIndex] = {
+	id: citationSegment.id,
+	sequences: {
+		'root:slot:01': [{ type: 'text', value: '第一項主張。' }],
+		'root:slot:02': [{ type: 'text', value: '第二項主張。' }],
+	},
+};
+const citationMarkdown = compileMarkdownTranslation(citationPlan, citationTranslations);
+assert.ok(citationMarkdown.includes('第一項主張。[^a]第二項主張。[^b]'), 'Core must restore each citation at its original claim boundary');
+
+const formulaCitationPlan = planMarkdownTranslation(
+	'The score $a$ rises to $b$.[^one] Then $c$ falls below $d$.\n\n[^one]: Supporting evidence.',
+);
+const formulaCitationSegment = formulaCitationPlan.segments.find((segment) =>
+	Object.keys(createMarkdownTranslationTemplate(segment).sequences).some((id) => id.startsWith('root:slot:')),
+);
+assert.ok(formulaCitationSegment, 'formula-plus-citation regression fixture must produce fixed-anchor slots');
+const formulaCitationTemplate = createMarkdownTranslationTemplate(formulaCitationSegment);
+assert.equal(
+	inlineIdsOfKind(formulaCitationTemplate, 'footnoteReference').length,
+	0,
+	'fixed footnotes must not compete with movable formulas in structured model output',
+);
+const formulaIdsBySlot = Object.fromEntries(
+	Object.entries(formulaCitationTemplate.sequences).map(([sequenceId, parts]) => [
+		sequenceId,
+		parts.flatMap((part) => (typeof part === 'string' ? [] : [part.id])),
+	]),
+);
+assert.deepEqual(
+	Object.values(formulaIdsBySlot).map((ids) => ids.length),
+	[2, 2],
+	'movable formulas must stay available on both sides of the fixed citation',
+);
+const formulaCitationTranslations = formulaCitationPlan.segments.map((segment) => createSourceMarkdownSegmentTranslation(segment));
+const formulaCitationIndex = formulaCitationPlan.segments.findIndex((segment) => segment.id === formulaCitationSegment.id);
+assert.ok(formulaCitationIndex >= 0, 'formula-plus-citation segment must belong to its plan');
+const [formulaSlotOne, formulaSlotTwo] = Object.keys(formulaCitationTemplate.sequences);
+const [formulaA, formulaB] = formulaIdsBySlot[formulaSlotOne] ?? [];
+const [formulaC, formulaD] = formulaIdsBySlot[formulaSlotTwo] ?? [];
+assert.ok(formulaSlotOne && formulaSlotTwo && formulaA && formulaB && formulaC && formulaD, 'fixture must expose all formula references');
+formulaCitationTranslations[formulaCitationIndex] = {
+	id: formulaCitationSegment.id,
+	sequences: {
+		[formulaSlotOne]: [
+			{ type: 'inline', value: formulaB },
+			{ type: 'text', value: '高於' },
+			{ type: 'inline', value: formulaA },
+			{ type: 'text', value: '。' },
+		],
+		[formulaSlotTwo]: [
+			{ type: 'inline', value: formulaD },
+			{ type: 'text', value: '仍高於' },
+			{ type: 'inline', value: formulaC },
+			{ type: 'text', value: '。' },
+		],
+	},
+};
+const formulaCitationMarkdown = compileMarkdownTranslation(formulaCitationPlan, formulaCitationTranslations);
+assert.ok(
+	formulaCitationMarkdown.includes('$b$高於$a$。[^one]$d$仍高於$c$。'),
+	'formulas may follow target-language order within each slot while Core keeps the citation boundary fixed',
 );
 
 const denseInlineMarkdown = Array.from({ length: 100 }, (_, index) => `Read [link ${index}](https://example.com/${index}).`).join(' ');

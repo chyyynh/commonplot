@@ -328,12 +328,12 @@ async function translatePlannedContent(
 		return null;
 	}
 	const translatedSegments: MarkdownSegmentTranslation[] = [];
-	for (const [index, batch] of markdownPlan.batches.entries()) {
+	for (const batch of markdownPlan.batches) {
 		try {
 			const translatedBatch = await step.do(
-				`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v7`,
+				`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v8`,
 				{ retries: { limit: 3, delay: translationRetryDelay }, timeout: '300 seconds' },
-				(context) => translateMarkdownBatchToZhHant(batch, env, resourceId, index + 1, markdownPlan.batches.length, context.attempt),
+				(context) => translateMarkdownBatchToZhHant(batch, env, resourceId, context.attempt),
 			);
 			translatedSegments.push(...translatedBatch);
 		} catch (error) {
@@ -375,7 +375,7 @@ async function translatePlannedContent(
 	}
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v19';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v20';
 const ResourceTranslationRevisionSchema = z.string().regex(/^[0-9a-f]{32}$/);
 const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 

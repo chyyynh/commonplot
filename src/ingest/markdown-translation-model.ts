@@ -1,9 +1,10 @@
-import { generateText, Output } from 'ai';
+import { generateText, NoObjectGeneratedError, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
 	createMarkdownTranslationTemplate,
+	createSourceMarkdownSegmentTranslation,
 	type MarkdownSegmentTranslation,
 	type MarkdownTranslationBatch,
 	MarkdownTranslationInvariantError,
@@ -63,13 +64,14 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 
 輸入契約：
 - 每個 segment 是一個完整標題、段落、表格儲存格，或超長純文字段落的一個完整句界切片
-- 輸入 sequences.root 是最外層文字；其中 string 是待翻譯原文，{id} 是由 Core 保管的 inline reference
+- sequences 是 Core 劃定的可翻譯範圍；其中 string 是待翻譯原文，{id} 是由 Core 保管、可依中文語序移動的 inline reference
 - inlines 以 id 為 key，kind 說明連結、強調、圖片、程式碼、公式或其他 Markdown inline；若同名 sequence 存在，它就是該 container 包住的可見文字，否則是 atom
-- reference 只供理解 code 或公式的語意角色；canReorder 省略代表 true。canReorder=false 代表 raw HTML、hard break、引用或不透明自動連結等結構錨點，它所在 sequence 的 inline 次序，以及錨點前、後、之間的文字範圍都必須保留
-- 同一 segment 的所有 sequences 合起來才是完整句意；context、inline id、kind、canReorder、reference 都只供翻譯判斷，不屬於譯文
+- sequence key 若以某個 inline id 加上 :slot: 開頭，代表該 container 內被固定結構隔開的一段可見文字；root:slot: 則屬於最外層文字
+- raw HTML、hard break、註腳引用與不透明自動連結等固定結構不會出現在輸入；Core 已把它們前後切成不同 sequence，並會在輸出後原位組回
+- 同一 segment 的所有 sequences 合起來才是完整句意；context、inline id、kind、reference 都只供翻譯判斷，不屬於譯文
 
 翻譯準則：
-- 把同一 segment 當作完整段落翻譯，不要逐 part 或逐 sequence 直譯；可以依自然的台灣中文調整語序、拆合子句與重新安排 text parts
+- 把同一 segment 當作完整段落理解，不要逐 part 直譯；可以在同一 sequence 內依自然的台灣中文調整語序、拆合子句與重新安排 text parts，但不要把文字移到另一個 sequence
 - 維持同一批段落的敘事語氣與術語一致；每個 segment 仍須只翻譯一次並完整輸出，不要重複相鄰 segment 或 context
 - 忠實完整翻譯，不要摘要、評論、解釋、補充背景或新增原文沒有的資訊
 - 保留原文語氣、時態、否定、程度、條件、不確定性、引述關係、數字、單位與引用指向
@@ -78,7 +80,7 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - 採用台灣慣用詞，例如「新創公司」、「機車」、「載貨自行車」、「城市移動」；避免「初創」、「摩托車」、「出行」、「貨物自行車」等非台灣慣用詞
 - 一般介面與商業詞彙應自然翻譯，不要把 configurator 等非專有名詞無故保留成英文
 - 若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然的台灣繁體中文
-- 每個 inline id 必須在原本的 sequence 內恰好出現一次；只有同一 sequence 的 inline 全部 canReorder=true 時才可為中文語序重新排列。若有 canReorder=false，翻譯各錨點前、後、之間的原有文字，但不可把文字移過錨點
+- 每個 inline id 必須在原本的 sequence 內恰好出現一次，並可在該 sequence 內依中文語序重新排列
 - container 的內文只能翻譯在它的同名 sequence；不要把文字移入或移出連結、強調等格式範圍
 - 依 reference 判斷 atom 的語意角色，不要把 reference 複製進 text。例如設定名稱與檔案路徑可在 root 中換序，譯成「在」+ 檔案路徑 inline +「中，將選項加入現有的」+ 設定名稱 inline +「值」
 - 不要沿用英文在 inline、中文標點或中文字之間的多餘空白，也不要為中文與英文、數字或 inline 邊界額外補空格；英文單字內與連續拉丁文字之間仍保留正常空格
@@ -95,7 +97,6 @@ type TranslationGroup = Readonly<{
 	index: number;
 	segments: readonly MarkdownTranslationSegment[];
 	strategy: TranslationRecoveryStrategy;
-	total: number;
 }>;
 
 function splitSegmentsInHalf(segments: readonly MarkdownTranslationSegment[]): readonly (readonly MarkdownTranslationSegment[])[] {
@@ -122,7 +123,7 @@ function translationGroups(batch: MarkdownTranslationBatch, attempt: number): Tr
 			: strategy === 'halves'
 				? splitSegmentsInHalf(batch.segments)
 				: batch.segments.map((segment) => [segment]);
-	return groups.map((segments, index) => ({ index: index + 1, segments, strategy, total: groups.length }));
+	return groups.map((segments, index) => ({ index: index + 1, segments, strategy }));
 }
 
 async function translateGroup(
@@ -130,8 +131,6 @@ async function translateGroup(
 	batch: MarkdownTranslationBatch,
 	env: CoreEnv,
 	resourceId: string,
-	batchIndex: number,
-	batchTotal: number,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	const promptSegments = group.segments.map((segment) => ({
 		context: segment.context,
@@ -146,14 +145,10 @@ async function translateGroup(
 				collectLog: true,
 				retries: { maxAttempts: 1 },
 				metadata: {
-					batch_count: batchTotal,
 					batch_id: batch.id,
-					batch_index: batchIndex,
-					environment: env.AI_GATEWAY_ENVIRONMENT,
 					feature: 'resource-content-translation',
 					recovery_strategy: group.strategy,
 					resource_id: resourceId,
-					sub_batch_count: group.total,
 					sub_batch_index: group.index,
 				},
 			},
@@ -185,12 +180,14 @@ async function translateGroup(
 	);
 }
 
+function isMarkdownOutputContractError(error: unknown): boolean {
+	return error instanceof MarkdownTranslationInvariantError || NoObjectGeneratedError.isInstance(error);
+}
+
 export async function translateMarkdownBatchToZhHant(
 	batch: MarkdownTranslationBatch,
 	env: CoreEnv,
 	resourceId: string,
-	batchIndex: number,
-	batchTotal: number,
 	attempt: number,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	const groups = translationGroups(batch, attempt);
@@ -208,7 +205,30 @@ export async function translateMarkdownBatchToZhHant(
 	try {
 		const translated: MarkdownSegmentTranslation[] = [];
 		for (const group of groups) {
-			translated.push(...(await translateGroup(group, batch, env, resourceId, batchIndex, batchTotal)));
+			try {
+				translated.push(...(await translateGroup(group, batch, env, resourceId)));
+			} catch (error) {
+				const segment = group.segments[0];
+				if (group.strategy !== 'individual' || group.segments.length !== 1 || !segment || !isMarkdownOutputContractError(error)) {
+					throw error;
+				}
+				console.warn({
+					tag: 'RESOURCE_TRANSLATION',
+					event: 'markdown_segment_original_fallback',
+					attempt,
+					batch_id: batch.id,
+					finish_reason: NoObjectGeneratedError.isInstance(error) ? error.finishReason : undefined,
+					reason:
+						error instanceof MarkdownTranslationInvariantError
+							? error.code
+							: NoObjectGeneratedError.isInstance(error)
+								? error.name
+								: 'unknown',
+					resource_id: resourceId,
+					segment_id: segment.id,
+				});
+				translated.push(createSourceMarkdownSegmentTranslation(segment));
+			}
 		}
 		return validateMarkdownBatchTranslations(batch, translated);
 	} catch (error) {
