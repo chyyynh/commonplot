@@ -3,6 +3,7 @@ packages:
 confirmModulesPurge: false
 storeDir: ../../.pnpm-store
 optimisticRepeatInstall: false
+trustLockfile: true
 verifyDepsBeforeRun: error
 virtualStoreType: project
 allowBuilds:
