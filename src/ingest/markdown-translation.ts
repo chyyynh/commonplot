@@ -657,10 +657,17 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 				throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} has an unknown part type`);
 			}
 			const inlineId = candidate.value;
-			if (!expectedInlineSet.has(inlineId) || seenInlineIds.has(inlineId)) {
+			if (!expectedInlineSet.has(inlineId)) {
+				const reason = protectedById.has(inlineId) ? 'moved' : 'invented';
 				throw new MarkdownTranslationInvariantError(
 					'markdown-structure-changed',
-					`Translated segment ${segment.id} moved, duplicated, or invented inline ${inlineId}`,
+					`Translated segment ${segment.id} ${reason} inline ${inlineId} into sequence ${sequenceId}`,
+				);
+			}
+			if (seenInlineIds.has(inlineId)) {
+				throw new MarkdownTranslationInvariantError(
+					'markdown-structure-changed',
+					`Translated segment ${segment.id} duplicated inline ${inlineId} in sequence ${sequenceId}`,
 				);
 			}
 			seenInlineIds.add(inlineId);

@@ -11,10 +11,19 @@ import {
 	validateMarkdownBatchTranslations,
 } from './markdown-translation';
 
-const markdownTranslationPartSchema = z.strictObject({
-	type: z.enum(['text', 'inline']),
+const markdownTranslationTextPartSchema = z.strictObject({
+	type: z.literal('text'),
 	value: z.string().min(1),
 });
+
+function markdownTranslationPartsSchema(inlineIds: readonly string[]) {
+	if (!inlineIds.length) return z.array(markdownTranslationTextPartSchema);
+	const markdownTranslationInlinePartSchema = z.strictObject({
+		type: z.literal('inline'),
+		value: z.enum(inlineIds as [string, ...string[]]),
+	});
+	return z.array(z.discriminatedUnion('type', [markdownTranslationTextPartSchema, markdownTranslationInlinePartSchema]));
+}
 
 function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslationSegment[]) {
 	return z.strictObject({
@@ -32,13 +41,11 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 											const inlineIds = parts.flatMap((part) => (typeof part === 'string' ? [] : [part.id]));
 											return [
 												sequenceId,
-												z
-													.array(markdownTranslationPartSchema)
-													.describe(
-														inlineIds.length
-															? `Translated ${sequenceId}; inline values must be exactly ${inlineIds.join(', ')} once each.`
-															: `Translated ${sequenceId}; use text parts only.`,
-													),
+												markdownTranslationPartsSchema(inlineIds).describe(
+													inlineIds.length
+														? `Translated ${sequenceId}; inline values must be exactly ${inlineIds.join(', ')} once each.`
+														: `Translated ${sequenceId}; use text parts only.`,
+												),
 											];
 										}),
 									),
