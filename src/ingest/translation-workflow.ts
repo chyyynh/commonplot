@@ -68,7 +68,6 @@ type ResourceTranslationInputRow = {
 const METADATA_CONTENT_MAX_LENGTH = 10000;
 const PARTIAL_CONTENT_TRANSLATION_RATIO = 0.2;
 const MIN_TRANSLATABLE_TEXT_LENGTH = 20;
-const INLINE_POST_CONTENT_TRANSLATION_MAX_LENGTH = 1000;
 const AI_RATE_LIMIT_ERROR = /\b(?:3021|429)\b|rate limit|too many requests/iu;
 
 function translationRetryDelay({ ctx, error }: WorkflowDynamicDelayContext): number {
@@ -123,12 +122,7 @@ const ZhHantTitleTranslationSchema = z.object({
 	title: z.string().min(1),
 });
 
-const ZhHantPostTranslationSchema = z.object({
-	title: z.string().min(1),
-	content: z.string().min(1),
-});
-
-type ZhHantMetadataTranslationTask = 'article-title-summary' | 'paper-title' | 'paper-title-summary' | 'post-title' | 'post-title-content';
+type ZhHantMetadataTranslationTask = 'article-title-summary' | 'paper-title' | 'paper-title-summary' | 'post-title';
 
 type ZhHantTranslationPlan = {
 	metadata: ZhHantMetadataTranslationTask | null;
@@ -148,10 +142,6 @@ function isBlank(value: string | null | undefined): boolean {
 function metadataTranslationTask(resource: ResourceTranslationInput, force: boolean): ZhHantMetadataTranslationTask | null {
 	const translation = resource.zhHantTranslation;
 	if (resource.kind === 'post') {
-		const content = resource.content.trim();
-		if (content && content.length <= INLINE_POST_CONTENT_TRANSLATION_MAX_LENGTH) {
-			return force || isBlank(translation?.title) || isBlank(translation?.content) ? 'post-title-content' : null;
-		}
 		return force || isBlank(translation?.title) ? 'post-title' : null;
 	}
 	if (resource.kind === 'paper') {
@@ -193,27 +183,11 @@ function planZhHantTranslation(resource: ResourceTranslationInput, force: boolea
 	if (!content || !hasTranslatableContent(content) || (!force && !needsMachineContentTranslation(resource))) {
 		return { metadata, content: null };
 	}
-	if (metadata === 'post-title-content') return { metadata, content: null };
 	return { metadata, content: 'translate' };
 }
 
 function metadataTranslationRequest(task: ZhHantMetadataTranslationTask) {
 	switch (task) {
-		case 'post-title-content':
-			return {
-				schema: ZhHantPostTranslationSchema,
-				maxOutputTokens: 2400,
-				system: `你是專業的新聞翻譯編輯。請只輸出符合 schema 的繁體中文結果。
-
-任務：
-- title: 將標題翻譯成自然流暢的繁體中文
-- content: 將完整貼文內容翻譯成自然流暢的繁體中文，不要摘要
-
-規則：
-- 忠實保留原文語氣，不要新增資訊
-- 若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然繁體中文
-- 不要使用 Markdown。`,
-			};
 		case 'post-title':
 			return {
 				schema: ZhHantTitleTranslationSchema,
@@ -266,11 +240,7 @@ async function generateZhHantMetadataTranslation(
 	resource: ResourceTranslationInput,
 	env: CoreEnv,
 	task: ZhHantMetadataTranslationTask,
-): Promise<
-	| z.infer<typeof ZhHantMetadataTranslationSchema>
-	| z.infer<typeof ZhHantTitleTranslationSchema>
-	| z.infer<typeof ZhHantPostTranslationSchema>
-> {
+): Promise<z.infer<typeof ZhHantMetadataTranslationSchema> | z.infer<typeof ZhHantTitleTranslationSchema>> {
 	const content = resource.content.trim();
 	if (!content) throw new Error(`Resource ${resource.id} has no content`);
 	const summaryLine = resource.summary?.trim() ? `\n摘要：${resource.summary.trim()}` : '';
@@ -405,7 +375,7 @@ async function translatePlannedContent(
 	}
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v18';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v19';
 const ResourceTranslationRevisionSchema = z.string().regex(/^[0-9a-f]{32}$/);
 const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 
