@@ -51,7 +51,7 @@ Content arrives (source monitor / saved URL / uploaded blob / resync)
   │
   ├─ 1. Acquire ─────────────── Fetch a URL draft, or load/extract an app-owned blob
   ├─ 2. Resolve ─────────────── Finalize kind/platform identity, paper metadata, and subject intent
-  ├─ 3. AI Analysis ─────────── One structured call → tags, keywords, named entities
+  ├─ 3. AI Analysis ─────────── One structured call → tags, keywords, original language
   ├─ 4. Host Images ─────────── Stream canonical remote images to Cloudflare Images
   ├─ 5. Finalize DB ─────────── Create or update a canonical URL resource; enrich an existing stored blob
   └─ 6. Follow-ups ──────────── Apply user save; enqueue translation, subject, and corpus-search jobs
@@ -67,21 +67,11 @@ short native Workflow retention. Each durable step retries independently.
 
 | Stage                   | Model             | What it does                                                                                      |
 | ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------- |
-| **Analysis**          | AI Gateway structured output | Resource → tags, keywords, and named entities with original + zh-TW names                         |
+| **Analysis**          | AI Gateway structured output | Resource → tags, keywords, and canonical original language                                       |
 | **Translation**       | AI Gateway text models      | Admitted persisted Resources → zh-Hant title, summary, and content                                |
 | **Retrieval Index**   | Cloudflare AI Search  | Hybrid keyword and semantic retrieval over enriched corpus documents                              |
 
 Resource analysis is one structured call. Translation runs later in its own Workflow, so localization failure cannot invalidate an already persisted canonical Resource.
-
-### Entity Quality Policy
-
-The core worker keeps entity storage deterministic and conservative. It normalizes obvious duplicates, gates known entity types, filters generic tokens and self-source aliases, and caps stored entities per resource.
-
-It intentionally does not perform semantic alias merging in the database. Model families, company/product containment, and alias groups are presentation-layer concerns until they have a reviewed alias source. For example, `google`, `google deepmind`, and `gemini` can be related without being the same canonical database entity.
-
-Entity extraction remains enabled even though the Collection Wiki product surface is retired. The derived annotations live only in `resources.entities` and are retained for future retrieval or presentation work; there is no normalized global entity graph or reverse index.
-
-Add normalized entity tables only when a real product consumer needs cross-resource queries that the resource-local JSON cannot answer cleanly. Potential future additions such as reviewed aliases or extraction-run history should follow that consumer rather than precede it.
 
 ## Stack
 

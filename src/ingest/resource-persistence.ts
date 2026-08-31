@@ -10,8 +10,8 @@ import {
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
 import type { ProcessingResource } from './acquisition';
-import { type ResourceAnalysis, toStoredResourceEntities } from './analysis';
-import { persistYouTubeData, prepareYouTubeData } from './platforms/youtube-persistence';
+import type { ResourceAnalysis } from './analysis';
+import { persistYouTubeData } from './platforms/youtube-persistence';
 import { syncResourceReferences } from './resource-references';
 
 export type ResourceDraftRelation =
@@ -93,7 +93,6 @@ export function prepareResolvedResource(
 	const prepared = {
 		content,
 		creators: media.creators,
-		entities: toStoredResourceEntities(analysis.entities, resource.resourcePlatform, resource.source, resource.creators),
 		fileType: resource.fileType ?? null,
 		identifiers,
 		keywords: [...analysis.keywords],
@@ -116,7 +115,7 @@ export function prepareResolvedResource(
 			...prepared,
 			kind: resource.kind,
 			resourcePlatform: resource.resourcePlatform,
-			youtube: prepareYouTubeData(resource.youtube),
+			youtube: resource.youtube,
 		} as const;
 	}
 	return {
@@ -268,7 +267,6 @@ async function writeCanonicalResource(
 			creators = ${JSON.stringify(resource.creators)}::jsonb,
 			kind_metadata = ${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb,
 			subject_resource_id = ${subjectResourceId}::uuid,
-			entities = ${JSON.stringify(resource.entities)}::jsonb,
 			enrichment_status = 'enriched',
 			updated_at = NOW()
 		WHERE id = ${resourceId}::uuid

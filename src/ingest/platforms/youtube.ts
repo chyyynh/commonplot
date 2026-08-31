@@ -23,7 +23,6 @@ type YouTubeTranscript = Readonly<{
 	segments: YouTubeTranscriptSegment[];
 	language: string | null;
 	chapters: YouTubeChapter[];
-	chaptersFromDescription: boolean;
 }>;
 type YouTubeHighlights = Readonly<{
 	version: '1.0';
@@ -315,7 +314,6 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string): Promise<Yo
 			segments: transcript.segments,
 			language: transcript.language ?? snippet.defaultAudioLanguage ?? null,
 			chapters,
-			chaptersFromDescription: chapters.length > 0,
 		},
 	};
 }

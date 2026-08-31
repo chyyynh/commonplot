@@ -67,17 +67,11 @@ retention。每個 durable step 各自重試。
 
 | 階段         | 模型              | 說明                                                        |
 | ------------ | ----------------- | ----------------------------------------------------------- |
-| **分析**     | AI Gateway structured output | Resource → 標籤、關鍵字與原文／繁中具名實體                   |
+| **分析**     | AI Gateway structured output | Resource → 標籤、關鍵字與 canonical 原文語言                  |
 | **翻譯**     | AI Gateway text models      | 符合條件的已持久化 Resource → 繁中標題、摘要與正文             |
 | **搜尋索引** | Cloudflare AI Search  | 對完成 enrichment 的 corpus 文件提供 hybrid retrieval       |
 
 Resource analysis 是一次 structured call；翻譯在獨立 Workflow 裡稍後執行，因此 localization 失敗不會讓已寫入的 canonical Resource 失效。
-
-### 實體資料策略
-
-Core 會正規化明顯重複項目、限制實體類型、排除泛詞與來源別名，並限制每筆 resource 儲存的實體數量。
-
-Collection Wiki 產品介面雖已退役，entity extraction 仍刻意保持啟用。衍生註記只存在 `resources.entities`，供未來搜尋或呈現功能使用；目前沒有全域正規化 entity graph 或 reverse index。只有在真實產品需求需要跨 resource 查詢時，才應重新加入正規化 entity tables。
 
 ## 技術棧
 
