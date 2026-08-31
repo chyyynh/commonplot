@@ -298,6 +298,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			async () => persistResolvedResource(await connectCoreDb(this.env), preparedResource, call.persistenceTarget),
 		);
 		const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision } = persistence;
+		const forceTranslationRunKey = target.kind === 'reacquire' ? (await sha256Hex(event.instanceId)).slice(0, 16) : undefined;
 		const saveTarget = call.saveTarget;
 		if (saveTarget) {
 			await step.do(
@@ -322,9 +323,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		if (shouldEnqueueResourceTranslation({ ...preparedResource, scope })) {
 			followUps.push(
 				step.do(
-					'enqueue-resource-translation-v2',
+					'enqueue-resource-translation-v3',
 					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision),
+					() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision, forceTranslationRunKey),
 				),
 			);
 		}

@@ -16,7 +16,7 @@ import {
 } from './markdown-translation';
 import { translateMarkdownBatchToZhHant } from './markdown-translation-model';
 
-type ResourceTranslationPayload = { resourceId: string; translationRevision: string };
+type ResourceTranslationPayload = { force?: boolean; resourceId: string; translationRevision: string };
 const PDF_MIME = 'application/pdf';
 const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const;
 const RESOURCE_TRANSLATION_SOURCES = ['original', 'machine', 'human'] as const;
@@ -137,20 +137,20 @@ function isBlank(value: string | null | undefined): boolean {
 	return !value?.trim();
 }
 
-function metadataTranslationTask(resource: ResourceTranslationInput): ZhHantMetadataTranslationTask | null {
+function metadataTranslationTask(resource: ResourceTranslationInput, force: boolean): ZhHantMetadataTranslationTask | null {
 	const translation = resource.zhHantTranslation;
 	if (resource.kind === 'post') {
 		const content = resource.content.trim();
 		if (content && content.length <= INLINE_POST_CONTENT_TRANSLATION_MAX_LENGTH) {
-			return isBlank(translation?.title) || isBlank(translation?.content) ? 'post-title-content' : null;
+			return force || isBlank(translation?.title) || isBlank(translation?.content) ? 'post-title-content' : null;
 		}
-		return isBlank(translation?.title) ? 'post-title' : null;
+		return force || isBlank(translation?.title) ? 'post-title' : null;
 	}
 	if (resource.kind === 'paper') {
-		if (isBlank(resource.summary)) return isBlank(translation?.title) ? 'paper-title' : null;
-		return isBlank(translation?.title) || isBlank(translation?.summary) ? 'paper-title-summary' : null;
+		if (isBlank(resource.summary)) return force || isBlank(translation?.title) ? 'paper-title' : null;
+		return force || isBlank(translation?.title) || isBlank(translation?.summary) ? 'paper-title-summary' : null;
 	}
-	return isBlank(translation?.title) || isBlank(translation?.summary) ? 'article-title-summary' : null;
+	return force || isBlank(translation?.title) || isBlank(translation?.summary) ? 'article-title-summary' : null;
 }
 
 function hasTranslatableContent(content: string): boolean {
@@ -169,7 +169,7 @@ function needsMachineContentTranslation(resource: ResourceTranslationInput): boo
 	return translated.length / content.length < PARTIAL_CONTENT_TRANSLATION_RATIO;
 }
 
-function planZhHantTranslation(resource: ResourceTranslationInput): ZhHantTranslationPlan {
+function planZhHantTranslation(resource: ResourceTranslationInput, force: boolean): ZhHantTranslationPlan {
 	const translation = resource.zhHantTranslation;
 	if (
 		!shouldEnqueueResourceTranslation(resource) ||
@@ -180,9 +180,9 @@ function planZhHantTranslation(resource: ResourceTranslationInput): ZhHantTransl
 		return { metadata: null, content: null };
 	}
 
-	const metadata = metadataTranslationTask(resource);
+	const metadata = metadataTranslationTask(resource, force);
 	const content = resource.content.trim();
-	if (!content || !hasTranslatableContent(content) || !needsMachineContentTranslation(resource)) {
+	if (!content || !hasTranslatableContent(content) || (!force && !needsMachineContentTranslation(resource))) {
 		return { metadata, content: null };
 	}
 	if (metadata === 'post-title-content') return { metadata, content: null };
@@ -397,8 +397,9 @@ async function translatePlannedContent(
 	}
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v13';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v14';
 const ResourceTranslationRevisionSchema = z.string().regex(/^[0-9a-f]{32}$/);
+const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 
 function isResourceTranslationRevision(value: unknown): value is string {
 	return z.validate(ResourceTranslationRevisionSchema, value);
@@ -542,18 +543,31 @@ async function persistMachineZhHantTranslation(
 	return result.rows.length > 0;
 }
 
-// One stable instance per translation revision dedupes duplicate enqueue calls;
-// a changed original gets a new ID.
-export async function enqueueResourceTranslation(env: CoreEnv, resourceId: string, translationRevision: string): Promise<string> {
+// Normal ingestion dedupes by source revision. Explicit reacquisition supplies a deterministic run key so every operator resync
+// receives a fresh instance while retries of the same processing Workflow remain idempotent.
+export async function enqueueResourceTranslation(
+	env: CoreEnv,
+	resourceId: string,
+	translationRevision: string,
+	forceRunKey?: string,
+): Promise<string> {
 	if (!isResourceTranslationRevision(translationRevision)) throw new Error('Invalid resource translation revision');
-	const id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
-	await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([{ id, params: { resourceId, translationRevision } }]);
+	const validatedForceRunKey = forceRunKey === undefined ? null : ForcedTranslationRunKeySchema.parse(forceRunKey);
+	const id = validatedForceRunKey
+		? `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-force-${resourceId}-${validatedForceRunKey}`
+		: `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
+	await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([
+		{
+			id,
+			params: { ...(validatedForceRunKey ? { force: true } : {}), resourceId, translationRevision },
+		},
+	]);
 	return id;
 }
 
 export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceTranslationPayload> {
 	async run(event: WorkflowEvent<ResourceTranslationPayload>, step: WorkflowStep) {
-		const { resourceId, translationRevision } = event.payload;
+		const { force = false, resourceId, translationRevision } = event.payload;
 		const inputStream = await step.do<ReadableStream<Uint8Array> | null>(
 			'load-resource-translation-input-stream-v4',
 			{
@@ -576,7 +590,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		}
 
 		const resource = input.resource;
-		const translationPlan = planZhHantTranslation(resource);
+		const translationPlan = planZhHantTranslation(resource, force);
 		const metadataTask = translationPlan.metadata;
 		if (!metadataTask && translationPlan.content !== 'translate') return;
 		const initialContent = resource.content.trim();
