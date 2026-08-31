@@ -353,7 +353,7 @@ async function translatePlannedContent(
 	for (const [index, batch] of markdownPlan.batches.entries()) {
 		try {
 			const translatedBatch = await step.do(
-				`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v3`,
+				`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v4`,
 				{ retries: { limit: 3, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 				(context) => translateMarkdownBatchToZhHant(batch, env, resourceId, index + 1, markdownPlan.batches.length, context.attempt),
 			);
@@ -397,7 +397,7 @@ async function translatePlannedContent(
 	}
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v12';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v13';
 const ResourceTranslationRevisionSchema = z.string().regex(/^[0-9a-f]{32}$/);
 
 function isResourceTranslationRevision(value: unknown): value is string {

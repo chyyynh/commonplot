@@ -17,6 +17,7 @@ const TRANSLATABLE_CHARACTER = /[\p{L}\p{N}]/u;
 const URL_OR_EMAIL = /^(?:https?:\/\/|mailto:|www\.)\S+$|^[^\s@]+@[^\s@]+\.[^\s@]+$/iu;
 const TRANSLATED_PROSE_SENTINEL = '<translated-prose>';
 const INLINE_TOKEN_PATTERN = /<\/?n-[0-9]{6}>|<n-[0-9]{6}\/>/gu;
+const MAX_BOUNDARY_REFERENCE_CHARACTERS = 256;
 const FRONTMATTER_PRESETS: Array<'toml' | 'yaml'> = ['yaml', 'toml'];
 
 interface TomlFrontmatter extends Literal {
@@ -73,6 +74,7 @@ export type MarkdownSegmentTranslation = Readonly<{
 
 export type MarkdownTranslationBoundary = Readonly<{
 	edge: 'atom' | 'close' | 'open';
+	reference?: string;
 	slot: number;
 }>;
 
@@ -322,12 +324,25 @@ function inlineTokens(value: string): string[] {
 	return value.match(INLINE_TOKEN_PATTERN) ?? [];
 }
 
+function protectedAtomReference(inline: ProtectedInline): string | undefined {
+	if (inline.kind !== 'atom' || (inline.node.type !== 'inlineCode' && inline.node.type !== 'inlineMath')) return undefined;
+	const value = inline.node.value.slice(0, MAX_BOUNDARY_REFERENCE_CHARACTERS);
+	return value || undefined;
+}
+
 function splitMarkdownTranslationSegment(segment: MarkdownTranslationSegment): MarkdownTranslationChunkTemplate & {
 	tokens: readonly string[];
 } {
 	const tokens = inlineTokens(segment.text);
 	const chunks: string[] = [];
 	const boundaries: MarkdownTranslationBoundary[] = [];
+	const atomReferences = new Map(
+		segment.protectedInlines.flatMap((inline) => {
+			if (inline.kind !== 'atom') return [];
+			const reference = protectedAtomReference(inline);
+			return reference ? [[inline.token, reference] as const] : [];
+		}),
+	);
 	const slots = new Map<string, number>();
 	let cursor = 0;
 	for (const token of tokens) {
@@ -344,6 +359,7 @@ function splitMarkdownTranslationSegment(segment: MarkdownTranslationSegment): M
 		}
 		boundaries.push({
 			edge: token.startsWith('</') ? 'close' : token.endsWith('/>') ? 'atom' : 'open',
+			...(atomReferences.has(token) ? { reference: atomReferences.get(token) } : {}),
 			slot,
 		});
 		cursor = index + token.length;

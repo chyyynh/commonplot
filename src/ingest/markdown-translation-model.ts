@@ -40,6 +40,7 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 輸入契約：
 - 每個 segment 的所有 chunks 合起來，是一個完整標題、段落、表格儲存格，或超長純文字段落的一個完整句界切片
 - boundaries 是由程式保管的連結、強調、圖片、程式碼、公式、HTML 等 inline 結構；chunks[0] 在第一個 boundary 前，之後每個 chunks[i] 位於相鄰 boundaries 之間
+- atom boundary 的 reference 是該位置將由程式原樣插回的 code 或公式預覽，只供理解句意與語意角色；不要把 reference 複製到 chunk
 - boundaries 只用來理解文字位置，不屬於輸出；context 只供消歧義，也不屬於輸出
 
 翻譯準則：

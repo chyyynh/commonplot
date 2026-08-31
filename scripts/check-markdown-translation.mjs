@@ -228,26 +228,28 @@ assert.throws(
 	'model output must not erase all prose while Core restores the structure',
 );
 
-const inlineCodePlan = planMarkdownTranslation('Add options to the existing `value` in `config`, then apply them with:');
+const inlineCodePlan = planMarkdownTranslation(
+	'Add options to the existing `GRUB_CMDLINE_LINUX_DEFAULT` value in `/etc/default/grub`, then apply them with:',
+);
 const inlineCodeSegment = inlineCodePlan.segments[0];
 assert.ok(inlineCodeSegment, 'inline-code fixture must produce a segment');
 assert.deepEqual(
 	createMarkdownTranslationChunkTemplate(inlineCodeSegment),
 	{
 		boundaries: [
-			{ edge: 'atom', slot: 1 },
-			{ edge: 'atom', slot: 2 },
+			{ edge: 'atom', reference: 'GRUB_CMDLINE_LINUX_DEFAULT', slot: 1 },
+			{ edge: 'atom', reference: '/etc/default/grub', slot: 2 },
 		],
-		chunks: ['Add options to the existing ', ' in ', ', then apply them with:'],
+		chunks: ['Add options to the existing ', ' value in ', ', then apply them with:'],
 	},
-	'opaque inline code must reach the model only as positional boundaries',
+	'opaque inline code must reach the model as positional boundaries with read-only semantic references',
 );
 assert.equal(
 	compileMarkdownTranslation(inlineCodePlan, [
-		compileMarkdownTranslationChunks(inlineCodeSegment, ['將選項加入現有的', '（位於', '）中，然後套用：']),
+		compileMarkdownTranslationChunks(inlineCodeSegment, ['將選項加入現有的', '值；該值位於', '，然後執行以下指令：']),
 	]),
-	'將選項加入現有的`value`（位於`config`）中，然後套用：',
-	'Core must restore multiple atomic inline nodes without asking the model to reproduce their tokens',
+	'將選項加入現有的`GRUB_CMDLINE_LINUX_DEFAULT`值；該值位於`/etc/default/grub`，然後執行以下指令：',
+	'Core must restore multiple atomic inline nodes while the translation preserves their semantic roles',
 );
 
 const malformedMarkdown = `## Malformed but parseable\n\nAn **unclosed delimiter and a [broken link label must remain ordinary prose.`;
