@@ -17,7 +17,8 @@ const TRANSLATABLE_CHARACTER = /[\p{L}\p{N}]/u;
 const URL_OR_EMAIL = /^(?:https?:\/\/|mailto:|www\.)\S+$|^[^\s@]+@[^\s@]+\.[^\s@]+$/iu;
 const TRANSLATED_PROSE_SENTINEL = '<translated-prose>';
 const INLINE_TOKEN_PATTERN = /<\/?n-[0-9]{6}>|<n-[0-9]{6}\/>/gu;
-const MAX_BOUNDARY_REFERENCE_CHARACTERS = 256;
+const MAX_INLINE_REFERENCE_CHARACTERS = 256;
+const ROOT_TRANSLATION_SEQUENCE = 'root';
 const FRONTMATTER_PRESETS: Array<'toml' | 'yaml'> = ['yaml', 'toml'];
 
 interface TomlFrontmatter extends Literal {
@@ -37,7 +38,7 @@ declare module 'mdast' {
 
 type ProseBlock = Heading | Paragraph | TableCell;
 
-type MarkdownTranslationTarget = Readonly<{
+type MarkdownBlockTranslationTarget = Readonly<{
 	boundaries: readonly string[] | null;
 	path: readonly number[];
 	segmentIds: readonly string[];
@@ -67,28 +68,36 @@ export type MarkdownTranslationBatch = Readonly<{
 	sourceCharacters: number;
 }>;
 
-export type MarkdownSegmentTranslation = Readonly<{
-	id: string;
-	text: string;
-}>;
+export type MarkdownTranslationPart = Readonly<{ type: 'inline'; value: string }> | Readonly<{ type: 'text'; value: string }>;
 
-export type MarkdownTranslationBoundary = Readonly<{
-	edge: 'atom' | 'close' | 'open';
+export type MarkdownTranslationInline = Readonly<{
+	canReorder?: false;
+	kind: PhrasingContent['type'];
 	reference?: string;
-	slot: number;
 }>;
 
-export type MarkdownTranslationChunkTemplate = Readonly<{
-	boundaries: readonly MarkdownTranslationBoundary[];
-	chunks: readonly string[];
+export type MarkdownTranslationSourcePart = string | Readonly<{ id: string }>;
+
+export type MarkdownTranslationTemplate = Readonly<{
+	inlines: Readonly<Record<string, MarkdownTranslationInline>>;
+	sequences: Readonly<Record<string, readonly MarkdownTranslationSourcePart[]>>;
 }>;
+
+export type MarkdownTranslationTarget = Readonly<{
+	sequences: Readonly<Record<string, readonly MarkdownTranslationPart[]>>;
+}>;
+
+export type MarkdownSegmentTranslation = MarkdownTranslationTarget &
+	Readonly<{
+		id: string;
+	}>;
 
 export type MarkdownTranslationPlan = Readonly<{
 	batches: readonly MarkdownTranslationBatch[];
 	segments: readonly MarkdownTranslationSegment[];
 	sourceMarkdown: string;
 	sourceSkeleton: string;
-	targets: readonly MarkdownTranslationTarget[];
+	targets: readonly MarkdownBlockTranslationTarget[];
 }>;
 
 export type MarkdownTranslationPlanOptions = Readonly<{
@@ -108,7 +117,7 @@ type ResolvedPlanOptions = Readonly<{
 type PlanAccumulator = {
 	nextInlineIndex: number;
 	segments: MarkdownTranslationSegment[];
-	targets: MarkdownTranslationTarget[];
+	targets: MarkdownBlockTranslationTarget[];
 };
 
 type VisitContext = Readonly<{
@@ -301,9 +310,16 @@ function structuralNode(
 	for (const [key, value] of Object.entries(node)) {
 		if (key === 'data' || key === 'position') continue;
 		if (key === 'children' && isParent(node)) {
-			structure.children = node.children
+			const children = node.children
 				.map((child, index) => structuralNode(child, [...path, index], translatedBlocks, [...ancestors, node], translated))
 				.filter((child) => child !== null);
+			structure.children = translated
+				? children.sort((left, right) => {
+						const leftKey = JSON.stringify(left);
+						const rightKey = JSON.stringify(right);
+						return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+					})
+				: children;
 			continue;
 		}
 		if (translated && key === 'alt' && (node.type === 'image' || node.type === 'imageReference')) {
@@ -326,73 +342,95 @@ function inlineTokens(value: string): string[] {
 
 function protectedAtomReference(inline: ProtectedInline): string | undefined {
 	if (inline.kind !== 'atom' || (inline.node.type !== 'inlineCode' && inline.node.type !== 'inlineMath')) return undefined;
-	const value = inline.node.value.slice(0, MAX_BOUNDARY_REFERENCE_CHARACTERS);
+	const value = inline.node.value.slice(0, MAX_INLINE_REFERENCE_CHARACTERS);
 	return value || undefined;
 }
 
-function splitMarkdownTranslationSegment(segment: MarkdownTranslationSegment): MarkdownTranslationChunkTemplate & {
-	tokens: readonly string[];
-} {
-	const tokens = inlineTokens(segment.text);
-	const chunks: string[] = [];
-	const boundaries: MarkdownTranslationBoundary[] = [];
-	const atomReferences = new Map(
-		segment.protectedInlines.flatMap((inline) => {
-			if (inline.kind !== 'atom') return [];
-			const reference = protectedAtomReference(inline);
-			return reference ? [[inline.token, reference] as const] : [];
-		}),
-	);
-	const slots = new Map<string, number>();
+function protectedInlineId(inline: ProtectedInline): string {
+	const id = (inline.kind === 'atom' ? inline.token : inline.open).match(/n-[0-9]{6}/u)?.[0];
+	if (!id) throw new MarkdownTranslationInvariantError('invalid-plan', 'Protected inline has no stable identifier');
+	return id;
+}
+
+function canReorderProtectedInline(inline: ProtectedInline): boolean {
+	return inline.kind === 'container' || inline.node.type === 'inlineCode' || inline.node.type === 'inlineMath';
+}
+
+function appendTranslationText(parts: MarkdownTranslationSourcePart[], value: string): void {
+	if (!value) return;
+	const previous = parts.at(-1);
+	if (typeof previous === 'string') parts[parts.length - 1] = previous + value;
+	else parts.push(value);
+}
+
+function parseTranslationSequences(
+	text: string,
+	protectedInlines: readonly ProtectedInline[],
+): Readonly<Record<string, readonly MarkdownTranslationSourcePart[]>> {
+	const registry = inlineRegistry(protectedInlines);
+	const matches = [...text.matchAll(INLINE_TOKEN_PATTERN)];
+	const sequences: Record<string, MarkdownTranslationSourcePart[]> = {};
 	let cursor = 0;
-	for (const token of tokens) {
-		const index = segment.text.indexOf(token, cursor);
-		const name = token.match(/n-[0-9]{6}/u)?.[0];
-		if (index < cursor || !name) {
-			throw new MarkdownTranslationInvariantError('invalid-plan', `Markdown segment ${segment.id} has an invalid inline token`);
+	let matchIndex = 0;
+
+	const fail = (message: string): never => {
+		throw new MarkdownTranslationInvariantError('invalid-plan', message);
+	};
+	const parseSequence = (sequenceId: string, container: ProtectedContainer | null): void => {
+		if (Object.hasOwn(sequences, sequenceId)) fail(`Inline sequence ${sequenceId} appears more than once`);
+		const parts: MarkdownTranslationSourcePart[] = [];
+		sequences[sequenceId] = parts;
+		while (matchIndex < matches.length) {
+			const match = matches[matchIndex];
+			if (!match || match.index === undefined) fail('Inline token has no source offset');
+			appendTranslationText(parts, text.slice(cursor, match.index));
+			const token = match[0];
+			cursor = match.index + token.length;
+			matchIndex += 1;
+			if (container && token === container.close) return;
+			if (registry.closings.has(token)) fail(`Inline sequence ${sequenceId} has an unexpected closing token`);
+			const atom = registry.atoms.get(token);
+			if (atom) {
+				parts.push({ id: protectedInlineId(atom) });
+				continue;
+			}
+			const opening = registry.openings.get(token);
+			if (opening) {
+				const inlineId = protectedInlineId(opening);
+				parts.push({ id: inlineId });
+				parseSequence(inlineId, opening);
+				continue;
+			}
+			fail(`Inline sequence ${sequenceId} contains an unknown token`);
 		}
-		chunks.push(segment.text.slice(cursor, index));
-		let slot = slots.get(name);
-		if (slot === undefined) {
-			slot = slots.size + 1;
-			slots.set(name, slot);
-		}
-		boundaries.push({
-			edge: token.startsWith('</') ? 'close' : token.endsWith('/>') ? 'atom' : 'open',
-			...(atomReferences.has(token) ? { reference: atomReferences.get(token) } : {}),
-			slot,
-		});
-		cursor = index + token.length;
-	}
-	chunks.push(segment.text.slice(cursor));
-	return { boundaries, chunks, tokens };
+		appendTranslationText(parts, text.slice(cursor));
+		cursor = text.length;
+		if (container) fail(`Inline sequence ${sequenceId} has no closing token`);
+	};
+
+	parseSequence(ROOT_TRANSLATION_SEQUENCE, null);
+	return sequences;
 }
 
-// The model translates only text slots. Core owns every inline token and restores it deterministically after generation.
-export function createMarkdownTranslationChunkTemplate(segment: MarkdownTranslationSegment): MarkdownTranslationChunkTemplate {
-	const { boundaries, chunks } = splitMarkdownTranslationSegment(segment);
-	return { boundaries, chunks };
-}
-
-export function compileMarkdownTranslationChunks(
-	segment: MarkdownTranslationSegment,
-	translatedChunks: readonly string[],
-): MarkdownSegmentTranslation {
-	const template = splitMarkdownTranslationSegment(segment);
-	if (translatedChunks.length !== template.chunks.length) {
-		throw new MarkdownTranslationInvariantError(
-			'invalid-result',
-			`Translated segment ${segment.id} expected ${template.chunks.length} text chunks but received ${translatedChunks.length}`,
-		);
-	}
-	if (!translatedChunks.join('').trim()) {
-		throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} has no translated prose`);
-	}
-	let text = translatedChunks[0] ?? '';
-	for (const [index, token] of template.tokens.entries()) {
-		text += token + (translatedChunks[index + 1] ?? '');
-	}
-	return { id: segment.id, text };
+// Like XLIFF inline codes, these references protect syntax and destinations. Named parent sequences normalize the inline tree without
+// a recursive model schema: siblings can move for target-language word order, but prose cannot cross a formatting scope.
+export function createMarkdownTranslationTemplate(segment: MarkdownTranslationSegment): MarkdownTranslationTemplate {
+	return {
+		inlines: Object.fromEntries(
+			segment.protectedInlines.map((inline) => {
+				const reference = protectedAtomReference(inline);
+				return [
+					protectedInlineId(inline),
+					{
+						...(!canReorderProtectedInline(inline) ? { canReorder: false as const } : {}),
+						kind: inline.node.type,
+						...(reference ? { reference } : {}),
+					},
+				];
+			}),
+		),
+		sequences: parseTranslationSequences(segment.text, segment.protectedInlines),
+	};
 }
 
 function nextInlineToken(kind: 'atom' | 'close' | 'open', index: number): string {
@@ -410,8 +448,8 @@ function isAutolink(node: PhrasingContent): boolean {
 	);
 }
 
-// A prose block is the smallest unit that still carries sentence-level meaning. Inline nodes become opaque tokens so the model can
-// rewrite the whole sentence naturally without seeing or editing destinations, code, formulas, or Markdown syntax.
+// A prose block is the smallest unit that still carries sentence-level meaning. Inline nodes use an internal encoded form that is
+// converted to the model-facing sequence IR, so the model never sees or edits destinations, code, formulas, or Markdown syntax.
 function encodePhrasing(
 	children: readonly PhrasingContent[],
 	firstInlineIndex: number,
@@ -531,8 +569,165 @@ function decodePhrasing(text: string, protectedInlines: readonly ProtectedInline
 	return frames[0]!.children;
 }
 
+function sameStringMembers(left: readonly string[], right: readonly string[]): boolean {
+	if (left.length !== right.length) return false;
+	const sortedLeft = [...left].sort();
+	const sortedRight = [...right].sort();
+	return sortedLeft.every((value, index) => value === sortedRight[index]);
+}
+
+function sourceTranslationTextSlots(parts: readonly MarkdownTranslationSourcePart[]): string[] {
+	const slots = [''];
+	for (const part of parts) {
+		if (typeof part === 'string') slots[slots.length - 1] += part;
+		else slots.push('');
+	}
+	return slots;
+}
+
+function targetTranslationTextSlots(parts: readonly MarkdownTranslationPart[]): string[] {
+	const slots = [''];
+	for (const part of parts) {
+		if (part.type === 'text') slots[slots.length - 1] += part.value;
+		else slots.push('');
+	}
+	return slots;
+}
+
+function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, target: MarkdownTranslationTarget): string {
+	const template = createMarkdownTranslationTemplate(segment);
+	const targetSequences = target?.sequences;
+	if (!targetSequences || typeof targetSequences !== 'object' || Array.isArray(targetSequences)) {
+		throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} has no inline sequences`);
+	}
+	const expectedSequenceIds = Object.keys(template.sequences);
+	const receivedSequenceIds = Object.keys(targetSequences);
+	if (!sameStringMembers(expectedSequenceIds, receivedSequenceIds)) {
+		throw new MarkdownTranslationInvariantError(
+			'markdown-structure-changed',
+			`Translated segment ${segment.id} changed its inline sequence keys`,
+		);
+	}
+	const protectedById = new Map(segment.protectedInlines.map((inline) => [protectedInlineId(inline), inline]));
+	let translatedText = '';
+
+	const compileSequence = (sequenceId: string): string => {
+		const sourceParts = template.sequences[sequenceId];
+		const targetParts = targetSequences[sequenceId];
+		if (!sourceParts || !Array.isArray(targetParts)) {
+			throw new MarkdownTranslationInvariantError(
+				'markdown-structure-changed',
+				`Translated segment ${segment.id} is missing inline sequence ${sequenceId}`,
+			);
+		}
+		const expectedInlineIds = sourceParts.flatMap((part) => (typeof part === 'string' ? [] : [part.id]));
+		const expectedInlineSet = new Set(expectedInlineIds);
+		const seenInlineIds = new Set<string>();
+		const receivedInlineIds: string[] = [];
+		let compiled = '';
+		let sequenceText = '';
+		for (const part of targetParts) {
+			const candidate = part as { type?: unknown; value?: unknown };
+			if (
+				!candidate ||
+				typeof candidate !== 'object' ||
+				!sameStringMembers(Object.keys(candidate), ['type', 'value']) ||
+				typeof candidate.value !== 'string'
+			) {
+				throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} has an invalid inline part`);
+			}
+			if (candidate.type === 'text') {
+				if (
+					!candidate.value ||
+					candidate.value.includes('\0') ||
+					/\r?\n[\t ]*\r?\n/u.test(candidate.value) ||
+					inlineTokens(candidate.value).length
+				) {
+					throw new MarkdownTranslationInvariantError(
+						'invalid-result',
+						`Translated segment ${segment.id} has unsafe text in inline sequence ${sequenceId}`,
+					);
+				}
+				compiled += candidate.value;
+				sequenceText += candidate.value;
+				translatedText += candidate.value;
+				continue;
+			}
+			if (candidate.type !== 'inline') {
+				throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} has an unknown part type`);
+			}
+			const inlineId = candidate.value;
+			if (!expectedInlineSet.has(inlineId) || seenInlineIds.has(inlineId)) {
+				throw new MarkdownTranslationInvariantError(
+					'markdown-structure-changed',
+					`Translated segment ${segment.id} moved, duplicated, or invented inline ${inlineId}`,
+				);
+			}
+			seenInlineIds.add(inlineId);
+			receivedInlineIds.push(inlineId);
+			const inline = protectedById.get(inlineId);
+			if (!inline) {
+				throw new MarkdownTranslationInvariantError(
+					'markdown-structure-changed',
+					`Translated segment ${segment.id} references unknown inline ${inlineId}`,
+				);
+			}
+			compiled += inline.kind === 'atom' ? inline.token : `${inline.open}${compileSequence(inlineId)}${inline.close}`;
+		}
+		if (seenInlineIds.size !== expectedInlineSet.size) {
+			throw new MarkdownTranslationInvariantError(
+				'markdown-structure-changed',
+				`Translated segment ${segment.id} omitted an inline from sequence ${sequenceId}`,
+			);
+		}
+		const hasFixedInline = expectedInlineIds.some((inlineId) => {
+			const inline = protectedById.get(inlineId);
+			return inline ? !canReorderProtectedInline(inline) : true;
+		});
+		if (hasFixedInline && !expectedInlineIds.every((inlineId, index) => receivedInlineIds[index] === inlineId)) {
+			throw new MarkdownTranslationInvariantError(
+				'markdown-structure-changed',
+				`Translated segment ${segment.id} reordered a fixed inline in sequence ${sequenceId}`,
+			);
+		}
+		if (hasFixedInline) {
+			const sourceSlots = sourceTranslationTextSlots(sourceParts);
+			const targetSlots = targetTranslationTextSlots(targetParts);
+			for (const [index, sourceSlot] of sourceSlots.entries()) {
+				const targetSlot = targetSlots[index] ?? '';
+				if (isTranslatableProse(sourceSlot) && !isTranslatableProse(targetSlot)) {
+					throw new MarkdownTranslationInvariantError(
+						'invalid-result',
+						`Translated segment ${segment.id} erased prose beside a fixed inline in sequence ${sequenceId}`,
+					);
+				}
+				if (!sourceSlot.trim() && isTranslatableProse(targetSlot)) {
+					throw new MarkdownTranslationInvariantError(
+						'markdown-structure-changed',
+						`Translated segment ${segment.id} moved prose across a fixed inline in sequence ${sequenceId}`,
+					);
+				}
+			}
+		}
+		const sourceHasProse = sourceParts.some((part) => typeof part === 'string' && isTranslatableProse(part));
+		if (sourceHasProse && !isTranslatableProse(sequenceText)) {
+			throw new MarkdownTranslationInvariantError(
+				'invalid-result',
+				`Translated segment ${segment.id} erased the prose in inline sequence ${sequenceId}`,
+			);
+		}
+		return compiled;
+	};
+
+	const compiled = compileSequence(ROOT_TRANSLATION_SEQUENCE);
+	if (!translatedText.trim() || compiled !== compiled.trim()) {
+		throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} must contain safe, trimmed prose`);
+	}
+	return compiled;
+}
+
 function segmentInputCharacters(segment: MarkdownTranslationSegment): number {
-	return JSON.stringify({ context: segment.context, id: segment.id, ...createMarkdownTranslationChunkTemplate(segment) }).length + 1;
+	return JSON.stringify({ context: segment.context, id: segment.id, ...createMarkdownTranslationTemplate(segment) }).length + 1;
 }
 
 function createBatch(segments: readonly MarkdownTranslationSegment[], index: number): MarkdownTranslationBatch {
@@ -671,20 +866,7 @@ function orderedTranslationMap(
 				`Expected translated segment ${expected.id} at index ${index}, received ${result.id}`,
 			);
 		}
-		if (!result.text.trim() || result.text !== result.text.trim() || /\r?\n[\t ]*\r?\n/u.test(result.text) || result.text.includes('\0')) {
-			throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${result.id} must contain safe, trimmed prose`);
-		}
-		// Preserve token order, not token position relative to prose: Chinese word order may move a formatted phrase, but changing the
-		// structural token sequence could produce a different Markdown tree after this Workflow step has already been persisted.
-		const sourceTokens = inlineTokens(expected.text);
-		const translatedTokens = inlineTokens(result.text);
-		if (JSON.stringify(sourceTokens) !== JSON.stringify(translatedTokens)) {
-			throw new MarkdownTranslationInvariantError(
-				'markdown-structure-changed',
-				`Translated segment ${result.id} changed protected inline tokens`,
-			);
-		}
-		values.set(result.id, result.text);
+		values.set(result.id, compileMarkdownTranslationTarget(expected, result));
 	}
 	return values;
 }
@@ -693,8 +875,12 @@ export function validateMarkdownBatchTranslations(
 	batch: Pick<MarkdownTranslationBatch, 'segments'>,
 	translations: readonly MarkdownSegmentTranslation[],
 ): readonly MarkdownSegmentTranslation[] {
-	const values = orderedTranslationMap(batch.segments, translations);
-	return batch.segments.map((segment) => ({ id: segment.id, text: values.get(segment.id)! }));
+	orderedTranslationMap(batch.segments, translations);
+	return batch.segments.map((segment, index) => {
+		const translation = translations[index];
+		if (!translation) throw new MarkdownTranslationInvariantError('missing-segment', `Missing translated segment ${segment.id}`);
+		return translation;
+	});
 }
 
 export function planMarkdownTranslation(sourceMarkdown: string, options: MarkdownTranslationPlanOptions = {}): MarkdownTranslationPlan {
