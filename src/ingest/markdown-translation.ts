@@ -161,7 +161,7 @@ function parseMarkdownOnce(markdown: string): Root {
 
 function parseMarkdown(markdown: string): Root {
 	const tree = parseMarkdownOnce(markdown);
-	const offsets = ambiguousCurrencyDelimiterOffsets(tree, markdown);
+	const offsets = currencyDelimiterOffsets(tree, markdown);
 	if (!offsets.length) return tree;
 	let escaped = markdown;
 	for (const offset of offsets.sort((left, right) => right - left)) {
@@ -180,18 +180,23 @@ function isParent(node: Nodes): node is Parents {
 	return 'children' in node && Array.isArray(node.children);
 }
 
-function ambiguousCurrencyDelimiterOffsets(tree: Root, source: string): number[] {
+function currencyDelimiterOffsets(tree: Root, source: string): number[] {
 	const offsets: number[] = [];
 	const visit = (node: Nodes): void => {
-		if (node.type === 'inlineMath' && (node.value.includes('](') || node.value.length > 160)) {
+		if (node.type === 'inlineMath') {
 			const start = node.position?.start.offset;
 			const end = node.position?.end.offset;
+			// micromark can read two prices such as "$57 ... $60" as one inline-math node. Override the package only
+			// when both delimiters introduce numeric currency amounts; formula length and contents are not evidence,
+			// because valid TeX is often long and may contain Markdown-like punctuation.
 			if (
 				start !== undefined &&
 				end !== undefined &&
 				source[start] === '$' &&
 				source[end - 1] === '$' &&
-				source.slice(start, start + 2) !== '$$'
+				source.slice(start, start + 2) !== '$$' &&
+				/\p{Nd}/u.test(source[start + 1] ?? '') &&
+				/\p{Nd}/u.test(source[end] ?? '')
 			) {
 				offsets.push(start, end - 1);
 			}

@@ -138,6 +138,18 @@ for (const protectedValue of [
 assert.match(translatedMarkdown, /^[*+-] \[x\]/m, 'checked task state changed');
 assert.match(translatedMarkdown, /^[*+-] \[ \]/m, 'unchecked task state changed');
 
+const longInlineMathFixture = String.raw`A real formula can be longer than ordinary prose.
+
+$$ \underbrace{\log p(z\_s \mid z\_t, y)}\_{\text{conditional distribution}} = \underbrace{\log p(y \mid z\_t, z\_s)}\_{\text{predictive term}} + \underbrace{\log p(z\_s \mid z\_t)}\_{\text{unconditional term}} + c, $$
+
+The equation remains part of the article.`;
+const longInlineMathPlan = planMarkdownTranslation(longInlineMathFixture);
+const longInlineMathResult = compileMarkdownTranslation(
+	longInlineMathPlan,
+	longInlineMathPlan.segments.map((segment) => targetFromSource(segment)),
+);
+assert.match(longInlineMathResult, /\\underbrace\{\\log p/u, 'valid long inline math must survive package round-tripping');
+
 const firstBatch = plan.batches[0];
 assert.ok(firstBatch, 'fixture must contain a batch');
 assert.deepEqual(

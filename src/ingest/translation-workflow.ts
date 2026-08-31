@@ -1,5 +1,5 @@
 // Durable translation execution; resource processing only enqueues this Workflow.
-import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
+import { type WorkflowDynamicDelayContext, WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { generateText, Output } from 'ai';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -69,6 +69,14 @@ const METADATA_CONTENT_MAX_LENGTH = 10000;
 const PARTIAL_CONTENT_TRANSLATION_RATIO = 0.2;
 const MIN_TRANSLATABLE_TEXT_LENGTH = 20;
 const INLINE_POST_CONTENT_TRANSLATION_MAX_LENGTH = 1000;
+const AI_RATE_LIMIT_ERROR = /\b(?:3021|429)\b|rate limit|too many requests/iu;
+
+function translationRetryDelay({ ctx, error }: WorkflowDynamicDelayContext): number {
+	// The provider's RPM window is one minute. Short exponential retries all land inside the same exhausted window,
+	// especially when a source cron starts several translations together. Waiting durably costs no active Worker time.
+	if (AI_RATE_LIMIT_ERROR.test(error.message)) return ctx.attempt * 60_000;
+	return ctx.attempt * 15_000;
+}
 
 type PdfTranslationAdmission = 'not-pdf' | 'private-upload' | 'unsupported';
 
@@ -353,8 +361,8 @@ async function translatePlannedContent(
 	for (const [index, batch] of markdownPlan.batches.entries()) {
 		try {
 			const translatedBatch = await step.do(
-				`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v6`,
-				{ retries: { limit: 3, delay: '15 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
+				`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v7`,
+				{ retries: { limit: 3, delay: translationRetryDelay }, timeout: '300 seconds' },
 				(context) => translateMarkdownBatchToZhHant(batch, env, resourceId, index + 1, markdownPlan.batches.length, context.attempt),
 			);
 			translatedSegments.push(...translatedBatch);
@@ -397,7 +405,7 @@ async function translatePlannedContent(
 	}
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v17';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v18';
 const ResourceTranslationRevisionSchema = z.string().regex(/^[0-9a-f]{32}$/);
 const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 
@@ -599,9 +607,9 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		const patch: MachineZhHantTranslationPatch = {};
 		if (metadataTask) {
 			const translatedMetadata = await step.do(
-				'translate-zh-hant-title-summary',
+				'translate-zh-hant-title-summary-v2',
 				{
-					retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' },
+					retries: { limit: 5, delay: translationRetryDelay },
 					timeout: '180 seconds',
 				},
 				() => generateZhHantMetadataTranslation(resource, this.env, metadataTask),
