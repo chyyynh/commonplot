@@ -1,6 +1,10 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { addTransformations, extractFromHtml } from '@extractus/article-extractor';
+import { fromHtml } from 'hast-util-from-html';
+import { toMdast } from 'hast-util-to-mdast';
+import { gfmToMarkdown } from 'mdast-util-gfm';
+import { toMarkdown } from 'mdast-util-to-markdown';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
 import { type GenericAcquiredMaterial, literalCreator, type PlatformResourceUrl } from './materialize';
 import {
@@ -18,8 +22,8 @@ const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) 
 const MIN_ARTICLE_CONTENT_CHARS = 180;
 const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
 
-// Normalize narrow source-DOM quirks before Readability so the canonical HTML
-// still contains the semantics that Workers AI converts to Markdown.
+// Normalize narrow source-DOM quirks before Readability so the extracted HTML
+// still contains the semantics carried into the Markdown syntax tree.
 addTransformations({
 	patterns: [/^https?:\/\//i],
 	pre(document) {
@@ -114,33 +118,13 @@ async function extractHtmlArticle(html: string, url: string): Promise<ExtractedH
 type PlatformResolution = { platform: PlatformResourceUrl };
 type WebAcquisition = GenericAcquiredMaterial | PdfAcquisitionDraft | PlatformResolution;
 
-async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, processingId: string): Promise<GenericAcquiredMaterial> {
+async function acquireHtmlArticle(html: string, url: string): Promise<GenericAcquiredMaterial> {
 	const article = await extractHtmlArticle(html, url);
 	if (!article) throw new NonRetryableError('No readable article content found');
 
-	const hostname = new URL(url).hostname;
-	const converted = await env.AI.toMarkdown(
-		{
-			name: `${hostname.replace(/^www\./, '')}.html`,
-			blob: new Blob([article.html], { type: 'text/html' }),
-		},
-		{
-			gateway: {
-				id: 'core-ingest',
-				collectLog: true,
-				retries: { maxAttempts: 1 },
-				metadata: {
-					feature: 'html-to-markdown',
-					environment: env.AI_GATEWAY_ENVIRONMENT,
-					processing_id: processingId,
-				},
-			},
-			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
-			conversionOptions: { html: { hostname } },
-		},
-	);
-	if (converted.format === 'error') throw new Error(`Workers AI toMarkdown failed: ${converted.error}`);
-	const content = converted.data.trim();
+	const content = toMarkdown(toMdast(fromHtml(article.html, { fragment: true })), {
+		extensions: [gfmToMarkdown()],
+	}).trim();
 	if (content.length < MIN_ARTICLE_CONTENT_CHARS) {
 		throw new NonRetryableError(`Extracted HTML content is too short (${content.length} chars)`);
 	}
@@ -159,12 +143,7 @@ async function acquireHtmlArticle(env: CoreEnv, html: string, url: string, proce
 	};
 }
 
-async function acquireWebResource(
-	url: string,
-	env: CoreEnv,
-	platformUrl: (url: URL) => PlatformResourceUrl | null,
-	processingId: string,
-): Promise<WebAcquisition> {
+async function acquireWebResource(url: string, platformUrl: (url: URL) => PlatformResourceUrl | null): Promise<WebAcquisition> {
 	const response = await fetch(url, {
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
@@ -229,7 +208,7 @@ async function acquireWebResource(
 		}),
 	);
 	const html = await new Response(body).text();
-	return { ...(await acquireHtmlArticle(env, html, finalUrl, processingId)), canonicalUrl: finalUrl };
+	return { ...(await acquireHtmlArticle(html, finalUrl)), canonicalUrl: finalUrl };
 }
 
 export async function stageWebAcquisition(
@@ -239,10 +218,10 @@ export async function stageWebAcquisition(
 	platformUrl: (url: URL) => PlatformResourceUrl | null,
 ) {
 	const result = await step.do(
-		'acquire-web-v4',
+		'acquire-web-v5',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => {
-			const acquired = await acquireWebResource(input.url, env, platformUrl, input.processingId);
+			const acquired = await acquireWebResource(input.url, platformUrl);
 			return 'platform' in acquired ? acquired : Response.json(acquired).body!;
 		},
 	);

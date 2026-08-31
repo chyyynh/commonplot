@@ -31,6 +31,8 @@
 		"@llamaindex/llama-cloud": "2.15.0",
 		"ai": "7.0.84",
 		"drizzle-orm": "^0.45.2",
+		"hast-util-from-html": "^2.0.3",
+		"hast-util-to-mdast": "^10.1.2",
 		"mdast-util-from-markdown": "^2.0.3",
 		"mdast-util-frontmatter": "^2.0.1",
 		"mdast-util-gfm": "^3.1.0",
