@@ -8,7 +8,6 @@ export async function markSourcesScraped(db: NodePgDatabase, sourceIds: string[]
 		UPDATE sources
 		SET scraped_at = ${scrapedAt},
 		    updated_at = NOW(),
-		    status = 'active',
 		    scrape_state = NULL
 		WHERE ${inArray(sql`id`, sourceIds)}
 		  AND (scraped_at IS NULL OR scraped_at <= ${scrapedAt})
@@ -17,8 +16,8 @@ export async function markSourcesScraped(db: NodePgDatabase, sourceIds: string[]
 	return updated.rows.length;
 }
 
-// Pending sources stop after three validation failures. Active sources keep
-// monitoring through transient provider failures.
+// Operator-managed sources keep monitoring through transient provider
+// failures. `enabled` is an explicit operator switch, never a failure counter.
 export async function recordSourceFailure(db: NodePgDatabase, sourceId: string, error: unknown): Promise<void> {
 	const failedAt = new Date();
 	const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
@@ -30,12 +29,6 @@ export async function recordSourceFailure(db: NodePgDatabase, sourceId: string, 
 					'lastError', ${message}::text,
 					'lastFailureAt', ${failedAt.toISOString()}::text
 				),
-				status = CASE
-					WHEN status = 'pending' AND COALESCE((scrape_state->>'consecutiveFailures')::int, 0) + 1 >= 3
-					THEN 'failed' ELSE status END,
-				enabled = CASE
-					WHEN status = 'pending' AND COALESCE((scrape_state->>'consecutiveFailures')::int, 0) + 1 >= 3
-					THEN false ELSE enabled END,
 				updated_at = ${failedAt}
 			WHERE id = ${sourceId}
 		`);
