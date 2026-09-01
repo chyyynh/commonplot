@@ -48,6 +48,10 @@ function sameMembers(actual, expected) {
 if (/^(?!\s*--)[^\r\n]*\bDROP\s+(?:TABLE|COLUMN)\b/im.test(manualIndexesSource)) {
 	errors.push('manual-indexes.sql must not drop tables or columns; use an explicit cutover');
 }
+const repairWithoutDollarQuotedBodies = manualIndexesSource.replace(/\$\$[\s\S]*?\$\$/g, '$$body$$');
+if (/^(?!\s*--)\s*(?:DELETE|INSERT|UPDATE|WITH\b|LOCK\s+TABLE\b)/im.test(repairWithoutDollarQuotedBodies)) {
+	errors.push('manual-indexes.sql must not mutate application rows or lock tables; use an ordered migration');
+}
 if (/resources_type_check/.test(manualIndexesSource)) {
 	errors.push('manual-indexes.sql must not recreate resources_type_check');
 }
