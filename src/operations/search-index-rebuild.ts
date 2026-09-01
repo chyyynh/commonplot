@@ -110,7 +110,7 @@ async function listCorpusDeltaAfter(db: NodePgDatabase, startedAt: string, curso
 	const result = await db.execute<SearchDeltaRow>(sql`
 		WITH changed_resources AS (
 		  SELECT r.id,
-		         GREATEST(r.updated_at, COALESCE(MAX(translation.updated_at), r.updated_at)) AT TIME ZONE 'UTC' AS updated_at
+		         GREATEST(r.updated_at, COALESCE(MAX(translation.updated_at), r.updated_at)) AS updated_at
 		  FROM resources r
 		  LEFT JOIN resource_translations translation ON translation.resource_id = r.id
 		  WHERE r.scope = 'corpus'
@@ -118,7 +118,7 @@ async function listCorpusDeltaAfter(db: NodePgDatabase, startedAt: string, curso
 		    AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		  GROUP BY r.id, r.updated_at
 		)
-		SELECT id::text, to_char(updated_at, ${UTC_TIMESTAMP_FORMAT}) AS updated_at
+		SELECT id::text, to_char(updated_at AT TIME ZONE 'UTC', ${UTC_TIMESTAMP_FORMAT}) AS updated_at
 		FROM changed_resources
 		WHERE updated_at >= ${startedAt}::timestamptz
 		  AND (
