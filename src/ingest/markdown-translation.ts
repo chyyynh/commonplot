@@ -710,6 +710,42 @@ function hasSubstantialContainedProse(left: string, right: string): boolean {
 	return [...shorter].length >= MIN_CROSS_SEQUENCE_DUPLICATE_CHARACTERS && longer.includes(shorter);
 }
 
+function sequenceSourceText(template: MarkdownTranslationTemplate, sequenceId: string): string {
+	return (template.sequences[sequenceId] ?? []).flatMap((part) => (typeof part === 'string' ? [part] : [])).join('');
+}
+
+function repairExactCrossSequenceDuplication(
+	template: MarkdownTranslationTemplate,
+	targetSequences: Readonly<Record<string, readonly MarkdownTranslationPart[]>>,
+): Readonly<Record<string, readonly MarkdownTranslationPart[]>> {
+	const repaired: Record<string, readonly MarkdownTranslationPart[]> = { ...targetSequences };
+	const sequenceText = new Map(
+		Object.entries(targetSequences).map(([sequenceId, parts]) => [
+			sequenceId,
+			parts.flatMap((part) => (part.type === 'text' ? [part.value] : [])).join(''),
+		]),
+	);
+	const sequenceIds = [...sequenceText.keys()];
+	for (const [index, leftId] of sequenceIds.entries()) {
+		for (const rightId of sequenceIds.slice(index + 1)) {
+			const leftText = sequenceText.get(leftId) ?? '';
+			const rightText = sequenceText.get(rightId) ?? '';
+			if (!hasSubstantialContainedProse(leftText, rightText)) continue;
+			if (hasSubstantialContainedProse(sequenceSourceText(template, leftId), sequenceSourceText(template, rightId))) continue;
+			const [longerId, longerText, shorterText] =
+				leftText.length >= rightText.length ? [leftId, leftText, rightText] : [rightId, rightText, leftText];
+			const longerParts = repaired[longerId];
+			const duplicate = shorterText.trim();
+			if (!longerParts?.every((part) => part.type === 'text') || !duplicate || !longerText.includes(duplicate)) continue;
+			const remainder = longerText.replace(duplicate, '').trim();
+			if (!isTranslatableProse(remainder)) continue;
+			repaired[longerId] = [{ type: 'text', value: remainder }];
+			sequenceText.set(longerId, remainder);
+		}
+	}
+	return repaired;
+}
+
 function assertNoNewCrossSequenceDuplication(
 	segment: MarkdownTranslationSegment,
 	template: MarkdownTranslationTemplate,
@@ -719,8 +755,8 @@ function assertNoNewCrossSequenceDuplication(
 	for (const [index, [leftId, leftText]] of translatedEntries.entries()) {
 		for (const [rightId, rightText] of translatedEntries.slice(index + 1)) {
 			if (!hasSubstantialContainedProse(leftText, rightText)) continue;
-			const sourceLeft = (template.sequences[leftId] ?? []).flatMap((part) => (typeof part === 'string' ? [part] : [])).join('');
-			const sourceRight = (template.sequences[rightId] ?? []).flatMap((part) => (typeof part === 'string' ? [part] : [])).join('');
+			const sourceLeft = sequenceSourceText(template, leftId);
+			const sourceRight = sequenceSourceText(template, rightId);
 			if (hasSubstantialContainedProse(sourceLeft, sourceRight)) continue;
 			throw new MarkdownTranslationInvariantError(
 				'invalid-result',
@@ -732,18 +768,19 @@ function assertNoNewCrossSequenceDuplication(
 
 function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, target: MarkdownTranslationTarget): string {
 	const { reconstruction, template } = createMarkdownTranslationTemplatePlan(segment);
-	const targetSequences = target?.sequences;
-	if (!targetSequences || typeof targetSequences !== 'object' || Array.isArray(targetSequences)) {
+	const rawTargetSequences = target?.sequences;
+	if (!rawTargetSequences || typeof rawTargetSequences !== 'object' || Array.isArray(rawTargetSequences)) {
 		throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} has no inline sequences`);
 	}
 	const expectedSequenceIds = Object.keys(template.sequences);
-	const receivedSequenceIds = Object.keys(targetSequences);
+	const receivedSequenceIds = Object.keys(rawTargetSequences);
 	if (!sameStringMembers(expectedSequenceIds, receivedSequenceIds)) {
 		throw new MarkdownTranslationInvariantError(
 			'markdown-structure-changed',
 			`Translated segment ${segment.id} changed its inline sequence keys`,
 		);
 	}
+	const targetSequences = repairExactCrossSequenceDuplication(template, rawTargetSequences);
 	const protectedById = new Map(segment.protectedInlines.map((inline) => [protectedInlineId(inline), inline]));
 	const translatedSequenceText = new Map<string, string>();
 	let translatedText = '';

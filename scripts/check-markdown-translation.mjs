@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { fromMarkdown } from 'mdast-util-from-markdown';
 
 const {
 	MarkdownTranslationInvariantError,
@@ -28,6 +29,11 @@ function withRootParts(translation, parts) {
 
 function inlineIdsOfKind(template, kind) {
 	return Object.entries(template.inlines).flatMap(([id, inline]) => (inline.kind === kind ? [id] : []));
+}
+
+function markdownPlainText(markdown) {
+	const visit = (node) => (node.type === 'text' ? node.value : 'children' in node ? node.children.map(visit).join('') : '');
+	return visit(fromMarkdown(markdown));
 }
 
 const markdownFixture = `---
@@ -176,24 +182,25 @@ const duplicatedSequenceEmphasisId = inlineIdsOfKind(duplicatedSequenceTemplate,
 assert.ok(duplicatedSequenceEmphasisId, 'cross-sequence duplication fixture must expose its emphasis node');
 const repeatedTranslation = '精確切割羽流的形狀與邊界，即使多個羽流相互重疊。';
 const duplicatedSequenceTranslation = targetFromSource(duplicatedSequenceSegment);
-assert.throws(
-	() =>
-		compileMarkdownTranslation(duplicatedSequencePlan, [
-			{
-				...duplicatedSequenceTranslation,
-				sequences: {
-					...duplicatedSequenceTranslation.sequences,
-					root: [
-						{ type: 'inline', value: duplicatedSequenceEmphasisId },
-						{ type: 'text', value: repeatedTranslation },
-					],
-					[duplicatedSequenceEmphasisId]: [{ type: 'text', value: `羽流描繪：${repeatedTranslation}` }],
-				},
-			},
-		]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'invalid-result',
-	'new long-form duplication across inline sequences must retry instead of persisting repeated prose',
+const repairedDuplicatedSequenceMarkdown = compileMarkdownTranslation(duplicatedSequencePlan, [
+	{
+		...duplicatedSequenceTranslation,
+		sequences: {
+			...duplicatedSequenceTranslation.sequences,
+			root: [
+				{ type: 'inline', value: duplicatedSequenceEmphasisId },
+				{ type: 'text', value: repeatedTranslation },
+			],
+			[duplicatedSequenceEmphasisId]: [{ type: 'text', value: `羽流描繪：${repeatedTranslation}` }],
+		},
+	},
+]);
+assert.equal(
+	markdownPlainText(repairedDuplicatedSequenceMarkdown).split(repeatedTranslation).length - 1,
+	1,
+	'an exact long-form cross-sequence duplicate must be removed from the contaminated sequence',
 );
+assert.match(repairedDuplicatedSequenceMarkdown, /\*羽流描繪：\*/u, 'deduplication must retain the inline label');
 
 const longInlineMathFixture = String.raw`A real formula can be longer than ordinary prose.
 
