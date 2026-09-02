@@ -166,6 +166,35 @@ assert.match(
 	'adjacent emphasis must retain two nodes when target-language spacing is removed',
 );
 
+const duplicatedSequencePlan = planMarkdownTranslation(
+	'*Plume Delineation:* Precisely segmenting the shape and boundaries of a plume, even when multiple plumes overlap.',
+);
+const duplicatedSequenceSegment = duplicatedSequencePlan.segments[0];
+assert.ok(duplicatedSequenceSegment, 'cross-sequence duplication fixture must produce one prose segment');
+const duplicatedSequenceTemplate = createMarkdownTranslationTemplate(duplicatedSequenceSegment);
+const duplicatedSequenceEmphasisId = inlineIdsOfKind(duplicatedSequenceTemplate, 'emphasis')[0];
+assert.ok(duplicatedSequenceEmphasisId, 'cross-sequence duplication fixture must expose its emphasis node');
+const repeatedTranslation = '精確切割羽流的形狀與邊界，即使多個羽流相互重疊。';
+const duplicatedSequenceTranslation = targetFromSource(duplicatedSequenceSegment);
+assert.throws(
+	() =>
+		compileMarkdownTranslation(duplicatedSequencePlan, [
+			{
+				...duplicatedSequenceTranslation,
+				sequences: {
+					...duplicatedSequenceTranslation.sequences,
+					root: [
+						{ type: 'inline', value: duplicatedSequenceEmphasisId },
+						{ type: 'text', value: repeatedTranslation },
+					],
+					[duplicatedSequenceEmphasisId]: [{ type: 'text', value: `羽流描繪：${repeatedTranslation}` }],
+				},
+			},
+		]),
+	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'invalid-result',
+	'new long-form duplication across inline sequences must retry instead of persisting repeated prose',
+);
+
 const longInlineMathFixture = String.raw`A real formula can be longer than ordinary prose.
 
 $$ \underbrace{\log p(z\_s \mid z\_t, y)}\_{\text{conditional distribution}} = \underbrace{\log p(y \mid z\_t, z\_s)}\_{\text{predictive term}} + \underbrace{\log p(z\_s \mid z\_t)}\_{\text{unconditional term}} + c, $$

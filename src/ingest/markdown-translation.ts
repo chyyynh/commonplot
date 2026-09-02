@@ -18,6 +18,7 @@ const URL_OR_EMAIL = /^(?:https?:\/\/|mailto:|www\.)\S+$|^[^\s@]+@[^\s@]+\.[^\s@
 const TRANSLATED_PROSE_SENTINEL = '<translated-prose>';
 const INLINE_TOKEN_PATTERN = /<\/?n-[0-9]{6}>|<n-[0-9]{6}\/>/gu;
 const MAX_INLINE_REFERENCE_CHARACTERS = 256;
+const MIN_CROSS_SEQUENCE_DUPLICATE_CHARACTERS = 20;
 const ROOT_TRANSLATION_SEQUENCE = 'root';
 const FRONTMATTER_PRESETS: Array<'toml' | 'yaml'> = ['yaml', 'toml'];
 
@@ -694,6 +695,41 @@ function sameStringMembers(left: readonly string[], right: readonly string[]): b
 	return sortedLeft.every((value, index) => value === sortedRight[index]);
 }
 
+function normalizedComparableProse(value: string): string {
+	return value
+		.normalize('NFKC')
+		.toLocaleLowerCase()
+		.replace(/[\s\p{P}\p{S}]+/gu, '');
+}
+
+function hasSubstantialContainedProse(left: string, right: string): boolean {
+	const normalizedLeft = normalizedComparableProse(left);
+	const normalizedRight = normalizedComparableProse(right);
+	const shorter = normalizedLeft.length <= normalizedRight.length ? normalizedLeft : normalizedRight;
+	const longer = shorter === normalizedLeft ? normalizedRight : normalizedLeft;
+	return [...shorter].length >= MIN_CROSS_SEQUENCE_DUPLICATE_CHARACTERS && longer.includes(shorter);
+}
+
+function assertNoNewCrossSequenceDuplication(
+	segment: MarkdownTranslationSegment,
+	template: MarkdownTranslationTemplate,
+	translatedSequenceText: ReadonlyMap<string, string>,
+): void {
+	const translatedEntries = [...translatedSequenceText.entries()];
+	for (const [index, [leftId, leftText]] of translatedEntries.entries()) {
+		for (const [rightId, rightText] of translatedEntries.slice(index + 1)) {
+			if (!hasSubstantialContainedProse(leftText, rightText)) continue;
+			const sourceLeft = (template.sequences[leftId] ?? []).flatMap((part) => (typeof part === 'string' ? [part] : [])).join('');
+			const sourceRight = (template.sequences[rightId] ?? []).flatMap((part) => (typeof part === 'string' ? [part] : [])).join('');
+			if (hasSubstantialContainedProse(sourceLeft, sourceRight)) continue;
+			throw new MarkdownTranslationInvariantError(
+				'invalid-result',
+				`Translated segment ${segment.id} duplicated prose across inline sequences ${leftId} and ${rightId}`,
+			);
+		}
+	}
+}
+
 function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, target: MarkdownTranslationTarget): string {
 	const { reconstruction, template } = createMarkdownTranslationTemplatePlan(segment);
 	const targetSequences = target?.sequences;
@@ -709,6 +745,7 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 		);
 	}
 	const protectedById = new Map(segment.protectedInlines.map((inline) => [protectedInlineId(inline), inline]));
+	const translatedSequenceText = new Map<string, string>();
 	let translatedText = '';
 
 	const compileSequence = (sequenceId: string): string => {
@@ -792,6 +829,7 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 				`Translated segment ${segment.id} erased the prose in inline sequence ${sequenceId}`,
 			);
 		}
+		translatedSequenceText.set(sequenceId, sequenceText);
 		return compiled;
 	};
 	const compileSourceSequence = (sourceSequenceId: string): string => {
@@ -816,6 +854,7 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 	};
 
 	const compiled = compileSourceSequence(ROOT_TRANSLATION_SEQUENCE);
+	assertNoNewCrossSequenceDuplication(segment, template, translatedSequenceText);
 	if (!translatedText.trim() || compiled !== compiled.trim()) {
 		throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} must contain safe, trimmed prose`);
 	}
