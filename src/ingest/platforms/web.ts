@@ -122,9 +122,16 @@ async function acquireHtmlArticle(html: string, url: string): Promise<GenericAcq
 	const article = await extractHtmlArticle(html, url);
 	if (!article) throw new NonRetryableError('No readable article content found');
 
-	const content = toMarkdown(toMdast(fromHtml(article.html, { fragment: true })), {
-		extensions: [gfmToMarkdown()],
-	}).trim();
+	const content = toMarkdown(
+		toMdast(fromHtml(article.html, { fragment: true }), {
+			// HTML comments are invisible implementation metadata. The converter
+			// preserves them as raw Markdown by default, so opt out at its AST boundary.
+			nodeHandlers: { comment() {} },
+		}),
+		{
+			extensions: [gfmToMarkdown()],
+		},
+	).trim();
 	if (content.length < MIN_ARTICLE_CONTENT_CHARS) {
 		throw new NonRetryableError(`Extracted HTML content is too short (${content.length} chars)`);
 	}
@@ -218,7 +225,7 @@ export async function stageWebAcquisition(
 	platformUrl: (url: URL) => PlatformResourceUrl | null,
 ) {
 	const result = await step.do(
-		'acquire-web-v5',
+		'acquire-web-v6',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => {
 			const acquired = await acquireWebResource(input.url, platformUrl);
