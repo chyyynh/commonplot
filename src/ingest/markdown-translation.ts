@@ -18,7 +18,7 @@ const URL_OR_EMAIL = /^(?:https?:\/\/|mailto:|www\.)\S+$|^[^\s@]+@[^\s@]+\.[^\s@
 const TRANSLATED_PROSE_SENTINEL = '<translated-prose>';
 const INLINE_TOKEN_PATTERN = /<\/?n-[0-9]{6}>|<n-[0-9]{6}\/>/gu;
 const MAX_INLINE_REFERENCE_CHARACTERS = 256;
-const MIN_CROSS_SEQUENCE_DUPLICATE_CHARACTERS = 20;
+const MIN_CROSS_SEQUENCE_DUPLICATE_CHARACTERS = 12;
 const ROOT_TRANSLATION_SEQUENCE = 'root';
 const FRONTMATTER_PRESETS: Array<'toml' | 'yaml'> = ['yaml', 'toml'];
 

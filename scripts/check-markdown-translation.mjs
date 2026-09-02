@@ -180,7 +180,7 @@ assert.ok(duplicatedSequenceSegment, 'cross-sequence duplication fixture must pr
 const duplicatedSequenceTemplate = createMarkdownTranslationTemplate(duplicatedSequenceSegment);
 const duplicatedSequenceEmphasisId = inlineIdsOfKind(duplicatedSequenceTemplate, 'emphasis')[0];
 assert.ok(duplicatedSequenceEmphasisId, 'cross-sequence duplication fixture must expose its emphasis node');
-const repeatedTranslation = '精確切割羽流的形狀與邊界，即使多個羽流相互重疊。';
+const repeatedTranslation = '回溯追蹤擴散的氣體，精確定位排放源。';
 const duplicatedSequenceTranslation = targetFromSource(duplicatedSequenceSegment);
 const repairedDuplicatedSequenceMarkdown = compileMarkdownTranslation(duplicatedSequencePlan, [
 	{
