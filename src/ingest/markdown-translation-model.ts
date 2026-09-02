@@ -1,10 +1,9 @@
-import { generateText, NoObjectGeneratedError, Output } from 'ai';
+import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
 	createMarkdownTranslationTemplate,
-	createSourceMarkdownSegmentTranslation,
 	type MarkdownSegmentTranslation,
 	type MarkdownTranslationBatch,
 	MarkdownTranslationInvariantError,
@@ -180,10 +179,6 @@ async function translateGroup(
 	);
 }
 
-function isMarkdownOutputContractError(error: unknown): boolean {
-	return error instanceof MarkdownTranslationInvariantError || NoObjectGeneratedError.isInstance(error);
-}
-
 export async function translateMarkdownBatchToZhHant(
 	batch: MarkdownTranslationBatch,
 	env: CoreEnv,
@@ -208,26 +203,19 @@ export async function translateMarkdownBatchToZhHant(
 			try {
 				translated.push(...(await translateGroup(group, batch, env, resourceId)));
 			} catch (error) {
-				const segment = group.segments[0];
-				if (group.strategy !== 'individual' || group.segments.length !== 1 || !segment || !isMarkdownOutputContractError(error)) {
-					throw error;
+				const segment = group.strategy === 'individual' && group.segments.length === 1 ? group.segments[0] : null;
+				if (segment) {
+					console.error({
+						tag: 'RESOURCE_TRANSLATION',
+						event: 'markdown_segment_translation_failed',
+						attempt,
+						batch_id: batch.id,
+						reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
+						resource_id: resourceId,
+						segment_id: segment.id,
+					});
 				}
-				console.warn({
-					tag: 'RESOURCE_TRANSLATION',
-					event: 'markdown_segment_original_fallback',
-					attempt,
-					batch_id: batch.id,
-					finish_reason: NoObjectGeneratedError.isInstance(error) ? error.finishReason : undefined,
-					reason:
-						error instanceof MarkdownTranslationInvariantError
-							? error.code
-							: NoObjectGeneratedError.isInstance(error)
-								? error.name
-								: 'unknown',
-					resource_id: resourceId,
-					segment_id: segment.id,
-				});
-				translated.push(createSourceMarkdownSegmentTranslation(segment));
+				throw error;
 			}
 		}
 		return validateMarkdownBatchTranslations(batch, translated);
