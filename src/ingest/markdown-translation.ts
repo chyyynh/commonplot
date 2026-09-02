@@ -664,6 +664,29 @@ function decodePhrasing(text: string, protectedInlines: readonly ProtectedInline
 	return frames[0]!.children;
 }
 
+function isAttentionNode(node: PhrasingContent): boolean {
+	return node.type === 'emphasis' || node.type === 'strong' || node.type === 'delete';
+}
+
+// CommonMark uses the same delimiter runs for adjacent attention nodes. Without a boundary, two sibling nodes such as
+// `*one**two*` are parsed as one emphasis node. The upstream serializer cannot round-trip every arbitrary mdast tree, so
+// add a visible word boundary only when translated prose produced this otherwise unrepresentable sibling shape.
+function separateAdjacentAttentionNodes(children: PhrasingContent[]): boolean {
+	let changed = false;
+	for (const child of children) {
+		if (isParent(child)) changed = separateAdjacentAttentionNodes(child.children as PhrasingContent[]) || changed;
+	}
+	for (let index = 1; index < children.length; index += 1) {
+		const previous = children[index - 1];
+		const current = children[index];
+		if (!previous || !current || !isAttentionNode(previous) || !isAttentionNode(current)) continue;
+		children.splice(index, 0, { type: 'text', value: ' ' });
+		changed = true;
+		index += 1;
+	}
+	return changed;
+}
+
 function sameStringMembers(left: readonly string[], right: readonly string[]): boolean {
 	if (left.length !== right.length) return false;
 	const sortedLeft = [...left].sort();
@@ -1015,11 +1038,20 @@ export function compileMarkdownTranslation(plan: MarkdownTranslationPlan, transl
 		}
 		block.children = [{ type: 'text', value: text }];
 	}
-	const translatedMarkdown = serializeMarkdown(tree);
-	const translatedSkeleton = markdownSkeleton(
-		parseMarkdown(translatedMarkdown),
-		plan.targets.map((target) => target.path),
-	);
+	const targetPaths = plan.targets.map((target) => target.path);
+	let translatedMarkdown = serializeMarkdown(tree);
+	let translatedSkeleton = markdownSkeleton(parseMarkdown(translatedMarkdown), targetPaths);
+	if (translatedSkeleton !== plan.sourceSkeleton) {
+		let separatedAttention = false;
+		for (const target of plan.targets) {
+			const block = nodeAtPath(tree, target.path);
+			if (isProseBlock(block)) separatedAttention = separateAdjacentAttentionNodes(block.children) || separatedAttention;
+		}
+		if (separatedAttention) {
+			translatedMarkdown = serializeMarkdown(tree);
+			translatedSkeleton = markdownSkeleton(parseMarkdown(translatedMarkdown), targetPaths);
+		}
+	}
 	if (translatedSkeleton !== plan.sourceSkeleton) {
 		throw new MarkdownTranslationInvariantError(
 			'markdown-structure-changed',

@@ -139,6 +139,33 @@ for (const protectedValue of [
 assert.match(translatedMarkdown, /^[*+-] \[x\]/m, 'checked task state changed');
 assert.match(translatedMarkdown, /^[*+-] \[ \]/m, 'unchecked task state changed');
 
+const adjacentAttentionPlan = planMarkdownTranslation(
+	'*Enhancement* *Quantification:* Measuring the precise amount of methane present in every pixel per plume.',
+);
+const adjacentAttentionSegment = adjacentAttentionPlan.segments[0];
+assert.ok(adjacentAttentionSegment, 'adjacent-attention fixture must produce one prose segment');
+const adjacentAttentionTemplate = createMarkdownTranslationTemplate(adjacentAttentionSegment);
+const adjacentEmphasisIds = inlineIdsOfKind(adjacentAttentionTemplate, 'emphasis');
+assert.equal(adjacentEmphasisIds.length, 2, 'adjacent-attention fixture must expose both emphasis nodes');
+const adjacentAttentionSourceTranslation = targetFromSource(adjacentAttentionSegment, (value) =>
+	value
+		.replace('Enhancement', '增強量')
+		.replace('Quantification:', '量化：')
+		.replace('Measuring the precise amount of methane present in every pixel per plume.', '測量每條羽流中每個像素所含甲烷的精確數量。'),
+);
+const adjacentAttentionMarkdown = compileMarkdownTranslation(adjacentAttentionPlan, [
+	withRootParts(adjacentAttentionSourceTranslation, [
+		{ type: 'inline', value: adjacentEmphasisIds[0] },
+		{ type: 'inline', value: adjacentEmphasisIds[1] },
+		{ type: 'text', value: '測量每條羽流中每個像素所含甲烷的精確數量。' },
+	]),
+]);
+assert.match(
+	adjacentAttentionMarkdown,
+	/^\*增強量\* \*量化：\*/u,
+	'adjacent emphasis must retain two nodes when target-language spacing is removed',
+);
+
 const longInlineMathFixture = String.raw`A real formula can be longer than ordinary prose.
 
 $$ \underbrace{\log p(z\_s \mid z\_t, y)}\_{\text{conditional distribution}} = \underbrace{\log p(y \mid z\_t, z\_s)}\_{\text{predictive term}} + \underbrace{\log p(z\_s \mid z\_t)}\_{\text{unconditional term}} + c, $$
