@@ -120,17 +120,14 @@ async function resolveCitoidPaperIdentifiers(value: string): Promise<PaperIdenti
 
 function localPaperIdentifiers(input: {
 	canonicalUrl: string | null;
-	documentTitle: string | null;
 	identifierText: string | null;
 	seedIdentifiers: readonly PaperIdentifier[];
 	sourceUrl: string | null;
 }): PaperIdentifier[] {
-	const exact = [input.sourceUrl, input.canonicalUrl === input.sourceUrl ? null : input.canonicalUrl, input.documentTitle].flatMap(
-		(value) => {
-			const resolved = resolveExactPaperInput(value);
-			return resolved ? paperIdentifiersFromIdentity(resolved.identity) : [];
-		},
-	);
+	const exact = [input.sourceUrl, input.canonicalUrl === input.sourceUrl ? null : input.canonicalUrl].flatMap((value) => {
+		const resolved = resolveExactPaperInput(value);
+		return resolved ? paperIdentifiersFromIdentity(resolved.identity) : [];
+	});
 	const fromText = input.identifierText?.trim() ? paperIdentityFromText(input.identifierText) : null;
 	return choosePreferredIdentifiers([...exact, ...(fromText ? paperIdentifiersFromIdentity(fromText) : []), ...input.seedIdentifiers]);
 }
@@ -252,16 +249,18 @@ export async function stagePaperProcessing(
 ) {
 	const identifiers = localPaperIdentifiers({
 		canonicalUrl: input.canonicalUrl,
-		documentTitle: input.acquiredContent.fileType === PDF_MIME ? input.acquiredContent.title : null,
 		identifierText: input.acquiredContent.fileType === PDF_MIME ? (input.acquiredContent.paperIdentifierText ?? null) : null,
 		seedIdentifiers: input.seedIdentifiers,
 		sourceUrl: input.sourceUrl,
 	});
-	const resolution = await stagePaperEnrichment(env, step, {
-		citoidUrl: identifiers.length || !input.allowCitoidLookup ? null : input.canonicalUrl,
-		identifiers,
-		processingId: input.processingId,
-	});
+	const resolution =
+		input.acquiredContent.fileType === PDF_MIME
+			? { contentPdfUrl: null, identifiers, metadata: null }
+			: await stagePaperEnrichment(env, step, {
+					citoidUrl: identifiers.length || !input.allowCitoidLookup ? null : input.canonicalUrl,
+					identifiers,
+					processingId: input.processingId,
+				});
 	const enriched = applyPaperMetadata(input.acquiredContent, resolution.metadata, input.publishedDate);
 	const pdfRepresentation =
 		input.acquiredContent.fileType === PDF_MIME || !resolution.contentPdfUrl

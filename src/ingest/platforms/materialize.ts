@@ -130,10 +130,10 @@ export function materializeGenericResource(
 		resourceIdentifiers: readonly PaperIdentifier[];
 	},
 ): ResolvedPlatformlessResource {
-	const isPaper = resolution.resourceIdentifiers.some(({ scheme }) => scheme === 'openalex');
+	const isPaper = resolution.resourceIdentifiers.length > 0;
 	const kind = isPaper ? 'paper' : acquired.fileType === 'application/pdf' ? 'file' : 'blog';
 	return materializeResource(
-		kind === 'file' ? { ...acquired, kindMetadata: null } : acquired,
+		kind === 'file' ? { ...acquired, kindMetadata: null } : isPaper ? { ...acquired, kindMetadata: acquired.kindMetadata ?? {} } : acquired,
 		hints,
 		{
 			kind,

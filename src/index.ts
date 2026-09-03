@@ -3,8 +3,10 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import type {} from './env';
+import { GrobidContainer } from './ingest/grobid-container';
 import { handleRSSCron } from './ingest/platforms/rss';
 import { handleTwitterCron } from './ingest/platforms/twitter';
+import { ResourceReferenceEnrichmentWorkflow } from './ingest/resource-reference-workflow';
 import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import { type ResourceDraftTarget, ResourceDraftTargetSchema, ResourceProcessingV2Workflow } from './ingest/workflow';
 import { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
@@ -17,7 +19,13 @@ import {
 } from './search-index';
 import { connectCoreDb } from './shared/db';
 
-export { ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexRebuildWorkflow };
+export {
+	GrobidContainer,
+	ResourceProcessingV2Workflow,
+	ResourceReferenceEnrichmentWorkflow,
+	ResourceTranslationV2Workflow,
+	SearchIndexRebuildWorkflow,
+};
 
 type AppResourceDraftInput = Readonly<{
 	instanceId: string;

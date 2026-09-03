@@ -12,7 +12,6 @@ import {
 import type { ProcessingResource } from './acquisition';
 import type { ResourceAnalysis } from './analysis';
 import { persistYouTubeData } from './platforms/youtube-persistence';
-import { syncResourceReferences } from './resource-references';
 
 export type ResourceDraftRelation =
 	| Readonly<{ kind: 'source'; sourceId: string }>
@@ -57,8 +56,8 @@ export function prepareResolvedResource(
 	const kindMetadata = RESOURCE_TYPES[resource.kind].metadata.parse(resource.kindMetadata);
 	const media = hostedResourceImageFields({ creators, kindMetadata, ogImageUrl: resource.previewImageUrl }, hostedImages);
 	const identifiers = ResourceIdentifiersSchema.parse(resource.resourceIdentifiers);
-	if (resource.kind === 'paper' && !identifiers.some(({ scheme }) => scheme === 'openalex')) {
-		throw new TypeError('Paper Resource requires an OpenAlex identifier');
+	if (resource.kind === 'paper' && !identifiers.some(isPaperIdentifier)) {
+		throw new TypeError('Paper Resource requires a DOI, arXiv, or OpenAlex identifier');
 	}
 	if (
 		identifiers.some((identifier) =>
@@ -312,9 +311,8 @@ async function writeCanonicalResource(
 	if (resource.resourcePlatform === 'youtube') {
 		await persistYouTubeData(db, resourceId, resource.youtube);
 	}
-	const original = await db.execute<{ content: string | null; revision: string }>(sql`
-		SELECT original.content,
-		       MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS revision
+	const original = await db.execute<{ revision: string }>(sql`
+		SELECT MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS revision
 		FROM resource_translations original
 		JOIN resources resource ON resource.id = original.resource_id
 		WHERE resource.id = ${resourceId}::uuid AND original.lang = resource.original_lang
@@ -322,7 +320,6 @@ async function writeCanonicalResource(
 	`);
 	const authoritativeOriginal = original.rows[0];
 	if (!authoritativeOriginal) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
-	await syncResourceReferences(db, resourceId, resource.kind, authoritativeOriginal.content);
 	return authoritativeOriginal.revision;
 }
 

@@ -24,6 +24,29 @@
 	 * other module types.
 	 */
 	"rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+	/** GROBID streams uploaded PDFs from R2; its model and scratch disk are intentionally ephemeral. */
+	"containers": [
+		{
+			"class_name": "GrobidContainer",
+			"image": "registry.cloudflare.com/f62c923a073e06d7b88040b743b2ee0a/newsence-core-grobidcontainer:crf-0.9.1-amd64",
+			"instance_type": "standard-4",
+			"max_instances": 1
+		}
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "GROBID",
+				"class_name": "GrobidContainer"
+			}
+		]
+	},
+	"migrations": [
+		{
+			"tag": "grobid-v1",
+			"new_sqlite_classes": ["GrobidContainer"]
+		}
+	],
 	"observability": {
 		"enabled": true,
 		"head_sampling_rate": 1,
@@ -79,6 +102,12 @@
 			"binding": "RESOURCE_TRANSLATION_V2_WORKFLOW",
 			"name": "newsence-resource-translation-v2",
 			"class_name": "ResourceTranslationV2Workflow",
+			"default_retention": { "success_retention": "1 day", "error_retention": "7 days" }
+		},
+		{
+			"binding": "RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW",
+			"name": "newsence-resource-reference-enrichment",
+			"class_name": "ResourceReferenceEnrichmentWorkflow",
 			"default_retention": { "success_retention": "1 day", "error_retention": "7 days" }
 		},
 		{

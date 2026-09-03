@@ -15,13 +15,14 @@ import {
 import { type ProcessingResource, stageStoredResourceAcquisition, stageUrlAcquisition } from './acquisition';
 import { analyzeResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
-import { MAX_PAID_PDF_PAGES } from './platforms/pdf';
+import { LLAMA_PARSE_MAX_PAGES } from './platforms/pdf-fallback-policy';
 import {
 	persistResolvedResource,
 	prepareResolvedResource,
 	type ResourceDraftRelation,
 	type ResourcePersistenceTarget,
 } from './resource-persistence';
+import { enqueueResourceReferenceEnrichment } from './resource-reference-workflow';
 import { enqueueResourceTranslation, shouldEnqueueResourceTranslation } from './translation-workflow';
 
 const ResourceDraftRelationSchema: z.ZodType<ResourceDraftRelation> = z.discriminatedUnion('kind', [
@@ -29,7 +30,7 @@ const ResourceDraftRelationSchema: z.ZodType<ResourceDraftRelation> = z.discrimi
 	z.strictObject({ kind: z.literal('subject'), parentResourceId: z.uuid() }),
 ]);
 
-const PaidPdfFallbackGrantSchema = z.strictObject({ maxPages: z.int().min(1).max(MAX_PAID_PDF_PAGES) });
+const PaidPdfFallbackGrantSchema = z.strictObject({ maxPages: z.int().min(1).max(LLAMA_PARSE_MAX_PAGES) });
 
 export const ResourceDraftTargetSchema = z.strictObject({
 	kind: z.literal('draft'),
@@ -298,7 +299,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			async () => persistResolvedResource(await connectCoreDb(this.env), preparedResource, call.persistenceTarget),
 		);
 		const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision } = persistence;
-		const forceTranslationRunKey = target.kind === 'reacquire' ? (await sha256Hex(event.instanceId)).slice(0, 16) : undefined;
+		const forceProcessingRunKey = target.kind === 'reacquire' ? (await sha256Hex(event.instanceId)).slice(0, 16) : undefined;
 		const saveTarget = call.saveTarget;
 		if (saveTarget) {
 			await step.do(
@@ -311,6 +312,19 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			);
 		}
 		const followUps: Promise<unknown>[] = [];
+		if (preparedResource.kind === 'paper' && target.kind === 'storedBlob') {
+			followUps.push(
+				step.do(
+					'enqueue-resource-reference-enrichment-v3',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					() =>
+						enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, {
+							forceRunKey: forceProcessingRunKey,
+							uploadedPdfResourceId: target.resourceId,
+						}),
+				),
+			);
+		}
 		if (scope === 'corpus') {
 			followUps.push(
 				step.do(
@@ -325,7 +339,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				step.do(
 					'enqueue-resource-translation-v3',
 					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision, forceTranslationRunKey),
+					() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision, forceProcessingRunKey),
 				),
 			);
 		}

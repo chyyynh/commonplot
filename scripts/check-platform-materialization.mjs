@@ -48,11 +48,25 @@ const cases = [
 		expected: { kind: 'blog', resourcePlatform: null, resourceIdentifiers: [] },
 	},
 	{
-		name: 'unresolved PDF remains a readable PDF file',
+		name: 'PDF with a local DOI resolves without OpenAlex',
+		input: {
+			fileType: 'application/pdf',
+			resourceIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/local' }],
+		},
+		expected: {
+			kind: 'paper',
+			resourcePlatform: null,
+			resourceIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/local' }],
+			fileType: 'application/pdf',
+			content: 'Example content',
+			kindMetadata: {},
+		},
+	},
+	{
+		name: 'PDF without a paper identifier remains a readable PDF file',
 		input: {
 			fileType: 'application/pdf',
 			kindMetadata: { siteName: 'example.com' },
-			resourceIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/unresolved' }],
 		},
 		expected: {
 			kind: 'file',

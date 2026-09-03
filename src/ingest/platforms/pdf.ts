@@ -7,23 +7,19 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
 import { canonicalizeResourceLang, type ResourceCreator, ResourceCreatorsSchema } from '../../shared/resource';
-import type { GenericAcquiredMaterial } from './materialize';
+import { GROBID_CONTAINER_NAME } from '../grobid-container';
+import { type GrobidPdfHeader, grobidPaperIdentifierText } from '../grobid-tei';
+import { type GenericAcquiredMaterial, literalCreator } from './materialize';
 import { fetchOpenAlexPdf } from './openalex';
 import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
-import {
-	LLAMA_PARSE_MAX_PAGES,
-	type LocalPdfSummary,
-	localPdfNeedsFallback,
-	type PaidPdfFallbackGrant,
-	storageSafePdfMarkdown,
-} from './pdf-fallback-policy.ts';
+import { type LocalPdfSummary, localPdfNeedsFallback, type PaidPdfFallbackGrant, storageSafePdfMarkdown } from './pdf-fallback-policy.ts';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
 
 export { PDF_MIME } from './pdf-constants';
-export const MAX_PAID_PDF_PAGES = LLAMA_PARSE_MAX_PAGES;
 export type { PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
 
 const MAX_PAPER_IDENTIFIER_TEXT_CHARS = 20_000;
+const GROBID_HEADER_STEP = { retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '600 seconds' } as const;
 
 const LITEPARSE_CONFIG = {
 	continueOnPageError: true,
@@ -430,12 +426,41 @@ export async function stageStoredPdfAcquisition(
 			},
 		},
 	);
-	const contentStream = await step.do(
-		'acquire-stored-pdf-v6',
-		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await acquireStoredPdf(env, resource)).body!,
-	);
+	const [contentStream, grobidHeader] = await Promise.all([
+		step.do(
+			'acquire-stored-pdf-v6',
+			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+			async () => Response.json(await acquireStoredPdf(env, resource)).body!,
+		),
+		step
+			.do<GrobidPdfHeader>('classify-stored-pdf-with-grobid-v1', GROBID_HEADER_STEP, async () => {
+				const object = await env.R2.get(resource.storageKey);
+				if (!object) throw new NonRetryableError('Uploaded PDF object is missing');
+				if (object.size < 1 || object.size > MAX_PDF_BYTES) {
+					await object.body.cancel('Uploaded PDF size is outside the supported range');
+					throw new NonRetryableError(`Uploaded PDF must contain 1-${MAX_PDF_BYTES} bytes`);
+				}
+				return env.GROBID.getByName(GROBID_CONTAINER_NAME).processPdfHeader(object.body, object.size);
+			})
+			.catch((error) => {
+				console.warn({
+					tag: 'GROBID',
+					event: 'paper_classification_failed',
+					resource_id: target.resourceId,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				return null;
+			}),
+	]);
 	const acquisition = await new Response(contentStream).json<PdfAcquisitionDraft>();
+	const paperIdentifierText = grobidHeader ? grobidPaperIdentifierText(grobidHeader) : null;
+	const paperHeader = paperIdentifierText ? grobidHeader : null;
+	const material: GenericAcquiredMaterial = {
+		...acquisition.material,
+		paperIdentifierText,
+		...(paperHeader?.title ? { title: paperHeader.title } : {}),
+		...(paperHeader?.authors.length ? { creators: paperHeader.authors.flatMap((author) => literalCreator('author', author)) } : {}),
+	};
 	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
 		grant: target.paidPdfFallback,
 		local: acquisition.parse,
@@ -445,10 +470,12 @@ export async function stageStoredPdfAcquisition(
 			storageKey: resource.storageKey,
 		},
 	});
-	if (!cloudMarkdown) return requireUsablePdf(acquisition, `Stored PDF ${target.resourceId}`);
+	if (!cloudMarkdown) {
+		requireUsablePdf(acquisition, `Stored PDF ${target.resourceId}`);
+		return material;
+	}
 	return {
-		...acquisition.material,
+		...material,
 		markdown: cloudMarkdown,
-		paperIdentifierText: cloudMarkdown.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS),
 	};
 }

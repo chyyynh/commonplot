@@ -5,10 +5,9 @@
 	"packageManager": "pnpm@11.9.0",
 	"type": "module",
 	"scripts": {
-		"backfill:resource-references": "node --experimental-strip-types scripts/backfill-resource-references.mjs",
 		"deploy": "wrangler deploy",
 		"deploy:dry-run": "pnpm run typecheck && wrangler deploy --dry-run",
-		"check:bibliography": "node --experimental-strip-types scripts/check-bibliography.mjs",
+		"check:resource-references": "node --experimental-strip-types scripts/check-resource-references.mjs",
 		"check:db-contract": "node --experimental-strip-types scripts/check-database-contract.mjs",
 		"check:llama-parse-policy": "node --experimental-strip-types scripts/check-llama-parse-policy.mjs",
 		"check:markdown-translation": "node --experimental-strip-types scripts/check-markdown-translation.mjs",
@@ -19,12 +18,13 @@
 		"dev": "wrangler dev --test-scheduled --var AI_GATEWAY_ENVIRONMENT:development",
 		"start": "wrangler dev --test-scheduled --var AI_GATEWAY_ENVIRONMENT:development",
 		"cf-typegen": "wrangler types --env-interface CoreBindings -c wrangler.jsonc",
-		"typecheck": "pnpm cf-typegen && pnpm check:bibliography && pnpm check:db-contract && pnpm check:llama-parse-policy && pnpm check:markdown-translation && pnpm check:resource-identity && pnpm check:platform-materialization && pnpm check:twitter-provider && tsc --noEmit",
+		"typecheck": "pnpm cf-typegen && pnpm check:resource-references && pnpm check:db-contract && pnpm check:llama-parse-policy && pnpm check:markdown-translation && pnpm check:resource-identity && pnpm check:platform-materialization && pnpm check:twitter-provider && tsc --noEmit",
 		"typecheck:types": "wrangler types --check --env-interface CoreBindings -c wrangler.jsonc",
 		"lint": "biome check .",
 		"lint:fix": "biome check --write ."
 	},
 	"dependencies": {
+		"@cloudflare/containers": "^0.3.7",
 		"@extractus/article-extractor": "^9.0.1",
 		"@extractus/feed-extractor": "8.0.3",
 		"@llamaindex/liteparse-wasm": "2.14.2",
