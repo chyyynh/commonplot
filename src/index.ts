@@ -9,6 +9,7 @@ import { handleTwitterCron } from './ingest/platforms/twitter';
 import { ResourceReferenceEnrichmentWorkflow } from './ingest/resource-reference-workflow';
 import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import { type ResourceDraftTarget, ResourceDraftTargetSchema, ResourceProcessingV2Workflow } from './ingest/workflow';
+import { ZoteroSdtContainer } from './ingest/zotero-sdt-container';
 import { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
 import {
 	type PublicResourceSearchInput,
@@ -25,6 +26,7 @@ export {
 	ResourceReferenceEnrichmentWorkflow,
 	ResourceTranslationV2Workflow,
 	SearchIndexRebuildWorkflow,
+	ZoteroSdtContainer,
 };
 
 type AppResourceDraftInput = Readonly<{

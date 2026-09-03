@@ -1,0 +1,48 @@
+const { readFileSync } = require('node:fs');
+const { resolve } = require('node:path');
+const { runInThisContext } = require('node:vm');
+const { parentPort, workerData } = require('node:worker_threads');
+
+if (!parentPort) throw new Error('The Zotero document worker must run in a worker thread.');
+
+const buildDir = resolve(workerData.buildDir);
+const canvas = require(resolve(buildDir, '../node_modules/@napi-rs/canvas'));
+
+globalThis.DOMMatrix = canvas.DOMMatrix;
+globalThis.ImageData = canvas.ImageData;
+globalThis.Path2D = canvas.Path2D;
+globalThis.PDFJSDev = {
+	eval() {
+		return null;
+	},
+	test(expression) {
+		const enabled = new Set(['GENERIC', 'LIB']);
+		return expression.split('||').some((part) => {
+			const value = part.trim();
+			return value.startsWith('!') ? !enabled.has(value.slice(1).trim()) : enabled.has(value);
+		});
+	},
+};
+
+globalThis.self = globalThis;
+globalThis.onmessage = null;
+globalThis.postMessage = (message, transferList = []) => {
+	parentPort.postMessage(message, transferList);
+};
+
+const workerBundlePath = resolve(buildDir, 'worker.js');
+runInThisContext(readFileSync(workerBundlePath, 'utf8'), { filename: workerBundlePath });
+
+parentPort.on('message', (message) => {
+	if (typeof globalThis.self.onmessage !== 'function') return;
+	Promise.resolve(globalThis.self.onmessage({ data: message })).catch((error) => {
+		parentPort.postMessage({ responseID: message.id, error: serializeError(error) });
+	});
+});
+
+parentPort.postMessage({ ready: true });
+
+function serializeError(error) {
+	if (error instanceof Error) return { message: error.message, name: error.name, stack: error.stack };
+	return { message: String(error), name: 'Error' };
+}
