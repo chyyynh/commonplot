@@ -34,10 +34,13 @@ type AppResourceDraftInput = Readonly<{
 	saveTarget: Exclude<ResourceDraftTarget['saveTarget'], undefined>;
 }>;
 
-type StoredPdfProcessingInput = Readonly<{
-	paidPdfFallback?: ResourceDraftTarget['paidPdfFallback'];
-	resourceId: string;
-}>;
+const StoredPdfProcessingInputSchema = z.strictObject({
+	paidPdfFallback: ResourceDraftTargetSchema.shape.paidPdfFallback,
+	resourceId: z.uuid(),
+	retry: z.boolean().optional(),
+});
+
+type StoredPdfProcessingInput = z.infer<typeof StoredPdfProcessingInputSchema>;
 
 const APP_RESOURCE_BATCH_LIMIT = 20;
 const AppDraftWorkflowIdSchema = z.templateLiteral(['app-draft-v1-', z.uuidv4()]);
@@ -49,11 +52,11 @@ const STORED_BLOB_WORKFLOW_RETENTION = {
 	errorRetention: '1 hour',
 } as const;
 
-function storedBlobWorkflowInstance(resourceId: string, paidPdfFallback?: ResourceDraftTarget['paidPdfFallback']) {
+function storedBlobWorkflowInstance(resourceId: string, paidPdfFallback?: ResourceDraftTarget['paidPdfFallback'], retryId?: string) {
 	const id = z.uuid().parse(resourceId);
 	const grant = ResourceDraftTargetSchema.shape.paidPdfFallback.parse(paidPdfFallback);
 	return {
-		id: `${STORED_BLOB_WORKFLOW_REVISION}-${id}`,
+		id: retryId ? `${STORED_BLOB_WORKFLOW_REVISION}-${id}-retry-${z.uuid().parse(retryId)}` : `${STORED_BLOB_WORKFLOW_REVISION}-${id}`,
 		params: { kind: 'storedBlob' as const, ...(grant ? { paidPdfFallback: grant } : {}), resourceId: id },
 		retention: STORED_BLOB_WORKFLOW_RETENTION,
 	};
@@ -153,7 +156,8 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 
 	/** Enqueue an app-owned blob after its R2 object and private ownership row exist. */
 	async enqueueResourceProcessing(input: StoredPdfProcessingInput) {
-		const instance = storedBlobWorkflowInstance(input.resourceId, input.paidPdfFallback);
+		const parsed = StoredPdfProcessingInputSchema.parse(input);
+		const instance = storedBlobWorkflowInstance(parsed.resourceId, parsed.paidPdfFallback, parsed.retry ? crypto.randomUUID() : undefined);
 		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([instance]);
 		return instance.id;
 	}

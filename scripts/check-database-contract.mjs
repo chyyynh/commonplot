@@ -12,10 +12,15 @@ const resourceReferencesMigrationPath = resolve(
 	root,
 	'../../web-tanstack/prisma/migrations/20260829123000_add_resource_references/migration.sql',
 );
+const dropResourceReferenceMarkerMigrationPath = resolve(
+	root,
+	'../../web-tanstack/prisma/migrations/20260903080000_drop_resource_reference_marker/migration.sql',
+);
 
 const prismaSource = readFileSync(prismaPath, 'utf8');
 const manualIndexesSource = readFileSync(manualIndexesPath, 'utf8');
 const resourceReferencesMigrationSource = readFileSync(resourceReferencesMigrationPath, 'utf8');
+const dropResourceReferenceMarkerMigrationSource = readFileSync(dropResourceReferenceMarkerMigrationPath, 'utf8');
 const errors = [];
 
 function parseDomainConstraint(source, constraintName, columnName) {
@@ -102,6 +107,9 @@ if (
 ) {
 	errors.push('resource_references migration must enforce compound identity, cascade deletion, and text bounds');
 }
+if (!/DROP COLUMN "marker"/.test(dropResourceReferenceMarkerMigrationSource)) {
+	errors.push('resource reference marker cutover must drop the retired marker column');
+}
 const normalizedManualIndexes = manualIndexesSource.replace(/\s+/g, ' ');
 if (
 	!normalizedManualIndexes.includes(
@@ -119,7 +127,6 @@ if (
 }
 for (const [constraint, check] of [
 	['resource_references_ordinal_check', 'ordinal > 0'],
-	['resource_references_marker_check', 'marker IS NULL OR marker > 0'],
 	['resource_references_text_check', "BTRIM(text) <> '' AND CHAR_LENGTH(text) <= 600"],
 ]) {
 	if (!normalizedManualIndexes.includes(`ADD CONSTRAINT ${constraint} CHECK (${check});`)) {
