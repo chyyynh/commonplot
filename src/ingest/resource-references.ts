@@ -5,7 +5,6 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../shared/db';
 import { resolveCrossrefReference } from './crossref';
 import { GROBID_CONTAINER_NAME } from './grobid-container';
-import type { GrobidPdfReference } from './grobid-tei';
 import { MAX_PDF_BYTES, PDF_MIME } from './platforms/pdf-constants';
 
 const CROSSREF_BATCH_SIZE = 3;
@@ -51,7 +50,7 @@ async function replaceStoredReferences(
 	db: NodePgDatabase,
 	resourceId: string,
 	referenceRevision: string,
-	references: readonly GrobidPdfReference[],
+	references: readonly string[],
 ): Promise<number> {
 	return db.transaction(async (tx) => {
 		const current = await tx.execute<{ id: string }>(sql`
@@ -71,11 +70,11 @@ async function replaceStoredReferences(
 		await tx.execute(sql`DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid`);
 		if (!references.length) return 0;
 		const values = sql.join(
-			references.map(({ text }, index) => sql`(${resourceId}::uuid, ${index + 1}, NULL, ${text}, NULL, NULL, NULL)`),
+			references.map((text, index) => sql`(${resourceId}::uuid, ${index + 1}, ${text})`),
 			sql`, `,
 		);
 		await tx.execute(sql`
-			INSERT INTO resource_references (resource_id, ordinal, marker, text, doi, arxiv_id, url)
+			INSERT INTO resource_references (resource_id, ordinal, text)
 			VALUES ${values}
 		`);
 		return references.length;
@@ -116,7 +115,7 @@ async function persistCrossrefIdentifiers(
 
 async function resolveCrossrefUpdates(
 	step: WorkflowStep,
-	references: readonly GrobidPdfReference[],
+	references: readonly string[],
 ): Promise<{ attemptedCount: number; updates: CrossrefIdentifierUpdate[] }> {
 	const updates: CrossrefIdentifierUpdate[] = [];
 	for (let offset = 0; offset < references.length; offset += CROSSREF_BATCH_SIZE) {
@@ -126,7 +125,7 @@ async function resolveCrossrefUpdates(
 			resolutions = await step.do(
 				`resolve-crossref-reference-batch-v1-${offset / CROSSREF_BATCH_SIZE}`,
 				{ retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() => Promise.all(batch.map(({ text }) => resolveCrossrefReference(text))),
+				() => Promise.all(batch.map((text) => resolveCrossrefReference(text))),
 			);
 		} catch (error) {
 			console.warn({

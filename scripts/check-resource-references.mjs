@@ -32,11 +32,11 @@ const references = parseGrobidPdfReferencesTei(`<TEI><text><listBibl>
 	<biblStruct><note type="raw_reference">A. First &amp; B. Second. Direct PDF parsing, 2020.</note><idno type="DOI">10.1000/ignored</idno></biblStruct>
 	<biblStruct><note type="raw_reference">C. Third. Durable workflows, 2022.</note></biblStruct>
 </listBibl></text></TEI>`);
-assert.deepEqual(references, [{ text: 'A. First & B. Second. Direct PDF parsing, 2020.' }, { text: 'C. Third. Durable workflows, 2022.' }]);
+assert.deepEqual(references, ['A. First & B. Second. Direct PDF parsing, 2020.', 'C. Third. Durable workflows, 2022.']);
 assert.equal(
 	parseGrobidPdfReferencesTei(
 		`<TEI><text><listBibl><biblStruct><note type="raw_reference">${'a'.repeat(700)}</note></biblStruct></listBibl></text></TEI>`,
-	)[0]?.text.length,
+	)[0]?.length,
 	600,
 );
 

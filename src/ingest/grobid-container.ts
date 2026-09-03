@@ -1,5 +1,5 @@
 import { Container } from '@cloudflare/containers';
-import { type GrobidPdfHeader, type GrobidPdfReference, parseGrobidPdfHeaderTei, parseGrobidPdfReferencesTei } from './grobid-tei.ts';
+import { type GrobidPdfHeader, parseGrobidPdfHeaderTei, parseGrobidPdfReferencesTei } from './grobid-tei.ts';
 import { MAX_PDF_BYTES } from './platforms/pdf-constants.ts';
 
 const GROBID_PORT = 8070;
@@ -131,7 +131,7 @@ export class GrobidContainer extends Container<CoreEnv> {
 	}
 
 	/** Stream one owned PDF directly into GROBID; only the compact bibliography leaves this Durable Object. */
-	async processPdfReferences(input: ReadableStream<Uint8Array>, byteLength: number): Promise<GrobidPdfReference[]> {
+	async processPdfReferences(input: ReadableStream<Uint8Array>, byteLength: number): Promise<string[]> {
 		const references = parseGrobidPdfReferencesTei(
 			await this.processPdfTei('processReferences', input, byteLength, { consolidateCitations: '0', includeRawCitations: '1' }),
 		);

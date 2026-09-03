@@ -6,8 +6,6 @@ export type GrobidReferenceIdentifiers = Readonly<{
 	url: string | null;
 }>;
 
-export type GrobidPdfReference = Readonly<{ text: string }>;
-
 export type GrobidPdfHeader = GrobidReferenceIdentifiers &
 	Readonly<{
 		authors: string[];
@@ -140,13 +138,13 @@ export function parseGrobidPdfHeaderTei(tei: string): GrobidPdfHeader {
 }
 
 /** Parse GROBID's bibliography result for a PDF without assuming it found every printed entry. */
-export function parseGrobidPdfReferencesTei(tei: string): GrobidPdfReference[] {
-	const references: GrobidPdfReference[] = [];
+export function parseGrobidPdfReferencesTei(tei: string): string[] {
+	const references: string[] = [];
 	BIBL_STRUCT_PATTERN.lastIndex = 0;
 	for (let match = BIBL_STRUCT_PATTERN.exec(tei); match !== null; match = BIBL_STRUCT_PATTERN.exec(tei)) {
 		if (references.length >= MAX_PDF_REFERENCES) throw new Error(`GROBID returned more than ${MAX_PDF_REFERENCES} references`);
 		const text = boundedReferenceText(rawReferenceFromBiblStruct(match[1] ?? ''));
-		if (text) references.push({ text });
+		if (text) references.push(text);
 	}
 	return references;
 }
