@@ -9,21 +9,13 @@
 	"workers_dev": false,
 	"compatibility_date": "2026-08-30",
 	/**
-	 * LiteParse is CPU-bound WASM; its longest PDF Workflow step has a three-minute
-	 * timeout. A full AI Search rebuild also performs one upload subrequest per
-	 * corpus item, so keep enough headroom for the 500k-file instance limit.
+	 * A full AI Search rebuild performs one upload subrequest per corpus item, so
+	 * keep enough headroom for the 500k-file instance limit.
 	 */
 	"limits": {
 		"cpu_ms": 180000,
 		"subrequests": 1000000
 	},
-	/**
-	 * Bundle `.wasm` files as compiled `WebAssembly.Module` imports. Used by the
-	 * PDF text-extraction stage (`@llamaindex/liteparse-wasm`) in
-	 * `src/ingest/platforms/pdf.ts`. `fallthrough` keeps default rules for any
-	 * other module types.
-	 */
-	"rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
 	/** PDF parsers stream uploaded PDFs from R2; their models and scratch disks are intentionally ephemeral. */
 	"containers": [
 		{

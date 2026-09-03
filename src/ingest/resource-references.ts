@@ -20,7 +20,7 @@ async function loadUploadedPdfSource(
 	fileResourceId: string,
 	referenceRevision: string,
 ): Promise<Readonly<{ contentHash: string; storageKey: string }>> {
-	const result = await db.execute<{ content_hash: string; storage_key: string }>(sql`
+	const result = await db.execute<{ content_hash: string | null; storage_key: string }>(sql`
 		SELECT blob.content_hash, blob.storage_key
 		FROM resources blob
 		JOIN user_files owned ON owned.resource_id = blob.id
@@ -44,8 +44,9 @@ async function loadUploadedPdfSource(
 	`);
 	const source = result.rows[0];
 	if (!source) throw new NonRetryableError('Uploaded PDF is no longer attached to this paper revision');
-	if (!/^[a-f\d]{64}$/u.test(source.content_hash)) throw new NonRetryableError('Uploaded PDF has no valid content hash');
-	return { contentHash: source.content_hash, storageKey: source.storage_key };
+	const contentHash = source.content_hash;
+	if (!contentHash || !/^[a-f\d]{64}$/u.test(contentHash)) throw new NonRetryableError('Uploaded PDF has no valid content hash');
+	return { contentHash, storageKey: source.storage_key };
 }
 
 async function replaceStoredCitationData(

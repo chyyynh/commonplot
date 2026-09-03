@@ -46,6 +46,15 @@ type PdfParseAttempt = Readonly<{
 	result: LocalPdfParseResult;
 }>;
 
+function byteStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
+	return new ReadableStream({
+		start(controller) {
+			controller.enqueue(bytes);
+			controller.close();
+		},
+	});
+}
+
 async function parsePdfStream(
 	env: CoreEnv,
 	input: ReadableStream<Uint8Array>,
@@ -338,7 +347,7 @@ export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response
 		}),
 	);
 	const bytes = await new Response(body).bytes();
-	const parsed = (await parsePdfStream(env, new Response(bytes).body!, bytes.byteLength, 'Fetched PDF')).result;
+	const parsed = (await parsePdfStream(env, byteStream(bytes), bytes.byteLength, 'Fetched PDF')).result;
 	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
 	let fileName = encodedName || 'document.pdf';
 	if (encodedName) {

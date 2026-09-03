@@ -324,7 +324,9 @@ class MarkdownWriter {
 	}
 
 	toString(): string {
-		return this.chunks.join('').trim();
+		// Preserve any leading source whitespace because citation offsets were
+		// recorded while writing. Removing trailing whitespace cannot shift them.
+		return this.chunks.join('').trimEnd();
 	}
 }
 

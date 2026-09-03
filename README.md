@@ -127,17 +127,24 @@ wrangler secret put LLAMA_CLOUD_API_KEY       # Paid PDF fallback
 wrangler secret put LLAMA_CLOUD_PROJECT_ID    # Deployment-specific Llama Cloud project
 ```
 
-LlamaParse is a local-first fallback. Web owns the product kill switch and
-Autumn eligibility, then attaches a per-document page grant to authenticated
-URL and newly uploaded PDF workflows. Core executes only granted fallbacks
-when LiteParse's native OCR, garbling, page-error, or full-page-image signals
-show that local output is unreliable, and independently enforces the 100-page and
-25 MiB safety caps. Private uploads use a temporary Llama Cloud file that Core
-deletes when the fallback finishes or aborts; ambiguous provider mutations fail
-loudly with a stable external ID for operator cleanup. OpenAlex key-bearing
-content URLs remain local-only. The provider adapter is locked to the US API,
-the `cost_effective` tier, and a dated parser version. Enable Web grants only
-after an authorized development smoke records the observed credits.
+Zotero Structured Document Text is the primary PDF parser. A private upload is
+streamed to a sleeping `basic` Cloudflare Container once; Core derives its
+Markdown, bibliography, citation links, and PDF source coordinates from that
+single document and stores the bounded SDT JSON beside the original R2 object,
+guarded by the source SHA-256. GROBID handles only the academic header/identifier
+gate, and Crossref enriches the resulting bibliography.
+
+LlamaParse remains a local-first OCR fallback. Web owns the product kill switch
+and Autumn eligibility, then attaches a per-document page grant to authenticated
+URL and newly uploaded PDF workflows. Core executes only granted fallbacks when
+the SDT extraction is empty, degraded, or dominated by image-only pages, and
+independently enforces the 100-page and 25 MiB safety caps. Private uploads use a
+temporary Llama Cloud file that Core deletes when the fallback finishes or
+aborts; ambiguous provider mutations fail loudly with a stable external ID for
+operator cleanup. OpenAlex key-bearing content URLs remain local-only. The
+provider adapter is locked to the US API, the `cost_effective` tier, and a dated
+parser version. Enable Web grants only after an authorized development smoke
+records the observed credits.
 
 ### 5. Deploy
 

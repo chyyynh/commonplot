@@ -1,12 +1,11 @@
 import { Container } from '@cloudflare/containers';
-import { type GrobidPdfFulltext, type GrobidPdfHeader, parseGrobidPdfFulltextTei, parseGrobidPdfHeaderTei } from './grobid-tei.ts';
+import { type GrobidPdfHeader, parseGrobidPdfHeaderTei } from './grobid-tei.ts';
 import { MAX_PDF_BYTES } from './platforms/pdf-constants.ts';
 
 const GROBID_PORT = 8070;
 export const GROBID_CONTAINER_NAME = 'citation-parser-v1';
 const MAX_ERROR_BODY_CHARS = 1_000;
 const MAX_GROBID_RESPONSE_BYTES = 8 * 1024 * 1024;
-const MAX_WORKFLOW_RESULT_BYTES = 900 * 1024;
 const textEncoder = new TextEncoder();
 
 async function boundedResponseText(response: Response, maxBytes: number): Promise<string> {
@@ -84,12 +83,7 @@ export class GrobidContainer extends Container<CoreEnv> {
 	sleepAfter = '2m';
 	enableInternet = false;
 
-	private async processPdfTei(
-		endpoint: 'processFulltextDocument' | 'processHeaderDocument',
-		input: ReadableStream<Uint8Array>,
-		byteLength: number,
-		fields: Readonly<Record<string, string>>,
-	): Promise<string> {
+	private async processPdfTei(input: ReadableStream<Uint8Array>, byteLength: number): Promise<string> {
 		if (!input || typeof input.getReader !== 'function') throw new TypeError('GROBID PDF input must be a readable byte stream');
 		if (!Number.isInteger(byteLength) || byteLength < 1 || byteLength > MAX_PDF_BYTES) {
 			throw new TypeError(`GROBID PDF must contain 1-${MAX_PDF_BYTES} bytes`);
@@ -109,8 +103,8 @@ export class GrobidContainer extends Container<CoreEnv> {
 		}
 
 		const boundary = `newsence-${crypto.randomUUID()}`;
-		const multipart = multipartPdfBody(input, boundary, fields);
-		const response = await this.containerFetch(`http://grobid/api/${endpoint}`, {
+		const multipart = multipartPdfBody(input, boundary, { consolidateHeader: '0' });
+		const response = await this.containerFetch('http://grobid/api/processHeaderDocument', {
 			body: multipart.body,
 			headers: {
 				accept: 'application/xml',
@@ -121,29 +115,12 @@ export class GrobidContainer extends Container<CoreEnv> {
 		});
 		if (!response.ok) {
 			const detail = (await boundedResponseText(response, MAX_ERROR_BODY_CHARS)).slice(0, MAX_ERROR_BODY_CHARS);
-			throw new Error(`GROBID ${endpoint} failed with ${response.status}${detail ? `: ${detail}` : ''}`);
+			throw new Error(`GROBID processHeaderDocument failed with ${response.status}${detail ? `: ${detail}` : ''}`);
 		}
 		return boundedResponseText(response, MAX_GROBID_RESPONSE_BYTES);
 	}
 
 	async processPdfHeader(input: ReadableStream<Uint8Array>, byteLength: number): Promise<GrobidPdfHeader> {
-		return parseGrobidPdfHeaderTei(await this.processPdfTei('processHeaderDocument', input, byteLength, { consolidateHeader: '0' }));
-	}
-
-	/** Stream one owned PDF directly into GROBID; only compact citation relationships leave this Durable Object. */
-	async processPdfFulltext(input: ReadableStream<Uint8Array>, byteLength: number): Promise<GrobidPdfFulltext> {
-		const fulltext = parseGrobidPdfFulltextTei(
-			await this.processPdfTei('processFulltextDocument', input, byteLength, {
-				consolidateCitations: '0',
-				consolidateHeader: '0',
-				generateIDs: '1',
-				includeRawCitations: '1',
-				segmentSentences: '1',
-			}),
-		);
-		if (textEncoder.encode(JSON.stringify(fulltext)).byteLength > MAX_WORKFLOW_RESULT_BYTES) {
-			throw new Error(`GROBID parsed-fulltext result exceeded ${MAX_WORKFLOW_RESULT_BYTES} bytes`);
-		}
-		return fulltext;
+		return parseGrobidPdfHeaderTei(await this.processPdfTei(input, byteLength));
 	}
 }
