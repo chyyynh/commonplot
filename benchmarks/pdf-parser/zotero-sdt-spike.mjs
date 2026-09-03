@@ -25,8 +25,7 @@ function parseArgs(argv) {
 
 	for (let index = 0; index < argv.length; index += 1) {
 		const argument = argv[index];
-		if (argument === '--') {
-		} else if (argument === '--document-worker') {
+		if (argument === '--document-worker') {
 			options.documentWorker = argv[++index] ?? null;
 		} else if (argument === '--pdf') {
 			options.pdf = argv[++index] ?? null;
@@ -47,7 +46,7 @@ Options:
 
 ZOTERO_DOCUMENT_WORKER_DIR can replace --document-worker.`);
 			process.exit(0);
-		} else {
+		} else if (argument !== '--') {
 			fail(`Unknown argument: ${argument}`);
 		}
 	}
@@ -141,6 +140,30 @@ function ratio(numerator, denominator) {
 	return denominator ? round(numerator / denominator) : null;
 }
 
+function countNonWhitespaceCharacters(text) {
+	let count = 0;
+	for (let index = 0; index < text.length; index += 1) {
+		if (!/\s/u.test(text[index])) count += 1;
+	}
+	return count;
+}
+
+function countTextMapCharacters(textMap) {
+	try {
+		const runs = JSON.parse(textMap);
+		if (!Array.isArray(runs)) return null;
+		let count = 0;
+		for (const run of runs) {
+			if (!Array.isArray(run) || run.length < 6 || !Number.isInteger(run[0])) return null;
+			const widthCount = run.length === 6 ? 1 : run.length - 6;
+			count += Math.max(0, widthCount - (run[0] & 1));
+		}
+		return count;
+	} catch {
+		return null;
+	}
+}
+
 function readDocumentWorkerCommit(documentWorker) {
 	const result = spawnSync('git', ['-C', documentWorker, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
 	return result.status === 0 ? result.stdout.trim() : null;
@@ -182,6 +205,13 @@ function summarizeDocument(document) {
 	const mappedCharacters = textNodes.reduce((sum, { node }) => sum + (node.anchor?.textMap ? node.text.length : 0), 0);
 	const rectCharacters = textNodes.reduce((sum, { node }) => sum + (node.anchor?.pageRects?.length ? node.text.length : 0), 0);
 	const referencedPaths = new Set(citationNodes.flatMap(({ referenceRefs }) => referenceRefs.map((ref) => ref.join('.'))));
+	const decodedTextMaps = textNodes
+		.filter(({ node }) => typeof node.anchor?.textMap === 'string')
+		.map(({ node }) => ({
+			actual: countTextMapCharacters(node.anchor.textMap),
+			expected: countNonWhitespaceCharacters(node.text),
+		}));
+	const mappedCitationNodes = citationNodes.filter(({ node }) => typeof node.anchor?.textMap === 'string');
 
 	return {
 		schemaVersion: document.schemaVersion,
@@ -207,10 +237,14 @@ function summarizeDocument(document) {
 		},
 		mapping: {
 			textNodes: textNodes.length,
-			textMapNodes: textNodes.filter(({ node }) => Boolean(node.anchor?.textMap)).length,
+			textMapNodes: decodedTextMaps.length,
+			exactTextMapNodes: decodedTextMaps.filter(({ actual, expected }) => actual === expected).length,
+			invalidTextMapNodes: decodedTextMaps.filter(({ actual }) => actual === null).length,
 			pageRectNodes: textNodes.filter(({ node }) => Boolean(node.anchor?.pageRects?.length)).length,
 			textMapCharacterCoverage: ratio(mappedCharacters, textCharacters),
 			pageRectCharacterCoverage: ratio(rectCharacters, textCharacters),
+			citationMarkerCoverage: ratio(mappedCitationNodes.length, citationNodes.length),
+			citationMarkersWithTextMap: mappedCitationNodes.length,
 		},
 		samples: {
 			outline: document.catalog.outline.slice(0, 12).map((item) => ({ ref: item.ref ?? null, title: item.title })),
