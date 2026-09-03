@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { sha256Hex } from '../shared/hash';
 import { enrichUploadedPdfReferences } from './resource-references';
 
-const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-gr-xr-v4';
+const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v1';
 const ReferenceRevisionSchema = z.string().regex(/^[a-f\d]{32}$/);
 const ForceRunKeySchema = z.string().regex(/^[a-f\d]{16}$/);
 const WorkflowInstanceIdSchema = z
@@ -41,12 +41,12 @@ export async function enqueueResourceReferenceEnrichment(
 			validatedForceRunKey ?? 'idempotent',
 		].join('\n'),
 	);
-	const id = WorkflowInstanceIdSchema.parse(`rr-v4-${runDigest}`);
+	const id = WorkflowInstanceIdSchema.parse(`rr-v5-${runDigest}`);
 	await env.RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW.createBatch([{ id, params: payload }]);
 	return id;
 }
 
-/** Reference enrichment stays off the critical path after GROBID has classified the base PDF. */
+/** Reference enrichment stays off the critical path after the base PDF and its SDT sidecar are persisted. */
 export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<CoreEnv, ResourceReferenceEnrichmentPayload> {
 	async run(event: WorkflowEvent<ResourceReferenceEnrichmentPayload>, step: WorkflowStep): Promise<void> {
 		const input = ResourceReferenceEnrichmentPayloadSchema.parse(event.payload);

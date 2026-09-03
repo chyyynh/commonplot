@@ -3,15 +3,14 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../shared/db';
-import { alignCitationMentions } from './citation-alignment';
 import { resolveCrossrefReference } from './crossref';
-import { GROBID_CONTAINER_NAME } from './grobid-container';
-import type { GrobidPdfFulltext } from './grobid-tei';
-import { MAX_PDF_BYTES, PDF_MIME } from './platforms/pdf-constants';
+import { PDF_MIME } from './platforms/pdf-constants';
+import type { NormalizedStructuredPdf } from './zotero-sdt.ts';
+import { readStructuredPdfArtifact } from './zotero-sdt-service.ts';
 
 const CROSSREF_BATCH_SIZE = 3;
 const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
-const GROBID_STEP = { retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '600 seconds' } as const;
+const REFERENCE_SDT_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '90 seconds' } as const;
 
 type CrossrefMetadataUpdate = NonNullable<Awaited<ReturnType<typeof resolveCrossrefReference>>> & Readonly<{ ordinal: number }>;
 
@@ -20,9 +19,9 @@ async function loadUploadedPdfSource(
 	resourceId: string,
 	fileResourceId: string,
 	referenceRevision: string,
-): Promise<string> {
-	const result = await db.execute<{ storage_key: string }>(sql`
-		SELECT blob.storage_key
+): Promise<Readonly<{ contentHash: string; storageKey: string }>> {
+	const result = await db.execute<{ content_hash: string; storage_key: string }>(sql`
+		SELECT blob.content_hash, blob.storage_key
 		FROM resources blob
 		JOIN user_files owned ON owned.resource_id = blob.id
 		JOIN profile_resources profile
@@ -45,14 +44,15 @@ async function loadUploadedPdfSource(
 	`);
 	const source = result.rows[0];
 	if (!source) throw new NonRetryableError('Uploaded PDF is no longer attached to this paper revision');
-	return source.storage_key;
+	if (!/^[a-f\d]{64}$/u.test(source.content_hash)) throw new NonRetryableError('Uploaded PDF has no valid content hash');
+	return { contentHash: source.content_hash, storageKey: source.storage_key };
 }
 
 async function replaceStoredCitationData(
 	db: NodePgDatabase,
 	resourceId: string,
 	referenceRevision: string,
-	fulltext: GrobidPdfFulltext,
+	structured: NormalizedStructuredPdf,
 ): Promise<Readonly<{ alignedMentionCount: number; mentionCount: number; referenceCount: number }>> {
 	const source = await db.execute<{ content: string | null }>(sql`
 		SELECT original.content
@@ -67,15 +67,25 @@ async function replaceStoredCitationData(
 		LIMIT 1
 	`);
 	const paper = source.rows[0];
-	if (!paper) throw new NonRetryableError('Paper revision changed before GROBID citations could be aligned');
-	const referenceOrdinalByKey = new Map(fulltext.references.map(({ key }, index) => [key, index + 1]));
-	const mentions = alignCitationMentions(
-		paper.content ?? '',
-		fulltext.mentions.flatMap(({ context, markerText, section, targetKeys }) => {
-			const referenceOrdinals = [...new Set(targetKeys.flatMap((key) => referenceOrdinalByKey.get(key) ?? []))];
-			return referenceOrdinals.length ? [{ context, markerText, referenceOrdinals, section }] : [];
-		}),
-	);
+	if (!paper) throw new NonRetryableError('Paper revision changed before structured citations could be stored');
+	const content = paper.content ?? '';
+	const hasExactStructuredContent = content === structured.markdown;
+	const referenceOrdinalByKey = new Map(structured.references.map(({ key }, index) => [key, index + 1]));
+	const mentions = structured.mentions.flatMap(({ contentEnd, contentStart, context, markerText, section, targetKeys }) => {
+		const referenceOrdinals = [...new Set(targetKeys.flatMap((key) => referenceOrdinalByKey.get(key) ?? []))];
+		if (!referenceOrdinals.length) return [];
+		const exactOffset = hasExactStructuredContent && content.slice(contentStart, contentEnd) === markerText;
+		return [
+			{
+				contentEnd: exactOffset ? contentEnd : null,
+				contentStart: exactOffset ? contentStart : null,
+				context,
+				markerText,
+				referenceOrdinals,
+				section,
+			},
+		];
+	});
 
 	return db.transaction(async (tx) => {
 		const current = await tx.execute<{ id: string }>(sql`
@@ -90,13 +100,13 @@ async function replaceStoredCitationData(
 			  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${referenceRevision}
 			FOR UPDATE OF resource
 		`);
-		if (!current.rows[0]) throw new NonRetryableError('Paper revision changed before GROBID citations could be stored');
+		if (!current.rows[0]) throw new NonRetryableError('Paper revision changed before structured citations could be stored');
 
 		await tx.execute(sql`DELETE FROM resource_citation_mentions WHERE resource_id = ${resourceId}::uuid`);
 		await tx.execute(sql`DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid`);
-		if (fulltext.references.length) {
+		if (structured.references.length) {
 			const referenceValues = sql.join(
-				fulltext.references.map(({ label, text }, index) => sql`(${resourceId}::uuid, ${index + 1}, ${label}::text, ${text})`),
+				structured.references.map(({ label, text }, index) => sql`(${resourceId}::uuid, ${index + 1}, ${label}::text, ${text})`),
 				sql`, `,
 			);
 			await tx.execute(sql`
@@ -136,7 +146,7 @@ async function replaceStoredCitationData(
 		return {
 			alignedMentionCount: mentions.filter(({ contentStart }) => contentStart !== null).length,
 			mentionCount: mentions.length,
-			referenceCount: fulltext.references.length,
+			referenceCount: structured.references.length,
 		};
 	});
 }
@@ -227,44 +237,27 @@ async function resolveCrossrefUpdates(
 	return { attemptedCount: references.length, updates };
 }
 
-/** GROBID owns PDF reference extraction; Crossref owns bibliographic identifier resolution. */
+/** Zotero SDT owns PDF references and citation links; Crossref owns bibliographic metadata resolution. */
 export async function enrichUploadedPdfReferences(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: Readonly<{ referenceRevision: string; resourceId: string; uploadedPdfResourceId: string }>,
 ): Promise<void> {
 	try {
-		const storageKey = await step.do('load-uploaded-pdf-reference-source-v1', REFERENCE_DB_STEP, async () =>
+		const source = await step.do('load-uploaded-pdf-reference-source-v2', REFERENCE_DB_STEP, async () =>
 			loadUploadedPdfSource(await connectCoreDb(env), input.resourceId, input.uploadedPdfResourceId, input.referenceRevision),
 		);
-		const fulltext = await step.do('parse-uploaded-pdf-fulltext-v1', GROBID_STEP, async () => {
-			const object = await env.R2.get(storageKey);
-			if (!object) throw new NonRetryableError('Uploaded PDF object is missing');
-			if (object.size < 1 || object.size > MAX_PDF_BYTES) {
-				await object.body.cancel('Uploaded PDF size is outside the supported range');
-				throw new NonRetryableError(`Uploaded PDF must contain 1-${MAX_PDF_BYTES} bytes`);
-			}
-			const grobid = env.GROBID.getByName(GROBID_CONTAINER_NAME);
-			using parsed = await grobid.processPdfFulltext(object.body, object.size);
-			// RPC plain-object results are disposable stubs. Copy the bounded data
-			// into a normal serializable value before Workflow persists the step.
+		const stored = await step.do('replace-uploaded-pdf-citations-v2', REFERENCE_SDT_STEP, async () => {
+			const artifact = await readStructuredPdfArtifact(env, source.storageKey, source.contentHash);
+			if (!artifact) throw new NonRetryableError('Structured PDF artifact is missing or stale');
 			return {
-				mentions: parsed.mentions.map(({ context, markerText, section, targetKeys }) => ({
-					context,
-					markerText,
-					section,
-					targetKeys: [...targetKeys],
-				})),
-				references: parsed.references.map(({ key, label, text }) => ({ key, label, text })),
-			} satisfies GrobidPdfFulltext;
+				...(await replaceStoredCitationData(await connectCoreDb(env), input.resourceId, input.referenceRevision, artifact.normalized)),
+				referenceTexts: artifact.normalized.references.map(({ text }) => text),
+				sdtMentionCount: artifact.normalized.mentions.length,
+				sdtReferenceCount: artifact.normalized.references.length,
+			};
 		});
-		const stored = await step.do('replace-uploaded-pdf-citations-v1', REFERENCE_DB_STEP, async () =>
-			replaceStoredCitationData(await connectCoreDb(env), input.resourceId, input.referenceRevision, fulltext),
-		);
-		const crossref = await resolveCrossrefUpdates(
-			step,
-			fulltext.references.map(({ text }) => text),
-		);
+		const crossref = await resolveCrossrefUpdates(step, stored.referenceTexts);
 		const enrichedCount = crossref.updates.length
 			? await step.do('persist-crossref-reference-metadata-v1', REFERENCE_DB_STEP, async () =>
 					persistCrossrefMetadata(await connectCoreDb(env), input.resourceId, input.referenceRevision, crossref.updates),
@@ -274,8 +267,8 @@ export async function enrichUploadedPdfReferences(
 			tag: 'RESOURCE_REFERENCES',
 			event: 'reference_enrichment_completed',
 			resource_id: input.resourceId,
-			grobid_reference_count: fulltext.references.length,
-			grobid_mention_count: fulltext.mentions.length,
+			sdt_reference_count: stored.sdtReferenceCount,
+			sdt_mention_count: stored.sdtMentionCount,
 			stored_reference_count: stored.referenceCount,
 			stored_mention_count: stored.mentionCount,
 			aligned_mention_count: stored.alignedMentionCount,

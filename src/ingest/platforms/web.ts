@@ -150,7 +150,11 @@ async function acquireHtmlArticle(html: string, url: string): Promise<GenericAcq
 	};
 }
 
-async function acquireWebResource(url: string, platformUrl: (url: URL) => PlatformResourceUrl | null): Promise<WebAcquisition> {
+async function acquireWebResource(
+	env: CoreEnv,
+	url: string,
+	platformUrl: (url: URL) => PlatformResourceUrl | null,
+): Promise<WebAcquisition> {
 	const response = await fetch(url, {
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
@@ -188,7 +192,7 @@ async function acquireWebResource(url: string, platformUrl: (url: URL) => Platfo
 
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
 	if (contentType.includes(PDF_MIME) || new URL(finalUrl).pathname.toLowerCase().endsWith('.pdf')) {
-		const acquired = await acquireFetchedPdfResponse(response, finalUrl);
+		const acquired = await acquireFetchedPdfResponse(env, response, finalUrl);
 		return { ...acquired, material: { ...acquired.material, canonicalUrl: finalUrl } };
 	}
 	if (
@@ -225,10 +229,10 @@ export async function stageWebAcquisition(
 	platformUrl: (url: URL) => PlatformResourceUrl | null,
 ) {
 	const result = await step.do(
-		'acquire-web-v6',
-		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+		'acquire-web-v7',
+		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 		async () => {
-			const acquired = await acquireWebResource(input.url, platformUrl);
+			const acquired = await acquireWebResource(env, input.url, platformUrl);
 			return 'platform' in acquired ? acquired : Response.json(acquired).body!;
 		},
 	);
