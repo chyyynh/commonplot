@@ -86,6 +86,20 @@ assert.equal(
 	'ambiguous sentence matches must never produce an inline offset',
 );
 
+const pseudoTagMarkdown =
+	'<Mattern (2020)</Mattern> contextualizes that this is the party line in other creative industries such as fashion and architecture: proponents reassure that AI-driven design tools will not make human workers redundant.';
+const pseudoTagAligned = alignCitationMentions(pseudoTagMarkdown, [
+	{
+		context:
+			'Mattern (2020) contextualizes that this is the party line in other creative industries such as fashion and architecture: proponents reassure that AI-driven design tools will not make human workers redundant.',
+		markerText: 'Mattern (2020)',
+		referenceOrdinals: [34],
+		section: 'Manual creativity',
+	},
+])[0];
+assert.equal(pseudoTagAligned?.contentStart, 1, 'extraction pseudo-tags must not prevent an otherwise exact citation alignment');
+assert.equal(pseudoTagMarkdown.slice(pseudoTagAligned?.contentStart ?? 0, pseudoTagAligned?.contentEnd ?? 0), 'Mattern (2020)');
+
 const crossrefResponse = {
 	status: 'ok',
 	message: {
@@ -125,4 +139,4 @@ assert.equal(
 	null,
 );
 
-console.info({ event: 'resource_reference_contract_smoke_passed', cases: 16 });
+console.info({ event: 'resource_reference_contract_smoke_passed', cases: 17 });

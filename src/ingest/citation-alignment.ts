@@ -18,6 +18,7 @@ type TextToken = Readonly<{
 }>;
 
 const TOKEN_PATTERN = /[\p{Letter}\p{Number}]+/gu;
+const EXTRACTION_MARKUP_PATTERN = /<\/[A-Za-z][A-Za-z0-9_-]*\s*>|<(?:b|strong|em|i|u|sup|sub|span|font|br)(?:\s[^<>]*)?\s*\/?>/gi;
 const FALLBACK_WINDOW_TOKENS = 16;
 const MARKER_SEARCH_PADDING_CHARS = 32;
 
@@ -29,7 +30,13 @@ function normalizeToken(value: string): string {
 }
 
 function tokenize(value: string): TextToken[] {
-	return [...value.matchAll(TOKEN_PATTERN)].map((match) => ({
+	// Keep every replacement the same length so token offsets still point into
+	// the canonical Markdown. LiteParse occasionally emits citation text as
+	// malformed pseudo-HTML (for example, `<Mattern (2020)</Mattern>`); masking
+	// only the extraction markup prevents the closing tag name from breaking an
+	// otherwise exact GROBID context match.
+	const alignableValue = value.replace(EXTRACTION_MARKUP_PATTERN, (markup) => ' '.repeat(markup.length));
+	return [...alignableValue.matchAll(TOKEN_PATTERN)].map((match) => ({
 		end: (match.index ?? 0) + match[0].length,
 		start: match.index ?? 0,
 		value: normalizeToken(match[0]),
