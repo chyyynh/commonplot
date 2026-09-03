@@ -3,15 +3,17 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../shared/db';
+import { alignCitationMentions } from './citation-alignment';
 import { resolveCrossrefReference } from './crossref';
 import { GROBID_CONTAINER_NAME } from './grobid-container';
+import type { GrobidPdfFulltext } from './grobid-tei';
 import { MAX_PDF_BYTES, PDF_MIME } from './platforms/pdf-constants';
 
 const CROSSREF_BATCH_SIZE = 3;
 const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 const GROBID_STEP = { retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '600 seconds' } as const;
 
-type CrossrefIdentifierUpdate = Readonly<{ doi: string; ordinal: number; url: string }>;
+type CrossrefMetadataUpdate = NonNullable<Awaited<ReturnType<typeof resolveCrossrefReference>>> & Readonly<{ ordinal: number }>;
 
 async function loadUploadedPdfSource(
 	db: NodePgDatabase,
@@ -46,12 +48,35 @@ async function loadUploadedPdfSource(
 	return source.storage_key;
 }
 
-async function replaceStoredReferences(
+async function replaceStoredCitationData(
 	db: NodePgDatabase,
 	resourceId: string,
 	referenceRevision: string,
-	references: readonly string[],
-): Promise<number> {
+	fulltext: GrobidPdfFulltext,
+): Promise<Readonly<{ alignedMentionCount: number; mentionCount: number; referenceCount: number }>> {
+	const source = await db.execute<{ content: string | null }>(sql`
+		SELECT original.content
+		FROM resources resource
+		JOIN resource_translations original
+		  ON original.resource_id = resource.id
+		 AND original.lang = resource.original_lang
+		WHERE resource.id = ${resourceId}::uuid
+		  AND resource.scope = 'corpus'
+		  AND resource.kind = 'paper'
+		  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${referenceRevision}
+		LIMIT 1
+	`);
+	const paper = source.rows[0];
+	if (!paper) throw new NonRetryableError('Paper revision changed before GROBID citations could be aligned');
+	const referenceOrdinalByKey = new Map(fulltext.references.map(({ key }, index) => [key, index + 1]));
+	const mentions = alignCitationMentions(
+		paper.content ?? '',
+		fulltext.mentions.flatMap(({ context, markerText, section, targetKeys }) => {
+			const referenceOrdinals = [...new Set(targetKeys.flatMap((key) => referenceOrdinalByKey.get(key) ?? []))];
+			return referenceOrdinals.length ? [{ context, markerText, referenceOrdinals, section }] : [];
+		}),
+	);
+
 	return db.transaction(async (tx) => {
 		const current = await tx.execute<{ id: string }>(sql`
 			SELECT resource.id::text
@@ -65,41 +90,96 @@ async function replaceStoredReferences(
 			  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${referenceRevision}
 			FOR UPDATE OF resource
 		`);
-		if (!current.rows[0]) throw new NonRetryableError('Paper revision changed before GROBID references could be stored');
+		if (!current.rows[0]) throw new NonRetryableError('Paper revision changed before GROBID citations could be stored');
 
+		await tx.execute(sql`DELETE FROM resource_citation_mentions WHERE resource_id = ${resourceId}::uuid`);
 		await tx.execute(sql`DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid`);
-		if (!references.length) return 0;
-		const values = sql.join(
-			references.map((text, index) => sql`(${resourceId}::uuid, ${index + 1}, ${text})`),
-			sql`, `,
-		);
-		await tx.execute(sql`
-			INSERT INTO resource_references (resource_id, ordinal, text)
-			VALUES ${values}
-		`);
-		return references.length;
+		if (fulltext.references.length) {
+			const referenceValues = sql.join(
+				fulltext.references.map(({ label, text }, index) => sql`(${resourceId}::uuid, ${index + 1}, ${label}::text, ${text})`),
+				sql`, `,
+			);
+			await tx.execute(sql`
+				INSERT INTO resource_references (resource_id, ordinal, label, text)
+				VALUES ${referenceValues}
+			`);
+		}
+		if (mentions.length) {
+			const mentionValues = sql.join(
+				mentions.map(
+					({ contentEnd, contentStart, context, markerText, section }, index) =>
+						sql`(
+							${resourceId}::uuid, ${index + 1}, ${markerText}, ${context}, ${section}::text,
+							${contentStart}::integer, ${contentEnd}::integer, ${referenceRevision}
+						)`,
+				),
+				sql`, `,
+			);
+			await tx.execute(sql`
+				INSERT INTO resource_citation_mentions (
+					resource_id, ordinal, marker_text, context, section, content_start, content_end, content_revision
+				)
+				VALUES ${mentionValues}
+			`);
+
+			const targetValues = sql.join(
+				mentions.flatMap(({ referenceOrdinals }, mentionIndex) =>
+					referenceOrdinals.map((referenceOrdinal) => sql`(${resourceId}::uuid, ${mentionIndex + 1}, ${referenceOrdinal})`),
+				),
+				sql`, `,
+			);
+			await tx.execute(sql`
+				INSERT INTO resource_citation_targets (resource_id, mention_ordinal, reference_ordinal)
+				VALUES ${targetValues}
+			`);
+		}
+		return {
+			alignedMentionCount: mentions.filter(({ contentStart }) => contentStart !== null).length,
+			mentionCount: mentions.length,
+			referenceCount: fulltext.references.length,
+		};
 	});
 }
 
-async function persistCrossrefIdentifiers(
+function sqlTextArray(values: readonly string[]) {
+	return values.length
+		? sql`ARRAY[${sql.join(
+				values.map((value) => sql`${value}`),
+				sql`, `,
+			)}]::text[]`
+		: sql`ARRAY[]::text[]`;
+}
+
+async function persistCrossrefMetadata(
 	db: NodePgDatabase,
 	resourceId: string,
 	referenceRevision: string,
-	updates: readonly CrossrefIdentifierUpdate[],
+	updates: readonly CrossrefMetadataUpdate[],
 ): Promise<number> {
 	if (!updates.length) return 0;
 	const values = sql.join(
-		updates.map(({ ordinal, doi, url }) => sql`(${ordinal}::integer, ${doi}::text, ${url}::text)`),
+		updates.map(
+			({ authors, doi, ordinal, title, url, venue, year }) =>
+				sql`(
+					${ordinal}::integer, ${doi}::text, ${url}::text, ${title}::text,
+					${sqlTextArray(authors)}, ${year}::integer, ${venue}::text
+				)`,
+		),
 		sql`, `,
 	);
 	const result = await db.execute(sql`
 		UPDATE resource_references AS reference
 		SET doi = incoming.doi,
-		    url = incoming.url
-		FROM (VALUES ${values}) AS incoming(ordinal, doi, url)
+		    url = incoming.url,
+		    title = incoming.title,
+		    authors = incoming.authors,
+		    year = incoming.year,
+		    venue = incoming.venue
+		FROM (VALUES ${values}) AS incoming(ordinal, doi, url, title, authors, year, venue)
 		WHERE reference.resource_id = ${resourceId}::uuid
 		  AND reference.ordinal = incoming.ordinal
-		  AND ROW(reference.doi, reference.url) IS DISTINCT FROM ROW(incoming.doi, incoming.url)
+		  AND ROW(reference.doi, reference.url, reference.title, reference.authors, reference.year, reference.venue)
+		      IS DISTINCT FROM ROW(incoming.doi, incoming.url, incoming.title, incoming.authors, incoming.year, incoming.venue)
 		  AND EXISTS (
 		    SELECT 1
 		    FROM resources resource
@@ -116,8 +196,8 @@ async function persistCrossrefIdentifiers(
 async function resolveCrossrefUpdates(
 	step: WorkflowStep,
 	references: readonly string[],
-): Promise<{ attemptedCount: number; updates: CrossrefIdentifierUpdate[] }> {
-	const updates: CrossrefIdentifierUpdate[] = [];
+): Promise<{ attemptedCount: number; updates: CrossrefMetadataUpdate[] }> {
+	const updates: CrossrefMetadataUpdate[] = [];
 	for (let offset = 0; offset < references.length; offset += CROSSREF_BATCH_SIZE) {
 		const batch = references.slice(offset, offset + CROSSREF_BATCH_SIZE);
 		let resolutions: Array<Awaited<ReturnType<typeof resolveCrossrefReference>>>;
@@ -157,30 +237,48 @@ export async function enrichUploadedPdfReferences(
 		const storageKey = await step.do('load-uploaded-pdf-reference-source-v1', REFERENCE_DB_STEP, async () =>
 			loadUploadedPdfSource(await connectCoreDb(env), input.resourceId, input.uploadedPdfResourceId, input.referenceRevision),
 		);
-		const references = await step.do('parse-uploaded-pdf-references-v2', GROBID_STEP, async () => {
+		const fulltext = await step.do('parse-uploaded-pdf-fulltext-v1', GROBID_STEP, async () => {
 			const object = await env.R2.get(storageKey);
 			if (!object) throw new NonRetryableError('Uploaded PDF object is missing');
 			if (object.size < 1 || object.size > MAX_PDF_BYTES) {
 				await object.body.cancel('Uploaded PDF size is outside the supported range');
 				throw new NonRetryableError(`Uploaded PDF must contain 1-${MAX_PDF_BYTES} bytes`);
 			}
-			return env.GROBID.getByName(GROBID_CONTAINER_NAME).processPdfReferences(object.body, object.size);
+			const grobid = env.GROBID.getByName(GROBID_CONTAINER_NAME);
+			using parsed = await grobid.processPdfFulltext(object.body, object.size);
+			// RPC plain-object results are disposable stubs. Copy the bounded data
+			// into a normal serializable value before Workflow persists the step.
+			return {
+				mentions: parsed.mentions.map(({ context, markerText, section, targetKeys }) => ({
+					context,
+					markerText,
+					section,
+					targetKeys: [...targetKeys],
+				})),
+				references: parsed.references.map(({ key, label, text }) => ({ key, label, text })),
+			} satisfies GrobidPdfFulltext;
 		});
-		const storedCount = await step.do('replace-uploaded-pdf-references-v1', REFERENCE_DB_STEP, async () =>
-			replaceStoredReferences(await connectCoreDb(env), input.resourceId, input.referenceRevision, references),
+		const stored = await step.do('replace-uploaded-pdf-citations-v1', REFERENCE_DB_STEP, async () =>
+			replaceStoredCitationData(await connectCoreDb(env), input.resourceId, input.referenceRevision, fulltext),
 		);
-		const crossref = await resolveCrossrefUpdates(step, references);
+		const crossref = await resolveCrossrefUpdates(
+			step,
+			fulltext.references.map(({ text }) => text),
+		);
 		const enrichedCount = crossref.updates.length
-			? await step.do('persist-crossref-reference-identifiers-v2', REFERENCE_DB_STEP, async () =>
-					persistCrossrefIdentifiers(await connectCoreDb(env), input.resourceId, input.referenceRevision, crossref.updates),
+			? await step.do('persist-crossref-reference-metadata-v1', REFERENCE_DB_STEP, async () =>
+					persistCrossrefMetadata(await connectCoreDb(env), input.resourceId, input.referenceRevision, crossref.updates),
 				)
 			: 0;
 		console.info({
 			tag: 'RESOURCE_REFERENCES',
 			event: 'reference_enrichment_completed',
 			resource_id: input.resourceId,
-			grobid_reference_count: references.length,
-			stored_count: storedCount,
+			grobid_reference_count: fulltext.references.length,
+			grobid_mention_count: fulltext.mentions.length,
+			stored_reference_count: stored.referenceCount,
+			stored_mention_count: stored.mentionCount,
+			aligned_mention_count: stored.alignedMentionCount,
 			crossref_attempted_count: crossref.attemptedCount,
 			crossref_enriched_count: enrichedCount,
 		});

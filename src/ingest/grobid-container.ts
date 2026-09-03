@@ -1,5 +1,5 @@
 import { Container } from '@cloudflare/containers';
-import { type GrobidPdfHeader, parseGrobidPdfHeaderTei, parseGrobidPdfReferencesTei } from './grobid-tei.ts';
+import { type GrobidPdfFulltext, type GrobidPdfHeader, parseGrobidPdfFulltextTei, parseGrobidPdfHeaderTei } from './grobid-tei.ts';
 import { MAX_PDF_BYTES } from './platforms/pdf-constants.ts';
 
 const GROBID_PORT = 8070;
@@ -85,7 +85,7 @@ export class GrobidContainer extends Container<CoreEnv> {
 	enableInternet = false;
 
 	private async processPdfTei(
-		endpoint: 'processHeaderDocument' | 'processReferences',
+		endpoint: 'processFulltextDocument' | 'processHeaderDocument',
 		input: ReadableStream<Uint8Array>,
 		byteLength: number,
 		fields: Readonly<Record<string, string>>,
@@ -130,14 +130,20 @@ export class GrobidContainer extends Container<CoreEnv> {
 		return parseGrobidPdfHeaderTei(await this.processPdfTei('processHeaderDocument', input, byteLength, { consolidateHeader: '0' }));
 	}
 
-	/** Stream one owned PDF directly into GROBID; only the compact bibliography leaves this Durable Object. */
-	async processPdfReferences(input: ReadableStream<Uint8Array>, byteLength: number): Promise<string[]> {
-		const references = parseGrobidPdfReferencesTei(
-			await this.processPdfTei('processReferences', input, byteLength, { consolidateCitations: '0', includeRawCitations: '1' }),
+	/** Stream one owned PDF directly into GROBID; only compact citation relationships leave this Durable Object. */
+	async processPdfFulltext(input: ReadableStream<Uint8Array>, byteLength: number): Promise<GrobidPdfFulltext> {
+		const fulltext = parseGrobidPdfFulltextTei(
+			await this.processPdfTei('processFulltextDocument', input, byteLength, {
+				consolidateCitations: '0',
+				consolidateHeader: '0',
+				generateIDs: '1',
+				includeRawCitations: '1',
+				segmentSentences: '1',
+			}),
 		);
-		if (textEncoder.encode(JSON.stringify(references)).byteLength > MAX_WORKFLOW_RESULT_BYTES) {
-			throw new Error(`GROBID parsed-reference result exceeded ${MAX_WORKFLOW_RESULT_BYTES} bytes`);
+		if (textEncoder.encode(JSON.stringify(fulltext)).byteLength > MAX_WORKFLOW_RESULT_BYTES) {
+			throw new Error(`GROBID parsed-fulltext result exceeded ${MAX_WORKFLOW_RESULT_BYTES} bytes`);
 		}
-		return references;
+		return fulltext;
 	}
 }

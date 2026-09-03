@@ -9,13 +9,17 @@ const MAX_CITATION_CHARS = 600;
 const MAX_CROSSREF_RESPONSE_BYTES = 256 * 1024;
 const MAX_NORMALIZED_CITATION_CHARS = 1_200;
 const CROSSREF_ROWS = 3;
+const MAX_AUTHOR_CHARS = 300;
+const MAX_TITLE_CHARS = 500;
+const MAX_VENUE_CHARS = 300;
 
 const CrossrefWorkSchema = z.object({
 	DOI: z.string(),
 	author: z
-		.array(z.object({ family: z.string().nullish() }))
+		.array(z.object({ family: z.string().nullish(), given: z.string().nullish() }))
 		.max(100)
 		.nullish(),
+	'container-title': z.array(z.string()).max(10).nullish(),
 	published: z
 		.object({
 			'date-parts': z.array(z.array(z.number()).min(1).max(3)).min(1).max(3),
@@ -32,8 +36,12 @@ const CrossrefResponseSchema = z.object({
 type CrossrefWork = z.infer<typeof CrossrefWorkSchema>;
 
 type CrossrefReferenceResolution = Readonly<{
+	authors: string[];
 	doi: string;
+	title: string;
 	url: string;
+	venue: string | null;
+	year: number | null;
 }>;
 
 function normalizeBibliographicText(value: string): string {
@@ -67,6 +75,18 @@ function normalizedFamilyNames(work: CrossrefWork): string[] {
 		.filter((family) => family.length >= 3);
 }
 
+function boundedMetadata(value: string | null | undefined, maxChars: number): string | null {
+	const normalized = value?.replace(/\s+/g, ' ').trim();
+	return normalized ? normalized.slice(0, maxChars) : null;
+}
+
+function workAuthors(work: CrossrefWork): string[] {
+	return (work.author ?? []).flatMap(({ family, given }) => {
+		const name = boundedMetadata([given, family].filter(Boolean).join(' '), MAX_AUTHOR_CHARS);
+		return name ? [name] : [];
+	});
+}
+
 function workMatchesCitation(citation: string, work: CrossrefWork): boolean {
 	const citationText = normalizeBibliographicText(citation);
 	const titleText = normalizeBibliographicText(work.title?.[0] ?? '');
@@ -97,7 +117,17 @@ export function selectCrossrefReference(citation: string, rawResponse: unknown):
 	for (const work of response.message.items) {
 		if (!workMatchesCitation(citation, work)) continue;
 		const doi = normalizeDoi(work.DOI);
-		if (doi) return { doi, url: `https://doi.org/${doi}` };
+		const title = boundedMetadata(work.title?.[0], MAX_TITLE_CHARS);
+		if (doi && title) {
+			return {
+				authors: workAuthors(work),
+				doi,
+				title,
+				url: `https://doi.org/${doi}`,
+				venue: boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS),
+				year: publishedYear(work),
+			};
+		}
 	}
 	return null;
 }
@@ -133,7 +163,7 @@ export async function resolveCrossrefReference(citation: string): Promise<Crossr
 	url.searchParams.set('mailto', CROSSREF_CONTACT);
 	url.searchParams.set('query.bibliographic', query);
 	url.searchParams.set('rows', String(CROSSREF_ROWS));
-	url.searchParams.set('select', 'DOI,title,author,published');
+	url.searchParams.set('select', 'DOI,title,author,published,container-title');
 	const response = await fetch(url, {
 		headers: { Accept: 'application/json', 'User-Agent': CROSSREF_USER_AGENT },
 		signal: AbortSignal.timeout(CROSSREF_TIMEOUT_MS),

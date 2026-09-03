@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { sha256Hex } from '../shared/hash';
 import { enrichUploadedPdfReferences } from './resource-references';
 
-const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-gr-xr-v3';
+const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-gr-xr-v4';
 const ReferenceRevisionSchema = z.string().regex(/^[a-f\d]{32}$/);
 const ForceRunKeySchema = z.string().regex(/^[a-f\d]{16}$/);
 const UploadedPdfSourceSchema = z.strictObject({ fileResourceId: z.uuid(), kind: z.literal('uploadedPdf') });

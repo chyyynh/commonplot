@@ -282,6 +282,8 @@ async function writeCanonicalResource(
 		`);
 	}
 	if (originalChanged) {
+		await db.execute(sql`DELETE FROM resource_citation_mentions WHERE resource_id = ${resourceId}::uuid`);
+		await db.execute(sql`DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid`);
 		await db.execute(sql`DELETE FROM resource_translations WHERE resource_id = ${resourceId}::uuid AND source = 'machine'`);
 	}
 	if (previousOriginalLang === 'und' && originalLang !== 'und') {
