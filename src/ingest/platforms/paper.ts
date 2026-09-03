@@ -8,10 +8,12 @@ import {
 	type PaperIdentifier,
 	type PaperIdentifierScheme,
 	paperIdentifiersFromIdentity,
+	paperIdentityFromIdentifiers,
 	paperIdentityFromText,
 	resolveExactPaperInput,
 } from '../../shared/paper-identity';
 import type { PaperKindMetadata } from '../../shared/resource';
+import { resolveCrossrefPaper } from '../crossref';
 import { type GenericAcquiredMaterial, literalCreator } from './materialize';
 import { type PaperMetadata, resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME, stageOpenAlexPdfRepresentation } from './pdf';
@@ -216,6 +218,47 @@ async function stageOpenAlexPaperEnrichment(
 	}
 }
 
+async function stageCrossrefPaperEnrichment(
+	step: WorkflowStep,
+	candidate: {
+		doi: string;
+		processingId: string;
+	},
+): Promise<PaperMetadata | null> {
+	const attemptStartedAt = Date.now();
+	try {
+		return await step.do(
+			'resolve-pdf-paper-crossref-by-doi-v1',
+			{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+			async () => {
+				const startedAt = Date.now();
+				const metadata = await resolveCrossrefPaper(candidate.doi);
+				console.info({
+					tag: 'PAPER_PROVIDER',
+					event: 'academic_enrichment',
+					provider: 'crossref',
+					processing_id: candidate.processingId,
+					identity_schemes: ['doi'],
+					outcome: metadata ? 'resolved' : 'not_found',
+					latency_ms: Date.now() - startedAt,
+				});
+				return metadata;
+			},
+		);
+	} catch (error) {
+		console.warn({
+			tag: 'PAPER_PROVIDER',
+			event: 'academic_enrichment',
+			provider: 'crossref',
+			processing_id: candidate.processingId,
+			outcome: 'failed',
+			latency_ms: Date.now() - attemptStartedAt,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	}
+}
+
 async function stagePaperEnrichment(
 	env: CoreEnv,
 	step: WorkflowStep,
@@ -253,9 +296,14 @@ export async function stagePaperProcessing(
 		seedIdentifiers: input.seedIdentifiers,
 		sourceUrl: input.sourceUrl,
 	});
+	const doi = paperIdentityFromIdentifiers(identifiers)?.doi;
 	const resolution =
 		input.acquiredContent.fileType === PDF_MIME
-			? { contentPdfUrl: null, identifiers, metadata: null }
+			? {
+					contentPdfUrl: null,
+					identifiers,
+					metadata: doi ? await stageCrossrefPaperEnrichment(step, { doi, processingId: input.processingId }) : null,
+				}
 			: await stagePaperEnrichment(env, step, {
 					citoidUrl: identifiers.length || !input.allowCitoidLookup ? null : input.canonicalUrl,
 					identifiers,

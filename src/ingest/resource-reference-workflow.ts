@@ -6,6 +6,10 @@ import { enrichUploadedPdfReferences } from './resource-references';
 const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-gr-xr-v4';
 const ReferenceRevisionSchema = z.string().regex(/^[a-f\d]{32}$/);
 const ForceRunKeySchema = z.string().regex(/^[a-f\d]{16}$/);
+const WorkflowInstanceIdSchema = z
+	.string()
+	.max(100)
+	.regex(/^[a-zA-Z0-9_][a-zA-Z0-9-_]*$/);
 const UploadedPdfSourceSchema = z.strictObject({ fileResourceId: z.uuid(), kind: z.literal('uploadedPdf') });
 const ResourceReferenceEnrichmentPayloadSchema = z.strictObject({
 	referenceRevision: ReferenceRevisionSchema,
@@ -28,11 +32,16 @@ export async function enqueueResourceReferenceEnrichment(
 		source: { fileResourceId: options.uploadedPdfResourceId, kind: 'uploadedPdf' },
 	});
 	const validatedForceRunKey = options.forceRunKey === undefined ? null : ForceRunKeySchema.parse(options.forceRunKey);
-	const sourceRunKey = (await sha256Hex(options.uploadedPdfResourceId)).slice(0, 16);
-	const baseId = validatedForceRunKey
-		? `rr-${RESOURCE_REFERENCE_WORKFLOW_REVISION}-force-${payload.resourceId}-${validatedForceRunKey}`
-		: `rr-${RESOURCE_REFERENCE_WORKFLOW_REVISION}-${payload.resourceId}-${payload.referenceRevision}`;
-	const id = `${baseId}-${sourceRunKey}`;
+	const runDigest = await sha256Hex(
+		[
+			RESOURCE_REFERENCE_WORKFLOW_REVISION,
+			payload.resourceId,
+			payload.referenceRevision,
+			options.uploadedPdfResourceId,
+			validatedForceRunKey ?? 'idempotent',
+		].join('\n'),
+	);
+	const id = WorkflowInstanceIdSchema.parse(`rr-v4-${runDigest}`);
 	await env.RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW.createBatch([{ id, params: payload }]);
 	return id;
 }

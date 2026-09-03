@@ -25,6 +25,8 @@ const CrossrefWorkSchema = z.object({
 			'date-parts': z.array(z.array(z.number()).min(1).max(3)).min(1).max(3),
 		})
 		.nullish(),
+	'is-referenced-by-count': z.int().nonnegative().nullish(),
+	'references-count': z.int().nonnegative().nullish(),
 	title: z.array(z.string()).min(1).max(10).nullish(),
 });
 
@@ -42,6 +44,16 @@ type CrossrefReferenceResolution = Readonly<{
 	url: string;
 	venue: string | null;
 	year: number | null;
+}>;
+
+export type CrossrefPaperMetadata = Readonly<{
+	authors: string[];
+	citedByCount?: number;
+	publicationDate?: string;
+	referenceCount?: number;
+	title?: string;
+	venue?: string;
+	year?: number;
 }>;
 
 function normalizeBibliographicText(value: string): string {
@@ -66,6 +78,29 @@ function citationYears(value: string): Set<number> {
 function publishedYear(work: CrossrefWork): number | null {
 	const year = work.published?.['date-parts'][0]?.[0];
 	return typeof year === 'number' && Number.isInteger(year) && year >= 1800 && year <= 2199 ? year : null;
+}
+
+function publishedDate(work: CrossrefWork): string | undefined {
+	const [year, month, day] = work.published?.['date-parts'][0] ?? [];
+	if (
+		typeof year !== 'number' ||
+		!Number.isInteger(year) ||
+		year < 1800 ||
+		year > 2199 ||
+		typeof month !== 'number' ||
+		!Number.isInteger(month) ||
+		month < 1 ||
+		month > 12 ||
+		typeof day !== 'number' ||
+		!Number.isInteger(day) ||
+		day < 1 ||
+		day > 31
+	) {
+		return undefined;
+	}
+	const candidate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+	const date = new Date(`${candidate}T00:00:00.000Z`);
+	return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === candidate ? candidate : undefined;
 }
 
 function normalizedFamilyNames(work: CrossrefWork): string[] {
@@ -132,6 +167,27 @@ export function selectCrossrefReference(citation: string, rawResponse: unknown):
 	return null;
 }
 
+export function selectCrossrefPaper(doi: string, rawResponse: unknown): CrossrefPaperMetadata | null {
+	const normalizedDoi = normalizeDoi(doi);
+	if (!normalizedDoi) throw new TypeError('Crossref paper DOI is invalid');
+	const response = CrossrefResponseSchema.parse(rawResponse);
+	const work = response.message.items.find((item) => normalizeDoi(item.DOI) === normalizedDoi);
+	if (!work) return null;
+	const date = publishedDate(work);
+	const title = boundedMetadata(work.title?.[0], MAX_TITLE_CHARS);
+	const venue = boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS);
+	const year = publishedYear(work);
+	return {
+		authors: workAuthors(work),
+		...(work['is-referenced-by-count'] == null ? {} : { citedByCount: work['is-referenced-by-count'] }),
+		...(date ? { publicationDate: date } : {}),
+		...(work['references-count'] == null ? {} : { referenceCount: work['references-count'] }),
+		...(title ? { title } : {}),
+		...(venue ? { venue } : {}),
+		...(year === null ? {} : { year }),
+	};
+}
+
 async function boundedJson(response: Response): Promise<unknown> {
 	const declaredLength = Number(response.headers.get('content-length'));
 	if (Number.isFinite(declaredLength) && declaredLength > MAX_CROSSREF_RESPONSE_BYTES) {
@@ -175,4 +231,25 @@ export async function resolveCrossrefReference(citation: string): Promise<Crossr
 		throw new Error(`Crossref request failed with HTTP ${status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
 	}
 	return selectCrossrefReference(query, await boundedJson(response));
+}
+
+export async function resolveCrossrefPaper(doi: string): Promise<CrossrefPaperMetadata | null> {
+	const normalizedDoi = normalizeDoi(doi);
+	if (!normalizedDoi) throw new TypeError('Crossref paper DOI is invalid');
+	const url = new URL(CROSSREF_WORKS_URL);
+	url.searchParams.set('filter', `doi:${normalizedDoi}`);
+	url.searchParams.set('mailto', CROSSREF_CONTACT);
+	url.searchParams.set('rows', '1');
+	url.searchParams.set('select', 'DOI,title,author,published,container-title,is-referenced-by-count,references-count');
+	const response = await fetch(url, {
+		headers: { Accept: 'application/json', 'User-Agent': CROSSREF_USER_AGENT },
+		signal: AbortSignal.timeout(CROSSREF_TIMEOUT_MS),
+	});
+	if (!response.ok) {
+		const retryAfter = response.headers.get('retry-after')?.slice(0, 100);
+		const status = response.status;
+		await response.body?.cancel();
+		throw new Error(`Crossref request failed with HTTP ${status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
+	}
+	return selectCrossrefPaper(normalizedDoi, await boundedJson(response));
 }
