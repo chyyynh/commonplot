@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
 import { canonicalizeResourceLang, type ResourceCreator, ResourceCreatorsSchema } from '../../shared/resource';
+import { resolveCrossrefPaperCandidate } from '../crossref';
 import { GROBID_CONTAINER_NAME } from '../grobid-container';
 import { type GrobidPdfHeader, grobidPaperIdentifierText } from '../grobid-tei';
 import { ZOTERO_SDT_ARTIFACT_VERSION } from '../zotero-sdt.ts';
@@ -24,6 +25,10 @@ export type { PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
 
 const MAX_PAPER_IDENTIFIER_TEXT_CHARS = 20_000;
 const GROBID_HEADER_STEP = { retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '600 seconds' } as const;
+const CROSSREF_PAPER_CANDIDATE_STEP = {
+	retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' },
+	timeout: '30 seconds',
+} as const;
 
 export type PdfAcquisitionDraft = Readonly<{
 	kind: 'local-pdf';
@@ -428,7 +433,33 @@ export async function stageStoredPdfAcquisition(
 			}),
 	]);
 	const acquisition = await new Response(contentStream).json<PdfAcquisitionDraft>();
-	const paperIdentifierText = grobidHeader ? grobidPaperIdentifierText(grobidHeader) : null;
+	let paperIdentifierText = grobidHeader ? grobidPaperIdentifierText(grobidHeader) : null;
+	const grobidTitle = grobidHeader?.title;
+	if (!paperIdentifierText && grobidTitle && grobidHeader.authors.length) {
+		try {
+			const crossref = await step.do('confirm-stored-pdf-with-crossref-v1', CROSSREF_PAPER_CANDIDATE_STEP, () =>
+				resolveCrossrefPaperCandidate(grobidTitle, grobidHeader.authors),
+			);
+			paperIdentifierText = crossref ? `DOI: ${crossref.doi}` : null;
+			console.info({
+				tag: 'PAPER_PROVIDER',
+				event: 'stored_pdf_candidate_confirmation',
+				provider: 'crossref',
+				resource_id: target.resourceId,
+				outcome: crossref ? 'resolved' : 'not_found',
+				...(crossref ? { doi: crossref.doi, venue: crossref.venue, year: crossref.year } : {}),
+			});
+		} catch (error) {
+			console.warn({
+				tag: 'PAPER_PROVIDER',
+				event: 'stored_pdf_candidate_confirmation',
+				provider: 'crossref',
+				resource_id: target.resourceId,
+				outcome: 'failed',
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 	const paperHeader = paperIdentifierText ? grobidHeader : null;
 	const material: GenericAcquiredMaterial = {
 		...acquisition.material,

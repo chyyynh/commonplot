@@ -12,6 +12,7 @@ const CROSSREF_ROWS = 3;
 const MAX_AUTHOR_CHARS = 300;
 const MAX_TITLE_CHARS = 500;
 const MAX_VENUE_CHARS = 300;
+const CROSSREF_PAPER_TYPES = new Set(['dissertation', 'journal-article', 'posted-content', 'proceedings-article', 'report']);
 
 const CrossrefWorkSchema = z.object({
 	DOI: z.string(),
@@ -28,6 +29,7 @@ const CrossrefWorkSchema = z.object({
 	'is-referenced-by-count': z.int().nonnegative().nullish(),
 	'references-count': z.int().nonnegative().nullish(),
 	title: z.array(z.string()).min(1).max(10).nullish(),
+	type: z.string().nullish(),
 });
 
 const CrossrefResponseSchema = z.object({
@@ -37,7 +39,7 @@ const CrossrefResponseSchema = z.object({
 
 type CrossrefWork = z.infer<typeof CrossrefWorkSchema>;
 
-type CrossrefReferenceResolution = Readonly<{
+export type CrossrefReferenceResolution = Readonly<{
 	authors: string[];
 	doi: string;
 	title: string;
@@ -146,23 +148,57 @@ function workMatchesCitation(citation: string, work: CrossrefWork): boolean {
 	return true;
 }
 
+function workMatchesPaperCandidate(title: string, authors: readonly string[], work: CrossrefWork): boolean {
+	const candidateTitle = normalizeBibliographicText(title);
+	const workTitle = normalizeBibliographicText(work.title?.[0] ?? '');
+	const shorterTitle = candidateTitle.length <= workTitle.length ? candidateTitle : workTitle;
+	const longerTitle = candidateTitle.length <= workTitle.length ? workTitle : candidateTitle;
+	if (shorterTitle.length < 18 || shorterTitle.split(' ').length < 4 || !longerTitle.includes(shorterTitle)) return false;
+	if (!work.type || !CROSSREF_PAPER_TYPES.has(work.type)) return false;
+	if (!boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS) || publishedYear(work) === null) return false;
+
+	const authorTokens = new Set(
+		authors.flatMap((author) => normalizeBibliographicText(author).split(' ')).filter((token) => token.length >= 3),
+	);
+	return normalizedFamilyNames(work).some((family) => authorTokens.has(family));
+}
+
+function crossrefResolution(work: CrossrefWork): CrossrefReferenceResolution | null {
+	const doi = normalizeDoi(work.DOI);
+	const title = boundedMetadata(work.title?.[0], MAX_TITLE_CHARS);
+	if (!doi || !title) return null;
+	return {
+		authors: workAuthors(work),
+		doi,
+		title,
+		url: `https://doi.org/${doi}`,
+		venue: boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS),
+		year: publishedYear(work),
+	};
+}
+
 /** Select only a Crossref hit whose deposited metadata strongly agrees with the citation. */
 export function selectCrossrefReference(citation: string, rawResponse: unknown): CrossrefReferenceResolution | null {
 	const response = CrossrefResponseSchema.parse(rawResponse);
 	for (const work of response.message.items) {
 		if (!workMatchesCitation(citation, work)) continue;
-		const doi = normalizeDoi(work.DOI);
-		const title = boundedMetadata(work.title?.[0], MAX_TITLE_CHARS);
-		if (doi && title) {
-			return {
-				authors: workAuthors(work),
-				doi,
-				title,
-				url: `https://doi.org/${doi}`,
-				venue: boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS),
-				year: publishedYear(work),
-			};
-		}
+		const resolution = crossrefResolution(work);
+		if (resolution) return resolution;
+	}
+	return null;
+}
+
+/** Confirm a GROBID header only when Crossref agrees on title, author, work type, venue, and year. */
+export function selectCrossrefPaperCandidate(
+	title: string,
+	authors: readonly string[],
+	rawResponse: unknown,
+): CrossrefReferenceResolution | null {
+	const response = CrossrefResponseSchema.parse(rawResponse);
+	for (const work of response.message.items) {
+		if (!workMatchesPaperCandidate(title, authors, work)) continue;
+		const resolution = crossrefResolution(work);
+		if (resolution) return resolution;
 	}
 	return null;
 }
@@ -231,6 +267,36 @@ export async function resolveCrossrefReference(citation: string): Promise<Crossr
 		throw new Error(`Crossref request failed with HTTP ${status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
 	}
 	return selectCrossrefReference(query, await boundedJson(response));
+}
+
+export async function resolveCrossrefPaperCandidate(
+	title: string,
+	authors: readonly string[],
+): Promise<CrossrefReferenceResolution | null> {
+	const queryTitle = title.trim();
+	const queryAuthor = authors[0]?.trim();
+	if (!queryTitle || queryTitle.length > MAX_TITLE_CHARS)
+		throw new TypeError(`Crossref paper title must contain 1-${MAX_TITLE_CHARS} characters`);
+	if (!queryAuthor || queryAuthor.length > MAX_AUTHOR_CHARS) {
+		throw new TypeError(`Crossref paper author must contain 1-${MAX_AUTHOR_CHARS} characters`);
+	}
+	const url = new URL(CROSSREF_WORKS_URL);
+	url.searchParams.set('mailto', CROSSREF_CONTACT);
+	url.searchParams.set('query.title', queryTitle);
+	url.searchParams.set('query.author', queryAuthor);
+	url.searchParams.set('rows', String(CROSSREF_ROWS));
+	url.searchParams.set('select', 'DOI,title,author,published,container-title,type');
+	const response = await fetch(url, {
+		headers: { Accept: 'application/json', 'User-Agent': CROSSREF_USER_AGENT },
+		signal: AbortSignal.timeout(CROSSREF_TIMEOUT_MS),
+	});
+	if (!response.ok) {
+		const retryAfter = response.headers.get('retry-after')?.slice(0, 100);
+		const status = response.status;
+		await response.body?.cancel();
+		throw new Error(`Crossref request failed with HTTP ${status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
+	}
+	return selectCrossrefPaperCandidate(queryTitle, authors, await boundedJson(response));
 }
 
 export async function resolveCrossrefPaper(doi: string): Promise<CrossrefPaperMetadata | null> {

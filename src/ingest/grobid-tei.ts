@@ -12,7 +12,7 @@ export type GrobidPdfHeader = GrobidReferenceIdentifiers &
 		title: string | null;
 	}>;
 
-/** A stored PDF becomes a paper only when GROBID extracts a canonical academic identifier. */
+/** Trust GROBID alone only for canonical identifiers; title-and-author headers still need external corroboration. */
 export function grobidPaperIdentifierText(header: GrobidPdfHeader): string | null {
 	const identifiers = [header.doi ? `DOI: ${header.doi}` : null, header.arxivId ? `arXiv: ${header.arxivId}` : null].filter(
 		(value): value is string => value !== null,

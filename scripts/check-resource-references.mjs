@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { selectCrossrefReference } from '../src/ingest/crossref.ts';
+import { selectCrossrefPaperCandidate, selectCrossrefReference } from '../src/ingest/crossref.ts';
 import { grobidPaperIdentifierText, parseGrobidPdfHeaderTei } from '../src/ingest/grobid-tei.ts';
 
 const parsedPdfHeader = parseGrobidPdfHeaderTei(`<TEI><teiHeader><fileDesc>
@@ -25,7 +25,7 @@ assert.equal(
 		),
 	),
 	null,
-	'GROBID header metadata without a canonical academic identifier must not promote an uploaded PDF to paper',
+	'GROBID header metadata without a canonical academic identifier must not promote an uploaded PDF by itself',
 );
 
 const crossrefResponse = {
@@ -67,4 +67,41 @@ assert.equal(
 	null,
 );
 
-console.info({ event: 'resource_reference_contract_smoke_passed', cases: 7 });
+const paperCandidateResponse = {
+	status: 'ok',
+	message: {
+		items: [
+			{
+				DOI: '10.1145/2145204.2145396',
+				author: [
+					{ family: 'Dabbish', given: 'Laura' },
+					{ family: 'Stuart', given: 'Colleen' },
+				],
+				'container-title': ['Proceedings of the ACM 2012 conference on Computer Supported Cooperative Work'],
+				published: { 'date-parts': [[2012]] },
+				title: ['Social coding in GitHub'],
+				type: 'proceedings-article',
+			},
+		],
+	},
+};
+const grobidTitle = 'Social Coding in GitHub: Transparency and Collaboration in an Open Software Repository';
+const grobidAuthors = ['Laura Dabbish', 'Colleen Stuart', 'Jason Tsay', 'Jim Herbsleb'];
+assert.deepEqual(selectCrossrefPaperCandidate(grobidTitle, grobidAuthors, paperCandidateResponse), {
+	authors: ['Laura Dabbish', 'Colleen Stuart'],
+	doi: '10.1145/2145204.2145396',
+	title: 'Social coding in GitHub',
+	url: 'https://doi.org/10.1145/2145204.2145396',
+	venue: 'Proceedings of the ACM 2012 conference on Computer Supported Cooperative Work',
+	year: 2012,
+});
+assert.equal(selectCrossrefPaperCandidate(grobidTitle, ['Someone Else'], paperCandidateResponse), null);
+assert.equal(
+	selectCrossrefPaperCandidate(grobidTitle, grobidAuthors, {
+		...paperCandidateResponse,
+		message: { items: [{ ...paperCandidateResponse.message.items[0], 'container-title': [] }] },
+	}),
+	null,
+);
+
+console.info({ event: 'resource_reference_contract_smoke_passed', cases: 10 });
