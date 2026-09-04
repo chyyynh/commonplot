@@ -2,12 +2,13 @@ import assert from 'node:assert/strict';
 
 const {
 	MarkdownTranslationInvariantError,
-	compileMarkdownTranslation,
 	compileMarkdownTranslationArtifact,
 	createMarkdownTranslationTemplate,
 	planMarkdownTranslation,
 	validateMarkdownBatchTranslations,
 } = await import('../src/ingest/markdown-translation.ts');
+
+const compileMarkdownTranslation = (...args) => compileMarkdownTranslationArtifact(...args).content;
 
 function targetFromSource(segment, translateText = (value) => value) {
 	const template = createMarkdownTranslationTemplate(segment);
@@ -340,7 +341,7 @@ assert.deepEqual(
 			n1: ['t3'],
 		},
 	},
-	'model input must expose a movable inline reference and a separately scoped link-label sequence',
+	'model input must expose a protected inline reference and a separately scoped link-label sequence',
 );
 const reorderedTranslation = withTranslatedTexts(targetFromSource(reorderedSegment), {
 	t1: '市場',

@@ -65,15 +65,7 @@ export type MarkdownTranslationBatch = Readonly<{
 	sourceCharacters: number;
 }>;
 
-export type MarkdownTranslationInline = PhrasingContent['type'] | Readonly<{ kind: PhrasingContent['type']; reference: string }>;
-
 type MarkdownTranslationSourcePart = string | Readonly<{ id: string }>;
-
-export type MarkdownTranslationTemplate = Readonly<{
-	inlines: Readonly<Record<string, MarkdownTranslationInline>>;
-	sequences: Readonly<Record<string, readonly string[]>>;
-	texts: Readonly<Record<string, string>>;
-}>;
 
 export type MarkdownSegmentTranslation = Readonly<{
 	texts: Readonly<Record<string, string>>;
@@ -503,7 +495,7 @@ function createMarkdownTranslationTemplatePlan(segment: MarkdownTranslationSegme
 
 // Like XLIFF inline codes, stable source text and inline IDs keep translation separate from Markdown syntax. Output text remains
 // fluid within each sequence because natural target-language prose cannot preserve every source-side gap around an inline.
-export function createMarkdownTranslationTemplate(segment: MarkdownTranslationSegment): MarkdownTranslationTemplate {
+export function createMarkdownTranslationTemplate(segment: MarkdownTranslationSegment) {
 	return createMarkdownTranslationTemplatePlan(segment).template;
 }
 
@@ -677,7 +669,7 @@ function hasSubstantialContainedProse(left: string, right: string): boolean {
 	return [...shorter].length >= MIN_CROSS_SEQUENCE_DUPLICATE_CHARACTERS && longer.includes(shorter);
 }
 
-function sequenceSourceText(template: MarkdownTranslationTemplate, sequenceId: string): string {
+function sequenceSourceText(template: ReturnType<typeof createMarkdownTranslationTemplate>, sequenceId: string): string {
 	return (template.sequences[sequenceId] ?? [])
 		.flatMap((partId) => {
 			const sourceText = template.texts[partId];
@@ -688,7 +680,7 @@ function sequenceSourceText(template: MarkdownTranslationTemplate, sequenceId: s
 
 function assertNoNewCrossSequenceDuplication(
 	segment: MarkdownTranslationSegment,
-	template: MarkdownTranslationTemplate,
+	template: ReturnType<typeof createMarkdownTranslationTemplate>,
 	translatedSequenceText: ReadonlyMap<string, string>,
 ): void {
 	const translatedEntries = [...translatedSequenceText.entries()];
@@ -1043,11 +1035,4 @@ export function compileMarkdownTranslationArtifact(
 		},
 		content: translatedMarkdown,
 	};
-}
-
-export function compileMarkdownTranslation(
-	plan: ReturnType<typeof planMarkdownTranslation>,
-	translations: readonly MarkdownSegmentTranslation[],
-): string {
-	return compileMarkdownTranslationArtifact(plan, translations).content;
 }
