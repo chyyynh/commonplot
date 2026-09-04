@@ -54,14 +54,14 @@ function jobState(job: { id: string; status: string; usage?: { credits?: number 
 
 type ProviderJob = ReturnType<typeof jobState>;
 
-async function privatePdfBytes(env: CoreEnv, storageKey: string): Promise<Uint8Array> {
+async function privatePdfBuffer(env: CoreEnv, storageKey: string): Promise<ArrayBuffer> {
 	let lastError: unknown;
 	for (let attempt = 1; attempt <= 3; attempt++) {
 		try {
 			const object = await env.R2.get(storageKey);
 			if (!object) throw new NonRetryableError(`${PREPARATION_FAILED} action=r2-read reason=missing`);
 			if (object.size > MAX_PDF_BYTES) throw new NonRetryableError(`${PREPARATION_FAILED} action=r2-read reason=too-large`);
-			return await object.bytes();
+			return await object.arrayBuffer();
 		} catch (error) {
 			if (error instanceof NonRetryableError) throw error;
 			lastError = error;
@@ -107,8 +107,8 @@ function stageProviderFile(
 				throw new NonRetryableError(`${AMBIGUOUS_MUTATION} action=file-upload-reconcile-miss`);
 			}
 
-			const bytes = await privatePdfBytes(env, input.storageKey);
-			const file = new File([bytes], `newsence-${input.processingId.slice(0, 96)}.pdf`, { type: PDF_MIME });
+			const buffer = await privatePdfBuffer(env, input.storageKey);
+			const file = new File([buffer], `newsence-${input.processingId.slice(0, 96)}.pdf`, { type: PDF_MIME });
 			try {
 				const uploaded = await client(input.credentials.apiKey).files.create(
 					{
