@@ -12,7 +12,6 @@ import {
 	paperIdentityFromText,
 	resolveExactPaperInput,
 } from '../../shared/paper-identity';
-import type { PaperKindMetadata } from '../../shared/resource';
 import { resolveCrossrefPaper } from '../crossref';
 import { type GenericAcquiredMaterial, literalCreator } from './materialize';
 import { type PaperMetadata, resolveOpenAlexPaper } from './openalex';
@@ -40,27 +39,19 @@ function applyPaperMetadata(
 	publishedDate: string | null,
 ): { acquiredContent: GenericAcquiredMaterial; publishedDate: string | null } {
 	if (!metadata) return { acquiredContent, publishedDate };
-	if (!publishedDate && metadata.publicationDate) {
-		const candidate = new Date(`${metadata.publicationDate}T00:00:00.000Z`);
+	const { abstract: rawAbstract, authors, publicationDate, title: rawTitle, ...kindMetadata } = metadata;
+	if (!publishedDate && publicationDate) {
+		const candidate = new Date(`${publicationDate}T00:00:00.000Z`);
 		if (!Number.isNaN(candidate.getTime())) publishedDate = candidate.toISOString();
 	}
-	const abstract = metadata.abstract?.trim();
-	const title = metadata.title?.trim();
-	const kindMetadata: PaperKindMetadata = {
-		...(metadata.venue?.trim() ? { venue: metadata.venue.trim() } : {}),
-		...(metadata.year === undefined ? {} : { year: metadata.year }),
-		...(metadata.citedByCount === undefined ? {} : { citedByCount: metadata.citedByCount }),
-		...(metadata.referenceCount === undefined ? {} : { referenceCount: metadata.referenceCount }),
-		...(metadata.pdfUrl?.trim() ? { pdfUrl: metadata.pdfUrl.trim() } : {}),
-		...(metadata.references ? { references: metadata.references } : {}),
-		...(metadata.citations ? { citations: metadata.citations } : {}),
-	};
+	const abstract = rawAbstract?.trim();
+	const title = rawTitle?.trim();
 	return {
 		acquiredContent: {
 			...acquiredContent,
 			...(title ? { title } : {}),
 			...(abstract ? { summary: abstract } : {}),
-			creators: metadata.authors.flatMap((author) => literalCreator('author', author)),
+			creators: authors.flatMap((author) => literalCreator('author', author)),
 			kindMetadata,
 		},
 		publishedDate,
