@@ -25,21 +25,11 @@ export class ZoteroSdtParseError extends Error {
 	}
 }
 
-export type StructuredPdfArtifact = Readonly<{
-	document: StructuredPdfDocument;
-	json: string;
-}>;
-
 type StructuredPdfSourceCropInventory = Readonly<{
 	crops: readonly StructuredPdfSourceCrop[];
 	inputContentHash: string;
 	pdfStorageKey: string;
 }>;
-
-function artifactFromJson(json: string): StructuredPdfArtifact {
-	const document = parseStructuredPdfDocumentJson(json);
-	return { document, json };
-}
 
 export function structuredPdfSourceCropStorageKey(pdfStorageKey: string, inputContentHash: string, cropId: string): string {
 	if (!INPUT_HASH_PATTERN.test(inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
@@ -138,21 +128,21 @@ export async function parsePdfWithZotero(
 	env: CoreEnv,
 	input: ReadableStream<Uint8Array>,
 	byteLength: number | null,
-): Promise<StructuredPdfArtifact> {
+): Promise<StructuredPdfDocument> {
 	const response = await env.ZOTERO_SDT.getByName(ZOTERO_SDT_CONTAINER_NAME).processPdf(input, byteLength);
 	if (!response.ok) {
 		const body = (await response.text()).slice(0, MAX_ERROR_BODY_BYTES);
 		const { message, totalPages } = parseStructuredPdfFailure(response.status, body);
 		throw new ZoteroSdtParseError(message, totalPages);
 	}
-	return artifactFromJson(await response.text());
+	return parseStructuredPdfDocumentJson(await response.text());
 }
 
 export async function readStructuredPdfArtifact(
 	env: CoreEnv,
 	pdfStorageKey: string,
 	inputContentHash: string,
-): Promise<StructuredPdfArtifact | null> {
+): Promise<StructuredPdfDocument | null> {
 	if (!INPUT_HASH_PATTERN.test(inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
 	const object = await env.R2.get(structuredPdfStorageKey(pdfStorageKey));
 	if (!object) return null;
@@ -164,17 +154,17 @@ export async function readStructuredPdfArtifact(
 		await object.body.cancel('Structured PDF artifact size is invalid');
 		throw new Error('Structured PDF artifact size is invalid');
 	}
-	return artifactFromJson(await object.text());
+	return parseStructuredPdfDocumentJson(await object.text());
 }
 
 export async function writeStructuredPdfArtifact(
 	env: CoreEnv,
 	pdfStorageKey: string,
 	inputContentHash: string,
-	artifact: StructuredPdfArtifact,
+	document: StructuredPdfDocument,
 ): Promise<void> {
 	if (!INPUT_HASH_PATTERN.test(inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
-	await env.R2.put(structuredPdfStorageKey(pdfStorageKey), artifact.json, {
+	await env.R2.put(structuredPdfStorageKey(pdfStorageKey), JSON.stringify(document), {
 		customMetadata: {
 			artifactVersion: ZOTERO_SDT_ARTIFACT_VERSION,
 			inputSha256: inputContentHash,

@@ -10,6 +10,7 @@ import { type GrobidPdfHeader, grobidPaperIdentifierText } from '../grobid-tei';
 import {
 	type NormalizedStructuredPdf,
 	normalizeStructuredPdf,
+	type StructuredPdfDocument,
 	structuredPdfSourceCrops,
 	ZOTERO_SDT_ARTIFACT_VERSION,
 } from '../zotero-sdt.ts';
@@ -17,7 +18,6 @@ import {
 	ensureStructuredPdfSourceCrops,
 	parsePdfWithZotero,
 	readStructuredPdfArtifact,
-	type StructuredPdfArtifact,
 	writeStructuredPdfArtifact,
 	ZoteroSdtParseError,
 } from '../zotero-sdt-service.ts';
@@ -74,7 +74,7 @@ async function parsePdfArtifactStream(
 	input: ReadableStream<Uint8Array>,
 	byteLength: number | null,
 	sourceLabel: string,
-): Promise<StructuredPdfArtifact | LocalPdfParseResult> {
+): Promise<StructuredPdfDocument | LocalPdfParseResult> {
 	try {
 		return await parsePdfWithZotero(env, input, byteLength);
 	} catch (error) {
@@ -265,10 +265,10 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 
 async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise<PdfAcquisitionDraft> {
 	const sourceLabel = `Stored PDF ${resource.resourceId}`;
-	let artifact: StructuredPdfArtifact | null = null;
+	let document: StructuredPdfDocument | null = null;
 	let parseFailure: LocalPdfParseResult | null = null;
 	try {
-		artifact = await readStructuredPdfArtifact(env, resource.storageKey, resource.contentHash);
+		document = await readStructuredPdfArtifact(env, resource.storageKey, resource.contentHash);
 	} catch (error) {
 		console.warn({
 			tag: 'PDF_PARSE',
@@ -277,11 +277,11 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
-	if (artifact) {
+	if (document) {
 		console.info({
 			tag: 'PDF_PARSE',
 			event: 'zotero_sdt_artifact_reused',
-			parser_version: `zotero-pdf-${artifact.document.metadata.processor.version}/sdt-${artifact.document.schemaVersion}`,
+			parser_version: `zotero-pdf-${document.metadata.processor.version}/sdt-${document.schemaVersion}`,
 			resource_id: resource.resourceId,
 		});
 	} else {
@@ -292,14 +292,14 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 			throw new NonRetryableError(`PDF source object must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
 		const attempt = await parsePdfArtifactStream(env, object.body, object.size, sourceLabel);
-		if ('document' in attempt) {
-			artifact = attempt;
-			await writeStructuredPdfArtifact(env, resource.storageKey, resource.contentHash, artifact);
+		if ('schemaVersion' in attempt) {
+			document = attempt;
+			await writeStructuredPdfArtifact(env, resource.storageKey, resource.contentHash, document);
 		} else parseFailure = attempt;
 	}
 	let parsed = parseFailure;
-	if (artifact) {
-		const crops = structuredPdfSourceCrops(artifact.document);
+	if (document) {
+		const crops = structuredPdfSourceCrops(document);
 		const readySourceCropIds = await ensureStructuredPdfSourceCrops(env, {
 			crops,
 			inputContentHash: resource.contentHash,
@@ -307,7 +307,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 			resourceId: resource.resourceId,
 		});
 		parsed = localPdfResult(
-			normalizeStructuredPdf(artifact.document, {
+			normalizeStructuredPdf(document, {
 				inputContentHash: resource.contentHash,
 				readySourceCropIds: new Set(readySourceCropIds),
 			}),
@@ -352,7 +352,7 @@ export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response
 	);
 	if (!body) throw new NonRetryableError('Fetched PDF response body is empty');
 	const attempt = await parsePdfArtifactStream(env, body, null, 'Fetched PDF');
-	const parsed = 'document' in attempt ? localPdfResult(normalizeStructuredPdf(attempt.document), 'Fetched PDF') : attempt;
+	const parsed = 'schemaVersion' in attempt ? localPdfResult(normalizeStructuredPdf(attempt), 'Fetched PDF') : attempt;
 	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
 	let fileName = encodedName || 'document.pdf';
 	if (encodedName) {

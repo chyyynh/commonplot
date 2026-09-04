@@ -259,15 +259,9 @@ export async function enrichUploadedPdfReferences(
 			loadUploadedPdfSource(await connectCoreDb(env), input.resourceId, input.uploadedPdfResourceId, input.referenceRevision),
 		);
 		const stored = await step.do('replace-uploaded-pdf-citations-v2', REFERENCE_SDT_STEP, async () => {
-			const artifact = await readStructuredPdfArtifact(env, source.storageKey, source.contentHash);
-			if (!artifact) throw new NonRetryableError('Structured PDF artifact is missing or stale');
-			return replaceStoredCitationData(
-				await connectCoreDb(env),
-				input.resourceId,
-				input.referenceRevision,
-				artifact.document,
-				source.contentHash,
-			);
+			const document = await readStructuredPdfArtifact(env, source.storageKey, source.contentHash);
+			if (!document) throw new NonRetryableError('Structured PDF artifact is missing or stale');
+			return replaceStoredCitationData(await connectCoreDb(env), input.resourceId, input.referenceRevision, document, source.contentHash);
 		});
 		const crossref = await resolveCrossrefUpdates(step, stored.referenceTexts);
 		const enrichedCount = crossref.updates.length
