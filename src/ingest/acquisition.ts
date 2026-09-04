@@ -1,21 +1,12 @@
 import type { WorkflowStep } from 'cloudflare:workers';
-import {
-	canonicalPaperUrl,
-	type PaperIdentifier,
-	paperIdentifiersFromIdentity,
-	paperIdentityFromIdentifiers,
-	resolveExactPaperInput,
-} from '../shared/paper-identity';
-import { isPaperIdentifier } from '../shared/resource';
+import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '../shared/paper-identity';
 import { parseHackerNewsResourceUrl, stageHackerNewsAcquisition } from './platforms/hackernews';
 import { parseLessWrongResourceUrl, stageLessWrongAcquisition } from './platforms/lesswrong';
-import {
-	type GenericAcquiredMaterial,
-	materializeGenericResource,
-	type PlatformResourceUrl,
-	type ResolvedPlatformlessResource,
-	type ResolvedResourceSubjectIdentity,
-	type ResourceAcquisitionHints,
+import type {
+	PlatformResourceUrl,
+	ResolvedPlatformlessResource,
+	ResolvedResourceSubjectIdentity,
+	ResourceAcquisitionHints,
 } from './platforms/materialize';
 import { stagePaperProcessing } from './platforms/paper';
 import { type PaidPdfFallbackGrant, stageStoredPdfAcquisition } from './platforms/pdf';
@@ -58,44 +49,6 @@ function resolveResourceSubject(value: string | null | undefined): ResolvedResou
 	return { identifiers: [], normalizedUrl: url.toString() };
 }
 
-async function resolveGenericAcquiredResource(
-	env: CoreEnv,
-	step: WorkflowStep,
-	acquired: GenericAcquiredMaterial,
-	input: {
-		hints: ResourceAcquisitionHints;
-		paperIdentifiers: readonly PaperIdentifier[];
-		processingId: string;
-		sourceUrl: string | null;
-		allowCitoidLookup: boolean;
-	},
-): Promise<ResolvedPlatformlessResource> {
-	let publishedDate = input.hints.publishedDate;
-	if (acquired.publishedDate?.trim()) {
-		const parsed = new Date(acquired.publishedDate);
-		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
-	}
-
-	const canonicalUrl = acquired.canonicalUrl?.trim() || input.sourceUrl;
-	const paper = await stagePaperProcessing(env, step, {
-		acquiredContent: acquired,
-		canonicalUrl,
-		processingId: input.processingId,
-		publishedDate,
-		seedIdentifiers: input.paperIdentifiers,
-		sourceUrl: input.sourceUrl,
-		allowCitoidLookup: input.allowCitoidLookup,
-	});
-	if (!paper.acquiredContent.markdown.trim()) {
-		throw new Error(`Processing ${input.processingId} has no extractable content`);
-	}
-	return materializeGenericResource(paper.acquiredContent, input.hints, {
-		canonicalUrl,
-		publishedDate: paper.publishedDate,
-		resourceIdentifiers: paper.resourceIdentifiers,
-	});
-}
-
 export async function stageUrlAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
@@ -112,10 +65,11 @@ export async function stageUrlAcquisition(
 	if (!detected) {
 		const web = await stageWebAcquisition(env, step, input, resolvePlatformResourceUrl);
 		if (!('platform' in web)) {
-			return resolveGenericAcquiredResource(env, step, web, {
+			return stagePaperProcessing(env, step, {
+				acquiredContent: web,
 				hints: input.hints,
-				paperIdentifiers: input.paperIdentifiers ?? [],
 				processingId: input.processingId,
+				seedIdentifiers: input.paperIdentifiers ?? [],
 				sourceUrl: input.url,
 				allowCitoidLookup: input.allowCitoidLookup,
 			});
@@ -159,17 +113,12 @@ export async function stageStoredResourceAcquisition(
 	}>,
 ): Promise<ResolvedPlatformlessResource> {
 	const acquired = await stageStoredPdfAcquisition(env, step, target);
-	const resource = await resolveGenericAcquiredResource(env, step, acquired, {
+	return stagePaperProcessing(env, step, {
+		acquiredContent: acquired,
 		hints: acquired,
-		paperIdentifiers: [],
 		processingId: target.resourceId,
+		seedIdentifiers: [],
 		sourceUrl: null,
 		allowCitoidLookup: false,
 	});
-	if (resource.kind !== 'paper') return resource;
-
-	const identity = paperIdentityFromIdentifiers(resource.resourceIdentifiers.filter(isPaperIdentifier));
-	if (!identity) throw new Error(`Private paper processing ${target.resourceId} has no canonical identity`);
-	const url = canonicalPaperUrl(identity);
-	return { ...resource, url, normalizedUrl: url };
 }

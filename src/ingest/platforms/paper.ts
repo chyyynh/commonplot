@@ -3,6 +3,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { z } from 'zod';
 import {
+	canonicalPaperUrl,
 	normalizePaperIdentifiers,
 	PAPER_IDENTIFIER_SCHEMES,
 	type PaperIdentifier,
@@ -13,7 +14,7 @@ import {
 	resolveExactPaperInput,
 } from '../../shared/paper-identity';
 import { resolveCrossrefPaper } from '../crossref';
-import { type GenericAcquiredMaterial, literalCreator } from './materialize';
+import { type GenericAcquiredMaterial, literalCreator, materializeGenericResource, type ResourceAcquisitionHints } from './materialize';
 import { type PaperMetadata, resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME, stageOpenAlexPdfRepresentation } from './pdf';
 
@@ -239,15 +240,20 @@ export async function stagePaperProcessing(
 	step: WorkflowStep,
 	input: {
 		acquiredContent: GenericAcquiredMaterial;
-		canonicalUrl: string | null;
+		hints: ResourceAcquisitionHints;
 		processingId: string;
-		publishedDate: string | null;
 		seedIdentifiers: readonly PaperIdentifier[];
 		sourceUrl: string | null;
 		allowCitoidLookup: boolean;
 	},
 ) {
-	const exactIdentifiers = [input.sourceUrl, input.canonicalUrl === input.sourceUrl ? null : input.canonicalUrl].flatMap((value) => {
+	let publishedDate = input.hints.publishedDate;
+	if (input.acquiredContent.publishedDate?.trim()) {
+		const parsed = new Date(input.acquiredContent.publishedDate);
+		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
+	}
+	const canonicalUrl = input.acquiredContent.canonicalUrl?.trim() || input.sourceUrl;
+	const exactIdentifiers = [input.sourceUrl, canonicalUrl === input.sourceUrl ? null : canonicalUrl].flatMap((value) => {
 		const resolved = resolveExactPaperInput(value);
 		return resolved ? paperIdentifiersFromIdentity(resolved.identity) : [];
 	});
@@ -262,8 +268,8 @@ export async function stagePaperProcessing(
 	]);
 	const doi = paperIdentityFromIdentifiers(identifiers)?.doi;
 	const citoidIdentifiers =
-		input.acquiredContent.fileType !== PDF_MIME && !identifiers.length && input.allowCitoidLookup && input.canonicalUrl
-			? await stageCitoidPaperIdentifiers(step, { citoidUrl: input.canonicalUrl, processingId: input.processingId })
+		input.acquiredContent.fileType !== PDF_MIME && !identifiers.length && input.allowCitoidLookup && canonicalUrl
+			? await stageCitoidPaperIdentifiers(step, { citoidUrl: canonicalUrl, processingId: input.processingId })
 			: [];
 	const resolution =
 		input.acquiredContent.fileType === PDF_MIME
@@ -276,7 +282,7 @@ export async function stagePaperProcessing(
 					identifiers: choosePreferredIdentifiers([...identifiers, ...citoidIdentifiers]),
 					processingId: input.processingId,
 				});
-	const enriched = applyPaperMetadata(input.acquiredContent, resolution.metadata, input.publishedDate);
+	const enriched = applyPaperMetadata(input.acquiredContent, resolution.metadata, publishedDate);
 	const pdfRepresentation =
 		input.acquiredContent.fileType === PDF_MIME || !resolution.contentPdfUrl
 			? null
@@ -288,9 +294,15 @@ export async function stagePaperProcessing(
 		? {
 				...enriched.acquiredContent,
 				...pdfRepresentation,
-				source: enriched.acquiredContent.source.trim() || (input.canonicalUrl ? new URL(input.canonicalUrl).hostname : 'OpenAlex'),
+				source: enriched.acquiredContent.source.trim() || (canonicalUrl ? new URL(canonicalUrl).hostname : 'OpenAlex'),
 			}
 		: enriched.acquiredContent;
 	const resourceIdentifiers = choosePreferredIdentifiers([...identifiers, ...resolution.identifiers]);
-	return { acquiredContent, publishedDate: enriched.publishedDate, resourceIdentifiers };
+	if (!acquiredContent.markdown.trim()) throw new Error(`Processing ${input.processingId} has no extractable content`);
+	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
+	return materializeGenericResource(acquiredContent, input.hints, {
+		canonicalUrl: canonicalUrl ?? (identity ? canonicalPaperUrl(identity) : null),
+		publishedDate: enriched.publishedDate,
+		resourceIdentifiers,
+	});
 }
