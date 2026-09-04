@@ -7,15 +7,10 @@ import { canonicalizeResourceLang, type ResourceCreator, ResourceCreatorsSchema 
 import { limitByteStream } from '../../shared/response';
 import { resolveCrossrefPaperCandidate } from '../crossref';
 import type { GrobidPdfHeader } from '../grobid-tei';
-import {
-	normalizeStructuredPdf,
-	type StructuredPdfDocument,
-	structuredPdfSourceCrops,
-	ZOTERO_SDT_ARTIFACT_VERSION,
-} from '../zotero-sdt.ts';
+import { normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfSourceCrops } from '../zotero-sdt.ts';
 import {
 	ensureStructuredPdfSourceCrops,
-	parsePdfWithZotero,
+	parsePdfArtifactStream,
 	readStructuredPdfArtifact,
 	writeStructuredPdfArtifact,
 } from '../zotero-sdt-service.ts';
@@ -57,35 +52,6 @@ function localPdfResult(normalized: ReturnType<typeof normalizeStructuredPdf>, s
 		total_pages: parse.totalPages,
 	});
 	return { markdown, paperIdentifierText, parse };
-}
-
-async function parsePdfArtifactStream(
-	env: CoreEnv,
-	input: ReadableStream<Uint8Array>,
-	byteLength: number | null,
-	sourceLabel: string,
-): Promise<StructuredPdfDocument | LocalPdfParseResult> {
-	try {
-		return await parsePdfWithZotero(env, input, byteLength);
-	} catch (error) {
-		console.error({
-			tag: 'PDF_PARSE',
-			event: 'zotero_sdt_failed',
-			parser_version: ZOTERO_SDT_ARTIFACT_VERSION,
-			source: sourceLabel,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return {
-			markdown: '',
-			paperIdentifierText: null,
-			parse: {
-				fallbackReasons: ['parse-failed'],
-				fullPageImagePages: 0,
-				parserVersion: ZOTERO_SDT_ARTIFACT_VERSION,
-				totalPages: error instanceof Error && typeof error.cause === 'number' ? error.cause : null,
-			},
-		};
-	}
 }
 
 function requireUsablePdf(acquisition: PdfAcquisitionDraft, sourceLabel: string): GenericAcquiredMaterial {
@@ -301,14 +267,11 @@ export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response
 	const body = limitByteStream(response.body, MAX_PDF_BYTES, () => new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`));
 	const attempt = await parsePdfArtifactStream(env, body, null, 'Fetched PDF');
 	const parsed = 'schemaVersion' in attempt ? localPdfResult(normalizeStructuredPdf(attempt), 'Fetched PDF') : attempt;
-	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
-	let fileName = encodedName || 'document.pdf';
-	if (encodedName) {
-		try {
-			fileName = decodeURIComponent(encodedName) || 'document.pdf';
-		} catch {
-			fileName = encodedName;
-		}
+	let fileName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';
+	try {
+		fileName = decodeURIComponent(fileName) || 'document.pdf';
+	} catch {
+		// Keep a malformed path segment in its encoded form.
 	}
 	const title = fileName.replace(/\.[a-z0-9]+$/i, '').trim();
 	if (!title) throw new NonRetryableError(`File name has no title: ${fileName}`);

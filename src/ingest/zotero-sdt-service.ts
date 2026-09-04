@@ -84,19 +84,42 @@ export async function ensureStructuredPdfSourceCrops(
 	return input.crops.filter((crop) => readyCropIds.has(crop.id));
 }
 
-export async function parsePdfWithZotero(
+export async function parsePdfArtifactStream(
 	env: CoreEnv,
 	input: ReadableStream<Uint8Array>,
 	byteLength: number | null,
-): Promise<StructuredPdfDocument> {
-	const response = await env.ZOTERO_SDT.getByName(ZOTERO_SDT_CONTAINER_NAME).processPdf(input, byteLength);
-	const maxBytes = response.ok ? ZOTERO_SDT_MAX_RESPONSE_BYTES : MAX_ERROR_BODY_BYTES;
-	const body = await readBoundedResponseText(response, maxBytes, 'Zotero SDT response');
-	if (!response.ok) {
-		const { message, totalPages } = parseStructuredPdfFailure(response.status, body);
-		throw new Error(message, { cause: totalPages });
+	sourceLabel: string,
+) {
+	let totalPages: number | null = null;
+	try {
+		const response = await env.ZOTERO_SDT.getByName(ZOTERO_SDT_CONTAINER_NAME).processPdf(input, byteLength);
+		const maxBytes = response.ok ? ZOTERO_SDT_MAX_RESPONSE_BYTES : MAX_ERROR_BODY_BYTES;
+		const body = await readBoundedResponseText(response, maxBytes, 'Zotero SDT response');
+		if (!response.ok) {
+			const failure = parseStructuredPdfFailure(response.status, body);
+			totalPages = failure.totalPages;
+			throw new Error(failure.message);
+		}
+		return parseStructuredPdfDocumentJson(body);
+	} catch (error) {
+		console.error({
+			tag: 'PDF_PARSE',
+			event: 'zotero_sdt_failed',
+			parser_version: ZOTERO_SDT_ARTIFACT_VERSION,
+			source: sourceLabel,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return {
+			markdown: '',
+			paperIdentifierText: null,
+			parse: {
+				fallbackReasons: ['parse-failed'],
+				fullPageImagePages: 0,
+				parserVersion: ZOTERO_SDT_ARTIFACT_VERSION,
+				totalPages,
+			},
+		};
 	}
-	return parseStructuredPdfDocumentJson(body);
 }
 
 export async function readStructuredPdfArtifact(

@@ -197,17 +197,6 @@ function nodeText(node: SdtNode): string {
 	return 'text' in node ? node.text : node.content.map(nodeText).join('');
 }
 
-function paragraphPartChain(document: StructuredPdfDocument, startIndex: number) {
-	const chain = getPartChain(document, [startIndex], {
-		include: (path, value) => {
-			const block = value as Partial<SdtBlockNode>;
-			return path.length === 1 && block.type === 'paragraph' && block.flowClass !== 'excluded' && isLeafBlock(block);
-		},
-	});
-	if (chain.length < 2 || chain[0]?.ref[0] !== startIndex) return null;
-	return chain as Array<{ block: SdtBlockNode; ref: SdtRefPath }>;
-}
-
 function mergeParagraphParts(chain: readonly { block: SdtBlockNode }[]): SdtBlockNode {
 	const first = chain[0]!.block;
 	const content: SdtNode[] = [...first.content];
@@ -546,7 +535,13 @@ export function normalizeStructuredPdf(
 		const block = document.content[index];
 		const blockPath: RefPath = [index];
 		if (block.flowClass === 'excluded' || renderedPartPaths.has(refKey(blockPath))) continue;
-		const partChain = paragraphPartChain(document, index);
+		const parts = getPartChain(document, blockPath as SdtRefPath, {
+			include: (path, value) => {
+				const part = value as Partial<SdtBlockNode>;
+				return path.length === 1 && part.type === 'paragraph' && part.flowClass !== 'excluded' && isLeafBlock(part);
+			},
+		});
+		const partChain = parts.length >= 2 && parts[0]?.ref[0] === index ? (parts as Array<{ block: SdtBlockNode; ref: SdtRefPath }>) : null;
 		const renderableBlock = partChain ? mergeParagraphParts(partChain) : block;
 		for (const part of partChain?.slice(1) ?? []) renderedPartPaths.add(refKey(part.ref));
 		section = renderBlock(writer, renderableBlock, blockPath, section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
