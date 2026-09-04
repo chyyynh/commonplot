@@ -1,6 +1,6 @@
 import { getFulltextFromStructuredText } from 'structured-document-text/src/fulltext.js';
 import { getPartBoundarySeparator, getPartChain, shouldDropHardHyphenAtPartBoundary } from 'structured-document-text/src/parts.js';
-import { refKey } from 'structured-document-text/src/range.js';
+import { isLeafBlock, refKey } from 'structured-document-text/src/range.js';
 import type { LocalPdfSummary } from './platforms/pdf-fallback-policy.ts';
 
 const MAX_DOCUMENT_JSON_BYTES = 32 * 1024 * 1024;
@@ -274,17 +274,13 @@ function nodeText(node: SdtNode): string {
 	return 'text' in node ? node.text : node.content.map(nodeText).join('');
 }
 
-function isInlineContent(nodes: readonly SdtNode[]): nodes is readonly SdtTextNode[] {
-	return nodes.every((node) => 'text' in node);
-}
-
 type ParagraphPart = Readonly<{ block: SdtBlockNode; index: number }>;
 
 function paragraphPartChain(document: StructuredPdfDocument, startIndex: number): ParagraphPart[] | null {
 	const chain = getPartChain(document, [startIndex], {
 		include: (path, value) => {
 			const block = value as Partial<SdtBlockNode>;
-			return path.length === 1 && block.type === 'paragraph' && block.flowClass !== 'excluded' && isInlineContent(block.content ?? []);
+			return path.length === 1 && block.type === 'paragraph' && block.flowClass !== 'excluded' && isLeafBlock(block);
 		},
 	});
 	if (chain.length < 2 || chain[0]?.ref[0] !== startIndex) return null;
@@ -367,7 +363,7 @@ class MarkdownWriter {
 	appendCitation(markerText: string, context: string, section: string | null, targetKeys: readonly string[]): void {
 		const normalized = markerText.replace(/\s+/gu, ' ');
 		const trimmed = normalized.trim();
-		if (!trimmed || trimmed.length > MAX_CITATION_MARKER_CHARS || trimmed.includes('\n') || this.mentions.length >= MAX_CITATION_MENTIONS) {
+		if (!trimmed || trimmed.length > MAX_CITATION_MARKER_CHARS || this.mentions.length >= MAX_CITATION_MENTIONS) {
 			this.append(escapeMarkdownText(normalized));
 			return;
 		}
@@ -424,10 +420,6 @@ function renderInline(
 	}
 }
 
-function shouldRenderSourceCrop(node: SdtBlockNode): node is SdtBlockNode & { type: 'image' | 'table' } {
-	return node.type === 'image' || (node.type === 'table' && isInlineContent(node.content));
-}
-
 /**
  * Zotero Reading Mode renders semantic image nodes and flat tables by
  * cropping their source rectangles from the PDF. Keep the same geometry as a
@@ -436,7 +428,7 @@ function shouldRenderSourceCrop(node: SdtBlockNode): node is SdtBlockNode & { ty
 export function structuredPdfSourceCrops(document: StructuredPdfDocument): StructuredPdfSourceCrop[] {
 	const crops: StructuredPdfSourceCrop[] = [];
 	for (const [blockIndex, block] of document.content.entries()) {
-		if (block.flowClass === 'excluded' || !shouldRenderSourceCrop(block)) continue;
+		if (block.flowClass === 'excluded' || (block.type !== 'image' && (block.type !== 'table' || !isLeafBlock(block)))) continue;
 		const rectByPage = new Map<number, [number, number, number, number]>();
 		for (const [pageIndex, x1, y1, x2, y2] of block.anchor?.pageRects ?? []) {
 			if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= document.catalog.pages.length || !(x2 > x1) || !(y2 > y1)) {
@@ -475,18 +467,12 @@ export function structuredPdfSourceCropUrl(inputContentHash: string, cropId: str
 	return `/api/media/asset/pdf-crops/${inputContentHash}/${cropId}.png`;
 }
 
-function renderTableRow(
-	writer: MarkdownWriter,
-	row: SdtBlockNode,
-	section: string | null,
-	referenceKeyByPath: ReadonlyMap<string, string>,
-): void {
+function renderTableRow(writer: MarkdownWriter, row: SdtBlockNode): void {
 	const cells = row.content.filter((node): node is SdtBlockNode => !('text' in node) && node.type === 'tablecell');
 	writer.append('| ');
 	for (const [index, cell] of cells.entries()) {
 		if (index) writer.append(' | ');
-		const text = cleanText(nodeText(cell));
-		renderInline(writer, [{ text }], text, section, referenceKeyByPath);
+		writer.append(escapeMarkdownText(cleanText(nodeText(cell))));
 	}
 	writer.append(' |\n');
 }
@@ -502,7 +488,7 @@ function renderBlock(
 ): string | null {
 	if (node.flowClass === 'excluded') return section;
 	const context = cleanText(nodeText(node));
-	const sourceCrops = shouldRenderSourceCrop(node) ? sourceCropsByBlock.get(refKey(path)) : undefined;
+	const sourceCrops = sourceCropsByBlock.get(refKey(path));
 	if (sourceCrops?.length) {
 		for (const crop of sourceCrops) writer.append(`![${escapeMarkdownText(crop.altText)}](${crop.url})\n\n`);
 		return section;
@@ -548,7 +534,7 @@ function renderBlock(
 			if ('text' in item) continue;
 			writer.append(node.ordered ? `${(node.startIndex ?? 1) + index}. ` : '- ');
 			const itemContext = cleanText(nodeText(item));
-			if (isInlineContent(item.content)) renderInline(writer, item.content, itemContext, section, referenceKeyByPath);
+			if (isLeafBlock(item)) renderInline(writer, item.content, itemContext, section, referenceKeyByPath);
 			else {
 				for (const child of item.content) {
 					if ('text' in child) renderInline(writer, [child], itemContext, section, referenceKeyByPath);
@@ -563,17 +549,17 @@ function renderBlock(
 	if (node.type === 'table') {
 		const rows = node.content.filter((child): child is SdtBlockNode => !('text' in child) && child.type === 'tablerow');
 		if (rows.length) {
-			renderTableRow(writer, rows[0]!, section, referenceKeyByPath);
+			renderTableRow(writer, rows[0]!);
 			const columns = rows[0]!.content.filter((child) => !('text' in child) && child.type === 'tablecell').length;
 			writer.append(`| ${Array.from({ length: columns }, () => '---').join(' | ')} |\n`);
-			for (const row of rows.slice(1)) renderTableRow(writer, row, section, referenceKeyByPath);
+			for (const row of rows.slice(1)) renderTableRow(writer, row);
 		} else {
 			renderInline(writer, node.content, context, section, referenceKeyByPath);
 		}
 		writer.append('\n');
 		return section;
 	}
-	if (isInlineContent(node.content)) renderInline(writer, node.content, context, section, referenceKeyByPath);
+	if (isLeafBlock(node)) renderInline(writer, node.content, context, section, referenceKeyByPath);
 	else {
 		for (const [index, child] of node.content.entries()) {
 			if ('text' in child) renderInline(writer, [child], context, section, referenceKeyByPath);
@@ -633,7 +619,7 @@ export function normalizeStructuredPdf(
 	for (let index = 0; index < document.content.length; index += 1) {
 		const block = document.content[index];
 		const blockPath: RefPath = [index];
-		if (!block || block.flowClass === 'excluded' || renderedPartPaths.has(refKey(blockPath))) continue;
+		if (block.flowClass === 'excluded' || renderedPartPaths.has(refKey(blockPath))) continue;
 		const partChain = paragraphPartChain(document, index);
 		const renderableBlock = partChain ? mergeParagraphParts(partChain) : block;
 		for (const part of partChain?.slice(1) ?? []) renderedPartPaths.add(refKey([part.index]));
@@ -650,7 +636,7 @@ export function normalizeStructuredPdf(
 	);
 	return {
 		markdown,
-		mentions: writer.mentions.filter(({ context, targetKeys }) => context && targetKeys.length),
+		mentions: writer.mentions.filter(({ context }) => context),
 		paperIdentifierText: firstPageIdentifierText(document),
 		parse: {
 			fallbackReasons: [...fallbackReasons].sort(),
