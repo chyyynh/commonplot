@@ -9,40 +9,28 @@ const MAX_ERROR_BODY_BYTES = 1_000;
 const MAX_GROBID_RESPONSE_BYTES = 8 * 1024 * 1024;
 const textEncoder = new TextEncoder();
 
-function multipartPdfBody(pdf: ReadableStream<Uint8Array>, boundary: string) {
+function multipartPdfBody(pdf: ReadableStream<Uint8Array>, boundary: string, byteLength: number) {
 	const prefix = textEncoder.encode(
 		`--${boundary}\r\nContent-Disposition: form-data; name="input"; filename="document.pdf"\r\nContent-Type: application/pdf\r\n\r\n`,
 	);
 	const suffix = textEncoder.encode(
 		`\r\n--${boundary}\r\nContent-Disposition: form-data; name="consolidateHeader"\r\n\r\n0\r\n--${boundary}--\r\n`,
 	);
-	const reader = pdf.getReader();
-	let phase: 'pdf' | 'prefix' | 'suffix' = 'prefix';
-	return {
-		byteLengthOverhead: prefix.byteLength + suffix.byteLength,
-		body: new ReadableStream<Uint8Array>({
-			async cancel(reason) {
-				await reader.cancel(reason);
-			},
-			async pull(controller) {
-				if (phase === 'prefix') {
-					phase = 'pdf';
+	return pdf
+		.pipeThrough(
+			new TransformStream<Uint8Array, Uint8Array>({
+				start(controller) {
 					controller.enqueue(prefix);
-					return;
-				}
-				if (phase === 'pdf') {
-					const next = await reader.read();
-					if (!next.done) {
-						controller.enqueue(next.value);
-						return;
-					}
-					phase = 'suffix';
-				}
-				controller.enqueue(suffix);
-				controller.close();
-			},
-		}),
-	};
+				},
+				transform(chunk, controller) {
+					controller.enqueue(chunk);
+				},
+				flush(controller) {
+					controller.enqueue(suffix);
+				},
+			}),
+		)
+		.pipeThrough(new FixedLengthStream(byteLength + prefix.byteLength + suffix.byteLength));
 }
 
 export class GrobidContainer extends Container<CoreEnv> {
@@ -70,10 +58,8 @@ export class GrobidContainer extends Container<CoreEnv> {
 		}
 
 		const boundary = `newsence-${crypto.randomUUID()}`;
-		const multipart = multipartPdfBody(input, boundary);
-		const body = multipart.body.pipeThrough(new FixedLengthStream(byteLength + multipart.byteLengthOverhead));
 		const response = await this.containerFetch('http://grobid/api/processHeaderDocument', {
-			body,
+			body: multipartPdfBody(input, boundary, byteLength),
 			headers: {
 				accept: 'application/xml',
 				'content-type': `multipart/form-data; boundary=${boundary}`,
