@@ -10,7 +10,6 @@ import { getPartBoundarySeparator, getPartChain, shouldDropHardHyphenAtPartBound
 import { getContentRangeBlockSpan, isLeafBlock, refKey } from 'structured-document-text/src/range.js';
 import type { LocalPdfSummary } from './platforms/pdf-fallback-policy.ts';
 
-const MAX_DOCUMENT_JSON_BYTES = 32 * 1024 * 1024;
 const MAX_DOCUMENT_NODES = 100_000;
 const MAX_DOCUMENT_TEXT_CHARS = 2_000_000;
 const MAX_REFERENCE_TEXT_CHARS = 600;
@@ -22,13 +21,12 @@ const MAX_SECTION_CHARS = 300;
 const MAX_SOURCE_CROP_ALT_CHARS = 500;
 const MAX_SOURCE_CROPS = 64;
 const MAX_REF_PATH_DEPTH = 16;
-const POSTGRES_NUL = String.fromCharCode(0);
 const INPUT_HASH_PATTERN = /^[a-f\d]{64}$/u;
 
 export const ZOTERO_SDT_ARTIFACT_VERSION = 'newsence-zotero-sdt-v1';
 export const ZOTERO_SDT_CONTAINER_NAME = 'structured-pdf-v1';
 export const ZOTERO_SDT_CONTENT_TYPE = 'application/vnd.newsence.structured-document+json';
-export const ZOTERO_SDT_MAX_RESPONSE_BYTES = MAX_DOCUMENT_JSON_BYTES;
+export const ZOTERO_SDT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
 export function parseStructuredPdfFailure(status: number, body: string): { message: string; totalPages: number | null } {
 	let message = `Zotero SDT parse failed with ${status}`;
@@ -195,9 +193,6 @@ function assertOutline(value: unknown, depth = 0): asserts value is SdtOutlineIt
 }
 
 export function parseStructuredPdfDocumentJson(json: string): StructuredPdfDocument {
-	if (new TextEncoder().encode(json).byteLength > MAX_DOCUMENT_JSON_BYTES) {
-		throw new Error(`Zotero SDT JSON exceeded ${MAX_DOCUMENT_JSON_BYTES} bytes`);
-	}
 	const value: unknown = JSON.parse(json);
 	if (!isRecord(value) || typeof value.schemaVersion !== 'string' || !/^\d+\.\d+\.\d+$/u.test(value.schemaVersion)) {
 		throw new Error('Zotero SDT schema version is invalid');
@@ -232,7 +227,7 @@ export function parseStructuredPdfDocumentJson(json: string): StructuredPdfDocum
 }
 
 function cleanText(value: string): string {
-	return value.split(POSTGRES_NUL).join('').replace(/\s+/gu, ' ').trim();
+	return value.replaceAll('\0', '').replace(/\s+/gu, ' ').trim();
 }
 
 function boundedText(value: string, maxChars: number): string {
@@ -480,7 +475,7 @@ function renderBlock(
 	}
 	if (node.type === 'preformatted') {
 		writer.append('```text\n');
-		writer.append(nodeText(node).replaceAll(POSTGRES_NUL, '').trimEnd());
+		writer.append(nodeText(node).replaceAll('\0', '').trimEnd());
 		writer.append('\n```\n\n');
 		return section;
 	}
@@ -569,10 +564,9 @@ export function normalizeStructuredPdf(
 	});
 	const writer = new MarkdownWriter();
 	const headingLevelByPath = headingLevels(document.catalog.outline);
-	const sourceCrops = structuredPdfSourceCrops(document);
 	const sourceCropsByBlock = new Map<string, Array<{ altText: string; url: string }>>();
 	if (options.inputContentHash && options.readySourceCropIds?.size) {
-		for (const crop of sourceCrops) {
+		for (const crop of structuredPdfSourceCrops(document)) {
 			if (!options.readySourceCropIds.has(crop.id)) continue;
 			const entry = { altText: crop.altText, url: structuredPdfSourceCropUrl(options.inputContentHash, crop.id) };
 			const existing = sourceCropsByBlock.get(crop.blockPath);
