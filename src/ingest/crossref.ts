@@ -167,27 +167,6 @@ export function selectCrossrefPaperCandidate(title: string, authors: readonly st
 	return selectCrossrefResolution(rawResponse, (work) => workMatchesPaperCandidate(title, authors, work));
 }
 
-export function selectCrossrefPaper(doi: string, rawResponse: unknown) {
-	const normalizedDoi = normalizeDoi(doi);
-	if (!normalizedDoi) throw new TypeError('Crossref paper DOI is invalid');
-	const response = CrossrefResponseSchema.parse(rawResponse);
-	const work = response.message.items.find((item) => normalizeDoi(item.DOI) === normalizedDoi);
-	if (!work) return null;
-	const date = publishedDate(work);
-	const title = boundedMetadata(work.title?.[0], MAX_TITLE_CHARS);
-	const venue = boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS);
-	const year = publishedYear(work);
-	return {
-		authors: workAuthors(work),
-		...(work['is-referenced-by-count'] == null ? {} : { citedByCount: work['is-referenced-by-count'] }),
-		...(date ? { publicationDate: date } : {}),
-		...(work['references-count'] == null ? {} : { referenceCount: work['references-count'] }),
-		...(title ? { title } : {}),
-		...(venue ? { venue } : {}),
-		...(year === null ? {} : { year }),
-	};
-}
-
 async function fetchCrossrefWorks(params: Readonly<Record<string, string>>): Promise<unknown> {
 	const url = new URL(CROSSREF_WORKS_URL);
 	url.search = new URLSearchParams({ mailto: CROSSREF_CONTACT, ...params }).toString();
@@ -240,12 +219,26 @@ export async function resolveCrossrefPaperCandidate(title: string, authors: read
 export async function resolveCrossrefPaper(doi: string) {
 	const normalizedDoi = normalizeDoi(doi);
 	if (!normalizedDoi) throw new TypeError('Crossref paper DOI is invalid');
-	return selectCrossrefPaper(
-		normalizedDoi,
+	const response = CrossrefResponseSchema.parse(
 		await fetchCrossrefWorks({
 			filter: `doi:${normalizedDoi}`,
 			rows: '1',
 			select: 'DOI,title,author,published,container-title,is-referenced-by-count,references-count',
 		}),
 	);
+	const work = response.message.items.find((item) => normalizeDoi(item.DOI) === normalizedDoi);
+	if (!work) return null;
+	const date = publishedDate(work);
+	const title = boundedMetadata(work.title?.[0], MAX_TITLE_CHARS);
+	const venue = boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS);
+	const year = publishedYear(work);
+	return {
+		authors: workAuthors(work),
+		...(work['is-referenced-by-count'] == null ? {} : { citedByCount: work['is-referenced-by-count'] }),
+		...(date ? { publicationDate: date } : {}),
+		...(work['references-count'] == null ? {} : { referenceCount: work['references-count'] }),
+		...(title ? { title } : {}),
+		...(venue ? { venue } : {}),
+		...(year === null ? {} : { year }),
+	};
 }
