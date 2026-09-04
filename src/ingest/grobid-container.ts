@@ -38,6 +38,7 @@ export class GrobidContainer extends Container<CoreEnv> {
 	async processPdfHeader(input: ReadableStream<Uint8Array>, byteLength: number): Promise<GrobidPdfHeader> {
 		if (!input || typeof input.getReader !== 'function') throw new TypeError('GROBID PDF input must be a readable byte stream');
 		if (!Number.isInteger(byteLength) || byteLength < 1 || byteLength > MAX_PDF_BYTES) {
+			await input.cancel('GROBID PDF size is outside the supported range');
 			throw new TypeError(`GROBID PDF must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
 		try {

@@ -21,7 +21,7 @@ import {
 	writeStructuredPdfArtifact,
 	ZoteroSdtParseError,
 } from '../zotero-sdt-service.ts';
-import { type GenericAcquiredMaterial, literalCreator } from './materialize';
+import type { GenericAcquiredMaterial } from './materialize';
 import { fetchOpenAlexPdf } from './openalex';
 import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
 import type { LocalPdfSummary, PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
@@ -130,14 +130,12 @@ export async function completeFetchedPdfAcquisition(
 	};
 }
 
-type PdfRepresentation = Pick<GenericAcquiredMaterial, 'fileType' | 'markdown'>;
-
 /** OpenAlex content URLs need our API key, so this optional representation is always local-only. */
 export async function stageOpenAlexPdfRepresentation(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: { contentPdfUrl: string; processingId: string },
-): Promise<PdfRepresentation | null> {
+) {
 	try {
 		const contentStream = await step.do(
 			'acquire-openalex-content-pdf-v8',
@@ -403,10 +401,6 @@ export async function stageStoredPdfAcquisition(
 			.do<GrobidPdfHeader>('classify-stored-pdf-with-grobid-v1', GROBID_HEADER_STEP, async () => {
 				const object = await env.R2.get(resource.storageKey);
 				if (!object) throw new NonRetryableError('Uploaded PDF object is missing');
-				if (object.size < 1 || object.size > MAX_PDF_BYTES) {
-					await object.body.cancel('Uploaded PDF size is outside the supported range');
-					throw new NonRetryableError(`Uploaded PDF must contain 1-${MAX_PDF_BYTES} bytes`);
-				}
 				return env.GROBID.getByName(GROBID_CONTAINER_NAME).processPdfHeader(object.body, object.size);
 			})
 			.catch((error) => {
@@ -452,7 +446,9 @@ export async function stageStoredPdfAcquisition(
 		...acquisition.material,
 		paperIdentifierText,
 		...(paperHeader?.title ? { title: paperHeader.title } : {}),
-		...(paperHeader?.authors.length ? { creators: paperHeader.authors.flatMap((author) => literalCreator('author', author)) } : {}),
+		...(paperHeader?.authors.length
+			? { creators: paperHeader.authors.map((literal): ResourceCreator => ({ literal, role: 'author' })) }
+			: {}),
 	};
 	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
 		grant: target.paidPdfFallback,
@@ -463,12 +459,6 @@ export async function stageStoredPdfAcquisition(
 			storageKey: resource.storageKey,
 		},
 	});
-	if (!cloudMarkdown) {
-		requireUsablePdf(acquisition, `Stored PDF ${target.resourceId}`);
-		return material;
-	}
-	return {
-		...material,
-		markdown: cloudMarkdown,
-	};
+	if (!cloudMarkdown) requireUsablePdf(acquisition, `Stored PDF ${target.resourceId}`);
+	return cloudMarkdown ? { ...material, markdown: cloudMarkdown } : material;
 }
