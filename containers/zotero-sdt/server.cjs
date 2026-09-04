@@ -5,10 +5,15 @@ const { resolve, sep } = require('node:path');
 const { Worker } = require('node:worker_threads');
 const { inflateRawSync } = require('node:zlib');
 
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
 const PORT = Number.parseInt(process.env.PORT ?? '8080', 10);
 const MAX_PDF_BYTES = Number.parseInt(process.env.MAX_PDF_BYTES ?? String(25 * 1024 * 1024), 10);
 const MAX_DOCUMENT_BYTES = Number.parseInt(process.env.MAX_DOCUMENT_BYTES ?? String(32 * 1024 * 1024), 10);
 const MAX_CROP_BYTES = Number.parseInt(process.env.MAX_CROP_BYTES ?? String(8 * 1024 * 1024), 10);
+const MAX_CROP_BATCH_BYTES = Number.parseInt(process.env.MAX_CROP_BATCH_BYTES ?? String(64 * 1024 * 1024), 10);
+const MAX_CROP_BATCH_ITEMS = 64;
+const MAX_CROP_DESCRIPTOR_BYTES = 16 * 1024;
 const WORKER_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.WORKER_REQUEST_TIMEOUT_MS ?? String(5 * 60 * 1000), 10);
 const BUILD_DIR = resolve(process.env.DOCUMENT_WORKER_BUILD_DIR ?? '/app/document-worker');
 const WORKER_PATH = resolve(__dirname, 'worker-thread.cjs');
@@ -56,6 +61,17 @@ class DocumentWorkerClient {
 		}
 		if (message?.action === 'FetchData' && message.id) {
 			this.sendAsset(message.id, message.data);
+			return;
+		}
+		if (message?.progressID) {
+			const pending = this.pending.get(message.progressID);
+			try {
+				pending?.onProgress?.(message.data);
+			} catch (error) {
+				this.pending.delete(message.progressID);
+				pending?.reject(error);
+				this.crash(error);
+			}
 			return;
 		}
 		if (!message?.responseID) return;
@@ -113,7 +129,7 @@ class DocumentWorkerClient {
 		if (!this.isHealthy) throw this.failure ?? new Error('Zotero document worker is unavailable.');
 	}
 
-	request(action, pdfBuffer, data) {
+	request(action, pdfBuffer, data, onProgress) {
 		if (this.failure) return Promise.reject(this.failure);
 		const timeoutError = new Error(`Zotero document worker request ${action} timed out after ${WORKER_REQUEST_TIMEOUT_MS}ms.`);
 		timeoutError.statusCode = 504;
@@ -123,7 +139,7 @@ class DocumentWorkerClient {
 			const id = ++this.nextRequestId;
 			const buffer = pdfBuffer.buffer.slice(pdfBuffer.byteOffset, pdfBuffer.byteOffset + pdfBuffer.byteLength);
 			return await new Promise((resolveRequest, rejectRequest) => {
-				this.pending.set(id, { reject: rejectRequest, resolve: resolveRequest });
+				this.pending.set(id, { onProgress, reject: rejectRequest, resolve: resolveRequest });
 				try {
 					this.worker.postMessage(
 						{
@@ -167,8 +183,8 @@ class DocumentWorkerClient {
 		return this.request('pdf.getFulltext', pdfBuffer, { maxPages: 1 });
 	}
 
-	renderArea(pdfBuffer, pageIndex, rect, scale) {
-		return this.request('pdf.renderArea', pdfBuffer, { pageIndex, rect, scale });
+	renderAreas(pdfBuffer, areas, scale, onProgress) {
+		return this.request('newsence.renderPdfAreas', pdfBuffer, { areas, scale }, onProgress);
 	}
 }
 
@@ -208,24 +224,54 @@ function sendJson(response, status, body) {
 	response.end(json);
 }
 
-function renderAreaInput(url) {
-	const pageIndex = Number(url.searchParams.get('pageIndex'));
-	const rect = (url.searchParams.get('rect') ?? '').split(',').map(Number);
-	const scale = Number(url.searchParams.get('scale'));
-	if (
-		!Number.isInteger(pageIndex) ||
-		pageIndex < 0 ||
-		rect.length !== 4 ||
-		rect.some((part) => !Number.isFinite(part)) ||
-		!(rect[2] > rect[0]) ||
-		!(rect[3] > rect[1]) ||
-		!Number.isFinite(scale) ||
-		scale < 1 ||
-		scale > 4
-	) {
+function renderAreasInput(request) {
+	const raw = request.headers['x-newsence-pdf-areas'];
+	const scale = Number(request.headers['x-newsence-pdf-scale']);
+	if (typeof raw !== 'string' || Buffer.byteLength(raw) > MAX_CROP_DESCRIPTOR_BYTES || !Number.isFinite(scale) || scale < 1 || scale > 4) {
 		return null;
 	}
-	return { pageIndex, rect, scale };
+	let value;
+	try {
+		value = JSON.parse(raw);
+	} catch {
+		return null;
+	}
+	if (!Array.isArray(value) || value.length < 1 || value.length > MAX_CROP_BATCH_ITEMS) return null;
+	const ids = new Set();
+	const areas = [];
+	for (const item of value) {
+		if (!Array.isArray(item) || item.length !== 6) return null;
+		const [id, pageIndex, ...rect] = item;
+		if (
+			typeof id !== 'string' ||
+			!/^[0-9]+(?:\.[0-9]+)*-p[0-9]+$/u.test(id) ||
+			ids.has(id) ||
+			!Number.isInteger(pageIndex) ||
+			pageIndex < 0 ||
+			rect.some((part) => !Number.isFinite(part)) ||
+			!(rect[2] > rect[0]) ||
+			!(rect[3] > rect[1])
+		) {
+			return null;
+		}
+		ids.add(id);
+		areas.push({ id, pageIndex, rect });
+	}
+	return { areas, scale };
+}
+
+function writeCropFrame(response, header, payload) {
+	const metadata = Buffer.from(JSON.stringify(header));
+	if (metadata.length > 4_096) throw new Error('Rendered PDF crop metadata is too large.');
+	const prefix = Buffer.allocUnsafe(4);
+	prefix.writeUInt32BE(metadata.length);
+	response.write(prefix);
+	response.write(metadata);
+	if (payload) response.write(payload);
+}
+
+function cropError(value) {
+	return (value instanceof Error ? value.message : String(value)).slice(0, 500);
 }
 
 const client = new DocumentWorkerClient();
@@ -240,7 +286,7 @@ const server = createServer(async (request, response) => {
 			}
 			return sendJson(response, client.isHealthy ? 200 : 503, { ok: client.isHealthy });
 		}
-		if (request.method !== 'POST' || (url.pathname !== '/parse' && url.pathname !== '/render-area')) {
+		if (request.method !== 'POST' || (url.pathname !== '/parse' && url.pathname !== '/render-areas')) {
 			return sendJson(response, 404, { error: 'Not found.' });
 		}
 		if (!request.headers['content-type']?.toLowerCase().startsWith('application/pdf')) {
@@ -251,29 +297,53 @@ const server = createServer(async (request, response) => {
 
 		const pdfBuffer = await readBody(request);
 		if (!pdfBuffer.length) return sendJson(response, 400, { error: 'PDF body is empty.' });
-		if (url.pathname === '/render-area') {
-			const input = renderAreaInput(url);
-			if (!input) return sendJson(response, 400, { error: 'Invalid PDF render area.' });
+		if (url.pathname === '/render-areas') {
+			const input = renderAreasInput(request);
+			if (!input) return sendJson(response, 400, { error: 'Invalid PDF render areas.' });
+			response.writeHead(200, {
+				'cache-control': 'no-store',
+				'content-type': 'application/vnd.newsence.pdf-crops',
+			});
+			let renderedBytes = 0;
+			const seen = new Set();
+			const expected = new Set(input.areas.map((area) => area.id));
 			try {
-				const result = await client.renderArea(pdfBuffer, input.pageIndex, input.rect, input.scale);
-				if (!result?.buf) return sendJson(response, 422, { error: 'PDF render area is empty.' });
-				const png = Buffer.from(result.buf);
-				if (!png.length || png.length > MAX_CROP_BYTES) {
-					return sendJson(response, 413, { error: `Rendered PDF area exceeds the ${MAX_CROP_BYTES}-byte limit.` });
-				}
-				response.writeHead(200, {
-					'cache-control': 'no-store',
-					'content-length': String(png.length),
-					'content-type': 'image/png',
+				await client.renderAreas(pdfBuffer, input.areas, input.scale, (result) => {
+					if (!result || typeof result.id !== 'string' || !expected.has(result.id) || seen.has(result.id)) return;
+					seen.add(result.id);
+					if (result.error || !result.buf) {
+						writeCropFrame(response, {
+							byteLength: 0,
+							error: cropError(result.error?.message ?? 'PDF render area is empty.'),
+							id: result.id,
+						});
+						return;
+					}
+					const png = Buffer.from(result.buf);
+					if (
+						!png.length ||
+						png.length > MAX_CROP_BYTES ||
+						renderedBytes + png.length > MAX_CROP_BATCH_BYTES ||
+						!png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)
+					) {
+						writeCropFrame(response, { byteLength: 0, error: 'Rendered PDF area is not a valid bounded PNG.', id: result.id });
+						return;
+					}
+					renderedBytes += png.length;
+					writeCropFrame(response, { byteLength: png.length, id: result.id }, png);
 				});
-				return response.end(png);
 			} catch (renderError) {
 				console.error({
 					error: renderError instanceof Error ? renderError.message : String(renderError),
-					event: 'zotero_sdt_render_area_failed',
+					event: 'zotero_sdt_render_areas_failed',
 				});
-				return sendJson(response, 422, { error: renderError instanceof Error ? renderError.message : 'PDF render area failed.' });
+				writeCropFrame(response, { byteLength: 0, error: cropError(renderError), fatal: true, id: null });
 			}
+			for (const area of input.areas) {
+				if (!seen.has(area.id)) writeCropFrame(response, { byteLength: 0, error: 'PDF render area returned no result.', id: area.id });
+			}
+			const end = Buffer.alloc(4);
+			return response.end(end);
 		}
 		const sourceHash = createHash('md5').update(pdfBuffer).digest('hex');
 		const startedAt = performance.now();
@@ -321,6 +391,10 @@ const server = createServer(async (request, response) => {
 		}
 	} catch (error) {
 		console.error({ error: error instanceof Error ? error.message : String(error), event: 'zotero_sdt_parse_failed' });
+		if (response.headersSent) {
+			if (!response.writableEnded) response.destroy(error instanceof Error ? error : undefined);
+			return;
+		}
 		return sendJson(response, error?.statusCode ?? 500, { error: error instanceof Error ? error.message : 'Parse failed.' });
 	}
 });

@@ -104,11 +104,11 @@ export class GrobidContainer extends Container<CoreEnv> {
 
 		const boundary = `newsence-${crypto.randomUUID()}`;
 		const multipart = multipartPdfBody(input, boundary, { consolidateHeader: '0' });
+		const body = multipart.body.pipeThrough(new FixedLengthStream(byteLength + multipart.byteLengthOverhead));
 		const response = await this.containerFetch('http://grobid/api/processHeaderDocument', {
-			body: multipart.body,
+			body,
 			headers: {
 				accept: 'application/xml',
-				'content-length': String(byteLength + multipart.byteLengthOverhead),
 				'content-type': `multipart/form-data; boundary=${boundary}`,
 			},
 			method: 'POST',

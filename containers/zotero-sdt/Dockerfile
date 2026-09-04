@@ -12,11 +12,20 @@ RUN git clone --filter=blob:none --no-checkout https://github.com/zotero/documen
 RUN git fetch --depth=1 origin ${DOCUMENT_WORKER_COMMIT}
 RUN git checkout --detach ${DOCUMENT_WORKER_COMMIT}
 RUN git submodule update --init --recursive --depth=1
+COPY document-worker-batch-render.patch /tmp/document-worker-batch-render.patch
+RUN git apply /tmp/document-worker-batch-render.patch
 RUN pnpm install --ignore-scripts
 RUN pnpm exec webpack --mode production
 RUN bash scripts/build-assets
 RUN node scripts/build-metadata.js
 RUN node scripts/build-structured-document-text.js
+
+# The production bundles inline document-worker's JavaScript dependencies. The
+# only runtime package left external is the Node canvas implementation used by
+# PDF.js and source-crop rendering. Assemble that exact package and its pinned
+# native binding from the lockfile-backed builder install instead of copying the
+# complete build toolchain into the runtime image.
+RUN node --eval "const { cpSync, mkdirSync } = require('node:fs'); const { dirname, join } = require('node:path'); if (process.platform !== 'linux' || process.arch !== 'x64') throw new Error('Zotero SDT runtime must be assembled for linux/amd64'); const canvasManifest = require.resolve('@napi-rs/canvas/package.json'); const nativeName = '@napi-rs/canvas-linux-x64-gnu'; const nativeManifest = require.resolve(nativeName + '/package.json', { paths: [canvasManifest] }); const target = '/runtime-node-modules/@napi-rs'; mkdirSync(target, { recursive: true }); cpSync(dirname(canvasManifest), join(target, 'canvas'), { recursive: true }); cpSync(dirname(nativeManifest), join(target, 'canvas-linux-x64-gnu'), { recursive: true });"
 
 FROM docker.io/library/node:24-bookworm-slim
 
@@ -32,10 +41,9 @@ ENV PORT=8080
 
 WORKDIR /app
 COPY --from=builder /src/build /app/document-worker
-COPY --from=builder /src/node_modules /app/node_modules
+COPY --from=builder /runtime-node-modules /app/node_modules
 COPY --from=builder /src/COPYING /usr/share/licenses/zotero-document-worker/COPYING
 COPY server.cjs worker-thread.cjs /app/
-RUN rm -rf /app/node_modules/canvas
 COPY canvas-compat /app/node_modules/canvas
 
 # document-worker dynamically imports the node-canvas package name for source

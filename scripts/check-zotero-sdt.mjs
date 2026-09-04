@@ -7,6 +7,7 @@ import {
 	structuredPdfSourceCropUrl,
 	structuredPdfStorageKey,
 } from '../src/ingest/zotero-sdt.ts';
+import { ensureStructuredPdfSourceCrops } from '../src/ingest/zotero-sdt-service.ts';
 
 const text = (value, options = {}) => ({
 	anchor: { pageRects: [[0, 10, 10, 20, 20]], textMap: JSON.stringify([[0, 0, 0, value.length, 10, 10, 20, 20]]) },
@@ -196,6 +197,90 @@ const cropNormalized = normalizeStructuredPdf(parsedCropDocument, {
 assert.match(cropNormalized.markdown, /!\[Research model\]\(\/api\/media\/asset\/pdf-crops\/a{64}\/0-p0\.png\)/u);
 assert.match(cropNormalized.markdown, /!\[Visible cues Social inferences Representative quote\]/u);
 assert.equal(cropNormalized.sourceCrops.length, 2);
+
+const encodeCropFrame = (metadata, payload = new Uint8Array()) => {
+	const encodedMetadata = new TextEncoder().encode(JSON.stringify(metadata));
+	const frame = new Uint8Array(4 + encodedMetadata.byteLength + payload.byteLength);
+	new DataView(frame.buffer).setUint32(0, encodedMetadata.byteLength);
+	frame.set(encodedMetadata, 4);
+	frame.set(payload, 4 + encodedMetadata.byteLength);
+	return frame;
+};
+const concatBytes = (...parts) => {
+	const output = new Uint8Array(parts.reduce((size, part) => size + part.byteLength, 0));
+	let offset = 0;
+	for (const part of parts) {
+		output.set(part, offset);
+		offset += part.byteLength;
+	}
+	return output;
+};
+const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+const cropBatch = concatBytes(
+	encodeCropFrame({ byteLength: png.byteLength, id: '0-p0' }, png),
+	encodeCropFrame({ byteLength: 0, error: 'table render failed', id: '1-p0' }),
+	new Uint8Array(4),
+);
+globalThis.FixedLengthStream = class extends TransformStream {
+	constructor(expectedLength) {
+		let receivedLength = 0;
+		super({
+			flush() {
+				assert.equal(receivedLength, expectedLength);
+			},
+			transform(chunk, controller) {
+				receivedLength += chunk.byteLength;
+				controller.enqueue(chunk);
+			},
+		});
+	}
+};
+const storedCrops = new Map();
+let pdfReads = 0;
+let renderBatches = 0;
+const cropEnv = {
+	R2: {
+		async get() {
+			pdfReads += 1;
+			return { body: new Response(new Uint8Array([1, 2, 3])).body, size: 3 };
+		},
+		async list() {
+			return { objects: [], truncated: false };
+		},
+		async put(key, body, options) {
+			storedCrops.set(key, { bytes: new Uint8Array(await new Response(body).arrayBuffer()), options });
+			return { key };
+		},
+	},
+	ZOTERO_SDT: {
+		getByName(name) {
+			assert.equal(name, 'structured-pdf-v1');
+			return {
+				async renderPdfAreas(body, byteLength, crops) {
+					renderBatches += 1;
+					assert.equal(byteLength, 3);
+					assert.deepEqual(
+						crops.map((crop) => crop.id),
+						['0-p0', '1-p0'],
+					);
+					assert.equal((await new Response(body).arrayBuffer()).byteLength, 3);
+					return new Response(cropBatch, { headers: { 'content-type': 'application/vnd.newsence.pdf-crops' } });
+				},
+			};
+		},
+	},
+};
+const readyCropIds = await ensureStructuredPdfSourceCrops(cropEnv, {
+	crops: structuredPdfSourceCrops(parsedCropDocument),
+	inputContentHash: 'a'.repeat(64),
+	pdfStorageKey: 'users/u/resources/r/source.pdf',
+	resourceId: 'resource-1',
+});
+assert.equal(pdfReads, 1);
+assert.equal(renderBatches, 1);
+assert.deepEqual(readyCropIds, ['0-p0']);
+assert.equal(storedCrops.size, 1);
+assert.deepEqual(storedCrops.values().next().value.bytes, png);
 
 console.info({
 	event: 'zotero_sdt_contract_passed',

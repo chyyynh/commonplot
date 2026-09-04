@@ -16,6 +16,7 @@ const POSTGRES_NUL = String.fromCharCode(0);
 const INPUT_HASH_PATTERN = /^[a-f\d]{64}$/u;
 
 export const ZOTERO_SDT_ARTIFACT_VERSION = 'newsence-zotero-sdt-v1';
+export const ZOTERO_SDT_CONTAINER_NAME = 'structured-pdf-v1';
 export const ZOTERO_SDT_CONTENT_TYPE = 'application/vnd.newsence.structured-document+json';
 export const ZOTERO_SDT_MAX_RESPONSE_BYTES = MAX_DOCUMENT_JSON_BYTES;
 

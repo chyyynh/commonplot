@@ -58,15 +58,6 @@ type PdfArtifactAttempt = Readonly<{
 	failure: LocalPdfParseResult | null;
 }>;
 
-function byteStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
-	return new ReadableStream({
-		start(controller) {
-			controller.enqueue(bytes);
-			controller.close();
-		},
-	});
-}
-
 function localPdfResult(normalized: NormalizedStructuredPdf, sourceLabel: string): LocalPdfParseResult {
 	const result: LocalPdfParseResult = {
 		markdown: normalized.markdown,
@@ -92,7 +83,7 @@ function localPdfResult(normalized: NormalizedStructuredPdf, sourceLabel: string
 async function parsePdfArtifactStream(
 	env: CoreEnv,
 	input: ReadableStream<Uint8Array>,
-	byteLength: number,
+	byteLength: number | null,
 	sourceLabel: string,
 ): Promise<PdfArtifactAttempt> {
 	try {
@@ -125,7 +116,7 @@ async function parsePdfArtifactStream(
 async function parsePdfStream(
 	env: CoreEnv,
 	input: ReadableStream<Uint8Array>,
-	byteLength: number,
+	byteLength: number | null,
 	sourceLabel: string,
 ): Promise<LocalPdfParseResult> {
 	const attempt = await parsePdfArtifactStream(env, input, byteLength, sourceLabel);
@@ -375,6 +366,11 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 }
 
 export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response, finalUrl: string): Promise<PdfAcquisitionDraft> {
+	const declaredLength = Number(response.headers.get('content-length'));
+	if (Number.isFinite(declaredLength) && declaredLength > MAX_PDF_BYTES) {
+		await response.body?.cancel('Fetched PDF size is outside the supported range');
+		throw new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`);
+	}
 	let pdfBytes = 0;
 	const body = response.body?.pipeThrough(
 		new TransformStream<Uint8Array, Uint8Array>({
@@ -385,8 +381,9 @@ export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response
 			},
 		}),
 	);
-	const bytes = await new Response(body).bytes();
-	const parsed = await parsePdfStream(env, byteStream(bytes), bytes.byteLength, 'Fetched PDF');
+	if (!body) throw new NonRetryableError('Fetched PDF response body is empty');
+	const parsed = await parsePdfStream(env, body, null, 'Fetched PDF');
+	if (pdfBytes > MAX_PDF_BYTES) throw new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`);
 	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
 	let fileName = encodedName || 'document.pdf';
 	if (encodedName) {
