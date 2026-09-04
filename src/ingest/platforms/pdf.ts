@@ -167,8 +167,8 @@ type StoredPdfRow = {
 	creators: unknown;
 	original_lang: string;
 	published_date: Date | string | null;
-	source: string | null;
-	storage_key: string | null;
+	source: string;
+	storage_key: string;
 	summary: string | null;
 	title: string | null;
 };
@@ -208,15 +208,11 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 		  AND resource.file_type = ${PDF_MIME}
 		  AND resource.storage_key IS NOT NULL
 		  AND EXISTS (SELECT 1 FROM user_files file WHERE file.resource_id = resource.id)
-		LIMIT 1
 	`);
 	const row = result.rows[0];
 	if (!row) throw new NonRetryableError(`Failed to fetch stored PDF ${resourceId}: not found or not an owned private blob`);
 	const title = row.title?.trim();
-	const source = row.source?.trim();
 	if (!title) throw new NonRetryableError(`Stored PDF ${resourceId} has no title`);
-	if (!source) throw new NonRetryableError(`Stored PDF ${resourceId} has no source`);
-	if (!row.storage_key) throw new NonRetryableError(`Stored PDF ${resourceId} has no blob representation`);
 	if (!row.content_hash || !/^[a-f\d]{64}$/u.test(row.content_hash)) {
 		throw new NonRetryableError(`Stored PDF ${resourceId} has no valid content hash`);
 	}
@@ -229,7 +225,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 		creators: creators.data,
 		originalLang: canonicalizeResourceLang(row.original_lang),
 		publishedDate: publishedDate?.toISOString() ?? null,
-		source,
+		source: row.source.trim(),
 		storageKey: row.storage_key,
 		summary: row.summary,
 		title,
