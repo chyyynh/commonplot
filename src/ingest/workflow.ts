@@ -318,11 +318,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				step.do(
 					'enqueue-resource-reference-enrichment-v3',
 					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() =>
-						enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, {
-							forceRunKey: forceProcessingRunKey,
-							uploadedPdfResourceId: target.resourceId,
-						}),
+					() => enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, target.resourceId),
 				),
 			);
 		}

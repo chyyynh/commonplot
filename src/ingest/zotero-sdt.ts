@@ -136,7 +136,7 @@ export type NormalizedStructuredPdf = Readonly<{
 	paperIdentifierText: string | null;
 	parse: LocalPdfSummary;
 	references: StructuredPdfReference[];
-	sourceCrops: StructuredPdfSourceCrop[];
+	sourceCrops: readonly StructuredPdfSourceCrop[];
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {

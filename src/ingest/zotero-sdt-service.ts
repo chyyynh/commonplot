@@ -30,7 +30,7 @@ export type StructuredPdfArtifact = Readonly<{
 	json: string;
 }>;
 
-export type StructuredPdfSourceCropInventory = Readonly<{
+type StructuredPdfSourceCropInventory = Readonly<{
 	crops: readonly StructuredPdfSourceCrop[];
 	inputContentHash: string;
 	pdfStorageKey: string;
@@ -78,7 +78,7 @@ function reusableSourceCrop(object: R2Object | null): boolean {
 }
 
 /** Return the expected crop IDs already materialized as valid R2 artifacts. */
-export async function readReadyStructuredPdfSourceCropIds(env: CoreEnv, input: StructuredPdfSourceCropInventory): Promise<string[]> {
+async function readReadyStructuredPdfSourceCropIds(env: CoreEnv, input: StructuredPdfSourceCropInventory): Promise<string[]> {
 	if (!INPUT_HASH_PATTERN.test(input.inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
 	if (!input.crops.length) return [];
 	const prefix = `${input.pdfStorageKey}.structured-crops/${input.inputContentHash}/`;

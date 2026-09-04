@@ -5,7 +5,6 @@ import { enrichUploadedPdfReferences } from './resource-references';
 
 const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v1';
 const ReferenceRevisionSchema = z.string().regex(/^[a-f\d]{32}$/);
-const ForceRunKeySchema = z.string().regex(/^[a-f\d]{16}$/);
 const WorkflowInstanceIdSchema = z
 	.string()
 	.max(100)
@@ -24,22 +23,15 @@ export async function enqueueResourceReferenceEnrichment(
 	env: CoreEnv,
 	resourceId: string,
 	referenceRevision: string,
-	options: { forceRunKey?: string; uploadedPdfResourceId: string },
+	uploadedPdfResourceId: string,
 ): Promise<string> {
 	const payload = ResourceReferenceEnrichmentPayloadSchema.parse({
 		referenceRevision,
 		resourceId,
-		source: { fileResourceId: options.uploadedPdfResourceId, kind: 'uploadedPdf' },
+		source: { fileResourceId: uploadedPdfResourceId, kind: 'uploadedPdf' },
 	});
-	const validatedForceRunKey = options.forceRunKey === undefined ? null : ForceRunKeySchema.parse(options.forceRunKey);
 	const runDigest = await sha256Hex(
-		[
-			RESOURCE_REFERENCE_WORKFLOW_REVISION,
-			payload.resourceId,
-			payload.referenceRevision,
-			options.uploadedPdfResourceId,
-			validatedForceRunKey ?? 'idempotent',
-		].join('\n'),
+		[RESOURCE_REFERENCE_WORKFLOW_REVISION, payload.resourceId, payload.referenceRevision, uploadedPdfResourceId, 'idempotent'].join('\n'),
 	);
 	const id = WorkflowInstanceIdSchema.parse(`rr-v5-${runDigest}`);
 	await env.RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW.createBatch([{ id, params: payload }]);

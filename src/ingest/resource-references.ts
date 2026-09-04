@@ -5,8 +5,8 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../shared/db';
 import { resolveCrossrefReference } from './crossref';
 import { PDF_MIME } from './platforms/pdf-constants';
-import { type NormalizedStructuredPdf, normalizeStructuredPdf, structuredPdfSourceCrops } from './zotero-sdt.ts';
-import { readReadyStructuredPdfSourceCropIds, readStructuredPdfArtifact } from './zotero-sdt-service.ts';
+import { normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfSourceCrops, structuredPdfSourceCropUrl } from './zotero-sdt.ts';
+import { readStructuredPdfArtifact } from './zotero-sdt-service.ts';
 
 const CROSSREF_BATCH_SIZE = 3;
 const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
@@ -53,8 +53,9 @@ async function replaceStoredCitationData(
 	db: NodePgDatabase,
 	resourceId: string,
 	referenceRevision: string,
-	structured: NormalizedStructuredPdf,
-): Promise<Readonly<{ alignedMentionCount: number; mentionCount: number; referenceCount: number }>> {
+	document: StructuredPdfDocument,
+	inputContentHash: string,
+) {
 	const source = await db.execute<{ content: string | null }>(sql`
 		SELECT original.content
 		FROM resources resource
@@ -70,6 +71,11 @@ async function replaceStoredCitationData(
 	const paper = source.rows[0];
 	if (!paper) throw new NonRetryableError('Paper revision changed before structured citations could be stored');
 	const content = paper.content ?? '';
+	const sourceCrops = structuredPdfSourceCrops(document);
+	const readySourceCropIds = new Set(
+		sourceCrops.flatMap((crop) => (content.includes(structuredPdfSourceCropUrl(inputContentHash, crop.id)) ? [crop.id] : [])),
+	);
+	const structured = normalizeStructuredPdf(document, { inputContentHash, readySourceCropIds });
 	const hasExactStructuredContent = content === structured.markdown;
 	const referenceOrdinalByKey = new Map(structured.references.map(({ key }, index) => [key, index + 1]));
 	const mentions = structured.mentions.flatMap(({ contentEnd, contentStart, context, markerText, section, targetKeys }) => {
@@ -88,7 +94,7 @@ async function replaceStoredCitationData(
 		];
 	});
 
-	return db.transaction(async (tx) => {
+	const stored = await db.transaction(async (tx) => {
 		const current = await tx.execute<{ id: string }>(sql`
 			SELECT resource.id::text
 			FROM resources resource
@@ -150,6 +156,10 @@ async function replaceStoredCitationData(
 			referenceCount: structured.references.length,
 		};
 	});
+	return {
+		...stored,
+		referenceTexts: structured.references.map(({ text }) => text),
+	};
 }
 
 function sqlTextArray(values: readonly string[]) {
@@ -251,22 +261,13 @@ export async function enrichUploadedPdfReferences(
 		const stored = await step.do('replace-uploaded-pdf-citations-v2', REFERENCE_SDT_STEP, async () => {
 			const artifact = await readStructuredPdfArtifact(env, source.storageKey, source.contentHash);
 			if (!artifact) throw new NonRetryableError('Structured PDF artifact is missing or stale');
-			const crops = structuredPdfSourceCrops(artifact.document);
-			const readySourceCropIds = await readReadyStructuredPdfSourceCropIds(env, {
-				crops,
-				inputContentHash: source.contentHash,
-				pdfStorageKey: source.storageKey,
-			});
-			const normalized = normalizeStructuredPdf(artifact.document, {
-				inputContentHash: source.contentHash,
-				readySourceCropIds: new Set(readySourceCropIds),
-			});
-			return {
-				...(await replaceStoredCitationData(await connectCoreDb(env), input.resourceId, input.referenceRevision, normalized)),
-				referenceTexts: normalized.references.map(({ text }) => text),
-				sdtMentionCount: normalized.mentions.length,
-				sdtReferenceCount: normalized.references.length,
-			};
+			return replaceStoredCitationData(
+				await connectCoreDb(env),
+				input.resourceId,
+				input.referenceRevision,
+				artifact.document,
+				source.contentHash,
+			);
 		});
 		const crossref = await resolveCrossrefUpdates(step, stored.referenceTexts);
 		const enrichedCount = crossref.updates.length
@@ -278,8 +279,6 @@ export async function enrichUploadedPdfReferences(
 			tag: 'RESOURCE_REFERENCES',
 			event: 'reference_enrichment_completed',
 			resource_id: input.resourceId,
-			sdt_reference_count: stored.sdtReferenceCount,
-			sdt_mention_count: stored.sdtMentionCount,
 			stored_reference_count: stored.referenceCount,
 			stored_mention_count: stored.mentionCount,
 			aligned_mention_count: stored.alignedMentionCount,
