@@ -190,10 +190,9 @@ type StoredPdfInput = Awaited<ReturnType<typeof loadStoredPdfInput>>;
 
 async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resourceId: string): Promise<PdfAcquisitionDraft> {
 	const sourceLabel = `Stored PDF ${resourceId}`;
-	let document: StructuredPdfDocument | null = null;
-	let parsed: LocalPdfParseResult | null = null;
+	let attempt: StructuredPdfDocument | LocalPdfParseResult | null = null;
 	try {
-		document = await readStructuredPdfArtifact(env, resource.storageKey, resource.contentHash);
+		attempt = await readStructuredPdfArtifact(env, resource.storageKey, resource.contentHash);
 	} catch (error) {
 		console.warn({
 			tag: 'PDF_PARSE',
@@ -202,11 +201,11 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
-	if (document) {
+	if (attempt) {
 		console.info({
 			tag: 'PDF_PARSE',
 			event: 'zotero_sdt_artifact_reused',
-			parser_version: `zotero-pdf-${document.metadata.processor.version}/sdt-${document.schemaVersion}`,
+			parser_version: `zotero-pdf-${attempt.metadata.processor.version}/sdt-${attempt.schemaVersion}`,
 			resource_id: resourceId,
 		});
 	} else {
@@ -216,28 +215,25 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 			await object.body.cancel('Stored PDF size is outside the supported range');
 			throw new NonRetryableError(`PDF source object must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
-		const attempt = await parsePdfArtifactStream(env, object.body, object.size, sourceLabel);
-		if ('schemaVersion' in attempt) {
-			document = attempt;
-			await writeStructuredPdfArtifact(env, resource.storageKey, resource.contentHash, document);
-		} else parsed = attempt;
+		attempt = await parsePdfArtifactStream(env, object.body, object.size, sourceLabel);
+		if ('schemaVersion' in attempt) await writeStructuredPdfArtifact(env, resource.storageKey, resource.contentHash, attempt);
 	}
-	if (document) {
+	let parsed: LocalPdfParseResult;
+	if ('schemaVersion' in attempt) {
 		const readySourceCrops = await ensureStructuredPdfSourceCrops(env, {
-			crops: structuredPdfSourceCrops(document),
+			crops: structuredPdfSourceCrops(attempt),
 			inputContentHash: resource.contentHash,
 			pdfStorageKey: resource.storageKey,
 			resourceId,
 		});
 		parsed = localPdfResult(
-			normalizeStructuredPdf(document, {
+			normalizeStructuredPdf(attempt, {
 				inputContentHash: resource.contentHash,
 				readySourceCrops,
 			}),
 			sourceLabel,
 		);
-	}
-	if (!parsed) throw new Error('Stored PDF parsing produced neither an artifact nor a failure result');
+	} else parsed = attempt;
 	return {
 		kind: 'local-pdf',
 		material: {
