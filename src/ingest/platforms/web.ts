@@ -23,6 +23,13 @@ const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) 
 const MIN_ARTICLE_CONTENT_CHARS = 180;
 const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
 
+export function canonicalizeWebResourceUrl(url: URL): string {
+	url.hostname = url.hostname.toLowerCase().replace(/^www\./, '');
+	for (const parameter of TRACKING_PARAMS) url.searchParams.delete(parameter);
+	url.searchParams.sort();
+	return url.toString();
+}
+
 // Normalize narrow source-DOM quirks before Readability so the extracted HTML
 // still contains the semantics carried into the Markdown syntax tree.
 addTransformations({
@@ -158,13 +165,10 @@ async function acquireWebResource(
 		await response.body?.cancel();
 		return { platform };
 	}
-	parsedFinalUrl.hostname = parsedFinalUrl.hostname.toLowerCase().replace(/^www\./, '');
-	for (const parameter of TRACKING_PARAMS) parsedFinalUrl.searchParams.delete(parameter);
-	parsedFinalUrl.searchParams.sort();
-	const finalUrl = parsedFinalUrl.toString();
+	const finalUrl = canonicalizeWebResourceUrl(parsedFinalUrl);
 
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
-	if (contentType.includes(PDF_MIME) || new URL(finalUrl).pathname.toLowerCase().endsWith('.pdf')) {
+	if (contentType.includes(PDF_MIME) || parsedFinalUrl.pathname.toLowerCase().endsWith('.pdf')) {
 		const acquired = await acquireFetchedPdfResponse(env, response, finalUrl);
 		return { ...acquired, material: { ...acquired.material, canonicalUrl: finalUrl } };
 	}

@@ -5,12 +5,12 @@ import { limitByteStream } from '../../shared/response';
 import { resolvePlatformResourceUrl } from '../acquisition';
 import { markSourcesScraped, recordSourceFailure } from '../source-monitor-state';
 import { enqueueSourceDrafts } from '../workflow';
+import { canonicalizeWebResourceUrl } from './web';
 
 const MAX_FEED_BYTES = 3 * 1024 * 1024;
 const MAX_FEED_ITEMS = 30;
 const FEED_SUMMARY_MAX_CHARS = 500;
 const RSS_FETCH_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
-const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
 const FEED_CONCURRENCY = 4;
 
 type FeedEntry = {
@@ -45,10 +45,7 @@ function feedEntryUrl(item: ExtractedFeedEntry): string | null {
 	if (!itemUrl || (itemUrl.protocol !== 'http:' && itemUrl.protocol !== 'https:') || itemUrl.username || itemUrl.password) return null;
 	if (itemPlatform) return itemPlatform.canonicalUrl;
 
-	itemUrl.hostname = itemUrl.hostname.toLowerCase().replace(/^www\./, '');
-	for (const parameter of TRACKING_PARAMS) itemUrl.searchParams.delete(parameter);
-	itemUrl.searchParams.sort();
-	return itemUrl.toString();
+	return canonicalizeWebResourceUrl(itemUrl);
 }
 
 function normalizeFeedEntries(items: ExtractedFeedEntry[], feedLanguage?: string): FeedEntry[] {

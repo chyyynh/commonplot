@@ -11,7 +11,7 @@ import type {
 import { stagePaperProcessing } from './platforms/paper';
 import { type PaidPdfFallbackGrant, stageStoredPdfAcquisition } from './platforms/pdf';
 import { parseTwitterResourceUrl, stageTwitterAcquisition } from './platforms/twitter-acquisition';
-import { stageWebAcquisition } from './platforms/web';
+import { canonicalizeWebResourceUrl, stageWebAcquisition } from './platforms/web';
 import { parseYouTubeResourceUrl, stageYouTubeAcquisition } from './platforms/youtube';
 
 export function resolvePlatformResourceUrl(url: URL): PlatformResourceUrl | null {
@@ -27,8 +27,6 @@ export function resolvePlatformResourceUrl(url: URL): PlatformResourceUrl | null
 	return null;
 }
 
-const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
-
 function resolveResourceSubject(value: string | null | undefined): ResolvedResourceSubjectIdentity | null {
 	const url = value?.trim() ? URL.parse(value) : null;
 	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null;
@@ -43,10 +41,7 @@ function resolveResourceSubject(value: string | null | undefined): ResolvedResou
 	const paper = resolveExactPaperInput(url.toString());
 	if (paper) return { identifiers: paperIdentifiersFromIdentity(paper.identity), normalizedUrl: paper.canonicalUrl };
 
-	url.hostname = url.hostname.toLowerCase().replace(/^www\./, '');
-	for (const parameter of TRACKING_PARAMS) url.searchParams.delete(parameter);
-	url.searchParams.sort();
-	return { identifiers: [], normalizedUrl: url.toString() };
+	return { identifiers: [], normalizedUrl: canonicalizeWebResourceUrl(url) };
 }
 
 export async function stageUrlAcquisition(
