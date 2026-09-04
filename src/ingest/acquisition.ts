@@ -112,16 +112,7 @@ export async function stageUrlAcquisition(
 	if (!parsedUrl) throw new Error(`Processing ${input.processingId} has an invalid URL`);
 	let detected = resolvePlatformResourceUrl(parsedUrl);
 	if (!detected) {
-		const web = await stageWebAcquisition(
-			env,
-			step,
-			{
-				paidPdfFallback: input.paidPdfFallback,
-				processingId: input.processingId,
-				url: input.url,
-			},
-			resolvePlatformResourceUrl,
-		);
+		const web = await stageWebAcquisition(env, step, input, resolvePlatformResourceUrl);
 		if (!('platform' in web)) {
 			return resolveGenericAcquiredResource(env, step, web, {
 				hints: input.hints,

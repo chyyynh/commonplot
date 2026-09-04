@@ -1,3 +1,4 @@
+import { readBoundedResponseText } from '../shared/response.ts';
 import {
 	parseStructuredPdfDocumentJson,
 	parseStructuredPdfFailure,
@@ -74,7 +75,8 @@ export async function ensureStructuredPdfSourceCrops(
 				crop.rect,
 			);
 			if (!response.ok) {
-				throw new Error(`Zotero source crop failed with ${response.status}: ${(await response.text()).slice(0, MAX_ERROR_BODY_BYTES)}`);
+				const body = await readBoundedResponseText(response, MAX_ERROR_BODY_BYTES, 'Zotero source crop error');
+				throw new Error(`Zotero source crop failed with ${response.status}: ${body}`);
 			}
 			const png = await response.blob();
 			if (png.type !== 'image/png' || png.size < 1 || png.size > MAX_SOURCE_CROP_BYTES) {
@@ -111,12 +113,13 @@ export async function parsePdfWithZotero(
 	byteLength: number | null,
 ): Promise<StructuredPdfDocument> {
 	const response = await env.ZOTERO_SDT.getByName(ZOTERO_SDT_CONTAINER_NAME).processPdf(input, byteLength);
+	const maxBytes = response.ok ? ZOTERO_SDT_MAX_RESPONSE_BYTES : MAX_ERROR_BODY_BYTES;
+	const body = await readBoundedResponseText(response, maxBytes, 'Zotero SDT response');
 	if (!response.ok) {
-		const body = (await response.text()).slice(0, MAX_ERROR_BODY_BYTES);
 		const { message, totalPages } = parseStructuredPdfFailure(response.status, body);
 		throw new ZoteroSdtParseError(message, totalPages);
 	}
-	return parseStructuredPdfDocumentJson(await response.text());
+	return parseStructuredPdfDocumentJson(body);
 }
 
 export async function readStructuredPdfArtifact(
