@@ -98,13 +98,8 @@ const ResourceWorkflowOutputSchema = z.object({ resourceId: z.uuid() });
 async function runFiveMinuteCycle(env: CoreEnv): Promise<void> {
 	const db = await connectCoreDb(env);
 	const results = await Promise.allSettled([handleRSSCron(env, db), reconcilePendingBlobProcessing(env, db)]);
-	const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
-	if (failures.length) {
-		throw new AggregateError(
-			failures.map(({ reason }) => reason),
-			'One or more five-minute core jobs failed',
-		);
-	}
+	const failures = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+	if (failures.length) throw new AggregateError(failures, 'One or more five-minute core jobs failed');
 }
 
 export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
@@ -163,17 +158,15 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		if (!Array.isArray(inputs) || !inputs.length || inputs.length > APP_RESOURCE_BATCH_LIMIT) {
 			throw new Error(`Resource draft batch must contain 1-${APP_RESOURCE_BATCH_LIMIT} items`);
 		}
-		const instances = inputs.map((input) => {
-			return {
-				id: AppDraftWorkflowIdSchema.parse(input.instanceId),
-				params: ResourceDraftTargetSchema.parse({
-					kind: 'draft',
-					...(input.paidPdfFallback ? { paidPdfFallback: input.paidPdfFallback } : {}),
-					saveTarget: input.saveTarget,
-					url: input.url,
-				}),
-			};
-		});
+		const instances = inputs.map((input) => ({
+			id: AppDraftWorkflowIdSchema.parse(input.instanceId),
+			params: ResourceDraftTargetSchema.parse({
+				kind: 'draft',
+				...(input.paidPdfFallback ? { paidPdfFallback: input.paidPdfFallback } : {}),
+				saveTarget: input.saveTarget,
+				url: input.url,
+			}),
+		}));
 		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(instances);
 	}
 
