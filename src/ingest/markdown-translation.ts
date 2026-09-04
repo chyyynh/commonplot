@@ -1,4 +1,4 @@
-import type { Heading, Link, Literal, Nodes, Paragraph, Parents, PhrasingContent, Root, TableCell } from 'mdast';
+import type { Heading, Link, Nodes, Paragraph, Parents, PhrasingContent, Root, TableCell } from 'mdast';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { frontmatterFromMarkdown, frontmatterToMarkdown } from 'mdast-util-frontmatter';
 import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm';
@@ -23,13 +23,9 @@ const ROOT_TRANSLATION_SEQUENCE = 'root';
 const TEXT_TRANSLATION_ID_PREFIX = 't';
 const FRONTMATTER_PRESETS: Array<'toml' | 'yaml'> = ['yaml', 'toml'];
 
-interface TomlFrontmatter extends Literal {
-	type: 'toml';
-}
-
 declare module 'mdast' {
 	interface RootContentMap {
-		toml: TomlFrontmatter;
+		toml: Literal & { type: 'toml' };
 	}
 }
 
