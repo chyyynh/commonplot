@@ -162,17 +162,6 @@ export async function stageOpenAlexPdfRepresentation(
 	}
 }
 
-type StoredPdfInput = {
-	contentHash: string;
-	creators: ResourceCreator[];
-	originalLang: string;
-	publishedDate: string | null;
-	source: string;
-	storageKey: string;
-	summary: string | null;
-	title: string;
-};
-
 type StoredPdfRow = {
 	content_hash: string | null;
 	creators: unknown;
@@ -184,7 +173,7 @@ type StoredPdfRow = {
 	title: string | null;
 };
 
-async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promise<StoredPdfInput> {
+async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 	const result = await db.execute<StoredPdfRow>(sql`
 		SELECT
 			resource.content_hash,
@@ -246,6 +235,8 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 		title,
 	};
 }
+
+type StoredPdfInput = Awaited<ReturnType<typeof loadStoredPdfInput>>;
 
 async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resourceId: string): Promise<PdfAcquisitionDraft> {
 	const sourceLabel = `Stored PDF ${resourceId}`;
