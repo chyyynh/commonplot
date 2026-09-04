@@ -1,3 +1,4 @@
+import { getFulltextFromStructuredText } from 'structured-document-text/src/fulltext.js';
 import { getPartBoundarySeparator, getPartChain, shouldDropHardHyphenAtPartBoundary } from 'structured-document-text/src/parts.js';
 import { refKey } from 'structured-document-text/src/range.js';
 import type { LocalPdfSummary } from './platforms/pdf-fallback-policy.ts';
@@ -582,29 +583,6 @@ function renderBlock(
 	return section;
 }
 
-function pagesWithText(document: StructuredPdfDocument): Set<number> {
-	const pages = new Set<number>();
-	for (const { node } of walkNodes(document.content)) {
-		if ('text' in node && cleanText(node.text) && node.anchor?.textMap) {
-			try {
-				const runs: unknown = JSON.parse(node.anchor.textMap);
-				if (!Array.isArray(runs)) continue;
-				for (const run of runs) {
-					if (Array.isArray(run) && Number.isInteger(run[1]) && run[1] >= 0 && run[1] < document.catalog.pages.length) pages.add(run[1]);
-				}
-			} catch {
-				// A malformed optional source map should not discard otherwise usable text.
-			}
-		}
-		if (!('text' in node) && cleanText(nodeText(node))) {
-			for (const rect of node.anchor?.pageRects ?? []) {
-				if (Number.isInteger(rect[0]) && rect[0] >= 0 && rect[0] < document.catalog.pages.length) pages.add(rect[0]);
-			}
-		}
-	}
-	return pages;
-}
-
 function firstPageIdentifierText(document: StructuredPdfDocument): string | null {
 	const firstPage = document.catalog.pages[0];
 	const start = firstPage?.contentRange[0][0] ?? 0;
@@ -662,11 +640,14 @@ export function normalizeStructuredPdf(
 		section = renderBlock(writer, renderableBlock, blockPath, section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
 	}
 	const markdown = writer.toString();
-	const pageText = pagesWithText(document);
 	const fallbackReasons = new Set<string>();
 	if (!markdown) fallbackReasons.add('empty-output');
 	if (document.catalog.pages.some(({ extractionDegraded }) => extractionDegraded === true)) fallbackReasons.add('degraded-page');
-	const fullPageImagePages = document.catalog.pages.reduce((count, _page, index) => count + (pageText.has(index) ? 0 : 1), 0);
+	const fulltextDocument = document as unknown as Parameters<typeof getFulltextFromStructuredText>[0];
+	const fullPageImagePages = document.catalog.pages.reduce(
+		(count, _page, index) => count + (getFulltextFromStructuredText(fulltextDocument, [index]) ? 0 : 1),
+		0,
+	);
 	return {
 		markdown,
 		mentions: writer.mentions.filter(({ context, targetKeys }) => context && targetKeys.length),
