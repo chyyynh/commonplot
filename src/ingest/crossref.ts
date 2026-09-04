@@ -197,9 +197,8 @@ async function fetchCrossrefWorks(params: Readonly<Record<string, string>>): Pro
 	});
 	if (!response.ok) {
 		const retryAfter = response.headers.get('retry-after')?.slice(0, 100);
-		const status = response.status;
 		await response.body?.cancel();
-		throw new Error(`Crossref request failed with HTTP ${status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
+		throw new Error(`Crossref request failed with HTTP ${response.status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
 	}
 	if (!response.body) throw new Error('Crossref response had no body');
 	return JSON.parse(await readBoundedResponseText(response, MAX_CROSSREF_RESPONSE_BYTES, 'Crossref response'));

@@ -89,19 +89,17 @@ async function resolveCitoidPaperIdentifiers(value: string): Promise<PaperIdenti
 	if (!parsedUrl || (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || parsedUrl.username || parsedUrl.password) {
 		return [];
 	}
-	const url = parsedUrl.toString();
-	const response = await fetch(`${CITOID_BASE}${encodeURIComponent(url)}`, {
+	const response = await fetch(`${CITOID_BASE}${encodeURIComponent(parsedUrl.toString())}`, {
 		headers: { Accept: 'application/json', 'Api-User-Agent': CITOID_USER_AGENT, 'User-Agent': CITOID_USER_AGENT },
 		signal: AbortSignal.timeout(CITOID_TIMEOUT_MS),
 	});
 	if (!response.ok) {
-		const status = response.status;
 		const retryAfter = response.headers.get('retry-after');
 		await response.body?.cancel();
-		if (status === 429) {
+		if (response.status === 429) {
 			throw new Error(`Citoid request failed with HTTP 429${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
 		}
-		console.warn({ tag: 'CITOID', event: 'lookup_unavailable', status });
+		console.warn({ tag: 'CITOID', event: 'lookup_unavailable', status: response.status });
 		return [];
 	}
 	const items = CitoidResponseSchema.parse(await response.json());
