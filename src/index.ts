@@ -6,7 +6,7 @@ import type {} from './env';
 import { GrobidContainer } from './ingest/grobid-container';
 import { handleRSSCron } from './ingest/platforms/rss';
 import { handleTwitterCron } from './ingest/platforms/twitter';
-import { ResourceReferenceEnrichmentWorkflow } from './ingest/resource-reference-workflow';
+import { ResourceReferenceEnrichmentWorkflow } from './ingest/resource-references';
 import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import { type ResourceDraftTarget, ResourceDraftTargetSchema, ResourceProcessingV2Workflow } from './ingest/workflow';
 import { ZoteroSdtContainer } from './ingest/zotero-sdt-container';

@@ -21,7 +21,7 @@ import {
 	type ResourceDraftRelation,
 	type ResourcePersistenceTarget,
 } from './resource-persistence';
-import { enqueueResourceReferenceEnrichment } from './resource-reference-workflow';
+import { enqueueResourceReferenceEnrichment } from './resource-references';
 import { shouldEnqueueResourceTranslation } from './translation-policy';
 import { enqueueResourceTranslation } from './translation-workflow';
 

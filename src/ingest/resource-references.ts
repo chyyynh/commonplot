@@ -1,8 +1,10 @@
-import type { WorkflowStep } from 'cloudflare:workers';
+import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
+import { sha256Hex } from '../shared/hash';
 import { resolveCrossrefReference } from './crossref';
 import { PDF_MIME } from './platforms/pdf-constants';
 import { normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfSourceCrops, structuredPdfSourceCropUrl } from './zotero-sdt.ts';
@@ -11,8 +13,16 @@ import { readStructuredPdfArtifact } from './zotero-sdt-service.ts';
 const CROSSREF_BATCH_SIZE = 3;
 const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 const REFERENCE_SDT_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '90 seconds' } as const;
+const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v1';
+const ResourceReferenceEnrichmentPayloadSchema = z.strictObject({
+	referenceRevision: z.hash('md5').lowercase(),
+	resourceId: z.uuid(),
+	/** Optional for compatibility with already-running v1 Workflow instances. */
+	source: z.strictObject({ fileResourceId: z.uuid(), kind: z.literal('uploadedPdf') }).optional(),
+});
 
 type CrossrefMetadataUpdate = NonNullable<Awaited<ReturnType<typeof resolveCrossrefReference>>> & Readonly<{ ordinal: number }>;
+type ResourceReferenceEnrichmentPayload = z.infer<typeof ResourceReferenceEnrichmentPayloadSchema>;
 
 async function loadUploadedPdfSource(db: NodePgDatabase, resourceId: string, fileResourceId: string, referenceRevision: string) {
 	const result = await db.execute<{ content_hash: string | null; storage_key: string }>(sql`
@@ -199,7 +209,7 @@ async function resolveCrossrefUpdates(step: WorkflowStep, references: readonly s
 }
 
 /** Zotero SDT owns PDF references and citation links; Crossref owns bibliographic metadata resolution. */
-export async function enrichUploadedPdfReferences(
+async function enrichUploadedPdfReferences(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: Readonly<{ referenceRevision: string; resourceId: string; uploadedPdfResourceId: string }>,
@@ -235,5 +245,31 @@ export async function enrichUploadedPdfReferences(
 			resource_id: input.resourceId,
 			error: error instanceof Error ? error.message : String(error),
 		});
+	}
+}
+
+export async function enqueueResourceReferenceEnrichment(
+	env: CoreEnv,
+	resourceId: string,
+	referenceRevision: string,
+	uploadedPdfResourceId: string,
+) {
+	const payload = {
+		referenceRevision,
+		resourceId,
+		source: { fileResourceId: uploadedPdfResourceId, kind: 'uploadedPdf' },
+	} satisfies ResourceReferenceEnrichmentPayload;
+	const id = `rr-v5-${await sha256Hex(
+		[RESOURCE_REFERENCE_WORKFLOW_REVISION, payload.resourceId, payload.referenceRevision, uploadedPdfResourceId, 'idempotent'].join('\n'),
+	)}`;
+	await env.RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW.createBatch([{ id, params: payload }]);
+}
+
+/** Reference enrichment stays off the critical path after the base PDF and its SDT sidecar are persisted. */
+export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<CoreEnv, ResourceReferenceEnrichmentPayload> {
+	async run(event: WorkflowEvent<ResourceReferenceEnrichmentPayload>, step: WorkflowStep): Promise<void> {
+		const input = ResourceReferenceEnrichmentPayloadSchema.parse(event.payload);
+		if (!input.source) return;
+		await enrichUploadedPdfReferences(this.env, step, { ...input, uploadedPdfResourceId: input.source.fileResourceId });
 	}
 }
