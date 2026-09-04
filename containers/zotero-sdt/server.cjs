@@ -245,9 +245,6 @@ const server = createServer(async (request, response) => {
 		if (!request.headers['content-type']?.toLowerCase().startsWith('application/pdf')) {
 			return sendJson(response, 415, { error: 'Content-Type must be application/pdf.' });
 		}
-		const declaredLength = Number.parseInt(request.headers['content-length'] ?? '0', 10);
-		if (declaredLength > MAX_PDF_BYTES) return sendJson(response, 413, { error: `PDF exceeds the ${MAX_PDF_BYTES}-byte limit.` });
-
 		const pdfBuffer = await readBody(request);
 		if (!pdfBuffer.length) return sendJson(response, 400, { error: 'PDF body is empty.' });
 		if (url.pathname === '/render-area') {
@@ -261,7 +258,6 @@ const server = createServer(async (request, response) => {
 					return sendJson(response, 422, { error: 'Rendered PDF area is not a valid bounded PNG.' });
 				}
 				response.writeHead(200, {
-					'cache-control': 'no-store',
 					'content-length': String(png.length),
 					'content-type': 'image/png',
 				});
@@ -289,7 +285,6 @@ const server = createServer(async (request, response) => {
 				throw error;
 			}
 			response.writeHead(200, {
-				'cache-control': 'no-store',
 				'content-length': String(documentBytes),
 				'content-type': 'application/vnd.newsence.structured-document+json',
 			});
