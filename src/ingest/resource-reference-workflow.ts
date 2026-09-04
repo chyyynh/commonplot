@@ -5,10 +5,6 @@ import { enrichUploadedPdfReferences } from './resource-references';
 
 const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v1';
 const ReferenceRevisionSchema = z.string().regex(/^[a-f\d]{32}$/);
-const WorkflowInstanceIdSchema = z
-	.string()
-	.max(100)
-	.regex(/^[a-zA-Z0-9_][a-zA-Z0-9-_]*$/);
 const UploadedPdfSourceSchema = z.strictObject({ fileResourceId: z.uuid(), kind: z.literal('uploadedPdf') });
 const ResourceReferenceEnrichmentPayloadSchema = z.strictObject({
 	referenceRevision: ReferenceRevisionSchema,
@@ -30,10 +26,9 @@ export async function enqueueResourceReferenceEnrichment(
 		resourceId,
 		source: { fileResourceId: uploadedPdfResourceId, kind: 'uploadedPdf' },
 	});
-	const runDigest = await sha256Hex(
+	const id = `rr-v5-${await sha256Hex(
 		[RESOURCE_REFERENCE_WORKFLOW_REVISION, payload.resourceId, payload.referenceRevision, uploadedPdfResourceId, 'idempotent'].join('\n'),
-	);
-	const id = WorkflowInstanceIdSchema.parse(`rr-v5-${runDigest}`);
+	)}`;
 	await env.RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW.createBatch([{ id, params: payload }]);
 	return id;
 }

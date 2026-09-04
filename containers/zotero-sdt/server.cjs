@@ -161,7 +161,6 @@ class DocumentWorkerClient {
 	parse(pdfBuffer, sourceHash) {
 		return this.request('getStructuredDocumentText', pdfBuffer, {
 			contentType: 'application/pdf',
-			reportProgress: false,
 			sourceHash,
 		});
 	}
