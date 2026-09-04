@@ -78,14 +78,6 @@ export type StructuredPdfCitationMention = Readonly<{
 	targetKeys: string[];
 }>;
 
-export type StructuredPdfSourceCrop = Readonly<{
-	altText: string;
-	blockPath: string;
-	id: string;
-	pageIndex: number;
-	rect: readonly [number, number, number, number];
-}>;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -365,8 +357,8 @@ function renderInline(
  * cropping their source rectangles from the PDF. Keep the same geometry as a
  * durable, bounded contract so the original PDF remains the rendering source.
  */
-export function structuredPdfSourceCrops(document: StructuredPdfDocument): StructuredPdfSourceCrop[] {
-	const crops: StructuredPdfSourceCrop[] = [];
+export function structuredPdfSourceCrops(document: StructuredPdfDocument) {
+	const crops = [];
 	for (const [blockIndex, block] of document.content.entries()) {
 		if (block.flowClass === 'excluded' || (block.type !== 'image' && (block.type !== 'table' || !isLeafBlock(block)))) continue;
 		const rectByPage = new Map<number, [number, number, number, number]>();
@@ -399,6 +391,8 @@ export function structuredPdfSourceCrops(document: StructuredPdfDocument): Struc
 	}
 	return crops;
 }
+
+export type StructuredPdfSourceCrop = Readonly<ReturnType<typeof structuredPdfSourceCrops>[number]>;
 
 export function structuredPdfSourceCropUrl(inputContentHash: string, cropId: string): string {
 	if (!INPUT_HASH_PATTERN.test(inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
