@@ -140,14 +140,10 @@ async function lockResource(db: NodePgDatabase, resourceId: string): Promise<Loc
 
 async function identifierOwners(db: NodePgDatabase, identifiers: readonly ResourceIdentifier[]): Promise<string[]> {
 	if (!identifiers.length) return [];
-	const pairs = sql.join(
-		identifiers.map(({ scheme, value }) => sql`(${scheme}, ${value})`),
-		sql`, `,
-	);
 	const result = await db.execute<{ resource_id: string }>(sql`
-		SELECT DISTINCT resource_id::text
-		FROM resource_identifiers
-		WHERE (scheme, value) IN (${pairs})
+		SELECT DISTINCT stored.resource_id::text
+		FROM jsonb_to_recordset(${JSON.stringify(identifiers)}::jsonb) AS incoming(scheme text, value text)
+		JOIN resource_identifiers stored USING (scheme, value)
 	`);
 	return result.rows.map(({ resource_id }) => resource_id);
 }
@@ -264,13 +260,10 @@ async function writeCanonicalResource(
 	`);
 	await db.execute(sql`DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid`);
 	if (resource.identifiers.length) {
-		const values = sql.join(
-			resource.identifiers.map(({ scheme, value, preferred }) => sql`(${resourceId}::uuid, ${scheme}, ${value}, ${preferred})`),
-			sql`, `,
-		);
 		await db.execute(sql`
 			INSERT INTO resource_identifiers (resource_id, scheme, value, is_preferred)
-			VALUES ${values}
+			SELECT ${resourceId}::uuid, scheme, value, preferred
+			FROM jsonb_to_recordset(${JSON.stringify(resource.identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
 		`);
 	}
 	if (originalChanged) {
