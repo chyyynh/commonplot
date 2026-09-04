@@ -34,7 +34,6 @@ type ProviderJob = Readonly<{
 	status: string;
 }>;
 type ProviderSource = Readonly<{ kind: 'private-upload'; storageKey: string }> | Readonly<{ kind: 'public-url'; url: string }>;
-type ParseSource = Readonly<{ file_id: string }> | Readonly<{ source_url: string }>;
 
 function client(apiKey: string): LlamaCloud {
 	return new LlamaCloud({ apiKey, baseURL: LLAMA_CLOUD_BASE_URL, maxRetries: 0, timeout: 30_000, logLevel: 'off' });
@@ -72,9 +71,7 @@ async function privatePdfBytes(env: CoreEnv, storageKey: string): Promise<Uint8A
 			const object = await env.R2.get(storageKey);
 			if (!object) throw new NonRetryableError(`${PREPARATION_FAILED} action=r2-read reason=missing`);
 			if (object.size > MAX_PDF_BYTES) throw new NonRetryableError(`${PREPARATION_FAILED} action=r2-read reason=too-large`);
-			const bytes = await object.bytes();
-			if (bytes.byteLength > MAX_PDF_BYTES) throw new NonRetryableError(`${PREPARATION_FAILED} action=r2-read reason=too-large`);
-			return bytes;
+			return await object.bytes();
 		} catch (error) {
 			if (error instanceof NonRetryableError) throw error;
 			lastError = error;
@@ -241,7 +238,7 @@ export async function stagePaidLlamaParseFallback(
 	}
 
 	try {
-		const parseSource: ParseSource = input.source.kind === 'public-url' ? { source_url: input.source.url } : { file_id: file!.fileId };
+		const parseSource = input.source.kind === 'public-url' ? { source_url: input.source.url } : { file_id: file!.fileId };
 		let job: ProviderJob;
 		try {
 			job = await step.do(

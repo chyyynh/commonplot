@@ -233,15 +233,11 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 	}
 	const publishedDate = row.published_date instanceof Date ? row.published_date : row.published_date ? new Date(row.published_date) : null;
 	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new NonRetryableError('Invalid published_date: expected date');
-	let creators: ResourceCreator[];
-	try {
-		creators = ResourceCreatorsSchema.parse(row.creators);
-	} catch (error) {
-		throw new NonRetryableError(`Invalid creators for ${resourceId}: ${error instanceof Error ? error.message : String(error)}`);
-	}
+	const creators = ResourceCreatorsSchema.safeParse(row.creators);
+	if (!creators.success) throw new NonRetryableError(`Invalid creators for ${resourceId}: ${creators.error.message}`);
 	return {
 		contentHash: row.content_hash,
-		creators,
+		creators: creators.data,
 		originalLang: canonicalizeResourceLang(row.original_lang),
 		publishedDate: publishedDate?.toISOString() ?? null,
 		source,
