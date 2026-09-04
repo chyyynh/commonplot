@@ -13,15 +13,6 @@ const SOURCE_CROP_ARTIFACT_VERSION = 'newsence-zotero-source-crop-v1';
 const ZOTERO_SDT_CONTAINER_NAME = 'structured-pdf-v1';
 const ZOTERO_SDT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
-export class ZoteroSdtParseError extends Error {
-	readonly totalPages: number | null;
-
-	constructor(message: string, totalPages: number | null) {
-		super(message);
-		this.totalPages = totalPages;
-	}
-}
-
 /** Materialize Zotero Reading Mode source crops beside the private PDF. */
 export async function ensureStructuredPdfSourceCrops(
 	env: CoreEnv,
@@ -103,7 +94,7 @@ export async function parsePdfWithZotero(
 	const body = await readBoundedResponseText(response, maxBytes, 'Zotero SDT response');
 	if (!response.ok) {
 		const { message, totalPages } = parseStructuredPdfFailure(response.status, body);
-		throw new ZoteroSdtParseError(message, totalPages);
+		throw new Error(message, { cause: totalPages });
 	}
 	return parseStructuredPdfDocumentJson(body);
 }
