@@ -35,6 +35,14 @@ COPY --from=builder /src/node_modules /app/node_modules
 COPY --from=builder /src/COPYING /usr/share/licenses/zotero-document-worker/COPYING
 COPY server.cjs worker-thread.cjs /app/
 
+# document-worker dynamically imports the package name `canvas` for source
+# crops. Its own @napi-rs/canvas dependency is already the working runtime used
+# by worker-thread.cjs, so expose that implementation under the expected name
+# instead of relying on node-canvas install scripts in the production image.
+RUN rm -rf /app/node_modules/canvas
+RUN ln -s /app/node_modules/@napi-rs/canvas /app/node_modules/canvas
+RUN node --input-type=module --eval "const canvas = await import('canvas'); const surface = canvas.createCanvas(1, 1); if (!surface.getContext('2d')) throw new Error('Canvas runtime unavailable')"
+
 USER node
 EXPOSE 8080
 CMD ["node", "/app/server.cjs"]
