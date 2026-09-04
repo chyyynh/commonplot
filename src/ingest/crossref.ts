@@ -40,25 +40,6 @@ const CrossrefResponseSchema = z.object({
 
 type CrossrefWork = z.infer<typeof CrossrefWorkSchema>;
 
-export type CrossrefReferenceResolution = Readonly<{
-	authors: string[];
-	doi: string;
-	title: string;
-	url: string;
-	venue: string | null;
-	year: number | null;
-}>;
-
-export type CrossrefPaperMetadata = Readonly<{
-	authors: string[];
-	citedByCount?: number;
-	publicationDate?: string;
-	referenceCount?: number;
-	title?: string;
-	venue?: string;
-	year?: number;
-}>;
-
 function normalizeBibliographicText(value: string): string {
 	return value
 		.normalize('NFKD')
@@ -158,7 +139,7 @@ function workMatchesPaperCandidate(title: string, authors: readonly string[], wo
 	return normalizedFamilyNames(work).some((family) => authorTokens.has(family));
 }
 
-function crossrefResolution(work: CrossrefWork): CrossrefReferenceResolution | null {
+function crossrefResolution(work: CrossrefWork) {
 	const doi = normalizeDoi(work.DOI);
 	const title = boundedMetadata(work.title?.[0], MAX_TITLE_CHARS);
 	if (!doi || !title) return null;
@@ -173,7 +154,7 @@ function crossrefResolution(work: CrossrefWork): CrossrefReferenceResolution | n
 }
 
 /** Select only a Crossref hit whose deposited metadata strongly agrees with the citation. */
-export function selectCrossrefReference(citation: string, rawResponse: unknown): CrossrefReferenceResolution | null {
+export function selectCrossrefReference(citation: string, rawResponse: unknown) {
 	const response = CrossrefResponseSchema.parse(rawResponse);
 	for (const work of response.message.items) {
 		if (!workMatchesCitation(citation, work)) continue;
@@ -184,11 +165,7 @@ export function selectCrossrefReference(citation: string, rawResponse: unknown):
 }
 
 /** Confirm a GROBID header only when Crossref agrees on title, author, work type, venue, and year. */
-export function selectCrossrefPaperCandidate(
-	title: string,
-	authors: readonly string[],
-	rawResponse: unknown,
-): CrossrefReferenceResolution | null {
+export function selectCrossrefPaperCandidate(title: string, authors: readonly string[], rawResponse: unknown) {
 	const response = CrossrefResponseSchema.parse(rawResponse);
 	for (const work of response.message.items) {
 		if (!workMatchesPaperCandidate(title, authors, work)) continue;
@@ -198,7 +175,7 @@ export function selectCrossrefPaperCandidate(
 	return null;
 }
 
-export function selectCrossrefPaper(doi: string, rawResponse: unknown): CrossrefPaperMetadata | null {
+export function selectCrossrefPaper(doi: string, rawResponse: unknown) {
 	const normalizedDoi = normalizeDoi(doi);
 	if (!normalizedDoi) throw new TypeError('Crossref paper DOI is invalid');
 	const response = CrossrefResponseSchema.parse(rawResponse);
@@ -236,7 +213,7 @@ async function fetchCrossrefWorks(params: Readonly<Record<string, string>>): Pro
 	return JSON.parse(await readBoundedResponseText(response, MAX_CROSSREF_RESPONSE_BYTES, 'Crossref response'));
 }
 
-export async function resolveCrossrefReference(citation: string): Promise<CrossrefReferenceResolution | null> {
+export async function resolveCrossrefReference(citation: string) {
 	const query = citation.trim();
 	if (!query || query.length > MAX_CITATION_CHARS) throw new TypeError(`Crossref citation must contain 1-${MAX_CITATION_CHARS} characters`);
 	return selectCrossrefReference(
@@ -249,10 +226,7 @@ export async function resolveCrossrefReference(citation: string): Promise<Crossr
 	);
 }
 
-export async function resolveCrossrefPaperCandidate(
-	title: string,
-	authors: readonly string[],
-): Promise<CrossrefReferenceResolution | null> {
+export async function resolveCrossrefPaperCandidate(title: string, authors: readonly string[]) {
 	const queryTitle = title.trim();
 	const queryAuthor = authors[0]?.trim();
 	if (!queryTitle || queryTitle.length > MAX_TITLE_CHARS)
@@ -272,7 +246,7 @@ export async function resolveCrossrefPaperCandidate(
 	);
 }
 
-export async function resolveCrossrefPaper(doi: string): Promise<CrossrefPaperMetadata | null> {
+export async function resolveCrossrefPaper(doi: string) {
 	const normalizedDoi = normalizeDoi(doi);
 	if (!normalizedDoi) throw new TypeError('Crossref paper DOI is invalid');
 	return selectCrossrefPaper(
