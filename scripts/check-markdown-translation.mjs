@@ -485,26 +485,48 @@ const inlineHtmlPlan = planMarkdownTranslation('Before <mark>highlighted</mark> 
 const inlineHtmlSegment = inlineHtmlPlan.segments[0];
 assert.ok(inlineHtmlSegment, 'inline-HTML fixture must produce a segment');
 const inlineHtmlTemplate = createMarkdownTranslationTemplate(inlineHtmlSegment);
-assert.deepEqual(inlineHtmlTemplate.inlines, {}, 'raw inline HTML must remain entirely outside the model contract');
-const inlineHtmlSequenceIds = Object.keys(inlineHtmlTemplate.sequences);
 assert.deepEqual(
-	inlineHtmlSequenceIds,
-	['root:slot:01', 'root:slot:02', 'root:slot:03'],
-	'fixed HTML anchors must deterministically split the surrounding prose',
+	Object.values(inlineHtmlTemplate.inlines),
+	[
+		{ kind: 'html', reference: '<mark>' },
+		{ kind: 'html', reference: '</mark>' },
+	],
+	'raw inline HTML must be visible only as referenced, Core-owned inline codes',
 );
-const inlineHtmlTextIds = Object.fromEntries(
-	inlineHtmlSequenceIds.map((sequenceId) => [sequenceId, textIdsInSequence(inlineHtmlTemplate, sequenceId)[0]]),
-);
-assert.ok(Object.values(inlineHtmlTextIds).every(Boolean), 'fixed HTML slots must each expose one text ID');
+assert.deepEqual(Object.keys(inlineHtmlTemplate.sequences), ['root'], 'inline HTML must not split one sentence into artificial scopes');
+const inlineHtmlTextIds = textIdsInSequence(inlineHtmlTemplate);
+assert.equal(inlineHtmlTextIds.length, 3, 'inline HTML must retain the surrounding writable text positions');
 const inlineHtmlTranslation = withTranslatedTexts(targetFromSource(inlineHtmlSegment), {
-	[inlineHtmlTextIds['root:slot:01']]: '之前',
-	[inlineHtmlTextIds['root:slot:02']]: '醒目文字',
-	[inlineHtmlTextIds['root:slot:03']]: '之後。',
+	[inlineHtmlTextIds[0]]: '之前',
+	[inlineHtmlTextIds[1]]: '醒目文字',
+	[inlineHtmlTextIds[2]]: '之後。',
 });
 assert.equal(
 	compileMarkdownTranslation(inlineHtmlPlan, [inlineHtmlTranslation]),
 	'之前<mark>醒目文字</mark>之後。',
-	'fixed raw HTML anchors must retain translated prose inside their original slot',
+	'Core-owned raw HTML anchors must retain translated prose in the natural target positions',
+);
+
+const ordinalHtmlPlan = planMarkdownTranslation('The date is *On the 2<sup>nd</sup> of May*.');
+const ordinalHtmlSegment = ordinalHtmlPlan.segments[0];
+assert.ok(ordinalHtmlSegment, 'ordinal HTML fixture must produce a segment');
+const ordinalHtmlTemplate = createMarkdownTranslationTemplate(ordinalHtmlSegment);
+const emphasisId = inlineIdsOfKind(ordinalHtmlTemplate, 'emphasis')[0];
+assert.ok(emphasisId, 'ordinal HTML fixture must expose its emphasis container');
+const ordinalTextIds = textIdsInSequence(ordinalHtmlTemplate, emphasisId);
+const ordinalRootTextIds = textIdsInSequence(ordinalHtmlTemplate);
+assert.equal(ordinalTextIds.length, 3, 'ordinal HTML must keep one semantic inline sequence across the sup element');
+const ordinalTranslation = withTranslatedTexts(targetFromSource(ordinalHtmlSegment), {
+	[ordinalRootTextIds[0]]: '日期是',
+	[ordinalRootTextIds[1]]: '。',
+	[ordinalTextIds[0]]: '5 月 2 日',
+	[ordinalTextIds[1]]: '',
+	[ordinalTextIds[2]]: '',
+});
+assert.equal(
+	compileMarkdownTranslation(ordinalHtmlPlan, [ordinalTranslation]),
+	'日期是*5 月 2 日<sup></sup>*。',
+	'target prose may collapse around preserved inline HTML without being treated as erased',
 );
 
 const citationPlan = planMarkdownTranslation('First claim.[^a] Second claim.[^b]\n\n[^a]: First note.\n[^b]: Second note.');

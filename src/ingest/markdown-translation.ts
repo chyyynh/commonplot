@@ -279,7 +279,7 @@ function protectedAtomReference(inline: ProtectedInline): string | undefined {
 	if (inline.kind !== 'atom') return undefined;
 	const node = inline.node;
 	const value =
-		node.type === 'inlineCode' || node.type === 'inlineMath'
+		node.type === 'inlineCode' || node.type === 'inlineMath' || node.type === 'html'
 			? node.value
 			: isAutolink(node)
 				? node.children[0]?.type === 'text'
@@ -297,8 +297,14 @@ function protectedInlineId(inline: ProtectedInline): string {
 	return id;
 }
 
-function canReorderProtectedInline(inline: ProtectedInline): boolean {
-	return inline.kind === 'container' || inline.node.type === 'inlineCode' || inline.node.type === 'inlineMath' || isAutolink(inline.node);
+function canShareTranslationSequence(inline: ProtectedInline): boolean {
+	return (
+		inline.kind === 'container' ||
+		inline.node.type === 'inlineCode' ||
+		inline.node.type === 'inlineMath' ||
+		inline.node.type === 'html' ||
+		isAutolink(inline.node)
+	);
 }
 
 function appendTranslationText(parts: MarkdownTranslationSourcePart[], value: string): void {
@@ -367,7 +373,7 @@ function createMarkdownTranslationTemplatePlan(segment: MarkdownTranslationSegme
 		const hasFixedInline = sourceParts.some((part) => {
 			if (typeof part === 'string') return false;
 			const inline = protectedById.get(part.id);
-			return !inline || !canReorderProtectedInline(inline);
+			return !inline || !canShareTranslationSequence(inline);
 		});
 		if (!hasFixedInline) {
 			plannedSequences[sourceSequenceId] = sourceParts;
@@ -402,7 +408,7 @@ function createMarkdownTranslationTemplatePlan(segment: MarkdownTranslationSegme
 			if (!inline) {
 				throw new MarkdownTranslationInvariantError('invalid-plan', `Inline ${sourcePart.id} has no protected source node`);
 			}
-			if (canReorderProtectedInline(inline)) {
+			if (canShareTranslationSequence(inline)) {
 				slot.push(sourcePart);
 				continue;
 			}
@@ -445,7 +451,7 @@ function createMarkdownTranslationTemplatePlan(segment: MarkdownTranslationSegme
 		template: {
 			inlines: Object.fromEntries(
 				segment.protectedInlines.flatMap((inline) => {
-					if (!canReorderProtectedInline(inline)) return [];
+					if (!canShareTranslationSequence(inline)) return [];
 					const reference = protectedAtomReference(inline);
 					return [[protectedInlineId(inline), reference ? { kind: inline.node.type, reference } : inline.node.type]];
 				}),
@@ -668,7 +674,7 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 				if (part.type === 'sequence') return compileSequence(part.id);
 				if (part.type === 'literal') return part.value;
 				const inline = protectedById.get(part.id);
-				if (inline?.kind !== 'atom' || canReorderProtectedInline(inline)) {
+				if (inline?.kind !== 'atom' || canShareTranslationSequence(inline)) {
 					throw new MarkdownTranslationInvariantError('invalid-plan', `Fixed inline ${part.id} is not an opaque atom`);
 				}
 				return inline.token;
