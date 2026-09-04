@@ -2,11 +2,6 @@
 	"$schema": "https://biomejs.dev/schemas/2.5.11/schema.json",
 	"extends": ["../../biome.jsonc"],
 	"files": {
-		"includes": [
-			"**",
-			"!worker-configuration.d.ts",
-			"!benchmarks/pdf-parser/zotero-sdt-container/worker-configuration.d.ts",
-			"!src/platforms/bilibili/gen"
-		]
+		"includes": ["**", "!worker-configuration.d.ts", "!src/platforms/bilibili/gen"]
 	}
 }
