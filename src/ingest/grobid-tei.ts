@@ -10,10 +10,7 @@ export type GrobidPdfHeader = Readonly<{
 
 /** Trust GROBID alone only for canonical identifiers; title-and-author headers still need external corroboration. */
 export function grobidPaperIdentifierText(header: GrobidPdfHeader): string | null {
-	const identifiers = [header.doi ? `DOI: ${header.doi}` : null, header.arxivId ? `arXiv: ${header.arxivId}` : null].filter(
-		(value): value is string => value !== null,
-	);
-	return identifiers.length ? identifiers.join('\n') : null;
+	return [header.doi ? `DOI: ${header.doi}` : null, header.arxivId ? `arXiv: ${header.arxivId}` : null].filter(Boolean).join('\n') || null;
 }
 
 const MAX_IDENTIFIER_CHARS = 300;
@@ -31,10 +28,8 @@ const teiParser = new XMLParser({
 	ignoreDeclaration: true,
 	ignorePiTags: true,
 	maxNestedTags: 100,
-	parseAttributeValue: false,
 	parseTagValue: false,
 	processEntities: {
-		enabled: true,
 		maxEntityCount: 10,
 		maxEntitySize: 1_000,
 		maxExpandedLength: 10_000,
@@ -93,8 +88,7 @@ export function parseGrobidPdfHeaderTei(tei: string): GrobidPdfHeader {
 		const title = xmlObject(value);
 		return title?.type?.toString().toLowerCase() === 'main' || title?.level?.toString().toLowerCase() === 'a';
 	});
-	const titleText = xmlText(titleNode);
-	const title = titleText ? titleText.slice(0, MAX_HEADER_TITLE_CHARS) : null;
+	const title = xmlText(titleNode).slice(0, MAX_HEADER_TITLE_CHARS) || null;
 	const biblStruct = xmlObject(xmlObject(fileDesc?.sourceDesc)?.biblStruct);
 	const analytic = xmlObject(biblStruct?.analytic);
 
