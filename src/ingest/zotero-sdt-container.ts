@@ -1,21 +1,16 @@
 import { Container } from '@cloudflare/containers';
 
-const ZOTERO_SDT_PORT = 8080;
-
 export class ZoteroSdtContainer extends Container<CoreEnv> {
-	defaultPort = ZOTERO_SDT_PORT;
+	defaultPort = 8080;
 	sleepAfter = '2m';
 	enableInternet = false;
 
 	private async ensureReady(input: ReadableStream<Uint8Array>): Promise<void> {
 		try {
-			await this.startAndWaitForPorts({
-				ports: ZOTERO_SDT_PORT,
-				cancellationOptions: {
-					instanceGetTimeoutMS: 30_000,
-					portReadyTimeoutMS: 240_000,
-					waitInterval: 500,
-				},
+			await this.startAndWaitForPorts(this.defaultPort, {
+				instanceGetTimeoutMS: 30_000,
+				portReadyTimeoutMS: 240_000,
+				waitInterval: 500,
 			});
 		} catch (error) {
 			await input.cancel('Zotero SDT container failed to become ready');
