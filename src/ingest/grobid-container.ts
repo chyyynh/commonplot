@@ -53,10 +53,7 @@ export class GrobidContainer extends Container<CoreEnv> {
 		const boundary = `newsence-${crypto.randomUUID()}`;
 		const response = await this.containerFetch('http://grobid/api/processHeaderDocument', {
 			body: multipartPdfBody(input, boundary, byteLength),
-			headers: {
-				accept: 'application/xml',
-				'content-type': `multipart/form-data; boundary=${boundary}`,
-			},
+			headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
 			method: 'POST',
 		});
 		const text = await readBoundedResponseText(response, response.ok ? MAX_GROBID_RESPONSE_BYTES : MAX_ERROR_BODY_BYTES, 'GROBID response');
