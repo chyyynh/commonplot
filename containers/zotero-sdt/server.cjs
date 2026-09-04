@@ -165,7 +165,7 @@ const server = createServer(async (request, response) => {
 			if (!png.length || png.length > MAX_CROP_BYTES || !png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
 				return sendJson(response, 422, { error: 'Rendered PDF area is not a valid bounded PNG.' });
 			}
-			return response.writeHead(200, { 'content-type': 'image/png' }).end(png);
+			return response.writeHead(200, { 'content-length': String(png.length), 'content-type': 'image/png' }).end(png);
 		}
 		try {
 			const result = await client.request('getStructuredDocumentText', pdfBuffer, {

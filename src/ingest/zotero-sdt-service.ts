@@ -66,7 +66,9 @@ export async function ensureStructuredPdfSourceCrops(
 				throw new Error(`Zotero source crop failed with ${response.status}: ${body}`);
 			}
 			if (!response.body) throw new Error('Zotero source crop response is empty');
-			await env.R2.put(storageKey, response.body, {
+			const contentLength = Number(response.headers.get('content-length'));
+			if (!Number.isSafeInteger(contentLength) || contentLength < 1) throw new Error('Zotero source crop response length is invalid');
+			await env.R2.put(storageKey, response.body.pipeThrough(new FixedLengthStream(contentLength)), {
 				customMetadata: { artifactVersion: SOURCE_CROP_ARTIFACT_VERSION },
 				httpMetadata: { contentType: 'image/png' },
 			});
