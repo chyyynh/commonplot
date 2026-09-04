@@ -86,10 +86,9 @@ export function parseGrobidPdfHeaderTei(tei: string): GrobidPdfHeader {
 	const biblStruct = xmlObject(xmlObject(fileDesc?.sourceDesc)?.biblStruct);
 	const analytic = xmlObject(biblStruct?.analytic);
 
-	const authors: string[] = [];
-	const seenAuthors = new Set<string>();
+	const authors = new Map<string, string>();
 	for (const rawAuthor of xmlValues(analytic?.author)) {
-		if (authors.length >= MAX_HEADER_AUTHORS) break;
+		if (authors.size >= MAX_HEADER_AUTHORS) break;
 		const personName = xmlObject(xmlObject(rawAuthor)?.persName);
 		const name = ['forename', 'nameLink', 'surname', 'genName']
 			.flatMap((part) => xmlValues(personName?.[part]))
@@ -98,10 +97,8 @@ export function parseGrobidPdfHeaderTei(tei: string): GrobidPdfHeader {
 			.join(' ')
 			.slice(0, MAX_HEADER_NAME_CHARS);
 		const key = name.toLocaleLowerCase('en-US');
-		if (!name || seenAuthors.has(key)) continue;
-		seenAuthors.add(key);
-		authors.push(name);
+		if (name && !authors.has(key)) authors.set(key, name);
 	}
 
-	return { authors, paperIdentifierText: identifierTextFromHeader(biblStruct, analytic), title };
+	return { authors: [...authors.values()], paperIdentifierText: identifierTextFromHeader(biblStruct, analytic), title };
 }

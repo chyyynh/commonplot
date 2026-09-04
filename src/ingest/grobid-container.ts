@@ -4,7 +4,6 @@ import { type GrobidPdfHeader, parseGrobidPdfHeaderTei } from './grobid-tei.ts';
 import { MAX_PDF_BYTES } from './platforms/pdf-constants.ts';
 
 const GROBID_PORT = 8070;
-export const GROBID_CONTAINER_NAME = 'citation-parser-v1';
 const MAX_ERROR_BODY_BYTES = 1_000;
 const MAX_GROBID_RESPONSE_BYTES = 8 * 1024 * 1024;
 const textEncoder = new TextEncoder();

@@ -6,7 +6,6 @@ import { connectCoreDb } from '../../shared/db';
 import { canonicalizeResourceLang, type ResourceCreator, ResourceCreatorsSchema } from '../../shared/resource';
 import { limitByteStream } from '../../shared/response';
 import { resolveCrossrefPaperCandidate } from '../crossref';
-import { GROBID_CONTAINER_NAME } from '../grobid-container';
 import type { GrobidPdfHeader } from '../grobid-tei';
 import {
 	normalizeStructuredPdf,
@@ -401,7 +400,7 @@ export async function stageStoredPdfAcquisition(
 			.do<GrobidPdfHeader>('classify-stored-pdf-with-grobid-v1', GROBID_HEADER_STEP, async () => {
 				const object = await env.R2.get(resource.storageKey);
 				if (!object) throw new NonRetryableError('Uploaded PDF object is missing');
-				return env.GROBID.getByName(GROBID_CONTAINER_NAME).processPdfHeader(object.body, object.size);
+				return env.GROBID.getByName('citation-parser-v1').processPdfHeader(object.body, object.size);
 			})
 			.catch((error) => {
 				console.warn({
