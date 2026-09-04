@@ -25,11 +25,6 @@ export type PaperIdentity = Readonly<{
 	openAlexId?: string;
 }>;
 
-type ResolvedPaperInput = Readonly<{
-	canonicalUrl: string;
-	identity: PaperIdentity;
-}>;
-
 function normalizePaperIdentifier(identifier: Omit<PaperIdentifier, 'preferred'> & { preferred?: boolean }): PaperIdentifier | null {
 	const value =
 		identifier.scheme === 'doi'
@@ -171,7 +166,7 @@ export function canonicalPaperUrl(identity: PaperIdentity): string {
  * Resolve only exact, user-supplied paper identities. Ordinary web URLs return
  * null so their URL semantics remain owned by the general ingest normalizer.
  */
-export function resolveExactPaperInput(value: unknown): ResolvedPaperInput | null {
+export function resolveExactPaperInput(value: unknown) {
 	if (typeof value !== 'string') return null;
 	const raw = value.trim();
 	if (!raw) return null;
