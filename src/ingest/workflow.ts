@@ -5,7 +5,6 @@ import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
 import { resourceImageSourceUrls } from '../shared/image-mapping';
-import { normalizePaperIdentifiers } from '../shared/paper-identity';
 import {
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
@@ -167,7 +166,7 @@ async function loadResourceReacquisitionInput(db: NodePgDatabase, resourceId: st
 	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new Error('Invalid published_date: expected date');
 	return {
 		originalLang: canonicalizeResourceLang(row.original_lang),
-		paperIdentifiers: normalizePaperIdentifiers(ResourceIdentifiersSchema.parse(row.resource_identifiers ?? []).filter(isPaperIdentifier)),
+		paperIdentifiers: ResourceIdentifiersSchema.parse(row.resource_identifiers ?? []).filter(isPaperIdentifier),
 		publishedDate: publishedDate?.toISOString() ?? null,
 		summary: row.summary,
 		url: url.toString(),
