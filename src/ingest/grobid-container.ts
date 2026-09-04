@@ -73,7 +73,7 @@ export class GrobidContainer extends Container<CoreEnv> {
 	sleepAfter = '2m';
 	enableInternet = false;
 
-	private async processPdfTei(input: ReadableStream<Uint8Array>, byteLength: number): Promise<string> {
+	async processPdfHeader(input: ReadableStream<Uint8Array>, byteLength: number): Promise<GrobidPdfHeader> {
 		if (!input || typeof input.getReader !== 'function') throw new TypeError('GROBID PDF input must be a readable byte stream');
 		if (!Number.isInteger(byteLength) || byteLength < 1 || byteLength > MAX_PDF_BYTES) {
 			throw new TypeError(`GROBID PDF must contain 1-${MAX_PDF_BYTES} bytes`);
@@ -107,10 +107,6 @@ export class GrobidContainer extends Container<CoreEnv> {
 			const detail = await boundedResponseText(response, MAX_ERROR_BODY_BYTES);
 			throw new Error(`GROBID processHeaderDocument failed with ${response.status}${detail ? `: ${detail}` : ''}`);
 		}
-		return boundedResponseText(response, MAX_GROBID_RESPONSE_BYTES);
-	}
-
-	async processPdfHeader(input: ReadableStream<Uint8Array>, byteLength: number): Promise<GrobidPdfHeader> {
-		return parseGrobidPdfHeaderTei(await this.processPdfTei(input, byteLength));
+		return parseGrobidPdfHeaderTei(await boundedResponseText(response, MAX_GROBID_RESPONSE_BYTES));
 	}
 }
