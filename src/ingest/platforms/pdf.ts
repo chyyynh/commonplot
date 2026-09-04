@@ -49,23 +49,19 @@ export function isPdfAcquisitionDraft(value: GenericAcquiredMaterial | PdfAcquis
 type LocalPdfParseResult = { markdown: string; paperIdentifierText: string | null; parse: LocalPdfSummary };
 
 function localPdfResult(normalized: ReturnType<typeof normalizeStructuredPdf>, sourceLabel: string): LocalPdfParseResult {
-	const result: LocalPdfParseResult = {
-		markdown: normalized.markdown,
-		paperIdentifierText: normalized.paperIdentifierText,
-		parse: normalized.parse,
-	};
+	const { markdown, paperIdentifierText, parse } = normalized;
 	console.info({
 		tag: 'PDF_PARSE',
 		event: 'zotero_sdt_completed',
-		fallback_reasons: result.parse.fallbackReasons,
-		full_page_image_pages: result.parse.fullPageImagePages,
+		fallback_reasons: parse.fallbackReasons,
+		full_page_image_pages: parse.fullPageImagePages,
 		mention_count: normalized.mentions.length,
-		parser_version: result.parse.parserVersion,
+		parser_version: parse.parserVersion,
 		reference_count: normalized.references.length,
 		source: sourceLabel,
-		total_pages: result.parse.totalPages,
+		total_pages: parse.totalPages,
 	});
-	return result;
+	return { markdown, paperIdentifierText, parse };
 }
 
 async function parsePdfArtifactStream(
@@ -290,9 +286,8 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 		} else parsed = attempt;
 	}
 	if (document) {
-		const crops = structuredPdfSourceCrops(document);
 		const readySourceCropIds = await ensureStructuredPdfSourceCrops(env, {
-			crops,
+			crops: structuredPdfSourceCrops(document),
 			inputContentHash: resource.contentHash,
 			pdfStorageKey: resource.storageKey,
 			resourceId,
