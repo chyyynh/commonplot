@@ -108,9 +108,7 @@ export async function stageUrlAcquisition(
 		url: string;
 	},
 ) {
-	const parsedUrl = URL.parse(input.url);
-	if (!parsedUrl) throw new Error(`Processing ${input.processingId} has an invalid URL`);
-	let detected = resolvePlatformResourceUrl(parsedUrl);
+	let detected = resolvePlatformResourceUrl(new URL(input.url));
 	if (!detected) {
 		const web = await stageWebAcquisition(env, step, input, resolvePlatformResourceUrl);
 		if (!('platform' in web)) {
