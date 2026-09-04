@@ -14,7 +14,6 @@ const MAX_CROP_BYTES = Number.parseInt(process.env.MAX_CROP_BYTES ?? String(8 * 
 const SOURCE_CROP_SCALE = 3;
 const WORKER_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.WORKER_REQUEST_TIMEOUT_MS ?? String(5 * 60 * 1000), 10);
 const BUILD_DIR = resolve(process.env.DOCUMENT_WORKER_BUILD_DIR ?? '/app/document-worker');
-const WORKER_PATH = resolve(__dirname, 'worker-thread.cjs');
 
 if (!Number.isInteger(WORKER_REQUEST_TIMEOUT_MS) || WORKER_REQUEST_TIMEOUT_MS < 1_000 || WORKER_REQUEST_TIMEOUT_MS > 15 * 60 * 1000) {
 	throw new Error('WORKER_REQUEST_TIMEOUT_MS must be an integer between 1000 and 900000.');
@@ -32,8 +31,7 @@ class DocumentWorkerClient {
 		this.pending = new Map();
 		this.queue = Promise.resolve();
 		this.failure = null;
-		this.exitScheduled = false;
-		this.worker = new Worker(WORKER_PATH, { workerData: { buildDir: BUILD_DIR } });
+		this.worker = new Worker(resolve(__dirname, 'worker-thread.cjs'), { workerData: { buildDir: BUILD_DIR } });
 		this.ready = new Promise((resolveReady, rejectReady) => {
 			this.resolveReady = resolveReady;
 			this.rejectReady = rejectReady;
@@ -85,28 +83,16 @@ class DocumentWorkerClient {
 		}
 	}
 
-	fail(error) {
-		if (this.failure) return this.failure;
+	crash(error) {
+		if (this.failure) return;
 		const failure = error instanceof Error ? error : new Error(String(error));
 		this.failure = failure;
 		clearTimeout(this.readyTimeout);
 		this.rejectReady(failure);
 		for (const pending of this.pending.values()) pending.reject(failure);
 		this.pending.clear();
-		return failure;
-	}
-
-	crash(error) {
-		const failure = this.fail(error);
-		if (this.exitScheduled) return;
-		this.exitScheduled = true;
 		console.error({ error: failure.message, event: 'zotero_sdt_document_worker_failed' });
 		setImmediate(() => process.exit(1));
-	}
-
-	async waitUntilReady() {
-		await this.ready;
-		if (this.failure) throw this.failure;
 	}
 
 	request(action, pdfBuffer, data) {
@@ -115,7 +101,8 @@ class DocumentWorkerClient {
 		timeoutError.statusCode = 504;
 		let timeout;
 		const queuedJob = this.queue.then(async () => {
-			await this.waitUntilReady();
+			await this.ready;
+			if (this.failure) throw this.failure;
 			const id = ++this.nextRequestId;
 			const buffer = pdfBuffer.buffer.slice(pdfBuffer.byteOffset, pdfBuffer.byteOffset + pdfBuffer.byteLength);
 			return await new Promise((resolveRequest, rejectRequest) => {
