@@ -4,13 +4,11 @@ import { sha256Hex } from '../shared/hash';
 import { enrichUploadedPdfReferences } from './resource-references';
 
 const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v1';
-const ReferenceRevisionSchema = z.string().regex(/^[a-f\d]{32}$/);
-const UploadedPdfSourceSchema = z.strictObject({ fileResourceId: z.uuid(), kind: z.literal('uploadedPdf') });
 const ResourceReferenceEnrichmentPayloadSchema = z.strictObject({
-	referenceRevision: ReferenceRevisionSchema,
+	referenceRevision: z.hash('md5').lowercase(),
 	resourceId: z.uuid(),
 	/** Optional for compatibility with already-running v1 Workflow instances. */
-	source: UploadedPdfSourceSchema.optional(),
+	source: z.strictObject({ fileResourceId: z.uuid(), kind: z.literal('uploadedPdf') }).optional(),
 });
 
 type ResourceReferenceEnrichmentPayload = z.infer<typeof ResourceReferenceEnrichmentPayloadSchema>;
