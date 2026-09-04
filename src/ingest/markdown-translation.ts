@@ -10,7 +10,7 @@ import { math } from 'micromark-extension-math';
 
 const DEFAULT_PLAN_OPTIONS = {
 	maxBatchCharacters: 24_000,
-	maxBatchSegments: 32,
+	maxBatchSegments: 16,
 	maxContextCharacters: 800,
 	maxSegmentCharacters: 20_000,
 } as const;

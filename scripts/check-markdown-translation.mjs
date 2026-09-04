@@ -104,6 +104,14 @@ for (const batch of plan.batches) {
 	assert.ok(batch.inputCharacters <= options.maxBatchCharacters, `${batch.id} exceeded its input character budget`);
 }
 
+const defaultBatchPlan = planMarkdownTranslation(
+	Array.from({ length: 33 }, (_, index) => `Paragraph ${index + 1} stays intact while structured output remains bounded.`).join('\n\n'),
+);
+assert.ok(
+	defaultBatchPlan.batches.every((batch) => batch.segments.length <= 16),
+	'default batches must bound structured-output object complexity independently of model context capacity',
+);
+
 const translations = plan.segments.map((segment) =>
 	targetFromSource(segment, (value) =>
 		value
