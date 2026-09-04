@@ -1,12 +1,6 @@
 import { XMLParser } from 'fast-xml-parser';
 import { normalizeArxivId, normalizeDoi, paperIdentityFromText } from '../shared/paper-identity.ts';
 
-export type GrobidPdfHeader = Readonly<{
-	authors: string[];
-	paperIdentifierText: string | null;
-	title: string | null;
-}>;
-
 const MAX_IDENTIFIER_CHARS = 300;
 const MAX_REFERENCE_URL_CHARS = 500;
 const MAX_HEADER_AUTHORS = 100;
@@ -75,7 +69,7 @@ function identifierTextFromHeader(biblStruct: XmlObject | null, analytic: XmlObj
 }
 
 /** The uploaded-PDF paper gate uses only metadata extracted by GROBID itself. */
-export function parseGrobidPdfHeaderTei(tei: string): GrobidPdfHeader {
+export function parseGrobidPdfHeaderTei(tei: string) {
 	const parsed = xmlObject(teiParser.parse(tei));
 	const fileDesc = xmlObject(xmlObject(xmlObject(parsed?.TEI)?.teiHeader)?.fileDesc);
 	const titleNode = xmlValues(xmlObject(fileDesc?.titleStmt)?.title).find((value) => {
@@ -102,3 +96,5 @@ export function parseGrobidPdfHeaderTei(tei: string): GrobidPdfHeader {
 
 	return { authors: [...authors.values()], paperIdentifierText: identifierTextFromHeader(biblStruct, analytic), title };
 }
+
+export type GrobidPdfHeader = ReturnType<typeof parseGrobidPdfHeaderTei>;
