@@ -68,7 +68,7 @@ export type StructuredPdfDocument = Readonly<{
 	schemaVersion: string;
 }>;
 
-export type StructuredPdfCitationMention = Readonly<{
+type StructuredPdfCitationMention = Readonly<{
 	contentEnd: number;
 	contentStart: number;
 	context: string;
@@ -197,9 +197,7 @@ function nodeText(node: SdtNode): string {
 	return 'text' in node ? node.text : node.content.map(nodeText).join('');
 }
 
-type ParagraphPart = Readonly<{ block: SdtBlockNode; index: number }>;
-
-function paragraphPartChain(document: StructuredPdfDocument, startIndex: number): ParagraphPart[] | null {
+function paragraphPartChain(document: StructuredPdfDocument, startIndex: number) {
 	const chain = getPartChain(document, [startIndex], {
 		include: (path, value) => {
 			const block = value as Partial<SdtBlockNode>;
@@ -207,10 +205,10 @@ function paragraphPartChain(document: StructuredPdfDocument, startIndex: number)
 		},
 	});
 	if (chain.length < 2 || chain[0]?.ref[0] !== startIndex) return null;
-	return chain.map(({ block, ref }) => ({ block: block as SdtBlockNode, index: ref[0]! }));
+	return chain as Array<{ block: SdtBlockNode; ref: SdtRefPath }>;
 }
 
-function mergeParagraphParts(chain: readonly ParagraphPart[]): SdtBlockNode {
+function mergeParagraphParts(chain: readonly { block: SdtBlockNode }[]): SdtBlockNode {
 	const first = chain[0]!.block;
 	const content: SdtNode[] = [...first.content];
 	for (let index = 1; index < chain.length; index += 1) {
@@ -550,7 +548,7 @@ export function normalizeStructuredPdf(
 		if (block.flowClass === 'excluded' || renderedPartPaths.has(refKey(blockPath))) continue;
 		const partChain = paragraphPartChain(document, index);
 		const renderableBlock = partChain ? mergeParagraphParts(partChain) : block;
-		for (const part of partChain?.slice(1) ?? []) renderedPartPaths.add(refKey([part.index]));
+		for (const part of partChain?.slice(1) ?? []) renderedPartPaths.add(refKey(part.ref));
 		section = renderBlock(writer, renderableBlock, blockPath, section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
 	}
 	const markdown = writer.toString();
