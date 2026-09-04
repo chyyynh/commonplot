@@ -1,3 +1,5 @@
+import type { normalizeStructuredPdf } from '../zotero-sdt.ts';
+
 export const LLAMA_PARSE_MAX_PAGES = 100;
 const FULL_PAGE_IMAGE_FALLBACK_RATIO = 0.8;
 const DOCUMENT_FALLBACK_REASONS = new Set(['empty-output', 'parse-failed']);
@@ -5,12 +7,7 @@ const DOCUMENT_FALLBACK_REASONS = new Set(['empty-output', 'parse-failed']);
 export type PaidPdfFallbackGrant = Readonly<{ maxPages: number }>;
 export type LlamaParseSource = Readonly<{ kind: 'private-upload' }> | Readonly<{ kind: 'public-url'; url: string }>;
 
-export type LocalPdfSummary = Readonly<{
-	fallbackReasons: readonly string[];
-	fullPageImagePages: number;
-	parserVersion: string;
-	totalPages: number | null;
-}>;
+export type LocalPdfSummary = Omit<ReturnType<typeof normalizeStructuredPdf>['parse'], 'totalPages'> & { totalPages: number | null };
 
 /** Route image-backed PDFs only when the signal describes the document, not an isolated cover page. */
 export function localPdfNeedsFallback(local: Pick<LocalPdfSummary, 'fallbackReasons' | 'fullPageImagePages' | 'totalPages'>): boolean {
