@@ -58,26 +58,10 @@ export type MarkdownTranslationSegment = Readonly<{
 	text: string;
 }>;
 
-export type MarkdownTranslationBatch = Readonly<{
-	id: string;
-	inputCharacters: number;
-	segments: readonly MarkdownTranslationSegment[];
-	sourceCharacters: number;
-}>;
-
 type MarkdownTranslationSourcePart = string | Readonly<{ id: string }>;
 
 export type MarkdownSegmentTranslation = Readonly<{
 	texts: Readonly<Record<string, string>>;
-}>;
-
-export type MarkdownTranslationAlignment = Readonly<{
-	blocks: readonly Readonly<{
-		sourceMarkdown: string;
-		translatedMarkdown: string;
-		type: ProseBlock['type'];
-	}>[];
-	version: 1;
 }>;
 
 export type MarkdownTranslationPlanOptions = Readonly<{
@@ -515,13 +499,7 @@ function isAutolink(node: PhrasingContent): node is Link {
 
 // A prose block is the smallest unit that still carries sentence-level meaning. Inline nodes use an internal encoded form that is
 // converted to the model-facing sequence IR, so the model never sees or edits destinations, code, formulas, or Markdown syntax.
-function encodePhrasing(
-	children: readonly PhrasingContent[],
-	firstInlineIndex: number,
-): Readonly<{
-	protectedInlines: readonly ProtectedInline[];
-	text: string;
-}> {
+function encodePhrasing(children: readonly PhrasingContent[], firstInlineIndex: number) {
 	const protectedInlines: ProtectedInline[] = [];
 	const encodeText = (value: string): string => {
 		if (value.search(INLINE_TOKEN_PATTERN) !== -1) {
@@ -772,7 +750,7 @@ function segmentInputCharacters(segment: MarkdownTranslationSegment): number {
 	return JSON.stringify({ context: segment.context, id: segment.id, ...createMarkdownTranslationTemplate(segment) }).length + 1;
 }
 
-function createBatch(segments: readonly MarkdownTranslationSegment[], index: number): MarkdownTranslationBatch {
+function createBatch(segments: readonly MarkdownTranslationSegment[], index: number) {
 	return {
 		id: `b${String(index + 1).padStart(4, '0')}`,
 		inputCharacters: segments.reduce((total, segment) => total + segmentInputCharacters(segment), 0),
@@ -780,6 +758,8 @@ function createBatch(segments: readonly MarkdownTranslationSegment[], index: num
 		sourceCharacters: segments.reduce((total, segment) => total + segment.text.length, 0),
 	};
 }
+
+export type MarkdownTranslationBatch = Readonly<ReturnType<typeof createBatch>>;
 
 function batchSegments(segments: readonly MarkdownTranslationSegment[], options: ResolvedPlanOptions): MarkdownTranslationBatch[] {
 	const batches: MarkdownTranslationBatch[] = [];
@@ -1020,8 +1000,10 @@ export function compileMarkdownTranslationArtifact(
 					},
 				];
 			}),
-			version: 1,
+			version: 1 as const,
 		},
 		content: translatedMarkdown,
 	};
 }
+
+export type MarkdownTranslationAlignment = Readonly<ReturnType<typeof compileMarkdownTranslationArtifact>['alignment']>;
