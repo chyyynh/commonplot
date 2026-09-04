@@ -118,14 +118,13 @@ if (!/DROP COLUMN "marker"/.test(dropResourceReferenceMarkerMigrationSource)) {
 const resourceCitationMentionModelBody = prismaSource.match(/model ResourceCitationMention \{([\s\S]*?)\n\}/)?.[1] ?? '';
 const resourceCitationTargetModelBody = prismaSource.match(/model ResourceCitationTarget \{([\s\S]*?)\n\}/)?.[1] ?? '';
 if (
-	!/contentRevision\s+String\s+@map\("content_revision"\)\s+@db\.VarChar\(32\)/.test(resourceCitationMentionModelBody) ||
 	!/@@id\(\[resourceId, ordinal\]\)/.test(resourceCitationMentionModelBody) ||
 	!/@@id\(\[resourceId, mentionOrdinal, referenceOrdinal\]\)/.test(resourceCitationTargetModelBody) ||
 	!/@@index\(\[resourceId, referenceOrdinal, mentionOrdinal\], map: "resource_citation_targets_reference_idx"\)/.test(
 		resourceCitationTargetModelBody,
 	)
 ) {
-	errors.push('Prisma citation mention models must preserve revision, grouped-target, and reverse-reference contracts');
+	errors.push('Prisma citation mention models must preserve grouped-target and reverse-reference contracts');
 }
 const normalizedResourceCitationMentionsMigration = resourceCitationMentionsMigrationSource.replace(/\s+/g, ' ');
 for (const requiredCitationContract of [
@@ -174,7 +173,6 @@ for (const citationConstraint of [
 	'resource_citation_mentions_context_check',
 	'resource_citation_mentions_section_check',
 	'resource_citation_mentions_offsets_check',
-	'resource_citation_mentions_content_revision_check',
 ]) {
 	if (!normalizedManualIndexes.includes(`ADD CONSTRAINT ${citationConstraint}`)) {
 		errors.push(`manual-indexes.sql must mirror ${citationConstraint}`);

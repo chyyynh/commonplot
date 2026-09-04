@@ -133,9 +133,9 @@ async function replaceStoredCitationData(
 				WITH ORDINALITY AS mention(value, ordinal)
 			), inserted_mentions AS (
 				INSERT INTO resource_citation_mentions (
-					resource_id, ordinal, marker_text, context, section, content_start, content_end, content_revision
+					resource_id, ordinal, marker_text, context, section, content_start, content_end
 				)
-				SELECT ${resourceId}::uuid, ordinal, marker_text, context, section, content_start, content_end, ${referenceRevision}
+				SELECT ${resourceId}::uuid, ordinal, marker_text, context, section, content_start, content_end
 				FROM incoming
 				RETURNING ordinal
 			)
