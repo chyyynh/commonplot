@@ -134,7 +134,6 @@ async function lockResource(db: NodePgDatabase, resourceId: string): Promise<Loc
 	`);
 	const resource = result.rows[0];
 	if (!resource) throw new Error(`Resource ${resourceId} was not found`);
-	if (resource.scope !== 'corpus' && resource.scope !== 'private') throw new Error(`Resource ${resourceId} has invalid scope`);
 	return resource;
 }
 
@@ -154,7 +153,6 @@ async function corpusUrlOwner(db: NodePgDatabase, normalizedUrl: string | null):
 		SELECT id::text
 		FROM resources
 		WHERE normalized_url = ${normalizedUrl} AND scope = 'corpus'
-		LIMIT 1
 	`);
 	return result.rows[0]?.id ?? null;
 }
@@ -184,9 +182,7 @@ async function draftRoot(db: NodePgDatabase, resource: PreparedResource): Promis
 		)
 		RETURNING enrichment_status, id::text, original_lang, scope, subject_resource_id::text
 	`);
-	const created = result.rows[0];
-	if (!created) throw new Error('Failed to create canonical Resource');
-	return created;
+	return result.rows[0]!;
 }
 
 async function existingSubject(db: NodePgDatabase, parentId: string, subject: NonNullable<PreparedResource['subject']>) {
