@@ -55,18 +55,6 @@ const OpenAlexListSchema = z.object({
 
 type OpenAlexWork = z.infer<typeof OpenAlexWorkSchema>;
 
-function abstractFromInvertedIndex(index: Record<string, number[]> | null | undefined): string | undefined {
-	if (!index) return undefined;
-	const words = Object.entries(index).flatMap(([word, positions]) => positions.map((position) => ({ position, word })));
-	words.sort((left, right) => left.position - right.position);
-	return (
-		words
-			.map(({ word }) => word)
-			.join(' ')
-			.trim() || undefined
-	);
-}
-
 function httpsUrl(value: string | null | undefined): string | undefined {
 	if (!value?.trim()) return undefined;
 	const url = URL.parse(value);
@@ -167,6 +155,13 @@ function normalizeOpenAlexWork(
 	const identity = paperIdentityFromIdentifiers(identifiers);
 	const openAlexId = identity?.openAlexId;
 	const referenceCount = work.referenced_works_count ?? undefined;
+	const abstract =
+		Object.entries(work.abstract_inverted_index ?? {})
+			.flatMap(([word, positions]) => positions.map((position) => ({ position, word })))
+			.sort((left, right) => left.position - right.position)
+			.map(({ word }) => word)
+			.join(' ')
+			.trim() || undefined;
 	return {
 		contentPdfUrl: openAlexContentPdfUrl({
 			hasContent: work.has_content?.pdf === true,
@@ -177,7 +172,7 @@ function normalizeOpenAlexWork(
 		metadata: {
 			title: work.title ?? undefined,
 			authors: work.authorships?.map(({ author }) => author.display_name?.trim()).filter((name): name is string => !!name) ?? [],
-			abstract: abstractFromInvertedIndex(work.abstract_inverted_index),
+			abstract,
 			venue: work.primary_location?.source?.display_name?.trim() || work.best_oa_location?.source?.display_name?.trim() || undefined,
 			year: work.publication_year ?? undefined,
 			publicationDate: work.publication_date ?? undefined,
