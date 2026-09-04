@@ -176,10 +176,7 @@ function normalizeRelationItem(work: OpenAlexWork): PaperRelationItem | null {
 }
 
 function relationSnapshot(input: { items: OpenAlexWork[]; total: number }): PaperRelationSnapshot {
-	const items = input.items.flatMap((work) => {
-		const normalized = normalizeRelationItem(work);
-		return normalized ? [normalized] : [];
-	});
+	const items = input.items.map(normalizeRelationItem).filter((item) => item !== null);
 	return {
 		items,
 		total: input.total,
