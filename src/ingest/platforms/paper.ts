@@ -259,24 +259,6 @@ async function stageCrossrefPaperEnrichment(
 	}
 }
 
-async function stagePaperEnrichment(
-	env: CoreEnv,
-	step: WorkflowStep,
-	candidate: {
-		citoidUrl: string | null;
-		identifiers: readonly PaperIdentifier[];
-		processingId: string;
-	},
-) {
-	const citoidIdentifiers = candidate.citoidUrl
-		? await stageCitoidPaperIdentifiers(step, { citoidUrl: candidate.citoidUrl, processingId: candidate.processingId })
-		: [];
-	return stageOpenAlexPaperEnrichment(env, step, {
-		identifiers: choosePreferredIdentifiers([...candidate.identifiers, ...citoidIdentifiers]),
-		processingId: candidate.processingId,
-	});
-}
-
 export async function stagePaperProcessing(
 	env: CoreEnv,
 	step: WorkflowStep,
@@ -297,6 +279,10 @@ export async function stagePaperProcessing(
 		sourceUrl: input.sourceUrl,
 	});
 	const doi = paperIdentityFromIdentifiers(identifiers)?.doi;
+	const citoidIdentifiers =
+		input.acquiredContent.fileType !== PDF_MIME && !identifiers.length && input.allowCitoidLookup && input.canonicalUrl
+			? await stageCitoidPaperIdentifiers(step, { citoidUrl: input.canonicalUrl, processingId: input.processingId })
+			: [];
 	const resolution =
 		input.acquiredContent.fileType === PDF_MIME
 			? {
@@ -304,9 +290,8 @@ export async function stagePaperProcessing(
 					identifiers,
 					metadata: doi ? await stageCrossrefPaperEnrichment(step, { doi, processingId: input.processingId }) : null,
 				}
-			: await stagePaperEnrichment(env, step, {
-					citoidUrl: identifiers.length || !input.allowCitoidLookup ? null : input.canonicalUrl,
-					identifiers,
+			: await stageOpenAlexPaperEnrichment(env, step, {
+					identifiers: choosePreferredIdentifiers([...identifiers, ...citoidIdentifiers]),
 					processingId: input.processingId,
 				});
 	const enriched = applyPaperMetadata(input.acquiredContent, resolution.metadata, input.publishedDate);
