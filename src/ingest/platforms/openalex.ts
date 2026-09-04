@@ -81,12 +81,6 @@ const OpenAlexListSchema = z.object({
 
 type OpenAlexWork = z.infer<typeof OpenAlexWorkSchema>;
 
-type OpenAlexPaperResolution = Readonly<{
-	contentPdfUrl: string | null;
-	identifiers: PaperIdentifier[];
-	metadata: PaperMetadata;
-}>;
-
 function abstractFromInvertedIndex(index: Record<string, number[]> | null | undefined): string | undefined {
 	if (!index) return undefined;
 	const words = Object.entries(index).flatMap(([word, positions]) => positions.map((position) => ({ position, word })));
@@ -196,7 +190,7 @@ function normalizeOpenAlexWork(
 	work: OpenAlexWork,
 	inputIdentifiers: readonly PaperIdentifier[],
 	relations?: { citations: PaperRelationSnapshot; references: PaperRelationSnapshot },
-): OpenAlexPaperResolution {
+) {
 	const pdfUrl = licensedPdfUrl(work);
 	const identifiers = resolvedWorkIdentifiers(work, inputIdentifiers);
 	const identity = paperIdentityFromIdentifiers(identifiers);
@@ -294,10 +288,7 @@ async function fetchOpenAlexRelations(input: {
 	};
 }
 
-export async function resolveOpenAlexPaper(input: {
-	apiKey?: string;
-	identifiers: readonly PaperIdentifier[];
-}): Promise<OpenAlexPaperResolution | null> {
+export async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: readonly PaperIdentifier[] }) {
 	const apiKey = input.apiKey?.trim();
 	if (!apiKey) return null;
 	const identifiers = normalizePaperIdentifiers(input.identifiers);
