@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import LlamaCloud, { APIConnectionError, APIError, NotFoundError, toFile } from '@llamaindex/llama-cloud';
+import LlamaCloud, { APIConnectionError, APIError, NotFoundError } from '@llamaindex/llama-cloud';
 import { VERSION as LLAMA_CLOUD_SDK_VERSION } from '@llamaindex/llama-cloud/version';
 import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
 import {
@@ -43,13 +43,6 @@ type ProviderResult = Readonly<{
 
 function client(apiKey: string): LlamaCloud {
 	return new LlamaCloud({ apiKey, baseURL: LLAMA_CLOUD_BASE_URL, maxRetries: 0, timeout: 30_000, logLevel: 'off' });
-}
-
-function providerError(error: unknown): { name: string; status: number | null } {
-	return {
-		name: error instanceof Error ? error.name : 'UnknownError',
-		status: error instanceof APIError && typeof error.status === 'number' ? error.status : null,
-	};
 }
 
 function mutationFailure(action: string, error: unknown, retryAmbiguous: boolean): Error {
@@ -133,12 +126,7 @@ function stageProviderFile(
 			}
 
 			const bytes = await privatePdfBytes(env, input.storageKey);
-			let file: Awaited<ReturnType<typeof toFile>>;
-			try {
-				file = await toFile(bytes, `newsence-${input.processingId.slice(0, 96)}.pdf`, { type: PDF_MIME });
-			} catch (error) {
-				throw new NonRetryableError(`${PREPARATION_FAILED} action=file-build reason=${error instanceof Error ? error.name : 'unknown'}`);
-			}
+			const file = new File([bytes], `newsence-${input.processingId.slice(0, 96)}.pdf`, { type: PDF_MIME });
 			try {
 				const uploaded = await client(input.credentials.apiKey).files.create(
 					{
@@ -147,7 +135,7 @@ function stageProviderFile(
 						project_id: input.credentials.projectId,
 						purpose: 'parse',
 					},
-					{ maxRetries: 0, timeout: 60_000 },
+					{ timeout: 60_000 },
 				);
 				return { externalId, fileId: uploaded.id };
 			} catch (error) {
@@ -165,18 +153,14 @@ function stageProviderFile(
 
 async function deleteProviderFile(credentials: ProviderCredentials, fileId: string): Promise<void> {
 	try {
-		await client(credentials.apiKey).files.delete(fileId, { project_id: credentials.projectId }, { maxRetries: 0, timeout: 30_000 });
+		await client(credentials.apiKey).files.delete(fileId, { project_id: credentials.projectId });
 	} catch (error) {
 		if (!(error instanceof NotFoundError)) throw error;
 	}
 }
 
 async function readJob(credentials: ProviderCredentials, job: Pick<ProviderJob, 'jobId' | 'startedAt'>): Promise<ProviderJob> {
-	const response = await client(credentials.apiKey).parsing.get(
-		job.jobId,
-		{ expand: ['usage'], project_id: credentials.projectId },
-		{ maxRetries: 0 },
-	);
+	const response = await client(credentials.apiKey).parsing.get(job.jobId, { expand: ['usage'], project_id: credentials.projectId });
 	return jobState(response.job, job.startedAt);
 }
 
@@ -184,7 +168,7 @@ async function cancelKnownJob(credentials: ProviderCredentials, job: Pick<Provid
 	const current = await readJob(credentials, job);
 	if (TERMINAL_STATUSES.has(current.status)) return;
 	try {
-		await client(credentials.apiKey).parsing.cancel(job.jobId, { project_id: credentials.projectId }, { maxRetries: 0, timeout: 30_000 });
+		await client(credentials.apiKey).parsing.cancel(job.jobId, { project_id: credentials.projectId });
 	} catch (error) {
 		if (!TERMINAL_STATUSES.has((await readJob(credentials, job)).status)) throw error;
 	}
@@ -204,24 +188,21 @@ function stageCreateJob(
 	return step.do(stepName, CREATE_ONCE_STEP, async () => {
 		const startedAt = Date.now();
 		try {
-			const job = await client(input.credentials.apiKey).parsing.create(
-				{
-					client_name: 'newsence-core',
-					disable_cache: false,
-					output_options: { images_to_save: [] },
-					page_ranges: { max_pages: input.pageCount },
-					processing_control: { timeouts: { base_in_seconds: 120, extra_time_per_page_in_seconds: 8 } },
-					project_id: input.credentials.projectId,
-					...input.source,
-					tier: LLAMA_PARSE_TIER,
-					user_metadata: {
-						local_parser_version: input.local.parserVersion,
-						processing_id: input.processingId.slice(0, 128),
-					},
-					version: LLAMA_PARSE_VERSION,
+			const job = await client(input.credentials.apiKey).parsing.create({
+				client_name: 'newsence-core',
+				disable_cache: false,
+				output_options: { images_to_save: [] },
+				page_ranges: { max_pages: input.pageCount },
+				processing_control: { timeouts: { base_in_seconds: 120, extra_time_per_page_in_seconds: 8 } },
+				project_id: input.credentials.projectId,
+				...input.source,
+				tier: LLAMA_PARSE_TIER,
+				user_metadata: {
+					local_parser_version: input.local.parserVersion,
+					processing_id: input.processingId.slice(0, 128),
 				},
-				{ maxRetries: 0, timeout: 30_000 },
-			);
+				version: LLAMA_PARSE_VERSION,
+			});
 			return jobState(job, startedAt);
 		} catch (error) {
 			throw mutationFailure('job-create', error, false);
@@ -229,16 +210,12 @@ function stageCreateJob(
 	});
 }
 
-function stageReadJob(step: WorkflowStep, credentials: ProviderCredentials, job: ProviderJob, attempt: number): Promise<ProviderJob> {
-	return step.do(`llamaparse-poll-${attempt}-v2`, READ_STEP, () => readJob(credentials, job));
-}
-
 async function stageReadResult(step: WorkflowStep, credentials: ProviderCredentials, jobId: string): Promise<ProviderResult> {
 	const stream = await step.do('llamaparse-read-result-v3', { ...READ_STEP, sensitive: 'output', timeout: '90 seconds' }, async () => {
 		const result = await client(credentials.apiKey).parsing.get(
 			jobId,
 			{ expand: ['markdown', 'usage'], project_id: credentials.projectId },
-			{ maxRetries: 0, timeout: 60_000 },
+			{ timeout: 60_000 },
 		);
 		return Response.json({
 			billedCredits: result.job.usage?.credits ?? null,
@@ -254,18 +231,12 @@ async function stageReadResult(step: WorkflowStep, credentials: ProviderCredenti
 	return new Response(stream).json<ProviderResult>();
 }
 
-async function stageCancelJob(step: WorkflowStep, credentials: ProviderCredentials, job: ProviderJob): Promise<void> {
-	await step.do('llamaparse-cancel-job-v2', CLEANUP_STEP, async () => {
-		await cancelKnownJob(credentials, job);
-		return true;
-	});
+function stageCancelJob(step: WorkflowStep, credentials: ProviderCredentials, job: ProviderJob): Promise<void> {
+	return step.do('llamaparse-cancel-job-v2', CLEANUP_STEP, () => cancelKnownJob(credentials, job));
 }
 
-async function stageDeleteProviderFile(step: WorkflowStep, credentials: ProviderCredentials, file: ProviderFile): Promise<void> {
-	await step.do('llamaparse-delete-file-v1', CLEANUP_STEP, async () => {
-		await deleteProviderFile(credentials, file.fileId);
-		return true;
-	});
+function stageDeleteProviderFile(step: WorkflowStep, credentials: ProviderCredentials, file: ProviderFile): Promise<void> {
+	return step.do('llamaparse-delete-file-v1', CLEANUP_STEP, () => deleteProviderFile(credentials, file.fileId));
 }
 
 function logFallback(input: {
@@ -277,7 +248,7 @@ function logFallback(input: {
 	local: LocalPdfSummary;
 	outcome: string;
 }): void {
-	const error = input.error ? providerError(input.error) : null;
+	const error = input.error || null;
 	console.info({
 		tag: 'PDF_PARSE',
 		event: 'llamaparse_fallback',
@@ -287,8 +258,8 @@ function logFallback(input: {
 		provider_file_id: input.file?.fileId ?? null,
 		provider_job_id: input.job?.jobId ?? null,
 		provider_sdk_version: LLAMA_CLOUD_SDK_VERSION,
-		provider_status: error?.status ?? null,
-		provider_error: error?.name ?? null,
+		provider_status: error instanceof APIError && typeof error.status === 'number' ? error.status : null,
+		provider_error: error ? (error instanceof Error ? error.name : 'UnknownError') : null,
 		tier: LLAMA_PARSE_TIER,
 		parser_version: LLAMA_PARSE_VERSION,
 		page_count: input.local.totalPages,
@@ -366,7 +337,7 @@ export async function stagePaidLlamaParseFallback(
 		try {
 			for (let attempt = 1; !TERMINAL_STATUSES.has(state.status) && attempt <= LLAMA_PARSE_POLL_ATTEMPTS; attempt++) {
 				await step.sleep(`llamaparse-poll-wait-${attempt}-v2`, LLAMA_PARSE_POLL_INTERVAL);
-				state = await stageReadJob(step, credentials, job, attempt);
+				state = await step.do(`llamaparse-poll-${attempt}-v2`, READ_STEP, () => readJob(credentials, job));
 			}
 		} catch (error) {
 			await stageCancelJob(step, credentials, job);
