@@ -19,23 +19,6 @@ const OPENALEX_CONTENT_HOST = 'content.openalex.org';
 const REQUEST_TIMEOUT_MS = 8_000;
 const CONTENT_REQUEST_TIMEOUT_MS = 90_000;
 const MAX_RELATION_ITEMS = 100;
-const WORK_FIELDS = [
-	'id',
-	'doi',
-	'title',
-	'publication_year',
-	'publication_date',
-	'cited_by_count',
-	'referenced_works_count',
-	'referenced_works',
-	'authorships',
-	'abstract_inverted_index',
-	'primary_location',
-	'best_oa_location',
-	'locations',
-	'has_content',
-	'content_urls',
-].join(',');
 const RELATION_WORK_FIELDS = ['id', 'doi', 'title', 'publication_year', 'cited_by_count', 'authorships', 'primary_location'].join(',');
 
 const OpenAlexLocationSchema = z.object({
@@ -63,6 +46,7 @@ const OpenAlexWorkSchema = z.object({
 	has_content: z.object({ pdf: z.boolean() }).nullish(),
 	content_urls: z.object({ pdf: z.string().nullish() }).nullish(),
 });
+const WORK_FIELDS = Object.keys(OpenAlexWorkSchema.shape).join(',');
 
 const OpenAlexListSchema = z.object({
 	meta: z.looseObject({ count: z.int().nonnegative() }),
