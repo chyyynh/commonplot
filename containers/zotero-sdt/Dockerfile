@@ -13,10 +13,7 @@ RUN git fetch --depth=1 origin ${DOCUMENT_WORKER_COMMIT}
 RUN git checkout --detach ${DOCUMENT_WORKER_COMMIT}
 RUN git submodule update --init --recursive --depth=1
 RUN pnpm install --ignore-scripts
-RUN pnpm exec webpack --mode production
-RUN bash scripts/build-assets
-RUN node scripts/build-metadata.js
-RUN node scripts/build-structured-document-text.js
+RUN pnpm build
 
 # The production bundles inline document-worker's JavaScript dependencies. The
 # only runtime package left external is the Node canvas implementation used by
@@ -31,11 +28,7 @@ LABEL org.opencontainers.image.source="https://github.com/zotero/document-worker
 LABEL org.opencontainers.image.revision="021004463ff1f2d535c59ec21b08b2855e1c672f"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
 
-ENV DOCUMENT_WORKER_BUILD_DIR=/app/document-worker
-ENV MAX_DOCUMENT_BYTES=33554432
-ENV NODE_PATH=/app/node_modules
 ENV NODE_ENV=production
-ENV PORT=8080
 
 WORKDIR /app
 COPY --from=builder /src/build /app/document-worker
