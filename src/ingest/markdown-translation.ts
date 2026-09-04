@@ -27,14 +27,9 @@ interface TomlFrontmatter extends Literal {
 	type: 'toml';
 }
 
-interface YamlFrontmatter extends Literal {
-	type: 'yaml';
-}
-
 declare module 'mdast' {
 	interface RootContentMap {
 		toml: TomlFrontmatter;
-		yaml: YamlFrontmatter;
 	}
 }
 
@@ -90,14 +85,6 @@ export type MarkdownSegmentTranslation = MarkdownTranslationTarget &
 		id: string;
 	}>;
 
-export type MarkdownTranslationPlan = Readonly<{
-	batches: readonly MarkdownTranslationBatch[];
-	segments: readonly MarkdownTranslationSegment[];
-	sourceMarkdown: string;
-	sourceSkeleton: string;
-	targets: readonly MarkdownBlockTranslationTarget[];
-}>;
-
 export type MarkdownTranslationAlignment = Readonly<{
 	blocks: readonly Readonly<{
 		sourceMarkdown: string;
@@ -105,11 +92,6 @@ export type MarkdownTranslationAlignment = Readonly<{
 		type: ProseBlock['type'];
 	}>[];
 	version: 1;
-}>;
-
-export type CompiledMarkdownTranslation = Readonly<{
-	alignment: MarkdownTranslationAlignment;
-	content: string;
 }>;
 
 export type MarkdownTranslationPlanOptions = Readonly<{
@@ -123,18 +105,6 @@ type MarkdownTranslationReconstructionPart =
 	| Readonly<{ id: string; type: 'fixed-inline' }>
 	| Readonly<{ id: string; type: 'sequence' }>
 	| Readonly<{ type: 'literal'; value: string }>;
-
-type MarkdownTranslationTemplatePlan = Readonly<{
-	reconstruction: Readonly<Record<string, readonly MarkdownTranslationReconstructionPart[]>>;
-	template: MarkdownTranslationTemplate;
-}>;
-
-type ResolvedPlanOptions = Readonly<{
-	maxBatchCharacters: number;
-	maxBatchSegments: number;
-	maxContextCharacters: number;
-	maxSegmentCharacters: number;
-}>;
 
 type PlanAccumulator = {
 	nextInlineIndex: number;
@@ -305,7 +275,7 @@ function positiveInteger(value: number | undefined, fallback: number, name: stri
 	return resolved;
 }
 
-function resolvePlanOptions(options: MarkdownTranslationPlanOptions): ResolvedPlanOptions {
+function resolvePlanOptions(options: MarkdownTranslationPlanOptions) {
 	const maxBatchCharacters = positiveInteger(options.maxBatchCharacters, DEFAULT_BATCH_MAX_CHARACTERS, 'maxBatchCharacters');
 	const maxBatchSegments = positiveInteger(options.maxBatchSegments, DEFAULT_BATCH_MAX_SEGMENTS, 'maxBatchSegments');
 	const requestedContext = positiveInteger(options.maxContextCharacters, DEFAULT_CONTEXT_MAX_CHARACTERS, 'maxContextCharacters');
@@ -319,6 +289,8 @@ function resolvePlanOptions(options: MarkdownTranslationPlanOptions): ResolvedPl
 		maxSegmentCharacters: Math.min(requestedSegment, availableSegmentCharacters),
 	};
 }
+
+type ResolvedPlanOptions = ReturnType<typeof resolvePlanOptions>;
 
 function translatedPathKey(path: readonly number[]): string {
 	return path.join('.');
@@ -445,7 +417,7 @@ function parseTranslationSequences(
 	return sequences;
 }
 
-function createMarkdownTranslationTemplatePlan(segment: MarkdownTranslationSegment): MarkdownTranslationTemplatePlan {
+function createMarkdownTranslationTemplatePlan(segment: MarkdownTranslationSegment) {
 	const protectedById = new Map(segment.protectedInlines.map((inline) => [protectedInlineId(inline), inline]));
 	const sourceSequences = parseTranslationSequences(segment.text, segment.protectedInlines);
 	const plannedSequences: Record<string, readonly MarkdownTranslationSourcePart[]> = {};
@@ -613,13 +585,7 @@ function appendText(children: PhrasingContent[], value: string): void {
 type ProtectedAtom = Extract<ProtectedInline, { kind: 'atom' }>;
 type ProtectedContainer = Extract<ProtectedInline, { kind: 'container' }>;
 type DecodeFrame = { children: PhrasingContent[]; inline: ProtectedContainer | null };
-type InlineRegistry = Readonly<{
-	atoms: ReadonlyMap<string, ProtectedAtom>;
-	closings: ReadonlyMap<string, ProtectedContainer>;
-	openings: ReadonlyMap<string, ProtectedContainer>;
-}>;
-
-function inlineRegistry(protectedInlines: readonly ProtectedInline[]): InlineRegistry {
+function inlineRegistry(protectedInlines: readonly ProtectedInline[]) {
 	const atoms = new Map<string, ProtectedAtom>();
 	const openings = new Map<string, ProtectedContainer>();
 	const closings = new Map<string, ProtectedContainer>();
@@ -654,7 +620,7 @@ function restoreContainer(inline: ProtectedContainer, children: PhrasingContent[
 	throw new MarkdownTranslationInvariantError('invalid-plan', 'Protected inline node cannot contain translated prose');
 }
 
-function appendDecodedToken(token: string, frames: DecodeFrame[], registry: InlineRegistry): void {
+function appendDecodedToken(token: string, frames: DecodeFrame[], registry: ReturnType<typeof inlineRegistry>): void {
 	const atom = registry.atoms.get(token);
 	if (atom) {
 		frames.at(-1)!.children.push(structuredClone(atom.node));
@@ -1040,7 +1006,7 @@ export function validateMarkdownBatchTranslations(
 	return translations;
 }
 
-export function planMarkdownTranslation(sourceMarkdown: string, options: MarkdownTranslationPlanOptions = {}): MarkdownTranslationPlan {
+export function planMarkdownTranslation(sourceMarkdown: string, options: MarkdownTranslationPlanOptions = {}) {
 	const resolvedOptions = resolvePlanOptions(options);
 	const tree = parseMarkdown(sourceMarkdown);
 	const accumulator: PlanAccumulator = { nextInlineIndex: 0, segments: [], targets: [] };
@@ -1070,9 +1036,9 @@ function serializeProseBlock(block: ProseBlock): string {
 }
 
 export function compileMarkdownTranslationArtifact(
-	plan: MarkdownTranslationPlan,
+	plan: ReturnType<typeof planMarkdownTranslation>,
 	translations: readonly MarkdownSegmentTranslation[],
-): CompiledMarkdownTranslation {
+) {
 	const values = orderedTranslationMap(plan.segments, translations);
 	const segmentsById = new Map(plan.segments.map((segment) => [segment.id, segment]));
 	const sourceTree = parseMarkdown(plan.sourceMarkdown);
@@ -1154,6 +1120,9 @@ export function compileMarkdownTranslationArtifact(
 	};
 }
 
-export function compileMarkdownTranslation(plan: MarkdownTranslationPlan, translations: readonly MarkdownSegmentTranslation[]): string {
+export function compileMarkdownTranslation(
+	plan: ReturnType<typeof planMarkdownTranslation>,
+	translations: readonly MarkdownSegmentTranslation[],
+): string {
 	return compileMarkdownTranslationArtifact(plan, translations).content;
 }
