@@ -1,3 +1,5 @@
+import { getPartBoundarySeparator, getPartChain, shouldDropHardHyphenAtPartBoundary } from 'structured-document-text/src/parts.js';
+import { refKey } from 'structured-document-text/src/range.js';
 import type { LocalPdfSummary } from './platforms/pdf-fallback-policy.ts';
 
 const MAX_DOCUMENT_JSON_BYTES = 32 * 1024 * 1024;
@@ -259,10 +261,6 @@ export function parseStructuredPdfDocumentJson(json: string): StructuredPdfDocum
 	return value as StructuredPdfDocument;
 }
 
-function nodePathKey(path: RefPath): string {
-	return path.join('.');
-}
-
 function cleanText(value: string): string {
 	return value.split(POSTGRES_NUL).join('').replace(/\s+/gu, ' ').trim();
 }
@@ -279,64 +277,17 @@ function isInlineContent(nodes: readonly SdtNode[]): nodes is readonly SdtTextNo
 	return nodes.every((node) => 'text' in node);
 }
 
-function inlineBoundaryNodes(
-	previous: SdtBlockNode,
-	next: SdtBlockNode,
-): Readonly<{ nextFirst: SdtTextNode; previousLast: SdtTextNode }> | null {
-	const previousLast = previous.content.at(-1);
-	const nextFirst = next.content[0];
-	return previousLast && nextFirst && 'text' in previousLast && 'text' in nextFirst ? { nextFirst, previousLast } : null;
-}
-
-function textNodeEndsWithSoftHyphen(node: SdtTextNode): boolean {
-	if (!node.anchor?.textMap) return false;
-	try {
-		const runs: unknown = JSON.parse(node.anchor.textMap);
-		const lastRun = Array.isArray(runs) ? runs.at(-1) : null;
-		return Array.isArray(lastRun) && typeof lastRun[0] === 'number' && (lastRun[0] & 1) !== 0;
-	} catch {
-		return false;
-	}
-}
-
-function shouldDropHardHyphen(previous: SdtBlockNode, next: SdtBlockNode): boolean {
-	const boundary = inlineBoundaryNodes(previous, next);
-	const previousLast = boundary?.previousLast;
-	const nextFirstCharacter = boundary?.nextFirst.text.charAt(0);
-	return Boolean(previousLast?.text.endsWith('-') && nextFirstCharacter && nextFirstCharacter >= 'a' && nextFirstCharacter <= 'z');
-}
-
-function partBoundarySeparator(previous: SdtBlockNode, next: SdtBlockNode): string {
-	const boundary = inlineBoundaryNodes(previous, next);
-	const previousLast = boundary?.previousLast;
-	const nextFirst = boundary?.nextFirst;
-	if (!previousLast || !nextFirst || /\s$/u.test(previousLast.text) || /^\s/u.test(nextFirst.text)) return '';
-	if (textNodeEndsWithSoftHyphen(previousLast)) return '';
-	return /[\p{L}\p{N}]$/u.test(previousLast.text) && /^[\p{L}\p{N}]/u.test(nextFirst.text) ? ' ' : '';
-}
-
 type ParagraphPart = Readonly<{ block: SdtBlockNode; index: number }>;
 
 function paragraphPartChain(document: StructuredPdfDocument, startIndex: number): ParagraphPart[] | null {
-	const first = document.content[startIndex];
-	if (first?.type !== 'paragraph' || first.previousPart || !isInlineContent(first.content)) return null;
-
-	const chain: ParagraphPart[] = [];
-	const seen = new Set<number>();
-	let index = startIndex;
-	for (;;) {
-		if (seen.has(index)) return null;
-		seen.add(index);
-		const block = document.content[index];
-		if (block?.type !== 'paragraph' || block.flowClass === 'excluded' || !isInlineContent(block.content)) {
-			return null;
-		}
-		chain.push({ block, index });
-		if (!block.nextPart) break;
-		if (block.nextPart.length !== 1) return null;
-		index = block.nextPart[0]!;
-	}
-	return chain.length > 1 ? chain : null;
+	const chain = getPartChain(document, [startIndex], {
+		include: (path, value) => {
+			const block = value as Partial<SdtBlockNode>;
+			return path.length === 1 && block.type === 'paragraph' && block.flowClass !== 'excluded' && isInlineContent(block.content ?? []);
+		},
+	});
+	if (chain.length < 2 || chain[0]?.ref[0] !== startIndex) return null;
+	return chain.map(({ block, ref }) => ({ block: block as SdtBlockNode, index: ref[0]! }));
 }
 
 function mergeParagraphParts(chain: readonly ParagraphPart[]): SdtBlockNode {
@@ -345,12 +296,12 @@ function mergeParagraphParts(chain: readonly ParagraphPart[]): SdtBlockNode {
 	for (let index = 1; index < chain.length; index += 1) {
 		const previous = chain[index - 1]!.block;
 		const next = chain[index]!.block;
-		if (shouldDropHardHyphen(previous, next)) {
+		if (shouldDropHardHyphenAtPartBoundary(previous, next)) {
 			const lastIndex = content.length - 1;
 			const last = content[lastIndex];
 			if (last && 'text' in last) content[lastIndex] = { ...last, text: last.text.slice(0, -1) };
 		}
-		const separator = partBoundarySeparator(previous, next);
+		const separator = getPartBoundarySeparator(previous, next);
 		if (separator) content.push({ text: separator });
 		content.push(...next.content);
 	}
@@ -382,7 +333,7 @@ function headingLevels(outline: readonly SdtOutlineItem[]): Map<string, number> 
 	const levels = new Map<string, number>();
 	const visit = (items: readonly SdtOutlineItem[], depth: number) => {
 		for (const item of items) {
-			if (item.ref) levels.set(nodePathKey(item.ref), Math.min(6, Math.max(1, depth)));
+			if (item.ref) levels.set(refKey(item.ref), Math.min(6, Math.max(1, depth)));
 			if (item.children) visit(item.children, depth + 1);
 		}
 	};
@@ -455,7 +406,7 @@ function renderInline(
 			renderInline(writer, node.content, context, section, referenceKeyByPath);
 			continue;
 		}
-		const citationTargets = (node.refs ?? []).flatMap((path) => referenceKeyByPath.get(nodePathKey(path)) ?? []);
+		const citationTargets = (node.refs ?? []).flatMap((path) => referenceKeyByPath.get(refKey(path)) ?? []);
 		if (citationTargets.length) {
 			writer.appendCitation(node.text, context, section, citationTargets);
 			continue;
@@ -550,14 +501,14 @@ function renderBlock(
 ): string | null {
 	if (node.flowClass === 'excluded') return section;
 	const context = cleanText(nodeText(node));
-	const sourceCrops = shouldRenderSourceCrop(node) ? sourceCropsByBlock.get(nodePathKey(path)) : undefined;
+	const sourceCrops = shouldRenderSourceCrop(node) ? sourceCropsByBlock.get(refKey(path)) : undefined;
 	if (sourceCrops?.length) {
 		for (const crop of sourceCrops) writer.append(`![${escapeMarkdownText(crop.altText)}](${crop.url})\n\n`);
 		return section;
 	}
 	if (node.type === 'heading') {
 		const nextSection = context || section;
-		const level = headingLevelByPath.get(nodePathKey(path)) ?? 2;
+		const level = headingLevelByPath.get(refKey(path)) ?? 2;
 		writer.append(`${'#'.repeat(level)} `);
 		renderInline(writer, node.content, context, nextSection, referenceKeyByPath);
 		writer.append('\n\n');
@@ -681,10 +632,10 @@ export function normalizeStructuredPdf(
 		(entry): entry is { node: SdtBlockNode; path: number[] } => !('text' in entry.node) && entry.node.reference === true,
 	);
 	if (referenceEntries.length > MAX_REFERENCES) throw new Error(`Zotero SDT returned more than ${MAX_REFERENCES} references`);
-	const referenceKeyByPath = new Map(referenceEntries.map(({ path }, index) => [nodePathKey(path), `sdt-${index + 1}`]));
+	const referenceKeyByPath = new Map(referenceEntries.map(({ path }, index) => [refKey(path), `sdt-${index + 1}`]));
 	const references = referenceEntries.flatMap(({ node, path }) => {
 		const parsed = referenceLabelAndText(nodeText(node));
-		return parsed.text ? [{ key: referenceKeyByPath.get(nodePathKey(path))!, ...parsed }] : [];
+		return parsed.text ? [{ key: referenceKeyByPath.get(refKey(path))!, ...parsed }] : [];
 	});
 	const writer = new MarkdownWriter();
 	const headingLevelByPath = headingLevels(document.catalog.outline);
@@ -704,10 +655,10 @@ export function normalizeStructuredPdf(
 	for (let index = 0; index < document.content.length; index += 1) {
 		const block = document.content[index];
 		const blockPath: RefPath = [index];
-		if (!block || block.flowClass === 'excluded' || renderedPartPaths.has(nodePathKey(blockPath))) continue;
+		if (!block || block.flowClass === 'excluded' || renderedPartPaths.has(refKey(blockPath))) continue;
 		const partChain = paragraphPartChain(document, index);
 		const renderableBlock = partChain ? mergeParagraphParts(partChain) : block;
-		for (const part of partChain?.slice(1) ?? []) renderedPartPaths.add(nodePathKey([part.index]));
+		for (const part of partChain?.slice(1) ?? []) renderedPartPaths.add(refKey([part.index]));
 		section = renderBlock(writer, renderableBlock, blockPath, section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
 	}
 	const markdown = writer.toString();

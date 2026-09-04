@@ -62,6 +62,9 @@ importers:
       pg:
         specifier: ^8.23.0
         version: 8.23.0
+      structured-document-text:
+        specifier: github:zotero/structured-document-text#7963c11faac4595be3bbe86b7574704a22c67bed
+        version: https://codeload.github.com/zotero/structured-document-text/tar.gz/7963c11faac4595be3bbe86b7574704a22c67bed
       workers-ai-provider:
         specifier: 4.0.0
         version: 4.0.0(@ai-sdk/provider@4.0.8)(ai@7.0.84(zod@4.5.4))
@@ -1174,6 +1177,10 @@ packages:
 
   strnum@2.4.1:
     resolution: {integrity: sha512-M9eUSMT2dCB2cTNPG7UYj6KuK7RJR2SN2+yCV/fTW3xzTCS6EaGZ5pSMgDIjB7r8zSfTGk+dvvn9rTjpVS9Mwg==}
+
+  structured-document-text@https://codeload.github.com/zotero/structured-document-text/tar.gz/7963c11faac4595be3bbe86b7574704a22c67bed:
+    resolution: {gitHosted: true, integrity: sha512-Y3r+yGIwdfIk5JXOKlBLJOyShZFmRunlEOq6HtXsZ/oMohOlreE1YxikYAY6rc1dzSL8W1wMv+K6QKraKffz2w==, tarball: https://codeload.github.com/zotero/structured-document-text/tar.gz/7963c11faac4595be3bbe86b7574704a22c67bed}
+    version: 0.0.0
 
   supports-color@10.2.2:
     resolution: {integrity: sha512-SS+jx45GF1QjgEXQx4NJZV9ImqmO2NPz5FNsIHrsDjh2YsHnawpan7SNQ1o8NuhrbHZy9AZhIoCUiCeaW/C80g==}
@@ -2436,6 +2443,8 @@ snapshots:
   strnum@2.4.1:
     dependencies:
       anynum: 1.0.1
+
+  structured-document-text@https://codeload.github.com/zotero/structured-document-text/tar.gz/7963c11faac4595be3bbe86b7574704a22c67bed: {}
 
   supports-color@10.2.2: {}
 
