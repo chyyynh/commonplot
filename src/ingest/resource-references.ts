@@ -59,8 +59,8 @@ async function replaceStoredCitationData(
 	document: StructuredPdfDocument,
 	inputContentHash: string,
 ) {
-	const source = await db.execute<{ content: string | null }>(sql`
-		SELECT original.content
+	const source = await db.execute<{ content: string }>(sql`
+		SELECT COALESCE(original.content, '') AS content
 		FROM resources resource
 		JOIN resource_translations original
 		  ON original.resource_id = resource.id
@@ -70,9 +70,8 @@ async function replaceStoredCitationData(
 		  AND resource.kind = 'paper'
 		  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${referenceRevision}
 	`);
-	const paper = source.rows[0];
-	if (!paper) throw new NonRetryableError('Paper revision changed before structured citations could be stored');
-	const content = paper.content ?? '';
+	const content = source.rows[0]?.content;
+	if (content === undefined) throw new NonRetryableError('Paper revision changed before structured citations could be stored');
 	const readySourceCrops = structuredPdfSourceCrops(document).filter((crop) =>
 		content.includes(structuredPdfSourceCropUrl(inputContentHash, crop.id)),
 	);
@@ -207,67 +206,56 @@ async function resolveCrossrefUpdates(step: WorkflowStep, references: readonly s
 	return updates;
 }
 
-/** Zotero SDT owns PDF references and citation links; Crossref owns bibliographic metadata resolution. */
-async function enrichUploadedPdfReferences(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: Readonly<{ referenceRevision: string; resourceId: string; uploadedPdfResourceId: string }>,
-): Promise<void> {
-	try {
-		const source = await step.do('load-uploaded-pdf-reference-source-v2', REFERENCE_DB_STEP, async () =>
-			loadUploadedPdfSource(await connectCoreDb(env), input.resourceId, input.uploadedPdfResourceId, input.referenceRevision),
-		);
-		const stored = await step.do('replace-uploaded-pdf-citations-v2', REFERENCE_SDT_STEP, async () => {
-			const document = await readStructuredPdfArtifact(env, source.storageKey, source.contentHash);
-			if (!document) throw new NonRetryableError('Structured PDF artifact is missing or stale');
-			return replaceStoredCitationData(await connectCoreDb(env), input.resourceId, input.referenceRevision, document, source.contentHash);
-		});
-		const crossrefUpdates = await resolveCrossrefUpdates(step, stored.referenceTexts);
-		const enrichedCount = crossrefUpdates.length
-			? await step.do('persist-crossref-reference-metadata-v1', REFERENCE_DB_STEP, async () =>
-					persistCrossrefMetadata(await connectCoreDb(env), input.resourceId, input.referenceRevision, crossrefUpdates),
-				)
-			: 0;
-		console.info({
-			tag: 'RESOURCE_REFERENCES',
-			event: 'reference_enrichment_completed',
-			resource_id: input.resourceId,
-			stored_reference_count: stored.referenceTexts.length,
-			stored_mention_count: stored.mentionCount,
-			aligned_mention_count: stored.alignedMentionCount,
-			crossref_enriched_count: enrichedCount,
-		});
-	} catch (error) {
-		console.warn({
-			tag: 'RESOURCE_REFERENCES',
-			event: 'reference_enrichment_skipped',
-			resource_id: input.resourceId,
-			error: error instanceof Error ? error.message : String(error),
-		});
-	}
-}
-
 export async function enqueueResourceReferenceEnrichment(
 	env: CoreEnv,
 	resourceId: string,
 	referenceRevision: string,
 	uploadedPdfResourceId: string,
 ) {
-	const payload = {
-		referenceRevision,
-		resourceId,
-		source: { fileResourceId: uploadedPdfResourceId, kind: 'uploadedPdf' },
-	} satisfies ResourceReferenceEnrichmentPayload;
 	const id = `rr-v5-${await sha256Hex(
-		[RESOURCE_REFERENCE_WORKFLOW_REVISION, payload.resourceId, payload.referenceRevision, uploadedPdfResourceId, 'idempotent'].join('\n'),
+		[RESOURCE_REFERENCE_WORKFLOW_REVISION, resourceId, referenceRevision, uploadedPdfResourceId, 'idempotent'].join('\n'),
 	)}`;
-	await env.RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW.createBatch([{ id, params: payload }]);
+	await env.RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW.createBatch([
+		{ id, params: { referenceRevision, resourceId, source: { fileResourceId: uploadedPdfResourceId, kind: 'uploadedPdf' } } },
+	]);
 }
 
-/** Reference enrichment stays off the critical path after the base PDF and its SDT sidecar are persisted. */
+/** Zotero SDT owns PDF references and citation links; Crossref metadata enrichment stays off the critical path. */
 export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<CoreEnv, ResourceReferenceEnrichmentPayload> {
 	async run(event: WorkflowEvent<ResourceReferenceEnrichmentPayload>, step: WorkflowStep): Promise<void> {
 		const input = ResourceReferenceEnrichmentPayloadSchema.parse(event.payload);
-		await enrichUploadedPdfReferences(this.env, step, { ...input, uploadedPdfResourceId: input.source.fileResourceId });
+		try {
+			const source = await step.do('load-uploaded-pdf-reference-source-v2', REFERENCE_DB_STEP, async () =>
+				loadUploadedPdfSource(await connectCoreDb(this.env), input.resourceId, input.source.fileResourceId, input.referenceRevision),
+			);
+			const stored = await step.do('replace-uploaded-pdf-citations-v2', REFERENCE_SDT_STEP, async () => {
+				const document = await readStructuredPdfArtifact(this.env, source.storageKey, source.contentHash);
+				if (!document) throw new NonRetryableError('Structured PDF artifact is missing or stale');
+				const db = await connectCoreDb(this.env);
+				return replaceStoredCitationData(db, input.resourceId, input.referenceRevision, document, source.contentHash);
+			});
+			const crossrefUpdates = await resolveCrossrefUpdates(step, stored.referenceTexts);
+			const enrichedCount = crossrefUpdates.length
+				? await step.do('persist-crossref-reference-metadata-v1', REFERENCE_DB_STEP, async () =>
+						persistCrossrefMetadata(await connectCoreDb(this.env), input.resourceId, input.referenceRevision, crossrefUpdates),
+					)
+				: 0;
+			console.info({
+				tag: 'RESOURCE_REFERENCES',
+				event: 'reference_enrichment_completed',
+				resource_id: input.resourceId,
+				stored_reference_count: stored.referenceTexts.length,
+				stored_mention_count: stored.mentionCount,
+				aligned_mention_count: stored.alignedMentionCount,
+				crossref_enriched_count: enrichedCount,
+			});
+		} catch (error) {
+			console.warn({
+				tag: 'RESOURCE_REFERENCES',
+				event: 'reference_enrichment_skipped',
+				resource_id: input.resourceId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 }
