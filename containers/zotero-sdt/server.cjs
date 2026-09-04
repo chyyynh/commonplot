@@ -1,5 +1,5 @@
 const { createHash } = require('node:crypto');
-const { existsSync, readFileSync } = require('node:fs');
+const { readFileSync } = require('node:fs');
 const { createServer } = require('node:http');
 const { resolve, sep } = require('node:path');
 const { Worker } = require('node:worker_threads');
@@ -16,10 +16,6 @@ const BUILD_DIR = resolve(process.env.DOCUMENT_WORKER_BUILD_DIR ?? '/app/documen
 
 if (!Number.isInteger(WORKER_REQUEST_TIMEOUT_MS) || WORKER_REQUEST_TIMEOUT_MS < 1_000 || WORKER_REQUEST_TIMEOUT_MS > 15 * 60 * 1000) {
 	throw new Error('WORKER_REQUEST_TIMEOUT_MS must be an integer between 1000 and 900000.');
-}
-
-if (!existsSync(resolve(BUILD_DIR, 'worker.js')) || !existsSync(resolve(BUILD_DIR, 'structured-document-text.js'))) {
-	throw new Error(`Missing document-worker build at ${BUILD_DIR}.`);
 }
 
 const { openStructuredDocumentTextPack } = require(resolve(BUILD_DIR, 'structured-document-text.js'));
