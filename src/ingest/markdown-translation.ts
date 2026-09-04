@@ -363,10 +363,6 @@ function markdownSkeleton(tree: Root, translatedBlockPaths: readonly (readonly n
 	return JSON.stringify(structuralNode(tree, [], translatedBlocks));
 }
 
-function inlineTokens(value: string): string[] {
-	return value.match(INLINE_TOKEN_PATTERN) ?? [];
-}
-
 function protectedAtomReference(inline: ProtectedInline): string | undefined {
 	if (inline.kind !== 'atom') return undefined;
 	const node = inline.node;
@@ -581,7 +577,7 @@ function encodePhrasing(
 }> {
 	const protectedInlines: ProtectedInline[] = [];
 	const encodeText = (value: string): string => {
-		if (inlineTokens(value).length) {
+		if (value.search(INLINE_TOKEN_PATTERN) !== -1) {
 			throw new MarkdownTranslationInvariantError('invalid-plan', 'Source prose contains a reserved translation token');
 		}
 		return value;
@@ -797,7 +793,7 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 			typeof targetText !== 'string' ||
 			targetText.includes('\0') ||
 			/\r?\n[\t ]*\r?\n/u.test(targetText) ||
-			inlineTokens(targetText).length
+			targetText.search(INLINE_TOKEN_PATTERN) !== -1
 		) {
 			throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} has unsafe text ${textId}`);
 		}
@@ -1041,11 +1037,7 @@ export function validateMarkdownBatchTranslations(
 	translations: readonly MarkdownSegmentTranslation[],
 ): readonly MarkdownSegmentTranslation[] {
 	orderedTranslationMap(batch.segments, translations);
-	return batch.segments.map((segment, index) => {
-		const translation = translations[index];
-		if (!translation) throw new MarkdownTranslationInvariantError('missing-segment', `Missing translated segment ${segment.id}`);
-		return translation;
-	});
+	return translations;
 }
 
 export function planMarkdownTranslation(sourceMarkdown: string, options: MarkdownTranslationPlanOptions = {}): MarkdownTranslationPlan {
