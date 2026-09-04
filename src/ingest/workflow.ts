@@ -23,7 +23,8 @@ import {
 	type ResourcePersistenceTarget,
 } from './resource-persistence';
 import { enqueueResourceReferenceEnrichment } from './resource-reference-workflow';
-import { enqueueResourceTranslation, shouldEnqueueResourceTranslation } from './translation-workflow';
+import { shouldEnqueueResourceTranslation } from './translation-policy';
+import { enqueueResourceTranslation } from './translation-workflow';
 
 const ResourceDraftRelationSchema: z.ZodType<ResourceDraftRelation> = z.discriminatedUnion('kind', [
 	z.strictObject({ kind: z.literal('source'), sourceId: z.uuid() }),

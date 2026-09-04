@@ -15,24 +15,15 @@ import {
 	planMarkdownTranslation,
 } from './markdown-translation';
 import { translateMarkdownBatchToZhHant } from './markdown-translation-model';
+import { type ResourceTranslationCandidate, shouldEnqueueResourceTranslation } from './translation-policy';
 
 type ResourceTranslationPayload = { force?: boolean; resourceId: string; translationRevision: string };
 const PDF_MIME = 'application/pdf';
-const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const;
 const RESOURCE_TRANSLATION_SOURCES = ['original', 'machine', 'human'] as const;
 const ResourceTranslationSourceSchema = z.enum(RESOURCE_TRANSLATION_SOURCES);
 type ResourceTranslationSource = z.infer<typeof ResourceTranslationSourceSchema>;
 type ResourceTranslationKind = keyof typeof RESOURCE_TYPES;
 type ResourceTranslationPlatform = (typeof RESOURCE_TYPES)[ResourceTranslationKind]['platforms'][number]['name'] | null;
-
-type ResourceTranslationCandidate = Readonly<{
-	fileType: string | null;
-	kind: ResourceTranslationKind;
-	originalLang: string;
-	resourcePlatform: ResourceTranslationPlatform;
-	scope: 'corpus' | 'private';
-	url: string | null;
-}>;
 
 type ResourceTranslationInput = ResourceTranslationCandidate & {
 	id: string;
@@ -75,27 +66,6 @@ function translationRetryDelay({ ctx, error }: WorkflowDynamicDelayContext): num
 	// especially when a source cron starts several translations together. Waiting durably costs no active Worker time.
 	if (AI_RATE_LIMIT_ERROR.test(error.message)) return ctx.attempt * 60_000;
 	return ctx.attempt * 15_000;
-}
-
-type PdfTranslationAdmission = 'not-pdf' | 'private-upload' | 'unsupported';
-
-function pdfTranslationAdmission(candidate: ResourceTranslationCandidate): PdfTranslationAdmission {
-	if (candidate.fileType !== PDF_MIME || candidate.resourcePlatform !== null) return 'not-pdf';
-	return candidate.scope === 'private' && candidate.kind === 'file' && candidate.url === null ? 'private-upload' : 'unsupported';
-}
-
-export function shouldEnqueueResourceTranslation(candidate: ResourceTranslationCandidate): boolean {
-	const pdfAdmission = pdfTranslationAdmission(candidate);
-	const privateUploadedPdf = pdfAdmission === 'private-upload';
-	const translatableKind =
-		(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(candidate.kind) || (candidate.kind === 'file' && privateUploadedPdf);
-	return (
-		candidate.originalLang !== 'zh-Hant' &&
-		(candidate.scope === 'corpus' || privateUploadedPdf) &&
-		translatableKind &&
-		(Boolean(candidate.url) || privateUploadedPdf) &&
-		pdfAdmission !== 'unsupported'
-	);
 }
 
 function privateUploadedPdfTranslationSqlAdmission() {
