@@ -159,32 +159,12 @@ async function replaceStoredCitationData(
 	};
 }
 
-function sqlTextArray(values: readonly string[]) {
-	return values.length
-		? sql`ARRAY[${sql.join(
-				values.map((value) => sql`${value}`),
-				sql`, `,
-			)}]::text[]`
-		: sql`ARRAY[]::text[]`;
-}
-
 async function persistCrossrefMetadata(
 	db: NodePgDatabase,
 	resourceId: string,
 	referenceRevision: string,
 	updates: readonly CrossrefMetadataUpdate[],
 ): Promise<number> {
-	if (!updates.length) return 0;
-	const values = sql.join(
-		updates.map(
-			({ authors, doi, ordinal, title, url, venue, year }) =>
-				sql`(
-					${ordinal}::integer, ${doi}::text, ${url}::text, ${title}::text,
-					${sqlTextArray(authors)}, ${year}::integer, ${venue}::text
-				)`,
-		),
-		sql`, `,
-	);
 	const result = await db.execute(sql`
 		UPDATE resource_references AS reference
 		SET doi = incoming.doi,
@@ -193,7 +173,9 @@ async function persistCrossrefMetadata(
 		    authors = incoming.authors,
 		    year = incoming.year,
 		    venue = incoming.venue
-		FROM (VALUES ${values}) AS incoming(ordinal, doi, url, title, authors, year, venue)
+		FROM jsonb_to_recordset(${JSON.stringify(updates)}::jsonb) AS incoming(
+			ordinal integer, doi text, url text, title text, authors text[], year integer, venue text
+		)
 		WHERE reference.resource_id = ${resourceId}::uuid
 		  AND reference.ordinal = incoming.ordinal
 		  AND ROW(reference.doi, reference.url, reference.title, reference.authors, reference.year, reference.venue)
