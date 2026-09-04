@@ -8,7 +8,6 @@ import {
 	ZOTERO_SDT_ARTIFACT_VERSION,
 } from './zotero-sdt.ts';
 
-const INPUT_HASH_PATTERN = /^[a-f\d]{64}$/u;
 const MAX_ERROR_BODY_BYTES = 4_096;
 const MAX_SOURCE_CROP_BYTES = 8 * 1024 * 1024;
 const SOURCE_CROP_ARTIFACT_VERSION = 'newsence-zotero-source-crop-v1';
@@ -35,7 +34,6 @@ export async function ensureStructuredPdfSourceCrops(
 		resourceId: string;
 	}>,
 ): Promise<StructuredPdfSourceCrop[]> {
-	if (!INPUT_HASH_PATTERN.test(input.inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
 	const prefix = `${input.pdfStorageKey}.structured-crops/${input.inputContentHash}/`;
 	const readyCropIds = new Set<string>();
 	try {
@@ -126,7 +124,6 @@ export async function readStructuredPdfArtifact(
 	pdfStorageKey: string,
 	inputContentHash: string,
 ): Promise<StructuredPdfDocument | null> {
-	if (!INPUT_HASH_PATTERN.test(inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
 	const object = await env.R2.get(structuredPdfStorageKey(pdfStorageKey));
 	if (!object) return null;
 	if (object.customMetadata?.artifactVersion !== ZOTERO_SDT_ARTIFACT_VERSION || object.customMetadata?.inputSha256 !== inputContentHash) {
@@ -146,7 +143,6 @@ export async function writeStructuredPdfArtifact(
 	inputContentHash: string,
 	document: StructuredPdfDocument,
 ): Promise<void> {
-	if (!INPUT_HASH_PATTERN.test(inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
 	await env.R2.put(structuredPdfStorageKey(pdfStorageKey), JSON.stringify(document), {
 		customMetadata: {
 			artifactVersion: ZOTERO_SDT_ARTIFACT_VERSION,

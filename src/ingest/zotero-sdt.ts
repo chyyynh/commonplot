@@ -20,8 +20,6 @@ const MAX_SECTION_CHARS = 300;
 const MAX_SOURCE_CROP_ALT_CHARS = 500;
 const MAX_SOURCE_CROPS = 64;
 const MAX_REF_PATH_DEPTH = 16;
-const INPUT_HASH_PATTERN = /^[a-f\d]{64}$/u;
-
 export const ZOTERO_SDT_ARTIFACT_VERSION = 'newsence-zotero-sdt-v1';
 
 export function parseStructuredPdfFailure(status: number, body: string): { message: string; totalPages: number | null } {
@@ -395,8 +393,6 @@ export function structuredPdfSourceCrops(document: StructuredPdfDocument) {
 export type StructuredPdfSourceCrop = Readonly<ReturnType<typeof structuredPdfSourceCrops>[number]>;
 
 export function structuredPdfSourceCropUrl(inputContentHash: string, cropId: string): string {
-	if (!INPUT_HASH_PATTERN.test(inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
-	if (!/^\d+(?:\.\d+)*-p\d+$/u.test(cropId)) throw new TypeError('Structured PDF source crop ID is invalid');
 	return `/api/media/asset/pdf-crops/${inputContentHash}/${cropId}.png`;
 }
 
