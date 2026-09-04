@@ -32,9 +32,6 @@ class DocumentWorkerClient {
 		this.failure = null;
 		this.worker = new Worker(resolve(__dirname, 'worker-thread.cjs'), { workerData: { buildDir: BUILD_DIR } });
 		this.ready = Promise.withResolvers();
-		this.readyTimeout = setTimeout(() => {
-			this.crash(new Error(`Zotero document worker did not become ready within ${WORKER_REQUEST_TIMEOUT_MS}ms.`));
-		}, WORKER_REQUEST_TIMEOUT_MS);
 		this.worker.on('message', (message) => this.handleMessage(message));
 		this.worker.on('error', (error) => this.crash(error));
 		this.worker.on('exit', (code) => {
@@ -45,7 +42,6 @@ class DocumentWorkerClient {
 	handleMessage(message) {
 		if (message?.ready) {
 			if (this.failure) return;
-			clearTimeout(this.readyTimeout);
 			this.ready.resolve();
 			return;
 		}
@@ -83,7 +79,6 @@ class DocumentWorkerClient {
 		if (this.failure) return;
 		const failure = error instanceof Error ? error : new Error(String(error));
 		this.failure = failure;
-		clearTimeout(this.readyTimeout);
 		this.ready.reject(failure);
 		for (const pending of this.pending.values()) pending.reject(failure);
 		this.pending.clear();
@@ -97,7 +92,6 @@ class DocumentWorkerClient {
 		timeoutError.statusCode = 504;
 		let timeout;
 		const queuedJob = this.queue.then(async () => {
-			await this.ready.promise;
 			if (this.failure) throw this.failure;
 			const id = ++this.nextRequestId;
 			const buffer = pdfBuffer.buffer.slice(pdfBuffer.byteOffset, pdfBuffer.byteOffset + pdfBuffer.byteLength);
@@ -257,13 +251,7 @@ const server = createServer(async (request, response) => {
 	}
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-	console.info({
-		buildDir: BUILD_DIR,
-		event: 'zotero_sdt_container_listening',
-		maxDocumentBytes: MAX_DOCUMENT_BYTES,
-		maxCropBytes: MAX_CROP_BYTES,
-		maxPdfBytes: MAX_PDF_BYTES,
-		port: PORT,
-	});
-});
+client.ready.promise.then(
+	() => server.listen(PORT, '0.0.0.0'),
+	() => undefined,
+);
