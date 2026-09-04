@@ -80,51 +80,20 @@ addTransformations({
 	},
 });
 
-type ExtractedHtmlArticle = {
-	html: string;
-	title: string;
-	author: string | null;
-	publishedDate: string | null;
-	siteName: string;
-	description: string | null;
-	previewImageUrl: string | null;
-};
-
-function optionalText(value: string | undefined): string | null {
-	return value?.trim() || null;
-}
-
-async function extractHtmlArticle(html: string, url: string): Promise<ExtractedHtmlArticle | null> {
+async function acquireHtmlArticle(html: string, url: string): Promise<GenericAcquiredMaterial> {
 	const article = await extractFromHtml(html, url, {
 		contentLengthThreshold: MIN_ARTICLE_CONTENT_CHARS,
 		descriptionLengthThreshold: 0,
 	});
-	if (!article?.content?.trim()) return null;
+	if (!article?.content?.trim()) throw new NonRetryableError('No readable article content found');
+	const articleHtml = article.content.trim();
 	const title = article.title?.trim();
 	if (!title) throw new NonRetryableError('Extracted article has no title');
 	const siteName = article.source?.trim();
 	if (!siteName) throw new NonRetryableError('Extracted article has no source');
 
-	return {
-		html: article.content.trim(),
-		title,
-		author: optionalText(article.author),
-		publishedDate: optionalText(article.published),
-		siteName,
-		description: optionalText(article.description),
-		previewImageUrl: normalizedResourceImageUrl(article.image, url),
-	};
-}
-
-type PlatformResolution = { platform: PlatformResourceUrl };
-type WebAcquisition = GenericAcquiredMaterial | PdfAcquisitionDraft | PlatformResolution;
-
-async function acquireHtmlArticle(html: string, url: string): Promise<GenericAcquiredMaterial> {
-	const article = await extractHtmlArticle(html, url);
-	if (!article) throw new NonRetryableError('No readable article content found');
-
 	const content = toMarkdown(
-		toMdast(fromHtml(article.html, { fragment: true }), {
+		toMdast(fromHtml(articleHtml, { fragment: true }), {
 			// HTML comments are invisible implementation metadata. The converter
 			// preserves them as raw Markdown by default, so opt out at its AST boundary.
 			nodeHandlers: { comment() {} },
@@ -139,17 +108,20 @@ async function acquireHtmlArticle(html: string, url: string): Promise<GenericAcq
 	return {
 		resourcePlatform: null,
 		fileType: null,
-		title: article.title,
+		title,
 		markdown: content,
-		source: article.siteName,
+		source: siteName,
 		originalLang: null,
-		publishedDate: article.publishedDate,
-		summary: article.description,
+		publishedDate: article.published?.trim() || null,
+		summary: article.description?.trim() || null,
 		creators: literalCreator('author', article.author),
-		kindMetadata: { siteName: article.siteName },
-		previewImageUrl: article.previewImageUrl,
+		kindMetadata: { siteName },
+		previewImageUrl: normalizedResourceImageUrl(article.image, url),
 	};
 }
+
+type PlatformResolution = { platform: PlatformResourceUrl };
+type WebAcquisition = GenericAcquiredMaterial | PdfAcquisitionDraft | PlatformResolution;
 
 async function acquireWebResource(
 	env: CoreEnv,
