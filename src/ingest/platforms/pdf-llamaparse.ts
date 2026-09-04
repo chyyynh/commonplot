@@ -174,42 +174,6 @@ async function cancelKnownJob(credentials: ProviderCredentials, job: Pick<Provid
 	}
 }
 
-function stageCreateJob(
-	step: WorkflowStep,
-	input: {
-		credentials: ProviderCredentials;
-		local: LocalPdfSummary;
-		pageCount: number;
-		processingId: string;
-		source: ParseSource;
-	},
-): Promise<ProviderJob> {
-	const stepName = 'file_id' in input.source ? 'llamaparse-create-file-job-v1' : 'llamaparse-create-source-job-v2';
-	return step.do(stepName, CREATE_ONCE_STEP, async () => {
-		const startedAt = Date.now();
-		try {
-			const job = await client(input.credentials.apiKey).parsing.create({
-				client_name: 'newsence-core',
-				disable_cache: false,
-				output_options: { images_to_save: [] },
-				page_ranges: { max_pages: input.pageCount },
-				processing_control: { timeouts: { base_in_seconds: 120, extra_time_per_page_in_seconds: 8 } },
-				project_id: input.credentials.projectId,
-				...input.source,
-				tier: LLAMA_PARSE_TIER,
-				user_metadata: {
-					local_parser_version: input.local.parserVersion,
-					processing_id: input.processingId.slice(0, 128),
-				},
-				version: LLAMA_PARSE_VERSION,
-			});
-			return jobState(job, startedAt);
-		} catch (error) {
-			throw mutationFailure('job-create', error, false);
-		}
-	});
-}
-
 function stageCancelJob(step: WorkflowStep, credentials: ProviderCredentials, job: ProviderJob): Promise<void> {
 	return step.do('llamaparse-cancel-job-v2', CLEANUP_STEP, () => cancelKnownJob(credentials, job));
 }
@@ -297,13 +261,33 @@ export async function stagePaidLlamaParseFallback(
 		const parseSource: ParseSource = input.source.kind === 'public-url' ? { source_url: input.source.url } : { file_id: file!.fileId };
 		let job: ProviderJob;
 		try {
-			job = await stageCreateJob(step, {
-				credentials,
-				local: input.local,
-				pageCount: input.local.totalPages!,
-				processingId: input.processingId,
-				source: parseSource,
-			});
+			job = await step.do(
+				'file_id' in parseSource ? 'llamaparse-create-file-job-v1' : 'llamaparse-create-source-job-v2',
+				CREATE_ONCE_STEP,
+				async () => {
+					const startedAt = Date.now();
+					try {
+						const created = await client(credentials.apiKey).parsing.create({
+							client_name: 'newsence-core',
+							disable_cache: false,
+							output_options: { images_to_save: [] },
+							page_ranges: { max_pages: input.local.totalPages! },
+							processing_control: { timeouts: { base_in_seconds: 120, extra_time_per_page_in_seconds: 8 } },
+							project_id: credentials.projectId,
+							...parseSource,
+							tier: LLAMA_PARSE_TIER,
+							user_metadata: {
+								local_parser_version: input.local.parserVersion,
+								processing_id: input.processingId.slice(0, 128),
+							},
+							version: LLAMA_PARSE_VERSION,
+						});
+						return jobState(created, startedAt);
+					} catch (error) {
+						throw mutationFailure('job-create', error, false);
+					}
+				},
+			);
 		} catch (error) {
 			const ambiguous = !isDefinitiveFailure(error);
 			logFallback({ error, file, local: input.local, outcome: ambiguous ? 'operator-reconciliation-required' : 'job-create-failed' });
