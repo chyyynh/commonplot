@@ -22,9 +22,6 @@ function multipartPdfBody(pdf: ReadableStream<Uint8Array>, boundary: string, byt
 				start(controller) {
 					controller.enqueue(prefix);
 				},
-				transform(chunk, controller) {
-					controller.enqueue(chunk);
-				},
 				flush(controller) {
 					controller.enqueue(suffix);
 				},
