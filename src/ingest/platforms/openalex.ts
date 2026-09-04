@@ -202,16 +202,6 @@ async function fetchOpenAlexJson(path: string, apiKey: string): Promise<unknown 
 	throw new Error(`OpenAlex request failed with HTTP ${response.status}${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
 }
 
-function workLookupPath(identifiers: readonly PaperIdentifier[]): string | null {
-	const identity = paperIdentityFromIdentifiers(identifiers);
-	if (!identity) return null;
-	let workId: string | null = null;
-	const doi = identity.doi ?? (identity.arxivId ? `10.48550/arxiv.${identity.arxivId}` : null);
-	if (doi) workId = `https://doi.org/${encodeURIComponent(doi)}`;
-	else if (identity.openAlexId) workId = encodeURIComponent(identity.openAlexId);
-	return workId ? `/works/${workId}?select=${WORK_FIELDS}` : null;
-}
-
 async function fetchOpenAlexRelations(input: {
 	apiKey: string;
 	work: OpenAlexWork;
@@ -258,9 +248,11 @@ export async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers
 	const apiKey = input.apiKey?.trim();
 	if (!apiKey) return null;
 	const identifiers = normalizePaperIdentifiers(input.identifiers);
-	const lookupPath = workLookupPath(identifiers);
-	if (!lookupPath) return null;
-	const json = await fetchOpenAlexJson(lookupPath, apiKey);
+	const identity = paperIdentityFromIdentifiers(identifiers);
+	const doi = identity?.doi ?? (identity?.arxivId ? `10.48550/arxiv.${identity.arxivId}` : null);
+	const workId = doi ? `https://doi.org/${encodeURIComponent(doi)}` : identity?.openAlexId ? encodeURIComponent(identity.openAlexId) : null;
+	if (!workId) return null;
+	const json = await fetchOpenAlexJson(`/works/${workId}?select=${WORK_FIELDS}`, apiKey);
 	if (!json) return null;
 	const work = OpenAlexWorkSchema.parse(json);
 	const relations = await fetchOpenAlexRelations({ apiKey, work }).catch((error) => {
