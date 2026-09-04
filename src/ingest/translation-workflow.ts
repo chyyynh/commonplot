@@ -11,7 +11,6 @@ import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
 	compileMarkdownTranslationArtifact,
 	type MarkdownSegmentTranslation,
-	type MarkdownTranslationAlignment,
 	MarkdownTranslationInvariantError,
 	planMarkdownTranslation,
 } from './markdown-translation';
@@ -21,7 +20,6 @@ import { type ResourceTranslationCandidate, shouldEnqueueResourceTranslation } f
 
 type ResourceTranslationPayload = { force?: boolean; resourceId: string; translationRevision: string };
 const ResourceTranslationSourceSchema = z.enum(['original', 'machine', 'human']);
-type ResourceTranslationSource = z.infer<typeof ResourceTranslationSourceSchema>;
 
 type ResourceTranslationInput = ResourceTranslationCandidate & {
 	id: string;
@@ -33,7 +31,7 @@ type ResourceTranslationInput = ResourceTranslationCandidate & {
 		title: string | null;
 		summary: string | null;
 		content: string | null;
-		source: ResourceTranslationSource;
+		source: z.infer<typeof ResourceTranslationSourceSchema>;
 	} | null;
 };
 
@@ -97,12 +95,9 @@ type ZhHantTranslationPlan = {
 	content: 'translate' | null;
 };
 
-type MachineZhHantTranslationPatch = {
-	alignment?: MarkdownTranslationAlignment;
-	content?: string;
-	summary?: string;
-	title?: string;
-};
+type MachineZhHantTranslationPatch = Partial<
+	z.infer<typeof ZhHantMetadataTranslationSchema> & NonNullable<Awaited<ReturnType<typeof translatePlannedContent>>>
+>;
 
 function isBlank(value: string | null | undefined): boolean {
 	return !value?.trim();
