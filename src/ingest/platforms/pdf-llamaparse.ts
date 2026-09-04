@@ -25,7 +25,6 @@ const UPLOAD_STEP = { retries: { limit: 2, delay: '5 seconds' }, timeout: '180 s
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 
 type ProviderCredentials = Readonly<{ apiKey: string; projectId: string }>;
-type ProviderFile = Readonly<{ externalId: string; fileId: string }>;
 type ProviderSource = Readonly<{ kind: 'private-upload'; storageKey: string }> | Readonly<{ kind: 'public-url'; url: string }>;
 
 function client(apiKey: string): LlamaCloud {
@@ -91,7 +90,7 @@ function stageProviderFile(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: { credentials: ProviderCredentials; processingId: string; storageKey: string },
-): Promise<ProviderFile> {
+): Promise<string> {
 	const externalId = providerFileExternalId(input.processingId);
 	return step.do(
 		'llamaparse-upload-private-pdf-v1',
@@ -100,7 +99,7 @@ function stageProviderFile(
 			if (attempt > 1) {
 				try {
 					const existing = await findProviderFile(input.credentials, externalId);
-					if (existing) return { externalId, fileId: existing };
+					if (existing) return existing;
 				} catch (error) {
 					if (error instanceof Error && error.message.includes(AMBIGUOUS_MUTATION)) throw error;
 					throw mutationFailure('file-upload-reconcile', error, false);
@@ -120,14 +119,14 @@ function stageProviderFile(
 					},
 					{ timeout: 60_000 },
 				);
-				return { externalId, fileId: uploaded.id };
+				return uploaded.id;
 			} catch (error) {
 				throw mutationFailure('file-upload', error, true);
 			}
 		},
 		{
 			rollback: async ({ output }) => {
-				if (output?.fileId) await deleteProviderFile(input.credentials, output.fileId);
+				if (output) await deleteProviderFile(input.credentials, output);
 			},
 			rollbackConfig: CLEANUP_STEP,
 		},
@@ -157,10 +156,6 @@ async function cancelKnownJob(credentials: ProviderCredentials, job: Pick<Provid
 	}
 }
 
-function stageCancelJob(step: WorkflowStep, credentials: ProviderCredentials, job: ProviderJob): Promise<void> {
-	return step.do('llamaparse-cancel-job-v2', CLEANUP_STEP, () => cancelKnownJob(credentials, job));
-}
-
 /** Execute one paid whole-document fallback after Web has granted a per-document page allowance. */
 export async function stagePaidLlamaParseFallback(
 	env: CoreEnv,
@@ -176,8 +171,14 @@ export async function stagePaidLlamaParseFallback(
 		apiKey: env.LLAMA_CLOUD_API_KEY?.trim() ?? '',
 		projectId: env.LLAMA_CLOUD_PROJECT_ID?.trim() ?? '',
 	};
-	let file: ProviderFile | undefined;
-	let externalId: string | undefined;
+	const admission = llamaParseAdmissionReason({
+		grant: input.grant,
+		hasCredentials: !!credentials.apiKey && !!credentials.projectId,
+		local: input.local,
+		source: input.source,
+	});
+	const externalId = admission === 'admitted' && input.source.kind === 'private-upload' ? providerFileExternalId(input.processingId) : null;
+	let fileId: string | undefined;
 	const logFallback = (event: { billedCredits?: number | null; error?: unknown; job?: ProviderJob; outcome: string }) => {
 		const error = event.error || null;
 		console.info({
@@ -185,8 +186,8 @@ export async function stagePaidLlamaParseFallback(
 			event: 'llamaparse_fallback',
 			provider: 'llamaparse',
 			provider_base_region: 'us',
-			provider_external_file_id: file?.externalId ?? externalId ?? null,
-			provider_file_id: file?.fileId ?? null,
+			provider_external_file_id: externalId,
+			provider_file_id: fileId ?? null,
 			provider_job_id: event.job?.jobId ?? null,
 			provider_sdk_version: LLAMA_CLOUD_SDK_VERSION,
 			provider_status: error instanceof APIError && typeof error.status === 'number' ? error.status : null,
@@ -201,21 +202,14 @@ export async function stagePaidLlamaParseFallback(
 			billed_credits: event.billedCredits ?? event.job?.billedCredits ?? null,
 		});
 	};
-	const admission = llamaParseAdmissionReason({
-		grant: input.grant,
-		hasCredentials: !!credentials.apiKey && !!credentials.projectId,
-		local: input.local,
-		source: input.source,
-	});
 	if (admission !== 'admitted') {
 		if (admission !== 'local-usable') logFallback({ outcome: admission });
 		return null;
 	}
 
 	if (input.source.kind === 'private-upload') {
-		externalId = providerFileExternalId(input.processingId);
 		try {
-			file = await stageProviderFile(env, step, {
+			fileId = await stageProviderFile(env, step, {
 				credentials,
 				processingId: input.processingId,
 				storageKey: input.source.storageKey,
@@ -229,7 +223,7 @@ export async function stagePaidLlamaParseFallback(
 	}
 
 	try {
-		const parseSource = input.source.kind === 'public-url' ? { source_url: input.source.url } : { file_id: file!.fileId };
+		const parseSource = input.source.kind === 'public-url' ? { source_url: input.source.url } : { file_id: fileId! };
 		let job: ProviderJob;
 		try {
 			job = await step.do(
@@ -273,12 +267,12 @@ export async function stagePaidLlamaParseFallback(
 				state = await step.do(`llamaparse-poll-${attempt}-v2`, READ_STEP, () => readJob(credentials, job));
 			}
 		} catch (error) {
-			await stageCancelJob(step, credentials, job);
+			await step.do('llamaparse-cancel-job-v2', CLEANUP_STEP, () => cancelKnownJob(credentials, job));
 			logFallback({ error, job, outcome: 'provider-failed' });
 			return null;
 		}
 		if (!TERMINAL_STATUSES.has(state.status)) {
-			await stageCancelJob(step, credentials, job);
+			await step.do('llamaparse-cancel-job-v2', CLEANUP_STEP, () => cancelKnownJob(credentials, job));
 			logFallback({ job: state, outcome: 'timed-out' });
 			return null;
 		}
@@ -313,6 +307,6 @@ export async function stagePaidLlamaParseFallback(
 		});
 		return result.markdown;
 	} finally {
-		if (file) await step.do('llamaparse-delete-file-v1', CLEANUP_STEP, () => deleteProviderFile(credentials, file.fileId));
+		if (fileId) await step.do('llamaparse-delete-file-v1', CLEANUP_STEP, () => deleteProviderFile(credentials, fileId));
 	}
 }
