@@ -1,13 +1,10 @@
 import { Container } from '@cloudflare/containers';
 import { MAX_PDF_BYTES } from './platforms/pdf-constants.ts';
-import { ZOTERO_SDT_MAX_RESPONSE_BYTES } from './zotero-sdt.ts';
 
 const ZOTERO_SDT_PORT = 8080;
-const SOURCE_CROP_SCALE = 3;
 
 export class ZoteroSdtContainer extends Container<CoreEnv> {
 	defaultPort = ZOTERO_SDT_PORT;
-	requiredPorts = [ZOTERO_SDT_PORT];
 	sleepAfter = '2m';
 	enableInternet = false;
 
@@ -50,21 +47,11 @@ export class ZoteroSdtContainer extends Container<CoreEnv> {
 		}
 		await this.ensureReady(input);
 
-		const response = await this.containerFetch('http://zotero-sdt/parse', {
+		return this.containerFetch('http://zotero-sdt/parse', {
 			body: this.requestBody(input, byteLength),
-			headers: {
-				accept: 'application/vnd.newsence.structured-document+json',
-				'content-type': 'application/pdf',
-			},
+			headers: { 'content-type': 'application/pdf' },
 			method: 'POST',
 		});
-		if (!response.ok) return response;
-		const declaredLength = Number(response.headers.get('content-length'));
-		if (Number.isFinite(declaredLength) && declaredLength > ZOTERO_SDT_MAX_RESPONSE_BYTES) {
-			await response.body?.cancel('Zotero SDT response exceeded byte limit');
-			throw new Error(`Zotero SDT response exceeded ${ZOTERO_SDT_MAX_RESPONSE_BYTES} bytes`);
-		}
-		return response;
 	}
 
 	async renderPdfArea(
@@ -85,13 +72,9 @@ export class ZoteroSdtContainer extends Container<CoreEnv> {
 		const url = new URL('http://zotero-sdt/render-area');
 		url.searchParams.set('pageIndex', String(pageIndex));
 		url.searchParams.set('rect', rect.join(','));
-		url.searchParams.set('scale', String(SOURCE_CROP_SCALE));
 		return this.containerFetch(url, {
 			body: this.requestBody(input, byteLength),
-			headers: {
-				accept: 'image/png',
-				'content-type': 'application/pdf',
-			},
+			headers: { 'content-type': 'application/pdf' },
 			method: 'POST',
 		});
 	}

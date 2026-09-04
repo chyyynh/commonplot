@@ -11,6 +11,7 @@ const PORT = Number.parseInt(process.env.PORT ?? '8080', 10);
 const MAX_PDF_BYTES = Number.parseInt(process.env.MAX_PDF_BYTES ?? String(25 * 1024 * 1024), 10);
 const MAX_DOCUMENT_BYTES = Number.parseInt(process.env.MAX_DOCUMENT_BYTES ?? String(32 * 1024 * 1024), 10);
 const MAX_CROP_BYTES = Number.parseInt(process.env.MAX_CROP_BYTES ?? String(8 * 1024 * 1024), 10);
+const SOURCE_CROP_SCALE = 3;
 const WORKER_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.WORKER_REQUEST_TIMEOUT_MS ?? String(5 * 60 * 1000), 10);
 const BUILD_DIR = resolve(process.env.DOCUMENT_WORKER_BUILD_DIR ?? '/app/document-worker');
 const WORKER_PATH = resolve(__dirname, 'worker-thread.cjs');
@@ -213,21 +214,17 @@ function sendJson(response, status, body) {
 function renderAreaInput(url) {
 	const pageIndex = Number(url.searchParams.get('pageIndex'));
 	const rect = (url.searchParams.get('rect') ?? '').split(',').map(Number);
-	const scale = Number(url.searchParams.get('scale'));
 	if (
 		!Number.isInteger(pageIndex) ||
 		pageIndex < 0 ||
 		rect.length !== 4 ||
 		rect.some((part) => !Number.isFinite(part)) ||
 		!(rect[2] > rect[0]) ||
-		!(rect[3] > rect[1]) ||
-		!Number.isFinite(scale) ||
-		scale < 1 ||
-		scale > 4
+		!(rect[3] > rect[1])
 	) {
 		return null;
 	}
-	return { pageIndex, rect, scale };
+	return { pageIndex, rect };
 }
 
 const client = new DocumentWorkerClient();
@@ -257,7 +254,7 @@ const server = createServer(async (request, response) => {
 			const input = renderAreaInput(url);
 			if (!input) return sendJson(response, 400, { error: 'Invalid PDF render area.' });
 			try {
-				const result = await client.renderArea(pdfBuffer, input.pageIndex, input.rect, input.scale);
+				const result = await client.renderArea(pdfBuffer, input.pageIndex, input.rect, SOURCE_CROP_SCALE);
 				if (!result?.buf) return sendJson(response, 422, { error: 'PDF render area is empty.' });
 				const png = Buffer.from(result.buf);
 				if (!png.length || png.length > MAX_CROP_BYTES || !png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
@@ -278,10 +275,8 @@ const server = createServer(async (request, response) => {
 			}
 		}
 		const sourceHash = createHash('md5').update(pdfBuffer).digest('hex');
-		const startedAt = performance.now();
 		try {
 			const result = await client.parse(pdfBuffer, sourceHash);
-			const parsedAt = performance.now();
 			const reader = await openStructuredDocumentTextPack(result.buf, {
 				inflate: (bytes) => new Uint8Array(inflateRawSync(bytes)),
 			});
@@ -293,15 +288,10 @@ const server = createServer(async (request, response) => {
 				error.statusCode = 413;
 				throw error;
 			}
-			const rssMiB = Math.round((process.memoryUsage().rss / 1024 / 1024) * 100) / 100;
 			response.writeHead(200, {
 				'cache-control': 'no-store',
 				'content-length': String(documentBytes),
 				'content-type': 'application/vnd.newsence.structured-document+json',
-				'x-newsence-materialize-ms': String(Math.round((performance.now() - parsedAt) * 100) / 100),
-				'x-newsence-parse-ms': String(Math.round((parsedAt - startedAt) * 100) / 100),
-				'x-newsence-rss-mib': String(rssMiB),
-				'x-newsence-source-hash': sourceHash,
 			});
 			return response.end(json);
 		} catch (parseError) {

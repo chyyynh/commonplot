@@ -13,7 +13,6 @@ import {
 const INPUT_HASH_PATTERN = /^[a-f\d]{64}$/u;
 const MAX_ERROR_BODY_BYTES = 4_096;
 const MAX_SOURCE_CROP_BYTES = 8 * 1024 * 1024;
-const PNG_SIGNATURE = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const SOURCE_CROP_ARTIFACT_VERSION = 'newsence-zotero-source-crop-v1';
 
 export class ZoteroSdtParseError extends Error {
@@ -61,27 +60,6 @@ async function boundedResponseText(response: Response, maxBytes: number): Promis
 	return text + decoder.decode();
 }
 
-function isPng(bytes: Uint8Array): boolean {
-	return bytes.length >= PNG_SIGNATURE.length && PNG_SIGNATURE.every((part, index) => bytes[index] === part);
-}
-
-async function sourceCropPng(response: Response): Promise<Uint8Array> {
-	const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
-	if (contentType !== 'image/png') {
-		await response.body?.cancel('Zotero source crop response is not a PNG');
-		throw new Error('Zotero source crop response is not a PNG');
-	}
-	const declaredLength = Number(response.headers.get('content-length'));
-	if (Number.isFinite(declaredLength) && declaredLength > MAX_SOURCE_CROP_BYTES) {
-		await response.body?.cancel('Zotero source crop response exceeded byte limit');
-		throw new Error('Zotero source crop response size is invalid');
-	}
-	const png = new Uint8Array(await response.arrayBuffer());
-	if (png.byteLength < 1 || png.byteLength > MAX_SOURCE_CROP_BYTES) throw new Error('Zotero source crop response size is invalid');
-	if (!isPng(png)) throw new Error('Zotero source crop response has an invalid PNG signature');
-	return png;
-}
-
 function artifactFromJson(json: string): StructuredPdfArtifact {
 	const document = parseStructuredPdfDocumentJson(json);
 	return { document, json };
@@ -93,13 +71,9 @@ export function structuredPdfSourceCropStorageKey(pdfStorageKey: string, inputCo
 	return `${pdfStorageKey}.structured-crops/${inputContentHash}/${cropId}.png`;
 }
 
-function reusableSourceCrop(object: R2Object | null, inputContentHash: string, crop: StructuredPdfSourceCrop): boolean {
+function reusableSourceCrop(object: R2Object | null): boolean {
 	return (
-		object?.customMetadata?.artifactVersion === SOURCE_CROP_ARTIFACT_VERSION &&
-		object.customMetadata.inputSha256 === inputContentHash &&
-		object.customMetadata.sourceCropId === crop.id &&
-		object.size > 0 &&
-		object.size <= MAX_SOURCE_CROP_BYTES
+		object?.customMetadata?.artifactVersion === SOURCE_CROP_ARTIFACT_VERSION && object.size > 0 && object.size <= MAX_SOURCE_CROP_BYTES
 	);
 }
 
@@ -113,7 +87,7 @@ export async function readReadyStructuredPdfSourceCropIds(env: CoreEnv, input: S
 	const objectsByKey = new Map(inventory.objects.map((object) => [object.key, object]));
 	return input.crops.flatMap((crop) => {
 		const storageKey = structuredPdfSourceCropStorageKey(input.pdfStorageKey, input.inputContentHash, crop.id);
-		return reusableSourceCrop(objectsByKey.get(storageKey) ?? null, input.inputContentHash, crop) ? [crop.id] : [];
+		return reusableSourceCrop(objectsByKey.get(storageKey) ?? null) ? [crop.id] : [];
 	});
 }
 
@@ -155,13 +129,12 @@ export async function ensureStructuredPdfSourceCrops(
 			if (!response.ok) {
 				throw new Error(`Zotero source crop failed with ${response.status}: ${await boundedResponseText(response, MAX_ERROR_BODY_BYTES)}`);
 			}
-			const png = await sourceCropPng(response);
+			const png = await response.blob();
+			if (png.type !== 'image/png' || png.size < 1 || png.size > MAX_SOURCE_CROP_BYTES) {
+				throw new Error('Zotero source crop response is not a valid bounded PNG');
+			}
 			await env.R2.put(storageKey, png, {
-				customMetadata: {
-					artifactVersion: SOURCE_CROP_ARTIFACT_VERSION,
-					inputSha256: input.inputContentHash,
-					sourceCropId: crop.id,
-				},
+				customMetadata: { artifactVersion: SOURCE_CROP_ARTIFACT_VERSION },
 				httpMetadata: { contentType: 'image/png' },
 			});
 			readyCropIds.add(crop.id);
@@ -229,9 +202,6 @@ export async function writeStructuredPdfArtifact(
 		customMetadata: {
 			artifactVersion: ZOTERO_SDT_ARTIFACT_VERSION,
 			inputSha256: inputContentHash,
-			processorVersion: String(artifact.document.metadata.processor.version),
-			schemaVersion: artifact.document.schemaVersion,
-			sourceMd5: artifact.document.metadata.source.hash,
 		},
 		httpMetadata: { contentType: ZOTERO_SDT_CONTENT_TYPE },
 	});
