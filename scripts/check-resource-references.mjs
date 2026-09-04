@@ -3,7 +3,7 @@ import { selectCrossrefPaperCandidate, selectCrossrefReference } from '../src/in
 import { grobidPaperIdentifierText, parseGrobidPdfHeaderTei } from '../src/ingest/grobid-tei.ts';
 
 const parsedPdfHeader = parseGrobidPdfHeaderTei(`<TEI><teiHeader><fileDesc>
-	<titleStmt><title level="a" type="main">Stigmergy &amp; Open Collaboration</title></titleStmt>
+	<titleStmt><title level="a" type="main">Stigmergy &#38; <hi>Open</hi> Collaboration</title></titleStmt>
 	<sourceDesc><biblStruct><analytic>
 		<author><persName><forename>Alex</forename><surname>Smith</surname></persName></author>
 		<author><persName><forename>Bo</forename><surname>Chen</surname></persName></author>

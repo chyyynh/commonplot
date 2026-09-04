@@ -26,6 +26,9 @@ importers:
       drizzle-orm:
         specifier: ^0.45.2
         version: 0.45.2(@types/pg@8.23.1)(pg@8.23.0)
+      fast-xml-parser:
+        specifier: 5.10.1
+        version: 5.10.1
       hast-util-from-html:
         specifier: ^2.0.3
         version: 2.0.3
