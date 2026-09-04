@@ -9,7 +9,6 @@ import {
 } from './zotero-sdt.ts';
 
 const MAX_ERROR_BODY_BYTES = 4_096;
-const MAX_SOURCE_CROP_BYTES = 8 * 1024 * 1024;
 const SOURCE_CROP_ARTIFACT_VERSION = 'newsence-zotero-source-crop-v1';
 const ZOTERO_SDT_CONTAINER_NAME = 'structured-pdf-v1';
 const ZOTERO_SDT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
@@ -43,12 +42,7 @@ export async function ensureStructuredPdfSourceCrops(
 			const objectsByKey = new Map(inventory.objects.map((object) => [object.key, object]));
 			for (const crop of input.crops) {
 				const object = objectsByKey.get(`${prefix}${crop.id}.png`);
-				if (
-					object?.customMetadata?.artifactVersion === SOURCE_CROP_ARTIFACT_VERSION &&
-					object.size > 0 &&
-					object.size <= MAX_SOURCE_CROP_BYTES
-				)
-					readyCropIds.add(crop.id);
+				if (object?.customMetadata?.artifactVersion === SOURCE_CROP_ARTIFACT_VERSION) readyCropIds.add(crop.id);
 			}
 		}
 	} catch (error) {
@@ -75,11 +69,8 @@ export async function ensureStructuredPdfSourceCrops(
 				const body = await readBoundedResponseText(response, MAX_ERROR_BODY_BYTES, 'Zotero source crop error');
 				throw new Error(`Zotero source crop failed with ${response.status}: ${body}`);
 			}
-			const png = await response.blob();
-			if (png.type !== 'image/png' || png.size < 1 || png.size > MAX_SOURCE_CROP_BYTES) {
-				throw new Error('Zotero source crop response is not a valid bounded PNG');
-			}
-			await env.R2.put(storageKey, png, {
+			if (!response.body) throw new Error('Zotero source crop response is empty');
+			await env.R2.put(storageKey, response.body, {
 				customMetadata: { artifactVersion: SOURCE_CROP_ARTIFACT_VERSION },
 				httpMetadata: { contentType: 'image/png' },
 			});
