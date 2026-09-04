@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import LlamaCloud, { APIConnectionError, APIError, NotFoundError } from '@llamaindex/llama-cloud';
+import LlamaCloud, { APIError, NotFoundError } from '@llamaindex/llama-cloud';
 import { VERSION as LLAMA_CLOUD_SDK_VERSION } from '@llamaindex/llama-cloud/version';
 import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
 import {
@@ -35,11 +35,6 @@ type ProviderJob = Readonly<{
 }>;
 type ProviderSource = Readonly<{ kind: 'private-upload'; storageKey: string }> | Readonly<{ kind: 'public-url'; url: string }>;
 type ParseSource = Readonly<{ file_id: string }> | Readonly<{ source_url: string }>;
-type ProviderResult = Readonly<{
-	billedCredits: number | null;
-	finishedAt: number;
-	markdown: string | null;
-}>;
 
 function client(apiKey: string): LlamaCloud {
 	return new LlamaCloud({ apiKey, baseURL: LLAMA_CLOUD_BASE_URL, maxRetries: 0, timeout: 30_000, logLevel: 'off' });
@@ -47,7 +42,7 @@ function client(apiKey: string): LlamaCloud {
 
 function mutationFailure(action: string, error: unknown, retryAmbiguous: boolean): Error {
 	const status = error instanceof APIError && typeof error.status === 'number' ? error.status : null;
-	const ambiguous = error instanceof APIConnectionError || status === null || status === 408 || status === 409 || status >= 500;
+	const ambiguous = status === null || status === 408 || status === 409 || status >= 500;
 	const message = `${ambiguous ? AMBIGUOUS_MUTATION : REJECTED_MUTATION} action=${action} status=${status ?? 'none'}`;
 	return ambiguous && retryAmbiguous ? new Error(message) : new NonRetryableError(message);
 }
@@ -178,10 +173,6 @@ function stageCancelJob(step: WorkflowStep, credentials: ProviderCredentials, jo
 	return step.do('llamaparse-cancel-job-v2', CLEANUP_STEP, () => cancelKnownJob(credentials, job));
 }
 
-function stageDeleteProviderFile(step: WorkflowStep, credentials: ProviderCredentials, file: ProviderFile): Promise<void> {
-	return step.do('llamaparse-delete-file-v1', CLEANUP_STEP, () => deleteProviderFile(credentials, file.fileId));
-}
-
 /** Execute one paid whole-document fallback after Web has granted a per-document page allowance. */
 export async function stagePaidLlamaParseFallback(
 	env: CoreEnv,
@@ -308,7 +299,7 @@ export async function stagePaidLlamaParseFallback(
 			return null;
 		}
 
-		let result: ProviderResult;
+		let result: { billedCredits: number | null; finishedAt: number; markdown: string | null };
 		try {
 			const stream = await step.do('llamaparse-read-result-v4', { ...READ_STEP, sensitive: 'output', timeout: '90 seconds' }, async () => {
 				const response = await client(credentials.apiKey).parsing.get(
@@ -322,7 +313,7 @@ export async function stagePaidLlamaParseFallback(
 					markdown: wholeDocumentMarkdown(response.markdown?.pages, input.local.totalPages!),
 				}).body!;
 			});
-			result = await new Response(stream).json<ProviderResult>();
+			result = await new Response(stream).json<typeof result>();
 		} catch (error) {
 			logFallback({ error, job, outcome: 'provider-failed' });
 			return null;
@@ -334,6 +325,6 @@ export async function stagePaidLlamaParseFallback(
 		});
 		return result.markdown;
 	} finally {
-		if (file) await stageDeleteProviderFile(step, credentials, file);
+		if (file) await step.do('llamaparse-delete-file-v1', CLEANUP_STEP, () => deleteProviderFile(credentials, file.fileId));
 	}
 }
