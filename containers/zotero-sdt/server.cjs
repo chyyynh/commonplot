@@ -33,7 +33,6 @@ class DocumentWorkerClient {
 		this.queue = Promise.resolve();
 		this.failure = null;
 		this.exitScheduled = false;
-		this.readyState = 'starting';
 		this.worker = new Worker(WORKER_PATH, { workerData: { buildDir: BUILD_DIR } });
 		this.ready = new Promise((resolveReady, rejectReady) => {
 			this.resolveReady = resolveReady;
@@ -51,9 +50,8 @@ class DocumentWorkerClient {
 
 	handleMessage(message) {
 		if (message?.ready) {
-			if (this.failure || this.readyState === 'ready') return;
+			if (this.failure) return;
 			clearTimeout(this.readyTimeout);
-			this.readyState = 'ready';
 			this.resolveReady();
 			return;
 		}
@@ -91,7 +89,6 @@ class DocumentWorkerClient {
 		if (this.failure) return this.failure;
 		const failure = error instanceof Error ? error : new Error(String(error));
 		this.failure = failure;
-		this.readyState = 'failed';
 		clearTimeout(this.readyTimeout);
 		this.rejectReady(failure);
 		for (const pending of this.pending.values()) pending.reject(failure);
@@ -107,13 +104,9 @@ class DocumentWorkerClient {
 		setImmediate(() => process.exit(1));
 	}
 
-	get isHealthy() {
-		return this.readyState === 'ready' && !this.failure;
-	}
-
 	async waitUntilReady() {
 		await this.ready;
-		if (!this.isHealthy) throw this.failure ?? new Error('Zotero document worker is unavailable.');
+		if (this.failure) throw this.failure;
 	}
 
 	request(action, pdfBuffer, data) {
@@ -230,14 +223,6 @@ const client = new DocumentWorkerClient();
 const server = createServer(async (request, response) => {
 	try {
 		const url = new URL(request.url ?? '/', 'http://container');
-		if (request.method === 'GET' && url.pathname === '/health') {
-			try {
-				await client.waitUntilReady();
-			} catch {
-				return sendJson(response, 503, { error: 'Zotero document worker is unavailable.', ok: false });
-			}
-			return sendJson(response, client.isHealthy ? 200 : 503, { ok: client.isHealthy });
-		}
 		if (request.method !== 'POST' || (url.pathname !== '/parse' && url.pathname !== '/render-area')) {
 			return sendJson(response, 404, { error: 'Not found.' });
 		}

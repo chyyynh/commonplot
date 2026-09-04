@@ -23,17 +23,13 @@ globalThis.PDFJSDev = {
 };
 
 globalThis.self = globalThis;
-globalThis.onmessage = null;
-globalThis.postMessage = (message, transferList = []) => {
-	parentPort.postMessage(message, transferList);
-};
+globalThis.postMessage = parentPort.postMessage.bind(parentPort);
 
-const workerBundlePath = resolve(buildDir, 'worker.js');
 // Load the generated worker as an ordinary CommonJS module. Evaluating it with
 // node:vm breaks document-worker's intentional dynamic import of Node-only
 // rendering dependencies (`canvas`), because `new Function(... import())`
 // created inside a vm script has no module import callback.
-require(workerBundlePath);
+require(resolve(buildDir, 'worker.js'));
 
 parentPort.on('message', (message) => {
 	if (typeof globalThis.self.onmessage !== 'function') return;
