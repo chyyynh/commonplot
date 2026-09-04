@@ -212,14 +212,6 @@ async function writeCanonicalResource(
 	previousOriginalLang: string,
 	subjectResourceId: string | null,
 ) {
-	const tags = sql.join(
-		resource.tags.map((tag) => sql`${tag}`),
-		sql`, `,
-	);
-	const keywords = sql.join(
-		resource.keywords.map((keyword) => sql`${keyword}`),
-		sql`, `,
-	);
 	const current = await db.execute<{
 		content: string | null;
 		lang: string;
@@ -259,7 +251,7 @@ async function writeCanonicalResource(
 			original_lang = ${originalLang},
 			published_date = ${resource.publishedDate},
 			scraped_date = NOW(),
-			tags = ARRAY[${tags}]::text[],
+			tags = ${sql.param(resource.tags)}::text[],
 			og_image_url = ${resource.ogImageUrl},
 			og_image_width = ${resource.ogImageWidth},
 			og_image_height = ${resource.ogImageHeight},
@@ -299,7 +291,7 @@ async function writeCanonicalResource(
 			INSERT INTO resource_translations (resource_id, lang, title, summary, content, keywords, source, updated_at)
 			VALUES (
 				${resourceId}::uuid, ${originalLang}, ${resource.title}, ${resource.summary}, ${resource.content},
-				ARRAY[${keywords}]::text[], 'original', NOW()
+				${sql.param(resource.keywords)}::text[], 'original', NOW()
 			)
 			ON CONFLICT (resource_id, lang) DO UPDATE SET
 				title = EXCLUDED.title,
