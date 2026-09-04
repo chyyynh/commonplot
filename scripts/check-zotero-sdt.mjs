@@ -23,7 +23,7 @@ const document = {
 		pages: [{ contentRange: [[0], [4]], textSource: 'born-digital' }],
 	},
 	content: [
-		{ content: [text('Running header')], flowClass: 'excluded', type: 'paragraph' },
+		{ content: [text('')], type: 'paragraph' },
 		{ content: [text('Introduction')], type: 'heading' },
 		{
 			content: [text('Prior work '), text('[1]', { refs: [[4, 0]] })],

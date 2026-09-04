@@ -280,9 +280,10 @@ class MarkdownWriter {
 	readonly mentions: StructuredPdfCitationMention[] = [];
 
 	append(value: string): void {
-		if (!value) return;
-		this.chunks.push(value);
-		this.length += value.length;
+		const chunk = this.length === 0 ? value.trimStart() : value;
+		if (!chunk) return;
+		this.chunks.push(chunk);
+		this.length += chunk.length;
 	}
 
 	appendCitation(markerText: string, context: string, section: string | null, targetKeys: readonly string[]): void {
@@ -310,8 +311,6 @@ class MarkdownWriter {
 	}
 
 	toString(): string {
-		// Preserve any leading source whitespace because citation offsets were
-		// recorded while writing. Removing trailing whitespace cannot shift them.
 		return this.chunks.join('').trimEnd();
 	}
 }
