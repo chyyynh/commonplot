@@ -168,8 +168,9 @@ const cropDocument = {
 	],
 };
 const parsedCropDocument = parseStructuredPdfDocumentJson(JSON.stringify(cropDocument));
+const sourceCrops = structuredPdfSourceCrops(parsedCropDocument);
 assert.deepEqual(
-	structuredPdfSourceCrops(parsedCropDocument).map(({ blockPath, id, pageIndex, rect }) => ({
+	sourceCrops.map(({ blockPath, id, pageIndex, rect }) => ({
 		blockPath,
 		id,
 		pageIndex,
@@ -184,13 +185,13 @@ const cropWithoutManifest = normalizeStructuredPdf(parsedCropDocument, { inputCo
 assert.doesNotMatch(cropWithoutManifest.markdown, /\/api\/media\/asset\/pdf-crops/u);
 const partiallyReadyCrop = normalizeStructuredPdf(parsedCropDocument, {
 	inputContentHash: 'a'.repeat(64),
-	readySourceCropIds: new Set(['0-p0']),
+	readySourceCrops: sourceCrops.slice(0, 1),
 });
 assert.match(partiallyReadyCrop.markdown, /\/0-p0\.png/u);
 assert.doesNotMatch(partiallyReadyCrop.markdown, /\/1-p0\.png/u);
 const cropNormalized = normalizeStructuredPdf(parsedCropDocument, {
 	inputContentHash: 'a'.repeat(64),
-	readySourceCropIds: new Set(['0-p0', '1-p0']),
+	readySourceCrops: sourceCrops,
 });
 assert.match(cropNormalized.markdown, /!\[Research model\]\(\/api\/media\/asset\/pdf-crops\/a{64}\/0-p0\.png\)/u);
 assert.match(cropNormalized.markdown, /!\[Visible cues Social inferences Representative quote\]/u);

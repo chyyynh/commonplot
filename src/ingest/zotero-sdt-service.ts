@@ -34,7 +34,7 @@ export async function ensureStructuredPdfSourceCrops(
 		pdfStorageKey: string;
 		resourceId: string;
 	}>,
-): Promise<string[]> {
+): Promise<StructuredPdfSourceCrop[]> {
 	if (!INPUT_HASH_PATTERN.test(input.inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
 	const prefix = `${input.pdfStorageKey}.structured-crops/${input.inputContentHash}/`;
 	const readyCropIds = new Set<string>();
@@ -102,7 +102,7 @@ export async function ensureStructuredPdfSourceCrops(
 		ready_count: readyCropIds.size,
 		resource_id: input.resourceId,
 	});
-	return input.crops.flatMap((crop) => (readyCropIds.has(crop.id) ? [crop.id] : []));
+	return input.crops.filter((crop) => readyCropIds.has(crop.id));
 }
 
 export async function parsePdfWithZotero(

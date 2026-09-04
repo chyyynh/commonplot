@@ -286,7 +286,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 		} else parsed = attempt;
 	}
 	if (document) {
-		const readySourceCropIds = await ensureStructuredPdfSourceCrops(env, {
+		const readySourceCrops = await ensureStructuredPdfSourceCrops(env, {
 			crops: structuredPdfSourceCrops(document),
 			inputContentHash: resource.contentHash,
 			pdfStorageKey: resource.storageKey,
@@ -295,7 +295,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 		parsed = localPdfResult(
 			normalizeStructuredPdf(document, {
 				inputContentHash: resource.contentHash,
-				readySourceCropIds: new Set(readySourceCropIds),
+				readySourceCrops,
 			}),
 			sourceLabel,
 		);

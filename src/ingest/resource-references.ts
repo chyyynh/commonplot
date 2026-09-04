@@ -71,11 +71,10 @@ async function replaceStoredCitationData(
 	const paper = source.rows[0];
 	if (!paper) throw new NonRetryableError('Paper revision changed before structured citations could be stored');
 	const content = paper.content ?? '';
-	const sourceCrops = structuredPdfSourceCrops(document);
-	const readySourceCropIds = new Set(
-		sourceCrops.flatMap((crop) => (content.includes(structuredPdfSourceCropUrl(inputContentHash, crop.id)) ? [crop.id] : [])),
+	const readySourceCrops = structuredPdfSourceCrops(document).filter((crop) =>
+		content.includes(structuredPdfSourceCropUrl(inputContentHash, crop.id)),
 	);
-	const structured = normalizeStructuredPdf(document, { inputContentHash, readySourceCropIds });
+	const structured = normalizeStructuredPdf(document, { inputContentHash, readySourceCrops });
 	const hasExactStructuredContent = content === structured.markdown;
 	const referenceOrdinalByKey = new Map(structured.references.map(({ key }, index) => [key, index + 1]));
 	const mentions = structured.mentions.flatMap(({ contentEnd, contentStart, context, markerText, section, targetKeys }) => {

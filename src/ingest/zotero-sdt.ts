@@ -524,7 +524,7 @@ function firstPageIdentifierText(document: StructuredPdfDocument): string | null
 
 export function normalizeStructuredPdf(
 	document: StructuredPdfDocument,
-	options: Readonly<{ inputContentHash?: string; readySourceCropIds?: ReadonlySet<string> }> = {},
+	options: Readonly<{ inputContentHash?: string; readySourceCrops?: readonly StructuredPdfSourceCrop[] }> = {},
 ) {
 	const entries = walkNodes(document.content);
 	const referenceEntries = entries.filter(
@@ -539,9 +539,8 @@ export function normalizeStructuredPdf(
 	const writer = new MarkdownWriter();
 	const headingLevelByPath = headingLevels(document.catalog.outline);
 	const sourceCropsByBlock = new Map<string, Array<{ altText: string; url: string }>>();
-	if (options.inputContentHash && options.readySourceCropIds?.size) {
-		for (const crop of structuredPdfSourceCrops(document)) {
-			if (!options.readySourceCropIds.has(crop.id)) continue;
+	if (options.inputContentHash && options.readySourceCrops?.length) {
+		for (const crop of options.readySourceCrops) {
 			const entry = { altText: crop.altText, url: structuredPdfSourceCropUrl(options.inputContentHash, crop.id) };
 			const existing = sourceCropsByBlock.get(crop.blockPath);
 			if (existing) existing.push(entry);
