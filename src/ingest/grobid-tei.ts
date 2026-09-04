@@ -1,17 +1,12 @@
 import { XMLParser } from 'fast-xml-parser';
 import { normalizeArxivId, normalizeDoi, paperIdentityFromText } from '../shared/paper-identity.ts';
 
-export type GrobidReferenceIdentifiers = Readonly<{
+export type GrobidPdfHeader = Readonly<{
 	arxivId: string | null;
+	authors: string[];
 	doi: string | null;
-	url: string | null;
+	title: string | null;
 }>;
-
-export type GrobidPdfHeader = GrobidReferenceIdentifiers &
-	Readonly<{
-		authors: string[];
-		title: string | null;
-	}>;
 
 /** Trust GROBID alone only for canonical identifiers; title-and-author headers still need external corroboration. */
 export function grobidPaperIdentifierText(header: GrobidPdfHeader): string | null {
@@ -63,14 +58,7 @@ function xmlText(value: unknown): string {
 	return typeof text === 'string' ? text.replace(/\s+/gu, ' ').trim() : '';
 }
 
-function validHttpUrl(value: string | null): string | null {
-	if (!value || value.length > MAX_REFERENCE_URL_CHARS) return null;
-	const parsed = URL.parse(value);
-	if (!parsed || (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') || parsed.username || parsed.password) return null;
-	return parsed.toString();
-}
-
-function identifiersFromHeader(biblStruct: XmlObject | null, analytic: XmlObject | null): GrobidReferenceIdentifiers {
+function identifiersFromHeader(biblStruct: XmlObject | null, analytic: XmlObject | null): Pick<GrobidPdfHeader, 'arxivId' | 'doi'> {
 	let doi: string | null = null;
 	let arxivId: string | null = null;
 	for (const rawIdno of [...xmlValues(analytic?.idno), ...xmlValues(biblStruct?.idno)]) {
@@ -87,20 +75,14 @@ function identifiersFromHeader(biblStruct: XmlObject | null, analytic: XmlObject
 		}
 	}
 
-	let pointerUrl: string | null = null;
 	for (const rawPointer of [...xmlValues(analytic?.ptr), ...xmlValues(biblStruct?.ptr)]) {
 		const target = xmlObject(rawPointer)?.target;
-		pointerUrl = validHttpUrl(typeof target === 'string' ? target : null);
-		if (pointerUrl) break;
+		if (typeof target !== 'string' || target.length > MAX_REFERENCE_URL_CHARS) continue;
+		doi ??= normalizeDoi(target);
+		arxivId ??= normalizeArxivId(target);
+		if (doi && arxivId) break;
 	}
-	doi ??= normalizeDoi(pointerUrl);
-	arxivId ??= normalizeArxivId(pointerUrl);
-
-	return {
-		arxivId,
-		doi,
-		url: doi ? `https://doi.org/${doi}` : arxivId ? `https://arxiv.org/abs/${arxivId}` : pointerUrl,
-	};
+	return { arxivId, doi };
 }
 
 /** The uploaded-PDF paper gate uses only metadata extracted by GROBID itself. */

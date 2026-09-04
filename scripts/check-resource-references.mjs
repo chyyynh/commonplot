@@ -15,7 +15,6 @@ assert.deepEqual(parsedPdfHeader, {
 	authors: ['Alex Smith', 'Bo Chen'],
 	doi: '10.1000/header',
 	title: 'Stigmergy & Open Collaboration',
-	url: 'https://doi.org/10.1000/header',
 });
 assert.equal(grobidPaperIdentifierText(parsedPdfHeader), 'DOI: 10.1000/header');
 assert.equal(
