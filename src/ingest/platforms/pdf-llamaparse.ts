@@ -244,6 +244,7 @@ function logFallback(input: {
 		page_count: input.local.totalPages,
 		local_fallback_reasons: input.local.fallbackReasons,
 		local_full_page_image_pages: input.local.fullPageImagePages,
+		local_parsed_pages: input.local.parsedPages,
 		outcome: input.outcome,
 		latency_ms: input.job ? Math.max(0, (input.job.observedAt || Date.now()) - input.job.startedAt) : null,
 		billed_credits: input.billedCredits ?? input.job?.billedCredits ?? null,

@@ -169,16 +169,15 @@ const cropDocument = {
 };
 const parsedCropDocument = parseStructuredPdfDocumentJson(JSON.stringify(cropDocument));
 assert.deepEqual(
-	structuredPdfSourceCrops(parsedCropDocument).map(({ blockPath, id, kind, pageIndex, rect }) => ({
+	structuredPdfSourceCrops(parsedCropDocument).map(({ blockPath, id, pageIndex, rect }) => ({
 		blockPath,
 		id,
-		kind,
 		pageIndex,
 		rect,
 	})),
 	[
-		{ blockPath: '0', id: '0-p0', kind: 'image', pageIndex: 0, rect: [20, 40, 220, 180] },
-		{ blockPath: '1', id: '1-p0', kind: 'table', pageIndex: 0, rect: [30, 200, 260, 500] },
+		{ blockPath: '0', id: '0-p0', pageIndex: 0, rect: [20, 40, 220, 180] },
+		{ blockPath: '1', id: '1-p0', pageIndex: 0, rect: [30, 200, 260, 500] },
 	],
 );
 const cropWithoutManifest = normalizeStructuredPdf(parsedCropDocument, { inputContentHash: 'a'.repeat(64) });
@@ -195,7 +194,6 @@ const cropNormalized = normalizeStructuredPdf(parsedCropDocument, {
 });
 assert.match(cropNormalized.markdown, /!\[Research model\]\(\/api\/media\/asset\/pdf-crops\/a{64}\/0-p0\.png\)/u);
 assert.match(cropNormalized.markdown, /!\[Visible cues Social inferences Representative quote\]/u);
-assert.equal(cropNormalized.sourceCrops.length, 2);
 
 console.info({
 	event: 'zotero_sdt_contract_passed',

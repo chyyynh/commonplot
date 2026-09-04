@@ -126,7 +126,6 @@ export type StructuredPdfSourceCrop = Readonly<{
 	altText: string;
 	blockPath: string;
 	id: string;
-	kind: 'image' | 'table';
 	pageIndex: number;
 	rect: readonly [number, number, number, number];
 }>;
@@ -137,7 +136,6 @@ export type NormalizedStructuredPdf = Readonly<{
 	paperIdentifierText: string | null;
 	parse: LocalPdfSummary;
 	references: StructuredPdfReference[];
-	sourceCrops: readonly StructuredPdfSourceCrop[];
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -452,7 +450,6 @@ export function structuredPdfSourceCrops(document: StructuredPdfDocument): Struc
 				altText,
 				blockPath,
 				id: `${blockPath}-p${pageIndex}`,
-				kind: block.type,
 				pageIndex,
 				rect,
 			});
@@ -643,7 +640,6 @@ export function normalizeStructuredPdf(
 			totalPages: document.catalog.pages.length,
 		},
 		references,
-		sourceCrops,
 	};
 }
 

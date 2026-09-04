@@ -10,6 +10,7 @@ import {
 const local = (overrides = {}) => ({
 	fallbackReasons: ['empty-output'],
 	fullPageImagePages: 0,
+	parsedPages: 3,
 	totalPages: 3,
 	...overrides,
 });
@@ -28,24 +29,27 @@ assert.equal(admission({ local: local({ fallbackReasons: [] }) }), 'local-usable
 assert.equal(admission({ grant: null }), 'not-authorized');
 assert.equal(admission({ grant: { maxPages: LLAMA_PARSE_MAX_PAGES + 1 } }), 'invalid-grant');
 assert.equal(admission({ hasCredentials: false }), 'missing-credentials');
-assert.equal(admission({ local: local({ fallbackReasons: ['parse-failed'], totalPages: null }) }), 'page-count-unknown');
-assert.equal(admission({ local: local({ fallbackReasons: ['empty-output'], totalPages: LLAMA_PARSE_MAX_PAGES }) }), 'admitted');
+assert.equal(admission({ local: local({ fallbackReasons: ['parse-failed'], parsedPages: 0, totalPages: null }) }), 'page-count-unknown');
+assert.equal(
+	admission({ local: local({ fallbackReasons: ['empty-output'], parsedPages: 100, totalPages: LLAMA_PARSE_MAX_PAGES }) }),
+	'admitted',
+);
 assert.equal(
 	admission({
-		local: local({ fallbackReasons: ['empty-output'], totalPages: LLAMA_PARSE_MAX_PAGES + 1 }),
+		local: local({ fallbackReasons: ['empty-output'], parsedPages: 101, totalPages: LLAMA_PARSE_MAX_PAGES + 1 }),
 	}),
 	'page-limit-exceeded',
 );
-assert.equal(admission({ local: local({ fallbackReasons: ['empty-output'], totalPages: 0 }) }), 'page-limit-exceeded');
+assert.equal(admission({ local: local({ fallbackReasons: ['empty-output'], parsedPages: 0, totalPages: 0 }) }), 'page-limit-exceeded');
 assert.equal(admission({ source: { kind: 'public-url', url: 'https://localhost/work.pdf' } }), 'source-ineligible');
 
-assert.equal(localPdfNeedsFallback(local({ fallbackReasons: [], fullPageImagePages: 8, totalPages: 10 })), true);
-assert.equal(localPdfNeedsFallback(local({ fallbackReasons: [], fullPageImagePages: 7, totalPages: 10 })), false);
-assert.equal(localPdfNeedsFallback(local({ fallbackReasons: [], fullPageImagePages: 0, totalPages: 0 })), false);
-assert.equal(localPdfNeedsFallback(local({ fallbackReasons: ['empty-output'], totalPages: 10 })), true);
-assert.equal(localPdfNeedsFallback(local({ fallbackReasons: ['parse-failed'], totalPages: null })), true);
-assert.equal(localPdfNeedsFallback(local({ fallbackReasons: ['degraded-page'], totalPages: 10 })), false);
-const imageBacked = local({ fallbackReasons: [], fullPageImagePages: 8, totalPages: 10 });
+assert.equal(localPdfNeedsFallback(local({ fallbackReasons: [], fullPageImagePages: 8, parsedPages: 10 })), true);
+assert.equal(localPdfNeedsFallback(local({ fallbackReasons: [], fullPageImagePages: 7, parsedPages: 10 })), false);
+assert.equal(localPdfNeedsFallback(local({ fallbackReasons: [], fullPageImagePages: 0, parsedPages: 0 })), false);
+assert.equal(localPdfNeedsFallback(local({ fallbackReasons: ['empty-output'], parsedPages: 10 })), true);
+assert.equal(localPdfNeedsFallback(local({ fallbackReasons: ['parse-failed'], parsedPages: 0 })), true);
+assert.equal(localPdfNeedsFallback(local({ fallbackReasons: ['degraded-page'], parsedPages: 10 })), false);
+const imageBacked = local({ fallbackReasons: [], fullPageImagePages: 8, parsedPages: 10, totalPages: 10 });
 assert.equal(admission({ local: imageBacked }), 'admitted');
 assert.equal(admission({ grant: null, local: imageBacked }), 'not-authorized');
 assert.equal(admission({ grant: { maxPages: 9 }, local: imageBacked }), 'page-limit-exceeded');

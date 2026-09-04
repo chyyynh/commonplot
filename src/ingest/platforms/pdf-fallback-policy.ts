@@ -9,14 +9,15 @@ export type LocalPdfSummary = Readonly<{
 	fallbackReasons: readonly string[];
 	fullPageImagePages: number;
 	parserVersion: string;
+	parsedPages: number;
 	totalPages: number | null;
 }>;
 
 /** Route image-backed PDFs only when the signal describes the document, not an isolated cover page. */
-export function localPdfNeedsFallback(local: Pick<LocalPdfSummary, 'fallbackReasons' | 'fullPageImagePages' | 'totalPages'>): boolean {
+export function localPdfNeedsFallback(local: Pick<LocalPdfSummary, 'fallbackReasons' | 'fullPageImagePages' | 'parsedPages'>): boolean {
 	return (
 		local.fallbackReasons.some((reason) => DOCUMENT_FALLBACK_REASONS.has(reason)) ||
-		(local.totalPages !== null && local.totalPages > 0 && local.fullPageImagePages / local.totalPages >= FULL_PAGE_IMAGE_FALLBACK_RATIO)
+		(local.parsedPages > 0 && local.fullPageImagePages / local.parsedPages >= FULL_PAGE_IMAGE_FALLBACK_RATIO)
 	);
 }
 
@@ -50,7 +51,7 @@ export function isAllowedPublicPdfUrl(value: string): boolean {
 export function llamaParseAdmissionReason(input: {
 	grant: PaidPdfFallbackGrant | null;
 	hasCredentials: boolean;
-	local: Pick<LocalPdfSummary, 'fallbackReasons' | 'fullPageImagePages' | 'totalPages'>;
+	local: Pick<LocalPdfSummary, 'fallbackReasons' | 'fullPageImagePages' | 'parsedPages' | 'totalPages'>;
 	source: LlamaParseSource;
 }): LlamaParseAdmissionReason {
 	if (!localPdfNeedsFallback(input.local)) return 'local-usable';

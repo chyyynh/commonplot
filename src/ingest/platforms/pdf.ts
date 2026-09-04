@@ -62,6 +62,7 @@ function localPdfResult(normalized: NormalizedStructuredPdf, sourceLabel: string
 		full_page_image_pages: result.parse.fullPageImagePages,
 		mention_count: normalized.mentions.length,
 		parser_version: result.parse.parserVersion,
+		parsed_pages: result.parse.parsedPages,
 		reference_count: normalized.references.length,
 		source: sourceLabel,
 		total_pages: result.parse.totalPages,
@@ -92,6 +93,7 @@ async function parsePdfArtifactStream(
 				fallbackReasons: ['parse-failed'],
 				fullPageImagePages: 0,
 				parserVersion: ZOTERO_SDT_ARTIFACT_VERSION,
+				parsedPages: 0,
 				totalPages: error instanceof ZoteroSdtParseError ? error.totalPages : null,
 			},
 		};
