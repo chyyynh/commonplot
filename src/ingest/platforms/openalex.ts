@@ -8,21 +8,11 @@ import {
 	type PaperIdentity,
 	paperIdentityFromIdentifiers,
 } from '../../shared/paper-identity';
-import type { PaperRelationItem, PaperRelationSnapshot } from '../../shared/resource';
+import type { PaperKindMetadata, PaperRelationItem, PaperRelationSnapshot } from '../../shared/resource';
 
-export interface PaperMetadata {
-	title?: string;
-	authors: string[];
-	abstract?: string;
-	venue?: string;
-	year?: number;
-	publicationDate?: string;
-	citedByCount?: number;
-	referenceCount?: number;
-	pdfUrl?: string;
-	references?: PaperRelationSnapshot;
-	citations?: PaperRelationSnapshot;
-}
+export type PaperMetadata = Readonly<
+	PaperKindMetadata & { abstract?: string; authors: string[]; publicationDate?: string; title?: string }
+>;
 
 const OPENALEX_BASE = 'https://api.openalex.org';
 const OPENALEX_CONTENT_HOST = 'content.openalex.org';
