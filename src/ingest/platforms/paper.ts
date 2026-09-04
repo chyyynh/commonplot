@@ -5,9 +5,7 @@ import { z } from 'zod';
 import {
 	canonicalPaperUrl,
 	normalizePaperIdentifiers,
-	PAPER_IDENTIFIER_SCHEMES,
 	type PaperIdentifier,
-	type PaperIdentifierScheme,
 	paperIdentifiersFromIdentity,
 	paperIdentityFromIdentifiers,
 	paperIdentityFromText,
@@ -61,18 +59,10 @@ function applyPaperMetadata(
 
 function choosePreferredIdentifiers(identifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
 	const normalized = normalizePaperIdentifiers(identifiers.map((identifier) => ({ ...identifier, preferred: false })));
-	const preferred = new Map<PaperIdentifierScheme, string>();
-	for (const scheme of PAPER_IDENTIFIER_SCHEMES) {
-		const candidates = normalized.filter((identifier) => identifier.scheme === scheme);
-		const selected =
-			scheme === 'doi' ? (candidates.find((identifier) => !identifier.value.startsWith(ARXIV_DOI_PREFIX)) ?? candidates[0]) : candidates[0];
-		if (selected) preferred.set(scheme, selected.value);
-	}
-	return normalizePaperIdentifiers(
-		normalized.map((identifier) => ({
-			...identifier,
-			preferred: preferred.get(identifier.scheme) === identifier.value,
-		})),
+	const preferredDoi = normalized.find((identifier) => identifier.scheme === 'doi' && !identifier.value.startsWith(ARXIV_DOI_PREFIX));
+	if (!preferredDoi) return normalized;
+	return normalized.map((identifier) =>
+		identifier.scheme === 'doi' ? { ...identifier, preferred: identifier.value === preferredDoi.value } : identifier,
 	);
 }
 
