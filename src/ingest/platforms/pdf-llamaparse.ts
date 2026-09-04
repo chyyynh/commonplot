@@ -39,10 +39,6 @@ function mutationFailure(action: string, error: unknown, retryAmbiguous: boolean
 	return ambiguous && retryAmbiguous ? new Error(message) : new NonRetryableError(message);
 }
 
-function isAmbiguousMutation(error: unknown): boolean {
-	return error instanceof Error && error.message.includes(AMBIGUOUS_MUTATION);
-}
-
 function isDefinitiveFailure(error: unknown): boolean {
 	return error instanceof Error && (error.message.includes(PREPARATION_FAILED) || error.message.includes(REJECTED_MUTATION));
 }
@@ -106,7 +102,7 @@ function stageProviderFile(
 					const existing = await findProviderFile(input.credentials, externalId);
 					if (existing) return { externalId, fileId: existing };
 				} catch (error) {
-					if (isAmbiguousMutation(error)) throw error;
+					if (error instanceof Error && error.message.includes(AMBIGUOUS_MUTATION)) throw error;
 					throw mutationFailure('file-upload-reconcile', error, false);
 				}
 				throw new NonRetryableError(`${AMBIGUOUS_MUTATION} action=file-upload-reconcile-miss`);
