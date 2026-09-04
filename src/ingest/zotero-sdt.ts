@@ -257,6 +257,58 @@ function nodeText(node: SdtNode): string {
 	return 'text' in node ? node.text : node.content.map(nodeText).join('');
 }
 
+function firstPageRect(node: SdtBlockNode): readonly [number, number, number, number, number] | null {
+	return node.anchor?.pageRects?.[0] ?? null;
+}
+
+function lastPageRect(node: SdtBlockNode): readonly [number, number, number, number, number] | null {
+	return node.anchor?.pageRects?.at(-1) ?? null;
+}
+
+function crossesColumnOrPageBoundary(previous: SdtBlockNode, next: SdtBlockNode): boolean {
+	const previousRect = lastPageRect(previous);
+	const nextRect = firstPageRect(next);
+	if (!previousRect || !nextRect) return false;
+	const [previousPage, , , previousRight, previousTop] = previousRect;
+	const [nextPage, nextLeft, , , nextTop] = nextRect;
+	if (nextPage === previousPage) {
+		return nextLeft > previousRight && nextTop > previousTop;
+	}
+	return nextPage === previousPage + 1 && nextTop > previousTop;
+}
+
+function isParagraphContinuation(previous: SdtBlockNode, next: SdtBlockNode): boolean {
+	if (
+		previous.type !== 'paragraph' ||
+		next.type !== 'paragraph' ||
+		previous.reference === true ||
+		next.reference === true ||
+		previous.flowClass !== next.flowClass ||
+		previous.flowClass === 'excluded'
+	) {
+		return false;
+	}
+	const previousText = cleanText(nodeText(previous));
+	const nextText = cleanText(nodeText(next));
+	return (
+		Boolean(previousText) &&
+		Boolean(nextText) &&
+		!/[.!?。！？]["'’”»)}\]]*$/u.test(previousText) &&
+		/^\p{Ll}/u.test(nextText) &&
+		crossesColumnOrPageBoundary(previous, next)
+	);
+}
+
+function mergeParagraphs(previous: SdtBlockNode, next: SdtBlockNode): SdtBlockNode {
+	const previousText = nodeText(previous);
+	const nextText = nodeText(next);
+	const joiner = /(?:\s|-|\u00ad)$/u.test(previousText) || /^\s/u.test(nextText) ? '' : ' ';
+	return {
+		...previous,
+		content: [...previous.content, ...(joiner ? [{ text: joiner }] : []), ...next.content],
+	};
+}
+
 function walkNodes(nodes: readonly SdtNode[], parentPath: RefPath = []): Array<{ node: SdtNode; path: number[] }> {
 	const entries: Array<{ node: SdtNode; path: number[] }> = [];
 	for (const [index, node] of nodes.entries()) {
@@ -533,8 +585,24 @@ export function normalizeStructuredPdf(document: StructuredPdfDocument): Normali
 	const writer = new MarkdownWriter();
 	const headingLevelByPath = headingLevels(document.catalog.outline);
 	let section: string | null = null;
-	for (const [index, block] of document.content.entries()) {
-		section = renderBlock(writer, block, [index], section, referenceKeyByPath, headingLevelByPath);
+	for (let index = 0; index < document.content.length; index += 1) {
+		const block = document.content[index];
+		if (!block || block.flowClass === 'excluded') continue;
+		const blockIndex = index;
+		let renderableBlock = block;
+		let previousSourceBlock = block;
+		let lastMergedIndex = index;
+		while (previousSourceBlock.type === 'paragraph') {
+			let nextIndex = lastMergedIndex + 1;
+			while (document.content[nextIndex]?.flowClass === 'excluded') nextIndex += 1;
+			const nextBlock = document.content[nextIndex];
+			if (!nextBlock || !isParagraphContinuation(previousSourceBlock, nextBlock)) break;
+			renderableBlock = mergeParagraphs(renderableBlock, nextBlock);
+			previousSourceBlock = nextBlock;
+			lastMergedIndex = nextIndex;
+		}
+		section = renderBlock(writer, renderableBlock, [blockIndex], section, referenceKeyByPath, headingLevelByPath);
+		index = lastMergedIndex;
 	}
 	const markdown = writer.toString();
 	const pageText = pagesWithText(document);

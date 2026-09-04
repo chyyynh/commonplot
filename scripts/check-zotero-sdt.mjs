@@ -86,6 +86,48 @@ assert.deepEqual(parseStructuredPdfFailure(500, 'not-json'), {
 	totalPages: null,
 });
 
+const positionedText = (value, page) =>
+	text(value, {
+		anchor: {
+			pageRects: [[page, 10, 10, 20, 20]],
+			textMap: JSON.stringify([[0, page, 0, value.length, 10, 10, 20, 20]]),
+		},
+	});
+const paragraph = (value, pageRects, options = {}) => ({
+	anchor: { pageRects },
+	content: [positionedText(value, pageRects[0][0])],
+	type: 'paragraph',
+	...options,
+});
+const seamDocument = {
+	...document,
+	catalog: {
+		outline: [],
+		pages: [
+			{ contentRange: [[0], [4]], textSource: 'born-digital' },
+			{ contentRange: [[5], [8]], textSource: 'born-digital' },
+		],
+	},
+	content: [
+		paragraph('These applications have important', [[0, 54, 80, 295, 120]]),
+		paragraph('functionality.', [[0, 317, 700, 558, 735]]),
+		paragraph('lowercase starts a real new paragraph.', [[0, 317, 620, 558, 680]]),
+		paragraph('A label without terminal punctuation', [[0, 317, 580, 558, 610]]),
+		paragraph('lowercase text below it remains separate.', [[0, 317, 520, 558, 560]]),
+		paragraph('This paragraph continues across the next page', [[0, 317, 70, 558, 100]]),
+		paragraph('Running header', [[0, 54, 755, 558, 765]], { flowClass: 'excluded' }),
+		paragraph('1278', [[0, 296, 26, 316, 35]], { flowClass: 'excluded' }),
+		paragraph('without being interrupted by excluded furniture.', [[1, 54, 700, 295, 735]]),
+	],
+};
+const seamNormalized = normalizeStructuredPdf(parseStructuredPdfDocumentJson(JSON.stringify(seamDocument)));
+assert.match(seamNormalized.markdown, /These applications have important functionality\./u);
+assert.doesNotMatch(seamNormalized.markdown, /important\n\nfunctionality/u);
+assert.match(seamNormalized.markdown, /functionality\.\n\nlowercase starts a real new paragraph\./u);
+assert.match(seamNormalized.markdown, /A label without terminal punctuation\n\nlowercase text below it remains separate\./u);
+assert.match(seamNormalized.markdown, /This paragraph continues across the next page without being interrupted by excluded furniture\./u);
+assert.doesNotMatch(seamNormalized.markdown, /Running header|1278/u);
+
 console.info({
 	event: 'zotero_sdt_contract_passed',
 	markdownCharacters: normalized.markdown.length,
