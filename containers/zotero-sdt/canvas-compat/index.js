@@ -1,1 +1,1 @@
-export * from '@napi-rs/canvas/node-canvas.js';
+module.exports = require('@napi-rs/canvas/node-canvas.js');

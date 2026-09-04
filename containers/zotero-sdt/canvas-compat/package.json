@@ -1,6 +1,0 @@
-{
-	"name": "canvas",
-	"private": true,
-	"exports": "./index.js",
-	"type": "module"
-}
