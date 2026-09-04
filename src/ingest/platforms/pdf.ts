@@ -52,7 +52,7 @@ type LocalPdfParseResult = Pick<NormalizedStructuredPdf, 'markdown' | 'paperIden
 function localPdfResult(normalized: NormalizedStructuredPdf, sourceLabel: string): LocalPdfParseResult {
 	const result: LocalPdfParseResult = {
 		markdown: normalized.markdown,
-		paperIdentifierText: normalized.paperIdentifierText?.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS) ?? null,
+		paperIdentifierText: normalized.paperIdentifierText,
 		parse: normalized.parse,
 	};
 	console.info({
@@ -129,7 +129,7 @@ export async function completeFetchedPdfAcquisition(
 	};
 }
 
-type PdfRepresentation = Pick<GenericAcquiredMaterial, 'fileType' | 'markdown' | 'paperIdentifierText'>;
+type PdfRepresentation = Pick<GenericAcquiredMaterial, 'fileType' | 'markdown'>;
 
 /** OpenAlex content URLs need our API key, so this optional representation is always local-only. */
 export async function stageOpenAlexPdfRepresentation(
@@ -157,7 +157,6 @@ export async function stageOpenAlexPdfRepresentation(
 		return {
 			fileType: PDF_MIME,
 			markdown: acquired.markdown,
-			paperIdentifierText: acquired.paperIdentifierText ?? null,
 		};
 	} catch (error) {
 		console.error({

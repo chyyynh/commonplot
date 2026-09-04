@@ -214,10 +214,7 @@ async function persistCrossrefMetadata(
 	return result.rowCount ?? 0;
 }
 
-async function resolveCrossrefUpdates(
-	step: WorkflowStep,
-	references: readonly string[],
-): Promise<{ attemptedCount: number; updates: CrossrefMetadataUpdate[] }> {
+async function resolveCrossrefUpdates(step: WorkflowStep, references: readonly string[]): Promise<CrossrefMetadataUpdate[]> {
 	const updates: CrossrefMetadataUpdate[] = [];
 	for (let offset = 0; offset < references.length; offset += CROSSREF_BATCH_SIZE) {
 		const batch = references.slice(offset, offset + CROSSREF_BATCH_SIZE);
@@ -245,7 +242,7 @@ async function resolveCrossrefUpdates(
 			await step.sleep(`pace-crossref-batch-v2-${offset / CROSSREF_BATCH_SIZE}`, '1 second');
 		}
 	}
-	return { attemptedCount: references.length, updates };
+	return updates;
 }
 
 /** Zotero SDT owns PDF references and citation links; Crossref owns bibliographic metadata resolution. */
@@ -263,10 +260,10 @@ export async function enrichUploadedPdfReferences(
 			if (!document) throw new NonRetryableError('Structured PDF artifact is missing or stale');
 			return replaceStoredCitationData(await connectCoreDb(env), input.resourceId, input.referenceRevision, document, source.contentHash);
 		});
-		const crossref = await resolveCrossrefUpdates(step, stored.referenceTexts);
-		const enrichedCount = crossref.updates.length
+		const crossrefUpdates = await resolveCrossrefUpdates(step, stored.referenceTexts);
+		const enrichedCount = crossrefUpdates.length
 			? await step.do('persist-crossref-reference-metadata-v1', REFERENCE_DB_STEP, async () =>
-					persistCrossrefMetadata(await connectCoreDb(env), input.resourceId, input.referenceRevision, crossref.updates),
+					persistCrossrefMetadata(await connectCoreDb(env), input.resourceId, input.referenceRevision, crossrefUpdates),
 				)
 			: 0;
 		console.info({
@@ -276,7 +273,7 @@ export async function enrichUploadedPdfReferences(
 			stored_reference_count: stored.referenceCount,
 			stored_mention_count: stored.mentionCount,
 			aligned_mention_count: stored.alignedMentionCount,
-			crossref_attempted_count: crossref.attemptedCount,
+			crossref_attempted_count: stored.referenceTexts.length,
 			crossref_enriched_count: enrichedCount,
 		});
 	} catch (error) {
