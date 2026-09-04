@@ -7,7 +7,7 @@ import type {
 } from 'structured-document-text/schema';
 import { getFulltextFromStructuredText } from 'structured-document-text/src/fulltext.js';
 import { getPartBoundarySeparator, getPartChain, shouldDropHardHyphenAtPartBoundary } from 'structured-document-text/src/parts.js';
-import { getContentRangeBlockSpan, isLeafBlock, refKey } from 'structured-document-text/src/range.js';
+import { getContentRangeBlockSpan, isContentBoundary, isLeafBlock, refKey } from 'structured-document-text/src/range.js';
 
 const MAX_DOCUMENT_NODES = 100_000;
 const MAX_DOCUMENT_TEXT_CHARS = 2_000_000;
@@ -81,12 +81,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function assertRefPath(value: unknown, field: string): asserts value is number[] {
-	if (
-		!Array.isArray(value) ||
-		value.length < 1 ||
-		value.length > MAX_REF_PATH_DEPTH ||
-		value.some((part) => !Number.isInteger(part) || part < 0)
-	) {
+	if (!isContentBoundary(value) || (value as unknown[]).length > MAX_REF_PATH_DEPTH) {
 		throw new Error(`Zotero SDT ${field} is not a valid node path`);
 	}
 }
