@@ -8,7 +8,6 @@ import type {
 import { getFulltextFromStructuredText } from 'structured-document-text/src/fulltext.js';
 import { getPartBoundarySeparator, getPartChain, shouldDropHardHyphenAtPartBoundary } from 'structured-document-text/src/parts.js';
 import { getContentRangeBlockSpan, isLeafBlock, refKey } from 'structured-document-text/src/range.js';
-import type { LocalPdfSummary } from './platforms/pdf-fallback-policy.ts';
 
 const MAX_DOCUMENT_NODES = 100_000;
 const MAX_DOCUMENT_TEXT_CHARS = 2_000_000;
@@ -76,12 +75,6 @@ export type StructuredPdfDocument = Readonly<{
 	schemaVersion: string;
 }>;
 
-export type StructuredPdfReference = Readonly<{
-	key: string;
-	label: string | null;
-	text: string;
-}>;
-
 export type StructuredPdfCitationMention = Readonly<{
 	contentEnd: number;
 	contentStart: number;
@@ -97,14 +90,6 @@ export type StructuredPdfSourceCrop = Readonly<{
 	id: string;
 	pageIndex: number;
 	rect: readonly [number, number, number, number];
-}>;
-
-export type NormalizedStructuredPdf = Readonly<{
-	markdown: string;
-	mentions: StructuredPdfCitationMention[];
-	paperIdentifierText: string | null;
-	parse: LocalPdfSummary;
-	references: StructuredPdfReference[];
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -551,7 +536,7 @@ function firstPageIdentifierText(document: StructuredPdfDocument): string | null
 export function normalizeStructuredPdf(
 	document: StructuredPdfDocument,
 	options: Readonly<{ inputContentHash?: string; readySourceCropIds?: ReadonlySet<string> }> = {},
-): NormalizedStructuredPdf {
+) {
 	const entries = walkNodes(document.content);
 	const referenceEntries = entries.filter(
 		(entry): entry is { node: SdtBlockNode; path: number[] } => !('text' in entry.node) && entry.node.reference === true,

@@ -8,7 +8,6 @@ import { resolveCrossrefPaperCandidate } from '../crossref';
 import { GROBID_CONTAINER_NAME } from '../grobid-container';
 import { type GrobidPdfHeader, grobidPaperIdentifierText } from '../grobid-tei';
 import {
-	type NormalizedStructuredPdf,
 	normalizeStructuredPdf,
 	type StructuredPdfDocument,
 	structuredPdfSourceCrops,
@@ -47,7 +46,8 @@ export function isPdfAcquisitionDraft(value: GenericAcquiredMaterial | PdfAcquis
 	return 'kind' in value && value.kind === 'local-pdf';
 }
 
-type LocalPdfParseResult = Pick<NormalizedStructuredPdf, 'markdown' | 'paperIdentifierText' | 'parse'>;
+type NormalizedStructuredPdf = ReturnType<typeof normalizeStructuredPdf>;
+type LocalPdfParseResult = { markdown: string; paperIdentifierText: string | null; parse: LocalPdfSummary };
 
 function localPdfResult(normalized: NormalizedStructuredPdf, sourceLabel: string): LocalPdfParseResult {
 	const result: LocalPdfParseResult = {
