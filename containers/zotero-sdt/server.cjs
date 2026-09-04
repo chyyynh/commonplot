@@ -71,7 +71,7 @@ class DocumentWorkerClient {
 		this.pending.clear();
 	}
 
-	parse(pdfBuffer, sourceHash) {
+	request(action, pdfBuffer, data) {
 		const job = this.queue.then(async () => {
 			await this.ready;
 			const id = ++this.nextRequestId;
@@ -80,13 +80,11 @@ class DocumentWorkerClient {
 				this.pending.set(id, { reject: rejectRequest, resolve: resolveRequest });
 				this.worker.postMessage(
 					{
-						action: 'getStructuredDocumentText',
+						action,
 						data: {
 							buf: buffer,
-							contentType: 'application/pdf',
 							password: '',
-							reportProgress: false,
-							sourceHash,
+							...data,
 						},
 						id,
 					},
@@ -96,6 +94,18 @@ class DocumentWorkerClient {
 		});
 		this.queue = job.catch(() => undefined);
 		return job;
+	}
+
+	parse(pdfBuffer, sourceHash) {
+		return this.request('getStructuredDocumentText', pdfBuffer, {
+			contentType: 'application/pdf',
+			reportProgress: false,
+			sourceHash,
+		});
+	}
+
+	inspect(pdfBuffer) {
+		return this.request('pdf.getFulltext', pdfBuffer, { maxPages: 1 });
 	}
 }
 
@@ -154,30 +164,48 @@ const server = createServer(async (request, response) => {
 		if (!pdfBuffer.length) return sendJson(response, 400, { error: 'PDF body is empty.' });
 		const sourceHash = createHash('md5').update(pdfBuffer).digest('hex');
 		const startedAt = performance.now();
-		const result = await client.parse(pdfBuffer, sourceHash);
-		const parsedAt = performance.now();
-		const reader = await openStructuredDocumentTextPack(result.buf, {
-			inflate: (bytes) => new Uint8Array(inflateRawSync(bytes)),
-		});
-		const document = await reader.materialize();
-		const json = JSON.stringify(document);
-		const documentBytes = Buffer.byteLength(json);
-		if (documentBytes > MAX_DOCUMENT_BYTES) {
-			const error = new Error(`Structured document exceeds the ${MAX_DOCUMENT_BYTES}-byte limit.`);
-			error.statusCode = 413;
-			throw error;
+		try {
+			const result = await client.parse(pdfBuffer, sourceHash);
+			const parsedAt = performance.now();
+			const reader = await openStructuredDocumentTextPack(result.buf, {
+				inflate: (bytes) => new Uint8Array(inflateRawSync(bytes)),
+			});
+			const document = await reader.materialize();
+			const json = JSON.stringify(document);
+			const documentBytes = Buffer.byteLength(json);
+			if (documentBytes > MAX_DOCUMENT_BYTES) {
+				const error = new Error(`Structured document exceeds the ${MAX_DOCUMENT_BYTES}-byte limit.`);
+				error.statusCode = 413;
+				throw error;
+			}
+			const rssMiB = Math.round((process.memoryUsage().rss / 1024 / 1024) * 100) / 100;
+			response.writeHead(200, {
+				'cache-control': 'no-store',
+				'content-length': String(documentBytes),
+				'content-type': 'application/vnd.newsence.structured-document+json',
+				'x-newsence-materialize-ms': String(Math.round((performance.now() - parsedAt) * 100) / 100),
+				'x-newsence-parse-ms': String(Math.round((parsedAt - startedAt) * 100) / 100),
+				'x-newsence-rss-mib': String(rssMiB),
+				'x-newsence-source-hash': sourceHash,
+			});
+			return response.end(json);
+		} catch (parseError) {
+			let totalPages = null;
+			try {
+				const inspection = await client.inspect(pdfBuffer);
+				if (Number.isInteger(inspection?.totalPages) && inspection.totalPages > 0) totalPages = inspection.totalPages;
+			} catch (inspectionError) {
+				console.warn({
+					error: inspectionError instanceof Error ? inspectionError.message : String(inspectionError),
+					event: 'zotero_sdt_page_count_failed',
+				});
+			}
+			console.error({ error: parseError instanceof Error ? parseError.message : String(parseError), event: 'zotero_sdt_parse_failed' });
+			return sendJson(response, 422, {
+				error: parseError instanceof Error ? parseError.message : 'Parse failed.',
+				totalPages,
+			});
 		}
-		const rssMiB = Math.round((process.memoryUsage().rss / 1024 / 1024) * 100) / 100;
-		response.writeHead(200, {
-			'cache-control': 'no-store',
-			'content-length': String(documentBytes),
-			'content-type': 'application/vnd.newsence.structured-document+json',
-			'x-newsence-materialize-ms': String(Math.round((performance.now() - parsedAt) * 100) / 100),
-			'x-newsence-parse-ms': String(Math.round((parsedAt - startedAt) * 100) / 100),
-			'x-newsence-rss-mib': String(rssMiB),
-			'x-newsence-source-hash': sourceHash,
-		});
-		response.end(json);
 	} catch (error) {
 		console.error({ error: error instanceof Error ? error.message : String(error), event: 'zotero_sdt_parse_failed' });
 		return sendJson(response, error?.statusCode ?? 500, { error: error instanceof Error ? error.message : 'Parse failed.' });

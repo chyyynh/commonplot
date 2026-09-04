@@ -3,25 +3,7 @@ import { MAX_PDF_BYTES } from './platforms/pdf-constants.ts';
 import { ZOTERO_SDT_MAX_RESPONSE_BYTES } from './zotero-sdt.ts';
 
 const ZOTERO_SDT_PORT = 8080;
-const MAX_ERROR_BODY_CHARS = 1_000;
 export const ZOTERO_SDT_CONTAINER_NAME = 'structured-pdf-v1';
-
-async function boundedErrorText(response: Response): Promise<string> {
-	if (!response.body) return '';
-	const reader = response.body.getReader();
-	const decoder = new TextDecoder();
-	let text = '';
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		text += decoder.decode(value, { stream: true });
-		if (text.length > MAX_ERROR_BODY_CHARS) {
-			await reader.cancel('Zotero SDT error response exceeded byte limit');
-			break;
-		}
-	}
-	return `${text}${decoder.decode()}`.slice(0, MAX_ERROR_BODY_CHARS);
-}
 
 export class ZoteroSdtContainer extends Container<CoreEnv> {
 	defaultPort = ZOTERO_SDT_PORT;
@@ -69,9 +51,7 @@ export class ZoteroSdtContainer extends Container<CoreEnv> {
 			},
 			method: 'POST',
 		});
-		if (!response.ok) {
-			throw new Error(`Zotero SDT parse failed with ${response.status}${response.body ? `: ${await boundedErrorText(response)}` : ''}`);
-		}
+		if (!response.ok) return response;
 		const declaredLength = Number(response.headers.get('content-length'));
 		if (Number.isFinite(declaredLength) && declaredLength > ZOTERO_SDT_MAX_RESPONSE_BYTES) {
 			await response.body?.cancel('Zotero SDT response exceeded byte limit');

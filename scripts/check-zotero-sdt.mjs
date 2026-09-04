@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
-import { normalizeStructuredPdf, parseStructuredPdfDocumentJson, structuredPdfStorageKey } from '../src/ingest/zotero-sdt.ts';
+import {
+	normalizeStructuredPdf,
+	parseStructuredPdfDocumentJson,
+	parseStructuredPdfFailure,
+	structuredPdfStorageKey,
+} from '../src/ingest/zotero-sdt.ts';
 
 const text = (value, options = {}) => ({
 	anchor: { pageRects: [[0, 10, 10, 20, 20]], textMap: JSON.stringify([[0, 0, 0, value.length, 10, 10, 20, 20]]) },
@@ -72,6 +77,14 @@ assert.match(normalized.paperIdentifierText ?? '', /DOI: 10\.1000\/example/u);
 assert.equal(normalized.parse.totalPages, 1);
 assert.equal(normalized.parse.fullPageImagePages, 0);
 assert.equal(structuredPdfStorageKey('users/u/resources/r/source.pdf'), 'users/u/resources/r/source.pdf.structured-document.json');
+assert.deepEqual(parseStructuredPdfFailure(422, '{"error":"model failed","totalPages":12}'), {
+	message: 'Zotero SDT parse failed with 422: model failed',
+	totalPages: 12,
+});
+assert.deepEqual(parseStructuredPdfFailure(500, 'not-json'), {
+	message: 'Zotero SDT parse failed with 500',
+	totalPages: null,
+});
 
 console.info({
 	event: 'zotero_sdt_contract_passed',

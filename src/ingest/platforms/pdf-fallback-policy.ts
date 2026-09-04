@@ -1,6 +1,7 @@
 export const LLAMA_PARSE_MAX_PAGES = 100;
 const FULL_PAGE_IMAGE_FALLBACK_RATIO = 0.8;
 const POSTGRES_NUL = String.fromCharCode(0);
+const DOCUMENT_FALLBACK_REASONS = new Set(['empty-output', 'parse-failed']);
 
 export type PaidPdfFallbackGrant = Readonly<{ maxPages: number }>;
 export type LlamaParseSource = Readonly<{ kind: 'private-upload' }> | Readonly<{ kind: 'public-url'; url: string }>;
@@ -16,7 +17,7 @@ export type LocalPdfSummary = Readonly<{
 /** Route image-backed PDFs only when the signal describes the document, not an isolated cover page. */
 export function localPdfNeedsFallback(local: Pick<LocalPdfSummary, 'fallbackReasons' | 'fullPageImagePages' | 'parsedPages'>): boolean {
 	return (
-		local.fallbackReasons.length > 0 ||
+		local.fallbackReasons.some((reason) => DOCUMENT_FALLBACK_REASONS.has(reason)) ||
 		(local.parsedPages > 0 && local.fullPageImagePages / local.parsedPages >= FULL_PAGE_IMAGE_FALLBACK_RATIO)
 	);
 }

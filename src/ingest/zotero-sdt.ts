@@ -16,6 +16,19 @@ export const ZOTERO_SDT_ARTIFACT_VERSION = 'newsence-zotero-sdt-v1';
 export const ZOTERO_SDT_CONTENT_TYPE = 'application/vnd.newsence.structured-document+json';
 export const ZOTERO_SDT_MAX_RESPONSE_BYTES = MAX_DOCUMENT_JSON_BYTES;
 
+export function parseStructuredPdfFailure(status: number, body: string): { message: string; totalPages: number | null } {
+	let message = `Zotero SDT parse failed with ${status}`;
+	let totalPages: number | null = null;
+	try {
+		const parsed = JSON.parse(body) as { error?: unknown; totalPages?: unknown };
+		if (typeof parsed.error === 'string' && parsed.error.trim()) message = `${message}: ${parsed.error.trim()}`;
+		if (Number.isInteger(parsed.totalPages) && Number(parsed.totalPages) > 0) totalPages = Number(parsed.totalPages);
+	} catch {
+		// A malformed internal error response still fails safely without page-count admission.
+	}
+	return { message, totalPages };
+}
+
 type RefPath = readonly number[];
 
 type PdfAnchor = Readonly<{

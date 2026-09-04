@@ -2,6 +2,7 @@ import {
 	type NormalizedStructuredPdf,
 	normalizeStructuredPdf,
 	parseStructuredPdfDocumentJson,
+	parseStructuredPdfFailure,
 	type StructuredPdfDocument,
 	structuredPdfStorageKey,
 	ZOTERO_SDT_ARTIFACT_VERSION,
@@ -11,6 +12,17 @@ import {
 import { ZOTERO_SDT_CONTAINER_NAME } from './zotero-sdt-container.ts';
 
 const INPUT_HASH_PATTERN = /^[a-f\d]{64}$/u;
+const MAX_ERROR_BODY_BYTES = 4_096;
+
+export class ZoteroSdtParseError extends Error {
+	readonly totalPages: number | null;
+
+	constructor(message: string, totalPages: number | null) {
+		super(message);
+		this.name = 'ZoteroSdtParseError';
+		this.totalPages = totalPages;
+	}
+}
 
 export type StructuredPdfArtifact = Readonly<{
 	document: StructuredPdfDocument;
@@ -53,6 +65,11 @@ export async function parsePdfWithZotero(
 	byteLength: number,
 ): Promise<StructuredPdfArtifact> {
 	const response = await env.ZOTERO_SDT.getByName(ZOTERO_SDT_CONTAINER_NAME).processPdf(input, byteLength);
+	if (!response.ok) {
+		const body = await boundedResponseText(response, MAX_ERROR_BODY_BYTES);
+		const { message, totalPages } = parseStructuredPdfFailure(response.status, body);
+		throw new ZoteroSdtParseError(message, totalPages);
+	}
 	return artifactFromJson(await boundedResponseText(response, ZOTERO_SDT_MAX_RESPONSE_BYTES));
 }
 

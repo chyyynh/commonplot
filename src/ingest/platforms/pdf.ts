@@ -13,6 +13,7 @@ import {
 	readStructuredPdfArtifact,
 	type StructuredPdfArtifact,
 	writeStructuredPdfArtifact,
+	ZoteroSdtParseError,
 } from '../zotero-sdt-service.ts';
 import { type GenericAcquiredMaterial, literalCreator } from './materialize';
 import { fetchOpenAlexPdf } from './openalex';
@@ -105,7 +106,7 @@ async function parsePdfStream(
 					fullPageImagePages: 0,
 					parserVersion: ZOTERO_SDT_ARTIFACT_VERSION,
 					parsedPages: 0,
-					totalPages: null,
+					totalPages: error instanceof ZoteroSdtParseError ? error.totalPages : null,
 				},
 			},
 		};
