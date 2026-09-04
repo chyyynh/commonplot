@@ -18,7 +18,6 @@ export class ZoteroSdtParseError extends Error {
 
 	constructor(message: string, totalPages: number | null) {
 		super(message);
-		this.name = 'ZoteroSdtParseError';
 		this.totalPages = totalPages;
 	}
 }
@@ -139,6 +138,5 @@ export async function writeStructuredPdfArtifact(
 			artifactVersion: ZOTERO_SDT_ARTIFACT_VERSION,
 			inputSha256: inputContentHash,
 		},
-		httpMetadata: { contentType: 'application/vnd.newsence.structured-document+json' },
 	});
 }
