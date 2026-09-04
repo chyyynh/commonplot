@@ -247,11 +247,8 @@ export async function stagePaperProcessing(
 		allowCitoidLookup: boolean;
 	},
 ) {
-	let publishedDate = input.hints.publishedDate;
-	if (input.acquiredContent.publishedDate?.trim()) {
-		const parsed = new Date(input.acquiredContent.publishedDate);
-		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
-	}
+	const parsedPublishedDate = Date.parse(input.acquiredContent.publishedDate ?? '');
+	const publishedDate = Number.isNaN(parsedPublishedDate) ? input.hints.publishedDate : new Date(parsedPublishedDate).toISOString();
 	const canonicalUrl = input.acquiredContent.canonicalUrl?.trim() || input.sourceUrl;
 	const exactIdentifiers = [input.sourceUrl, canonicalUrl === input.sourceUrl ? null : canonicalUrl].flatMap((value) => {
 		const resolved = resolveExactPaperInput(value);

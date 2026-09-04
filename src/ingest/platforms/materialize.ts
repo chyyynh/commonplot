@@ -152,11 +152,8 @@ export function materializePlatformResource<TPlatform extends ResourcePlatform>(
 	identity: Pick<ResolvedResource, 'url'> & { kind: ResourceKindForPlatform<TPlatform> },
 	subject: ResolvedResourceSubjectIdentity | null = null,
 ): ResolvedPlatformResource<TPlatform> {
-	let publishedDate = hints.publishedDate;
-	if (acquired.publishedDate?.trim()) {
-		const parsed = new Date(acquired.publishedDate);
-		if (!Number.isNaN(parsed.getTime())) publishedDate = parsed.toISOString();
-	}
+	const parsedPublishedDate = Date.parse(acquired.publishedDate ?? '');
+	const publishedDate = Number.isNaN(parsedPublishedDate) ? hints.publishedDate : new Date(parsedPublishedDate).toISOString();
 	return materializeResource(
 		acquired,
 		hints,
