@@ -181,11 +181,7 @@ export async function stageStoredResourceAcquisition(
 ): Promise<ResolvedPlatformlessResource> {
 	const acquired = await stageStoredPdfAcquisition(env, step, target);
 	const resource = await resolveGenericAcquiredResource(env, step, acquired, {
-		hints: {
-			originalLang: acquired.originalLang,
-			publishedDate: acquired.publishedDate,
-			summary: acquired.summary,
-		},
+		hints: acquired,
 		paperIdentifiers: [],
 		processingId: target.resourceId,
 		sourceUrl: null,

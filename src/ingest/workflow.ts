@@ -207,11 +207,7 @@ async function resolveProcessingResource(
 		async () => loadResourceReacquisitionInput(await connectCoreDb(env), target.resourceId),
 	);
 	return stageUrlAcquisition(env, step, {
-		hints: {
-			originalLang: snapshot.originalLang,
-			publishedDate: snapshot.publishedDate,
-			summary: snapshot.summary,
-		},
+		hints: snapshot,
 		allowCitoidLookup: false,
 		paperIdentifiers: snapshot.paperIdentifiers,
 		paidPdfFallback: target.paidPdfFallback ?? null,
