@@ -153,26 +153,18 @@ function crossrefResolution(work: CrossrefWork) {
 	};
 }
 
+function selectCrossrefResolution(rawResponse: unknown, matches: (work: CrossrefWork) => boolean) {
+	return CrossrefResponseSchema.parse(rawResponse).message.items.filter(matches).map(crossrefResolution).find(Boolean) ?? null;
+}
+
 /** Select only a Crossref hit whose deposited metadata strongly agrees with the citation. */
 export function selectCrossrefReference(citation: string, rawResponse: unknown) {
-	const response = CrossrefResponseSchema.parse(rawResponse);
-	for (const work of response.message.items) {
-		if (!workMatchesCitation(citation, work)) continue;
-		const resolution = crossrefResolution(work);
-		if (resolution) return resolution;
-	}
-	return null;
+	return selectCrossrefResolution(rawResponse, (work) => workMatchesCitation(citation, work));
 }
 
 /** Confirm a GROBID header only when Crossref agrees on title, author, work type, venue, and year. */
 export function selectCrossrefPaperCandidate(title: string, authors: readonly string[], rawResponse: unknown) {
-	const response = CrossrefResponseSchema.parse(rawResponse);
-	for (const work of response.message.items) {
-		if (!workMatchesPaperCandidate(title, authors, work)) continue;
-		const resolution = crossrefResolution(work);
-		if (resolution) return resolution;
-	}
-	return null;
+	return selectCrossrefResolution(rawResponse, (work) => workMatchesPaperCandidate(title, authors, work));
 }
 
 export function selectCrossrefPaper(doi: string, rawResponse: unknown) {
