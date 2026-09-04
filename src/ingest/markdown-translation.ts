@@ -8,10 +8,12 @@ import { frontmatter } from 'micromark-extension-frontmatter';
 import { gfm } from 'micromark-extension-gfm';
 import { math } from 'micromark-extension-math';
 
-const DEFAULT_BATCH_MAX_CHARACTERS = 24_000;
-const DEFAULT_CONTEXT_MAX_CHARACTERS = 800;
-const DEFAULT_SEGMENT_MAX_CHARACTERS = 20_000;
-const DEFAULT_BATCH_MAX_SEGMENTS = 32;
+const DEFAULT_PLAN_OPTIONS = {
+	maxBatchCharacters: 24_000,
+	maxBatchSegments: 32,
+	maxContextCharacters: 800,
+	maxSegmentCharacters: 20_000,
+} as const;
 const TRANSLATABLE_CHARACTER = /[\p{L}\p{N}]/u;
 const URL_OR_EMAIL = /^(?:https?:\/\/|mailto:|www\.)\S+$|^[^\s@]+@[^\s@]+\.[^\s@]+$/iu;
 const TRANSLATED_PROSE_SENTINEL = '<translated-prose>';
@@ -58,12 +60,9 @@ export type MarkdownSegmentTranslation = Readonly<{
 	texts: Readonly<Record<string, string>>;
 }>;
 
-export type MarkdownTranslationPlanOptions = Readonly<{
-	maxBatchCharacters?: number;
-	maxBatchSegments?: number;
-	maxContextCharacters?: number;
-	maxSegmentCharacters?: number;
-}>;
+type ResolvedPlanOptions = Record<keyof typeof DEFAULT_PLAN_OPTIONS, number>;
+
+export type MarkdownTranslationPlanOptions = Readonly<Partial<ResolvedPlanOptions>>;
 
 type MarkdownTranslationReconstructionPart =
 	| Readonly<{ id: string; type: 'fixed-inline' }>
@@ -223,12 +222,12 @@ function positiveInteger(value: number | undefined, fallback: number, name: stri
 }
 
 function resolvePlanOptions(options: MarkdownTranslationPlanOptions) {
-	const maxBatchCharacters = positiveInteger(options.maxBatchCharacters, DEFAULT_BATCH_MAX_CHARACTERS, 'maxBatchCharacters');
-	const maxBatchSegments = positiveInteger(options.maxBatchSegments, DEFAULT_BATCH_MAX_SEGMENTS, 'maxBatchSegments');
-	const requestedContext = positiveInteger(options.maxContextCharacters, DEFAULT_CONTEXT_MAX_CHARACTERS, 'maxContextCharacters');
+	const maxBatchCharacters = positiveInteger(options.maxBatchCharacters, DEFAULT_PLAN_OPTIONS.maxBatchCharacters, 'maxBatchCharacters');
+	const maxBatchSegments = positiveInteger(options.maxBatchSegments, DEFAULT_PLAN_OPTIONS.maxBatchSegments, 'maxBatchSegments');
+	const requestedContext = positiveInteger(options.maxContextCharacters, DEFAULT_PLAN_OPTIONS.maxContextCharacters, 'maxContextCharacters');
 	const maxContextCharacters = Math.min(requestedContext, Math.max(1, Math.floor(maxBatchCharacters * 0.2)));
 	const availableSegmentCharacters = Math.max(1, maxBatchCharacters - maxContextCharacters - 64);
-	const requestedSegment = positiveInteger(options.maxSegmentCharacters, DEFAULT_SEGMENT_MAX_CHARACTERS, 'maxSegmentCharacters');
+	const requestedSegment = positiveInteger(options.maxSegmentCharacters, DEFAULT_PLAN_OPTIONS.maxSegmentCharacters, 'maxSegmentCharacters');
 	return {
 		maxBatchCharacters,
 		maxBatchSegments,
@@ -236,8 +235,6 @@ function resolvePlanOptions(options: MarkdownTranslationPlanOptions) {
 		maxSegmentCharacters: Math.min(requestedSegment, availableSegmentCharacters),
 	};
 }
-
-type ResolvedPlanOptions = ReturnType<typeof resolvePlanOptions>;
 
 function translatedPathKey(path: readonly number[]): string {
 	return path.join('.');
