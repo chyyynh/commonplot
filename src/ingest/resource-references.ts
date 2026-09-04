@@ -94,7 +94,7 @@ async function replaceStoredCitationData(
 		];
 	});
 
-	const stored = await db.transaction(async (tx) => {
+	await db.transaction(async (tx) => {
 		const current = await tx.execute<{ id: string }>(sql`
 			SELECT resource.id::text
 			FROM resources resource
@@ -150,14 +150,11 @@ async function replaceStoredCitationData(
 				VALUES ${targetValues}
 			`);
 		}
-		return {
-			alignedMentionCount: mentions.filter(({ contentStart }) => contentStart !== null).length,
-			mentionCount: mentions.length,
-			referenceCount: structured.references.length,
-		};
 	});
 	return {
-		...stored,
+		alignedMentionCount: mentions.filter(({ contentStart }) => contentStart !== null).length,
+		mentionCount: mentions.length,
+		referenceCount: structured.references.length,
 		referenceTexts: structured.references.map(({ text }) => text),
 	};
 }
