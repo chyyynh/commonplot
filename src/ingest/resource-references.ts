@@ -159,28 +159,19 @@ async function persistCrossrefMetadata(
 ): Promise<number> {
 	const result = await db.execute(sql`
 		UPDATE resource_references AS reference
-		SET doi = incoming.doi,
-		    url = incoming.url,
-		    title = incoming.title,
-		    authors = incoming.authors,
-		    year = incoming.year,
-		    venue = incoming.venue
+		SET (doi, url, title, authors, year, venue) =
+		    (incoming.doi, incoming.url, incoming.title, incoming.authors, incoming.year, incoming.venue)
 		FROM jsonb_to_recordset(${JSON.stringify(updates)}::jsonb) AS incoming(
 			ordinal integer, doi text, url text, title text, authors text[], year integer, venue text
 		)
-		WHERE reference.resource_id = ${resourceId}::uuid
+		JOIN resources resource ON resource.id = ${resourceId}::uuid
+		JOIN resource_translations original
+		  ON original.resource_id = resource.id AND original.lang = resource.original_lang
+		WHERE reference.resource_id = resource.id
 		  AND reference.ordinal = incoming.ordinal
 		  AND ROW(reference.doi, reference.url, reference.title, reference.authors, reference.year, reference.venue)
 		      IS DISTINCT FROM ROW(incoming.doi, incoming.url, incoming.title, incoming.authors, incoming.year, incoming.venue)
-		  AND EXISTS (
-		    SELECT 1
-		    FROM resources resource
-		    JOIN resource_translations original
-		      ON original.resource_id = resource.id
-		     AND original.lang = resource.original_lang
-		    WHERE resource.id = reference.resource_id
-		      AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${referenceRevision}
-		  )
+		  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${referenceRevision}
 	`);
 	return result.rowCount ?? 0;
 }
