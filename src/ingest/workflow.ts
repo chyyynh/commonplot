@@ -265,56 +265,48 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				() => this.env.APP.completeResourceSave(persistedResourceId, saveTarget),
 			);
 		}
-		const followUps: Promise<unknown>[] = [];
-		if (preparedResource.kind === 'paper' && target.kind === 'storedBlob') {
-			followUps.push(
-				step.do(
-					'enqueue-resource-reference-enrichment-v3',
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() => enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, target.resourceId),
-				),
-			);
-		}
-		if (scope === 'corpus') {
-			followUps.push(
-				step.do(
-					'enqueue-resolved-ai-search-sync-v1',
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() => this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId: persistedResourceId }),
-				),
-			);
-		}
-		if (shouldEnqueueResourceTranslation({ ...preparedResource, scope })) {
-			followUps.push(
-				step.do(
-					'enqueue-resource-translation-v3',
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision, forceProcessingRunKey),
-				),
-			);
-		}
 		const subject = resource.subject;
-		if (subject && !subjectAttached) {
-			followUps.push(
-				step.do(
-					'enqueue-resolved-subject-child-v1',
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					async () => {
-						const subjectTarget = ResourceDraftTargetSchema.parse({
-							kind: 'draft',
-							relation: { kind: 'subject', parentResourceId: persistedResourceId },
-							// Carrier-resolved hints only; the subject page still wins when it states its own date.
-							...(subject.publishedDate ? { sourceHints: { publishedDate: subject.publishedDate } } : {}),
-							url: subject.normalizedUrl,
-						});
-						const id = `subject-draft-v4-${await sha256Hex(JSON.stringify(subjectTarget))}`;
-						await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: subjectTarget }]);
-						return id;
-					},
-				),
-			);
-		}
-		await Promise.all(followUps);
+		await Promise.all([
+			uploadedPaper
+				? step.do(
+						'enqueue-resource-reference-enrichment-v3',
+						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+						() => enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, target.resourceId),
+					)
+				: undefined,
+			scope === 'corpus'
+				? step.do(
+						'enqueue-resolved-ai-search-sync-v1',
+						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+						() => this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId: persistedResourceId }),
+					)
+				: undefined,
+			shouldEnqueueResourceTranslation({ ...preparedResource, scope })
+				? step.do(
+						'enqueue-resource-translation-v3',
+						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+						() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision, forceProcessingRunKey),
+					)
+				: undefined,
+			subject && !subjectAttached
+				? step.do(
+						'enqueue-resolved-subject-child-v1',
+						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+						async () => {
+							const subjectTarget = ResourceDraftTargetSchema.parse({
+								kind: 'draft',
+								relation: { kind: 'subject', parentResourceId: persistedResourceId },
+								// Carrier-resolved hints only; the subject page still wins when it states its own date.
+								...(subject.publishedDate ? { sourceHints: { publishedDate: subject.publishedDate } } : {}),
+								url: subject.normalizedUrl,
+							});
+							const id = `subject-draft-v4-${await sha256Hex(JSON.stringify(subjectTarget))}`;
+							await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: subjectTarget }]);
+							return id;
+						},
+					)
+				: undefined,
+		]);
 
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
 		return { resourceId: persistedResourceId };
