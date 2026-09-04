@@ -26,13 +26,6 @@ const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 
 type ProviderCredentials = Readonly<{ apiKey: string; projectId: string }>;
 type ProviderFile = Readonly<{ externalId: string; fileId: string }>;
-type ProviderJob = Readonly<{
-	billedCredits: number | null;
-	jobId: string;
-	observedAt: number;
-	startedAt: number;
-	status: string;
-}>;
 type ProviderSource = Readonly<{ kind: 'private-upload'; storageKey: string }> | Readonly<{ kind: 'public-url'; url: string }>;
 
 function client(apiKey: string): LlamaCloud {
@@ -54,7 +47,7 @@ function isDefinitiveFailure(error: unknown): boolean {
 	return error instanceof Error && (error.message.includes(PREPARATION_FAILED) || error.message.includes(REJECTED_MUTATION));
 }
 
-function jobState(job: { id: string; status: string; usage?: { credits?: number | null } | null }, startedAt: number): ProviderJob {
+function jobState(job: { id: string; status: string; usage?: { credits?: number | null } | null }, startedAt: number) {
 	return {
 		billedCredits: job.usage?.credits ?? null,
 		jobId: job.id,
@@ -63,6 +56,8 @@ function jobState(job: { id: string; status: string; usage?: { credits?: number 
 		status: job.status,
 	};
 }
+
+type ProviderJob = ReturnType<typeof jobState>;
 
 async function privatePdfBytes(env: CoreEnv, storageKey: string): Promise<Uint8Array> {
 	let lastError: unknown;
