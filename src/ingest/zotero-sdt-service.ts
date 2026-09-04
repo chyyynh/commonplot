@@ -25,38 +25,6 @@ export class ZoteroSdtParseError extends Error {
 	}
 }
 
-type StructuredPdfSourceCropInventory = Readonly<{
-	crops: readonly StructuredPdfSourceCrop[];
-	inputContentHash: string;
-	pdfStorageKey: string;
-}>;
-
-export function structuredPdfSourceCropStorageKey(pdfStorageKey: string, inputContentHash: string, cropId: string): string {
-	if (!INPUT_HASH_PATTERN.test(inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
-	if (!/^\d+(?:\.\d+)*-p\d+$/u.test(cropId)) throw new TypeError('Structured PDF source crop ID is invalid');
-	return `${pdfStorageKey}.structured-crops/${inputContentHash}/${cropId}.png`;
-}
-
-function reusableSourceCrop(object: R2Object | null): boolean {
-	return (
-		object?.customMetadata?.artifactVersion === SOURCE_CROP_ARTIFACT_VERSION && object.size > 0 && object.size <= MAX_SOURCE_CROP_BYTES
-	);
-}
-
-/** Return the expected crop IDs already materialized as valid R2 artifacts. */
-async function readReadyStructuredPdfSourceCropIds(env: CoreEnv, input: StructuredPdfSourceCropInventory): Promise<string[]> {
-	if (!INPUT_HASH_PATTERN.test(input.inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
-	if (!input.crops.length) return [];
-	const prefix = `${input.pdfStorageKey}.structured-crops/${input.inputContentHash}/`;
-	const inventory = await env.R2.list({ include: ['customMetadata'], limit: 1_000, prefix });
-	if (inventory.truncated) throw new Error('Structured PDF source crop inventory exceeded the bounded prefix');
-	const objectsByKey = new Map(inventory.objects.map((object) => [object.key, object]));
-	return input.crops.flatMap((crop) => {
-		const storageKey = structuredPdfSourceCropStorageKey(input.pdfStorageKey, input.inputContentHash, crop.id);
-		return reusableSourceCrop(objectsByKey.get(storageKey) ?? null) ? [crop.id] : [];
-	});
-}
-
 /** Materialize Zotero Reading Mode source crops beside the private PDF. */
 export async function ensureStructuredPdfSourceCrops(
 	env: CoreEnv,
@@ -68,11 +36,25 @@ export async function ensureStructuredPdfSourceCrops(
 	}>,
 ): Promise<string[]> {
 	if (!INPUT_HASH_PATTERN.test(input.inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
-	let readyCropIds: Set<string>;
+	const prefix = `${input.pdfStorageKey}.structured-crops/${input.inputContentHash}/`;
+	let readyCropIds = new Set<string>();
 	try {
-		readyCropIds = new Set(await readReadyStructuredPdfSourceCropIds(env, input));
+		if (input.crops.length) {
+			const inventory = await env.R2.list({ include: ['customMetadata'], limit: 1_000, prefix });
+			if (inventory.truncated) throw new Error('Structured PDF source crop inventory exceeded the bounded prefix');
+			const objectsByKey = new Map(inventory.objects.map((object) => [object.key, object]));
+			readyCropIds = new Set(
+				input.crops.flatMap((crop) => {
+					const object = objectsByKey.get(`${prefix}${crop.id}.png`);
+					return object?.customMetadata?.artifactVersion === SOURCE_CROP_ARTIFACT_VERSION &&
+						object.size > 0 &&
+						object.size <= MAX_SOURCE_CROP_BYTES
+						? [crop.id]
+						: [];
+				}),
+			);
+		}
 	} catch (error) {
-		readyCropIds = new Set();
 		console.warn({
 			tag: 'PDF_PARSE',
 			event: 'zotero_source_crop_inventory_failed',
@@ -81,7 +63,7 @@ export async function ensureStructuredPdfSourceCrops(
 		});
 	}
 	for (const crop of input.crops) {
-		const storageKey = structuredPdfSourceCropStorageKey(input.pdfStorageKey, input.inputContentHash, crop.id);
+		const storageKey = `${prefix}${crop.id}.png`;
 		try {
 			if (readyCropIds.has(crop.id)) continue;
 			const pdf = await env.R2.get(input.pdfStorageKey);
