@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
 import { resourceImageSourceUrls } from '../shared/image-mapping';
-import { normalizePaperIdentifiers, type PaperIdentifier } from '../shared/paper-identity';
+import { normalizePaperIdentifiers } from '../shared/paper-identity';
 import {
 	canonicalizeOptionalResourceLang,
 	canonicalizeResourceLang,
@@ -113,12 +113,7 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, draf
 
 const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
 	z.strictObject({
-		kind: z.literal('storedBlob'),
-		paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
-		resourceId: z.uuid(),
-	}),
-	z.strictObject({
-		kind: z.literal('reacquire'),
+		kind: z.enum(['storedBlob', 'reacquire']),
 		paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
 		resourceId: z.uuid(),
 	}),
@@ -126,22 +121,6 @@ const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
 ]);
 
 type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSchema>;
-
-type ResolvedProcessingCall = {
-	keywordHints: readonly string[];
-	resource: ProcessingResource;
-	persistenceTarget: ResourcePersistenceTarget;
-	processingId: string;
-	saveTarget: ResourceDraftTarget['saveTarget'] | null;
-};
-
-type ResourceReacquisitionInput = {
-	originalLang: string;
-	paperIdentifiers: PaperIdentifier[];
-	publishedDate: string | null;
-	summary: string | null;
-	url: string;
-};
 
 type ResourceReacquisitionRow = {
 	original_lang: string;
@@ -151,7 +130,7 @@ type ResourceReacquisitionRow = {
 	url: string | null;
 };
 
-async function loadResourceReacquisitionInput(db: NodePgDatabase, resourceId: string): Promise<ResourceReacquisitionInput> {
+async function loadResourceReacquisitionInput(db: NodePgDatabase, resourceId: string) {
 	const result = await db.execute<ResourceReacquisitionRow>(sql`
 		SELECT
 			original.summary,
@@ -195,48 +174,31 @@ async function loadResourceReacquisitionInput(db: NodePgDatabase, resourceId: st
 	};
 }
 
-async function resolveProcessingCall(
+async function resolveProcessingResource(
 	env: CoreEnv,
 	step: WorkflowStep,
 	target: ResourceProcessingTarget,
 	instanceId: string,
-): Promise<ResolvedProcessingCall> {
+): Promise<ProcessingResource> {
 	if (target.kind === 'draft') {
-		return {
-			keywordHints: target.sourceHints?.keywords ?? [],
-			processingId: instanceId,
-			resource: await stageUrlAcquisition(env, step, {
-				hints: {
-					originalLang: target.sourceHints?.originalLang ?? null,
-					publishedDate: target.sourceHints?.publishedDate ?? null,
-					summary: target.sourceHints?.summary ?? null,
-				},
-				allowCitoidLookup: target.relation?.kind !== 'source',
-				paidPdfFallback: target.paidPdfFallback ?? null,
-				processingId: instanceId,
-				url: target.url,
-			}),
-			persistenceTarget: {
-				kind: 'draft',
-				...(target.relation ? { relation: target.relation } : {}),
+		return stageUrlAcquisition(env, step, {
+			hints: {
+				originalLang: target.sourceHints?.originalLang ?? null,
+				publishedDate: target.sourceHints?.publishedDate ?? null,
+				summary: target.sourceHints?.summary ?? null,
 			},
-			saveTarget: target.saveTarget ?? null,
-		};
+			allowCitoidLookup: target.relation?.kind !== 'source',
+			paidPdfFallback: target.paidPdfFallback ?? null,
+			processingId: instanceId,
+			url: target.url,
+		});
 	}
 
 	if (target.kind === 'storedBlob') {
-		const resource = await stageStoredResourceAcquisition(env, step, {
+		return stageStoredResourceAcquisition(env, step, {
 			paidPdfFallback: target.paidPdfFallback ?? null,
 			resourceId: target.resourceId,
 		});
-		const resolvedPaper = resource.kind === 'paper';
-		return {
-			keywordHints: [],
-			processingId: target.resourceId,
-			resource,
-			persistenceTarget: resolvedPaper ? { kind: 'draft' } : { kind: 'existing', resourceId: target.resourceId },
-			saveTarget: resolvedPaper ? { kind: 'userFilePaper', fileResourceId: target.resourceId } : null,
-		};
 	}
 
 	const snapshot = await step.do(
@@ -244,35 +206,38 @@ async function resolveProcessingCall(
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 		async () => loadResourceReacquisitionInput(await connectCoreDb(env), target.resourceId),
 	);
-	return {
-		keywordHints: [],
-		processingId: target.resourceId,
-		resource: await stageUrlAcquisition(env, step, {
-			hints: {
-				originalLang: snapshot.originalLang,
-				publishedDate: snapshot.publishedDate,
-				summary: snapshot.summary,
-			},
-			allowCitoidLookup: false,
-			paperIdentifiers: snapshot.paperIdentifiers,
-			paidPdfFallback: target.paidPdfFallback ?? null,
-			processingId: target.resourceId,
-			url: snapshot.url,
-		}),
-		persistenceTarget: {
-			kind: 'existing',
-			resourceId: target.resourceId,
+	return stageUrlAcquisition(env, step, {
+		hints: {
+			originalLang: snapshot.originalLang,
+			publishedDate: snapshot.publishedDate,
+			summary: snapshot.summary,
 		},
-		saveTarget: null,
-	};
+		allowCitoidLookup: false,
+		paperIdentifiers: snapshot.paperIdentifiers,
+		paidPdfFallback: target.paidPdfFallback ?? null,
+		processingId: target.resourceId,
+		url: snapshot.url,
+	});
 }
 
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep) {
 		const target = ResourceProcessingTargetSchema.parse(event.payload);
-		const call = await resolveProcessingCall(this.env, step, target, event.instanceId);
-		const resource = call.resource;
-		const processingId = call.processingId;
+		const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
+		const resource = await resolveProcessingResource(this.env, step, target, processingId);
+		const uploadedPaper = target.kind === 'storedBlob' && resource.kind === 'paper';
+		const persistenceTarget: ResourcePersistenceTarget =
+			target.kind === 'draft'
+				? { kind: 'draft', ...(target.relation ? { relation: target.relation } : {}) }
+				: uploadedPaper
+					? { kind: 'draft' }
+					: { kind: 'existing', resourceId: target.resourceId };
+		const saveTarget =
+			target.kind === 'draft'
+				? (target.saveTarget ?? null)
+				: uploadedPaper
+					? ({ kind: 'userFilePaper', fileResourceId: target.resourceId } as const)
+					: null;
 
 		console.info({
 			tag: 'WORKFLOW',
@@ -289,7 +254,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		});
 		const [analysis, hostedImages] = await Promise.all([
 			step.do('classify-resource', { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' }, () =>
-				analyzeResource(resource, call.keywordHints, this.env, processingId),
+				analyzeResource(resource, target.kind === 'draft' ? (target.sourceHints?.keywords ?? []) : [], this.env, processingId),
 			),
 			stageResourceImages(this.env, step, processingId, imageSources),
 		]);
@@ -297,19 +262,15 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const persistence = await step.do(
 			'persist-resolved-resource-scope-v2',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			async () => persistResolvedResource(await connectCoreDb(this.env), preparedResource, call.persistenceTarget),
+			async () => persistResolvedResource(await connectCoreDb(this.env), preparedResource, persistenceTarget),
 		);
 		const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision } = persistence;
 		const forceProcessingRunKey = target.kind === 'reacquire' ? (await sha256Hex(event.instanceId)).slice(0, 16) : undefined;
-		const saveTarget = call.saveTarget;
 		if (saveTarget) {
 			await step.do(
 				'complete-resource-save-v1',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				async () => {
-					await this.env.APP.completeResourceSave(persistedResourceId, saveTarget);
-					return true;
-				},
+				() => this.env.APP.completeResourceSave(persistedResourceId, saveTarget),
 			);
 		}
 		const followUps: Promise<unknown>[] = [];
