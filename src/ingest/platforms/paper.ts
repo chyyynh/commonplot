@@ -120,20 +120,6 @@ async function resolveCitoidPaperIdentifiers(value: string): Promise<PaperIdenti
 	return identity ? paperIdentifiersFromIdentity(identity) : [];
 }
 
-function localPaperIdentifiers(input: {
-	canonicalUrl: string | null;
-	identifierText: string | null;
-	seedIdentifiers: readonly PaperIdentifier[];
-	sourceUrl: string | null;
-}): PaperIdentifier[] {
-	const exact = [input.sourceUrl, input.canonicalUrl === input.sourceUrl ? null : input.canonicalUrl].flatMap((value) => {
-		const resolved = resolveExactPaperInput(value);
-		return resolved ? paperIdentifiersFromIdentity(resolved.identity) : [];
-	});
-	const fromText = input.identifierText?.trim() ? paperIdentityFromText(input.identifierText) : null;
-	return choosePreferredIdentifiers([...exact, ...(fromText ? paperIdentifiersFromIdentity(fromText) : []), ...input.seedIdentifiers]);
-}
-
 async function stageCitoidPaperIdentifiers(
 	step: WorkflowStep,
 	candidate: {
@@ -272,12 +258,19 @@ export async function stagePaperProcessing(
 		allowCitoidLookup: boolean;
 	},
 ) {
-	const identifiers = localPaperIdentifiers({
-		canonicalUrl: input.canonicalUrl,
-		identifierText: input.acquiredContent.fileType === PDF_MIME ? (input.acquiredContent.paperIdentifierText ?? null) : null,
-		seedIdentifiers: input.seedIdentifiers,
-		sourceUrl: input.sourceUrl,
+	const exactIdentifiers = [input.sourceUrl, input.canonicalUrl === input.sourceUrl ? null : input.canonicalUrl].flatMap((value) => {
+		const resolved = resolveExactPaperInput(value);
+		return resolved ? paperIdentifiersFromIdentity(resolved.identity) : [];
 	});
+	const textIdentity =
+		input.acquiredContent.fileType === PDF_MIME && input.acquiredContent.paperIdentifierText?.trim()
+			? paperIdentityFromText(input.acquiredContent.paperIdentifierText)
+			: null;
+	const identifiers = choosePreferredIdentifiers([
+		...exactIdentifiers,
+		...(textIdentity ? paperIdentifiersFromIdentity(textIdentity) : []),
+		...input.seedIdentifiers,
+	]);
 	const doi = paperIdentityFromIdentifiers(identifiers)?.doi;
 	const citoidIdentifiers =
 		input.acquiredContent.fileType !== PDF_MIME && !identifiers.length && input.allowCitoidLookup && input.canonicalUrl
