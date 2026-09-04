@@ -58,6 +58,28 @@ async function boundedResponseText(response: Response, maxBytes: number): Promis
 	return text + decoder.decode();
 }
 
+function isPng(bytes: Uint8Array): boolean {
+	const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+	return bytes.length >= signature.length && signature.every((part, index) => bytes[index] === part);
+}
+
+/*
+ * Container RPC response streams are not guaranteed to retain Workers'
+ * fixed-length stream marker. Buffer each server-bounded crop before R2.put so R2
+ * receives a value with a known length rather than a chunked stream.
+ */
+async function sourceCropPng(response: Response): Promise<Uint8Array> {
+	const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+	if (contentType !== 'image/png') {
+		await response.body?.cancel('Zotero source crop response is not a PNG');
+		throw new Error('Zotero source crop response is not a PNG');
+	}
+	const png = new Uint8Array(await response.arrayBuffer());
+	if (png.byteLength < 1 || png.byteLength > MAX_SOURCE_CROP_BYTES) throw new Error('Zotero source crop response size is invalid');
+	if (!isPng(png)) throw new Error('Zotero source crop response has an invalid PNG signature');
+	return png;
+}
+
 function artifactFromJson(json: string, inputContentHash?: string): StructuredPdfArtifact {
 	const document = parseStructuredPdfDocumentJson(json);
 	return { document, json, normalized: normalizeStructuredPdf(document, { inputContentHash }) };
@@ -110,14 +132,8 @@ export async function ensureStructuredPdfSourceCrops(
 			if (!response.ok) {
 				throw new Error(`Zotero source crop failed with ${response.status}: ${await boundedResponseText(response, MAX_ERROR_BODY_BYTES)}`);
 			}
-			const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
-			const contentLength = Number(response.headers.get('content-length'));
-			if (contentType !== 'image/png' || !Number.isInteger(contentLength) || contentLength < 1 || contentLength > MAX_SOURCE_CROP_BYTES) {
-				await response.body?.cancel('Zotero source crop response is invalid');
-				throw new Error('Zotero source crop response is invalid');
-			}
-			if (!response.body) throw new Error('Zotero source crop response body is missing');
-			await env.R2.put(storageKey, response.body, {
+			const png = await sourceCropPng(response);
+			await env.R2.put(storageKey, png, {
 				customMetadata: {
 					artifactVersion: SOURCE_CROP_ARTIFACT_VERSION,
 					inputSha256: input.inputContentHash,
