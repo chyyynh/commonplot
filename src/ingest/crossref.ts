@@ -61,14 +61,6 @@ function publishedYear(work: CrossrefWork): number | null {
 	return typeof year === 'number' && Number.isInteger(year) && year >= 1800 && year <= 2199 ? year : null;
 }
 
-function publishedDate(work: CrossrefWork): string | undefined {
-	const [, month, day] = work.published?.['date-parts'][0] ?? [];
-	const year = publishedYear(work);
-	if (year === null) return undefined;
-	const candidate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-	return CrossrefPublicationDateSchema.safeParse(candidate).success ? candidate : undefined;
-}
-
 function normalizedFamilyNames(work: CrossrefWork): string[] {
 	return (work.author ?? [])
 		.slice(0, 3)
@@ -216,10 +208,11 @@ export async function resolveCrossrefPaper(doi: string) {
 	);
 	const work = response.message.items.find((item) => normalizeDoi(item.DOI) === normalizedDoi);
 	if (!work) return null;
-	const date = publishedDate(work);
+	const [, month, day] = work.published?.['date-parts'][0] ?? [];
+	const year = publishedYear(work);
+	const date = CrossrefPublicationDateSchema.safeParse(`${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`).data;
 	const title = boundedMetadata(work.title?.[0], MAX_TITLE_CHARS);
 	const venue = boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS);
-	const year = publishedYear(work);
 	return {
 		authors: workAuthors(work),
 		...(work['is-referenced-by-count'] == null ? {} : { citedByCount: work['is-referenced-by-count'] }),
