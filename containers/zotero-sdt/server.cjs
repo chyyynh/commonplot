@@ -8,6 +8,7 @@ const { inflateRawSync } = require('node:zlib');
 const PORT = Number.parseInt(process.env.PORT ?? '8080', 10);
 const MAX_PDF_BYTES = Number.parseInt(process.env.MAX_PDF_BYTES ?? String(25 * 1024 * 1024), 10);
 const MAX_DOCUMENT_BYTES = Number.parseInt(process.env.MAX_DOCUMENT_BYTES ?? String(32 * 1024 * 1024), 10);
+const MAX_CROP_BYTES = Number.parseInt(process.env.MAX_CROP_BYTES ?? String(8 * 1024 * 1024), 10);
 const BUILD_DIR = resolve(process.env.DOCUMENT_WORKER_BUILD_DIR ?? '/app/document-worker');
 const WORKER_PATH = resolve(__dirname, 'worker-thread.cjs');
 
@@ -107,6 +108,10 @@ class DocumentWorkerClient {
 	inspect(pdfBuffer) {
 		return this.request('pdf.getFulltext', pdfBuffer, { maxPages: 1 });
 	}
+
+	renderArea(pdfBuffer, pageIndex, rect, scale) {
+		return this.request('pdf.renderArea', pdfBuffer, { pageIndex, rect, scale });
+	}
 }
 
 function toError(value) {
@@ -145,6 +150,26 @@ function sendJson(response, status, body) {
 	response.end(json);
 }
 
+function renderAreaInput(url) {
+	const pageIndex = Number(url.searchParams.get('pageIndex'));
+	const rect = (url.searchParams.get('rect') ?? '').split(',').map(Number);
+	const scale = Number(url.searchParams.get('scale'));
+	if (
+		!Number.isInteger(pageIndex) ||
+		pageIndex < 0 ||
+		rect.length !== 4 ||
+		rect.some((part) => !Number.isFinite(part)) ||
+		!(rect[2] > rect[0]) ||
+		!(rect[3] > rect[1]) ||
+		!Number.isFinite(scale) ||
+		scale < 1 ||
+		scale > 4
+	) {
+		return null;
+	}
+	return { pageIndex, rect, scale };
+}
+
 const client = new DocumentWorkerClient();
 const server = createServer(async (request, response) => {
 	try {
@@ -153,7 +178,9 @@ const server = createServer(async (request, response) => {
 			await client.ready;
 			return sendJson(response, 200, { ok: true });
 		}
-		if (request.method !== 'POST' || url.pathname !== '/parse') return sendJson(response, 404, { error: 'Not found.' });
+		if (request.method !== 'POST' || (url.pathname !== '/parse' && url.pathname !== '/render-area')) {
+			return sendJson(response, 404, { error: 'Not found.' });
+		}
 		if (!request.headers['content-type']?.toLowerCase().startsWith('application/pdf')) {
 			return sendJson(response, 415, { error: 'Content-Type must be application/pdf.' });
 		}
@@ -162,6 +189,30 @@ const server = createServer(async (request, response) => {
 
 		const pdfBuffer = await readBody(request);
 		if (!pdfBuffer.length) return sendJson(response, 400, { error: 'PDF body is empty.' });
+		if (url.pathname === '/render-area') {
+			const input = renderAreaInput(url);
+			if (!input) return sendJson(response, 400, { error: 'Invalid PDF render area.' });
+			try {
+				const result = await client.renderArea(pdfBuffer, input.pageIndex, input.rect, input.scale);
+				if (!result?.buf) return sendJson(response, 422, { error: 'PDF render area is empty.' });
+				const png = Buffer.from(result.buf);
+				if (!png.length || png.length > MAX_CROP_BYTES) {
+					return sendJson(response, 413, { error: `Rendered PDF area exceeds the ${MAX_CROP_BYTES}-byte limit.` });
+				}
+				response.writeHead(200, {
+					'cache-control': 'no-store',
+					'content-length': String(png.length),
+					'content-type': 'image/png',
+				});
+				return response.end(png);
+			} catch (renderError) {
+				console.error({
+					error: renderError instanceof Error ? renderError.message : String(renderError),
+					event: 'zotero_sdt_render_area_failed',
+				});
+				return sendJson(response, 422, { error: renderError instanceof Error ? renderError.message : 'PDF render area failed.' });
+			}
+		}
 		const sourceHash = createHash('md5').update(pdfBuffer).digest('hex');
 		const startedAt = performance.now();
 		try {
@@ -217,6 +268,7 @@ server.listen(PORT, '0.0.0.0', () => {
 		buildDir: BUILD_DIR,
 		event: 'zotero_sdt_container_listening',
 		maxDocumentBytes: MAX_DOCUMENT_BYTES,
+		maxCropBytes: MAX_CROP_BYTES,
 		maxPdfBytes: MAX_PDF_BYTES,
 		port: PORT,
 	});

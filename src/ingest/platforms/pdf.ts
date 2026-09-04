@@ -7,8 +7,9 @@ import { canonicalizeResourceLang, type ResourceCreator, ResourceCreatorsSchema 
 import { resolveCrossrefPaperCandidate } from '../crossref';
 import { GROBID_CONTAINER_NAME } from '../grobid-container';
 import { type GrobidPdfHeader, grobidPaperIdentifierText } from '../grobid-tei';
-import { ZOTERO_SDT_ARTIFACT_VERSION } from '../zotero-sdt.ts';
+import { normalizeStructuredPdf, ZOTERO_SDT_ARTIFACT_VERSION } from '../zotero-sdt.ts';
 import {
+	ensureStructuredPdfSourceCrops,
 	parsePdfWithZotero,
 	readStructuredPdfArtifact,
 	type StructuredPdfArtifact,
@@ -319,8 +320,25 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 		const attempt = await parsePdfStream(env, object.body, object.size, sourceLabel);
 		parsed = attempt.result;
 		if (attempt.artifact) {
-			await writeStructuredPdfArtifact(env, resource.storageKey, resource.contentHash, attempt.artifact);
+			artifact = {
+				...attempt.artifact,
+				normalized: normalizeStructuredPdf(attempt.artifact.document, { inputContentHash: resource.contentHash }),
+			};
+			parsed = {
+				markdown: artifact.normalized.markdown,
+				paperIdentifierText: artifact.normalized.paperIdentifierText,
+				parse: artifact.normalized.parse,
+			};
+			await writeStructuredPdfArtifact(env, resource.storageKey, resource.contentHash, artifact);
 		}
+	}
+	if (artifact) {
+		await ensureStructuredPdfSourceCrops(env, {
+			document: artifact.document,
+			inputContentHash: resource.contentHash,
+			pdfStorageKey: resource.storageKey,
+			resourceId: resource.resourceId,
+		});
 	}
 	return {
 		kind: 'local-pdf',

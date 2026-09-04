@@ -9,8 +9,11 @@ const MAX_CITATION_CONTEXT_CHARS = 1_200;
 const MAX_CITATION_MARKER_CHARS = 128;
 const MAX_CITATION_MENTIONS = 3_000;
 const MAX_SECTION_CHARS = 300;
+const MAX_SOURCE_CROP_ALT_CHARS = 500;
+const MAX_SOURCE_CROPS = 64;
 const MAX_REF_PATH_DEPTH = 16;
 const POSTGRES_NUL = String.fromCharCode(0);
+const INPUT_HASH_PATTERN = /^[a-f\d]{64}$/u;
 
 export const ZOTERO_SDT_ARTIFACT_VERSION = 'newsence-zotero-sdt-v1';
 export const ZOTERO_SDT_CONTENT_TYPE = 'application/vnd.newsence.structured-document+json';
@@ -113,12 +116,22 @@ export type StructuredPdfCitationMention = Readonly<{
 	targetKeys: string[];
 }>;
 
+export type StructuredPdfSourceCrop = Readonly<{
+	altText: string;
+	blockPath: string;
+	id: string;
+	kind: 'image' | 'table';
+	pageIndex: number;
+	rect: readonly [number, number, number, number];
+}>;
+
 export type NormalizedStructuredPdf = Readonly<{
 	markdown: string;
 	mentions: StructuredPdfCitationMention[];
 	paperIdentifierText: string | null;
 	parse: LocalPdfSummary;
 	references: StructuredPdfReference[];
+	sourceCrops: StructuredPdfSourceCrop[];
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -428,6 +441,57 @@ function isInlineContent(nodes: readonly SdtNode[]): boolean {
 	return nodes.every((node) => 'text' in node);
 }
 
+function shouldRenderSourceCrop(node: SdtBlockNode): node is SdtBlockNode & { type: 'image' | 'table' } {
+	return node.type === 'image' || (node.type === 'table' && isInlineContent(node.content));
+}
+
+/**
+ * Zotero Reading Mode renders semantic image nodes and flat tables by
+ * cropping their source rectangles from the PDF. Keep the same geometry as a
+ * durable, bounded contract so the original PDF remains the rendering source.
+ */
+export function structuredPdfSourceCrops(document: StructuredPdfDocument): StructuredPdfSourceCrop[] {
+	const crops: StructuredPdfSourceCrop[] = [];
+	for (const [blockIndex, block] of document.content.entries()) {
+		if (block.flowClass === 'excluded' || !shouldRenderSourceCrop(block)) continue;
+		const rectByPage = new Map<number, [number, number, number, number]>();
+		for (const [pageIndex, x1, y1, x2, y2] of block.anchor?.pageRects ?? []) {
+			if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= document.catalog.pages.length || !(x2 > x1) || !(y2 > y1)) {
+				continue;
+			}
+			const current = rectByPage.get(pageIndex);
+			if (current) {
+				current[0] = Math.min(current[0], x1);
+				current[1] = Math.min(current[1], y1);
+				current[2] = Math.max(current[2], x2);
+				current[3] = Math.max(current[3], y2);
+			} else {
+				rectByPage.set(pageIndex, [x1, y1, x2, y2]);
+			}
+		}
+		const blockPath = String(blockIndex);
+		const altText = boundedText(cleanText(nodeText(block)), MAX_SOURCE_CROP_ALT_CHARS);
+		for (const [pageIndex, rect] of [...rectByPage].sort((left, right) => left[0] - right[0])) {
+			if (crops.length >= MAX_SOURCE_CROPS) return crops;
+			crops.push({
+				altText,
+				blockPath,
+				id: `${blockPath}-p${pageIndex}`,
+				kind: block.type,
+				pageIndex,
+				rect,
+			});
+		}
+	}
+	return crops;
+}
+
+export function structuredPdfSourceCropUrl(inputContentHash: string, cropId: string): string {
+	if (!INPUT_HASH_PATTERN.test(inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
+	if (!/^\d+(?:\.\d+)*-p\d+$/u.test(cropId)) throw new TypeError('Structured PDF source crop ID is invalid');
+	return `/api/media/asset/pdf-crops/${inputContentHash}/${cropId}.png`;
+}
+
 function renderTableRow(
 	writer: MarkdownWriter,
 	row: SdtBlockNode,
@@ -451,9 +515,15 @@ function renderBlock(
 	section: string | null,
 	referenceKeyByPath: ReadonlyMap<string, string>,
 	headingLevelByPath: ReadonlyMap<string, number>,
+	sourceCropsByBlock: ReadonlyMap<string, readonly Readonly<{ altText: string; url: string }>[]>,
 ): string | null {
 	if (node.flowClass === 'excluded') return section;
 	const context = cleanText(nodeText(node));
+	const sourceCrops = shouldRenderSourceCrop(node) ? sourceCropsByBlock.get(nodePathKey(path)) : undefined;
+	if (sourceCrops?.length) {
+		for (const crop of sourceCrops) writer.append(`![${escapeMarkdownText(crop.altText)}](${crop.url})\n\n`);
+		return section;
+	}
 	if (node.type === 'heading') {
 		const nextSection = context || section;
 		const level = headingLevelByPath.get(nodePathKey(path)) ?? 2;
@@ -484,7 +554,7 @@ function renderBlock(
 				renderInline(writer, [child], context, section, referenceKeyByPath);
 				writer.append('\n');
 			} else {
-				section = renderBlock(writer, child, path, section, referenceKeyByPath, headingLevelByPath);
+				section = renderBlock(writer, child, path, section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
 			}
 		}
 		writer.append('\n');
@@ -499,7 +569,7 @@ function renderBlock(
 			else {
 				for (const child of item.content) {
 					if ('text' in child) renderInline(writer, [child], itemContext, section, referenceKeyByPath);
-					else section = renderBlock(writer, child, [...path, index], section, referenceKeyByPath, headingLevelByPath);
+					else section = renderBlock(writer, child, [...path, index], section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
 				}
 			}
 			writer.append('\n');
@@ -524,7 +594,7 @@ function renderBlock(
 	else {
 		for (const [index, child] of node.content.entries()) {
 			if ('text' in child) renderInline(writer, [child], context, section, referenceKeyByPath);
-			else section = renderBlock(writer, child, [...path, index], section, referenceKeyByPath, headingLevelByPath);
+			else section = renderBlock(writer, child, [...path, index], section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
 		}
 	}
 	return section;
@@ -571,7 +641,10 @@ function firstPageIdentifierText(document: StructuredPdfDocument): string | null
 	return combined || null;
 }
 
-export function normalizeStructuredPdf(document: StructuredPdfDocument): NormalizedStructuredPdf {
+export function normalizeStructuredPdf(
+	document: StructuredPdfDocument,
+	options: Readonly<{ inputContentHash?: string }> = {},
+): NormalizedStructuredPdf {
 	const entries = walkNodes(document.content);
 	const referenceEntries = entries.filter(
 		(entry): entry is { node: SdtBlockNode; path: number[] } => !('text' in entry.node) && entry.node.reference === true,
@@ -584,6 +657,16 @@ export function normalizeStructuredPdf(document: StructuredPdfDocument): Normali
 	});
 	const writer = new MarkdownWriter();
 	const headingLevelByPath = headingLevels(document.catalog.outline);
+	const sourceCrops = structuredPdfSourceCrops(document);
+	const sourceCropsByBlock = new Map<string, Array<{ altText: string; url: string }>>();
+	if (options.inputContentHash) {
+		for (const crop of sourceCrops) {
+			const entry = { altText: crop.altText, url: structuredPdfSourceCropUrl(options.inputContentHash, crop.id) };
+			const existing = sourceCropsByBlock.get(crop.blockPath);
+			if (existing) existing.push(entry);
+			else sourceCropsByBlock.set(crop.blockPath, [entry]);
+		}
+	}
 	let section: string | null = null;
 	for (let index = 0; index < document.content.length; index += 1) {
 		const block = document.content[index];
@@ -601,7 +684,7 @@ export function normalizeStructuredPdf(document: StructuredPdfDocument): Normali
 			previousSourceBlock = nextBlock;
 			lastMergedIndex = nextIndex;
 		}
-		section = renderBlock(writer, renderableBlock, [blockIndex], section, referenceKeyByPath, headingLevelByPath);
+		section = renderBlock(writer, renderableBlock, [blockIndex], section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
 		index = lastMergedIndex;
 	}
 	const markdown = writer.toString();
@@ -622,6 +705,7 @@ export function normalizeStructuredPdf(document: StructuredPdfDocument): Normali
 			totalPages: document.catalog.pages.length,
 		},
 		references,
+		sourceCrops,
 	};
 }
 

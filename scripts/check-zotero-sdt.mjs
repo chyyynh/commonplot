@@ -3,6 +3,8 @@ import {
 	normalizeStructuredPdf,
 	parseStructuredPdfDocumentJson,
 	parseStructuredPdfFailure,
+	structuredPdfSourceCrops,
+	structuredPdfSourceCropUrl,
 	structuredPdfStorageKey,
 } from '../src/ingest/zotero-sdt.ts';
 
@@ -77,6 +79,7 @@ assert.match(normalized.paperIdentifierText ?? '', /DOI: 10\.1000\/example/u);
 assert.equal(normalized.parse.totalPages, 1);
 assert.equal(normalized.parse.fullPageImagePages, 0);
 assert.equal(structuredPdfStorageKey('users/u/resources/r/source.pdf'), 'users/u/resources/r/source.pdf.structured-document.json');
+assert.equal(structuredPdfSourceCropUrl('a'.repeat(64), '12-p3'), `/api/media/asset/pdf-crops/${'a'.repeat(64)}/12-p3.png`);
 assert.deepEqual(parseStructuredPdfFailure(422, '{"error":"model failed","totalPages":12}'), {
 	message: 'Zotero SDT parse failed with 422: model failed',
 	totalPages: 12,
@@ -127,6 +130,44 @@ assert.match(seamNormalized.markdown, /functionality\.\n\nlowercase starts a rea
 assert.match(seamNormalized.markdown, /A label without terminal punctuation\n\nlowercase text below it remains separate\./u);
 assert.match(seamNormalized.markdown, /This paragraph continues across the next page without being interrupted by excluded furniture\./u);
 assert.doesNotMatch(seamNormalized.markdown, /Running header|1278/u);
+
+const cropDocument = {
+	...document,
+	catalog: {
+		outline: [],
+		pages: [{ contentRange: [[0], [2]], textSource: 'born-digital' }],
+	},
+	content: [
+		{
+			anchor: { pageRects: [[0, 20, 40, 220, 180]] },
+			content: [text('Research model')],
+			type: 'image',
+		},
+		{
+			anchor: { pageRects: [[0, 30, 200, 260, 500]] },
+			content: [text('Visible cues Social inferences Representative quote')],
+			type: 'table',
+		},
+	],
+};
+const parsedCropDocument = parseStructuredPdfDocumentJson(JSON.stringify(cropDocument));
+assert.deepEqual(
+	structuredPdfSourceCrops(parsedCropDocument).map(({ blockPath, id, kind, pageIndex, rect }) => ({
+		blockPath,
+		id,
+		kind,
+		pageIndex,
+		rect,
+	})),
+	[
+		{ blockPath: '0', id: '0-p0', kind: 'image', pageIndex: 0, rect: [20, 40, 220, 180] },
+		{ blockPath: '1', id: '1-p0', kind: 'table', pageIndex: 0, rect: [30, 200, 260, 500] },
+	],
+);
+const cropNormalized = normalizeStructuredPdf(parsedCropDocument, { inputContentHash: 'a'.repeat(64) });
+assert.match(cropNormalized.markdown, /!\[Research model\]\(\/api\/media\/asset\/pdf-crops\/a{64}\/0-p0\.png\)/u);
+assert.match(cropNormalized.markdown, /!\[Visible cues Social inferences Representative quote\]/u);
+assert.equal(cropNormalized.sourceCrops.length, 2);
 
 console.info({
 	event: 'zotero_sdt_contract_passed',
