@@ -1,6 +1,5 @@
 export const LLAMA_PARSE_MAX_PAGES = 100;
 const FULL_PAGE_IMAGE_FALLBACK_RATIO = 0.8;
-const POSTGRES_NUL = String.fromCharCode(0);
 const DOCUMENT_FALLBACK_REASONS = new Set(['empty-output', 'parse-failed']);
 
 export type PaidPdfFallbackGrant = Readonly<{ maxPages: number }>;
@@ -20,11 +19,6 @@ export function localPdfNeedsFallback(local: Pick<LocalPdfSummary, 'fallbackReas
 		local.fallbackReasons.some((reason) => DOCUMENT_FALLBACK_REASONS.has(reason)) ||
 		(local.parsedPages > 0 && local.fullPageImagePages / local.parsedPages >= FULL_PAGE_IMAGE_FALLBACK_RATIO)
 	);
-}
-
-/** Remove characters PostgreSQL text cannot safely persist without treating content shape as a quality score. */
-export function storageSafePdfMarkdown(markdown: string): string {
-	return markdown.split(POSTGRES_NUL).join('').trim();
 }
 
 export type LlamaParseAdmissionReason =
@@ -78,5 +72,11 @@ export function wholeDocumentMarkdown(pages: readonly MarkdownPage[] | null | un
 	if (pages?.length !== expectedPages || expectedPages < 1 || expectedPages > LLAMA_PARSE_MAX_PAGES) return null;
 	const ordered = [...pages].sort((left, right) => left.page_number - right.page_number);
 	if (ordered.some((page, index) => !page.success || page.page_number !== index + 1 || typeof page.markdown !== 'string')) return null;
-	return storageSafePdfMarkdown(ordered.map((page) => page.markdown).join('\n\n')) || null;
+	return (
+		ordered
+			.map((page) => page.markdown)
+			.join('\n\n')
+			.replaceAll('\0', '')
+			.trim() || null
+	);
 }

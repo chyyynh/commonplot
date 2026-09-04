@@ -24,7 +24,7 @@ import {
 import { type GenericAcquiredMaterial, literalCreator } from './materialize';
 import { fetchOpenAlexPdf } from './openalex';
 import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
-import { type LocalPdfSummary, localPdfNeedsFallback, type PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
+import type { LocalPdfSummary, PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
 
 export { PDF_MIME } from './pdf-constants';
@@ -49,11 +49,6 @@ export function isPdfAcquisitionDraft(value: GenericAcquiredMaterial | PdfAcquis
 
 type LocalPdfParseResult = Pick<NormalizedStructuredPdf, 'markdown' | 'paperIdentifierText' | 'parse'>;
 
-type PdfArtifactAttempt = Readonly<{
-	artifact: StructuredPdfArtifact | null;
-	failure: LocalPdfParseResult | null;
-}>;
-
 function localPdfResult(normalized: NormalizedStructuredPdf, sourceLabel: string): LocalPdfParseResult {
 	const result: LocalPdfParseResult = {
 		markdown: normalized.markdown,
@@ -66,7 +61,6 @@ function localPdfResult(normalized: NormalizedStructuredPdf, sourceLabel: string
 		fallback_reasons: result.parse.fallbackReasons,
 		full_page_image_pages: result.parse.fullPageImagePages,
 		mention_count: normalized.mentions.length,
-		outcome: localPdfNeedsFallback(result.parse) ? 'fallback-needed' : 'usable',
 		parser_version: result.parse.parserVersion,
 		parsed_pages: result.parse.parsedPages,
 		reference_count: normalized.references.length,
@@ -81,9 +75,9 @@ async function parsePdfArtifactStream(
 	input: ReadableStream<Uint8Array>,
 	byteLength: number | null,
 	sourceLabel: string,
-): Promise<PdfArtifactAttempt> {
+): Promise<StructuredPdfArtifact | LocalPdfParseResult> {
 	try {
-		return { artifact: await parsePdfWithZotero(env, input, byteLength), failure: null };
+		return await parsePdfWithZotero(env, input, byteLength);
 	} catch (error) {
 		console.error({
 			tag: 'PDF_PARSE',
@@ -93,17 +87,14 @@ async function parsePdfArtifactStream(
 			error: error instanceof Error ? error.message : String(error),
 		});
 		return {
-			artifact: null,
-			failure: {
-				markdown: '',
-				paperIdentifierText: null,
-				parse: {
-					fallbackReasons: ['parse-failed'],
-					fullPageImagePages: 0,
-					parserVersion: ZOTERO_SDT_ARTIFACT_VERSION,
-					parsedPages: 0,
-					totalPages: error instanceof ZoteroSdtParseError ? error.totalPages : null,
-				},
+			markdown: '',
+			paperIdentifierText: null,
+			parse: {
+				fallbackReasons: ['parse-failed'],
+				fullPageImagePages: 0,
+				parserVersion: ZOTERO_SDT_ARTIFACT_VERSION,
+				parsedPages: 0,
+				totalPages: error instanceof ZoteroSdtParseError ? error.totalPages : null,
 			},
 		};
 	}
@@ -164,7 +155,6 @@ export async function stageOpenAlexPdfRepresentation(
 			event: 'pdf_acquired',
 			processing_id: input.processingId,
 			chars: acquired.markdown.length,
-			local_parse_outcome: localPdfNeedsFallback(local.parse) ? 'fallback-needed' : 'usable',
 		});
 		return {
 			fileType: PDF_MIME,
@@ -304,11 +294,10 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 			throw new NonRetryableError(`PDF source object must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
 		const attempt = await parsePdfArtifactStream(env, object.body, object.size, sourceLabel);
-		parseFailure = attempt.failure;
-		if (attempt.artifact) {
-			artifact = attempt.artifact;
+		if ('document' in attempt) {
+			artifact = attempt;
 			await writeStructuredPdfArtifact(env, resource.storageKey, resource.contentHash, artifact);
-		}
+		} else parseFailure = attempt;
 	}
 	let parsed = parseFailure;
 	if (artifact) {
@@ -365,7 +354,7 @@ export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response
 	);
 	if (!body) throw new NonRetryableError('Fetched PDF response body is empty');
 	const attempt = await parsePdfArtifactStream(env, body, null, 'Fetched PDF');
-	const parsed = attempt.artifact ? localPdfResult(normalizeStructuredPdf(attempt.artifact.document), 'Fetched PDF') : attempt.failure!;
+	const parsed = 'document' in attempt ? localPdfResult(normalizeStructuredPdf(attempt.document), 'Fetched PDF') : attempt;
 	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
 	let fileName = encodedName || 'document.pdf';
 	if (encodedName) {
