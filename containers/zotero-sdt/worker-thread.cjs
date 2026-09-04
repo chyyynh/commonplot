@@ -32,7 +32,6 @@ globalThis.postMessage = parentPort.postMessage.bind(parentPort);
 require(resolve(buildDir, 'worker.js'));
 
 parentPort.on('message', (message) => {
-	if (typeof globalThis.self.onmessage !== 'function') return;
 	globalThis.self.onmessage({ data: message }).catch((error) => {
 		parentPort.postMessage({ responseID: message.id, error: error instanceof Error ? error : new Error(String(error)) });
 	});

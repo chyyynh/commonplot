@@ -37,7 +37,6 @@ class DocumentWorkerClient {
 
 	handleMessage(message) {
 		if (message?.ready) {
-			if (this.failure) return;
 			this.ready.resolve();
 			return;
 		}
