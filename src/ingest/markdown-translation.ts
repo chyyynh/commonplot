@@ -98,6 +98,20 @@ export type MarkdownTranslationPlan = Readonly<{
 	targets: readonly MarkdownBlockTranslationTarget[];
 }>;
 
+export type MarkdownTranslationAlignment = Readonly<{
+	blocks: readonly Readonly<{
+		sourceMarkdown: string;
+		translatedMarkdown: string;
+		type: ProseBlock['type'];
+	}>[];
+	version: 1;
+}>;
+
+export type CompiledMarkdownTranslation = Readonly<{
+	alignment: MarkdownTranslationAlignment;
+	content: string;
+}>;
+
 export type MarkdownTranslationPlanOptions = Readonly<{
 	maxBatchCharacters?: number;
 	maxBatchSegments?: number;
@@ -1071,10 +1085,20 @@ export function planMarkdownTranslation(sourceMarkdown: string, options: Markdow
 	};
 }
 
-export function compileMarkdownTranslation(plan: MarkdownTranslationPlan, translations: readonly MarkdownSegmentTranslation[]): string {
+function serializeProseBlock(block: ProseBlock): string {
+	const child: Heading | Paragraph =
+		block.type === 'tableCell' ? { children: structuredClone(block.children), type: 'paragraph' } : structuredClone(block);
+	return serializeMarkdown({ children: [child], type: 'root' }).trim();
+}
+
+export function compileMarkdownTranslationArtifact(
+	plan: MarkdownTranslationPlan,
+	translations: readonly MarkdownSegmentTranslation[],
+): CompiledMarkdownTranslation {
 	const values = orderedTranslationMap(plan.segments, translations);
 	const segmentsById = new Map(plan.segments.map((segment) => [segment.id, segment]));
-	const tree = parseMarkdown(plan.sourceMarkdown);
+	const sourceTree = parseMarkdown(plan.sourceMarkdown);
+	const tree = structuredClone(sourceTree);
 	for (const target of plan.targets) {
 		const translatedParts = target.segmentIds.map((id) => {
 			const translated = values.get(id);
@@ -1127,5 +1151,31 @@ export function compileMarkdownTranslation(plan: MarkdownTranslationPlan, transl
 			'Translated Markdown did not preserve the source document structure',
 		);
 	}
-	return translatedMarkdown;
+	return {
+		alignment: {
+			blocks: plan.targets.flatMap((target) => {
+				const source = nodeAtPath(sourceTree, target.path);
+				const translated = nodeAtPath(tree, target.path);
+				if (!isProseBlock(source) || !isProseBlock(translated) || source.type !== translated.type) {
+					throw new MarkdownTranslationInvariantError('invalid-plan', 'Aligned translation target changed block type');
+				}
+				// Resource readers render the canonical title separately and remove a
+				// leading H1 from the body. Keep the alignment payload on that same body boundary.
+				if (source.type === 'heading' && target.path.length === 1 && target.path[0] === 0) return [];
+				return [
+					{
+						sourceMarkdown: serializeProseBlock(source),
+						translatedMarkdown: serializeProseBlock(translated),
+						type: source.type,
+					},
+				];
+			}),
+			version: 1,
+		},
+		content: translatedMarkdown,
+	};
+}
+
+export function compileMarkdownTranslation(plan: MarkdownTranslationPlan, translations: readonly MarkdownSegmentTranslation[]): string {
+	return compileMarkdownTranslationArtifact(plan, translations).content;
 }

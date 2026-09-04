@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 const {
 	MarkdownTranslationInvariantError,
 	compileMarkdownTranslation,
+	compileMarkdownTranslationArtifact,
 	createSourceMarkdownSegmentTranslation,
 	createMarkdownTranslationTemplate,
 	planMarkdownTranslation,
@@ -119,6 +120,20 @@ const translations = plan.segments.map((segment) =>
 	),
 );
 const translatedMarkdown = compileMarkdownTranslation(plan, translations);
+const translatedArtifact = compileMarkdownTranslationArtifact(plan, translations);
+assert.equal(translatedArtifact.content, translatedMarkdown, 'aligned artifact content must remain the canonical plain Markdown');
+assert.equal(translatedArtifact.alignment.version, 1);
+assert.equal(
+	translatedArtifact.alignment.blocks.length,
+	plan.targets.length,
+	'every planned prose block must have one persisted alignment',
+);
+assert.ok(
+	translatedArtifact.alignment.blocks.some(
+		(block) => block.sourceMarkdown.includes('Format-safe translation') && block.translatedMarkdown.includes('格式安全翻譯'),
+	),
+	'alignment must carry the exact source and translated block produced by the structural plan',
+);
 
 for (const protectedValue of [
 	'https://example.com/report?q=1',

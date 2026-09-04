@@ -9,8 +9,10 @@ import { connectCoreDb } from '../shared/db';
 import { canonicalizeResourceLang, type RESOURCE_TYPES } from '../shared/resource';
 import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
-	compileMarkdownTranslation,
+	type CompiledMarkdownTranslation,
+	compileMarkdownTranslationArtifact,
 	type MarkdownSegmentTranslation,
+	type MarkdownTranslationAlignment,
 	MarkdownTranslationInvariantError,
 	planMarkdownTranslation,
 } from './markdown-translation';
@@ -31,6 +33,7 @@ type ResourceTranslationInput = ResourceTranslationCandidate & {
 	summary: string | null;
 	content: string;
 	zhHantTranslation: {
+		aligned: boolean;
 		title: string | null;
 		summary: string | null;
 		content: string | null;
@@ -51,6 +54,7 @@ type ResourceTranslationInputRow = {
 	zh_hant_title: string | null;
 	zh_hant_summary: string | null;
 	zh_hant_content: string | null;
+	zh_hant_alignment_version: string | null;
 	zh_hant_source: string | null;
 	translation_revision: string;
 	url: string | null;
@@ -100,6 +104,7 @@ type ZhHantTranslationPlan = {
 };
 
 type MachineZhHantTranslationPatch = {
+	alignment?: MarkdownTranslationAlignment;
 	content?: string;
 	summary?: string;
 	title?: string;
@@ -130,6 +135,7 @@ function hasTranslatableContent(content: string): boolean {
 }
 
 function needsMachineContentTranslation(resource: ResourceTranslationInput): boolean {
+	if (resource.kind === 'paper' && resource.zhHantTranslation?.source === 'machine' && !resource.zhHantTranslation.aligned) return true;
 	const translated = resource.zhHantTranslation?.content?.trim();
 	if (!translated) return true;
 	const content = resource.content.trim();
@@ -258,7 +264,7 @@ async function translatePlannedContent(
 	env: CoreEnv,
 	resourceId: string,
 	step: WorkflowStep,
-): Promise<string | null> {
+): Promise<CompiledMarkdownTranslation | null> {
 	if (plan !== 'translate') return null;
 	let markdownPlan: ReturnType<typeof planMarkdownTranslation>;
 	try {
@@ -319,12 +325,13 @@ async function translatePlannedContent(
 		}
 	}
 	try {
-		const translated = compileMarkdownTranslation(markdownPlan, translatedSegments);
+		const translated = compileMarkdownTranslationArtifact(markdownPlan, translatedSegments);
 		console.info({
 			tag: 'RESOURCE_TRANSLATION',
 			event: 'markdown_translation_compiled',
 			resource_id: resourceId,
-			translated_characters: translated.length,
+			aligned_blocks: translated.alignment.blocks.length,
+			translated_characters: translated.content.length,
 		});
 		return translated;
 	} catch (error) {
@@ -345,7 +352,7 @@ async function translatePlannedContent(
 	}
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v20';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v21';
 const ResourceTranslationRevisionSchema = z.string().regex(/^[0-9a-f]{32}$/);
 const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 
@@ -376,6 +383,7 @@ async function loadResourceTranslationInput(
 			zh_hant.title AS zh_hant_title,
 			zh_hant.summary AS zh_hant_summary,
 			zh_hant.content AS zh_hant_content,
+			zh_hant.alignment->>'version' AS zh_hant_alignment_version,
 			zh_hant.source AS zh_hant_source,
 			resource.url,
 			MD5(jsonb_build_array(
@@ -418,6 +426,7 @@ async function loadResourceTranslationInput(
 			url: row.url,
 			zhHantTranslation: zhHantSource
 				? {
+						aligned: row.zh_hant_alignment_version === '1',
 						title: row.zh_hant_title?.trim() || null,
 						summary: row.zh_hant_summary?.trim() || null,
 						content: row.zh_hant_content?.trim() || null,
@@ -439,6 +448,9 @@ async function persistMachineZhHantTranslation(
 	if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) {
 		throw new TypeError('Resource translation patch is empty');
 	}
+	if ((patch.content === undefined) !== (patch.alignment === undefined)) {
+		throw new TypeError('Machine translation content and alignment must be persisted together');
+	}
 	const result = await db.execute<{ resource_id: string }>(sql`
 		WITH target_resource AS (
 			SELECT resource.id
@@ -455,10 +467,11 @@ async function persistMachineZhHantTranslation(
 			FOR UPDATE OF resource
 		)
 		INSERT INTO resource_translations AS current_translation (
-			resource_id, lang, title, summary, content, keywords, source, updated_at
+			resource_id, lang, title, summary, content, alignment, keywords, source, updated_at
 		)
 		SELECT
 			target_resource.id, 'zh-Hant', ${patch.title ?? null}, ${patch.summary ?? null}, ${patch.content ?? null},
+			${patch.alignment === undefined ? null : JSON.stringify(patch.alignment)}::jsonb,
 			ARRAY[]::text[], 'machine', NOW()
 		FROM target_resource
 		ON CONFLICT (resource_id, lang) DO UPDATE SET
@@ -476,6 +489,11 @@ async function persistMachineZhHantTranslation(
 				WHEN current_translation.source IN ('human', 'original') OR ${patch.content === undefined}
 					THEN current_translation.content
 				ELSE EXCLUDED.content
+			END,
+			alignment = CASE
+				WHEN current_translation.source IN ('human', 'original') OR ${patch.content === undefined}
+					THEN current_translation.alignment
+				ELSE EXCLUDED.alignment
 			END,
 			keywords = CASE
 				WHEN current_translation.source IN ('human', 'original') THEN current_translation.keywords
@@ -558,11 +576,14 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		}
 
 		const translated = await translatePlannedContent(initialContent, translationPlan.content, this.env, resourceId, step);
-		if (translated !== null) patch.content = translated;
+		if (translated !== null) {
+			patch.alignment = translated.alignment;
+			patch.content = translated.content;
+		}
 		if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) return;
 
 		const persisted = await step.do(
-			'persist-zh-hant-translation-v1',
+			'persist-zh-hant-translation-v2',
 			{
 				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 				timeout: '30 seconds',
