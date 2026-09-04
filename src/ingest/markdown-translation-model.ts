@@ -11,20 +11,6 @@ import {
 	validateMarkdownBatchTranslations,
 } from './markdown-translation';
 
-const markdownTranslationTextPartSchema = z.strictObject({
-	type: z.literal('text'),
-	value: z.string().min(1),
-});
-
-function markdownTranslationPartsSchema(inlineIds: readonly string[]) {
-	if (!inlineIds.length) return z.array(markdownTranslationTextPartSchema);
-	const markdownTranslationInlinePartSchema = z.strictObject({
-		type: z.literal('inline'),
-		value: z.enum(inlineIds as [string, ...string[]]),
-	});
-	return z.array(z.discriminatedUnion('type', [markdownTranslationTextPartSchema, markdownTranslationInlinePartSchema]));
-}
-
 function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslationSegment[]) {
 	return z.strictObject({
 		translations: z
@@ -35,19 +21,12 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 						return [
 							segment.id,
 							z.strictObject({
-								sequences: z.strictObject(
+								texts: z.strictObject(
 									Object.fromEntries(
-										Object.entries(template.sequences).map(([sequenceId, partIds]) => {
-											const inlineIds = partIds.filter((partId) => !Object.hasOwn(template.texts, partId));
-											return [
-												sequenceId,
-												markdownTranslationPartsSchema(inlineIds).describe(
-													inlineIds.length
-														? `Translated ${sequenceId}; inline values must be exactly ${inlineIds.join(', ')} once each.`
-														: `Translated ${sequenceId}; use text parts only.`,
-												),
-											];
-										}),
+										Object.keys(template.texts).map((textId) => [
+											textId,
+											z.string().describe(`Target-language text for writable position ${textId}; may be empty.`),
+										]),
 									),
 								),
 							}),
@@ -55,7 +34,7 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 					}),
 				),
 			)
-			.describe('One complete set of translated inline sequences for every input segment ID.'),
+			.describe('One complete set of translated text slots for every input segment ID.'),
 	});
 }
 
@@ -63,13 +42,15 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 
 輸入契約：
 - 每個 segment 是一個完整標題、段落、表格儲存格，或超長純文字段落的一個完整句界切片
-- texts 是待翻譯的原文片段；sequences 以 t ID 與 n ID 表示這些片段和 inline 在原文中的排列
-- inlines 是由 Core 保管的連結、強調、圖片、程式碼、公式或其他 Markdown inline；若同名 sequence 存在，它就是該 container 包住的可見文字
-- 同一 segment 的所有 sequences 合起來才是完整句意；context、ID、kind 與 reference 只供翻譯判斷，不屬於譯文
+- texts 是原文；sequences 顯示完整句子中 t 文字位置與 n inline 的原始排列
+- t ID 是 inline 前後可寫入譯文的位置，不是一對一翻譯單位；n ID 是 Core 保管的連結、強調、圖片、程式碼、公式或其他 Markdown inline
+- 若某個 n ID 也有同名 sequence，該 sequence 是該 container 內的可見文字；同一 segment 的所有 sequences 合起來才是完整句意
+- context、ID、kind 與 reference 只供翻譯判斷，不屬於譯文
 
 翻譯準則：
 - 把同一 segment 當作完整段落理解，不要逐 t ID 直譯
-- 可以在同一 sequence 內依自然中文語序合併、拆分或重新排列原文 text 片段；英文冠詞、空白等不需要一一產生中文表面文字
+- 在同一 sequence 內，把完整譯文自然分配到既有 t 位置；可以合併、拆分或把內容移到另一個 t，沒有譯文的 t 回傳空字串
+- 英文冠詞、空白等不需要一一產生中文表面文字；但不要把正文移入或移出 n ID 所屬的 container
 - 維持同一批段落的敘事語氣與術語一致，不要重複相鄰 segment 或 context
 - 忠實完整翻譯，不要摘要、評論、解釋、補充背景或新增原文沒有的資訊
 - 保留原文語氣、時態、否定、程度、條件、不確定性、引述關係、數字、單位與引用指向
@@ -80,12 +61,12 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - 若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然的台灣繁體中文
 
 格式契約：
-- translations 的每個 key 對應輸入的 segment ID；每個 sequence key 必須與輸入完全相同
-- 每個 n ID 必須在原本的 sequence 內恰好出現一次，並可在該 sequence 內依中文語序重新排列；不得把正文移入或移出 n ID 所屬的 container
-- type=text 的 value 只放譯文純文字；type=inline 的 value 只放該 sequence 原有的 n ID。不要輸出 t ID，text parts 可以自由拆合，不需要空 text part
+- translations 的每個 key 對應輸入的 segment ID；texts 必須保留輸入的所有 t ID，不得新增或遺漏
+- 每個 t value 只放該位置的譯文純文字，可以是空字串；不要輸出 n ID、sequence、reference、Markdown 或 HTML
+- n ID 的次序、數量與結構完全由 Core 還原，不能也不需要在輸出中重複
 - reference 只供理解，不能複製成譯文；URL、Markdown 語法和其他受保護內容由 Core 還原
 - 不要沿用英文在 inline、中文標點或中文字之間的多餘空白，也不要為中文與英文、數字或 inline 邊界額外補空格；英文單字內與連續拉丁文字之間仍保留正常空格
-- 只輸出符合 schema 的結果，不要輸出 Markdown、HTML、XML、說明、前後空白或額外段落；整個 segment 與原本含有文字的 sequence 都不可為空。`;
+- 只輸出符合 schema 的結果，不要輸出說明、前後空白或額外段落；整個 segment 與原本含有文字的 sequence 都不可為空。`;
 
 type TranslationRecoveryStrategy = 'batch' | 'halves' | 'individual';
 
@@ -169,10 +150,14 @@ async function translateGroup(
 	if (finishReason === 'length') throw new Error('Markdown segment translation hit its output token cap');
 	return validateMarkdownBatchTranslations(
 		{ segments: group.segments },
-		group.segments.map((segment) => ({
-			id: segment.id,
-			sequences: output.translations[segment.id]?.sequences ?? {},
-		})),
+		group.segments.map((segment) => {
+			const template = createMarkdownTranslationTemplate(segment);
+			return {
+				id: segment.id,
+				sequences: template.sequences,
+				texts: output.translations[segment.id]?.texts ?? {},
+			};
+		}),
 	);
 }
 

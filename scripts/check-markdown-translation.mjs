@@ -13,16 +13,7 @@ function materializeTranslation(translation, partOrder = translation.partOrder, 
 	return {
 		...translation,
 		partOrder,
-		sequences: Object.fromEntries(
-			Object.entries(partOrder).map(([sequenceId, partIds]) => [
-				sequenceId,
-				partIds.flatMap((partId) => {
-					const text = texts[partId];
-					if (text !== undefined) return text ? [{ type: 'text', value: text }] : [];
-					return [{ type: 'inline', value: partId }];
-				}),
-			]),
-		),
+		sequences: partOrder,
 		texts,
 	};
 }
@@ -407,16 +398,11 @@ const filingInlineId = inlineIdsOfKind(disappearingArticleTemplate, 'link')[0];
 assert.ok(filingInlineId, 'article regression fixture must expose its link');
 assert.equal(
 	compileMarkdownTranslation(disappearingArticlePlan, [
-		{
-			id: disappearingArticleSegment.id,
-			sequences: {
-				root: [
-					{ type: 'inline', value: filingInlineId },
-					{ type: 'text', value: '顯示，營收大幅成長。' },
-				],
-				[filingInlineId]: [{ type: 'text', value: '申報文件' }],
-			},
-		},
+		withTranslatedTexts(targetFromSource(disappearingArticleSegment), {
+			t1: '',
+			t2: '顯示，營收大幅成長。',
+			t3: '申報文件',
+		}),
 	]),
 	'[申報文件](https://example.com/filing)顯示，營收大幅成長。',
 	'natural Chinese may omit an English article without erasing the enclosing sequence',
