@@ -38,7 +38,7 @@ type ParseSource = Readonly<{ file_id: string }> | Readonly<{ source_url: string
 type ProviderResult = Readonly<{
 	billedCredits: number | null;
 	finishedAt: number;
-	pages: readonly Readonly<{ markdown?: string; page_number: number; success: boolean }>[] | null;
+	markdown: string | null;
 }>;
 
 function client(apiKey: string): LlamaCloud {
@@ -210,27 +210,6 @@ function stageCreateJob(
 	});
 }
 
-async function stageReadResult(step: WorkflowStep, credentials: ProviderCredentials, jobId: string): Promise<ProviderResult> {
-	const stream = await step.do('llamaparse-read-result-v3', { ...READ_STEP, sensitive: 'output', timeout: '90 seconds' }, async () => {
-		const result = await client(credentials.apiKey).parsing.get(
-			jobId,
-			{ expand: ['markdown', 'usage'], project_id: credentials.projectId },
-			{ timeout: 60_000 },
-		);
-		return Response.json({
-			billedCredits: result.job.usage?.credits ?? null,
-			finishedAt: Date.now(),
-			pages:
-				result.markdown?.pages.map((page) => ({
-					...(page.success ? { markdown: page.markdown } : {}),
-					page_number: page.page_number,
-					success: page.success,
-				})) ?? null,
-		}).body!;
-	});
-	return new Response(stream).json<ProviderResult>();
-}
-
 function stageCancelJob(step: WorkflowStep, credentials: ProviderCredentials, job: ProviderJob): Promise<void> {
 	return step.do('llamaparse-cancel-job-v2', CLEANUP_STEP, () => cancelKnownJob(credentials, job));
 }
@@ -356,20 +335,31 @@ export async function stagePaidLlamaParseFallback(
 
 		let result: ProviderResult;
 		try {
-			result = await stageReadResult(step, credentials, job.jobId);
+			const stream = await step.do('llamaparse-read-result-v4', { ...READ_STEP, sensitive: 'output', timeout: '90 seconds' }, async () => {
+				const response = await client(credentials.apiKey).parsing.get(
+					job.jobId,
+					{ expand: ['markdown', 'usage'], project_id: credentials.projectId },
+					{ timeout: 60_000 },
+				);
+				return Response.json({
+					billedCredits: response.job.usage?.credits ?? null,
+					finishedAt: Date.now(),
+					markdown: wholeDocumentMarkdown(response.markdown?.pages, input.local.totalPages!),
+				}).body!;
+			});
+			result = await new Response(stream).json<ProviderResult>();
 		} catch (error) {
 			logFallback({ error, file, job, local: input.local, outcome: 'provider-failed' });
 			return null;
 		}
-		const markdown = wholeDocumentMarkdown(result.pages, input.local.totalPages!);
 		logFallback({
 			billedCredits: result.billedCredits,
 			file,
 			job: { ...state, observedAt: result.finishedAt },
 			local: input.local,
-			outcome: markdown ? 'cloud-replaced-local' : 'incomplete-cloud-result',
+			outcome: result.markdown ? 'cloud-replaced-local' : 'incomplete-cloud-result',
 		});
-		return markdown;
+		return result.markdown;
 	} finally {
 		if (file) await stageDeleteProviderFile(step, credentials, file);
 	}
