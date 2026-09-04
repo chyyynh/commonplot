@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { canonicalPaperUrl, normalizeDoi } from '../shared/paper-identity.ts';
+import { readBoundedResponseText } from '../shared/response.ts';
 
 const CROSSREF_WORKS_URL = 'https://api.crossref.org/works';
 const CROSSREF_CONTACT = 'hello@newsence.app';
@@ -222,30 +223,6 @@ export function selectCrossrefPaper(doi: string, rawResponse: unknown): Crossref
 	};
 }
 
-async function boundedJson(response: Response): Promise<unknown> {
-	const declaredLength = Number(response.headers.get('content-length'));
-	if (Number.isFinite(declaredLength) && declaredLength > MAX_CROSSREF_RESPONSE_BYTES) {
-		await response.body?.cancel('Crossref response exceeded byte limit');
-		throw new Error(`Crossref response exceeded ${MAX_CROSSREF_RESPONSE_BYTES} bytes`);
-	}
-	if (!response.body) throw new Error('Crossref response had no body');
-	const reader = response.body.getReader();
-	const decoder = new TextDecoder();
-	let byteLength = 0;
-	let json = '';
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		byteLength += value.byteLength;
-		if (byteLength > MAX_CROSSREF_RESPONSE_BYTES) {
-			await reader.cancel('Crossref response exceeded byte limit');
-			throw new Error(`Crossref response exceeded ${MAX_CROSSREF_RESPONSE_BYTES} bytes`);
-		}
-		json += decoder.decode(value, { stream: true });
-	}
-	return JSON.parse(json + decoder.decode());
-}
-
 async function fetchCrossrefWorks(params: Readonly<Record<string, string>>): Promise<unknown> {
 	const url = new URL(CROSSREF_WORKS_URL);
 	url.search = new URLSearchParams({ mailto: CROSSREF_CONTACT, ...params }).toString();
@@ -259,7 +236,8 @@ async function fetchCrossrefWorks(params: Readonly<Record<string, string>>): Pro
 		await response.body?.cancel();
 		throw new Error(`Crossref request failed with HTTP ${status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
 	}
-	return boundedJson(response);
+	if (!response.body) throw new Error('Crossref response had no body');
+	return JSON.parse(await readBoundedResponseText(response, MAX_CROSSREF_RESPONSE_BYTES, 'Crossref response'));
 }
 
 export async function resolveCrossrefReference(citation: string): Promise<CrossrefReferenceResolution | null> {

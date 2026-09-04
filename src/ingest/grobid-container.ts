@@ -1,4 +1,5 @@
 import { Container } from '@cloudflare/containers';
+import { readBoundedResponseText } from '../shared/response.ts';
 import { type GrobidPdfHeader, parseGrobidPdfHeaderTei } from './grobid-tei.ts';
 import { MAX_PDF_BYTES } from './platforms/pdf-constants.ts';
 
@@ -7,30 +8,6 @@ export const GROBID_CONTAINER_NAME = 'citation-parser-v1';
 const MAX_ERROR_BODY_BYTES = 1_000;
 const MAX_GROBID_RESPONSE_BYTES = 8 * 1024 * 1024;
 const textEncoder = new TextEncoder();
-
-async function boundedResponseText(response: Response, maxBytes: number): Promise<string> {
-	const declaredLength = Number(response.headers.get('content-length'));
-	if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-		await response.body?.cancel('GROBID response exceeded byte limit');
-		throw new Error(`GROBID response exceeded ${maxBytes} bytes`);
-	}
-	if (!response.body) return '';
-	const reader = response.body.getReader();
-	const decoder = new TextDecoder();
-	let byteLength = 0;
-	let text = '';
-	for (;;) {
-		const { done, value } = await reader.read();
-		if (done) break;
-		byteLength += value.byteLength;
-		if (byteLength > maxBytes) {
-			await reader.cancel('GROBID response exceeded byte limit');
-			throw new Error(`GROBID response exceeded ${maxBytes} bytes`);
-		}
-		text += decoder.decode(value, { stream: true });
-	}
-	return text + decoder.decode();
-}
 
 function multipartPdfBody(pdf: ReadableStream<Uint8Array>, boundary: string) {
 	const prefix = textEncoder.encode(
@@ -104,9 +81,9 @@ export class GrobidContainer extends Container<CoreEnv> {
 			method: 'POST',
 		});
 		if (!response.ok) {
-			const detail = await boundedResponseText(response, MAX_ERROR_BODY_BYTES);
+			const detail = await readBoundedResponseText(response, MAX_ERROR_BODY_BYTES, 'GROBID response');
 			throw new Error(`GROBID processHeaderDocument failed with ${response.status}${detail ? `: ${detail}` : ''}`);
 		}
-		return parseGrobidPdfHeaderTei(await boundedResponseText(response, MAX_GROBID_RESPONSE_BYTES));
+		return parseGrobidPdfHeaderTei(await readBoundedResponseText(response, MAX_GROBID_RESPONSE_BYTES, 'GROBID response'));
 	}
 }
