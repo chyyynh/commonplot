@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { selectCrossrefPaperCandidate, selectCrossrefReference } from '../src/ingest/crossref.ts';
-import { grobidPaperIdentifierText, parseGrobidPdfHeaderTei } from '../src/ingest/grobid-tei.ts';
+import { parseGrobidPdfHeaderTei } from '../src/ingest/grobid-tei.ts';
 
 const parsedPdfHeader = parseGrobidPdfHeaderTei(`<TEI><teiHeader><fileDesc>
 	<titleStmt><title level="a" type="main">Stigmergy &#38; Open Collaboration</title></titleStmt>
@@ -11,18 +11,13 @@ const parsedPdfHeader = parseGrobidPdfHeaderTei(`<TEI><teiHeader><fileDesc>
 	</analytic></biblStruct></sourceDesc>
 </fileDesc></teiHeader></TEI>`);
 assert.deepEqual(parsedPdfHeader, {
-	arxivId: null,
 	authors: ['Alex Smith', 'Bo Chen'],
-	doi: '10.1000/header',
+	paperIdentifierText: 'DOI: 10.1000/header',
 	title: 'Stigmergy & Open Collaboration',
 });
-assert.equal(grobidPaperIdentifierText(parsedPdfHeader), 'DOI: 10.1000/header');
 assert.equal(
-	grobidPaperIdentifierText(
-		parseGrobidPdfHeaderTei(
-			'<TEI><teiHeader><fileDesc><titleStmt><title type="main">Report</title></titleStmt></fileDesc></teiHeader></TEI>',
-		),
-	),
+	parseGrobidPdfHeaderTei('<TEI><teiHeader><fileDesc><titleStmt><title type="main">Report</title></titleStmt></fileDesc></teiHeader></TEI>')
+		.paperIdentifierText,
 	null,
 	'GROBID header metadata without a canonical academic identifier must not promote an uploaded PDF by itself',
 );

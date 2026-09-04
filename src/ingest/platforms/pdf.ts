@@ -7,7 +7,7 @@ import { canonicalizeResourceLang, type ResourceCreator, ResourceCreatorsSchema 
 import { limitByteStream } from '../../shared/response';
 import { resolveCrossrefPaperCandidate } from '../crossref';
 import { GROBID_CONTAINER_NAME } from '../grobid-container';
-import { type GrobidPdfHeader, grobidPaperIdentifierText } from '../grobid-tei';
+import type { GrobidPdfHeader } from '../grobid-tei';
 import {
 	normalizeStructuredPdf,
 	type StructuredPdfDocument,
@@ -414,7 +414,7 @@ export async function stageStoredPdfAcquisition(
 			}),
 	]);
 	const acquisition = await new Response(contentStream).json<PdfAcquisitionDraft>();
-	let paperIdentifierText = grobidHeader ? grobidPaperIdentifierText(grobidHeader) : null;
+	let paperIdentifierText = grobidHeader?.paperIdentifierText ?? null;
 	const grobidTitle = grobidHeader?.title;
 	if (!paperIdentifierText && grobidTitle && grobidHeader.authors.length) {
 		try {

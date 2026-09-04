@@ -2,16 +2,10 @@ import { XMLParser } from 'fast-xml-parser';
 import { normalizeArxivId, normalizeDoi, paperIdentityFromText } from '../shared/paper-identity.ts';
 
 export type GrobidPdfHeader = Readonly<{
-	arxivId: string | null;
 	authors: string[];
-	doi: string | null;
+	paperIdentifierText: string | null;
 	title: string | null;
 }>;
-
-/** Trust GROBID alone only for canonical identifiers; title-and-author headers still need external corroboration. */
-export function grobidPaperIdentifierText(header: GrobidPdfHeader): string | null {
-	return [header.doi ? `DOI: ${header.doi}` : null, header.arxivId ? `arXiv: ${header.arxivId}` : null].filter(Boolean).join('\n') || null;
-}
 
 const MAX_IDENTIFIER_CHARS = 300;
 const MAX_REFERENCE_URL_CHARS = 500;
@@ -53,7 +47,7 @@ function xmlText(value: unknown): string {
 	return typeof text === 'string' ? text.replace(/\s+/gu, ' ').trim() : '';
 }
 
-function identifiersFromHeader(biblStruct: XmlObject | null, analytic: XmlObject | null): Pick<GrobidPdfHeader, 'arxivId' | 'doi'> {
+function identifierTextFromHeader(biblStruct: XmlObject | null, analytic: XmlObject | null): string | null {
 	let doi: string | null = null;
 	let arxivId: string | null = null;
 	for (const rawIdno of [...xmlValues(analytic?.idno), ...xmlValues(biblStruct?.idno)]) {
@@ -77,7 +71,7 @@ function identifiersFromHeader(biblStruct: XmlObject | null, analytic: XmlObject
 		arxivId ??= normalizeArxivId(target);
 		if (doi && arxivId) break;
 	}
-	return { arxivId, doi };
+	return [doi ? `DOI: ${doi}` : null, arxivId ? `arXiv: ${arxivId}` : null].filter(Boolean).join('\n') || null;
 }
 
 /** The uploaded-PDF paper gate uses only metadata extracted by GROBID itself. */
@@ -109,5 +103,5 @@ export function parseGrobidPdfHeaderTei(tei: string): GrobidPdfHeader {
 		authors.push(name);
 	}
 
-	return { ...identifiersFromHeader(biblStruct, analytic), authors, title };
+	return { authors, paperIdentifierText: identifierTextFromHeader(biblStruct, analytic), title };
 }
