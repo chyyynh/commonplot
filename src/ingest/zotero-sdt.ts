@@ -1,3 +1,10 @@
+import type {
+	ContentBlockNode,
+	PageInfo,
+	PdfAnchor,
+	OutlineItem as SdtOutlineItem,
+	TextNode as SdtTextNode,
+} from 'structured-document-text/schema';
 import { getFulltextFromStructuredText } from 'structured-document-text/src/fulltext.js';
 import { getPartBoundarySeparator, getPartChain, shouldDropHardHyphenAtPartBoundary } from 'structured-document-text/src/parts.js';
 import { getContentRangeBlockSpan, isLeafBlock, refKey } from 'structured-document-text/src/range.js';
@@ -38,19 +45,6 @@ export function parseStructuredPdfFailure(status: number, body: string): { messa
 
 type RefPath = readonly number[];
 
-type PdfAnchor = Readonly<{
-	pageRects?: readonly (readonly [number, number, number, number, number])[];
-	textMap?: string;
-}>;
-
-type SdtTextNode = Readonly<{
-	anchor?: PdfAnchor;
-	refs?: readonly RefPath[];
-	style?: Readonly<{ bold?: boolean; italic?: boolean; monospace?: boolean; sub?: boolean; sup?: boolean }>;
-	target?: Readonly<{ url?: string }>;
-	text: string;
-}>;
-
 type SdtBlockNode = Readonly<{
 	anchor?: PdfAnchor;
 	content: readonly SdtNode[];
@@ -59,20 +53,7 @@ type SdtBlockNode = Readonly<{
 	previousPart?: RefPath;
 	reference?: boolean;
 	refs?: readonly RefPath[];
-	type:
-		| 'blockquote'
-		| 'caption'
-		| 'heading'
-		| 'image'
-		| 'list'
-		| 'listitem'
-		| 'math'
-		| 'note'
-		| 'paragraph'
-		| 'preformatted'
-		| 'table'
-		| 'tablecell'
-		| 'tablerow';
+	type: ContentBlockNode['type'] | 'listitem' | 'tablecell' | 'tablerow';
 	ordered?: boolean;
 	startIndex?: number;
 }>;
@@ -82,11 +63,7 @@ type SdtNode = SdtBlockNode | SdtTextNode;
 export type StructuredPdfDocument = Readonly<{
 	catalog: Readonly<{
 		outline: readonly SdtOutlineItem[];
-		pages: readonly Readonly<{
-			contentRange: readonly [RefPath, RefPath];
-			extractionDegraded?: boolean;
-			textSource?: 'born-digital' | 'ocr';
-		}>[];
+		pages: readonly PageInfo[];
 	}>;
 	content: readonly SdtBlockNode[];
 	metadata: Readonly<{
@@ -99,12 +76,6 @@ export type StructuredPdfDocument = Readonly<{
 		}>;
 	}>;
 	schemaVersion: string;
-}>;
-
-type SdtOutlineItem = Readonly<{
-	children?: readonly SdtOutlineItem[];
-	ref?: RefPath;
-	title: string;
 }>;
 
 export type StructuredPdfReference = Readonly<{
