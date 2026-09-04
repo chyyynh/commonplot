@@ -9,34 +9,19 @@ const {
 	validateMarkdownBatchTranslations,
 } = await import('../src/ingest/markdown-translation.ts');
 
-function materializeTranslation(translation, partOrder = translation.partOrder, texts = translation.texts) {
-	return {
-		...translation,
-		partOrder,
-		sequences: partOrder,
-		texts,
-	};
-}
-
 function targetFromSource(segment, translateText = (value) => value) {
 	const template = createMarkdownTranslationTemplate(segment);
-	return materializeTranslation({
-		id: segment.id,
-		partOrder: template.sequences,
+	return {
 		texts: Object.fromEntries(Object.entries(template.texts).map(([textId, value]) => [textId, translateText(value)])),
-	});
+	};
 }
 
 function textIdsInSequence(template, sequenceId = 'root') {
 	return (template.sequences[sequenceId] ?? []).filter((partId) => Object.hasOwn(template.texts, partId));
 }
 
-function withSequenceOrder(translation, sequenceId, order) {
-	return materializeTranslation(translation, { ...translation.partOrder, [sequenceId]: order });
-}
-
 function withTranslatedTexts(translation, values) {
-	return materializeTranslation(translation, translation.partOrder, { ...translation.texts, ...values });
+	return { ...translation, texts: { ...translation.texts, ...values } };
 }
 
 function inlineIdsOfKind(template, kind) {
@@ -185,15 +170,7 @@ const adjacentAttentionSourceTranslation = targetFromSource(adjacentAttentionSeg
 		.replace('Measuring the precise amount of methane present in every pixel per plume.', '測量每條羽流中每個像素所含甲烷的精確數量。'),
 );
 const adjacentAttentionMarkdown = compileMarkdownTranslation(adjacentAttentionPlan, [
-	withTranslatedTexts(
-		withSequenceOrder(adjacentAttentionSourceTranslation, 'root', [
-			adjacentEmphasisIds[0],
-			adjacentEmphasisIds[1],
-			adjacentGapTextId,
-			adjacentBodyTextId,
-		]),
-		{ [adjacentGapTextId]: '' },
-	),
+	withTranslatedTexts(adjacentAttentionSourceTranslation, { [adjacentGapTextId]: '' }),
 ]);
 assert.match(
 	adjacentAttentionMarkdown,
@@ -249,15 +226,6 @@ assert.throws(
 	() => compileMarkdownTranslation(plan, translations.slice(1)),
 	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'missing-segment',
 	'missing segment results must fail closed',
-);
-assert.throws(
-	() =>
-		validateMarkdownBatchTranslations(firstBatch, [
-			{ ...translations[0], id: 'unknown' },
-			...translations.slice(1, firstBatch.segments.length),
-		]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'unknown-segment',
-	'unknown segment IDs must fail closed',
 );
 const firstTranslation = translations[0];
 const firstRootTextId = firstTranslation ? textIdsInSequence(createMarkdownTranslationTemplate(plan.segments[0]))[0] : undefined;
@@ -374,18 +342,15 @@ assert.deepEqual(
 	},
 	'model input must expose a movable inline reference and a separately scoped link-label sequence',
 );
-const reorderedTranslation = withTranslatedTexts(
-	withSequenceOrder(targetFromSource(reorderedSegment), 'root', [reorderedInlineId, 't1', 't2']),
-	{
-		t1: '市場',
-		t2: '將以電動車為主。',
-		t3: '預期',
-	},
-);
+const reorderedTranslation = withTranslatedTexts(targetFromSource(reorderedSegment), {
+	t1: '市場',
+	t2: '電動車將成為主流。',
+	t3: '預期',
+});
 const reorderedMarkdown = compileMarkdownTranslation(reorderedPlan, [reorderedTranslation]);
 assert.ok(
-	reorderedMarkdown.includes(`[預期](https://example.com/forecast)市場將以電動車為主。`),
-	'complete prose translation must allow inline markup to move with natural target-language word order',
+	reorderedMarkdown.includes(`市場[預期](https://example.com/forecast)電動車將成為主流。`),
+	'complete prose translation must preserve inline markup while text slots use natural target-language wording',
 );
 
 const disappearingArticlePlan = planMarkdownTranslation(
@@ -471,35 +436,18 @@ assert.deepEqual(
 			root: ['t1', 'n1', 't2', 'n2', 't3'],
 		},
 	},
-	'opaque inline code must reach the model as movable references with read-only semantic previews',
+	'opaque inline code must reach the model as read-only semantic previews',
 );
-const [settingInlineId, pathInlineId] = inlineIdsOfKind(inlineCodeTemplate, 'inlineCode');
-assert.ok(settingInlineId && pathInlineId, 'inline-code fixture must expose both atoms');
-const inlineCodeTranslation = withTranslatedTexts(
-	withSequenceOrder(targetFromSource(inlineCodeSegment), 'root', ['t2', pathInlineId, 't1', settingInlineId, 't3']),
-	{
-		t1: '中，將選項加入現有的',
-		t2: '請在',
-		t3: '值，然後執行以下指令：',
-	},
-);
+const inlineCodeTranslation = withTranslatedTexts(targetFromSource(inlineCodeSegment), {
+	t1: '將選項加入現有的',
+	t2: '值，設定檔位於',
+	t3: '，然後執行以下指令：',
+});
 assert.equal(
 	compileMarkdownTranslation(inlineCodePlan, [inlineCodeTranslation]),
-	'請在`/etc/default/grub`中，將選項加入現有的`GRUB_CMDLINE_LINUX_DEFAULT`值，然後執行以下指令：',
-	'Core must let multiple atomic inline nodes move to natural target-language positions',
+	'將選項加入現有的`GRUB_CMDLINE_LINUX_DEFAULT`值，設定檔位於`/etc/default/grub`，然後執行以下指令：',
+	'Core must restore multiple atomic inline nodes in their source-owned positions',
 );
-
-for (const [order, message] of [
-	[['t1', settingInlineId, settingInlineId, pathInlineId, 't3'], 'duplicate inline references must fail closed'],
-	[['t1', settingInlineId, 't2', 't3'], 'missing inline references must fail closed'],
-	[['t1', settingInlineId, 't2', pathInlineId, 't3', 'n999999'], 'unknown inline references must fail closed'],
-]) {
-	assert.throws(
-		() => compileMarkdownTranslation(inlineCodePlan, [withSequenceOrder(inlineCodeTranslation, 'root', order)]),
-		(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
-		message,
-	);
-}
 
 const nestedPlan = planMarkdownTranslation('Read the **full [research report](https://example.com/report)** before running `pnpm test`.');
 const nestedSegment = nestedPlan.segments[0];
@@ -514,26 +462,17 @@ const nestedStrongTextId = textIdsInSequence(nestedTemplate, strongInlineId)[0];
 const nestedLinkTextId = textIdsInSequence(nestedTemplate, nestedLinkInlineId)[0];
 assert.equal(nestedRootTextIds.length, 3, 'nested-inline fixture must expose three root text positions');
 assert.ok(nestedStrongTextId && nestedLinkTextId, 'nested-inline fixture must expose translated container text IDs');
-const nestedTranslation = withTranslatedTexts(
-	withSequenceOrder(targetFromSource(nestedSegment), 'root', [
-		nestedRootTextIds[1],
-		codeInlineId,
-		nestedRootTextIds[0],
-		strongInlineId,
-		nestedRootTextIds[2],
-	]),
-	{
-		[nestedRootTextIds[0]]: '前，請先閱讀',
-		[nestedRootTextIds[1]]: '執行',
-		[nestedRootTextIds[2]]: '。',
-		[nestedStrongTextId]: '完整的',
-		[nestedLinkTextId]: '研究報告',
-	},
-);
+const nestedTranslation = withTranslatedTexts(targetFromSource(nestedSegment), {
+	[nestedRootTextIds[0]]: '請先閱讀',
+	[nestedRootTextIds[1]]: '，再執行',
+	[nestedRootTextIds[2]]: '。',
+	[nestedStrongTextId]: '完整的',
+	[nestedLinkTextId]: '研究報告',
+});
 assert.equal(
 	compileMarkdownTranslation(nestedPlan, [nestedTranslation]),
-	'執行`pnpm test`前，請先閱讀**完整的[研究報告](https://example.com/report)**。',
-	'nested inline containers must move as complete nodes while preserving their child scopes',
+	'請先閱讀**完整的[研究報告](https://example.com/report)**，再執行`pnpm test`。',
+	'nested inline containers must preserve their child scopes',
 );
 assert.throws(
 	() =>
@@ -542,32 +481,6 @@ assert.throws(
 		]),
 	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'invalid-result',
 	'direct prose in a non-leaf sequence must not disappear behind translated child content',
-);
-assert.throws(
-	() =>
-		compileMarkdownTranslation(nestedPlan, [
-			withSequenceOrder(nestedTranslation, 'root', [
-				nestedRootTextIds[1],
-				codeInlineId,
-				nestedRootTextIds[0],
-				nestedLinkInlineId,
-				nestedRootTextIds[2],
-			]),
-		]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
-	'nested inline references must not escape their parent sequence',
-);
-const missingNestedSequence = { ...nestedTranslation.sequences };
-delete missingNestedSequence[nestedLinkInlineId];
-assert.throws(
-	() => compileMarkdownTranslation(nestedPlan, [{ ...nestedTranslation, sequences: missingNestedSequence }]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
-	'missing container sequences must fail closed',
-);
-assert.throws(
-	() => compileMarkdownTranslation(nestedPlan, [{ ...nestedTranslation, sequences: { ...nestedTranslation.sequences, invented: [] } }]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
-	'extra container sequences must fail closed',
 );
 
 const inlineHtmlPlan = planMarkdownTranslation('Before <mark>highlighted</mark> after.');
@@ -594,17 +507,6 @@ assert.equal(
 	compileMarkdownTranslation(inlineHtmlPlan, [inlineHtmlTranslation]),
 	'之前<mark>醒目文字</mark>之後。',
 	'fixed raw HTML anchors must retain translated prose inside their original slot',
-);
-assert.throws(
-	() =>
-		compileMarkdownTranslation(inlineHtmlPlan, [
-			{
-				...inlineHtmlTranslation,
-				sequences: { 'root:slot:01': [inlineHtmlTextIds['root:slot:01']] },
-			},
-		]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'markdown-structure-changed',
-	'fixed-anchor slots cannot be merged or omitted by model output',
 );
 
 const citationPlan = planMarkdownTranslation('First claim.[^a] Second claim.[^b]\n\n[^a]: First note.\n[^b]: Second note.');

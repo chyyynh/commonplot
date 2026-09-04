@@ -142,14 +142,9 @@ async function translateGroup(
 	if (finishReason === 'length') throw new Error('Markdown segment translation hit its output token cap');
 	return validateMarkdownBatchTranslations(
 		{ segments: group.segments },
-		group.segments.map((segment) => {
-			const template = createMarkdownTranslationTemplate(segment);
-			return {
-				id: segment.id,
-				sequences: template.sequences,
-				texts: output.translations[segment.id]?.texts ?? {},
-			};
-		}),
+		group.segments.map((segment) => ({
+			texts: output.translations[segment.id]!.texts,
+		})),
 	);
 }
 
