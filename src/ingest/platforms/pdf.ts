@@ -365,7 +365,7 @@ export async function stageStoredPdfAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	target: Readonly<{
-		paidPdfFallback: PaidPdfFallbackGrant | null;
+		paidPdfFallback?: PaidPdfFallbackGrant;
 		resourceId: string;
 	}>,
 ): Promise<GenericAcquiredMaterial> {
@@ -443,7 +443,7 @@ export async function stageStoredPdfAcquisition(
 			: {}),
 	};
 	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
-		grant: target.paidPdfFallback,
+		grant: target.paidPdfFallback ?? null,
 		local: acquisition.parse,
 		processingId: target.resourceId,
 		source: {

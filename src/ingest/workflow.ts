@@ -194,10 +194,7 @@ async function resolveProcessingResource(
 	}
 
 	if (target.kind === 'storedBlob') {
-		return stageStoredResourceAcquisition(env, step, {
-			paidPdfFallback: target.paidPdfFallback ?? null,
-			resourceId: target.resourceId,
-		});
+		return stageStoredResourceAcquisition(env, step, target);
 	}
 
 	const snapshot = await step.do(

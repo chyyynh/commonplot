@@ -165,7 +165,7 @@ export async function stageStoredResourceAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	target: Readonly<{
-		paidPdfFallback: PaidPdfFallbackGrant | null;
+		paidPdfFallback?: PaidPdfFallbackGrant;
 		resourceId: string;
 	}>,
 ): Promise<ResolvedPlatformlessResource> {
