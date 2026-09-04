@@ -42,25 +42,19 @@ const StoredPdfProcessingInputSchema = z.strictObject({
 	retry: z.boolean().optional(),
 });
 
-type StoredPdfProcessingInput = z.infer<typeof StoredPdfProcessingInputSchema>;
-
 const APP_RESOURCE_BATCH_LIMIT = 20;
 const AppDraftWorkflowIdSchema = z.templateLiteral(['app-draft-v1-', z.uuidv4()]);
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
 const STORED_BLOB_WORKFLOW_REVISION = 'stored-resource-v12';
-const STORED_BLOB_WORKFLOW_RETENTION = {
-	successRetention: '5 minutes',
-	errorRetention: '1 hour',
-} as const;
-
 function storedBlobWorkflowInstance(resourceId: string, paidPdfFallback?: ResourceDraftTarget['paidPdfFallback'], retryId?: string) {
-	const id = z.uuid().parse(resourceId);
-	const grant = ResourceDraftTargetSchema.shape.paidPdfFallback.parse(paidPdfFallback);
 	return {
-		id: retryId ? `${STORED_BLOB_WORKFLOW_REVISION}-${id}-retry-${z.uuid().parse(retryId)}` : `${STORED_BLOB_WORKFLOW_REVISION}-${id}`,
-		params: { kind: 'storedBlob' as const, ...(grant ? { paidPdfFallback: grant } : {}), resourceId: id },
-		retention: STORED_BLOB_WORKFLOW_RETENTION,
+		id: retryId ? `${STORED_BLOB_WORKFLOW_REVISION}-${resourceId}-retry-${retryId}` : `${STORED_BLOB_WORKFLOW_REVISION}-${resourceId}`,
+		params: { kind: 'storedBlob' as const, ...(paidPdfFallback ? { paidPdfFallback } : {}), resourceId },
+		retention: {
+			successRetention: '5 minutes',
+			errorRetention: '1 hour',
+		} as const,
 	};
 }
 
@@ -157,7 +151,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	// the app Worker's DomainRpc binding.
 
 	/** Enqueue an app-owned blob after its R2 object and private ownership row exist. */
-	async enqueueResourceProcessing(input: StoredPdfProcessingInput) {
+	async enqueueResourceProcessing(input: z.infer<typeof StoredPdfProcessingInputSchema>) {
 		const parsed = StoredPdfProcessingInputSchema.parse(input);
 		const instance = storedBlobWorkflowInstance(parsed.resourceId, parsed.paidPdfFallback, parsed.retry ? crypto.randomUUID() : undefined);
 		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([instance]);
