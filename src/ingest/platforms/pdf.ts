@@ -7,7 +7,12 @@ import { canonicalizeResourceLang, type ResourceCreator, ResourceCreatorsSchema 
 import { resolveCrossrefPaperCandidate } from '../crossref';
 import { GROBID_CONTAINER_NAME } from '../grobid-container';
 import { type GrobidPdfHeader, grobidPaperIdentifierText } from '../grobid-tei';
-import { normalizeStructuredPdf, ZOTERO_SDT_ARTIFACT_VERSION } from '../zotero-sdt.ts';
+import {
+	type NormalizedStructuredPdf,
+	normalizeStructuredPdf,
+	structuredPdfSourceCrops,
+	ZOTERO_SDT_ARTIFACT_VERSION,
+} from '../zotero-sdt.ts';
 import {
 	ensureStructuredPdfSourceCrops,
 	parsePdfWithZotero,
@@ -48,9 +53,9 @@ type LocalPdfParseResult = Readonly<{
 	parse: LocalPdfSummary;
 }>;
 
-type PdfParseAttempt = Readonly<{
+type PdfArtifactAttempt = Readonly<{
 	artifact: StructuredPdfArtifact | null;
-	result: LocalPdfParseResult;
+	failure: LocalPdfParseResult | null;
 }>;
 
 function byteStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
@@ -62,33 +67,36 @@ function byteStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
 	});
 }
 
-async function parsePdfStream(
+function localPdfResult(normalized: NormalizedStructuredPdf, sourceLabel: string): LocalPdfParseResult {
+	const result: LocalPdfParseResult = {
+		markdown: normalized.markdown,
+		paperIdentifierText: normalized.paperIdentifierText?.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS) ?? null,
+		parse: normalized.parse,
+	};
+	console.info({
+		tag: 'PDF_PARSE',
+		event: 'zotero_sdt_completed',
+		fallback_reasons: result.parse.fallbackReasons,
+		full_page_image_pages: result.parse.fullPageImagePages,
+		mention_count: normalized.mentions.length,
+		outcome: localPdfNeedsFallback(result.parse) ? 'fallback-needed' : 'usable',
+		parser_version: result.parse.parserVersion,
+		parsed_pages: result.parse.parsedPages,
+		reference_count: normalized.references.length,
+		source: sourceLabel,
+		total_pages: result.parse.totalPages,
+	});
+	return result;
+}
+
+async function parsePdfArtifactStream(
 	env: CoreEnv,
 	input: ReadableStream<Uint8Array>,
 	byteLength: number,
 	sourceLabel: string,
-): Promise<PdfParseAttempt> {
+): Promise<PdfArtifactAttempt> {
 	try {
-		const artifact = await parsePdfWithZotero(env, input, byteLength);
-		const result: LocalPdfParseResult = {
-			markdown: artifact.normalized.markdown,
-			paperIdentifierText: artifact.normalized.paperIdentifierText?.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS) ?? null,
-			parse: artifact.normalized.parse,
-		};
-		console.info({
-			tag: 'PDF_PARSE',
-			event: 'zotero_sdt_completed',
-			fallback_reasons: result.parse.fallbackReasons,
-			full_page_image_pages: result.parse.fullPageImagePages,
-			mention_count: artifact.normalized.mentions.length,
-			outcome: localPdfNeedsFallback(result.parse) ? 'fallback-needed' : 'usable',
-			parser_version: result.parse.parserVersion,
-			parsed_pages: result.parse.parsedPages,
-			reference_count: artifact.normalized.references.length,
-			source: sourceLabel,
-			total_pages: result.parse.totalPages,
-		});
-		return { artifact, result };
+		return { artifact: await parsePdfWithZotero(env, input, byteLength), failure: null };
 	} catch (error) {
 		console.error({
 			tag: 'PDF_PARSE',
@@ -99,7 +107,7 @@ async function parsePdfStream(
 		});
 		return {
 			artifact: null,
-			result: {
+			failure: {
 				markdown: '',
 				paperIdentifierText: null,
 				parse: {
@@ -112,6 +120,16 @@ async function parsePdfStream(
 			},
 		};
 	}
+}
+
+async function parsePdfStream(
+	env: CoreEnv,
+	input: ReadableStream<Uint8Array>,
+	byteLength: number,
+	sourceLabel: string,
+): Promise<LocalPdfParseResult> {
+	const attempt = await parsePdfArtifactStream(env, input, byteLength, sourceLabel);
+	return attempt.artifact ? localPdfResult(normalizeStructuredPdf(attempt.artifact.document), sourceLabel) : attempt.failure!;
 }
 
 function requireUsablePdf(acquisition: PdfAcquisitionDraft, sourceLabel: string): GenericAcquiredMaterial {
@@ -287,6 +305,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise<PdfAcquisitionDraft> {
 	const sourceLabel = `Stored PDF ${resource.resourceId}`;
 	let artifact: StructuredPdfArtifact | null = null;
+	let parseFailure: LocalPdfParseResult | null = null;
 	try {
 		artifact = await readStructuredPdfArtifact(env, resource.storageKey, resource.contentHash);
 	} catch (error) {
@@ -297,17 +316,11 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
-	let parsed: LocalPdfParseResult;
 	if (artifact) {
-		parsed = {
-			markdown: artifact.normalized.markdown,
-			paperIdentifierText: artifact.normalized.paperIdentifierText,
-			parse: artifact.normalized.parse,
-		};
 		console.info({
 			tag: 'PDF_PARSE',
 			event: 'zotero_sdt_artifact_reused',
-			parser_version: parsed.parse.parserVersion,
+			parser_version: `zotero-pdf-${artifact.document.metadata.processor.version}/sdt-${artifact.document.schemaVersion}`,
 			resource_id: resource.resourceId,
 		});
 	} else {
@@ -317,29 +330,31 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 			await object.body.cancel('Stored PDF size is outside the supported range');
 			throw new NonRetryableError(`PDF source object must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
-		const attempt = await parsePdfStream(env, object.body, object.size, sourceLabel);
-		parsed = attempt.result;
+		const attempt = await parsePdfArtifactStream(env, object.body, object.size, sourceLabel);
+		parseFailure = attempt.failure;
 		if (attempt.artifact) {
-			artifact = {
-				...attempt.artifact,
-				normalized: normalizeStructuredPdf(attempt.artifact.document, { inputContentHash: resource.contentHash }),
-			};
-			parsed = {
-				markdown: artifact.normalized.markdown,
-				paperIdentifierText: artifact.normalized.paperIdentifierText,
-				parse: artifact.normalized.parse,
-			};
+			artifact = attempt.artifact;
 			await writeStructuredPdfArtifact(env, resource.storageKey, resource.contentHash, artifact);
 		}
 	}
+	let parsed = parseFailure;
 	if (artifact) {
-		await ensureStructuredPdfSourceCrops(env, {
-			document: artifact.document,
+		const crops = structuredPdfSourceCrops(artifact.document);
+		const readySourceCropIds = await ensureStructuredPdfSourceCrops(env, {
+			crops,
 			inputContentHash: resource.contentHash,
 			pdfStorageKey: resource.storageKey,
 			resourceId: resource.resourceId,
 		});
+		parsed = localPdfResult(
+			normalizeStructuredPdf(artifact.document, {
+				inputContentHash: resource.contentHash,
+				readySourceCropIds: new Set(readySourceCropIds),
+			}),
+			sourceLabel,
+		);
 	}
+	if (!parsed) throw new Error('Stored PDF parsing produced neither an artifact nor a failure result');
 	return {
 		kind: 'local-pdf',
 		material: {
@@ -371,7 +386,7 @@ export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response
 		}),
 	);
 	const bytes = await new Response(body).bytes();
-	const parsed = (await parsePdfStream(env, byteStream(bytes), bytes.byteLength, 'Fetched PDF')).result;
+	const parsed = await parsePdfStream(env, byteStream(bytes), bytes.byteLength, 'Fetched PDF');
 	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
 	let fileName = encodedName || 'document.pdf';
 	if (encodedName) {

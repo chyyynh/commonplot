@@ -18,21 +18,21 @@ const document = {
 	catalog: {
 		outline: [
 			{ ref: [1], title: 'Introduction' },
-			{ ref: [3], title: 'References' },
+			{ ref: [4], title: 'References' },
 		],
-		pages: [{ contentRange: [[0], [3]], textSource: 'born-digital' }],
+		pages: [{ contentRange: [[0], [4]], textSource: 'born-digital' }],
 	},
 	content: [
 		{ content: [text('Running header')], flowClass: 'excluded', type: 'paragraph' },
 		{ content: [text('Introduction')], type: 'heading' },
 		{
-			content: [
-				text('Prior work '),
-				text('[1]', { refs: [[3, 0]] }),
-				text(' established the result'),
-				text('2', { style: { sup: true } }),
-				text('.'),
-			],
+			content: [text('Prior work '), text('[1]', { refs: [[4, 0]] })],
+			nextPart: [3],
+			type: 'paragraph',
+		},
+		{
+			content: [text(' established the result'), text('2', { style: { sup: true } }), text('.')],
+			previousPart: [2],
 			type: 'paragraph',
 		},
 		{
@@ -74,7 +74,7 @@ assert.equal(normalized.markdown.slice(normalized.mentions[0].contentStart, norm
 assert.match(normalized.mentions[0].context, /Prior work \[1\] established the result2\./u);
 assert.equal(normalized.mentions[0].section, 'Introduction');
 assert.doesNotMatch(normalized.markdown, /Running header|<sup>|<sub>/u);
-assert.match(normalized.markdown, /^# Introduction/u);
+assert.match(normalized.markdown, /^## Introduction/u);
 assert.match(normalized.paperIdentifierText ?? '', /DOI: 10\.1000\/example/u);
 assert.equal(normalized.parse.totalPages, 1);
 assert.equal(normalized.parse.fullPageImagePages, 0);
@@ -112,15 +112,15 @@ const seamDocument = {
 		],
 	},
 	content: [
-		paragraph('These applications have important', [[0, 54, 80, 295, 120]]),
-		paragraph('functionality.', [[0, 317, 700, 558, 735]]),
+		paragraph('These applications have important', [[0, 54, 80, 295, 120]], { nextPart: [1] }),
+		paragraph('functionality.', [[0, 317, 700, 558, 735]], { previousPart: [0] }),
 		paragraph('lowercase starts a real new paragraph.', [[0, 317, 620, 558, 680]]),
-		paragraph('A label without terminal punctuation', [[0, 317, 580, 558, 610]]),
-		paragraph('lowercase text below it remains separate.', [[0, 317, 520, 558, 560]]),
-		paragraph('This paragraph continues across the next page', [[0, 317, 70, 558, 100]]),
+		paragraph('A label without terminal punctuation', [[0, 54, 80, 295, 120]]),
+		paragraph('lowercase text below it remains separate.', [[0, 317, 700, 558, 735]]),
+		paragraph('This paragraph continues across the next page', [[0, 317, 70, 558, 100]], { nextPart: [8] }),
 		paragraph('Running header', [[0, 54, 755, 558, 765]], { flowClass: 'excluded' }),
 		paragraph('1278', [[0, 296, 26, 316, 35]], { flowClass: 'excluded' }),
-		paragraph('without being interrupted by excluded furniture.', [[1, 54, 700, 295, 735]]),
+		paragraph('without being interrupted by excluded furniture.', [[1, 54, 700, 295, 735]], { previousPart: [5] }),
 	],
 };
 const seamNormalized = normalizeStructuredPdf(parseStructuredPdfDocumentJson(JSON.stringify(seamDocument)));
@@ -130,6 +130,23 @@ assert.match(seamNormalized.markdown, /functionality\.\n\nlowercase starts a rea
 assert.match(seamNormalized.markdown, /A label without terminal punctuation\n\nlowercase text below it remains separate\./u);
 assert.match(seamNormalized.markdown, /This paragraph continues across the next page without being interrupted by excluded furniture\./u);
 assert.doesNotMatch(seamNormalized.markdown, /Running header|1278/u);
+
+const hyphenDocument = {
+	...document,
+	catalog: {
+		outline: [],
+		pages: [{ contentRange: [[0], [1]], textSource: 'born-digital' }],
+	},
+	content: [
+		paragraph('multi-', [[0, 54, 80, 295, 120]], { nextPart: [1] }),
+		paragraph('column layout', [[0, 317, 700, 558, 735]], { previousPart: [0] }),
+	],
+};
+assert.equal(normalizeStructuredPdf(parseStructuredPdfDocumentJson(JSON.stringify(hyphenDocument))).markdown, 'multicolumn layout');
+
+const invalidPartDocument = JSON.parse(JSON.stringify(document));
+invalidPartDocument.content[2].nextPart = [];
+assert.throws(() => parseStructuredPdfDocumentJson(JSON.stringify(invalidPartDocument)), /nextPart/u);
 
 const cropDocument = {
 	...document,
@@ -164,7 +181,18 @@ assert.deepEqual(
 		{ blockPath: '1', id: '1-p0', kind: 'table', pageIndex: 0, rect: [30, 200, 260, 500] },
 	],
 );
-const cropNormalized = normalizeStructuredPdf(parsedCropDocument, { inputContentHash: 'a'.repeat(64) });
+const cropWithoutManifest = normalizeStructuredPdf(parsedCropDocument, { inputContentHash: 'a'.repeat(64) });
+assert.doesNotMatch(cropWithoutManifest.markdown, /\/api\/media\/asset\/pdf-crops/u);
+const partiallyReadyCrop = normalizeStructuredPdf(parsedCropDocument, {
+	inputContentHash: 'a'.repeat(64),
+	readySourceCropIds: new Set(['0-p0']),
+});
+assert.match(partiallyReadyCrop.markdown, /\/0-p0\.png/u);
+assert.doesNotMatch(partiallyReadyCrop.markdown, /\/1-p0\.png/u);
+const cropNormalized = normalizeStructuredPdf(parsedCropDocument, {
+	inputContentHash: 'a'.repeat(64),
+	readySourceCropIds: new Set(['0-p0', '1-p0']),
+});
 assert.match(cropNormalized.markdown, /!\[Research model\]\(\/api\/media\/asset\/pdf-crops\/a{64}\/0-p0\.png\)/u);
 assert.match(cropNormalized.markdown, /!\[Visible cues Social inferences Representative quote\]/u);
 assert.equal(cropNormalized.sourceCrops.length, 2);

@@ -5,8 +5,8 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../shared/db';
 import { resolveCrossrefReference } from './crossref';
 import { PDF_MIME } from './platforms/pdf-constants';
-import type { NormalizedStructuredPdf } from './zotero-sdt.ts';
-import { readStructuredPdfArtifact } from './zotero-sdt-service.ts';
+import { type NormalizedStructuredPdf, normalizeStructuredPdf, structuredPdfSourceCrops } from './zotero-sdt.ts';
+import { readReadyStructuredPdfSourceCropIds, readStructuredPdfArtifact } from './zotero-sdt-service.ts';
 
 const CROSSREF_BATCH_SIZE = 3;
 const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
@@ -251,11 +251,21 @@ export async function enrichUploadedPdfReferences(
 		const stored = await step.do('replace-uploaded-pdf-citations-v2', REFERENCE_SDT_STEP, async () => {
 			const artifact = await readStructuredPdfArtifact(env, source.storageKey, source.contentHash);
 			if (!artifact) throw new NonRetryableError('Structured PDF artifact is missing or stale');
+			const crops = structuredPdfSourceCrops(artifact.document);
+			const readySourceCropIds = await readReadyStructuredPdfSourceCropIds(env, {
+				crops,
+				inputContentHash: source.contentHash,
+				pdfStorageKey: source.storageKey,
+			});
+			const normalized = normalizeStructuredPdf(artifact.document, {
+				inputContentHash: source.contentHash,
+				readySourceCropIds: new Set(readySourceCropIds),
+			});
 			return {
-				...(await replaceStoredCitationData(await connectCoreDb(env), input.resourceId, input.referenceRevision, artifact.normalized)),
-				referenceTexts: artifact.normalized.references.map(({ text }) => text),
-				sdtMentionCount: artifact.normalized.mentions.length,
-				sdtReferenceCount: artifact.normalized.references.length,
+				...(await replaceStoredCitationData(await connectCoreDb(env), input.resourceId, input.referenceRevision, normalized)),
+				referenceTexts: normalized.references.map(({ text }) => text),
+				sdtMentionCount: normalized.mentions.length,
+				sdtReferenceCount: normalized.references.length,
 			};
 		});
 		const crossref = await resolveCrossrefUpdates(step, stored.referenceTexts);

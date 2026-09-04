@@ -51,6 +51,8 @@ type SdtBlockNode = Readonly<{
 	anchor?: PdfAnchor;
 	content: readonly SdtNode[];
 	flowClass?: 'auxiliary' | 'excluded';
+	nextPart?: RefPath;
+	previousPart?: RefPath;
 	reference?: boolean;
 	refs?: readonly RefPath[];
 	type:
@@ -201,6 +203,8 @@ function assertSdtNodes(value: unknown, state: { characters: number; nodes: numb
 			if (node.flowClass !== undefined && node.flowClass !== 'auxiliary' && node.flowClass !== 'excluded') {
 				throw new Error(`Zotero SDT ${path}[${index}].flowClass is invalid`);
 			}
+			if (node.previousPart !== undefined) assertRefPath(node.previousPart, `${path}[${index}].previousPart`);
+			if (node.nextPart !== undefined) assertRefPath(node.nextPart, `${path}[${index}].nextPart`);
 			assertSdtNodes(node.content, state, `${path}[${index}].content`);
 		}
 		if (node.anchor !== undefined) assertAnchor(node.anchor, `${path}[${index}].anchor`);
@@ -270,56 +274,86 @@ function nodeText(node: SdtNode): string {
 	return 'text' in node ? node.text : node.content.map(nodeText).join('');
 }
 
-function firstPageRect(node: SdtBlockNode): readonly [number, number, number, number, number] | null {
-	return node.anchor?.pageRects?.[0] ?? null;
+function isInlineContent(nodes: readonly SdtNode[]): nodes is readonly SdtTextNode[] {
+	return nodes.every((node) => 'text' in node);
 }
 
-function lastPageRect(node: SdtBlockNode): readonly [number, number, number, number, number] | null {
-	return node.anchor?.pageRects?.at(-1) ?? null;
+function inlineBoundaryNodes(
+	previous: SdtBlockNode,
+	next: SdtBlockNode,
+): Readonly<{ nextFirst: SdtTextNode; previousLast: SdtTextNode }> | null {
+	const previousLast = previous.content.at(-1);
+	const nextFirst = next.content[0];
+	return previousLast && nextFirst && 'text' in previousLast && 'text' in nextFirst ? { nextFirst, previousLast } : null;
 }
 
-function crossesColumnOrPageBoundary(previous: SdtBlockNode, next: SdtBlockNode): boolean {
-	const previousRect = lastPageRect(previous);
-	const nextRect = firstPageRect(next);
-	if (!previousRect || !nextRect) return false;
-	const [previousPage, , , previousRight, previousTop] = previousRect;
-	const [nextPage, nextLeft, , , nextTop] = nextRect;
-	if (nextPage === previousPage) {
-		return nextLeft > previousRight && nextTop > previousTop;
-	}
-	return nextPage === previousPage + 1 && nextTop > previousTop;
-}
-
-function isParagraphContinuation(previous: SdtBlockNode, next: SdtBlockNode): boolean {
-	if (
-		previous.type !== 'paragraph' ||
-		next.type !== 'paragraph' ||
-		previous.reference === true ||
-		next.reference === true ||
-		previous.flowClass !== next.flowClass ||
-		previous.flowClass === 'excluded'
-	) {
+function textNodeEndsWithSoftHyphen(node: SdtTextNode): boolean {
+	if (!node.anchor?.textMap) return false;
+	try {
+		const runs: unknown = JSON.parse(node.anchor.textMap);
+		const lastRun = Array.isArray(runs) ? runs.at(-1) : null;
+		return Array.isArray(lastRun) && typeof lastRun[0] === 'number' && (lastRun[0] & 1) !== 0;
+	} catch {
 		return false;
 	}
-	const previousText = cleanText(nodeText(previous));
-	const nextText = cleanText(nodeText(next));
-	return (
-		Boolean(previousText) &&
-		Boolean(nextText) &&
-		!/[.!?。！？]["'’”»)}\]]*$/u.test(previousText) &&
-		/^\p{Ll}/u.test(nextText) &&
-		crossesColumnOrPageBoundary(previous, next)
-	);
 }
 
-function mergeParagraphs(previous: SdtBlockNode, next: SdtBlockNode): SdtBlockNode {
-	const previousText = nodeText(previous);
-	const nextText = nodeText(next);
-	const joiner = /(?:\s|-|\u00ad)$/u.test(previousText) || /^\s/u.test(nextText) ? '' : ' ';
-	return {
-		...previous,
-		content: [...previous.content, ...(joiner ? [{ text: joiner }] : []), ...next.content],
-	};
+function shouldDropHardHyphen(previous: SdtBlockNode, next: SdtBlockNode): boolean {
+	const boundary = inlineBoundaryNodes(previous, next);
+	const previousLast = boundary?.previousLast;
+	const nextFirstCharacter = boundary?.nextFirst.text.charAt(0);
+	return Boolean(previousLast?.text.endsWith('-') && nextFirstCharacter && nextFirstCharacter >= 'a' && nextFirstCharacter <= 'z');
+}
+
+function partBoundarySeparator(previous: SdtBlockNode, next: SdtBlockNode): string {
+	const boundary = inlineBoundaryNodes(previous, next);
+	const previousLast = boundary?.previousLast;
+	const nextFirst = boundary?.nextFirst;
+	if (!previousLast || !nextFirst || /\s$/u.test(previousLast.text) || /^\s/u.test(nextFirst.text)) return '';
+	if (textNodeEndsWithSoftHyphen(previousLast)) return '';
+	return /[\p{L}\p{N}]$/u.test(previousLast.text) && /^[\p{L}\p{N}]/u.test(nextFirst.text) ? ' ' : '';
+}
+
+type ParagraphPart = Readonly<{ block: SdtBlockNode; index: number }>;
+
+function paragraphPartChain(document: StructuredPdfDocument, startIndex: number): ParagraphPart[] | null {
+	const first = document.content[startIndex];
+	if (first?.type !== 'paragraph' || first.previousPart || !isInlineContent(first.content)) return null;
+
+	const chain: ParagraphPart[] = [];
+	const seen = new Set<number>();
+	let index = startIndex;
+	for (;;) {
+		if (seen.has(index)) return null;
+		seen.add(index);
+		const block = document.content[index];
+		if (block?.type !== 'paragraph' || block.flowClass === 'excluded' || !isInlineContent(block.content)) {
+			return null;
+		}
+		chain.push({ block, index });
+		if (!block.nextPart) break;
+		if (block.nextPart.length !== 1) return null;
+		index = block.nextPart[0]!;
+	}
+	return chain.length > 1 ? chain : null;
+}
+
+function mergeParagraphParts(chain: readonly ParagraphPart[]): SdtBlockNode {
+	const first = chain[0]!.block;
+	const content: SdtNode[] = [...first.content];
+	for (let index = 1; index < chain.length; index += 1) {
+		const previous = chain[index - 1]!.block;
+		const next = chain[index]!.block;
+		if (shouldDropHardHyphen(previous, next)) {
+			const lastIndex = content.length - 1;
+			const last = content[lastIndex];
+			if (last && 'text' in last) content[lastIndex] = { ...last, text: last.text.slice(0, -1) };
+		}
+		const separator = partBoundarySeparator(previous, next);
+		if (separator) content.push({ text: separator });
+		content.push(...next.content);
+	}
+	return { ...first, content };
 }
 
 function walkNodes(nodes: readonly SdtNode[], parentPath: RefPath = []): Array<{ node: SdtNode; path: number[] }> {
@@ -351,7 +385,7 @@ function headingLevels(outline: readonly SdtOutlineItem[]): Map<string, number> 
 			if (item.children) visit(item.children, depth + 1);
 		}
 	};
-	visit(outline, 1);
+	visit(outline, 2);
 	return levels;
 }
 
@@ -435,10 +469,6 @@ function renderInline(
 		const url = safeHttpUrl(node.target?.url);
 		writer.append(url && cleanText(normalized) ? `[${text}](${url})` : text);
 	}
-}
-
-function isInlineContent(nodes: readonly SdtNode[]): boolean {
-	return nodes.every((node) => 'text' in node);
 }
 
 function shouldRenderSourceCrop(node: SdtBlockNode): node is SdtBlockNode & { type: 'image' | 'table' } {
@@ -643,7 +673,7 @@ function firstPageIdentifierText(document: StructuredPdfDocument): string | null
 
 export function normalizeStructuredPdf(
 	document: StructuredPdfDocument,
-	options: Readonly<{ inputContentHash?: string }> = {},
+	options: Readonly<{ inputContentHash?: string; readySourceCropIds?: ReadonlySet<string> }> = {},
 ): NormalizedStructuredPdf {
 	const entries = walkNodes(document.content);
 	const referenceEntries = entries.filter(
@@ -659,8 +689,9 @@ export function normalizeStructuredPdf(
 	const headingLevelByPath = headingLevels(document.catalog.outline);
 	const sourceCrops = structuredPdfSourceCrops(document);
 	const sourceCropsByBlock = new Map<string, Array<{ altText: string; url: string }>>();
-	if (options.inputContentHash) {
+	if (options.inputContentHash && options.readySourceCropIds?.size) {
 		for (const crop of sourceCrops) {
+			if (!options.readySourceCropIds.has(crop.id)) continue;
 			const entry = { altText: crop.altText, url: structuredPdfSourceCropUrl(options.inputContentHash, crop.id) };
 			const existing = sourceCropsByBlock.get(crop.blockPath);
 			if (existing) existing.push(entry);
@@ -668,24 +699,15 @@ export function normalizeStructuredPdf(
 		}
 	}
 	let section: string | null = null;
+	const renderedPartPaths = new Set<string>();
 	for (let index = 0; index < document.content.length; index += 1) {
 		const block = document.content[index];
-		if (!block || block.flowClass === 'excluded') continue;
-		const blockIndex = index;
-		let renderableBlock = block;
-		let previousSourceBlock = block;
-		let lastMergedIndex = index;
-		while (previousSourceBlock.type === 'paragraph') {
-			let nextIndex = lastMergedIndex + 1;
-			while (document.content[nextIndex]?.flowClass === 'excluded') nextIndex += 1;
-			const nextBlock = document.content[nextIndex];
-			if (!nextBlock || !isParagraphContinuation(previousSourceBlock, nextBlock)) break;
-			renderableBlock = mergeParagraphs(renderableBlock, nextBlock);
-			previousSourceBlock = nextBlock;
-			lastMergedIndex = nextIndex;
-		}
-		section = renderBlock(writer, renderableBlock, [blockIndex], section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
-		index = lastMergedIndex;
+		const blockPath: RefPath = [index];
+		if (!block || block.flowClass === 'excluded' || renderedPartPaths.has(nodePathKey(blockPath))) continue;
+		const partChain = paragraphPartChain(document, index);
+		const renderableBlock = partChain ? mergeParagraphParts(partChain) : block;
+		for (const part of partChain?.slice(1) ?? []) renderedPartPaths.add(nodePathKey([part.index]));
+		section = renderBlock(writer, renderableBlock, blockPath, section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
 	}
 	const markdown = writer.toString();
 	const pageText = pagesWithText(document);

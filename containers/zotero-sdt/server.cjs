@@ -9,8 +9,13 @@ const PORT = Number.parseInt(process.env.PORT ?? '8080', 10);
 const MAX_PDF_BYTES = Number.parseInt(process.env.MAX_PDF_BYTES ?? String(25 * 1024 * 1024), 10);
 const MAX_DOCUMENT_BYTES = Number.parseInt(process.env.MAX_DOCUMENT_BYTES ?? String(32 * 1024 * 1024), 10);
 const MAX_CROP_BYTES = Number.parseInt(process.env.MAX_CROP_BYTES ?? String(8 * 1024 * 1024), 10);
+const WORKER_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.WORKER_REQUEST_TIMEOUT_MS ?? String(5 * 60 * 1000), 10);
 const BUILD_DIR = resolve(process.env.DOCUMENT_WORKER_BUILD_DIR ?? '/app/document-worker');
 const WORKER_PATH = resolve(__dirname, 'worker-thread.cjs');
+
+if (!Number.isInteger(WORKER_REQUEST_TIMEOUT_MS) || WORKER_REQUEST_TIMEOUT_MS < 1_000 || WORKER_REQUEST_TIMEOUT_MS > 15 * 60 * 1000) {
+	throw new Error('WORKER_REQUEST_TIMEOUT_MS must be an integer between 1000 and 900000.');
+}
 
 if (!existsSync(resolve(BUILD_DIR, 'worker.js')) || !existsSync(resolve(BUILD_DIR, 'structured-document-text.js'))) {
 	throw new Error(`Missing document-worker build at ${BUILD_DIR}.`);
@@ -23,20 +28,29 @@ class DocumentWorkerClient {
 		this.nextRequestId = 0;
 		this.pending = new Map();
 		this.queue = Promise.resolve();
+		this.failure = null;
+		this.exitScheduled = false;
+		this.readyState = 'starting';
 		this.worker = new Worker(WORKER_PATH, { workerData: { buildDir: BUILD_DIR } });
 		this.ready = new Promise((resolveReady, rejectReady) => {
 			this.resolveReady = resolveReady;
 			this.rejectReady = rejectReady;
 		});
+		this.readyTimeout = setTimeout(() => {
+			this.crash(new Error(`Zotero document worker did not become ready within ${WORKER_REQUEST_TIMEOUT_MS}ms.`));
+		}, WORKER_REQUEST_TIMEOUT_MS);
 		this.worker.on('message', (message) => this.handleMessage(message));
-		this.worker.on('error', (error) => this.fail(error));
+		this.worker.on('error', (error) => this.crash(error));
 		this.worker.on('exit', (code) => {
-			if (code !== 0) this.fail(new Error(`Zotero document worker exited with code ${code}.`));
+			this.crash(new Error(`Zotero document worker exited unexpectedly with code ${code}.`));
 		});
 	}
 
 	handleMessage(message) {
 		if (message?.ready) {
+			if (this.failure || this.readyState === 'ready') return;
+			clearTimeout(this.readyTimeout);
+			this.readyState = 'ready';
 			this.resolveReady();
 			return;
 		}
@@ -62,37 +76,81 @@ class DocumentWorkerClient {
 			const data = buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
 			this.worker.postMessage({ responseID, data }, [data]);
 		} catch (error) {
-			this.worker.postMessage({ responseID, error: serializeError(error) });
+			try {
+				this.worker.postMessage({ responseID, error: serializeError(error) });
+			} catch (postError) {
+				this.crash(postError);
+			}
 		}
 	}
 
 	fail(error) {
-		this.rejectReady(error);
-		for (const pending of this.pending.values()) pending.reject(error);
+		if (this.failure) return this.failure;
+		const failure = error instanceof Error ? error : new Error(String(error));
+		this.failure = failure;
+		this.readyState = 'failed';
+		clearTimeout(this.readyTimeout);
+		this.rejectReady(failure);
+		for (const pending of this.pending.values()) pending.reject(failure);
 		this.pending.clear();
+		return failure;
+	}
+
+	crash(error) {
+		const failure = this.fail(error);
+		if (this.exitScheduled) return;
+		this.exitScheduled = true;
+		console.error({ error: failure.message, event: 'zotero_sdt_document_worker_failed' });
+		setImmediate(() => process.exit(1));
+	}
+
+	get isHealthy() {
+		return this.readyState === 'ready' && !this.failure;
+	}
+
+	async waitUntilReady() {
+		await this.ready;
+		if (!this.isHealthy) throw this.failure ?? new Error('Zotero document worker is unavailable.');
 	}
 
 	request(action, pdfBuffer, data) {
-		const job = this.queue.then(async () => {
-			await this.ready;
+		if (this.failure) return Promise.reject(this.failure);
+		const timeoutError = new Error(`Zotero document worker request ${action} timed out after ${WORKER_REQUEST_TIMEOUT_MS}ms.`);
+		timeoutError.statusCode = 504;
+		let timeout;
+		const queuedJob = this.queue.then(async () => {
+			await this.waitUntilReady();
 			const id = ++this.nextRequestId;
 			const buffer = pdfBuffer.buffer.slice(pdfBuffer.byteOffset, pdfBuffer.byteOffset + pdfBuffer.byteLength);
 			return await new Promise((resolveRequest, rejectRequest) => {
 				this.pending.set(id, { reject: rejectRequest, resolve: resolveRequest });
-				this.worker.postMessage(
-					{
-						action,
-						data: {
-							buf: buffer,
-							password: '',
-							...data,
+				try {
+					this.worker.postMessage(
+						{
+							action,
+							data: {
+								buf: buffer,
+								password: '',
+								...data,
+							},
+							id,
 						},
-						id,
-					},
-					[buffer],
-				);
+						[buffer],
+					);
+				} catch (error) {
+					this.pending.delete(id);
+					rejectRequest(error);
+					this.crash(error);
+				}
 			});
 		});
+		const timeoutJob = new Promise((_resolveTimeout, rejectTimeout) => {
+			timeout = setTimeout(() => {
+				rejectTimeout(timeoutError);
+				this.crash(timeoutError);
+			}, WORKER_REQUEST_TIMEOUT_MS);
+		});
+		const job = Promise.race([queuedJob, timeoutJob]).finally(() => clearTimeout(timeout));
 		this.queue = job.catch(() => undefined);
 		return job;
 	}
@@ -175,8 +233,12 @@ const server = createServer(async (request, response) => {
 	try {
 		const url = new URL(request.url ?? '/', 'http://container');
 		if (request.method === 'GET' && url.pathname === '/health') {
-			await client.ready;
-			return sendJson(response, 200, { ok: true });
+			try {
+				await client.waitUntilReady();
+			} catch {
+				return sendJson(response, 503, { error: 'Zotero document worker is unavailable.', ok: false });
+			}
+			return sendJson(response, client.isHealthy ? 200 : 503, { ok: client.isHealthy });
 		}
 		if (request.method !== 'POST' || (url.pathname !== '/parse' && url.pathname !== '/render-area')) {
 			return sendJson(response, 404, { error: 'Not found.' });
