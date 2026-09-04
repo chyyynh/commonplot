@@ -125,11 +125,7 @@ export async function completeFetchedPdfAcquisition(
 }
 
 /** OpenAlex content URLs need our API key, so this optional representation is always local-only. */
-export async function stageOpenAlexPdfRepresentation(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: { contentPdfUrl: string; processingId: string },
-) {
+export async function stageOpenAlexPdfMarkdown(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
 	try {
 		const contentStream = await step.do(
 			'acquire-openalex-content-pdf-v8',
@@ -147,10 +143,7 @@ export async function stageOpenAlexPdfRepresentation(
 			processing_id: input.processingId,
 			chars: acquired.markdown.length,
 		});
-		return {
-			fileType: PDF_MIME,
-			markdown: acquired.markdown,
-		};
+		return acquired.markdown;
 	} catch (error) {
 		console.error({
 			tag: 'OPENALEX_CONTENT',

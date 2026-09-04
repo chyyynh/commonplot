@@ -16,7 +16,7 @@ import {
 import { resolveCrossrefPaper } from '../crossref';
 import { type GenericAcquiredMaterial, literalCreator, materializeGenericResource, type ResourceAcquisitionHints } from './materialize';
 import { type PaperMetadata, resolveOpenAlexPaper } from './openalex';
-import { PDF_MIME, stageOpenAlexPdfRepresentation } from './pdf';
+import { PDF_MIME, stageOpenAlexPdfMarkdown } from './pdf';
 
 const CITOID_IDENTIFIER_SCAN_CHARS = 3_000;
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
@@ -280,17 +280,18 @@ export async function stagePaperProcessing(
 					processingId: input.processingId,
 				});
 	const enriched = applyPaperMetadata(input.acquiredContent, resolution.metadata, publishedDate);
-	const pdfRepresentation =
+	const pdfMarkdown =
 		input.acquiredContent.fileType === PDF_MIME || !resolution.contentPdfUrl
 			? null
-			: await stageOpenAlexPdfRepresentation(env, step, {
+			: await stageOpenAlexPdfMarkdown(env, step, {
 					contentPdfUrl: resolution.contentPdfUrl,
 					processingId: input.processingId,
 				});
-	const acquiredContent = pdfRepresentation
+	const acquiredContent = pdfMarkdown
 		? {
 				...enriched.acquiredContent,
-				...pdfRepresentation,
+				fileType: PDF_MIME,
+				markdown: pdfMarkdown,
 				source: enriched.acquiredContent.source.trim() || (canonicalUrl ? new URL(canonicalUrl).hostname : 'OpenAlex'),
 			}
 		: enriched.acquiredContent;
