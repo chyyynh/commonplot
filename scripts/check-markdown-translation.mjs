@@ -192,16 +192,14 @@ const duplicatedInlineTextId = textIdsInSequence(duplicatedSequenceTemplate, dup
 assert.ok(duplicatedRootTextId && duplicatedInlineTextId, 'cross-sequence duplication fixture must expose both text IDs');
 const repeatedTranslation = '回溯追蹤擴散的氣體，精確定位排放源。';
 const duplicatedSequenceTranslation = targetFromSource(duplicatedSequenceSegment);
-assert.throws(
-	() =>
-		compileMarkdownTranslation(duplicatedSequencePlan, [
-			withTranslatedTexts(duplicatedSequenceTranslation, {
-				[duplicatedRootTextId]: repeatedTranslation,
-				[duplicatedInlineTextId]: `羽流描繪：${repeatedTranslation}`,
-			}),
-		]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'invalid-result',
-	'new cross-sequence duplication must remain visible as an error instead of being silently rewritten',
+assert.ok(
+	compileMarkdownTranslation(duplicatedSequencePlan, [
+		withTranslatedTexts(duplicatedSequenceTranslation, {
+			[duplicatedRootTextId]: repeatedTranslation,
+			[duplicatedInlineTextId]: `羽流描繪：${repeatedTranslation}`,
+		}),
+	]),
+	'semantic translation quality must remain the model contract instead of a text-pattern validator',
 );
 
 const longInlineMathFixture = String.raw`A real formula can be longer than ordinary prose.
@@ -231,14 +229,13 @@ assert.throws(
 const firstTranslation = translations[0];
 const firstRootTextId = firstTranslation ? textIdsInSequence(createMarkdownTranslationTemplate(plan.segments[0]))[0] : undefined;
 assert.ok(firstTranslation && firstRootTextId, 'first fixture translation must start with root prose');
-assert.throws(
+assert.doesNotThrow(
 	() =>
 		validateMarkdownBatchTranslations(firstBatch, [
 			withTranslatedTexts(firstTranslation, { [firstRootTextId]: ` ${firstTranslation.texts[firstRootTextId]}` }),
 			...translations.slice(1, firstBatch.segments.length),
 		]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'invalid-result',
-	'leading or trailing model whitespace must fail closed',
+	'model whitespace is prose quality, not a Markdown structural invariant',
 );
 assert.throws(
 	() =>
@@ -587,8 +584,24 @@ const denseInlineMarkdown = Array.from({ length: 100 }, (_, index) => `Read [lin
 const denseInlinePlan = planMarkdownTranslation(denseInlineMarkdown);
 assert.equal(denseInlinePlan.segments.length, 1, 'dense inline prose should remain one semantic segment');
 assert.ok(
-	denseInlinePlan.batches.every((batch) => batch.inputCharacters <= 8_000),
+	denseInlinePlan.batches.every((batch) => batch.inputCharacters <= 24_000),
 	'compact source IR must keep a 100-link paragraph inside the production batch budget',
+);
+
+const formerlyOversizedInlineMarkdown = Array.from(
+	{ length: 120 },
+	(_, index) => `*Sentence ${index} keeps its emphasis and remains part of the same semantic passage.*`,
+).join(' ');
+assert.ok(formerlyOversizedInlineMarkdown.length > 6_000, 'inline fixture must exceed the retired arbitrary segment ceiling');
+const formerlyOversizedInlinePlan = planMarkdownTranslation(formerlyOversizedInlineMarkdown);
+assert.equal(formerlyOversizedInlinePlan.segments.length, 1, 'a model-sized inline passage must remain one semantic segment');
+assert.equal(
+	compileMarkdownTranslation(
+		formerlyOversizedInlinePlan,
+		formerlyOversizedInlinePlan.segments.map((segment) => targetFromSource(segment)),
+	),
+	formerlyOversizedInlineMarkdown,
+	'model-sized inline prose must preserve its Markdown structure',
 );
 
 const malformedMarkdown = `## Malformed but parseable\n\nAn **unclosed delimiter and a [broken link label must remain ordinary prose.`;

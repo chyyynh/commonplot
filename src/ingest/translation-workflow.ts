@@ -59,7 +59,7 @@ type ResourceTranslationInputRow = {
 const METADATA_CONTENT_MAX_LENGTH = 10000;
 const PARTIAL_CONTENT_TRANSLATION_RATIO = 0.2;
 const MIN_TRANSLATABLE_TEXT_LENGTH = 20;
-const AI_RATE_LIMIT_ERROR = /\b(?:3021|429)\b|rate limit|too many requests/iu;
+const AI_RATE_LIMIT_ERROR = /\b(?:3021|3040|429)\b|rate limit|too many requests|capacity temporarily exceeded/iu;
 
 function translationRetryDelay({ ctx, error }: WorkflowDynamicDelayContext): number {
 	// The provider's RPM window is one minute. Short exponential retries all land inside the same exhausted window,
@@ -299,7 +299,7 @@ async function translatePlannedContent(
 	for (const batch of markdownPlan.batches) {
 		try {
 			const translatedBatch = await step.do(
-				`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v10`,
+				`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v11`,
 				{ retries: { limit: 3, delay: translationRetryDelay }, timeout: '300 seconds' },
 				(context) => translateMarkdownBatchToZhHant(batch, env, resourceId, context.attempt),
 			);
@@ -344,7 +344,7 @@ async function translatePlannedContent(
 	}
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v23';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v24';
 const ResourceTranslationRevisionSchema = z.hash('md5').lowercase();
 const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 

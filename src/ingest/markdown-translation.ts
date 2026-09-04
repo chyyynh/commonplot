@@ -8,17 +8,15 @@ import { frontmatter } from 'micromark-extension-frontmatter';
 import { gfm } from 'micromark-extension-gfm';
 import { math } from 'micromark-extension-math';
 
-const DEFAULT_BATCH_MAX_CHARACTERS = 8_000;
+const DEFAULT_BATCH_MAX_CHARACTERS = 24_000;
 const DEFAULT_CONTEXT_MAX_CHARACTERS = 800;
-const DEFAULT_SEGMENT_MAX_CHARACTERS = 6_000;
-const DEFAULT_BATCH_MAX_SEGMENTS = 16;
-const MINIMUM_SPLIT_BOUNDARY_RATIO = 0.65;
+const DEFAULT_SEGMENT_MAX_CHARACTERS = 20_000;
+const DEFAULT_BATCH_MAX_SEGMENTS = 32;
 const TRANSLATABLE_CHARACTER = /[\p{L}\p{N}]/u;
 const URL_OR_EMAIL = /^(?:https?:\/\/|mailto:|www\.)\S+$|^[^\s@]+@[^\s@]+\.[^\s@]+$/iu;
 const TRANSLATED_PROSE_SENTINEL = '<translated-prose>';
 const INLINE_TOKEN_PATTERN = /<\/?n[0-9]+>|<n[0-9]+\/>/gu;
 const MAX_INLINE_REFERENCE_CHARACTERS = 256;
-const MIN_CROSS_SEQUENCE_DUPLICATE_CHARACTERS = 12;
 const ROOT_TRANSLATION_SEQUENCE = 'root';
 const TEXT_TRANSLATION_ID_PREFIX = 't';
 const FRONTMATTER_PRESETS: Array<'toml' | 'yaml'> = ['yaml', 'toml'];
@@ -191,35 +189,28 @@ function containsTranslatableProse(node: Nodes, ancestors: readonly Nodes[] = []
 	return node.children.some((child) => containsTranslatableProse(child, [...ancestors, node]));
 }
 
-function safeSplitIndex(value: string, proposed: number): number {
-	if (proposed <= 0 || proposed >= value.length) return proposed;
-	const previous = value.charCodeAt(proposed - 1);
-	const next = value.charCodeAt(proposed);
-	return previous >= 0xd800 && previous <= 0xdbff && next >= 0xdc00 && next <= 0xdfff ? proposed - 1 : proposed;
-}
-
-function preferredSplitIndex(value: string, start: number, maxCharacters: number): number {
-	const hardEnd = Math.min(value.length, start + maxCharacters);
-	if (hardEnd === value.length) return hardEnd;
-	const minimumEnd = start + Math.floor(maxCharacters * MINIMUM_SPLIT_BOUNDARY_RATIO);
-	const separators = ['\n\n', '\n', '. ', '! ', '? ', '。', '！', '？', '; ', '；', ', ', '，', ' '] as const;
-	for (const separator of separators) {
-		const boundary = value.lastIndexOf(separator, hardEnd - separator.length);
-		if (boundary < minimumEnd) continue;
-		return safeSplitIndex(value, boundary + separator.length);
-	}
-	return safeSplitIndex(value, hardEnd);
-}
-
 function splitProse(value: string, maxCharacters: number): string[] {
 	const chunks: string[] = [];
-	let start = 0;
-	while (start < value.length) {
-		const end = preferredSplitIndex(value, start, maxCharacters);
-		if (end <= start) throw new MarkdownTranslationInvariantError('invalid-plan', 'Markdown prose split made no progress');
-		chunks.push(value.slice(start, end));
-		start = end;
+	let chunk = '';
+	const flush = (): void => {
+		if (chunk) chunks.push(chunk);
+		chunk = '';
+	};
+	const append = (part: string): void => {
+		if (chunk && chunk.length + part.length > maxCharacters) flush();
+		if (part.length <= maxCharacters) {
+			chunk += part;
+			return;
+		}
+		for (const character of part) {
+			if (chunk.length + character.length > maxCharacters) flush();
+			chunk += character;
+		}
+	};
+	for (const sentence of new Intl.Segmenter(undefined, { granularity: 'sentence' }).segment(value)) {
+		append(sentence.segment);
 	}
+	flush();
 	return chunks;
 }
 
@@ -627,45 +618,6 @@ function separateAdjacentAttentionNodes(children: PhrasingContent[]): boolean {
 	return changed;
 }
 
-function normalizedComparableProse(value: string): string {
-	return value
-		.normalize('NFKC')
-		.toLocaleLowerCase()
-		.replace(/[\s\p{P}\p{S}]+/gu, '');
-}
-
-function hasSubstantialContainedProse(left: string, right: string): boolean {
-	const normalizedLeft = normalizedComparableProse(left);
-	const normalizedRight = normalizedComparableProse(right);
-	const shorter = normalizedLeft.length <= normalizedRight.length ? normalizedLeft : normalizedRight;
-	const longer = shorter === normalizedLeft ? normalizedRight : normalizedLeft;
-	return [...shorter].length >= MIN_CROSS_SEQUENCE_DUPLICATE_CHARACTERS && longer.includes(shorter);
-}
-
-function sequenceSourceText(template: ReturnType<typeof createMarkdownTranslationTemplate>, sequenceId: string): string {
-	return (template.sequences[sequenceId] ?? []).map((partId) => template.texts[partId] ?? '').join('');
-}
-
-function assertNoNewCrossSequenceDuplication(
-	segment: MarkdownTranslationSegment,
-	template: ReturnType<typeof createMarkdownTranslationTemplate>,
-	translatedSequenceText: ReadonlyMap<string, string>,
-): void {
-	const translatedEntries = [...translatedSequenceText.entries()];
-	for (const [index, [leftId, leftText]] of translatedEntries.entries()) {
-		for (const [rightId, rightText] of translatedEntries.slice(index + 1)) {
-			if (!hasSubstantialContainedProse(leftText, rightText)) continue;
-			const sourceLeft = sequenceSourceText(template, leftId);
-			const sourceRight = sequenceSourceText(template, rightId);
-			if (hasSubstantialContainedProse(sourceLeft, sourceRight)) continue;
-			throw new MarkdownTranslationInvariantError(
-				'invalid-result',
-				`Translated segment ${segment.id} duplicated prose across inline sequences ${leftId} and ${rightId}`,
-			);
-		}
-	}
-}
-
 function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, target: MarkdownSegmentTranslation): string {
 	const { reconstruction, template } = createMarkdownTranslationTemplatePlan(segment);
 	for (const textId of Object.keys(template.texts)) {
@@ -675,7 +627,6 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 		}
 	}
 	const protectedById = new Map(segment.protectedInlines.map((inline) => [protectedInlineId(inline), inline]));
-	const translatedSequenceText = new Map<string, string>();
 
 	const compileSequence = (sequenceId: string): string => {
 		const partIds = template.sequences[sequenceId];
@@ -686,12 +637,10 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 			);
 		}
 		let compiled = '';
-		let sequenceText = '';
 		for (const partId of partIds) {
 			const text = target.texts[partId];
 			if (text !== undefined) {
 				compiled += text;
-				sequenceText += text;
 				continue;
 			}
 			const inline = protectedById.get(partId);
@@ -704,13 +653,13 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 			compiled += inline.kind === 'atom' ? inline.token : `${inline.open}${compileSourceSequence(partId)}${inline.close}`;
 		}
 		const sourceHasProse = partIds.some((partId) => isTranslatableProse(template.texts[partId] ?? ''));
-		if (sourceHasProse && !isTranslatableProse(sequenceText)) {
+		const translatedHasProse = partIds.some((partId) => isTranslatableProse(target.texts[partId] ?? ''));
+		if (sourceHasProse && !translatedHasProse) {
 			throw new MarkdownTranslationInvariantError(
 				'invalid-result',
 				`Translated segment ${segment.id} erased the prose in inline sequence ${sequenceId}`,
 			);
 		}
-		translatedSequenceText.set(sequenceId, sequenceText);
 		return compiled;
 	};
 	const compileSourceSequence = (sourceSequenceId: string): string => {
@@ -735,9 +684,10 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 	};
 
 	const compiled = compileSourceSequence(ROOT_TRANSLATION_SEQUENCE);
-	assertNoNewCrossSequenceDuplication(segment, template, translatedSequenceText);
-	if (compiled !== compiled.trim()) {
-		throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} must contain safe, trimmed prose`);
+	const sourceProse = Object.values(template.texts).join('');
+	const translatedProse = Object.values(target.texts).join('');
+	if (isTranslatableProse(sourceProse) && !isTranslatableProse(translatedProse)) {
+		throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} erased all prose`);
 	}
 	return compiled;
 }
@@ -794,13 +744,13 @@ function addSegment(
 }
 
 function splitWhitespace(value: string): Readonly<{ leading: string; prose: string; trailing: string }> {
-	const leading = value.match(/^\s*/u)?.[0] ?? '';
-	const withoutLeading = value.slice(leading.length);
-	const trailing = withoutLeading.match(/\s*$/u)?.[0] ?? '';
+	const withoutLeading = value.trimStart();
+	const leading = value.slice(0, value.length - withoutLeading.length);
+	const prose = withoutLeading.trimEnd();
 	return {
 		leading,
-		prose: withoutLeading.slice(0, withoutLeading.length - trailing.length),
-		trailing,
+		prose,
+		trailing: withoutLeading.slice(prose.length),
 	};
 }
 
@@ -890,7 +840,8 @@ export function validateMarkdownBatchTranslations(
 
 export function planMarkdownTranslation(sourceMarkdown: string, options: MarkdownTranslationPlanOptions = {}) {
 	const resolvedOptions = resolvePlanOptions(options);
-	const tree = parseMarkdown(sourceMarkdown);
+	const canonicalSourceMarkdown = serializeMarkdown(parseMarkdown(sourceMarkdown));
+	const tree = parseMarkdown(canonicalSourceMarkdown);
 	const accumulator: PlanAccumulator = { nextInlineIndex: 0, segments: [], targets: [] };
 	visitNode(tree, { heading: null, path: [] }, resolvedOptions, accumulator);
 	const targetPaths = accumulator.targets.map((target) => target.path);
@@ -905,7 +856,7 @@ export function planMarkdownTranslation(sourceMarkdown: string, options: Markdow
 	return {
 		batches: batchSegments(accumulator.segments, resolvedOptions),
 		segments: accumulator.segments,
-		sourceMarkdown,
+		sourceMarkdown: canonicalSourceMarkdown,
 		sourceSkeleton,
 		targets: accumulator.targets,
 	};

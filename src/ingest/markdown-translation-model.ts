@@ -18,15 +18,22 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 				Object.fromEntries(
 					segments.map((segment) => {
 						const template = createMarkdownTranslationTemplate(segment);
+						const requiredTextIds = new Set(
+							Object.values(template.sequences).flatMap((partIds) => {
+								const textIds = partIds.filter((partId) => Object.hasOwn(template.texts, partId));
+								const textId = textIds.length === 1 ? textIds[0] : undefined;
+								return textId && /[\p{L}\p{N}]/u.test(template.texts[textId] ?? '') ? [textId] : [];
+							}),
+						);
 						return [
 							segment.id,
 							z.strictObject({
 								texts: z.strictObject(
 									Object.fromEntries(
-										Object.keys(template.texts).map((textId) => [
-											textId,
-											z.string().describe(`Target-language text for writable position ${textId}; may be empty.`),
-										]),
+										Object.keys(template.texts).map((textId) => {
+											const text = z.string().describe(`Target-language text for writable position ${textId}.`);
+											return [textId, requiredTextIds.has(textId) ? text.min(1) : text];
+										}),
 									),
 								),
 							}),
@@ -66,7 +73,7 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - n ID 的次序、數量與結構完全由 Core 還原，不能也不需要在輸出中重複
 - reference 只供理解，不能複製成譯文；URL、Markdown 語法和其他受保護內容由 Core 還原
 - 不要沿用英文在 inline、中文標點或中文字之間的多餘空白，也不要為中文與英文、數字或 inline 邊界額外補空格；英文單字內與連續拉丁文字之間仍保留正常空格
-- 只輸出符合 schema 的結果，不要輸出說明、前後空白或額外段落；整個 segment 與原本含有文字的 sequence 都不可為空。`;
+- 只輸出符合 schema 的結果，不要輸出說明或額外段落；整個 segment 的正文不可全數刪除。若 t 是某個 sequence 唯一的文字位置，schema 會要求它非空；專有名詞、產品名或單一字母若不需翻譯，請照原文保留。`;
 
 function splitSegmentsInHalf(segments: readonly MarkdownTranslationSegment[]): readonly (readonly MarkdownTranslationSegment[])[] {
 	if (segments.length <= 1) return [segments];
@@ -133,7 +140,7 @@ async function translateGroup(
 			description: 'Complete, faithful, naturally edited Taiwan Traditional Chinese prose blocks keyed by exact input segment IDs.',
 			schema: zhHantMarkdownTranslationsSchema(group.segments),
 		}),
-		maxOutputTokens: 8000,
+		maxOutputTokens: 12000,
 		temperature: 0.2,
 		reasoning: 'none',
 		maxRetries: 0,
