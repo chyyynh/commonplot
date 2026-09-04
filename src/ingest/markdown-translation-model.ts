@@ -11,12 +11,18 @@ import {
 	validateMarkdownBatchTranslations,
 } from './markdown-translation';
 
-function markdownTranslationSequenceSchema(partIds: readonly string[]) {
-	if (!partIds.length) return z.array(z.string()).max(0);
-	return z
-		.array(z.enum(partIds as [string, ...string[]]))
-		.length(partIds.length)
-		.describe(`The same IDs exactly once, in natural target-language order: ${partIds.join(', ')}`);
+const markdownTranslationTextPartSchema = z.strictObject({
+	type: z.literal('text'),
+	value: z.string().min(1),
+});
+
+function markdownTranslationPartsSchema(inlineIds: readonly string[]) {
+	if (!inlineIds.length) return z.array(markdownTranslationTextPartSchema);
+	const markdownTranslationInlinePartSchema = z.strictObject({
+		type: z.literal('inline'),
+		value: z.enum(inlineIds as [string, ...string[]]),
+	});
+	return z.array(z.discriminatedUnion('type', [markdownTranslationTextPartSchema, markdownTranslationInlinePartSchema]));
 }
 
 function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslationSegment[]) {
@@ -29,17 +35,19 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 						return [
 							segment.id,
 							z.strictObject({
-								texts: z.strictObject(
-									Object.fromEntries(
-										Object.keys(template.texts).map((textId) => [textId, z.string().describe(`Translation of ${textId}.`)]),
-									),
-								),
 								sequences: z.strictObject(
 									Object.fromEntries(
-										Object.entries(template.sequences).map(([sequenceId, partIds]) => [
-											sequenceId,
-											markdownTranslationSequenceSchema(partIds),
-										]),
+										Object.entries(template.sequences).map(([sequenceId, partIds]) => {
+											const inlineIds = partIds.filter((partId) => !Object.hasOwn(template.texts, partId));
+											return [
+												sequenceId,
+												markdownTranslationPartsSchema(inlineIds).describe(
+													inlineIds.length
+														? `Translated ${sequenceId}; inline values must be exactly ${inlineIds.join(', ')} once each.`
+														: `Translated ${sequenceId}; use text parts only.`,
+												),
+											];
+										}),
 									),
 								),
 							}),
@@ -53,8 +61,15 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 
 const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯編輯。請產出自然、準確、符合台灣讀者習慣的繁體中文。
 
+輸入契約：
+- 每個 segment 是一個完整標題、段落、表格儲存格，或超長純文字段落的一個完整句界切片
+- texts 是待翻譯的原文片段；sequences 以 t ID 與 n ID 表示這些片段和 inline 在原文中的排列
+- inlines 是由 Core 保管的連結、強調、圖片、程式碼、公式或其他 Markdown inline；若同名 sequence 存在，它就是該 container 包住的可見文字
+- 同一 segment 的所有 sequences 合起來才是完整句意；context、ID、kind 與 reference 只供翻譯判斷，不屬於譯文
+
 翻譯準則：
-- 先把同一 segment 的所有 texts 當作一個完整標題、段落或表格儲存格理解，再依各 t ID 完整翻譯；不要逐字直譯
+- 把同一 segment 當作完整段落理解，不要逐 t ID 直譯
+- 可以在同一 sequence 內依自然中文語序合併、拆分或重新排列原文 text 片段；英文冠詞、空白等不需要一一產生中文表面文字
 - 維持同一批段落的敘事語氣與術語一致，不要重複相鄰 segment 或 context
 - 忠實完整翻譯，不要摘要、評論、解釋、補充背景或新增原文沒有的資訊
 - 保留原文語氣、時態、否定、程度、條件、不確定性、引述關係、數字、單位與引用指向
@@ -65,12 +80,12 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - 若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然的台灣繁體中文
 
 格式契約：
-- texts 的每個 t ID 都是固定的翻譯位置；只把該 key 的原文翻譯回同一 key，不得把正文移到其他 t ID
-- sequences 只描述排版順序。每個 sequence 必須保留輸入中的同一組 t 與 n ID，各恰好一次；可在同一 sequence 內依中文語序換序，但不得跨 sequence 移動
-- n ID 是 Core 保管的連結、強調、圖片、程式碼、公式或其他 inline。reference 只供理解，不能複製成譯文；不要把正文移入或移出 n ID 所屬的格式範圍
+- translations 的每個 key 對應輸入的 segment ID；每個 sequence key 必須與輸入完全相同
+- 每個 n ID 必須在原本的 sequence 內恰好出現一次，並可在該 sequence 內依中文語序重新排列；不得把正文移入或移出 n ID 所屬的 container
+- type=text 的 value 只放譯文純文字；type=inline 的 value 只放該 sequence 原有的 n ID。不要輸出 t ID，text parts 可以自由拆合，不需要空 text part
+- reference 只供理解，不能複製成譯文；URL、Markdown 語法和其他受保護內容由 Core 還原
 - 不要沿用英文在 inline、中文標點或中文字之間的多餘空白，也不要為中文與英文、數字或 inline 邊界額外補空格；英文單字內與連續拉丁文字之間仍保留正常空格
-- 只輸出符合 schema 的結果；不得遺漏或新增 segment、text、sequence 或 ID
-- texts 的 value 只放譯文純文字，不要輸出 Markdown、HTML、XML、ID、說明、前後空白或額外段落。`;
+- 只輸出符合 schema 的結果，不要輸出 Markdown、HTML、XML、說明、前後空白或額外段落；整個 segment 與原本含有文字的 sequence 都不可為空。`;
 
 type TranslationRecoveryStrategy = 'batch' | 'halves' | 'individual';
 
@@ -157,7 +172,6 @@ async function translateGroup(
 		group.segments.map((segment) => ({
 			id: segment.id,
 			sequences: output.translations[segment.id]?.sequences ?? {},
-			texts: output.translations[segment.id]?.texts ?? {},
 		})),
 	);
 }

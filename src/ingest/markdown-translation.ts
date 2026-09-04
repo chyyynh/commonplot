@@ -72,6 +72,8 @@ export type MarkdownTranslationBatch = Readonly<{
 
 export type MarkdownTranslationInline = PhrasingContent['type'] | Readonly<{ kind: PhrasingContent['type']; reference: string }>;
 
+export type MarkdownTranslationPart = Readonly<{ type: 'inline'; value: string }> | Readonly<{ type: 'text'; value: string }>;
+
 type MarkdownTranslationSourcePart = string | Readonly<{ id: string }>;
 
 export type MarkdownTranslationTemplate = Readonly<{
@@ -81,8 +83,7 @@ export type MarkdownTranslationTemplate = Readonly<{
 }>;
 
 export type MarkdownTranslationTarget = Readonly<{
-	sequences: Readonly<Record<string, readonly string[]>>;
-	texts: Readonly<Record<string, string>>;
+	sequences: Readonly<Record<string, readonly MarkdownTranslationPart[]>>;
 }>;
 
 export type MarkdownSegmentTranslation = MarkdownTranslationTarget &
@@ -549,19 +550,10 @@ function createMarkdownTranslationTemplatePlan(segment: MarkdownTranslationSegme
 	};
 }
 
-// Like XLIFF inline codes, stable text and inline IDs keep translation separate from Markdown syntax. The model translates each
-// t value and may reorder existing IDs only within its sequence; Core remains the sole owner of destinations and formatting.
+// Like XLIFF inline codes, stable source text and inline IDs keep translation separate from Markdown syntax. Output text remains
+// fluid within each sequence because natural target-language prose cannot preserve every source-side gap around an inline.
 export function createMarkdownTranslationTemplate(segment: MarkdownTranslationSegment): MarkdownTranslationTemplate {
 	return createMarkdownTranslationTemplatePlan(segment).template;
-}
-
-export function createSourceMarkdownSegmentTranslation(segment: MarkdownTranslationSegment): MarkdownSegmentTranslation {
-	const template = createMarkdownTranslationTemplate(segment);
-	return {
-		id: segment.id,
-		sequences: template.sequences,
-		texts: template.texts,
-	};
 }
 
 function nextInlineToken(kind: 'atom' | 'close' | 'open', index: number): string {
@@ -779,12 +771,8 @@ function assertNoNewCrossSequenceDuplication(
 function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, target: MarkdownTranslationTarget): string {
 	const { reconstruction, template } = createMarkdownTranslationTemplatePlan(segment);
 	const rawTargetSequences = target?.sequences;
-	const rawTargetTexts = target?.texts;
 	if (!rawTargetSequences || typeof rawTargetSequences !== 'object' || Array.isArray(rawTargetSequences)) {
 		throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} has no inline sequences`);
-	}
-	if (!rawTargetTexts || typeof rawTargetTexts !== 'object' || Array.isArray(rawTargetTexts)) {
-		throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} has no translated texts`);
 	}
 	const expectedSequenceIds = Object.keys(template.sequences);
 	const receivedSequenceIds = Object.keys(rawTargetSequences);
@@ -794,74 +782,82 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 			`Translated segment ${segment.id} changed its inline sequence keys`,
 		);
 	}
-	const expectedTextIds = Object.keys(template.texts);
-	const receivedTextIds = Object.keys(rawTargetTexts);
-	if (!sameStringMembers(expectedTextIds, receivedTextIds)) {
-		throw new MarkdownTranslationInvariantError('markdown-structure-changed', `Translated segment ${segment.id} changed its text keys`);
-	}
-	const targetTexts: Record<string, string> = {};
-	for (const textId of expectedTextIds) {
-		const sourceText = template.texts[textId];
-		const targetText = rawTargetTexts[textId];
-		if (
-			typeof sourceText !== 'string' ||
-			typeof targetText !== 'string' ||
-			targetText.includes('\0') ||
-			/\r?\n[\t ]*\r?\n/u.test(targetText) ||
-			inlineTokens(targetText).length
-		) {
-			throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} has unsafe text ${textId}`);
-		}
-		if (isTranslatableProse(sourceText) && !isTranslatableProse(targetText)) {
-			throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} erased translated text ${textId}`);
-		}
-		targetTexts[textId] = targetText;
-	}
 	const protectedById = new Map(segment.protectedInlines.map((inline) => [protectedInlineId(inline), inline]));
 	const translatedSequenceText = new Map<string, string>();
 	let translatedText = '';
 
 	const compileSequence = (sequenceId: string): string => {
 		const sourcePartIds = template.sequences[sequenceId];
-		const targetPartIds = rawTargetSequences[sequenceId];
-		if (!sourcePartIds || !Array.isArray(targetPartIds)) {
+		const targetParts = rawTargetSequences[sequenceId];
+		if (!sourcePartIds || !Array.isArray(targetParts)) {
 			throw new MarkdownTranslationInvariantError(
 				'markdown-structure-changed',
 				`Translated segment ${segment.id} is missing inline sequence ${sequenceId}`,
 			);
 		}
-		if (!targetPartIds.every((partId) => typeof partId === 'string') || !sameStringMembers(sourcePartIds, targetPartIds)) {
-			throw new MarkdownTranslationInvariantError(
-				'markdown-structure-changed',
-				`Translated segment ${segment.id} changed the members of inline sequence ${sequenceId}`,
-			);
-		}
 		const expectedInlineSet = new Set(sourcePartIds.filter((partId) => !Object.hasOwn(template.texts, partId)));
+		const seenInlineIds = new Set<string>();
 		let compiled = '';
 		let sequenceText = '';
-		for (const partId of targetPartIds) {
-			const text = targetTexts[partId];
-			if (text !== undefined) {
-				compiled += text;
-				sequenceText += text;
-				translatedText += text;
+		for (const part of targetParts) {
+			const candidate = part as { type?: unknown; value?: unknown };
+			if (
+				!candidate ||
+				typeof candidate !== 'object' ||
+				!sameStringMembers(Object.keys(candidate), ['type', 'value']) ||
+				typeof candidate.value !== 'string'
+			) {
+				throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} has an invalid inline part`);
+			}
+			if (candidate.type === 'text') {
+				if (
+					!candidate.value ||
+					candidate.value.includes('\0') ||
+					/\r?\n[\t ]*\r?\n/u.test(candidate.value) ||
+					inlineTokens(candidate.value).length
+				) {
+					throw new MarkdownTranslationInvariantError(
+						'invalid-result',
+						`Translated segment ${segment.id} has unsafe text in inline sequence ${sequenceId}`,
+					);
+				}
+				compiled += candidate.value;
+				sequenceText += candidate.value;
+				translatedText += candidate.value;
 				continue;
 			}
-			if (!expectedInlineSet.has(partId)) {
-				const reason = protectedById.has(partId) ? 'moved' : 'invented';
+			if (candidate.type !== 'inline') {
+				throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} has an unknown part type`);
+			}
+			const inlineId = candidate.value;
+			if (!expectedInlineSet.has(inlineId)) {
+				const reason = protectedById.has(inlineId) ? 'moved' : 'invented';
 				throw new MarkdownTranslationInvariantError(
 					'markdown-structure-changed',
-					`Translated segment ${segment.id} ${reason} inline ${partId} into sequence ${sequenceId}`,
+					`Translated segment ${segment.id} ${reason} inline ${inlineId} into sequence ${sequenceId}`,
 				);
 			}
-			const inline = protectedById.get(partId);
+			if (seenInlineIds.has(inlineId)) {
+				throw new MarkdownTranslationInvariantError(
+					'markdown-structure-changed',
+					`Translated segment ${segment.id} duplicated inline ${inlineId} in sequence ${sequenceId}`,
+				);
+			}
+			seenInlineIds.add(inlineId);
+			const inline = protectedById.get(inlineId);
 			if (!inline) {
 				throw new MarkdownTranslationInvariantError(
 					'markdown-structure-changed',
-					`Translated segment ${segment.id} references unknown inline ${partId}`,
+					`Translated segment ${segment.id} references unknown inline ${inlineId}`,
 				);
 			}
-			compiled += inline.kind === 'atom' ? inline.token : `${inline.open}${compileSourceSequence(partId)}${inline.close}`;
+			compiled += inline.kind === 'atom' ? inline.token : `${inline.open}${compileSourceSequence(inlineId)}${inline.close}`;
+		}
+		if (seenInlineIds.size !== expectedInlineSet.size) {
+			throw new MarkdownTranslationInvariantError(
+				'markdown-structure-changed',
+				`Translated segment ${segment.id} omitted an inline from sequence ${sequenceId}`,
+			);
 		}
 		const sourceHasProse = sourcePartIds.some((partId) => {
 			const sourceText = template.texts[partId];

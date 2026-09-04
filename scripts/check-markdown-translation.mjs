@@ -4,19 +4,36 @@ const {
 	MarkdownTranslationInvariantError,
 	compileMarkdownTranslation,
 	compileMarkdownTranslationArtifact,
-	createSourceMarkdownSegmentTranslation,
 	createMarkdownTranslationTemplate,
 	planMarkdownTranslation,
 	validateMarkdownBatchTranslations,
 } = await import('../src/ingest/markdown-translation.ts');
 
+function materializeTranslation(translation, partOrder = translation.partOrder, texts = translation.texts) {
+	return {
+		...translation,
+		partOrder,
+		sequences: Object.fromEntries(
+			Object.entries(partOrder).map(([sequenceId, partIds]) => [
+				sequenceId,
+				partIds.flatMap((partId) => {
+					const text = texts[partId];
+					if (text !== undefined) return text ? [{ type: 'text', value: text }] : [];
+					return [{ type: 'inline', value: partId }];
+				}),
+			]),
+		),
+		texts,
+	};
+}
+
 function targetFromSource(segment, translateText = (value) => value) {
 	const template = createMarkdownTranslationTemplate(segment);
-	return {
+	return materializeTranslation({
 		id: segment.id,
-		sequences: template.sequences,
+		partOrder: template.sequences,
 		texts: Object.fromEntries(Object.entries(template.texts).map(([textId, value]) => [textId, translateText(value)])),
-	};
+	});
 }
 
 function textIdsInSequence(template, sequenceId = 'root') {
@@ -24,11 +41,11 @@ function textIdsInSequence(template, sequenceId = 'root') {
 }
 
 function withSequenceOrder(translation, sequenceId, order) {
-	return { ...translation, sequences: { ...translation.sequences, [sequenceId]: order } };
+	return materializeTranslation(translation, { ...translation.partOrder, [sequenceId]: order });
 }
 
 function withTranslatedTexts(translation, values) {
-	return { ...translation, texts: { ...translation.texts, ...values } };
+	return materializeTranslation(translation, translation.partOrder, { ...translation.texts, ...values });
 }
 
 function inlineIdsOfKind(template, kind) {
@@ -366,23 +383,43 @@ assert.deepEqual(
 	},
 	'model input must expose a movable inline reference and a separately scoped link-label sequence',
 );
-const reorderedMarkdown = compileMarkdownTranslation(reorderedPlan, [
+const reorderedTranslation = withTranslatedTexts(
+	withSequenceOrder(targetFromSource(reorderedSegment), 'root', [reorderedInlineId, 't1', 't2']),
 	{
-		id: reorderedSegment.id,
-		sequences: {
-			root: [reorderedInlineId, 't1', 't2'],
-			[reorderedInlineId]: ['t3'],
-		},
-		texts: {
-			t1: '市場',
-			t2: '將以電動車為主。',
-			t3: '預期',
-		},
+		t1: '市場',
+		t2: '將以電動車為主。',
+		t3: '預期',
 	},
-]);
+);
+const reorderedMarkdown = compileMarkdownTranslation(reorderedPlan, [reorderedTranslation]);
 assert.ok(
 	reorderedMarkdown.includes(`[預期](https://example.com/forecast)市場將以電動車為主。`),
 	'complete prose translation must allow inline markup to move with natural target-language word order',
+);
+
+const disappearingArticlePlan = planMarkdownTranslation(
+	'The [filing](https://example.com/filing) shows that revenue increased substantially.',
+);
+const disappearingArticleSegment = disappearingArticlePlan.segments[0];
+assert.ok(disappearingArticleSegment, 'article regression fixture must produce one prose segment');
+const disappearingArticleTemplate = createMarkdownTranslationTemplate(disappearingArticleSegment);
+const filingInlineId = inlineIdsOfKind(disappearingArticleTemplate, 'link')[0];
+assert.ok(filingInlineId, 'article regression fixture must expose its link');
+assert.equal(
+	compileMarkdownTranslation(disappearingArticlePlan, [
+		{
+			id: disappearingArticleSegment.id,
+			sequences: {
+				root: [
+					{ type: 'inline', value: filingInlineId },
+					{ type: 'text', value: '顯示，營收大幅成長。' },
+				],
+				[filingInlineId]: [{ type: 'text', value: '申報文件' }],
+			},
+		},
+	]),
+	'[申報文件](https://example.com/filing)顯示，營收大幅成長。',
+	'natural Chinese may omit an English article without erasing the enclosing sequence',
 );
 
 const naturalParagraphPlan = planMarkdownTranslation(
@@ -452,17 +489,14 @@ assert.deepEqual(
 );
 const [settingInlineId, pathInlineId] = inlineIdsOfKind(inlineCodeTemplate, 'inlineCode');
 assert.ok(settingInlineId && pathInlineId, 'inline-code fixture must expose both atoms');
-const inlineCodeTranslation = {
-	id: inlineCodeSegment.id,
-	sequences: {
-		root: ['t2', pathInlineId, 't1', settingInlineId, 't3'],
-	},
-	texts: {
+const inlineCodeTranslation = withTranslatedTexts(
+	withSequenceOrder(targetFromSource(inlineCodeSegment), 'root', ['t2', pathInlineId, 't1', settingInlineId, 't3']),
+	{
 		t1: '中，將選項加入現有的',
 		t2: '請在',
 		t3: '值，然後執行以下指令：',
 	},
-};
+);
 assert.equal(
 	compileMarkdownTranslation(inlineCodePlan, [inlineCodeTranslation]),
 	'請在`/etc/default/grub`中，將選項加入現有的`GRUB_CMDLINE_LINUX_DEFAULT`值，然後執行以下指令：',
@@ -599,17 +633,15 @@ assert.deepEqual(
 	['root:slot:01', 'root:slot:02'],
 	'each claim must remain in its own translation slot beside its citation',
 );
-const citationTranslations = citationPlan.segments.map((segment) => createSourceMarkdownSegmentTranslation(segment));
+const citationTranslations = citationPlan.segments.map((segment) => targetFromSource(segment));
 const citationIndex = citationPlan.segments.findIndex((segment) => segment.id === citationSegment.id);
 assert.ok(citationIndex >= 0, 'citation segment must belong to the plan');
-citationTranslations[citationIndex] = {
-	...citationTranslations[citationIndex],
-	texts: {
-		...citationTranslations[citationIndex].texts,
-		[textIdsInSequence(citationTemplate, 'root:slot:01')[0]]: '第一項主張。',
-		[textIdsInSequence(citationTemplate, 'root:slot:02')[0]]: '第二項主張。',
-	},
-};
+const citationTranslation = citationTranslations[citationIndex];
+assert.ok(citationTranslation, 'citation segment must have a source translation');
+citationTranslations[citationIndex] = withTranslatedTexts(citationTranslation, {
+	[textIdsInSequence(citationTemplate, 'root:slot:01')[0]]: '第一項主張。',
+	[textIdsInSequence(citationTemplate, 'root:slot:02')[0]]: '第二項主張。',
+});
 const citationMarkdown = compileMarkdownTranslation(citationPlan, citationTranslations);
 assert.ok(citationMarkdown.includes('第一項主張。[^a]第二項主張。[^b]'), 'Core must restore each citation at its original claim boundary');
 
@@ -637,7 +669,7 @@ assert.deepEqual(
 	[2, 2],
 	'movable formulas must stay available on both sides of the fixed citation',
 );
-const formulaCitationTranslations = formulaCitationPlan.segments.map((segment) => createSourceMarkdownSegmentTranslation(segment));
+const formulaCitationTranslations = formulaCitationPlan.segments.map((segment) => targetFromSource(segment));
 const formulaCitationIndex = formulaCitationPlan.segments.findIndex((segment) => segment.id === formulaCitationSegment.id);
 assert.ok(formulaCitationIndex >= 0, 'formula-plus-citation segment must belong to its plan');
 const [formulaSlotOne, formulaSlotTwo] = Object.keys(formulaCitationTemplate.sequences);
