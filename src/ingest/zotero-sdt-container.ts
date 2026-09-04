@@ -23,15 +23,11 @@ export class ZoteroSdtContainer extends Container<CoreEnv> {
 		}
 	}
 
-	private requestBody(input: ReadableStream<Uint8Array>, byteLength: number | null): ReadableStream<Uint8Array> {
-		return byteLength === null ? input : input.pipeThrough(new FixedLengthStream(byteLength));
-	}
-
 	async processPdf(input: ReadableStream<Uint8Array>, byteLength: number | null): Promise<Response> {
 		await this.ensureReady(input);
 
 		return this.containerFetch('http://zotero-sdt/parse', {
-			body: this.requestBody(input, byteLength),
+			body: byteLength === null ? input : input.pipeThrough(new FixedLengthStream(byteLength)),
 			headers: { 'content-type': 'application/pdf' },
 			method: 'POST',
 		});
@@ -48,7 +44,7 @@ export class ZoteroSdtContainer extends Container<CoreEnv> {
 		url.searchParams.set('pageIndex', String(pageIndex));
 		url.searchParams.set('rect', rect.join(','));
 		return this.containerFetch(url, {
-			body: this.requestBody(input, byteLength),
+			body: input.pipeThrough(new FixedLengthStream(byteLength)),
 			headers: { 'content-type': 'application/pdf' },
 			method: 'POST',
 		});
