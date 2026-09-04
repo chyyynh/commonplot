@@ -12,25 +12,19 @@ export type ResourceTranslationCandidate = Readonly<{
 	url: string | null;
 }>;
 
-type PdfTranslationAdmission = 'canonical-paper' | 'not-pdf' | 'private-upload' | 'unsupported';
-
-function pdfTranslationAdmission(candidate: ResourceTranslationCandidate): PdfTranslationAdmission {
-	if (candidate.fileType !== PDF_MIME) return 'not-pdf';
-	if (candidate.resourcePlatform !== null) return 'unsupported';
-	if (candidate.scope === 'corpus' && candidate.kind === 'paper') return 'canonical-paper';
-	return candidate.scope === 'private' && candidate.kind === 'file' && candidate.url === null ? 'private-upload' : 'unsupported';
-}
-
 export function shouldEnqueueResourceTranslation(candidate: ResourceTranslationCandidate): boolean {
-	const pdfAdmission = pdfTranslationAdmission(candidate);
-	const privateUploadedPdf = pdfAdmission === 'private-upload';
-	const translatableKind =
-		(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(candidate.kind) || (candidate.kind === 'file' && privateUploadedPdf);
+	const privateUploadedPdf =
+		candidate.fileType === PDF_MIME &&
+		candidate.resourcePlatform === null &&
+		candidate.scope === 'private' &&
+		candidate.kind === 'file' &&
+		candidate.url === null;
+	if (privateUploadedPdf) return candidate.originalLang !== 'zh-Hant';
 	return (
 		candidate.originalLang !== 'zh-Hant' &&
-		(candidate.scope === 'corpus' || privateUploadedPdf) &&
-		translatableKind &&
-		(Boolean(candidate.url) || privateUploadedPdf) &&
-		pdfAdmission !== 'unsupported'
+		candidate.scope === 'corpus' &&
+		Boolean(candidate.url) &&
+		(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(candidate.kind) &&
+		(candidate.fileType !== PDF_MIME || (candidate.kind === 'paper' && candidate.resourcePlatform === null))
 	);
 }
