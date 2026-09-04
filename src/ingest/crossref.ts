@@ -37,6 +37,7 @@ const CrossrefResponseSchema = z.object({
 	message: z.object({ items: z.array(CrossrefWorkSchema).max(CROSSREF_ROWS) }),
 	status: z.literal('ok'),
 });
+const CrossrefPublicationDateSchema = z.iso.date();
 
 type CrossrefWork = z.infer<typeof CrossrefWorkSchema>;
 
@@ -63,22 +64,9 @@ function publishedYear(work: CrossrefWork): number | null {
 function publishedDate(work: CrossrefWork): string | undefined {
 	const [, month, day] = work.published?.['date-parts'][0] ?? [];
 	const year = publishedYear(work);
-	if (
-		year === null ||
-		typeof month !== 'number' ||
-		!Number.isInteger(month) ||
-		month < 1 ||
-		month > 12 ||
-		typeof day !== 'number' ||
-		!Number.isInteger(day) ||
-		day < 1 ||
-		day > 31
-	) {
-		return undefined;
-	}
+	if (year === null) return undefined;
 	const candidate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-	const date = new Date(`${candidate}T00:00:00.000Z`);
-	return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === candidate ? candidate : undefined;
+	return CrossrefPublicationDateSchema.safeParse(candidate).success ? candidate : undefined;
 }
 
 function normalizedFamilyNames(work: CrossrefWork): string[] {
