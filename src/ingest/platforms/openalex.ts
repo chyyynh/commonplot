@@ -228,10 +228,6 @@ function workLookupPath(identifiers: readonly PaperIdentifier[]): string | null 
 	return workId ? `/works/${workId}?select=${WORK_FIELDS}` : null;
 }
 
-function worksListPath(params: Record<string, string>): string {
-	return `/works?${new URLSearchParams(params).toString()}`;
-}
-
 async function fetchOpenAlexRelations(input: {
 	apiKey: string;
 	work: OpenAlexWork;
@@ -244,22 +240,22 @@ async function fetchOpenAlexRelations(input: {
 		.slice(0, MAX_RELATION_ITEMS);
 	const referenceRequest = referencedIds.length
 		? fetchOpenAlexJson(
-				worksListPath({
+				`/works?${new URLSearchParams({
 					filter: `openalex_id:${referencedIds.join('|')}`,
 					'per-page': String(referencedIds.length),
 					select: RELATION_WORK_FIELDS,
 					sort: 'cited_by_count:desc',
-				}),
+				})}`,
 				input.apiKey,
 			)
 		: Promise.resolve({ meta: { count: 0 }, results: [] });
 	const citationRequest = fetchOpenAlexJson(
-		worksListPath({
+		`/works?${new URLSearchParams({
 			filter: `cites:${openAlexId}`,
 			'per-page': String(MAX_RELATION_ITEMS),
 			select: RELATION_WORK_FIELDS,
 			sort: 'cited_by_count:desc',
-		}),
+		})}`,
 		input.apiKey,
 	);
 	const [referenceJson, citationJson] = await Promise.all([referenceRequest, citationRequest]);
