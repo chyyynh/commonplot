@@ -18,21 +18,29 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 				Object.fromEntries(
 					segments.map((segment) => {
 						const template = createMarkdownTranslationTemplate(segment);
-						const requiredTextIds = new Set(
-							Object.values(template.sequences).flatMap((partIds) => {
-								const textIds = partIds.filter((partId) => Object.hasOwn(template.texts, partId));
-								const textId = textIds.length === 1 ? textIds[0] : undefined;
-								return textId && /[\p{L}\p{N}]/u.test(template.texts[textId] ?? '') ? [textId] : [];
-							}),
-						);
 						return [
 							segment.id,
 							z.strictObject({
-								texts: z.strictObject(
+								sequences: z.strictObject(
 									Object.fromEntries(
-										Object.keys(template.texts).map((textId) => {
-											const text = z.string().describe(`Target-language text for writable position ${textId}.`);
-											return [textId, requiredTextIds.has(textId) ? text.min(1) : text];
+										Object.entries(template.sequences).flatMap(([sequenceId, partIds]) => {
+											const textIds = partIds.filter((partId) => Object.hasOwn(template.texts, partId));
+											if (!textIds.length) return [];
+											const requiredTextId =
+												textIds.length === 1 && /[\p{L}\p{N}]/u.test(template.texts[textIds[0]!] ?? '') ? textIds[0] : null;
+											return [
+												[
+													sequenceId,
+													z.strictObject(
+														Object.fromEntries(
+															textIds.map((textId) => {
+																const text = z.string().describe(`Target-language text for writable position ${textId}.`);
+																return [textId, textId === requiredTextId ? text.min(1) : text];
+															}),
+														),
+													),
+												],
+											];
 										}),
 									),
 								),
@@ -45,18 +53,37 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 	});
 }
 
+function markdownTranslationModelInput(segment: MarkdownTranslationSegment) {
+	const template = createMarkdownTranslationTemplate(segment);
+	return {
+		context: segment.context,
+		id: segment.id,
+		sequences: Object.fromEntries(
+			Object.entries(template.sequences).map(([sequenceId, partIds]) => [
+				sequenceId,
+				partIds.map((partId) =>
+					Object.hasOwn(template.texts, partId)
+						? { id: partId, text: template.texts[partId] }
+						: { id: partId, inline: template.inlines[partId] },
+				),
+			]),
+		),
+	};
+}
+
 const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯編輯。請產出自然、準確、符合台灣讀者習慣的繁體中文。
 
 輸入契約：
 - 每個 segment 是一個完整標題、段落、表格儲存格，或超長純文字段落的一個完整句界切片
-- texts 是原文；sequences 顯示完整句子中 t 文字位置與 n inline 的原始排列
+- sequences 直接列出各個語意範圍內的原始排列；{ id: t, text } 是可寫入譯文的位置，{ id: n, inline } 是受保護的 inline
 - t ID 是 inline 前後可寫入譯文的位置，不是一對一翻譯單位；n ID 是 Core 保管的連結、強調、圖片、程式碼、公式或其他 Markdown inline
 - 若某個 n ID 也有同名 sequence，該 sequence 是該 container 內的可見文字；同一 segment 的所有 sequences 合起來才是完整句意
 - context、ID、kind 與 reference 只供翻譯判斷，不屬於譯文
 
 翻譯準則：
 - 把同一 segment 當作完整段落理解，不要逐 t ID 直譯
-- 在同一 sequence 內，把完整譯文自然分配到既有 t 位置；可以合併、拆分或把內容移到另一個 t，沒有譯文的 t 回傳空字串
+- 在同一 sequence 內，把完整譯文自然分配到既有 t 位置；可以合併、拆分或把內容移到同一 sequence 的另一個 t，沒有譯文的 t 回傳空字串
+- 不得把正文移到另一個 sequence；sequence 是連結、強調等格式作用範圍的邊界
 - 英文冠詞、空白等不需要一一產生中文表面文字；但不要把正文移入或移出 n ID 所屬的 container
 - 維持同一批段落的敘事語氣與術語一致，不要重複相鄰 segment 或 context
 - 忠實完整翻譯，不要摘要、評論、解釋、補充背景或新增原文沒有的資訊
@@ -68,8 +95,8 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - 若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然的台灣繁體中文
 
 格式契約：
-- translations 的每個 key 對應輸入的 segment ID；texts 必須保留輸入的所有 t ID，不得新增或遺漏
-- 每個 t value 只放該位置的譯文純文字，可以是空字串；不要輸出 n ID、sequence、reference、Markdown 或 HTML
+- translations 的每個 key 對應輸入的 segment ID；輸出的 sequences 必須保留輸入中含 t 的 sequence ID，各 sequence 必須保留自己的所有 t ID
+- 每個 t value 只放該位置的譯文純文字，可以是空字串；不要把 n ID、sequence、reference、Markdown 或 HTML 寫進 t value
 - n ID 的次序、數量與結構完全由 Core 還原，不能也不需要在輸出中重複
 - reference 只供理解，不能複製成譯文；URL、Markdown 語法和其他受保護內容由 Core 還原
 - 不要沿用英文在 inline、中文標點或中文字之間的多餘空白，也不要為中文與英文、數字或 inline 邊界額外補空格；英文單字內與連續拉丁文字之間仍保留正常空格
@@ -107,11 +134,7 @@ async function translateGroup(
 	env: CoreEnv,
 	resourceId: string,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
-	const promptSegments = group.segments.map((segment) => ({
-		context: segment.context,
-		id: segment.id,
-		...createMarkdownTranslationTemplate(segment),
-	}));
+	const promptSegments = group.segments.map(markdownTranslationModelInput);
 	const { finishReason, output } = await generateText({
 		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
 			...CORE_STRUCTURED_MODEL_SETTINGS,
@@ -149,7 +172,7 @@ async function translateGroup(
 	return validateMarkdownBatchTranslations(
 		{ segments: group.segments },
 		group.segments.map((segment) => ({
-			texts: output.translations[segment.id]!.texts,
+			texts: Object.assign({}, ...Object.values(output.translations[segment.id]!.sequences)),
 		})),
 	);
 }
