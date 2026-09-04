@@ -137,7 +137,6 @@ class DocumentWorkerClient {
 		this.queue = job.catch(() => undefined);
 		return job;
 	}
-
 }
 
 function toError(value) {
