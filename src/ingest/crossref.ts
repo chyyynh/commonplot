@@ -74,10 +74,6 @@ function significantTokens(value: string): string[] {
 	return [...new Set(value.split(' ').filter((token) => token.length >= 3))];
 }
 
-function citationYears(value: string): Set<number> {
-	return new Set([...value.matchAll(/\b(?:18|19|20|21)\d{2}\b/g)].map(([year]) => Number(year)).filter((year) => Number.isInteger(year)));
-}
-
 function publishedYear(work: CrossrefWork): number | null {
 	const year = work.published?.['date-parts'][0]?.[0];
 	return typeof year === 'number' && Number.isInteger(year) && year >= 1800 && year <= 2199 ? year : null;
@@ -136,7 +132,7 @@ function workMatchesCitation(citation: string, work: CrossrefWork): boolean {
 	const exactTitle = titleText.length >= 12 && citationText.includes(titleText);
 	if (!exactTitle && (matchedTitleTokens < 4 || titleCoverage < 0.85)) return false;
 
-	const years = citationYears(citation);
+	const years = new Set([...citation.matchAll(/\b(?:18|19|20|21)\d{2}\b/g)].map(([year]) => Number(year)));
 	const year = publishedYear(work);
 	if (years.size && year !== null && !years.has(year)) return false;
 
