@@ -13,7 +13,6 @@ const teiParser = new XMLParser({
 	attributeNamePrefix: '',
 	htmlEntities: true,
 	ignoreAttributes: false,
-	ignoreDeclaration: true,
 	ignorePiTags: true,
 	maxNestedTags: 100,
 	parseTagValue: false,
