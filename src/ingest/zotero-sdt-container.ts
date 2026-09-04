@@ -35,10 +35,8 @@ export class ZoteroSdtContainer extends Container<CoreEnv> {
 		rect: readonly [number, number, number, number],
 	): Promise<Response> {
 		await this.ensureReady(input);
-		const url = new URL('http://zotero-sdt/render-area');
-		url.searchParams.set('pageIndex', String(pageIndex));
-		url.searchParams.set('rect', rect.join(','));
-		return this.containerFetch(url, {
+		const query = new URLSearchParams({ pageIndex: String(pageIndex), rect: rect.join(',') });
+		return this.containerFetch(`http://zotero-sdt/render-area?${query}`, {
 			body: input.pipeThrough(new FixedLengthStream(byteLength)),
 			headers: { 'content-type': 'application/pdf' },
 			method: 'POST',

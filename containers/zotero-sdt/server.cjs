@@ -1,4 +1,4 @@
-const { createHash } = require('node:crypto');
+const { hash } = require('node:crypto');
 const { readFileSync } = require('node:fs');
 const { createServer } = require('node:http');
 const { resolve, sep } = require('node:path');
@@ -85,7 +85,6 @@ class DocumentWorkerClient {
 	request(action, pdfBuffer, data) {
 		if (this.failure) return Promise.reject(this.failure);
 		const timeoutError = new Error(`Zotero document worker request ${action} timed out after ${WORKER_REQUEST_TIMEOUT_MS}ms.`);
-		timeoutError.statusCode = 504;
 		let timeout;
 		const queuedJob = this.queue.then(async () => {
 			if (this.failure) throw this.failure;
@@ -134,14 +133,10 @@ async function readBody(request) {
 	let size = 0;
 	for await (const chunk of request) {
 		size += chunk.length;
-		if (size > MAX_PDF_BYTES) {
-			const error = new Error(`PDF exceeds the ${MAX_PDF_BYTES}-byte limit.`);
-			error.statusCode = 413;
-			throw error;
-		}
+		if (size > MAX_PDF_BYTES) throw Object.assign(new Error(`PDF exceeds the ${MAX_PDF_BYTES}-byte limit.`), { statusCode: 413 });
 		chunks.push(chunk);
 	}
-	return Buffer.concat(chunks);
+	return Buffer.concat(chunks, size);
 }
 
 function sendJson(response, status, body) {
@@ -180,11 +175,7 @@ const server = createServer(async (request, response) => {
 				if (!png.length || png.length > MAX_CROP_BYTES || !png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
 					return sendJson(response, 422, { error: 'Rendered PDF area is not a valid bounded PNG.' });
 				}
-				response.writeHead(200, {
-					'content-length': String(png.length),
-					'content-type': 'image/png',
-				});
-				return response.end(png);
+				return response.writeHead(200, { 'content-type': 'image/png' }).end(png);
 			} catch (renderError) {
 				console.error({
 					error: renderError instanceof Error ? renderError.message : String(renderError),
@@ -193,28 +184,19 @@ const server = createServer(async (request, response) => {
 				return sendJson(response, 422, { error: renderError instanceof Error ? renderError.message : 'PDF render area failed.' });
 			}
 		}
-		const sourceHash = createHash('md5').update(pdfBuffer).digest('hex');
 		try {
 			const result = await client.request('getStructuredDocumentText', pdfBuffer, {
 				contentType: 'application/pdf',
-				sourceHash,
+				sourceHash: hash('md5', pdfBuffer),
 			});
 			const reader = await openStructuredDocumentTextPack(result.buf, {
 				inflate: (bytes) => inflateRawSync(bytes, { maxOutputLength: MAX_DOCUMENT_BYTES }),
 			});
 			const document = await reader.materialize();
 			const json = JSON.stringify(document);
-			const documentBytes = Buffer.byteLength(json);
-			if (documentBytes > MAX_DOCUMENT_BYTES) {
-				const error = new Error(`Structured document exceeds the ${MAX_DOCUMENT_BYTES}-byte limit.`);
-				error.statusCode = 413;
-				throw error;
-			}
-			response.writeHead(200, {
-				'content-length': String(documentBytes),
-				'content-type': 'application/vnd.newsence.structured-document+json',
-			});
-			return response.end(json);
+			if (Buffer.byteLength(json) > MAX_DOCUMENT_BYTES)
+				throw new Error(`Structured document exceeds the ${MAX_DOCUMENT_BYTES}-byte limit.`);
+			return response.writeHead(200, { 'content-type': 'application/vnd.newsence.structured-document+json' }).end(json);
 		} catch (parseError) {
 			let totalPages = null;
 			try {
