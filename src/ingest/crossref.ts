@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { normalizeDoi } from '../shared/paper-identity.ts';
+import { canonicalPaperUrl, normalizeDoi } from '../shared/paper-identity.ts';
 
 const CROSSREF_WORKS_URL = 'https://api.crossref.org/works';
 const CROSSREF_CONTACT = 'hello@newsence.app';
@@ -83,12 +83,10 @@ function publishedYear(work: CrossrefWork): number | null {
 }
 
 function publishedDate(work: CrossrefWork): string | undefined {
-	const [year, month, day] = work.published?.['date-parts'][0] ?? [];
+	const [, month, day] = work.published?.['date-parts'][0] ?? [];
+	const year = publishedYear(work);
 	if (
-		typeof year !== 'number' ||
-		!Number.isInteger(year) ||
-		year < 1800 ||
-		year > 2199 ||
+		year === null ||
 		typeof month !== 'number' ||
 		!Number.isInteger(month) ||
 		month < 1 ||
@@ -171,7 +169,7 @@ function crossrefResolution(work: CrossrefWork): CrossrefReferenceResolution | n
 		authors: workAuthors(work),
 		doi,
 		title,
-		url: `https://doi.org/${doi}`,
+		url: canonicalPaperUrl({ doi }),
 		venue: boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS),
 		year: publishedYear(work),
 	};
@@ -248,14 +246,9 @@ async function boundedJson(response: Response): Promise<unknown> {
 	return JSON.parse(json + decoder.decode());
 }
 
-export async function resolveCrossrefReference(citation: string): Promise<CrossrefReferenceResolution | null> {
-	const query = citation.trim();
-	if (!query || query.length > MAX_CITATION_CHARS) throw new TypeError(`Crossref citation must contain 1-${MAX_CITATION_CHARS} characters`);
+async function fetchCrossrefWorks(params: Readonly<Record<string, string>>): Promise<unknown> {
 	const url = new URL(CROSSREF_WORKS_URL);
-	url.searchParams.set('mailto', CROSSREF_CONTACT);
-	url.searchParams.set('query.bibliographic', query);
-	url.searchParams.set('rows', String(CROSSREF_ROWS));
-	url.searchParams.set('select', 'DOI,title,author,published,container-title');
+	url.search = new URLSearchParams({ mailto: CROSSREF_CONTACT, ...params }).toString();
 	const response = await fetch(url, {
 		headers: { Accept: 'application/json', 'User-Agent': CROSSREF_USER_AGENT },
 		signal: AbortSignal.timeout(CROSSREF_TIMEOUT_MS),
@@ -266,7 +259,20 @@ export async function resolveCrossrefReference(citation: string): Promise<Crossr
 		await response.body?.cancel();
 		throw new Error(`Crossref request failed with HTTP ${status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
 	}
-	return selectCrossrefReference(query, await boundedJson(response));
+	return boundedJson(response);
+}
+
+export async function resolveCrossrefReference(citation: string): Promise<CrossrefReferenceResolution | null> {
+	const query = citation.trim();
+	if (!query || query.length > MAX_CITATION_CHARS) throw new TypeError(`Crossref citation must contain 1-${MAX_CITATION_CHARS} characters`);
+	return selectCrossrefReference(
+		query,
+		await fetchCrossrefWorks({
+			'query.bibliographic': query,
+			rows: String(CROSSREF_ROWS),
+			select: 'DOI,title,author,published,container-title',
+		}),
+	);
 }
 
 export async function resolveCrossrefPaperCandidate(
@@ -280,42 +286,27 @@ export async function resolveCrossrefPaperCandidate(
 	if (!queryAuthor || queryAuthor.length > MAX_AUTHOR_CHARS) {
 		throw new TypeError(`Crossref paper author must contain 1-${MAX_AUTHOR_CHARS} characters`);
 	}
-	const url = new URL(CROSSREF_WORKS_URL);
-	url.searchParams.set('mailto', CROSSREF_CONTACT);
-	url.searchParams.set('query.title', queryTitle);
-	url.searchParams.set('query.author', queryAuthor);
-	url.searchParams.set('rows', String(CROSSREF_ROWS));
-	url.searchParams.set('select', 'DOI,title,author,published,container-title,type');
-	const response = await fetch(url, {
-		headers: { Accept: 'application/json', 'User-Agent': CROSSREF_USER_AGENT },
-		signal: AbortSignal.timeout(CROSSREF_TIMEOUT_MS),
-	});
-	if (!response.ok) {
-		const retryAfter = response.headers.get('retry-after')?.slice(0, 100);
-		const status = response.status;
-		await response.body?.cancel();
-		throw new Error(`Crossref request failed with HTTP ${status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
-	}
-	return selectCrossrefPaperCandidate(queryTitle, authors, await boundedJson(response));
+	return selectCrossrefPaperCandidate(
+		queryTitle,
+		authors,
+		await fetchCrossrefWorks({
+			'query.author': queryAuthor,
+			'query.title': queryTitle,
+			rows: String(CROSSREF_ROWS),
+			select: 'DOI,title,author,published,container-title,type',
+		}),
+	);
 }
 
 export async function resolveCrossrefPaper(doi: string): Promise<CrossrefPaperMetadata | null> {
 	const normalizedDoi = normalizeDoi(doi);
 	if (!normalizedDoi) throw new TypeError('Crossref paper DOI is invalid');
-	const url = new URL(CROSSREF_WORKS_URL);
-	url.searchParams.set('filter', `doi:${normalizedDoi}`);
-	url.searchParams.set('mailto', CROSSREF_CONTACT);
-	url.searchParams.set('rows', '1');
-	url.searchParams.set('select', 'DOI,title,author,published,container-title,is-referenced-by-count,references-count');
-	const response = await fetch(url, {
-		headers: { Accept: 'application/json', 'User-Agent': CROSSREF_USER_AGENT },
-		signal: AbortSignal.timeout(CROSSREF_TIMEOUT_MS),
-	});
-	if (!response.ok) {
-		const retryAfter = response.headers.get('retry-after')?.slice(0, 100);
-		const status = response.status;
-		await response.body?.cancel();
-		throw new Error(`Crossref request failed with HTTP ${status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
-	}
-	return selectCrossrefPaper(normalizedDoi, await boundedJson(response));
+	return selectCrossrefPaper(
+		normalizedDoi,
+		await fetchCrossrefWorks({
+			filter: `doi:${normalizedDoi}`,
+			rows: '1',
+			select: 'DOI,title,author,published,container-title,is-referenced-by-count,references-count',
+		}),
+	);
 }
