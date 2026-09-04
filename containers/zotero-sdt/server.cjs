@@ -145,12 +145,7 @@ async function readBody(request) {
 }
 
 function sendJson(response, status, body) {
-	const json = `${JSON.stringify(body)}\n`;
-	response.writeHead(status, {
-		'content-length': String(Buffer.byteLength(json)),
-		'content-type': 'application/json; charset=utf-8',
-	});
-	response.end(json);
+	response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' }).end(JSON.stringify(body));
 }
 
 const client = new DocumentWorkerClient();
