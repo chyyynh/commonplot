@@ -236,10 +236,6 @@ function resolvePlanOptions(options: MarkdownTranslationPlanOptions) {
 	};
 }
 
-function translatedPathKey(path: readonly number[]): string {
-	return path.join('.');
-}
-
 function structuralNode(
 	node: Nodes,
 	path: readonly number[],
@@ -247,7 +243,7 @@ function structuralNode(
 	ancestors: readonly Nodes[] = [],
 	insideTranslatedBlock = false,
 ): unknown | null {
-	const translated = insideTranslatedBlock || translatedBlocks.has(translatedPathKey(path));
+	const translated = insideTranslatedBlock || translatedBlocks.has(path.join('.'));
 	if (translated && node.type === 'text' && !isProtectedLinkText(node.value, ancestors)) return null;
 	const structure: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(node)) {
@@ -275,7 +271,7 @@ function structuralNode(
 }
 
 function markdownSkeleton(tree: Root, translatedBlockPaths: readonly (readonly number[])[]): string {
-	const translatedBlocks = new Set(translatedBlockPaths.map(translatedPathKey));
+	const translatedBlocks = new Set(translatedBlockPaths.map((path) => path.join('.')));
 	return JSON.stringify(structuralNode(tree, [], translatedBlocks));
 }
 
