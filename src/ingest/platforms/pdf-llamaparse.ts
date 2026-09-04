@@ -182,38 +182,6 @@ function stageDeleteProviderFile(step: WorkflowStep, credentials: ProviderCreden
 	return step.do('llamaparse-delete-file-v1', CLEANUP_STEP, () => deleteProviderFile(credentials, file.fileId));
 }
 
-function logFallback(input: {
-	billedCredits?: number | null;
-	error?: unknown;
-	externalId?: string;
-	file?: ProviderFile;
-	job?: ProviderJob;
-	local: LocalPdfSummary;
-	outcome: string;
-}): void {
-	const error = input.error || null;
-	console.info({
-		tag: 'PDF_PARSE',
-		event: 'llamaparse_fallback',
-		provider: 'llamaparse',
-		provider_base_region: 'us',
-		provider_external_file_id: input.file?.externalId ?? input.externalId ?? null,
-		provider_file_id: input.file?.fileId ?? null,
-		provider_job_id: input.job?.jobId ?? null,
-		provider_sdk_version: LLAMA_CLOUD_SDK_VERSION,
-		provider_status: error instanceof APIError && typeof error.status === 'number' ? error.status : null,
-		provider_error: error ? (error instanceof Error ? error.name : 'UnknownError') : null,
-		tier: LLAMA_PARSE_TIER,
-		parser_version: LLAMA_PARSE_VERSION,
-		page_count: input.local.totalPages,
-		local_fallback_reasons: input.local.fallbackReasons,
-		local_full_page_image_pages: input.local.fullPageImagePages,
-		outcome: input.outcome,
-		latency_ms: input.job ? Math.max(0, (input.job.observedAt || Date.now()) - input.job.startedAt) : null,
-		billed_credits: input.billedCredits ?? input.job?.billedCredits ?? null,
-	});
-}
-
 /** Execute one paid whole-document fallback after Web has granted a per-document page allowance. */
 export async function stagePaidLlamaParseFallback(
 	env: CoreEnv,
@@ -229,6 +197,31 @@ export async function stagePaidLlamaParseFallback(
 		apiKey: env.LLAMA_CLOUD_API_KEY?.trim() ?? '',
 		projectId: env.LLAMA_CLOUD_PROJECT_ID?.trim() ?? '',
 	};
+	let file: ProviderFile | undefined;
+	let externalId: string | undefined;
+	const logFallback = (event: { billedCredits?: number | null; error?: unknown; job?: ProviderJob; outcome: string }) => {
+		const error = event.error || null;
+		console.info({
+			tag: 'PDF_PARSE',
+			event: 'llamaparse_fallback',
+			provider: 'llamaparse',
+			provider_base_region: 'us',
+			provider_external_file_id: file?.externalId ?? externalId ?? null,
+			provider_file_id: file?.fileId ?? null,
+			provider_job_id: event.job?.jobId ?? null,
+			provider_sdk_version: LLAMA_CLOUD_SDK_VERSION,
+			provider_status: error instanceof APIError && typeof error.status === 'number' ? error.status : null,
+			provider_error: error ? (error instanceof Error ? error.name : 'UnknownError') : null,
+			tier: LLAMA_PARSE_TIER,
+			parser_version: LLAMA_PARSE_VERSION,
+			page_count: input.local.totalPages,
+			local_fallback_reasons: input.local.fallbackReasons,
+			local_full_page_image_pages: input.local.fullPageImagePages,
+			outcome: event.outcome,
+			latency_ms: event.job ? Math.max(0, (event.job.observedAt || Date.now()) - event.job.startedAt) : null,
+			billed_credits: event.billedCredits ?? event.job?.billedCredits ?? null,
+		});
+	};
 	const admission = llamaParseAdmissionReason({
 		grant: input.grant,
 		hasCredentials: !!credentials.apiKey && !!credentials.projectId,
@@ -236,13 +229,12 @@ export async function stagePaidLlamaParseFallback(
 		source: input.source,
 	});
 	if (admission !== 'admitted') {
-		if (admission !== 'local-usable') logFallback({ local: input.local, outcome: admission });
+		if (admission !== 'local-usable') logFallback({ outcome: admission });
 		return null;
 	}
 
-	let file: ProviderFile | undefined;
 	if (input.source.kind === 'private-upload') {
-		const externalId = providerFileExternalId(input.processingId);
+		externalId = providerFileExternalId(input.processingId);
 		try {
 			file = await stageProviderFile(env, step, {
 				credentials,
@@ -251,7 +243,7 @@ export async function stagePaidLlamaParseFallback(
 			});
 		} catch (error) {
 			const ambiguous = !isDefinitiveFailure(error);
-			logFallback({ error, externalId, local: input.local, outcome: ambiguous ? 'operator-reconciliation-required' : 'upload-failed' });
+			logFallback({ error, outcome: ambiguous ? 'operator-reconciliation-required' : 'upload-failed' });
 			if (ambiguous) throw error;
 			return null;
 		}
@@ -290,7 +282,7 @@ export async function stagePaidLlamaParseFallback(
 			);
 		} catch (error) {
 			const ambiguous = !isDefinitiveFailure(error);
-			logFallback({ error, file, local: input.local, outcome: ambiguous ? 'operator-reconciliation-required' : 'job-create-failed' });
+			logFallback({ error, outcome: ambiguous ? 'operator-reconciliation-required' : 'job-create-failed' });
 			if (ambiguous) throw error;
 			return null;
 		}
@@ -303,16 +295,16 @@ export async function stagePaidLlamaParseFallback(
 			}
 		} catch (error) {
 			await stageCancelJob(step, credentials, job);
-			logFallback({ error, file, job, local: input.local, outcome: 'provider-failed' });
+			logFallback({ error, job, outcome: 'provider-failed' });
 			return null;
 		}
 		if (!TERMINAL_STATUSES.has(state.status)) {
 			await stageCancelJob(step, credentials, job);
-			logFallback({ file, job: state, local: input.local, outcome: 'timed-out' });
+			logFallback({ job: state, outcome: 'timed-out' });
 			return null;
 		}
 		if (state.status !== 'COMPLETED') {
-			logFallback({ file, job: state, local: input.local, outcome: `job-${state.status.toLowerCase()}` });
+			logFallback({ job: state, outcome: `job-${state.status.toLowerCase()}` });
 			return null;
 		}
 
@@ -332,14 +324,12 @@ export async function stagePaidLlamaParseFallback(
 			});
 			result = await new Response(stream).json<ProviderResult>();
 		} catch (error) {
-			logFallback({ error, file, job, local: input.local, outcome: 'provider-failed' });
+			logFallback({ error, job, outcome: 'provider-failed' });
 			return null;
 		}
 		logFallback({
 			billedCredits: result.billedCredits,
-			file,
 			job: { ...state, observedAt: result.finishedAt },
-			local: input.local,
 			outcome: result.markdown ? 'cloud-replaced-local' : 'incomplete-cloud-result',
 		});
 		return result.markdown;
