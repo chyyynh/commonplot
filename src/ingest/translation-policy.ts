@@ -1,16 +1,13 @@
-import type { RESOURCE_TYPES } from '../shared/resource';
+import type { ResourceKind, ResourcePlatform } from '../shared/resource';
 import { PDF_MIME } from './platforms/pdf-constants.ts';
 
 const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const;
 
-type ResourceTranslationKind = keyof typeof RESOURCE_TYPES;
-type ResourceTranslationPlatform = (typeof RESOURCE_TYPES)[ResourceTranslationKind]['platforms'][number]['name'] | null;
-
 export type ResourceTranslationCandidate = Readonly<{
 	fileType: string | null;
-	kind: ResourceTranslationKind;
+	kind: ResourceKind;
 	originalLang: string;
-	resourcePlatform: ResourceTranslationPlatform;
+	resourcePlatform: ResourcePlatform | null;
 	scope: 'corpus' | 'private';
 	url: string | null;
 }>;
