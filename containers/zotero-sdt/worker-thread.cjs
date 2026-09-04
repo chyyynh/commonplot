@@ -33,14 +33,9 @@ require(resolve(buildDir, 'worker.js'));
 
 parentPort.on('message', (message) => {
 	if (typeof globalThis.self.onmessage !== 'function') return;
-	Promise.resolve(globalThis.self.onmessage({ data: message })).catch((error) => {
-		parentPort.postMessage({ responseID: message.id, error: serializeError(error) });
+	globalThis.self.onmessage({ data: message }).catch((error) => {
+		parentPort.postMessage({ responseID: message.id, error: error instanceof Error ? error : new Error(String(error)) });
 	});
 });
 
 parentPort.postMessage({ ready: true });
-
-function serializeError(error) {
-	if (error instanceof Error) return { message: error.message, name: error.name, stack: error.stack };
-	return { message: String(error), name: 'Error' };
-}

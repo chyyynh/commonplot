@@ -11,7 +11,6 @@ const PORT = Number.parseInt(process.env.PORT ?? '8080', 10);
 const MAX_PDF_BYTES = Number.parseInt(process.env.MAX_PDF_BYTES ?? String(25 * 1024 * 1024), 10);
 const MAX_DOCUMENT_BYTES = Number.parseInt(process.env.MAX_DOCUMENT_BYTES ?? String(32 * 1024 * 1024), 10);
 const MAX_CROP_BYTES = Number.parseInt(process.env.MAX_CROP_BYTES ?? String(8 * 1024 * 1024), 10);
-const SOURCE_CROP_SCALE = 3;
 const WORKER_REQUEST_TIMEOUT_MS = Number.parseInt(process.env.WORKER_REQUEST_TIMEOUT_MS ?? String(5 * 60 * 1000), 10);
 const BUILD_DIR = resolve(process.env.DOCUMENT_WORKER_BUILD_DIR ?? '/app/document-worker');
 
@@ -32,10 +31,7 @@ class DocumentWorkerClient {
 		this.queue = Promise.resolve();
 		this.failure = null;
 		this.worker = new Worker(resolve(__dirname, 'worker-thread.cjs'), { workerData: { buildDir: BUILD_DIR } });
-		this.ready = new Promise((resolveReady, rejectReady) => {
-			this.resolveReady = resolveReady;
-			this.rejectReady = rejectReady;
-		});
+		this.ready = Promise.withResolvers();
 		this.readyTimeout = setTimeout(() => {
 			this.crash(new Error(`Zotero document worker did not become ready within ${WORKER_REQUEST_TIMEOUT_MS}ms.`));
 		}, WORKER_REQUEST_TIMEOUT_MS);
@@ -50,7 +46,7 @@ class DocumentWorkerClient {
 		if (message?.ready) {
 			if (this.failure) return;
 			clearTimeout(this.readyTimeout);
-			this.resolveReady();
+			this.ready.resolve();
 			return;
 		}
 		if (message?.action === 'FetchData' && message.id) {
@@ -76,7 +72,7 @@ class DocumentWorkerClient {
 			this.worker.postMessage({ responseID, data }, [data]);
 		} catch (error) {
 			try {
-				this.worker.postMessage({ responseID, error: serializeError(error) });
+				this.worker.postMessage({ responseID, error: error instanceof Error ? error : new Error(String(error)) });
 			} catch (postError) {
 				this.crash(postError);
 			}
@@ -88,7 +84,7 @@ class DocumentWorkerClient {
 		const failure = error instanceof Error ? error : new Error(String(error));
 		this.failure = failure;
 		clearTimeout(this.readyTimeout);
-		this.rejectReady(failure);
+		this.ready.reject(failure);
 		for (const pending of this.pending.values()) pending.reject(failure);
 		this.pending.clear();
 		console.error({ error: failure.message, event: 'zotero_sdt_document_worker_failed' });
@@ -101,31 +97,31 @@ class DocumentWorkerClient {
 		timeoutError.statusCode = 504;
 		let timeout;
 		const queuedJob = this.queue.then(async () => {
-			await this.ready;
+			await this.ready.promise;
 			if (this.failure) throw this.failure;
 			const id = ++this.nextRequestId;
 			const buffer = pdfBuffer.buffer.slice(pdfBuffer.byteOffset, pdfBuffer.byteOffset + pdfBuffer.byteLength);
-			return await new Promise((resolveRequest, rejectRequest) => {
-				this.pending.set(id, { reject: rejectRequest, resolve: resolveRequest });
-				try {
-					this.worker.postMessage(
-						{
-							action,
-							data: {
-								buf: buffer,
-								password: '',
-								...data,
-							},
-							id,
+			const pending = Promise.withResolvers();
+			this.pending.set(id, pending);
+			try {
+				this.worker.postMessage(
+					{
+						action,
+						data: {
+							buf: buffer,
+							password: '',
+							...data,
 						},
-						[buffer],
-					);
-				} catch (error) {
-					this.pending.delete(id);
-					rejectRequest(error);
-					this.crash(error);
-				}
-			});
+						id,
+					},
+					[buffer],
+				);
+			} catch (error) {
+				this.pending.delete(id);
+				pending.reject(error);
+				this.crash(error);
+			}
+			return pending.promise;
 		});
 		const timeoutJob = new Promise((_resolveTimeout, rejectTimeout) => {
 			timeout = setTimeout(() => {
@@ -140,15 +136,7 @@ class DocumentWorkerClient {
 }
 
 function toError(value) {
-	const error = new Error(value?.message ?? 'Zotero document worker failed.');
-	error.name = value?.name ?? 'Error';
-	if (value?.stack) error.stack = value.stack;
-	return error;
-}
-
-function serializeError(error) {
-	if (error instanceof Error) return { message: error.message, name: error.name, stack: error.stack };
-	return { message: String(error), name: 'Error' };
+	return value instanceof Error ? value : Object.assign(new Error(value?.message ?? 'Zotero document worker failed.'), value);
 }
 
 async function readBody(request) {
@@ -201,7 +189,7 @@ const server = createServer(async (request, response) => {
 				return sendJson(response, 400, { error: 'Invalid PDF render area.' });
 			}
 			try {
-				const result = await client.request('pdf.renderArea', pdfBuffer, { pageIndex, rect, scale: SOURCE_CROP_SCALE });
+				const result = await client.request('pdf.renderArea', pdfBuffer, { pageIndex, rect, scale: 3 });
 				if (!result?.buf) return sendJson(response, 422, { error: 'PDF render area is empty.' });
 				const png = Buffer.from(result.buf);
 				if (!png.length || png.length > MAX_CROP_BYTES || !png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
@@ -227,7 +215,7 @@ const server = createServer(async (request, response) => {
 				sourceHash,
 			});
 			const reader = await openStructuredDocumentTextPack(result.buf, {
-				inflate: (bytes) => new Uint8Array(inflateRawSync(bytes)),
+				inflate: (bytes) => inflateRawSync(bytes, { maxOutputLength: MAX_DOCUMENT_BYTES }),
 			});
 			const document = await reader.materialize();
 			const json = JSON.stringify(document);
