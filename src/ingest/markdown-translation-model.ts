@@ -68,14 +68,6 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - 不要沿用英文在 inline、中文標點或中文字之間的多餘空白，也不要為中文與英文、數字或 inline 邊界額外補空格；英文單字內與連續拉丁文字之間仍保留正常空格
 - 只輸出符合 schema 的結果，不要輸出說明、前後空白或額外段落；整個 segment 與原本含有文字的 sequence 都不可為空。`;
 
-type TranslationRecoveryStrategy = 'batch' | 'halves' | 'individual';
-
-type TranslationGroup = Readonly<{
-	index: number;
-	segments: readonly MarkdownTranslationSegment[];
-	strategy: TranslationRecoveryStrategy;
-}>;
-
 function splitSegmentsInHalf(segments: readonly MarkdownTranslationSegment[]): readonly (readonly MarkdownTranslationSegment[])[] {
 	if (segments.length <= 1) return [segments];
 	const totalCharacters = segments.reduce((total, segment) => total + segment.text.length + (segment.context?.length ?? 0), 0);
@@ -92,8 +84,8 @@ function splitSegmentsInHalf(segments: readonly MarkdownTranslationSegment[]): r
 	return [segments.slice(0, splitIndex), segments.slice(splitIndex)];
 }
 
-function translationGroups(batch: MarkdownTranslationBatch, attempt: number): TranslationGroup[] {
-	const strategy: TranslationRecoveryStrategy = attempt <= 2 ? 'batch' : attempt === 3 ? 'halves' : 'individual';
+function translationGroups(batch: MarkdownTranslationBatch, attempt: number) {
+	const strategy = attempt <= 2 ? 'batch' : attempt === 3 ? 'halves' : 'individual';
 	const groups =
 		strategy === 'batch'
 			? [batch.segments]
@@ -104,7 +96,7 @@ function translationGroups(batch: MarkdownTranslationBatch, attempt: number): Tr
 }
 
 async function translateGroup(
-	group: TranslationGroup,
+	group: ReturnType<typeof translationGroups>[number],
 	batch: MarkdownTranslationBatch,
 	env: CoreEnv,
 	resourceId: string,
