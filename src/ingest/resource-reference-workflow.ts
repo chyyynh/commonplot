@@ -19,11 +19,11 @@ export async function enqueueResourceReferenceEnrichment(
 	referenceRevision: string,
 	uploadedPdfResourceId: string,
 ): Promise<string> {
-	const payload = ResourceReferenceEnrichmentPayloadSchema.parse({
+	const payload = {
 		referenceRevision,
 		resourceId,
 		source: { fileResourceId: uploadedPdfResourceId, kind: 'uploadedPdf' },
-	});
+	} satisfies ResourceReferenceEnrichmentPayload;
 	const id = `rr-v5-${await sha256Hex(
 		[RESOURCE_REFERENCE_WORKFLOW_REVISION, payload.resourceId, payload.referenceRevision, uploadedPdfResourceId, 'idempotent'].join('\n'),
 	)}`;
@@ -36,10 +36,6 @@ export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<Core
 	async run(event: WorkflowEvent<ResourceReferenceEnrichmentPayload>, step: WorkflowStep): Promise<void> {
 		const input = ResourceReferenceEnrichmentPayloadSchema.parse(event.payload);
 		if (!input.source) return;
-		await enrichUploadedPdfReferences(this.env, step, {
-			referenceRevision: input.referenceRevision,
-			resourceId: input.resourceId,
-			uploadedPdfResourceId: input.source.fileResourceId,
-		});
+		await enrichUploadedPdfReferences(this.env, step, { ...input, uploadedPdfResourceId: input.source.fileResourceId });
 	}
 }
