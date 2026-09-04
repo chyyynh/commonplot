@@ -85,7 +85,7 @@ class DocumentWorkerClient {
 	request(action, pdfBuffer, data) {
 		if (this.failure) return Promise.reject(this.failure);
 		const timeoutError = new Error(`Zotero document worker request ${action} timed out after ${WORKER_REQUEST_TIMEOUT_MS}ms.`);
-		let timeout;
+		const timeout = setTimeout(() => this.crash(timeoutError), WORKER_REQUEST_TIMEOUT_MS);
 		const queuedJob = this.queue.then(async () => {
 			if (this.failure) throw this.failure;
 			const id = ++this.nextRequestId;
@@ -112,13 +112,7 @@ class DocumentWorkerClient {
 			}
 			return pending.promise;
 		});
-		const timeoutJob = new Promise((_resolveTimeout, rejectTimeout) => {
-			timeout = setTimeout(() => {
-				rejectTimeout(timeoutError);
-				this.crash(timeoutError);
-			}, WORKER_REQUEST_TIMEOUT_MS);
-		});
-		const job = Promise.race([queuedJob, timeoutJob]).finally(() => clearTimeout(timeout));
+		const job = queuedJob.finally(() => clearTimeout(timeout));
 		this.queue = job.catch(() => undefined);
 		return job;
 	}
