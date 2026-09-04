@@ -222,11 +222,10 @@ async function fetchOpenAlexJson(path: string, apiKey: string): Promise<unknown 
 	if (response.ok) {
 		return response.json();
 	}
-	const status = response.status;
 	const retryAfter = response.headers.get('retry-after');
 	await response.body?.cancel();
-	if (status === 404) return null;
-	throw new Error(`OpenAlex request failed with HTTP ${status}${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
+	if (response.status === 404) return null;
+	throw new Error(`OpenAlex request failed with HTTP ${response.status}${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
 }
 
 function workLookupPath(identifiers: readonly PaperIdentifier[]): string | null {
@@ -320,16 +319,14 @@ export async function fetchOpenAlexPdf(input: { apiKey?: string; contentPdfUrl: 
 	) {
 		throw new Error('OpenAlex content PDF URL is invalid');
 	}
-	const requestUrl = new URL(contentUrl);
-	requestUrl.searchParams.set('api_key', apiKey);
-	const response = await fetch(requestUrl, {
+	contentUrl.searchParams.set('api_key', apiKey);
+	const response = await fetch(contentUrl, {
 		headers: { Accept: 'application/pdf' },
 		signal: AbortSignal.timeout(CONTENT_REQUEST_TIMEOUT_MS),
 	});
 	if (!response.ok) {
-		const status = response.status;
 		await response.body?.cancel();
-		throw new Error(`OpenAlex content PDF request failed with HTTP ${status}`);
+		throw new Error(`OpenAlex content PDF request failed with HTTP ${response.status}`);
 	}
 	return response;
 }
