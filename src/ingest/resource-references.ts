@@ -111,45 +111,38 @@ async function replaceStoredCitationData(
 
 		await tx.execute(sql`DELETE FROM resource_citation_mentions WHERE resource_id = ${resourceId}::uuid`);
 		await tx.execute(sql`DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid`);
-		if (structured.references.length) {
-			const referenceValues = sql.join(
-				structured.references.map(({ label, text }, index) => sql`(${resourceId}::uuid, ${index + 1}, ${label}::text, ${text})`),
-				sql`, `,
-			);
-			await tx.execute(sql`
-				INSERT INTO resource_references (resource_id, ordinal, label, text)
-				VALUES ${referenceValues}
-			`);
-		}
-		if (mentions.length) {
-			const mentionValues = sql.join(
-				mentions.map(
-					({ contentEnd, contentStart, context, markerText, section }, index) =>
-						sql`(
-							${resourceId}::uuid, ${index + 1}, ${markerText}, ${context}, ${section}::text,
-							${contentStart}::integer, ${contentEnd}::integer, ${referenceRevision}
-						)`,
-				),
-				sql`, `,
-			);
-			await tx.execute(sql`
+		await tx.execute(sql`
+			INSERT INTO resource_references (resource_id, ordinal, label, text)
+			SELECT ${resourceId}::uuid, incoming.ordinal::integer, incoming.value->>'label', incoming.value->>'text'
+			FROM jsonb_array_elements(${JSON.stringify(structured.references)}::jsonb)
+			WITH ORDINALITY AS incoming(value, ordinal)
+		`);
+		await tx.execute(sql`
+			WITH incoming AS MATERIALIZED (
+				SELECT
+					ordinal::integer,
+					value->>'markerText' AS marker_text,
+					value->>'context' AS context,
+					value->>'section' AS section,
+					(value->>'contentStart')::integer AS content_start,
+					(value->>'contentEnd')::integer AS content_end,
+					value->'referenceOrdinals' AS reference_ordinals
+				FROM jsonb_array_elements(${JSON.stringify(mentions)}::jsonb)
+				WITH ORDINALITY AS mention(value, ordinal)
+			), inserted_mentions AS (
 				INSERT INTO resource_citation_mentions (
 					resource_id, ordinal, marker_text, context, section, content_start, content_end, content_revision
 				)
-				VALUES ${mentionValues}
-			`);
-
-			const targetValues = sql.join(
-				mentions.flatMap(({ referenceOrdinals }, mentionIndex) =>
-					referenceOrdinals.map((referenceOrdinal) => sql`(${resourceId}::uuid, ${mentionIndex + 1}, ${referenceOrdinal})`),
-				),
-				sql`, `,
-			);
-			await tx.execute(sql`
-				INSERT INTO resource_citation_targets (resource_id, mention_ordinal, reference_ordinal)
-				VALUES ${targetValues}
-			`);
-		}
+				SELECT ${resourceId}::uuid, ordinal, marker_text, context, section, content_start, content_end, ${referenceRevision}
+				FROM incoming
+				RETURNING ordinal
+			)
+			INSERT INTO resource_citation_targets (resource_id, mention_ordinal, reference_ordinal)
+			SELECT ${resourceId}::uuid, incoming.ordinal, target.value::integer
+			FROM incoming
+			JOIN inserted_mentions USING (ordinal)
+			CROSS JOIN LATERAL jsonb_array_elements_text(incoming.reference_ordinals) AS target(value)
+		`);
 	});
 	return {
 		alignedMentionCount: mentions.filter(({ contentStart }) => contentStart !== null).length,
