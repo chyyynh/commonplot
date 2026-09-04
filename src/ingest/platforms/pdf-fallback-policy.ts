@@ -20,16 +20,6 @@ export function localPdfNeedsFallback(local: Pick<LocalPdfSummary, 'fallbackReas
 	);
 }
 
-export type LlamaParseAdmissionReason =
-	| 'admitted'
-	| 'invalid-grant'
-	| 'local-usable'
-	| 'missing-credentials'
-	| 'not-authorized'
-	| 'page-count-unknown'
-	| 'page-limit-exceeded'
-	| 'source-ineligible';
-
 export function isAllowedPublicPdfUrl(value: string): boolean {
 	const url = URL.parse(value);
 	if (url?.protocol !== 'https:' || url.username || url.password || url.port) return false;
@@ -52,7 +42,7 @@ export function llamaParseAdmissionReason(input: {
 	hasCredentials: boolean;
 	local: Pick<LocalPdfSummary, 'fallbackReasons' | 'fullPageImagePages' | 'totalPages'>;
 	source: LlamaParseSource;
-}): LlamaParseAdmissionReason {
+}) {
 	if (!localPdfNeedsFallback(input.local)) return 'local-usable';
 	if (!input.grant) return 'not-authorized';
 	if (!Number.isInteger(input.grant.maxPages) || input.grant.maxPages < 1 || input.grant.maxPages > LLAMA_PARSE_MAX_PAGES)
