@@ -4,7 +4,7 @@ import { MAX_PDF_BYTES } from './platforms/pdf-constants.ts';
 
 const GROBID_PORT = 8070;
 export const GROBID_CONTAINER_NAME = 'citation-parser-v1';
-const MAX_ERROR_BODY_CHARS = 1_000;
+const MAX_ERROR_BODY_BYTES = 1_000;
 const MAX_GROBID_RESPONSE_BYTES = 8 * 1024 * 1024;
 const textEncoder = new TextEncoder();
 
@@ -32,21 +32,12 @@ async function boundedResponseText(response: Response, maxBytes: number): Promis
 	return text + decoder.decode();
 }
 
-function multipartPdfBody(
-	pdf: ReadableStream<Uint8Array>,
-	boundary: string,
-	fields: Readonly<Record<string, string>>,
-): {
-	byteLengthOverhead: number;
-	body: ReadableStream<Uint8Array>;
-} {
+function multipartPdfBody(pdf: ReadableStream<Uint8Array>, boundary: string) {
 	const prefix = textEncoder.encode(
 		`--${boundary}\r\nContent-Disposition: form-data; name="input"; filename="document.pdf"\r\nContent-Type: application/pdf\r\n\r\n`,
 	);
 	const suffix = textEncoder.encode(
-		`${Object.entries(fields)
-			.map(([name, value]) => `\r\n--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}`)
-			.join('')}\r\n--${boundary}--\r\n`,
+		`\r\n--${boundary}\r\nContent-Disposition: form-data; name="consolidateHeader"\r\n\r\n0\r\n--${boundary}--\r\n`,
 	);
 	const reader = pdf.getReader();
 	let phase: 'pdf' | 'prefix' | 'suffix' = 'prefix';
@@ -79,7 +70,6 @@ function multipartPdfBody(
 
 export class GrobidContainer extends Container<CoreEnv> {
 	defaultPort = GROBID_PORT;
-	requiredPorts = [GROBID_PORT];
 	sleepAfter = '2m';
 	enableInternet = false;
 
@@ -103,7 +93,7 @@ export class GrobidContainer extends Container<CoreEnv> {
 		}
 
 		const boundary = `newsence-${crypto.randomUUID()}`;
-		const multipart = multipartPdfBody(input, boundary, { consolidateHeader: '0' });
+		const multipart = multipartPdfBody(input, boundary);
 		const body = multipart.body.pipeThrough(new FixedLengthStream(byteLength + multipart.byteLengthOverhead));
 		const response = await this.containerFetch('http://grobid/api/processHeaderDocument', {
 			body,
@@ -114,7 +104,7 @@ export class GrobidContainer extends Container<CoreEnv> {
 			method: 'POST',
 		});
 		if (!response.ok) {
-			const detail = (await boundedResponseText(response, MAX_ERROR_BODY_CHARS)).slice(0, MAX_ERROR_BODY_CHARS);
+			const detail = await boundedResponseText(response, MAX_ERROR_BODY_BYTES);
 			throw new Error(`GROBID processHeaderDocument failed with ${response.status}${detail ? `: ${detail}` : ''}`);
 		}
 		return boundedResponseText(response, MAX_GROBID_RESPONSE_BYTES);
