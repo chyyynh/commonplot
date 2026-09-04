@@ -38,10 +38,8 @@ export async function ensureStructuredPdfSourceCrops(
 		if (input.crops.length) {
 			const inventory = await env.R2.list({ include: ['customMetadata'], limit: 1_000, prefix });
 			if (inventory.truncated) throw new Error('Structured PDF source crop inventory exceeded the bounded prefix');
-			const objectsByKey = new Map(inventory.objects.map((object) => [object.key, object]));
-			for (const crop of input.crops) {
-				const object = objectsByKey.get(`${prefix}${crop.id}.png`);
-				if (object?.customMetadata?.artifactVersion === SOURCE_CROP_ARTIFACT_VERSION) readyCropIds.add(crop.id);
+			for (const { customMetadata, key } of inventory.objects) {
+				if (customMetadata?.artifactVersion === SOURCE_CROP_ARTIFACT_VERSION) readyCropIds.add(key.slice(prefix.length, -4));
 			}
 		}
 	} catch (error) {
