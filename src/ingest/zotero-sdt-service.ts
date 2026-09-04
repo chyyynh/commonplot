@@ -37,22 +37,21 @@ export async function ensureStructuredPdfSourceCrops(
 ): Promise<string[]> {
 	if (!INPUT_HASH_PATTERN.test(input.inputContentHash)) throw new TypeError('Structured PDF input content hash is invalid');
 	const prefix = `${input.pdfStorageKey}.structured-crops/${input.inputContentHash}/`;
-	let readyCropIds = new Set<string>();
+	const readyCropIds = new Set<string>();
 	try {
 		if (input.crops.length) {
 			const inventory = await env.R2.list({ include: ['customMetadata'], limit: 1_000, prefix });
 			if (inventory.truncated) throw new Error('Structured PDF source crop inventory exceeded the bounded prefix');
 			const objectsByKey = new Map(inventory.objects.map((object) => [object.key, object]));
-			readyCropIds = new Set(
-				input.crops.flatMap((crop) => {
-					const object = objectsByKey.get(`${prefix}${crop.id}.png`);
-					return object?.customMetadata?.artifactVersion === SOURCE_CROP_ARTIFACT_VERSION &&
-						object.size > 0 &&
-						object.size <= MAX_SOURCE_CROP_BYTES
-						? [crop.id]
-						: [];
-				}),
-			);
+			for (const crop of input.crops) {
+				const object = objectsByKey.get(`${prefix}${crop.id}.png`);
+				if (
+					object?.customMetadata?.artifactVersion === SOURCE_CROP_ARTIFACT_VERSION &&
+					object.size > 0 &&
+					object.size <= MAX_SOURCE_CROP_BYTES
+				)
+					readyCropIds.add(crop.id);
+			}
 		}
 	} catch (error) {
 		console.warn({
