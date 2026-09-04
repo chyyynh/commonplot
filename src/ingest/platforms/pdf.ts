@@ -174,7 +174,6 @@ type StoredPdfInput = {
 	creators: ResourceCreator[];
 	originalLang: string;
 	publishedDate: string | null;
-	resourceId: string;
 	source: string;
 	storageKey: string;
 	summary: string | null;
@@ -184,7 +183,6 @@ type StoredPdfInput = {
 type StoredPdfRow = {
 	content_hash: string | null;
 	creators: unknown;
-	id: string;
 	original_lang: string;
 	published_date: Date | string | null;
 	source: string | null;
@@ -196,7 +194,6 @@ type StoredPdfRow = {
 async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promise<StoredPdfInput> {
 	const result = await db.execute<StoredPdfRow>(sql`
 		SELECT
-			resource.id::text AS id,
 			resource.content_hash,
 			original.title,
 			original.summary,
@@ -254,7 +251,6 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 		creators,
 		originalLang: canonicalizeResourceLang(row.original_lang),
 		publishedDate: publishedDate?.toISOString() ?? null,
-		resourceId: row.id,
 		source,
 		storageKey: row.storage_key,
 		summary: row.summary,
@@ -262,8 +258,8 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 	};
 }
 
-async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise<PdfAcquisitionDraft> {
-	const sourceLabel = `Stored PDF ${resource.resourceId}`;
+async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resourceId: string): Promise<PdfAcquisitionDraft> {
+	const sourceLabel = `Stored PDF ${resourceId}`;
 	let document: StructuredPdfDocument | null = null;
 	let parseFailure: LocalPdfParseResult | null = null;
 	try {
@@ -272,7 +268,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 		console.warn({
 			tag: 'PDF_PARSE',
 			event: 'zotero_sdt_artifact_invalid',
-			resource_id: resource.resourceId,
+			resource_id: resourceId,
 			error: error instanceof Error ? error.message : String(error),
 		});
 	}
@@ -281,7 +277,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 			tag: 'PDF_PARSE',
 			event: 'zotero_sdt_artifact_reused',
 			parser_version: `zotero-pdf-${document.metadata.processor.version}/sdt-${document.schemaVersion}`,
-			resource_id: resource.resourceId,
+			resource_id: resourceId,
 		});
 	} else {
 		const object = await env.R2.get(resource.storageKey);
@@ -303,7 +299,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput): Promise
 			crops,
 			inputContentHash: resource.contentHash,
 			pdfStorageKey: resource.storageKey,
-			resourceId: resource.resourceId,
+			resourceId,
 		});
 		parsed = localPdfResult(
 			normalizeStructuredPdf(document, {
@@ -409,7 +405,7 @@ export async function stageStoredPdfAcquisition(
 		step.do(
 			'acquire-stored-pdf-v7',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
-			async () => Response.json(await acquireStoredPdf(env, resource)).body!,
+			async () => Response.json(await acquireStoredPdf(env, resource, target.resourceId)).body!,
 		),
 		step
 			.do<GrobidPdfHeader>('classify-stored-pdf-with-grobid-v1', GROBID_HEADER_STEP, async () => {
