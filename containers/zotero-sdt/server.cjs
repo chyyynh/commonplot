@@ -168,21 +168,13 @@ const server = createServer(async (request, response) => {
 			) {
 				return sendJson(response, 400, { error: 'Invalid PDF render area.' });
 			}
-			try {
-				const result = await client.request('pdf.renderArea', pdfBuffer, { pageIndex, rect, scale: 3 });
-				if (!result?.buf) return sendJson(response, 422, { error: 'PDF render area is empty.' });
-				const png = Buffer.from(result.buf);
-				if (!png.length || png.length > MAX_CROP_BYTES || !png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
-					return sendJson(response, 422, { error: 'Rendered PDF area is not a valid bounded PNG.' });
-				}
-				return response.writeHead(200, { 'content-type': 'image/png' }).end(png);
-			} catch (renderError) {
-				console.error({
-					error: renderError instanceof Error ? renderError.message : String(renderError),
-					event: 'zotero_sdt_render_area_failed',
-				});
-				return sendJson(response, 422, { error: renderError instanceof Error ? renderError.message : 'PDF render area failed.' });
+			const result = await client.request('pdf.renderArea', pdfBuffer, { pageIndex, rect, scale: 3 });
+			if (!result?.buf) return sendJson(response, 422, { error: 'PDF render area is empty.' });
+			const png = Buffer.from(result.buf);
+			if (!png.length || png.length > MAX_CROP_BYTES || !png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+				return sendJson(response, 422, { error: 'Rendered PDF area is not a valid bounded PNG.' });
 			}
+			return response.writeHead(200, { 'content-type': 'image/png' }).end(png);
 		}
 		try {
 			const result = await client.request('getStructuredDocumentText', pdfBuffer, {
@@ -215,7 +207,7 @@ const server = createServer(async (request, response) => {
 			});
 		}
 	} catch (error) {
-		console.error({ error: error instanceof Error ? error.message : String(error), event: 'zotero_sdt_parse_failed' });
+		console.error({ error: error instanceof Error ? error.message : String(error), event: 'zotero_sdt_request_failed' });
 		if (response.headersSent) {
 			if (!response.writableEnded) response.destroy(error instanceof Error ? error : undefined);
 			return;
