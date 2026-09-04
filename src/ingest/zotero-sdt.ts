@@ -1,9 +1,9 @@
 import type {
 	ContentBlockNode,
-	PageInfo,
 	PdfAnchor,
 	OutlineItem as SdtOutlineItem,
 	TextNode as SdtTextNode,
+	StructuredDocumentText,
 } from 'structured-document-text/schema';
 import { getFulltextFromStructuredText } from 'structured-document-text/src/fulltext.js';
 import { getPartBoundarySeparator, getPartChain, shouldDropHardHyphenAtPartBoundary } from 'structured-document-text/src/parts.js';
@@ -58,10 +58,7 @@ type SdtBlockNode = Readonly<{
 type SdtNode = SdtBlockNode | SdtTextNode;
 
 export type StructuredPdfDocument = Readonly<{
-	catalog: Readonly<{
-		outline: readonly SdtOutlineItem[];
-		pages: readonly PageInfo[];
-	}>;
+	catalog: Readonly<Pick<StructuredDocumentText['catalog'], 'outline' | 'pages'>>;
 	content: readonly SdtBlockNode[];
 	metadata: Readonly<{
 		characterCount?: number;
@@ -255,13 +252,10 @@ function mergeParagraphParts(chain: readonly ParagraphPart[]): SdtBlockNode {
 }
 
 function walkNodes(nodes: readonly SdtNode[], parentPath: RefPath = []): Array<{ node: SdtNode; path: number[] }> {
-	const entries: Array<{ node: SdtNode; path: number[] }> = [];
-	for (const [index, node] of nodes.entries()) {
+	return nodes.flatMap((node, index) => {
 		const path = [...parentPath, index];
-		entries.push({ node, path });
-		if ('content' in node) entries.push(...walkNodes(node.content, path));
-	}
-	return entries;
+		return [{ node, path }, ...('content' in node ? walkNodes(node.content, path) : [])];
+	});
 }
 
 function referenceLabelAndText(value: string): { label: string | null; text: string } {
@@ -417,12 +411,7 @@ export function structuredPdfSourceCropUrl(inputContentHash: string, cropId: str
 
 function renderTableRow(writer: MarkdownWriter, row: SdtBlockNode): void {
 	const cells = row.content.filter((node): node is SdtBlockNode => !('text' in node) && node.type === 'tablecell');
-	writer.append('| ');
-	for (const [index, cell] of cells.entries()) {
-		if (index) writer.append(' | ');
-		writer.append(escapeMarkdownText(cleanText(nodeText(cell))));
-	}
-	writer.append(' |\n');
+	writer.append(`| ${cells.map((cell) => escapeMarkdownText(cleanText(nodeText(cell)))).join(' | ')} |\n`);
 }
 
 function renderBlock(
@@ -575,10 +564,7 @@ export function normalizeStructuredPdf(
 	if (!markdown) fallbackReasons.add('empty-output');
 	if (document.catalog.pages.some(({ extractionDegraded }) => extractionDegraded === true)) fallbackReasons.add('degraded-page');
 	const fulltextDocument = document as unknown as Parameters<typeof getFulltextFromStructuredText>[0];
-	const fullPageImagePages = document.catalog.pages.reduce(
-		(count, _page, index) => count + (getFulltextFromStructuredText(fulltextDocument, [index]) ? 0 : 1),
-		0,
-	);
+	const fullPageImagePages = document.catalog.pages.filter((_, index) => !getFulltextFromStructuredText(fulltextDocument, [index])).length;
 	return {
 		markdown,
 		mentions: writer.mentions.filter(({ context }) => context),
