@@ -13,7 +13,7 @@ import { readStructuredPdfArtifact } from './zotero-sdt-service.ts';
 const CROSSREF_BATCH_SIZE = 3;
 const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 const REFERENCE_SDT_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '90 seconds' } as const;
-const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v1';
+const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v2';
 const ResourceReferenceEnrichmentPayloadSchema = z.strictObject({
 	referenceRevision: z.hash('md5').lowercase(),
 	resourceId: z.uuid(),

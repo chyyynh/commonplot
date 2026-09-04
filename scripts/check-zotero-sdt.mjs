@@ -102,6 +102,30 @@ const paragraph = (value, pageRects, options = {}) => ({
 	type: 'paragraph',
 	...options,
 });
+
+const splitReferenceDocument = JSON.parse(JSON.stringify(document));
+splitReferenceDocument.catalog.pages = [{ contentRange: [[0], [5]], textSource: 'born-digital' }];
+splitReferenceDocument.content[2].content[1].refs = [[5]];
+splitReferenceDocument.content[4] = paragraph('[41] Kane, G.C.; Alavi, M.;', [[0, 54, 80, 295, 120]], {
+	nextPart: [5],
+	reference: true,
+});
+splitReferenceDocument.content.push(
+	paragraph('and Borgatti, S.P. A complete reference. MIS Quarterly (2014).', [[0, 317, 700, 558, 735]], {
+		previousPart: [4],
+		reference: true,
+	}),
+);
+const splitReferenceNormalized = normalizeStructuredPdf(parseStructuredPdfDocumentJson(JSON.stringify(splitReferenceDocument)));
+assert.deepEqual(splitReferenceNormalized.references, [
+	{
+		key: 'sdt-1',
+		label: '41',
+		text: 'Kane, G.C.; Alavi, M.;and Borgatti, S.P. A complete reference. MIS Quarterly (2014).',
+	},
+]);
+assert.deepEqual(splitReferenceNormalized.mentions[0].targetKeys, ['sdt-1']);
+
 const seamDocument = {
 	...document,
 	catalog: {

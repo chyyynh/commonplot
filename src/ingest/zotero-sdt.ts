@@ -2,11 +2,17 @@ import type {
 	ContentBlockNode,
 	PdfAnchor,
 	OutlineItem as SdtOutlineItem,
+	RefPath as SdtRefPath,
 	TextNode as SdtTextNode,
 	StructuredDocumentText,
 } from 'structured-document-text/schema';
 import { getFulltextFromStructuredText } from 'structured-document-text/src/fulltext.js';
-import { getPartBoundarySeparator, getPartChain, shouldDropHardHyphenAtPartBoundary } from 'structured-document-text/src/parts.js';
+import {
+	getLogicalBlockText,
+	getPartBoundarySeparator,
+	getPartChain,
+	shouldDropHardHyphenAtPartBoundary,
+} from 'structured-document-text/src/parts.js';
 import { getContentRangeBlockSpan, isContentBoundary, isLeafBlock, refKey } from 'structured-document-text/src/range.js';
 
 const MAX_DOCUMENT_NODES = 100_000;
@@ -220,6 +226,11 @@ function mergeParagraphParts(chain: readonly ParagraphPart[]): SdtBlockNode {
 		content.push(...next.content);
 	}
 	return { ...first, content };
+}
+
+function isReferencePart(_path: SdtRefPath, value: unknown): boolean {
+	const block = value as Partial<SdtBlockNode>;
+	return block.reference === true && block.flowClass !== 'excluded' && isLeafBlock(block);
 }
 
 function walkNodes(nodes: readonly SdtNode[], parentPath: RefPath = []): Array<{ node: SdtNode; path: number[] }> {
@@ -502,11 +513,25 @@ export function normalizeStructuredPdf(
 		(entry): entry is { node: SdtBlockNode; path: number[] } => !('text' in entry.node) && entry.node.reference === true,
 	);
 	if (referenceEntries.length > MAX_REFERENCES) throw new Error(`Zotero SDT returned more than ${MAX_REFERENCES} references`);
-	const referenceKeyByPath = new Map(referenceEntries.map(({ path }, index) => [refKey(path), `sdt-${index + 1}`]));
-	const references = referenceEntries.flatMap(({ node, path }) => {
-		const parsed = referenceLabelAndText(nodeText(node));
-		return parsed.text ? [{ key: referenceKeyByPath.get(refKey(path))!, ...parsed }] : [];
-	});
+	const referenceKeyByPath = new Map<string, string>();
+	const visitedReferencePaths = new Set<string>();
+	const references: Array<{ key: string; label: string | null; text: string }> = [];
+	let referenceSequence = 0;
+	for (const { node, path } of referenceEntries) {
+		if (visitedReferencePaths.has(refKey(path))) continue;
+		const chain = getPartChain(document, path as SdtRefPath, { include: isReferencePart });
+		const parts = chain.length ? chain : [{ block: node, ref: path }];
+		const key = `sdt-${++referenceSequence}`;
+		for (const part of parts) {
+			const partKey = refKey(part.ref);
+			visitedReferencePaths.add(partKey);
+			referenceKeyByPath.set(partKey, key);
+		}
+		const parsed = referenceLabelAndText(
+			chain.length ? getLogicalBlockText(document, chain[0]!.ref, { include: isReferencePart }) : nodeText(node),
+		);
+		if (parsed.text) references.push({ key, ...parsed });
+	}
 	const writer = new MarkdownWriter();
 	const headingLevelByPath = headingLevels(document.catalog.outline);
 	const sourceCropsByBlock = new Map<string, Array<{ altText: string; url: string }>>();
