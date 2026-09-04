@@ -261,6 +261,30 @@ function escapeMarkdownText(value: string): string {
 	return value.replace(/([\\`*_<>[\]])/gu, '\\$1');
 }
 
+function statisticalReferenceNodes(nodes: readonly SdtNode[], referenceKeyByPath: ReadonlyMap<string, string>): ReadonlySet<SdtTextNode> {
+	const ignored = new Set<SdtTextNode>();
+	const targetSignature = (node: SdtTextNode) =>
+		[...new Set((node.refs ?? []).flatMap((path) => referenceKeyByPath.get(refKey(path)) ?? []))].sort().join('\0');
+	for (let index = 1; index < nodes.length; index += 1) {
+		const previous = nodes[index - 1];
+		const open = nodes[index];
+		if (!previous || !('text' in previous) || !/(?:^|[^\p{L}])(?:[tfz]|χ(?:2|²)?)\s*$/iu.test(previous.text)) continue;
+		if (!open || !('text' in open) || open.text.trim() !== '(') continue;
+		const signature = targetSignature(open);
+		if (!signature) continue;
+		const run: SdtTextNode[] = [];
+		for (const node of nodes.slice(index)) {
+			if (!('text' in node) || targetSignature(node) !== signature) break;
+			run.push(node);
+			if (node.text.trim() === ')') break;
+		}
+		if (!/^\(\s*\d+(?:\s*,\s*\d+)*\s*\)$/u.test(run.map(({ text }) => text).join('')) || !run.some(({ style }) => style?.monospace))
+			continue;
+		for (const node of run) ignored.add(node);
+	}
+	return ignored;
+}
+
 class MarkdownWriter {
 	private readonly chunks: string[] = [];
 	private length = 0;
@@ -309,23 +333,23 @@ function renderInline(
 	section: string | null,
 	referenceKeyByPath: ReadonlyMap<string, string>,
 ): void {
+	const ignoredReferences = statisticalReferenceNodes(nodes, referenceKeyByPath);
 	for (const node of nodes) {
 		if (!('text' in node)) {
 			renderInline(writer, node.content, context, section, referenceKeyByPath);
 			continue;
 		}
-		const citationTargets = (node.refs ?? []).flatMap((path) => referenceKeyByPath.get(refKey(path)) ?? []);
+		const citationTargets = ignoredReferences.has(node)
+			? []
+			: (node.refs ?? []).flatMap((path) => referenceKeyByPath.get(refKey(path)) ?? []);
 		if (citationTargets.length) {
 			writer.appendCitation(node.text, context, section, citationTargets);
 			continue;
 		}
 		const normalized = node.text.replace(/\s+/gu, ' ');
 		let text = escapeMarkdownText(normalized);
-		if (node.style?.monospace && text) text = `\`${text.replaceAll('`', '\\`')}\``;
-		else {
-			if (node.style?.bold && text) text = `**${text}**`;
-			if (node.style?.italic && text) text = `_${text}_`;
-		}
+		if (node.style?.bold && text) text = `**${text}**`;
+		if (node.style?.italic && text) text = `_${text}_`;
 		const url = safeHttpUrl(node.target?.url);
 		writer.append(url && cleanText(normalized) ? `[${text}](${url})` : text);
 	}

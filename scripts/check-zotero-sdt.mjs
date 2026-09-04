@@ -26,7 +26,21 @@ const document = {
 		{ content: [text('')], type: 'paragraph' },
 		{ content: [text('Introduction')], type: 'heading' },
 		{
-			content: [text('Prior work '), text('[1]', { refs: [[4, 0]] })],
+			content: [
+				text('Prior work reported t '),
+				text('(', { refs: [[4, 0]] }),
+				text('46', { refs: [[4, 0]], style: { monospace: true } }),
+				text(')', { refs: [[4, 0]] }),
+				text(', F '),
+				text('(', { refs: [[4, 0]] }),
+				text('1', { refs: [[4, 0]], style: { monospace: true } }),
+				text(',', { refs: [[4, 0]] }),
+				text(' ', { refs: [[4, 0]] }),
+				text('44', { refs: [[4, 0]], style: { monospace: true } }),
+				text(')', { refs: [[4, 0]] }),
+				text(' and '),
+				text('[1]', { refs: [[4, 0]] }),
+			],
 			nextPart: [3],
 			type: 'paragraph',
 		},
@@ -71,9 +85,10 @@ assert.deepEqual(normalized.references[0], {
 assert.equal(normalized.mentions.length, 1);
 assert.deepEqual(normalized.mentions[0].targetKeys, ['sdt-1']);
 assert.equal(normalized.markdown.slice(normalized.mentions[0].contentStart, normalized.mentions[0].contentEnd), '[1]');
-assert.match(normalized.mentions[0].context, /Prior work \[1\] established the result2\./u);
+assert.match(normalized.mentions[0].context, /Prior work reported t \(46\), F \(1, 44\) and \[1\] established the result2\./u);
 assert.equal(normalized.mentions[0].section, 'Introduction');
 assert.doesNotMatch(normalized.markdown, /Running header|<sup>|<sub>/u);
+assert.doesNotMatch(normalized.markdown, /`46`/u);
 assert.match(normalized.markdown, /^## Introduction/u);
 assert.match(normalized.paperIdentifierText ?? '', /DOI: 10\.1000\/example/u);
 assert.equal(normalized.parse.totalPages, 1);
