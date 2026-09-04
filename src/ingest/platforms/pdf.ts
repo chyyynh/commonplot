@@ -47,11 +47,7 @@ export function isPdfAcquisitionDraft(value: GenericAcquiredMaterial | PdfAcquis
 	return 'kind' in value && value.kind === 'local-pdf';
 }
 
-type LocalPdfParseResult = Readonly<{
-	markdown: string;
-	paperIdentifierText: string | null;
-	parse: LocalPdfSummary;
-}>;
+type LocalPdfParseResult = Pick<NormalizedStructuredPdf, 'markdown' | 'paperIdentifierText' | 'parse'>;
 
 type PdfArtifactAttempt = Readonly<{
 	artifact: StructuredPdfArtifact | null;
@@ -113,16 +109,6 @@ async function parsePdfArtifactStream(
 	}
 }
 
-async function parsePdfStream(
-	env: CoreEnv,
-	input: ReadableStream<Uint8Array>,
-	byteLength: number | null,
-	sourceLabel: string,
-): Promise<LocalPdfParseResult> {
-	const attempt = await parsePdfArtifactStream(env, input, byteLength, sourceLabel);
-	return attempt.artifact ? localPdfResult(normalizeStructuredPdf(attempt.artifact.document), sourceLabel) : attempt.failure!;
-}
-
 function requireUsablePdf(acquisition: PdfAcquisitionDraft, sourceLabel: string): GenericAcquiredMaterial {
 	if (!acquisition.material.markdown) throw new NonRetryableError(`${sourceLabel} has no usable text; OCR is required`);
 	return acquisition.material;
@@ -154,11 +140,7 @@ export async function completeFetchedPdfAcquisition(
 	};
 }
 
-type PdfRepresentation = Readonly<{
-	fileType: typeof PDF_MIME;
-	markdown: string;
-	paperIdentifierText: string | null;
-}>;
+type PdfRepresentation = Pick<GenericAcquiredMaterial, 'fileType' | 'markdown' | 'paperIdentifierText'>;
 
 /** OpenAlex content URLs need our API key, so this optional representation is always local-only. */
 export async function stageOpenAlexPdfRepresentation(
@@ -382,8 +364,8 @@ export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response
 		}),
 	);
 	if (!body) throw new NonRetryableError('Fetched PDF response body is empty');
-	const parsed = await parsePdfStream(env, body, null, 'Fetched PDF');
-	if (pdfBytes > MAX_PDF_BYTES) throw new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`);
+	const attempt = await parsePdfArtifactStream(env, body, null, 'Fetched PDF');
+	const parsed = attempt.artifact ? localPdfResult(normalizeStructuredPdf(attempt.artifact.document), 'Fetched PDF') : attempt.failure!;
 	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';
 	let fileName = encodedName || 'document.pdf';
 	if (encodedName) {
