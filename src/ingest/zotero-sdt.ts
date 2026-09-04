@@ -23,9 +23,6 @@ const MAX_REF_PATH_DEPTH = 16;
 const INPUT_HASH_PATTERN = /^[a-f\d]{64}$/u;
 
 export const ZOTERO_SDT_ARTIFACT_VERSION = 'newsence-zotero-sdt-v1';
-export const ZOTERO_SDT_CONTAINER_NAME = 'structured-pdf-v1';
-export const ZOTERO_SDT_CONTENT_TYPE = 'application/vnd.newsence.structured-document+json';
-export const ZOTERO_SDT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
 export function parseStructuredPdfFailure(status: number, body: string): { message: string; totalPages: number | null } {
 	let message = `Zotero SDT parse failed with ${status}`;

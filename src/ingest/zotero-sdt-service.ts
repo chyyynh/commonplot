@@ -6,15 +6,14 @@ import {
 	type StructuredPdfSourceCrop,
 	structuredPdfStorageKey,
 	ZOTERO_SDT_ARTIFACT_VERSION,
-	ZOTERO_SDT_CONTAINER_NAME,
-	ZOTERO_SDT_CONTENT_TYPE,
-	ZOTERO_SDT_MAX_RESPONSE_BYTES,
 } from './zotero-sdt.ts';
 
 const INPUT_HASH_PATTERN = /^[a-f\d]{64}$/u;
 const MAX_ERROR_BODY_BYTES = 4_096;
 const MAX_SOURCE_CROP_BYTES = 8 * 1024 * 1024;
 const SOURCE_CROP_ARTIFACT_VERSION = 'newsence-zotero-source-crop-v1';
+const ZOTERO_SDT_CONTAINER_NAME = 'structured-pdf-v1';
+const ZOTERO_SDT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 
 export class ZoteroSdtParseError extends Error {
 	readonly totalPages: number | null;
@@ -153,6 +152,6 @@ export async function writeStructuredPdfArtifact(
 			artifactVersion: ZOTERO_SDT_ARTIFACT_VERSION,
 			inputSha256: inputContentHash,
 		},
-		httpMetadata: { contentType: ZOTERO_SDT_CONTENT_TYPE },
+		httpMetadata: { contentType: 'application/vnd.newsence.structured-document+json' },
 	});
 }
