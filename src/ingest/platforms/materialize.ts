@@ -71,11 +71,7 @@ export type PlatformAcquiredMaterial<TPlatform extends ResourcePlatform = Resour
 	subjectUrl?: string;
 };
 
-export type PlatformResourceUrl = Readonly<{
-	canonicalUrl: string;
-	platformId: string;
-	resourcePlatform: ResourcePlatform;
-}>;
+export type PlatformResourceUrl = Readonly<Pick<PlatformAcquiredMaterial, 'platformId' | 'resourcePlatform'> & { canonicalUrl: string }>;
 
 export function literalCreator(
 	role: ResourceCreator['role'],
@@ -86,11 +82,7 @@ export function literalCreator(
 	return name ? [{ role, literal: name, ...extra }] : [];
 }
 
-export type ResourceAcquisitionHints = Readonly<{
-	originalLang: string | null;
-	publishedDate: string | null;
-	summary: string | null;
-}>;
+export type ResourceAcquisitionHints = Readonly<Pick<AcquiredMaterialFields, 'originalLang' | 'publishedDate' | 'summary'>>;
 
 type ResolvedResourceIdentity = Pick<ResolvedResource, 'kind' | 'resourcePlatform' | 'url'>;
 
