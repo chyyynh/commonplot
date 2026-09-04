@@ -17,8 +17,7 @@ const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v2';
 const ResourceReferenceEnrichmentPayloadSchema = z.strictObject({
 	referenceRevision: z.hash('md5').lowercase(),
 	resourceId: z.uuid(),
-	/** Optional for compatibility with already-running v1 Workflow instances. */
-	source: z.strictObject({ fileResourceId: z.uuid(), kind: z.literal('uploadedPdf') }).optional(),
+	source: z.strictObject({ fileResourceId: z.uuid(), kind: z.literal('uploadedPdf') }),
 });
 
 type CrossrefMetadataUpdate = NonNullable<Awaited<ReturnType<typeof resolveCrossrefReference>>> & Readonly<{ ordinal: number }>;
@@ -269,7 +268,6 @@ export async function enqueueResourceReferenceEnrichment(
 export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<CoreEnv, ResourceReferenceEnrichmentPayload> {
 	async run(event: WorkflowEvent<ResourceReferenceEnrichmentPayload>, step: WorkflowStep): Promise<void> {
 		const input = ResourceReferenceEnrichmentPayloadSchema.parse(event.payload);
-		if (!input.source) return;
 		await enrichUploadedPdfReferences(this.env, step, { ...input, uploadedPdfResourceId: input.source.fileResourceId });
 	}
 }
