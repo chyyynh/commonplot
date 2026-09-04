@@ -3,7 +3,6 @@ import { readBoundedResponseText } from '../shared/response.ts';
 import { type GrobidPdfHeader, parseGrobidPdfHeaderTei } from './grobid-tei.ts';
 import { MAX_PDF_BYTES } from './platforms/pdf-constants.ts';
 
-const GROBID_PORT = 8070;
 const MAX_ERROR_BODY_BYTES = 1_000;
 const MAX_GROBID_RESPONSE_BYTES = 8 * 1024 * 1024;
 const textEncoder = new TextEncoder();
@@ -30,7 +29,7 @@ function multipartPdfBody(pdf: ReadableStream<Uint8Array>, boundary: string, byt
 }
 
 export class GrobidContainer extends Container<CoreEnv> {
-	defaultPort = GROBID_PORT;
+	defaultPort = 8070;
 	sleepAfter = '2m';
 	enableInternet = false;
 
@@ -41,7 +40,7 @@ export class GrobidContainer extends Container<CoreEnv> {
 			throw new TypeError(`GROBID PDF must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
 		try {
-			await this.startAndWaitForPorts(GROBID_PORT, {
+			await this.startAndWaitForPorts(this.defaultPort, {
 				instanceGetTimeoutMS: 30_000,
 				portReadyTimeoutMS: 240_000,
 				waitInterval: 500,
@@ -60,10 +59,8 @@ export class GrobidContainer extends Container<CoreEnv> {
 			},
 			method: 'POST',
 		});
-		if (!response.ok) {
-			const detail = await readBoundedResponseText(response, MAX_ERROR_BODY_BYTES, 'GROBID response');
-			throw new Error(`GROBID processHeaderDocument failed with ${response.status}${detail ? `: ${detail}` : ''}`);
-		}
-		return parseGrobidPdfHeaderTei(await readBoundedResponseText(response, MAX_GROBID_RESPONSE_BYTES, 'GROBID response'));
+		const text = await readBoundedResponseText(response, response.ok ? MAX_GROBID_RESPONSE_BYTES : MAX_ERROR_BODY_BYTES, 'GROBID response');
+		if (!response.ok) throw new Error(`GROBID processHeaderDocument failed with ${response.status}${text ? `: ${text}` : ''}`);
+		return parseGrobidPdfHeaderTei(text);
 	}
 }
