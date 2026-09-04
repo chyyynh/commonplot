@@ -42,10 +42,6 @@ export type PdfAcquisitionDraft = Readonly<{
 	parse: LocalPdfSummary;
 }>;
 
-export function isPdfAcquisitionDraft(value: GenericAcquiredMaterial | PdfAcquisitionDraft): value is PdfAcquisitionDraft {
-	return 'kind' in value && value.kind === 'local-pdf';
-}
-
 type LocalPdfParseResult = { markdown: string; paperIdentifierText: string | null; parse: LocalPdfSummary };
 
 function localPdfResult(normalized: ReturnType<typeof normalizeStructuredPdf>, sourceLabel: string): LocalPdfParseResult {

@@ -11,7 +11,6 @@ import { type GenericAcquiredMaterial, literalCreator, type PlatformResourceUrl 
 import {
 	acquireFetchedPdfResponse,
 	completeFetchedPdfAcquisition,
-	isPdfAcquisitionDraft,
 	type PaidPdfFallbackGrant,
 	PDF_MIME,
 	type PdfAcquisitionDraft,
@@ -210,7 +209,7 @@ export async function stageWebAcquisition(
 	);
 	if ('platform' in result) return result;
 	const acquired = await new Response(result).json<GenericAcquiredMaterial | PdfAcquisitionDraft>();
-	return isPdfAcquisitionDraft(acquired)
+	return acquired.kind === 'local-pdf'
 		? completeFetchedPdfAcquisition(env, step, {
 				acquisition: acquired,
 				grant: input.paidPdfFallback,

@@ -59,6 +59,7 @@ type AcquiredMaterialFields<TKindMetadata extends ResourceKindMetadata = Resourc
 
 export type GenericAcquiredMaterial = AcquiredMaterialFields & {
 	canonicalUrl?: string;
+	kind?: never;
 	paperIdentifierText?: string | null;
 	resourcePlatform: null;
 };
