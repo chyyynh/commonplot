@@ -6,10 +6,9 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
-import { canonicalizeResourceLang, type RESOURCE_TYPES } from '../shared/resource';
+import { canonicalizeResourceLang } from '../shared/resource';
 import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
-	type CompiledMarkdownTranslation,
 	compileMarkdownTranslationArtifact,
 	type MarkdownSegmentTranslation,
 	type MarkdownTranslationAlignment,
@@ -21,11 +20,8 @@ import { type ResourceTranslationCandidate, shouldEnqueueResourceTranslation } f
 
 type ResourceTranslationPayload = { force?: boolean; resourceId: string; translationRevision: string };
 const PDF_MIME = 'application/pdf';
-const RESOURCE_TRANSLATION_SOURCES = ['original', 'machine', 'human'] as const;
-const ResourceTranslationSourceSchema = z.enum(RESOURCE_TRANSLATION_SOURCES);
+const ResourceTranslationSourceSchema = z.enum(['original', 'machine', 'human']);
 type ResourceTranslationSource = z.infer<typeof ResourceTranslationSourceSchema>;
-type ResourceTranslationKind = keyof typeof RESOURCE_TYPES;
-type ResourceTranslationPlatform = (typeof RESOURCE_TYPES)[ResourceTranslationKind]['platforms'][number]['name'] | null;
 
 type ResourceTranslationInput = ResourceTranslationCandidate & {
 	id: string;
@@ -44,8 +40,8 @@ type ResourceTranslationInput = ResourceTranslationCandidate & {
 type ResourceTranslationInputRow = {
 	file_type: string | null;
 	id: string;
-	kind: ResourceTranslationKind;
-	resource_platform: ResourceTranslationPlatform;
+	kind: ResourceTranslationCandidate['kind'];
+	resource_platform: ResourceTranslationCandidate['resourcePlatform'];
 	original_lang: string;
 	scope: 'corpus' | 'private';
 	title: string | null;
@@ -92,9 +88,7 @@ const ZhHantMetadataTranslationSchema = z.object({
 	summary: z.string().min(1),
 });
 
-const ZhHantTitleTranslationSchema = z.object({
-	title: z.string().min(1),
-});
+const ZhHantTitleTranslationSchema = ZhHantMetadataTranslationSchema.pick({ title: true });
 
 type ZhHantMetadataTranslationTask = 'article-title-summary' | 'paper-title' | 'paper-title-summary' | 'post-title';
 
@@ -139,8 +133,7 @@ function needsMachineContentTranslation(resource: ResourceTranslationInput): boo
 	const translated = resource.zhHantTranslation?.content?.trim();
 	if (!translated) return true;
 	const content = resource.content.trim();
-	if (!content || content.length < 1000) return false;
-	return translated.length / content.length < PARTIAL_CONTENT_TRANSLATION_RATIO;
+	return content.length >= 1000 && translated.length / content.length < PARTIAL_CONTENT_TRANSLATION_RATIO;
 }
 
 function planZhHantTranslation(resource: ResourceTranslationInput, force: boolean): ZhHantTranslationPlan {
@@ -155,8 +148,7 @@ function planZhHantTranslation(resource: ResourceTranslationInput, force: boolea
 	}
 
 	const metadata = metadataTranslationTask(resource, force);
-	const content = resource.content.trim();
-	if (!content || !hasTranslatableContent(content) || (!force && !needsMachineContentTranslation(resource))) {
+	if (!hasTranslatableContent(resource.content) || (!force && !needsMachineContentTranslation(resource))) {
 		return { metadata, content: null };
 	}
 	return { metadata, content: 'translate' };
@@ -264,7 +256,7 @@ async function translatePlannedContent(
 	env: CoreEnv,
 	resourceId: string,
 	step: WorkflowStep,
-): Promise<CompiledMarkdownTranslation | null> {
+) {
 	if (plan !== 'translate') return null;
 	let markdownPlan: ReturnType<typeof planMarkdownTranslation>;
 	try {
@@ -353,16 +345,11 @@ async function translatePlannedContent(
 }
 
 const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v21';
-const ResourceTranslationRevisionSchema = z.string().regex(/^[0-9a-f]{32}$/);
+const ResourceTranslationRevisionSchema = z.hash('md5').lowercase();
 const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 
 function isResourceTranslationRevision(value: unknown): value is string {
 	return z.validate(ResourceTranslationRevisionSchema, value);
-}
-
-function parseTranslationSource(value: unknown): ResourceTranslationSource | null {
-	if (value === null || value === undefined) return null;
-	return ResourceTranslationSourceSchema.parse(value);
 }
 
 async function loadResourceTranslationInput(
@@ -411,7 +398,7 @@ async function loadResourceTranslationInput(
 	if (!isResourceTranslationRevision(row.translation_revision)) {
 		throw new Error(`Invalid translation revision for ${resourceId}`);
 	}
-	const zhHantSource = parseTranslationSource(row.zh_hant_source);
+	const zhHantSource = row.zh_hant_source == null ? null : ResourceTranslationSourceSchema.parse(row.zh_hant_source);
 	return {
 		resource: {
 			kind: row.kind,
