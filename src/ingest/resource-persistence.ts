@@ -73,7 +73,7 @@ export function prepareResolvedResource(
 	}
 	const isYouTubeResource =
 		resource.kind === 'video' && resource.resourcePlatform === 'youtube' && identifiers.some(({ scheme }) => scheme === 'youtube');
-	if ((resource.youtube !== undefined) !== isYouTubeResource) {
+	if (('youtube' in resource && resource.youtube !== undefined) !== isYouTubeResource) {
 		throw new TypeError('YouTube data requires a YouTube video Resource');
 	}
 	const url = httpUrl(resource.url, 'Resource URL');

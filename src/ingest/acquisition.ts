@@ -6,7 +6,7 @@ import {
 	paperIdentityFromIdentifiers,
 	resolveExactPaperInput,
 } from '../shared/paper-identity';
-import { isPaperIdentifier, type ResourcePlatform } from '../shared/resource';
+import { isPaperIdentifier } from '../shared/resource';
 import { parseHackerNewsResourceUrl, stageHackerNewsAcquisition } from './platforms/hackernews';
 import { parseLessWrongResourceUrl, stageLessWrongAcquisition } from './platforms/lesswrong';
 import {
@@ -14,7 +14,6 @@ import {
 	materializeGenericResource,
 	type PlatformResourceUrl,
 	type ResolvedPlatformlessResource,
-	type ResolvedPlatformResource,
 	type ResolvedResourceSubjectIdentity,
 	type ResourceAcquisitionHints,
 } from './platforms/materialize';
@@ -22,18 +21,7 @@ import { stagePaperProcessing } from './platforms/paper';
 import { type PaidPdfFallbackGrant, stageStoredPdfAcquisition } from './platforms/pdf';
 import { parseTwitterResourceUrl, stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
-import { parseYouTubeResourceUrl, stageYouTubeAcquisition, type YouTubeResourceData } from './platforms/youtube';
-
-type NonYouTubePlatform = Exclude<ResourcePlatform, 'youtube'>;
-type NonYouTubeResolvedResource =
-	| ResolvedPlatformlessResource
-	| {
-			[TPlatform in NonYouTubePlatform]: ResolvedPlatformResource<TPlatform>;
-	  }[NonYouTubePlatform];
-
-export type ProcessingResource =
-	| (NonYouTubeResolvedResource & { youtube?: never })
-	| (ResolvedPlatformResource<'youtube'> & { youtube: YouTubeResourceData });
+import { parseYouTubeResourceUrl, stageYouTubeAcquisition } from './platforms/youtube';
 
 export function resolvePlatformResourceUrl(url: URL): PlatformResourceUrl | null {
 	const hostname = url.hostname.toLowerCase();
@@ -119,7 +107,7 @@ export async function stageUrlAcquisition(
 		processingId: string;
 		url: string;
 	},
-): Promise<ProcessingResource> {
+) {
 	const parsedUrl = URL.parse(input.url);
 	if (!parsedUrl) throw new Error(`Processing ${input.processingId} has an invalid URL`);
 	let detected = resolvePlatformResourceUrl(parsedUrl);
@@ -170,6 +158,8 @@ export async function stageUrlAcquisition(
 			});
 	}
 }
+
+export type ProcessingResource = Awaited<ReturnType<typeof stageUrlAcquisition>>;
 
 export async function stageStoredResourceAcquisition(
 	env: CoreEnv,
