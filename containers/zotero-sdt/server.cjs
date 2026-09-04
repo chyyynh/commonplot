@@ -23,7 +23,7 @@ const { openStructuredDocumentTextPack } = require(resolve(BUILD_DIR, 'structure
 class DocumentWorkerClient {
 	constructor() {
 		this.nextRequestId = 0;
-		this.pending = new Map();
+		this.activeRequest = null;
 		this.queue = Promise.resolve();
 		this.failure = null;
 		this.worker = new Worker(resolve(__dirname, 'worker-thread.cjs'), { workerData: { buildDir: BUILD_DIR } });
@@ -46,11 +46,11 @@ class DocumentWorkerClient {
 			return;
 		}
 		if (!message?.responseID) return;
-		const pending = this.pending.get(message.responseID);
-		if (!pending) return;
-		this.pending.delete(message.responseID);
-		if (message.error) pending.reject(toError(message.error));
-		else pending.resolve(message.data);
+		const request = this.activeRequest;
+		if (!request || request.id !== message.responseID) return;
+		this.activeRequest = null;
+		if (message.error) request.reject(toError(message.error));
+		else request.resolve(message.data);
 	}
 
 	sendAsset(responseID, assetPath) {
@@ -76,8 +76,8 @@ class DocumentWorkerClient {
 		const failure = error instanceof Error ? error : new Error(String(error));
 		this.failure = failure;
 		this.ready.reject(failure);
-		for (const pending of this.pending.values()) pending.reject(failure);
-		this.pending.clear();
+		this.activeRequest?.reject(failure);
+		this.activeRequest = null;
 		console.error({ error: failure.message, event: 'zotero_sdt_document_worker_failed' });
 		setImmediate(() => process.exit(1));
 	}
@@ -90,8 +90,8 @@ class DocumentWorkerClient {
 			if (this.failure) throw this.failure;
 			const id = ++this.nextRequestId;
 			const buffer = pdfBuffer.buffer.slice(pdfBuffer.byteOffset, pdfBuffer.byteOffset + pdfBuffer.byteLength);
-			const pending = Promise.withResolvers();
-			this.pending.set(id, pending);
+			const request = Promise.withResolvers();
+			this.activeRequest = { id, ...request };
 			try {
 				this.worker.postMessage(
 					{
@@ -106,11 +106,9 @@ class DocumentWorkerClient {
 					[buffer],
 				);
 			} catch (error) {
-				this.pending.delete(id);
-				pending.reject(error);
 				this.crash(error);
 			}
-			return pending.promise;
+			return request.promise;
 		});
 		const job = queuedJob.finally(() => clearTimeout(timeout));
 		this.queue = job.catch(() => undefined);
