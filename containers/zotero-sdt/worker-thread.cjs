@@ -1,6 +1,4 @@
-const { readFileSync } = require('node:fs');
 const { resolve } = require('node:path');
-const { runInThisContext } = require('node:vm');
 const { parentPort, workerData } = require('node:worker_threads');
 
 if (!parentPort) throw new Error('The Zotero document worker must run in a worker thread.');
@@ -31,7 +29,11 @@ globalThis.postMessage = (message, transferList = []) => {
 };
 
 const workerBundlePath = resolve(buildDir, 'worker.js');
-runInThisContext(readFileSync(workerBundlePath, 'utf8'), { filename: workerBundlePath });
+// Load the generated worker as an ordinary CommonJS module. Evaluating it with
+// node:vm breaks document-worker's intentional dynamic import of Node-only
+// rendering dependencies (`canvas`), because `new Function(... import())`
+// created inside a vm script has no module import callback.
+require(workerBundlePath);
 
 parentPort.on('message', (message) => {
 	if (typeof globalThis.self.onmessage !== 'function') return;
