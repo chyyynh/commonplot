@@ -16,10 +16,10 @@ import {
 	planMarkdownTranslation,
 } from './markdown-translation';
 import { translateMarkdownBatchToZhHant } from './markdown-translation-model';
+import { PDF_MIME } from './platforms/pdf-constants';
 import { type ResourceTranslationCandidate, shouldEnqueueResourceTranslation } from './translation-policy';
 
 type ResourceTranslationPayload = { force?: boolean; resourceId: string; translationRevision: string };
-const PDF_MIME = 'application/pdf';
 const ResourceTranslationSourceSchema = z.enum(['original', 'machine', 'human']);
 type ResourceTranslationSource = z.infer<typeof ResourceTranslationSourceSchema>;
 
@@ -348,10 +348,6 @@ const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v22';
 const ResourceTranslationRevisionSchema = z.hash('md5').lowercase();
 const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 
-function isResourceTranslationRevision(value: unknown): value is string {
-	return z.validate(ResourceTranslationRevisionSchema, value);
-}
-
 async function loadResourceTranslationInput(
 	db: NodePgDatabase,
 	resourceId: string,
@@ -395,9 +391,7 @@ async function loadResourceTranslationInput(
 	`);
 	const row = result.rows[0];
 	if (!row) return null;
-	if (!isResourceTranslationRevision(row.translation_revision)) {
-		throw new Error(`Invalid translation revision for ${resourceId}`);
-	}
+	const translationRevision = ResourceTranslationRevisionSchema.parse(row.translation_revision);
 	const zhHantSource = row.zh_hant_source == null ? null : ResourceTranslationSourceSchema.parse(row.zh_hant_source);
 	return {
 		resource: {
@@ -421,7 +415,7 @@ async function loadResourceTranslationInput(
 					}
 				: null,
 		},
-		translationRevision: row.translation_revision,
+		translationRevision,
 	};
 }
 
@@ -431,10 +425,7 @@ async function persistMachineZhHantTranslation(
 	translationRevision: string,
 	patch: Readonly<MachineZhHantTranslationPatch>,
 ): Promise<boolean> {
-	if (!isResourceTranslationRevision(translationRevision)) throw new TypeError('Resource translation revision is invalid');
-	if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) {
-		throw new TypeError('Resource translation patch is empty');
-	}
+	ResourceTranslationRevisionSchema.parse(translationRevision);
 	if ((patch.content === undefined) !== (patch.alignment === undefined)) {
 		throw new TypeError('Machine translation content and alignment must be persisted together');
 	}
@@ -504,7 +495,7 @@ export async function enqueueResourceTranslation(
 	translationRevision: string,
 	forceRunKey?: string,
 ): Promise<string> {
-	if (!isResourceTranslationRevision(translationRevision)) throw new Error('Invalid resource translation revision');
+	ResourceTranslationRevisionSchema.parse(translationRevision);
 	const validatedForceRunKey = forceRunKey === undefined ? null : ForcedTranslationRunKeySchema.parse(forceRunKey);
 	const id = validatedForceRunKey
 		? `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-force-${resourceId}-${validatedForceRunKey}`
@@ -563,10 +554,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		}
 
 		const translated = await translatePlannedContent(initialContent, translationPlan.content, this.env, resourceId, step);
-		if (translated !== null) {
-			patch.alignment = translated.alignment;
-			patch.content = translated.content;
-		}
+		if (translated) Object.assign(patch, translated);
 		if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) return;
 
 		const persisted = await step.do(
