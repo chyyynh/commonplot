@@ -46,10 +46,9 @@ export function isPdfAcquisitionDraft(value: GenericAcquiredMaterial | PdfAcquis
 	return 'kind' in value && value.kind === 'local-pdf';
 }
 
-type NormalizedStructuredPdf = ReturnType<typeof normalizeStructuredPdf>;
 type LocalPdfParseResult = { markdown: string; paperIdentifierText: string | null; parse: LocalPdfSummary };
 
-function localPdfResult(normalized: NormalizedStructuredPdf, sourceLabel: string): LocalPdfParseResult {
+function localPdfResult(normalized: ReturnType<typeof normalizeStructuredPdf>, sourceLabel: string): LocalPdfParseResult {
 	const result: LocalPdfParseResult = {
 		markdown: normalized.markdown,
 		paperIdentifierText: normalized.paperIdentifierText,
@@ -259,7 +258,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string): Promi
 async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resourceId: string): Promise<PdfAcquisitionDraft> {
 	const sourceLabel = `Stored PDF ${resourceId}`;
 	let document: StructuredPdfDocument | null = null;
-	let parseFailure: LocalPdfParseResult | null = null;
+	let parsed: LocalPdfParseResult | null = null;
 	try {
 		document = await readStructuredPdfArtifact(env, resource.storageKey, resource.contentHash);
 	} catch (error) {
@@ -288,9 +287,8 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 		if ('schemaVersion' in attempt) {
 			document = attempt;
 			await writeStructuredPdfArtifact(env, resource.storageKey, resource.contentHash, document);
-		} else parseFailure = attempt;
+		} else parsed = attempt;
 	}
-	let parsed = parseFailure;
 	if (document) {
 		const crops = structuredPdfSourceCrops(document);
 		const readySourceCropIds = await ensureStructuredPdfSourceCrops(env, {

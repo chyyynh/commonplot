@@ -41,13 +41,10 @@ export class GrobidContainer extends Container<CoreEnv> {
 			throw new TypeError(`GROBID PDF must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
 		try {
-			await this.startAndWaitForPorts({
-				ports: GROBID_PORT,
-				cancellationOptions: {
-					instanceGetTimeoutMS: 30_000,
-					portReadyTimeoutMS: 240_000,
-					waitInterval: 500,
-				},
+			await this.startAndWaitForPorts(GROBID_PORT, {
+				instanceGetTimeoutMS: 30_000,
+				portReadyTimeoutMS: 240_000,
+				waitInterval: 500,
 			});
 		} catch (error) {
 			await input.cancel('GROBID container failed to become ready');
