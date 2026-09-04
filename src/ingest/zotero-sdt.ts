@@ -56,13 +56,8 @@ export type StructuredPdfDocument = Readonly<{
 	catalog: Readonly<Pick<StructuredDocumentText['catalog'], 'outline' | 'pages'>>;
 	content: readonly SdtBlockNode[];
 	metadata: Readonly<{
-		characterCount?: number;
 		processor: Readonly<{ type: 'pdf'; version: number }>;
-		source: Readonly<{
-			contentType: 'application/pdf';
-			hash: string;
-			properties?: Readonly<Record<string, unknown>>;
-		}>;
+		source: Readonly<Pick<StructuredDocumentText['metadata']['source'], 'properties'>>;
 	}>;
 	schemaVersion: string;
 }>;
@@ -164,13 +159,7 @@ export function parseStructuredPdfDocumentJson(json: string): StructuredPdfDocum
 	if (!isRecord(value.metadata) || !isRecord(value.metadata.processor) || !isRecord(value.metadata.source)) {
 		throw new Error('Zotero SDT metadata is invalid');
 	}
-	if (
-		value.metadata.processor.type !== 'pdf' ||
-		!Number.isInteger(value.metadata.processor.version) ||
-		value.metadata.source.contentType !== 'application/pdf' ||
-		typeof value.metadata.source.hash !== 'string' ||
-		!/^[a-f\d]{32}$/u.test(value.metadata.source.hash)
-	) {
+	if (value.metadata.processor.type !== 'pdf' || !Number.isInteger(value.metadata.processor.version)) {
 		throw new Error('Zotero SDT PDF source metadata is invalid');
 	}
 	if (!isRecord(value.catalog) || !Array.isArray(value.catalog.pages)) throw new Error('Zotero SDT catalog is invalid');
