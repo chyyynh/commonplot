@@ -639,7 +639,6 @@ export function normalizeStructuredPdf(
 		parse: {
 			fallbackReasons: [...fallbackReasons].sort(),
 			fullPageImagePages,
-			parsedPages: document.catalog.pages.length,
 			parserVersion: `zotero-pdf-${document.metadata.processor.version}/sdt-${document.schemaVersion}`,
 			totalPages: document.catalog.pages.length,
 		},
