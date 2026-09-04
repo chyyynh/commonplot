@@ -27,12 +27,7 @@ const MAX_HEADER_AUTHORS = 100;
 const MAX_HEADER_NAME_CHARS = 300;
 const MAX_HEADER_TITLE_CHARS = 500;
 
-type XmlObject = Readonly<Record<string, unknown>>;
-type XmlElement = Readonly<{
-	attributes: XmlObject;
-	children: readonly XmlObject[];
-	name: string;
-}>;
+type XmlObject = Record<string, unknown>;
 
 const teiParser = new XMLParser({
 	attributeNamePrefix: '',
@@ -43,7 +38,6 @@ const teiParser = new XMLParser({
 	maxNestedTags: 100,
 	parseAttributeValue: false,
 	parseTagValue: false,
-	preserveOrder: true,
 	processEntities: {
 		enabled: true,
 		maxEntityCount: 10,
@@ -56,57 +50,17 @@ const teiParser = new XMLParser({
 	trimValues: false,
 });
 
-function isXmlObject(value: unknown): value is XmlObject {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
+function xmlObject(value: unknown): XmlObject | null {
+	return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as XmlObject) : null;
 }
 
-function xmlElement(node: XmlObject): XmlElement | null {
-	for (const [name, value] of Object.entries(node)) {
-		if (name === ':@' || name === '#text' || !Array.isArray(value)) continue;
-		return {
-			attributes: isXmlObject(node[':@']) ? node[':@'] : {},
-			children: value.filter(isXmlObject),
-			name,
-		};
-	}
-	return null;
+function xmlValues(value: unknown): unknown[] {
+	return value === undefined || value === null ? [] : Array.isArray(value) ? value : [value];
 }
 
-function* descendantElements(nodes: readonly XmlObject[], name: string): Generator<XmlElement> {
-	for (const node of nodes) {
-		const element = xmlElement(node);
-		if (!element) continue;
-		if (element.name.toLowerCase() === name) yield element;
-		yield* descendantElements(element.children, name);
-	}
-}
-
-function elementAttribute(element: XmlElement, name: string): string | null {
-	for (const [attributeName, value] of Object.entries(element.attributes)) {
-		if (attributeName.toLowerCase() !== name || typeof value !== 'string') continue;
-		return value.trim() || null;
-	}
-	return null;
-}
-
-function collectElementText(nodes: readonly XmlObject[], parts: string[]): void {
-	for (const node of nodes) {
-		const text = node['#text'];
-		if (typeof text === 'string') parts.push(text);
-		const element = xmlElement(node);
-		if (element) collectElementText(element.children, parts);
-	}
-}
-
-function elementText(element: XmlElement): string {
-	const parts: string[] = [];
-	collectElementText(element.children, parts);
-	return parts.join(' ').replace(/\s+/gu, ' ').trim();
-}
-
-function parseTei(tei: string): readonly XmlObject[] {
-	const parsed: unknown = teiParser.parse(tei);
-	return Array.isArray(parsed) ? parsed.filter(isXmlObject) : [];
+function xmlText(value: unknown): string {
+	const text = typeof value === 'string' ? value : xmlObject(value)?.['#text'];
+	return typeof text === 'string' ? text.replace(/\s+/gu, ' ').trim() : '';
 }
 
 function validHttpUrl(value: string | null): string | null {
@@ -116,12 +70,13 @@ function validHttpUrl(value: string | null): string | null {
 	return parsed.toString();
 }
 
-function identifiersFromTei(elements: readonly XmlObject[]): GrobidReferenceIdentifiers {
+function identifiersFromHeader(biblStruct: XmlObject | null, analytic: XmlObject | null): GrobidReferenceIdentifiers {
 	let doi: string | null = null;
 	let arxivId: string | null = null;
-	for (const idno of descendantElements(elements, 'idno')) {
-		const type = elementAttribute(idno, 'type')?.toLowerCase();
-		const value = elementText(idno);
+	for (const rawIdno of [...xmlValues(analytic?.idno), ...xmlValues(biblStruct?.idno)]) {
+		const idno = xmlObject(rawIdno);
+		const type = typeof idno?.type === 'string' ? idno.type.toLowerCase() : null;
+		const value = xmlText(rawIdno);
 		if (!value || value.length > MAX_IDENTIFIER_CHARS) continue;
 		if (type === 'doi') doi ??= normalizeDoi(value);
 		else if (type === 'arxiv') arxivId ??= normalizeArxivId(value.replace(/\s*\[[^\]]+\]\s*$/, ''));
@@ -133,8 +88,9 @@ function identifiersFromTei(elements: readonly XmlObject[]): GrobidReferenceIden
 	}
 
 	let pointerUrl: string | null = null;
-	for (const pointer of descendantElements(elements, 'ptr')) {
-		pointerUrl = validHttpUrl(elementAttribute(pointer, 'target'));
+	for (const rawPointer of [...xmlValues(analytic?.ptr), ...xmlValues(biblStruct?.ptr)]) {
+		const target = xmlObject(rawPointer)?.target;
+		pointerUrl = validHttpUrl(typeof target === 'string' ? target : null);
 		if (pointerUrl) break;
 	}
 	doi ??= normalizeDoi(pointerUrl);
@@ -149,33 +105,33 @@ function identifiersFromTei(elements: readonly XmlObject[]): GrobidReferenceIden
 
 /** The uploaded-PDF paper gate uses only metadata extracted by GROBID itself. */
 export function parseGrobidPdfHeaderTei(tei: string): GrobidPdfHeader {
-	const elements = parseTei(tei);
-	let title: string | null = null;
-	for (const titleElement of descendantElements(elements, 'title')) {
-		if (
-			elementAttribute(titleElement, 'type')?.toLowerCase() !== 'main' &&
-			elementAttribute(titleElement, 'level')?.toLowerCase() !== 'a'
-		) {
-			continue;
-		}
-		const candidate = elementText(titleElement).slice(0, MAX_HEADER_TITLE_CHARS);
-		if (candidate) {
-			title = candidate;
-			break;
-		}
-	}
+	const parsed = xmlObject(teiParser.parse(tei));
+	const fileDesc = xmlObject(xmlObject(xmlObject(parsed?.TEI)?.teiHeader)?.fileDesc);
+	const titleNode = xmlValues(xmlObject(fileDesc?.titleStmt)?.title).find((value) => {
+		const title = xmlObject(value);
+		return title?.type?.toString().toLowerCase() === 'main' || title?.level?.toString().toLowerCase() === 'a';
+	});
+	const titleText = xmlText(titleNode);
+	const title = titleText ? titleText.slice(0, MAX_HEADER_TITLE_CHARS) : null;
+	const biblStruct = xmlObject(xmlObject(fileDesc?.sourceDesc)?.biblStruct);
+	const analytic = xmlObject(biblStruct?.analytic);
 
 	const authors: string[] = [];
 	const seenAuthors = new Set<string>();
-	for (const author of descendantElements(elements, 'author')) {
+	for (const rawAuthor of xmlValues(analytic?.author)) {
 		if (authors.length >= MAX_HEADER_AUTHORS) break;
-		const personName = descendantElements(author.children, 'persname').next().value;
-		const name = elementText(personName ?? author).slice(0, MAX_HEADER_NAME_CHARS);
+		const personName = xmlObject(xmlObject(rawAuthor)?.persName);
+		const name = ['forename', 'nameLink', 'surname', 'genName']
+			.flatMap((part) => xmlValues(personName?.[part]))
+			.map(xmlText)
+			.filter(Boolean)
+			.join(' ')
+			.slice(0, MAX_HEADER_NAME_CHARS);
 		const key = name.toLocaleLowerCase('en-US');
 		if (!name || seenAuthors.has(key)) continue;
 		seenAuthors.add(key);
 		authors.push(name);
 	}
 
-	return { ...identifiersFromTei(elements), authors, title };
+	return { ...identifiersFromHeader(biblStruct, analytic), authors, title };
 }

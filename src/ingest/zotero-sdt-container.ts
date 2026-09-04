@@ -4,14 +4,6 @@ import { ZOTERO_SDT_MAX_RESPONSE_BYTES } from './zotero-sdt.ts';
 
 const ZOTERO_SDT_PORT = 8080;
 const SOURCE_CROP_SCALE = 3;
-const MAX_SOURCE_CROPS = 64;
-const MAX_SOURCE_CROP_DESCRIPTOR_BYTES = 16 * 1024;
-
-export type PdfRenderArea = Readonly<{
-	id: string;
-	pageIndex: number;
-	rect: readonly [number, number, number, number];
-}>;
 
 export class ZoteroSdtContainer extends Container<CoreEnv> {
 	defaultPort = ZOTERO_SDT_PORT;
@@ -75,38 +67,30 @@ export class ZoteroSdtContainer extends Container<CoreEnv> {
 		return response;
 	}
 
-	async renderPdfAreas(input: ReadableStream<Uint8Array>, byteLength: number, areas: readonly PdfRenderArea[]): Promise<Response> {
+	async renderPdfArea(
+		input: ReadableStream<Uint8Array>,
+		byteLength: number,
+		pageIndex: number,
+		rect: readonly [number, number, number, number],
+	): Promise<Response> {
 		if (!input || typeof input.getReader !== 'function') throw new TypeError('Zotero SDT PDF input must be a readable byte stream');
 		if (!Number.isInteger(byteLength) || byteLength < 1 || byteLength > MAX_PDF_BYTES) {
 			throw new TypeError(`Zotero SDT PDF must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
-		if (!areas.length || areas.length > MAX_SOURCE_CROPS) throw new TypeError('Zotero SDT source crop batch size is invalid');
-		const ids = new Set<string>();
-		for (const area of areas) {
-			if (!/^\d+(?:\.\d+)*-p\d+$/u.test(area.id) || ids.has(area.id)) throw new TypeError('Zotero SDT source crop ID is invalid');
-			if (!Number.isInteger(area.pageIndex) || area.pageIndex < 0) throw new TypeError('Zotero SDT source crop page is invalid');
-			if (
-				area.rect.length !== 4 ||
-				area.rect.some((part) => !Number.isFinite(part)) ||
-				!(area.rect[2] > area.rect[0]) ||
-				!(area.rect[3] > area.rect[1])
-			) {
-				throw new TypeError('Zotero SDT source crop rectangle is invalid');
-			}
-			ids.add(area.id);
-		}
-		const descriptors = JSON.stringify(areas.map(({ id, pageIndex, rect }) => [id, pageIndex, ...rect]));
-		if (new TextEncoder().encode(descriptors).byteLength > MAX_SOURCE_CROP_DESCRIPTOR_BYTES) {
-			throw new TypeError('Zotero SDT source crop descriptors are too large');
+		if (!Number.isInteger(pageIndex) || pageIndex < 0) throw new TypeError('Zotero SDT source crop page is invalid');
+		if (rect.some((part) => !Number.isFinite(part)) || !(rect[2] > rect[0]) || !(rect[3] > rect[1])) {
+			throw new TypeError('Zotero SDT source crop rectangle is invalid');
 		}
 		await this.ensureReady(input);
-		return this.containerFetch('http://zotero-sdt/render-areas', {
+		const url = new URL('http://zotero-sdt/render-area');
+		url.searchParams.set('pageIndex', String(pageIndex));
+		url.searchParams.set('rect', rect.join(','));
+		url.searchParams.set('scale', String(SOURCE_CROP_SCALE));
+		return this.containerFetch(url, {
 			body: this.requestBody(input, byteLength),
 			headers: {
-				accept: 'application/vnd.newsence.pdf-crops',
+				accept: 'image/png',
 				'content-type': 'application/pdf',
-				'x-newsence-pdf-areas': descriptors,
-				'x-newsence-pdf-scale': String(SOURCE_CROP_SCALE),
 			},
 			method: 'POST',
 		});

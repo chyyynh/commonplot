@@ -12,8 +12,6 @@ RUN git clone --filter=blob:none --no-checkout https://github.com/zotero/documen
 RUN git fetch --depth=1 origin ${DOCUMENT_WORKER_COMMIT}
 RUN git checkout --detach ${DOCUMENT_WORKER_COMMIT}
 RUN git submodule update --init --recursive --depth=1
-COPY document-worker-batch-render.patch /tmp/document-worker-batch-render.patch
-RUN git apply /tmp/document-worker-batch-render.patch
 RUN pnpm install --ignore-scripts
 RUN pnpm exec webpack --mode production
 RUN bash scripts/build-assets
