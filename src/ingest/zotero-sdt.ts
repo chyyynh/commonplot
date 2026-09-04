@@ -1,6 +1,6 @@
 import { getFulltextFromStructuredText } from 'structured-document-text/src/fulltext.js';
 import { getPartBoundarySeparator, getPartChain, shouldDropHardHyphenAtPartBoundary } from 'structured-document-text/src/parts.js';
-import { isLeafBlock, refKey } from 'structured-document-text/src/range.js';
+import { getContentRangeBlockSpan, isLeafBlock, refKey } from 'structured-document-text/src/range.js';
 import type { LocalPdfSummary } from './platforms/pdf-fallback-policy.ts';
 
 const MAX_DOCUMENT_JSON_BYTES = 32 * 1024 * 1024;
@@ -570,12 +570,10 @@ function renderBlock(
 }
 
 function firstPageIdentifierText(document: StructuredPdfDocument): string | null {
-	const firstPage = document.catalog.pages[0];
-	const start = firstPage?.contentRange[0][0] ?? 0;
-	const end = firstPage?.contentRange[1][0] ?? Math.min(document.content.length, start + 20);
+	const span = getContentRangeBlockSpan(document.catalog.pages[0]?.contentRange, document.content.length);
 	const pageText = cleanText(
 		document.content
-			.slice(start, Math.min(document.content.length, end + 1))
+			.slice(span?.startIndex ?? 0, span?.endIndexExclusive ?? Math.min(document.content.length, 20))
 			.map(nodeText)
 			.join(' '),
 	);
