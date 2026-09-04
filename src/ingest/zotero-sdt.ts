@@ -13,7 +13,7 @@ import {
 	getPartChain,
 	shouldDropHardHyphenAtPartBoundary,
 } from 'structured-document-text/src/parts.js';
-import { getContentRangeBlockSpan, isContentBoundary, isLeafBlock, refKey } from 'structured-document-text/src/range.js';
+import { isContentBoundary, isLeafBlock, refKey } from 'structured-document-text/src/range.js';
 
 const MAX_DOCUMENT_NODES = 100_000;
 const MAX_DOCUMENT_TEXT_CHARS = 2_000_000;
@@ -499,13 +499,8 @@ function renderBlock(
 }
 
 function firstPageIdentifierText(document: StructuredPdfDocument): string | null {
-	const span = getContentRangeBlockSpan(document.catalog.pages[0]?.contentRange, document.content.length);
-	const pageText = cleanText(
-		document.content
-			.slice(span?.startIndex ?? 0, span?.endIndexExclusive ?? Math.min(document.content.length, 20))
-			.map(nodeText)
-			.join(' '),
-	);
+	const fulltextDocument = document as unknown as Parameters<typeof getFulltextFromStructuredText>[0];
+	const pageText = cleanText(getFulltextFromStructuredText(fulltextDocument, [0]));
 	const propertyText = Object.entries(document.metadata.source.properties ?? {})
 		.filter(([, value]) => typeof value === 'string')
 		.map(([key, value]) => `${key}: ${value}`)
