@@ -951,5 +951,3 @@ export function compileMarkdownTranslationArtifact(
 		content: translatedMarkdown,
 	};
 }
-
-export type MarkdownTranslationAlignment = Readonly<ReturnType<typeof compileMarkdownTranslationArtifact>['alignment']>;
