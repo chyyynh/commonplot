@@ -416,9 +416,8 @@ function createMarkdownTranslationTemplatePlan(segment: MarkdownTranslationSegme
 		let slotIndex = 0;
 		const flushSlot = (): void => {
 			if (!slot.length) return;
-			const hasMovableInline = slot.some((part) => typeof part !== 'string');
 			const literal = slot.every((part) => typeof part === 'string') ? slot.join('') : null;
-			if (!hasMovableInline && literal !== null && !isTranslatableProse(literal)) {
+			if (literal !== null && !isTranslatableProse(literal)) {
 				parts.push({ type: 'literal', value: literal });
 				slot = [];
 				return;
@@ -670,12 +669,7 @@ function hasSubstantialContainedProse(left: string, right: string): boolean {
 }
 
 function sequenceSourceText(template: ReturnType<typeof createMarkdownTranslationTemplate>, sequenceId: string): string {
-	return (template.sequences[sequenceId] ?? [])
-		.flatMap((partId) => {
-			const sourceText = template.texts[partId];
-			return sourceText === undefined ? [] : [sourceText];
-		})
-		.join('');
+	return (template.sequences[sequenceId] ?? []).map((partId) => template.texts[partId] ?? '').join('');
 }
 
 function assertNoNewCrossSequenceDuplication(
@@ -708,7 +702,6 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 	}
 	const protectedById = new Map(segment.protectedInlines.map((inline) => [protectedInlineId(inline), inline]));
 	const translatedSequenceText = new Map<string, string>();
-	let translatedText = '';
 
 	const compileSequence = (sequenceId: string): string => {
 		const partIds = template.sequences[sequenceId];
@@ -725,7 +718,6 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 			if (text !== undefined) {
 				compiled += text;
 				sequenceText += text;
-				translatedText += text;
 				continue;
 			}
 			const inline = protectedById.get(partId);
@@ -737,10 +729,7 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 			}
 			compiled += inline.kind === 'atom' ? inline.token : `${inline.open}${compileSourceSequence(partId)}${inline.close}`;
 		}
-		const sourceHasProse = partIds.some((partId) => {
-			const sourceText = template.texts[partId];
-			return sourceText !== undefined && isTranslatableProse(sourceText);
-		});
+		const sourceHasProse = partIds.some((partId) => isTranslatableProse(template.texts[partId] ?? ''));
 		if (sourceHasProse && !isTranslatableProse(sequenceText)) {
 			throw new MarkdownTranslationInvariantError(
 				'invalid-result',
@@ -773,7 +762,7 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 
 	const compiled = compileSourceSequence(ROOT_TRANSLATION_SEQUENCE);
 	assertNoNewCrossSequenceDuplication(segment, template, translatedSequenceText);
-	if (!translatedText.trim() || compiled !== compiled.trim()) {
+	if (compiled !== compiled.trim()) {
 		throw new MarkdownTranslationInvariantError('invalid-result', `Translated segment ${segment.id} must contain safe, trimmed prose`);
 	}
 	return compiled;

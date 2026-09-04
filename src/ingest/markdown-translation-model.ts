@@ -75,8 +75,7 @@ function splitSegmentsInHalf(segments: readonly MarkdownTranslationSegment[]): r
 	let consumedCharacters = 0;
 	let splitIndex = 1;
 	for (let index = 0; index < segments.length - 1; index++) {
-		const segment = segments[index];
-		if (!segment) break;
+		const segment = segments[index]!;
 		consumedCharacters += segment.text.length + (segment.context?.length ?? 0);
 		splitIndex = index + 1;
 		if (consumedCharacters >= targetCharacters) break;
@@ -198,7 +197,7 @@ export async function translateMarkdownBatchToZhHant(
 				throw error;
 			}
 		}
-		return validateMarkdownBatchTranslations(batch, translated);
+		return translated;
 	} catch (error) {
 		console.error({
 			tag: 'RESOURCE_TRANSLATION',
