@@ -14,12 +14,7 @@ const REFERENCE_SDT_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: '
 
 type CrossrefMetadataUpdate = NonNullable<Awaited<ReturnType<typeof resolveCrossrefReference>>> & Readonly<{ ordinal: number }>;
 
-async function loadUploadedPdfSource(
-	db: NodePgDatabase,
-	resourceId: string,
-	fileResourceId: string,
-	referenceRevision: string,
-): Promise<Readonly<{ contentHash: string; storageKey: string }>> {
+async function loadUploadedPdfSource(db: NodePgDatabase, resourceId: string, fileResourceId: string, referenceRevision: string) {
 	const result = await db.execute<{ content_hash: string | null; storage_key: string }>(sql`
 		SELECT blob.content_hash, blob.storage_key
 		FROM resources blob
@@ -40,7 +35,6 @@ async function loadUploadedPdfSource(
 		  AND paper.scope = 'corpus'
 		  AND paper.kind = 'paper'
 		  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${referenceRevision}
-		LIMIT 1
 	`);
 	const source = result.rows[0];
 	if (!source) throw new NonRetryableError('Uploaded PDF is no longer attached to this paper revision');
@@ -66,7 +60,6 @@ async function replaceStoredCitationData(
 		  AND resource.scope = 'corpus'
 		  AND resource.kind = 'paper'
 		  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${referenceRevision}
-		LIMIT 1
 	`);
 	const paper = source.rows[0];
 	if (!paper) throw new NonRetryableError('Paper revision changed before structured citations could be stored');
@@ -146,7 +139,6 @@ async function replaceStoredCitationData(
 	return {
 		alignedMentionCount: mentions.filter(({ contentStart }) => contentStart !== null).length,
 		mentionCount: mentions.length,
-		referenceCount: structured.references.length,
 		referenceTexts: structured.references.map(({ text }) => text),
 	};
 }
@@ -180,7 +172,7 @@ async function resolveCrossrefUpdates(step: WorkflowStep, references: readonly s
 	const updates: CrossrefMetadataUpdate[] = [];
 	for (let offset = 0; offset < references.length; offset += CROSSREF_BATCH_SIZE) {
 		const batch = references.slice(offset, offset + CROSSREF_BATCH_SIZE);
-		let resolutions: Array<Awaited<ReturnType<typeof resolveCrossrefReference>>>;
+		let resolutions: Array<Awaited<ReturnType<typeof resolveCrossrefReference>>> = [];
 		try {
 			resolutions = await step.do(
 				`resolve-crossref-reference-batch-v1-${offset / CROSSREF_BATCH_SIZE}`,
@@ -195,7 +187,6 @@ async function resolveCrossrefUpdates(step: WorkflowStep, references: readonly s
 				reference_count: batch.length,
 				error: error instanceof Error ? error.message : String(error),
 			});
-			resolutions = [];
 		}
 		for (const [index, resolution] of resolutions.entries()) {
 			if (resolution) updates.push({ ...resolution, ordinal: offset + index + 1 });
@@ -232,10 +223,9 @@ export async function enrichUploadedPdfReferences(
 			tag: 'RESOURCE_REFERENCES',
 			event: 'reference_enrichment_completed',
 			resource_id: input.resourceId,
-			stored_reference_count: stored.referenceCount,
+			stored_reference_count: stored.referenceTexts.length,
 			stored_mention_count: stored.mentionCount,
 			aligned_mention_count: stored.alignedMentionCount,
-			crossref_attempted_count: stored.referenceTexts.length,
 			crossref_enriched_count: enrichedCount,
 		});
 	} catch (error) {

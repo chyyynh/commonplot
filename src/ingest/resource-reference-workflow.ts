@@ -18,7 +18,7 @@ export async function enqueueResourceReferenceEnrichment(
 	resourceId: string,
 	referenceRevision: string,
 	uploadedPdfResourceId: string,
-): Promise<string> {
+) {
 	const payload = {
 		referenceRevision,
 		resourceId,
@@ -28,7 +28,6 @@ export async function enqueueResourceReferenceEnrichment(
 		[RESOURCE_REFERENCE_WORKFLOW_REVISION, payload.resourceId, payload.referenceRevision, uploadedPdfResourceId, 'idempotent'].join('\n'),
 	)}`;
 	await env.RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW.createBatch([{ id, params: payload }]);
-	return id;
 }
 
 /** Reference enrichment stays off the critical path after the base PDF and its SDT sidecar are persisted. */
