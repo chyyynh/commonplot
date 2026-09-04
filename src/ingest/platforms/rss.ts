@@ -1,6 +1,7 @@
 import { type FeedEntry as ExtractedFeedEntry, extractFromJson, extractFromXml, type FeedData } from '@extractus/feed-extractor';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { limitByteStream } from '../../shared/response';
 import { resolvePlatformResourceUrl } from '../acquisition';
 import { markSourcesScraped, recordSourceFailure } from '../source-monitor-state';
 import { enqueueSourceDrafts } from '../workflow';
@@ -104,16 +105,7 @@ async function loadFeed(feedUrl: string): Promise<{
 
 	let parsed: FeedData;
 	try {
-		let feedBytes = 0;
-		const body = response.body?.pipeThrough(
-			new TransformStream<Uint8Array, Uint8Array>({
-				transform(chunk, controller) {
-					feedBytes += chunk.byteLength;
-					if (feedBytes > MAX_FEED_BYTES) throw new Error(`Feed exceeded ${MAX_FEED_BYTES} bytes`);
-					controller.enqueue(chunk);
-				},
-			}),
-		);
+		const body = response.body && limitByteStream(response.body, MAX_FEED_BYTES, () => new Error(`Feed exceeded ${MAX_FEED_BYTES} bytes`));
 		const content = await new Response(body).text();
 		const parserOptions = {
 			baseUrl: effectiveUrl.toString(),

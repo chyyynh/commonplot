@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
 import { canonicalizeResourceLang, type ResourceCreator, ResourceCreatorsSchema } from '../../shared/resource';
+import { limitByteStream } from '../../shared/response';
 import { resolveCrossrefPaperCandidate } from '../crossref';
 import { GROBID_CONTAINER_NAME } from '../grobid-container';
 import { type GrobidPdfHeader, grobidPaperIdentifierText } from '../grobid-tei';
@@ -335,17 +336,8 @@ export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response
 		await response.body?.cancel('Fetched PDF size is outside the supported range');
 		throw new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`);
 	}
-	let pdfBytes = 0;
-	const body = response.body?.pipeThrough(
-		new TransformStream<Uint8Array, Uint8Array>({
-			transform(chunk, controller) {
-				pdfBytes += chunk.byteLength;
-				if (pdfBytes > MAX_PDF_BYTES) throw new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`);
-				controller.enqueue(chunk);
-			},
-		}),
-	);
-	if (!body) throw new NonRetryableError('Fetched PDF response body is empty');
+	if (!response.body) throw new NonRetryableError('Fetched PDF response body is empty');
+	const body = limitByteStream(response.body, MAX_PDF_BYTES, () => new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`));
 	const attempt = await parsePdfArtifactStream(env, body, null, 'Fetched PDF');
 	const parsed = 'schemaVersion' in attempt ? localPdfResult(normalizeStructuredPdf(attempt), 'Fetched PDF') : attempt;
 	const encodedName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) ?? '';

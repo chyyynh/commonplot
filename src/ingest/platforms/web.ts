@@ -6,6 +6,7 @@ import { toMdast } from 'hast-util-to-mdast';
 import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
+import { limitByteStream } from '../../shared/response';
 import { type GenericAcquiredMaterial, literalCreator, type PlatformResourceUrl } from './materialize';
 import {
 	acquireFetchedPdfResponse,
@@ -206,18 +207,13 @@ async function acquireWebResource(
 		throw new NonRetryableError(`Unsupported response content type: ${contentType}`);
 	}
 
-	let htmlBytes = 0;
-	const body = response.body?.pipeThrough(
-		new TransformStream<Uint8Array, Uint8Array>({
-			transform(chunk, controller) {
-				htmlBytes += chunk.byteLength;
-				if (htmlBytes > GENERIC_HTML_MAX_BYTES) {
-					throw new NonRetryableError(`HTML response exceeded ${GENERIC_HTML_MAX_BYTES} bytes`);
-				}
-				controller.enqueue(chunk);
-			},
-		}),
-	);
+	const body =
+		response.body &&
+		limitByteStream(
+			response.body,
+			GENERIC_HTML_MAX_BYTES,
+			() => new NonRetryableError(`HTML response exceeded ${GENERIC_HTML_MAX_BYTES} bytes`),
+		);
 	const html = await new Response(body).text();
 	return { ...(await acquireHtmlArticle(html, finalUrl)), canonicalUrl: finalUrl };
 }
