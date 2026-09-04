@@ -138,20 +138,6 @@ class DocumentWorkerClient {
 		return job;
 	}
 
-	parse(pdfBuffer, sourceHash) {
-		return this.request('getStructuredDocumentText', pdfBuffer, {
-			contentType: 'application/pdf',
-			sourceHash,
-		});
-	}
-
-	inspect(pdfBuffer) {
-		return this.request('pdf.getFulltext', pdfBuffer, { maxPages: 1 });
-	}
-
-	renderArea(pdfBuffer, pageIndex, rect, scale) {
-		return this.request('pdf.renderArea', pdfBuffer, { pageIndex, rect, scale });
-	}
 }
 
 function toError(value) {
@@ -190,22 +176,6 @@ function sendJson(response, status, body) {
 	response.end(json);
 }
 
-function renderAreaInput(url) {
-	const pageIndex = Number(url.searchParams.get('pageIndex'));
-	const rect = (url.searchParams.get('rect') ?? '').split(',').map(Number);
-	if (
-		!Number.isInteger(pageIndex) ||
-		pageIndex < 0 ||
-		rect.length !== 4 ||
-		rect.some((part) => !Number.isFinite(part)) ||
-		!(rect[2] > rect[0]) ||
-		!(rect[3] > rect[1])
-	) {
-		return null;
-	}
-	return { pageIndex, rect };
-}
-
 const client = new DocumentWorkerClient();
 const server = createServer(async (request, response) => {
 	try {
@@ -219,10 +189,20 @@ const server = createServer(async (request, response) => {
 		const pdfBuffer = await readBody(request);
 		if (!pdfBuffer.length) return sendJson(response, 400, { error: 'PDF body is empty.' });
 		if (url.pathname === '/render-area') {
-			const input = renderAreaInput(url);
-			if (!input) return sendJson(response, 400, { error: 'Invalid PDF render area.' });
+			const pageIndex = Number(url.searchParams.get('pageIndex'));
+			const rect = (url.searchParams.get('rect') ?? '').split(',').map(Number);
+			if (
+				!Number.isInteger(pageIndex) ||
+				pageIndex < 0 ||
+				rect.length !== 4 ||
+				rect.some((part) => !Number.isFinite(part)) ||
+				!(rect[2] > rect[0]) ||
+				!(rect[3] > rect[1])
+			) {
+				return sendJson(response, 400, { error: 'Invalid PDF render area.' });
+			}
 			try {
-				const result = await client.renderArea(pdfBuffer, input.pageIndex, input.rect, SOURCE_CROP_SCALE);
+				const result = await client.request('pdf.renderArea', pdfBuffer, { pageIndex, rect, scale: SOURCE_CROP_SCALE });
 				if (!result?.buf) return sendJson(response, 422, { error: 'PDF render area is empty.' });
 				const png = Buffer.from(result.buf);
 				if (!png.length || png.length > MAX_CROP_BYTES || !png.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
@@ -243,7 +223,10 @@ const server = createServer(async (request, response) => {
 		}
 		const sourceHash = createHash('md5').update(pdfBuffer).digest('hex');
 		try {
-			const result = await client.parse(pdfBuffer, sourceHash);
+			const result = await client.request('getStructuredDocumentText', pdfBuffer, {
+				contentType: 'application/pdf',
+				sourceHash,
+			});
 			const reader = await openStructuredDocumentTextPack(result.buf, {
 				inflate: (bytes) => new Uint8Array(inflateRawSync(bytes)),
 			});
@@ -263,7 +246,7 @@ const server = createServer(async (request, response) => {
 		} catch (parseError) {
 			let totalPages = null;
 			try {
-				const inspection = await client.inspect(pdfBuffer);
+				const inspection = await client.request('pdf.getFulltext', pdfBuffer, { maxPages: 1 });
 				if (Number.isInteger(inspection?.totalPages) && inspection.totalPages > 0) totalPages = inspection.totalPages;
 			} catch (inspectionError) {
 				console.warn({
