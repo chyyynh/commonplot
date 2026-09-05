@@ -212,33 +212,23 @@ function normalizedCustomMetadata(
 function canonicalSearchInstanceConfigMatches(info: AiSearchInstanceInfo, index: SearchIndexName): boolean {
 	const expected = CANONICAL_SEARCH_CONFIGS[index];
 	if (
+		info.cache !== expected.cache ||
 		info.chunk !== expected.chunk ||
+		info.chunk_size !== expected.chunk_size ||
+		info.chunk_overlap !== expected.chunk_overlap ||
 		info.embedding_model !== expected.embedding_model ||
-		info.index_method?.vector !== true ||
+		info.index_method?.vector !== expected.index_method.vector ||
+		info.index_method?.keyword !== expected.index_method.keyword ||
 		info.max_num_results !== expected.max_num_results ||
+		info.score_threshold !== expected.score_threshold ||
 		JSON.stringify(normalizedCustomMetadata(info.custom_metadata)) !== JSON.stringify(normalizedCustomMetadata(CANONICAL_CUSTOM_METADATA))
 	) {
 		return false;
 	}
-	if (index === 'related') {
-		const related = CANONICAL_SEARCH_CONFIGS.related;
-		return (
-			info.cache === related.cache &&
-			info.chunk_size === related.chunk_size &&
-			info.chunk_overlap === related.chunk_overlap &&
-			info.index_method.keyword === false &&
-			info.score_threshold === related.score_threshold
-		);
-	}
 	const corpus = CANONICAL_SEARCH_CONFIGS.corpus;
 	return (
-		info.cache === corpus.cache &&
-		info.chunk_size === corpus.chunk_size &&
-		info.chunk_overlap === corpus.chunk_overlap &&
-		info.index_method.keyword === true &&
-		info.fusion_method === corpus.fusion_method &&
-		info.indexing_options?.keyword_tokenizer === corpus.indexing_options.keyword_tokenizer &&
-		info.score_threshold === corpus.score_threshold
+		index === 'related' ||
+		(info.fusion_method === corpus.fusion_method && info.indexing_options?.keyword_tokenizer === corpus.indexing_options.keyword_tokenizer)
 	);
 }
 
@@ -279,7 +269,7 @@ async function observeSearchIndex(
 	};
 }
 
-async function retryFailedSearchItems(env: CoreEnv, instance: AiSearchInstance): Promise<number> {
+async function retryFailedSearchItems(instance: AiSearchInstance): Promise<number> {
 	const listed = await instance.items.list({
 		metadata_filter: CORPUS_FOLDER_FILTER,
 		page: 1,
@@ -287,12 +277,11 @@ async function retryFailedSearchItems(env: CoreEnv, instance: AiSearchInstance):
 		source: 'builtin',
 		status: 'error',
 	});
-	const resourceIds = [
-		...new Set(listed.result.map((item) => resourceIdFromAiSearchItemKey(item.key)).filter((id): id is string => id !== null)),
-	];
-	if (!resourceIds.length) return 0;
-	await uploadCorpusIds(env, await connectCoreDb(env), resourceIds);
-	return resourceIds.length;
+	const items = listed.result.filter((item) => item.source_id === 'builtin' && resourceIdFromAiSearchItemKey(item.key) !== null);
+	for (let offset = 0; offset < items.length; offset += REINDEX_AI_SEARCH_CONCURRENCY) {
+		await Promise.all(items.slice(offset, offset + REINDEX_AI_SEARCH_CONCURRENCY).map((item) => instance.items.get(item.id).sync()));
+	}
+	return items.length;
 }
 
 async function waitForSearchIndex(env: CoreEnv, instance: AiSearchInstance, index: SearchIndexName, step: WorkflowStep) {
@@ -302,9 +291,7 @@ async function waitForSearchIndex(env: CoreEnv, instance: AiSearchInstance, inde
 			observeSearchIndex(instance, index, await connectCoreDb(env)),
 		);
 		if (last.error > 0) {
-			const retried = await step.do(`retry-${index}-search-errors-${attempt}`, BATCH_STEP_OPTIONS, () =>
-				retryFailedSearchItems(env, instance),
-			);
+			const retried = await step.do(`retry-${index}-search-errors-${attempt}`, BATCH_STEP_OPTIONS, () => retryFailedSearchItems(instance));
 			if (retried === 0) throw new Error(`${index} AI Search reported errors without retryable Resource items: ${JSON.stringify(last)}`);
 		}
 		if (last.skipped > 0 || last.outdated > 0) {
@@ -312,6 +299,7 @@ async function waitForSearchIndex(env: CoreEnv, instance: AiSearchInstance, inde
 		}
 		if (
 			last.configReady &&
+			last.error === 0 &&
 			last.queued === 0 &&
 			last.running === 0 &&
 			last.completed === last.expectedItems &&
