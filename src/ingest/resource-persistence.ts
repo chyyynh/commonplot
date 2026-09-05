@@ -45,8 +45,6 @@ export function prepareResolvedResource(
 	analysis: ResourceAnalysis,
 	hostedImages: readonly HostedResourceImage[],
 ) {
-	const acquiredOriginalLang = canonicalizeResourceLang(resource.originalLang);
-	const originalLang = acquiredOriginalLang === 'und' ? canonicalizeResourceLang(analysis.originalLang) : acquiredOriginalLang;
 	const title = resource.title.trim();
 	const content = resource.content.trim();
 	const sourceName = resource.source.trim();
@@ -77,10 +75,6 @@ export function prepareResolvedResource(
 		throw new TypeError('YouTube data requires a YouTube video Resource');
 	}
 	const url = httpUrl(resource.url, 'Resource URL');
-	const normalizedUrl = httpUrl(resource.normalizedUrl ?? resource.url, 'Normalized Resource URL');
-	if ((url === null) !== (normalizedUrl === null)) {
-		throw new TypeError('Resource URL and normalized URL must either both be present or both be null');
-	}
 	const publishedDate = resource.publishedDate ? new Date(resource.publishedDate) : null;
 	if (publishedDate && Number.isNaN(publishedDate.getTime())) throw new TypeError('Resource publication date is invalid');
 	const subject = resource.subject
@@ -96,15 +90,15 @@ export function prepareResolvedResource(
 		identifiers,
 		keywords: [...analysis.keywords],
 		kindMetadata: media.kindMetadata,
-		normalizedUrl,
+		normalizedUrl: url,
 		ogImageHeight: media.ogImageHeight,
 		ogImageUrl: media.ogImageUrl,
 		ogImageWidth: media.ogImageWidth,
-		originalLang,
+		originalLang: canonicalizeResourceLang(analysis.originalLang),
 		publishedDate,
 		sourceName,
 		subject,
-		summary: resource.summary,
+		summary: analysis.summary,
 		tags: [...analysis.tags],
 		title,
 		url,

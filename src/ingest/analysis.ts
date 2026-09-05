@@ -16,9 +16,9 @@ const ResourceAnalysisSchema = z.object({
 		.regex(/^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/),
 });
 
-export type ResourceAnalysis = z.infer<typeof ResourceAnalysisSchema>;
+export type ResourceAnalysis = z.infer<typeof ResourceAnalysisSchema> & { summary: string };
 
-const RESOURCE_ANALYSIS_SYSTEM_PROMPT = `你是專業的新聞分類分析師。請只輸出符合 schema 的分類資料。
+const RESOURCE_ANALYSIS_SYSTEM_PROMPT = `你是專業的新聞分類分析師。請只輸出符合 schema 的資料。
 
 任務：
 - 產生 tags、keywords
@@ -29,6 +29,12 @@ const RESOURCE_ANALYSIS_SYSTEM_PROMPT = `你是專業的新聞分類分析師。
 - 繁體中文使用 zh-Hant，簡體中文使用 zh-Hans
 - 英文使用 en，日文使用 ja；其他語言使用對應的 canonical language tag
 - 多語內容選擇佔比最高的主要語言
+
+摘要規則：
+- 已提供來源摘要時，summary 回傳 null；程式會直接保留來源摘要
+- 沒有來源摘要時，以指定原文語言撰寫 1–2 句摘要；原文語言為 und 時使用你判斷的主要語言
+- 只產生一種語言，保留歸屬、語氣、限制與不確定性，不加入正文沒有的資訊
+- 討論串摘要描述討論內容；短貼文摘要長度應與原文相稱
 
 標籤規則：
 - AI相關: AI, MachineLearning, DeepLearning, NLP, ComputerVision, LLM, GenerativeAI
@@ -44,12 +50,15 @@ export async function analyzeResource(
 	processingId: string,
 ): Promise<ResourceAnalysis> {
 	console.info({ tag: 'AI', msg: 'Analyzing', title: resource.title.substring(0, 80) });
-	const summaryLine = resource.summary?.trim() ? `\n摘要: ${resource.summary.trim()}` : '';
+	const sourceSummary = resource.summary?.trim() || null;
+	const originalLang = canonicalizeResourceLang(resource.originalLang);
 	const prompt = `文章資訊:
 標題: ${resource.title}
 來源: ${resource.source.trim()}
 資源種類: ${resource.kind}
-資源平台: ${resource.resourcePlatform ?? 'none'}${summaryLine}
+資源平台: ${resource.resourcePlatform ?? 'none'}
+原文語言: ${originalLang}
+來源摘要: ${sourceSummary ?? '未提供'}
 內容:
 ${resource.content.trim().substring(0, ANALYSIS_CONTENT_MAX_LENGTH)}`;
 	const { finishReason, output: analysis } = await generateText({
@@ -69,16 +78,22 @@ ${resource.content.trim().substring(0, ANALYSIS_CONTENT_MAX_LENGTH)}`;
 		}),
 		prompt,
 		system: RESOURCE_ANALYSIS_SYSTEM_PROMPT,
-		output: Output.object({ name: 'resource_analysis', schema: ResourceAnalysisSchema }),
-		maxOutputTokens: 300,
+		output: Output.object({
+			name: 'resource_analysis',
+			schema: ResourceAnalysisSchema.extend({ summary: sourceSummary ? z.null() : z.string().trim().min(1) }),
+		}),
+		maxOutputTokens: sourceSummary ? 300 : 1000,
 		temperature: 0.3,
 		reasoning: 'none',
 		maxRetries: 0,
 	});
 	if (finishReason === 'length') throw new Error('Resource analysis hit its output token cap');
+	const summary = sourceSummary ?? analysis.summary;
+	if (!summary) throw new Error('Resource analysis requires an original summary');
 	return {
 		tags: analysis.tags.slice(0, 5),
 		keywords: keywordHints.length ? [...keywordHints] : analysis.keywords.slice(0, 8),
-		originalLang: canonicalizeResourceLang(analysis.originalLang),
+		originalLang: originalLang === 'und' ? canonicalizeResourceLang(analysis.originalLang) : originalLang,
+		summary,
 	};
 }

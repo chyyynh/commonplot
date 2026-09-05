@@ -13,13 +13,14 @@ registerHooks({
 	},
 });
 
-const [resource, paper, hackerNews, lessWrong, twitter, youtube] = await Promise.all([
+const [resource, paper, hackerNews, lessWrong, twitter, youtube, { analyzeResource }] = await Promise.all([
 	import('../src/shared/resource.ts'),
 	import('../src/shared/paper-identity.ts'),
 	import('../src/ingest/platforms/hackernews.ts'),
 	import('../src/ingest/platforms/lesswrong.ts'),
 	import('../src/ingest/platforms/twitter-acquisition.ts'),
 	import('../src/ingest/platforms/youtube.ts'),
+	import('../src/ingest/analysis.ts'),
 ]);
 
 function detectResourceUrl(value) {
@@ -126,6 +127,34 @@ assert.deepEqual(
 	],
 );
 assert.equal(resource.ResourceIdentifiersSchema.safeParse([{ preferred: true, scheme: 'youtube', value: 'too-short' }]).success, false);
+
+const generatedSummary = 'A preliminary evaluation found improved accuracy on two datasets.';
+for (const [summary, originalLang, detectedLang, expectedLang] of [
+	['Existing source abstract, including its limitations.', 'en', 'ja', 'en'],
+	[null, 'und', 'en', 'en'],
+	['', 'zh-Hant', 'zh-Hant', 'zh-Hant'],
+	['   ', 'und', 'ja', 'ja'],
+]) {
+	const input = { title: 'Evaluation', source: 'Example', kind: 'blog', content: generatedSummary, summary, originalLang };
+	const output = {
+		tags: ['Research'],
+		keywords: ['evaluation'],
+		originalLang: detectedLang,
+		summary: summary?.trim() ? null : generatedSummary,
+	};
+	const env = {
+		AI: { run: async () => ({ response: JSON.stringify(output), finish_reason: 'stop' }) },
+		AI_GATEWAY_ENVIRONMENT: 'development',
+	};
+	const analysis = await analyzeResource(input, ['source-keyword'], env, 'analysis-contract');
+	assert.equal(analysis.summary, summary?.trim() || generatedSummary);
+	assert.equal(analysis.originalLang, expectedLang);
+	assert.deepEqual(analysis.keywords, ['source-keyword']);
+	if (!summary?.trim()) {
+		output.summary = '   ';
+		await assert.rejects(analyzeResource(input, [], env, 'analysis-contract'));
+	}
+}
 
 console.info({
 	event: 'resource_contract_smoke_passed',

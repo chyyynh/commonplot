@@ -1,14 +1,13 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
-import { RESOURCE_TYPES } from '../../shared/resource';
 import {
+	type AcquiredResource,
 	literalCreator,
-	materializePlatformResource,
-	type PlatformAcquiredMaterial,
-	type ResolvedPlatformResource,
+	RESOURCE_TYPES,
 	type ResourceAcquisitionHints,
-} from './materialize';
+	resolveResourceHints,
+} from '../../shared/resource';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
 
@@ -54,7 +53,7 @@ type LessWrongGraphqlResponse = {
 	errors?: Array<{ message?: string }>;
 };
 
-async function scrapeLessWrong(postId: string): Promise<PlatformAcquiredMaterial<'lesswrong'>> {
+async function scrapeLessWrong(postId: string) {
 	const response = await fetch(LESSWRONG_GRAPHQL_URL, {
 		method: 'POST',
 		headers: {
@@ -78,8 +77,6 @@ async function scrapeLessWrong(postId: string): Promise<PlatformAcquiredMaterial
 	if (!markdown) throw new NonRetryableError(`LessWrong post ${postId} has no Markdown content`);
 	const author = post.user?.displayName?.trim() || post.user?.username?.trim() || null;
 	return {
-		resourcePlatform: 'lesswrong',
-		platformId: postId,
 		fileType: null,
 		title,
 		markdown,
@@ -96,18 +93,26 @@ async function scrapeLessWrong(postId: string): Promise<PlatformAcquiredMaterial
 	};
 }
 
-export async function stageLessWrongAcquisition(
-	step: WorkflowStep,
-	postId: string,
-	hints: ResourceAcquisitionHints,
-): Promise<ResolvedPlatformResource<'lesswrong'>> {
+export async function stageLessWrongAcquisition(step: WorkflowStep, postId: string, hints: ResourceAcquisitionHints) {
 	const contentStream = await step.do(
 		'acquire-lesswrong-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await scrapeLessWrong(postId)).body!,
 	);
-	return materializePlatformResource(await new Response(contentStream).json<PlatformAcquiredMaterial<'lesswrong'>>(), hints, {
+	const acquired = await new Response(contentStream).json<Awaited<ReturnType<typeof scrapeLessWrong>>>();
+	return {
 		kind: 'blog',
+		resourcePlatform: 'lesswrong',
+		resourceIdentifiers: [{ preferred: true, scheme: 'lesswrong', value: postId }],
 		url: `https://lesswrong.com/posts/${postId}`,
-	});
+		title: acquired.title.trim(),
+		content: acquired.markdown,
+		source: acquired.source,
+		...resolveResourceHints(acquired, hints),
+		creators: acquired.creators,
+		kindMetadata: acquired.kindMetadata,
+		fileType: acquired.fileType,
+		previewImageUrl: acquired.previewImageUrl?.trim() || null,
+		subject: null,
+	} satisfies AcquiredResource;
 }

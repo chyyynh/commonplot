@@ -6,8 +6,16 @@ import { toMdast } from 'hast-util-to-mdast';
 import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
+import {
+	type AcquiredResource,
+	literalCreator,
+	type ResourceAcquisitionHints,
+	type ResourceCreator,
+	type ResourceKindMetadata,
+	resolveResourceHints,
+} from '../../shared/resource';
 import { limitByteStream } from '../../shared/response';
-import { type GenericAcquiredMaterial, literalCreator, type PlatformResourceUrl } from './materialize';
+import type { PlatformResourceUrl } from '../acquisition';
 import {
 	acquireFetchedPdfResponse,
 	completeFetchedPdfAcquisition,
@@ -15,6 +23,41 @@ import {
 	PDF_MIME,
 	type PdfAcquisitionDraft,
 } from './pdf';
+
+export type WebAcquiredContent = {
+	resourcePlatform: null;
+	canonicalUrl?: string;
+	kind?: never;
+	fileType: string | null;
+	title: string;
+	markdown: string;
+	previewImageUrl?: string | null;
+	source: string;
+	originalLang: string | null;
+	publishedDate: string | null;
+	summary: string | null;
+	creators: ResourceCreator[];
+	kindMetadata: ResourceKindMetadata;
+	paperIdentifierText?: string | null;
+};
+
+export function webResource(content: WebAcquiredContent, hints: ResourceAcquisitionHints, url: string) {
+	return {
+		kind: 'blog',
+		resourcePlatform: null,
+		resourceIdentifiers: [],
+		url: content.canonicalUrl?.trim() || url,
+		title: content.title.trim(),
+		content: content.markdown,
+		source: content.source,
+		...resolveResourceHints(content, hints),
+		creators: content.creators,
+		kindMetadata: content.kindMetadata,
+		fileType: content.fileType,
+		previewImageUrl: content.previewImageUrl?.trim() || null,
+		subject: null,
+	} satisfies AcquiredResource;
+}
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
@@ -86,7 +129,7 @@ addTransformations({
 	},
 });
 
-async function acquireHtmlArticle(html: string, url: string): Promise<GenericAcquiredMaterial> {
+async function acquireHtmlArticle(html: string, url: string): Promise<WebAcquiredContent> {
 	const article = await extractFromHtml(html, url, {
 		contentLengthThreshold: MIN_ARTICLE_CONTENT_CHARS,
 		descriptionLengthThreshold: 0,
@@ -127,7 +170,7 @@ async function acquireHtmlArticle(html: string, url: string): Promise<GenericAcq
 }
 
 type PlatformResolution = { platform: PlatformResourceUrl };
-type WebAcquisition = GenericAcquiredMaterial | PdfAcquisitionDraft | PlatformResolution;
+type WebAcquisition = WebAcquiredContent | PdfAcquisitionDraft | PlatformResolution;
 
 async function acquireWebResource(
 	env: CoreEnv,
@@ -208,7 +251,7 @@ export async function stageWebAcquisition(
 		},
 	);
 	if ('platform' in result) return result;
-	const acquired = await new Response(result).json<GenericAcquiredMaterial | PdfAcquisitionDraft>();
+	const acquired = await new Response(result).json<WebAcquiredContent | PdfAcquisitionDraft>();
 	return acquired.kind === 'local-pdf'
 		? completeFetchedPdfAcquisition(env, step, {
 				acquisition: acquired,

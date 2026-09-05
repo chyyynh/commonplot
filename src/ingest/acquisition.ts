@@ -1,18 +1,15 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { type PaperIdentifier, paperIdentifiersFromIdentity, resolveExactPaperInput } from '../shared/paper-identity';
+import type { ResourceAcquisitionHints, ResourcePlatform, ResourceSubjectIdentity } from '../shared/resource';
 import { parseHackerNewsResourceUrl, stageHackerNewsAcquisition } from './platforms/hackernews';
 import { parseLessWrongResourceUrl, stageLessWrongAcquisition } from './platforms/lesswrong';
-import type {
-	PlatformResourceUrl,
-	ResolvedPlatformlessResource,
-	ResolvedResourceSubjectIdentity,
-	ResourceAcquisitionHints,
-} from './platforms/materialize';
-import { stagePaperProcessing } from './platforms/paper';
-import { type PaidPdfFallbackGrant, stageStoredPdfAcquisition } from './platforms/pdf';
+import { stagePaperResolution } from './platforms/paper';
+import { type PaidPdfFallbackGrant, PDF_MIME, pdfResource, stageStoredPdfAcquisition } from './platforms/pdf';
 import { parseTwitterResourceUrl, stageTwitterAcquisition } from './platforms/twitter-acquisition';
-import { canonicalizeWebResourceUrl, stageWebAcquisition } from './platforms/web';
+import { canonicalizeWebResourceUrl, stageWebAcquisition, webResource } from './platforms/web';
 import { parseYouTubeResourceUrl, stageYouTubeAcquisition } from './platforms/youtube';
+
+export type PlatformResourceUrl = { resourcePlatform: ResourcePlatform; platformId: string; canonicalUrl: string };
 
 export function resolvePlatformResourceUrl(url: URL): PlatformResourceUrl | null {
 	const hostname = url.hostname.toLowerCase();
@@ -27,7 +24,7 @@ export function resolvePlatformResourceUrl(url: URL): PlatformResourceUrl | null
 	return null;
 }
 
-function resolveResourceSubject(value: string | null | undefined): ResolvedResourceSubjectIdentity | null {
+function resolveResourceSubject(value: string | null | undefined): ResourceSubjectIdentity | null {
 	const url = value?.trim() ? URL.parse(value) : null;
 	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null;
 
@@ -60,7 +57,7 @@ export async function stageUrlAcquisition(
 	if (!detected) {
 		const web = await stageWebAcquisition(env, step, input, resolvePlatformResourceUrl);
 		if (!('platform' in web)) {
-			return stagePaperProcessing(env, step, {
+			const paper = await stagePaperResolution(env, step, {
 				acquiredContent: web,
 				hints: input.hints,
 				processingId: input.processingId,
@@ -68,6 +65,7 @@ export async function stageUrlAcquisition(
 				sourceUrl: input.url,
 				allowCitoidLookup: input.allowCitoidLookup,
 			});
+			return paper ?? (web.fileType === PDF_MIME ? pdfResource(web, input.hints, input.url) : webResource(web, input.hints, input.url));
 		}
 		detected = web.platform;
 	}
@@ -106,9 +104,9 @@ export async function stageStoredResourceAcquisition(
 		paidPdfFallback?: PaidPdfFallbackGrant;
 		resourceId: string;
 	}>,
-): Promise<ResolvedPlatformlessResource> {
+) {
 	const acquired = await stageStoredPdfAcquisition(env, step, target);
-	return stagePaperProcessing(env, step, {
+	const paper = await stagePaperResolution(env, step, {
 		acquiredContent: acquired,
 		hints: acquired,
 		processingId: target.resourceId,
@@ -116,4 +114,5 @@ export async function stageStoredResourceAcquisition(
 		sourceUrl: null,
 		allowCitoidLookup: false,
 	});
+	return paper ?? pdfResource(acquired, acquired, null);
 }

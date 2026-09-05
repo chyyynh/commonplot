@@ -123,17 +123,49 @@ export type PostKindMetadata = z.infer<(typeof RESOURCE_TYPES)['post']['metadata
 export type PaperKindMetadata = z.infer<(typeof RESOURCE_TYPES)['paper']['metadata']>;
 export type ResourceKind = keyof typeof RESOURCE_TYPES;
 export type ResourcePlatform = (typeof RESOURCE_TYPES)[ResourceKind]['platforms'][number]['name'];
-export type ResourcePlatformKind = {
-	[TKind in ResourceKind]: (typeof RESOURCE_TYPES)[TKind]['platforms'][number] extends never ? never : TKind;
-}[ResourceKind];
-export type ResourceKindForPlatform<TPlatform extends ResourcePlatform> = {
-	[TKind in ResourcePlatformKind]: TPlatform extends (typeof RESOURCE_TYPES)[TKind]['platforms'][number]['name'] ? TKind : never;
-}[ResourcePlatformKind];
 export type ResourceKindMetadataFor<TKind extends ResourceKind> = z.infer<(typeof RESOURCE_TYPES)[TKind]['metadata']>;
-export type ResourcePlatformKindMetadata<TPlatform extends ResourcePlatform> = ResourceKindMetadataFor<ResourceKindForPlatform<TPlatform>>;
 export type ResourceKindMetadata = {
 	[K in ResourceKind]: ResourceKindMetadataFor<K>;
 }[ResourceKind];
+
+// Adapters share an output contract; each adapter owns its mapping and identity.
+export type AcquiredResource = {
+	kind: Exclude<ResourceKind, 'image'>;
+	resourcePlatform: ResourcePlatform | null;
+	resourceIdentifiers: ResourceIdentifier[];
+	url: string | null;
+	title: string;
+	summary: string | null;
+	content: string;
+	source: string;
+	originalLang: string;
+	publishedDate: string | null;
+	creators: ResourceCreator[];
+	kindMetadata: ResourceKindMetadata;
+	fileType: string | null;
+	previewImageUrl: string | null;
+	subject: (ResourceSubjectIdentity & { publishedDate: string | null }) | null;
+};
+export type ResourceSubjectIdentity = { identifiers: ResourceIdentifier[]; normalizedUrl: string };
+export type ResourceAcquisitionHints = { originalLang: string | null; publishedDate: string | null; summary: string | null };
+
+export function resolveResourceHints(acquired: ResourceAcquisitionHints, hints: ResourceAcquisitionHints) {
+	const parsedDate = Date.parse(acquired.publishedDate ?? '');
+	return {
+		originalLang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeOptionalResourceLang(hints.originalLang) ?? 'und',
+		publishedDate: Number.isNaN(parsedDate) ? hints.publishedDate : new Date(parsedDate).toISOString(),
+		summary: acquired.summary?.trim() || hints.summary?.trim() || null,
+	};
+}
+
+export function literalCreator(
+	role: ResourceCreator['role'],
+	literal: string | null | undefined,
+	extra: Omit<ResourceCreator, 'literal' | 'role'> = {},
+): ResourceCreator[] {
+	const name = literal?.trim();
+	return name ? [{ role, literal: name, ...extra }] : [];
+}
 
 export const ResourceCreatorsSchema = z.array(ResourceCreatorSchema);
 

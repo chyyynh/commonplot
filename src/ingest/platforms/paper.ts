@@ -11,10 +11,11 @@ import {
 	paperIdentityFromText,
 	resolveExactPaperInput,
 } from '../../shared/paper-identity';
+import { type AcquiredResource, literalCreator, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
 import { resolveCrossrefPaper } from '../crossref';
-import { type GenericAcquiredMaterial, literalCreator, materializeGenericResource, type ResourceAcquisitionHints } from './materialize';
 import { type PaperMetadata, resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME, stageOpenAlexPdfMarkdown } from './pdf';
+import type { WebAcquiredContent } from './web';
 
 const CITOID_IDENTIFIER_SCAN_CHARS = 3_000;
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
@@ -33,10 +34,10 @@ const CitoidResponseSchema = z.array(
 const ACADEMIC_ITEM_TYPES = new Set(['journalArticle', 'conferencePaper', 'preprint', 'thesis', 'manuscript']);
 
 function applyPaperMetadata(
-	acquiredContent: GenericAcquiredMaterial,
+	acquiredContent: WebAcquiredContent,
 	metadata: PaperMetadata | null,
 	publishedDate: string | null,
-): { acquiredContent: GenericAcquiredMaterial; publishedDate: string | null } {
+): { acquiredContent: WebAcquiredContent; publishedDate: string | null } {
 	if (!metadata) return { acquiredContent, publishedDate };
 	const { abstract: rawAbstract, authors, publicationDate, title: rawTitle, ...kindMetadata } = metadata;
 	if (!publishedDate && publicationDate) {
@@ -225,11 +226,11 @@ async function stageCrossrefPaperEnrichment(
 	}
 }
 
-export async function stagePaperProcessing(
+export async function stagePaperResolution(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		acquiredContent: GenericAcquiredMaterial;
+		acquiredContent: WebAcquiredContent;
 		hints: ResourceAcquisitionHints;
 		processingId: string;
 		seedIdentifiers: readonly PaperIdentifier[];
@@ -237,8 +238,7 @@ export async function stagePaperProcessing(
 		allowCitoidLookup: boolean;
 	},
 ) {
-	const parsedPublishedDate = Date.parse(input.acquiredContent.publishedDate ?? '');
-	const publishedDate = Number.isNaN(parsedPublishedDate) ? input.hints.publishedDate : new Date(parsedPublishedDate).toISOString();
+	const { publishedDate } = resolveResourceHints(input.acquiredContent, input.hints);
 	const canonicalUrl = input.acquiredContent.canonicalUrl?.trim() || input.sourceUrl;
 	const exactIdentifiers = [input.sourceUrl, canonicalUrl === input.sourceUrl ? null : canonicalUrl].flatMap((value) => {
 		const resolved = resolveExactPaperInput(value);
@@ -288,9 +288,21 @@ export async function stagePaperProcessing(
 	const resourceIdentifiers = choosePreferredIdentifiers([...identifiers, ...resolution.identifiers]);
 	if (!acquiredContent.markdown.trim()) throw new Error(`Processing ${input.processingId} has no extractable content`);
 	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
-	return materializeGenericResource(acquiredContent, input.hints, {
-		canonicalUrl: canonicalUrl ?? (identity ? canonicalPaperUrl(identity) : null),
-		publishedDate: enriched.publishedDate,
+	if (!identity) return null;
+	return {
+		kind: 'paper',
+		resourcePlatform: null,
 		resourceIdentifiers,
-	});
+		url: canonicalUrl ?? canonicalPaperUrl(identity),
+		title: acquiredContent.title.trim(),
+		content: acquiredContent.markdown,
+		source: acquiredContent.source,
+		...resolveResourceHints(acquiredContent, input.hints),
+		publishedDate: enriched.publishedDate,
+		creators: acquiredContent.creators,
+		kindMetadata: acquiredContent.kindMetadata ?? {},
+		fileType: acquiredContent.fileType,
+		previewImageUrl: acquiredContent.previewImageUrl?.trim() || null,
+		subject: null,
+	} satisfies AcquiredResource;
 }

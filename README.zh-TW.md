@@ -38,9 +38,9 @@
 | **網頁**        | 爬蟲   | saved URL  | 文章擷取、redirect/platform 與 PDF 偵測、OG metadata |
 | **App 輸入**    | 入口   | 即時       | Service-binding RPC — saved URL/blob acquisition + enrichment；membership 由 app 擁有 |
 
-單一 URL detector 先選出負責的 platform adapter。每個 adapter 自己取得內容並
-materialize 成相同的 resolved Resource shape，再進入共用的 analysis、image 與
-persistence tail。
+單一 URL detector 先選出負責的 platform adapter。每個 platform/kind adapter
+自行負責來源解析、identity 與 Resource 輸出；共用部分只有輸出契約與來源提示小工具，
+沒有泛型 materializer。Workflow 再將輸出交給 analysis、image hosting 與 persistence。
 
 ## 運作流程
 
@@ -51,7 +51,7 @@ persistence tail。
   │
   ├─ 1. 取得內容 ──────────── 抓取 URL draft，或讀取／抽取 app-owned blob
   ├─ 2. 決定 identity ─────── 完成 kind/platform、paper metadata 與 subject intent
-  ├─ 3. AI 分析 ───────────── 單次 structured call → 標籤、關鍵字、具名實體
+  ├─ 3. AI 分析 ───────────── 單次呼叫 → 標籤、關鍵字、原文語言；補齊缺少的摘要
   ├─ 4. 託管圖片 ──────────── 將 canonical 遠端圖片串流到 Cloudflare Images
   ├─ 5. 最終寫入 DB ───────── 建立或更新 canonical URL resource；enrich 既有 stored blob
   └─ 6. 後續工作 ──────────── 套用 user save；enqueue 翻譯、subject 與 corpus search jobs
@@ -72,6 +72,8 @@ retention。每個 durable step 各自重試。
 | **搜尋索引** | Cloudflare AI Search  | 對完成 enrichment 的 corpus 文件提供 hybrid retrieval       |
 
 Resource analysis 是一次 structured call；翻譯在獨立 Workflow 裡稍後執行，因此 localization 失敗不會讓已寫入的 canonical Resource 失效。
+
+Core 優先保留非空白的來源摘要或論文 abstract；缺少時由既有的分析呼叫一併生成原文語言摘要，正文截片不視為來源摘要。Metadata localization 完整翻譯已保存的摘要，不從正文自行補寫；舊資料沒有摘要時只翻譯標題，重新處理後才會補上原文摘要。以 `pnpm check:resource-identity` 和 `pnpm check:platform-acquisition` 驗證原文摘要的選用規則。
 
 ## 技術棧
 
@@ -155,7 +157,7 @@ pnpm run deploy
 
 Core 沒有產品 HTTP API；default fetch handler 只回傳 404。App URL import 透過 Cloudflare service-binding RPC 傳入 Workflow instance ID、URL 與使用者的 `saveTarget`；monitor 與 derived subject 在 Core 內排入不含 save target 的相同 draft。只有 uploaded blob 與 explicit resync 傳入已持久化的 resource ID。URL acquisition 只存在於 canonical resource Workflow 內部。
 
-URL／platform acquisition 與 app-owned R2 PDF 讀取都只 materialize 一個 canonical processing aggregate。Core 先選定可能的學術替代正文，再透過 Drizzle／Hyperdrive commit canonical Resource；只有需要處理使用者 save／container／file ownership 時，才在下一個 durable step 呼叫 Web。
+URL／platform acquisition 與 app-owned R2 PDF 讀取各自產生一個 canonical processing aggregate。Core 先選定可能的學術替代正文，再透過 Drizzle／Hyperdrive commit canonical Resource；只有需要處理使用者 save／container／file ownership 時，才在下一個 durable step 呼叫 Web。
 
 ## Hosted MCP
 

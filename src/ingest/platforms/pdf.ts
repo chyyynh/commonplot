@@ -3,7 +3,14 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
-import { canonicalizeResourceLang, type ResourceCreator, ResourceCreatorsSchema } from '../../shared/resource';
+import {
+	type AcquiredResource,
+	canonicalizeResourceLang,
+	type ResourceAcquisitionHints,
+	type ResourceCreator,
+	ResourceCreatorsSchema,
+	resolveResourceHints,
+} from '../../shared/resource';
 import { limitByteStream } from '../../shared/response';
 import { resolveCrossrefPaperCandidate } from '../crossref';
 import type { GrobidPdfHeader } from '../grobid-tei';
@@ -14,11 +21,11 @@ import {
 	readStructuredPdfArtifact,
 	writeStructuredPdfArtifact,
 } from '../zotero-sdt-service.ts';
-import type { GenericAcquiredMaterial } from './materialize';
 import { fetchOpenAlexPdf } from './openalex';
 import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
 import type { LocalPdfSummary, PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
+import type { WebAcquiredContent } from './web';
 
 export { PDF_MIME } from './pdf-constants';
 export type { PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
@@ -30,9 +37,27 @@ const CROSSREF_PAPER_CANDIDATE_STEP = {
 	timeout: '30 seconds',
 } as const;
 
+export function pdfResource(content: WebAcquiredContent, hints: ResourceAcquisitionHints, url: string | null) {
+	return {
+		kind: 'file',
+		resourcePlatform: null,
+		resourceIdentifiers: [],
+		url: content.canonicalUrl?.trim() || url,
+		title: content.title.trim(),
+		content: content.markdown,
+		source: content.source,
+		...resolveResourceHints(content, hints),
+		creators: content.creators,
+		kindMetadata: null,
+		fileType: PDF_MIME,
+		previewImageUrl: content.previewImageUrl?.trim() || null,
+		subject: null,
+	} satisfies AcquiredResource;
+}
+
 export type PdfAcquisitionDraft = Readonly<{
 	kind: 'local-pdf';
-	material: GenericAcquiredMaterial;
+	material: WebAcquiredContent;
 	parse: LocalPdfSummary;
 }>;
 
@@ -54,7 +79,7 @@ function localPdfResult(normalized: ReturnType<typeof normalizeStructuredPdf>, s
 	return { markdown, paperIdentifierText, parse };
 }
 
-function requireUsablePdf(acquisition: PdfAcquisitionDraft, sourceLabel: string): GenericAcquiredMaterial {
+function requireUsablePdf(acquisition: PdfAcquisitionDraft, sourceLabel: string): WebAcquiredContent {
 	if (!acquisition.material.markdown) throw new NonRetryableError(`${sourceLabel} has no usable text; OCR is required`);
 	return acquisition.material;
 }
@@ -69,7 +94,7 @@ export async function completeFetchedPdfAcquisition(
 		processingId: string;
 		sourceUrl: string;
 	},
-): Promise<GenericAcquiredMaterial> {
+): Promise<WebAcquiredContent> {
 	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
 		grant: input.grant,
 		local: input.acquisition.parse,
@@ -81,7 +106,6 @@ export async function completeFetchedPdfAcquisition(
 		...input.acquisition.material,
 		markdown: cloudMarkdown,
 		paperIdentifierText: cloudMarkdown.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS),
-		summary: cloudMarkdown.slice(0, 500) || null,
 	};
 }
 
@@ -283,7 +307,7 @@ export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response
 			source,
 			originalLang: null,
 			publishedDate: null,
-			summary: parsed.markdown.slice(0, 500) || null,
+			summary: null,
 			creators: [],
 			kindMetadata: null,
 		},
@@ -298,7 +322,7 @@ export async function stageStoredPdfAcquisition(
 		paidPdfFallback?: PaidPdfFallbackGrant;
 		resourceId: string;
 	}>,
-): Promise<GenericAcquiredMaterial> {
+): Promise<WebAcquiredContent> {
 	const resource = await step.do(
 		'load-stored-pdf-input-v1',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
@@ -364,7 +388,7 @@ export async function stageStoredPdfAcquisition(
 		}
 	}
 	const paperHeader = paperIdentifierText ? grobidHeader : null;
-	const material: GenericAcquiredMaterial = {
+	const material: WebAcquiredContent = {
 		...acquisition.material,
 		paperIdentifierText,
 		...(paperHeader?.title ? { title: paperHeader.title } : {}),

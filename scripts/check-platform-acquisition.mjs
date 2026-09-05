@@ -1,5 +1,35 @@
 import assert from 'node:assert/strict';
-import { materializeGenericResource, materializePlatformResource } from '../src/ingest/platforms/materialize.ts';
+import { registerHooks } from 'node:module';
+
+registerHooks({
+	resolve(specifier, context, nextResolve) {
+		if (specifier === 'cloudflare:workflows')
+			return { shortCircuit: true, url: 'data:text/javascript,export class NonRetryableError extends Error {}' };
+		if (specifier.startsWith('.') && !specifier.endsWith('.ts') && context.parentURL?.includes('/core-worker/src/')) {
+			return { shortCircuit: true, url: new URL(`${specifier}.ts`, context.parentURL).href };
+		}
+		return nextResolve(specifier, context);
+	},
+});
+
+const [
+	{ stageHackerNewsAcquisition },
+	{ stageLessWrongAcquisition },
+	{ stageTwitterAcquisition },
+	{ stageYouTubeAcquisition },
+	{ stagePaperResolution },
+	{ pdfResource },
+	{ webResource },
+] = await Promise.all([
+	import('../src/ingest/platforms/hackernews.ts'),
+	import('../src/ingest/platforms/lesswrong.ts'),
+	import('../src/ingest/platforms/twitter-acquisition.ts'),
+	import('../src/ingest/platforms/youtube.ts'),
+	import('../src/ingest/platforms/paper.ts'),
+	import('../src/ingest/platforms/pdf.ts'),
+	import('../src/ingest/platforms/web.ts'),
+]);
+
 import {
 	hostedResourceImageFields,
 	normalizedExternalMediaUrl,
@@ -11,7 +41,7 @@ const base = {
 	url: 'https://example.com/article',
 };
 
-function materialize(input = {}) {
+async function acquire(input = {}) {
 	const url = input.url === undefined ? base.url : input.url;
 	const acquired = {
 		...(url ? { canonicalUrl: url } : {}),
@@ -19,26 +49,48 @@ function materialize(input = {}) {
 		title: 'Example',
 		markdown: 'Example content',
 		source: 'Example',
-		originalLang: 'en',
+		originalLang: input.originalLang === undefined ? 'en' : input.originalLang,
 		publishedDate: input.publishedDate ?? null,
-		summary: null,
+		summary: input.summary ?? null,
 		creators: [],
 		kindMetadata: input.kindMetadata ?? null,
 	};
-	const hints = { originalLang: 'en', publishedDate: null, summary: null };
-	if (input.resourcePlatform) {
-		return materializePlatformResource(
-			{ ...acquired, platformId: input.platformId, resourcePlatform: input.resourcePlatform },
-			hints,
-			{ kind: input.kind, url },
-			input.subject ?? null,
-		);
-	}
-	return materializeGenericResource({ ...acquired, resourcePlatform: null }, hints, {
-		canonicalUrl: url,
+	const hints = {
+		originalLang: input.originalLang === undefined ? 'en' : input.originalLang,
 		publishedDate: null,
-		resourceIdentifiers: input.resourceIdentifiers ?? [],
-	});
+		summary: input.summaryHint ?? null,
+	};
+	const step = {
+		do: async (name) =>
+			name.startsWith('acquire-')
+				? Response.json({
+						...acquired,
+						discussion: { commentCount: 0, threadCount: 0 },
+						transcript: { segments: [], chapters: [], language: 'en' },
+					}).body
+				: null,
+	};
+	const context = { hints, processingId: 'contract', resolveSubject: () => input.subject ?? null };
+	switch (input.resourcePlatform) {
+		case 'hackernews':
+			return stageHackerNewsAcquisition({}, step, { ...context, itemId: input.platformId });
+		case 'lesswrong':
+			return stageLessWrongAcquisition(step, input.platformId, hints);
+		case 'twitter':
+			return stageTwitterAcquisition({}, step, { ...context, tweetId: input.platformId });
+		case 'youtube':
+			return stageYouTubeAcquisition({}, step, { ...context, videoId: input.platformId });
+	}
+	return (
+		(await stagePaperResolution({}, step, {
+			acquiredContent: acquired,
+			hints,
+			processingId: context.processingId,
+			seedIdentifiers: input.resourceIdentifiers ?? [],
+			sourceUrl: url,
+			allowCitoidLookup: false,
+		})) ?? (input.fileType === 'application/pdf' ? pdfResource(acquired, hints, url) : webResource(acquired, hints, url))
+	);
 }
 
 const cases = [
@@ -197,31 +249,15 @@ const cases = [
 	},
 ];
 
-const unknownLanguage = materializeGenericResource(
-	{
-		canonicalUrl: base.url,
-		fileType: null,
-		kindMetadata: null,
-		markdown: '未知語言內容',
-		originalLang: null,
-		publishedDate: null,
-		resourcePlatform: null,
-		source: 'Example',
-		summary: null,
-		title: 'Example',
-		creators: [],
-	},
-	{ originalLang: null, publishedDate: null, summary: null },
-	{ canonicalUrl: base.url, publishedDate: null, resourceIdentifiers: [] },
-);
+const unknownLanguage = await acquire({ originalLang: null });
 assert.equal(unknownLanguage.originalLang, 'und', 'unknown acquisition language must stay provisional until analysis');
 
 for (const testCase of cases) {
-	const actual = materialize(testCase.input);
+	const actual = await acquire(testCase.input);
 	assert.deepEqual(Object.fromEntries(Object.keys(testCase.expected).map((key) => [key, actual[key]])), testCase.expected, testCase.name);
 }
 
-const migratedCarrier = materialize({
+const migratedCarrier = await acquire({
 	kind: 'forum',
 	platformId: '126',
 	resourcePlatform: 'hackernews',
@@ -243,28 +279,32 @@ const paperSubject = {
 };
 
 assert.deepEqual(
-	materialize({
-		kind: 'forum',
-		platformId: '127',
-		resourcePlatform: 'hackernews',
-		url: 'https://news.ycombinator.com/item?id=127',
-		subject: paperSubject,
-	}).subject,
+	(
+		await acquire({
+			kind: 'forum',
+			platformId: '127',
+			resourcePlatform: 'hackernews',
+			url: 'https://news.ycombinator.com/item?id=127',
+			subject: paperSubject,
+		})
+	).subject,
 	{ ...paperSubject, publishedDate: null },
-	'materialization keeps the already-resolved paper subject',
+	'acquisition keeps the already-resolved paper subject',
 );
 
 // A subject page routinely publishes no date of its own; the carrier's date
 // travels with it so the subject can still be placed chronologically.
 assert.deepEqual(
-	materialize({
-		kind: 'forum',
-		platformId: '128',
-		resourcePlatform: 'hackernews',
-		publishedDate: '2026-08-29T14:02:10.000Z',
-		url: 'https://news.ycombinator.com/item?id=128',
-		subject: paperSubject,
-	}).subject,
+	(
+		await acquire({
+			kind: 'forum',
+			platformId: '128',
+			resourcePlatform: 'hackernews',
+			publishedDate: '2026-08-29T14:02:10.000Z',
+			url: 'https://news.ycombinator.com/item?id=128',
+			subject: paperSubject,
+		})
+	).subject,
 	{ ...paperSubject, publishedDate: '2026-08-29T14:02:10.000Z' },
 	'subject inherits the carrier publication date',
 );
@@ -312,4 +352,12 @@ assert.deepEqual(
 );
 assert.throws(() => hostedResourceImageFields(imageInput, hosted.slice(0, 1)), /do not cover every source/);
 
-console.info(`Platform materialization contract checks passed (${cases.length + 7} cases).`);
+const summaryCases = [
+	{ summary: 'Source description', summaryHint: 'Feed description', expected: 'Source description' },
+	{ summary: null, summaryHint: 'Feed description', expected: 'Feed description' },
+	{ summary: '   ', summaryHint: 'Feed description', expected: 'Feed description' },
+	{ summary: '   ', summaryHint: '   ', expected: null },
+];
+for (const { expected, ...input } of summaryCases) assert.equal((await acquire(input)).summary, expected);
+
+console.info(`Platform acquisition contract checks passed (${cases.length + 7 + summaryCases.length} cases).`);

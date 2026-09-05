@@ -241,7 +241,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		});
 		const imageSources = resourceImageSourceUrls({ ...resource, ogImageUrl: resource.previewImageUrl });
 		const [analysis, hostedImages] = await Promise.all([
-			step.do('classify-resource', { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' }, () =>
+			step.do('analyze-resource-v2', { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' }, () =>
 				analyzeResource(resource, target.kind === 'draft' ? (target.sourceHints?.keywords ?? []) : [], this.env, processingId),
 			),
 			stageResourceImages(this.env, step, processingId, imageSources),

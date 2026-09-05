@@ -4,15 +4,14 @@ import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import type { TranscriptResponse } from 'youtube-transcript';
 import { z } from 'zod';
-import { RESOURCE_TYPES } from '../../shared/resource';
-import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
 import {
+	type AcquiredResource,
 	literalCreator,
-	materializePlatformResource,
-	type PlatformAcquiredMaterial,
-	type ResolvedPlatformResource,
+	RESOURCE_TYPES,
 	type ResourceAcquisitionHints,
-} from './materialize';
+	resolveResourceHints,
+} from '../../shared/resource';
+import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
@@ -106,8 +105,7 @@ const YouTubeChannelsResponseSchema = z.object({
 });
 type YouTubeThumbnails = z.infer<typeof YouTubeThumbnailsSchema>;
 type YouTubeVideosResponse = z.infer<typeof YouTubeVideosResponseSchema>;
-type YouTubeAcquisition = PlatformAcquiredMaterial<'youtube'> & { transcript: YouTubeTranscript };
-type YouTubeResolvedResource = ResolvedPlatformResource<'youtube'> & { youtube: YouTubeResourceData };
+type YouTubeAcquisition = Awaited<ReturnType<typeof scrapeYouTube>>;
 
 function bestThumbnailUrl(thumbnails: YouTubeThumbnails): string | null {
 	return (
@@ -252,7 +250,7 @@ async function fetchTranscript(videoId: string): Promise<Pick<YouTubeTranscript,
 	return { segments, language };
 }
 
-async function scrapeYouTube(videoId: string, youtubeApiKey: string): Promise<YouTubeAcquisition> {
+async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching video', videoId });
 
 	const videoData = await fetchYouTubeVideoData(videoId, youtubeApiKey);
@@ -291,8 +289,6 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string): Promise<Yo
 	console.info({ tag: 'YOUTUBE', msg: 'Video fetched', title: snippet.title });
 
 	return {
-		resourcePlatform: 'youtube',
-		platformId: videoId,
 		fileType: null,
 		title: snippet.title,
 		markdown:
@@ -300,7 +296,7 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string): Promise<Yo
 				.map((segment) => segment.text.trim())
 				.filter(Boolean)
 				.join('\n') || snippet.description.trim(),
-		summary: snippet.description.substring(0, 500) || null,
+		summary: snippet.description.trim() || null,
 		source: snippet.channelTitle.trim() || 'YouTube',
 		originalLang: transcript.language ?? snippet.defaultAudioLanguage ?? null,
 		publishedDate: snippet.publishedAt,
@@ -326,14 +322,14 @@ export async function stageYouTubeAcquisition(
 		processingId: string;
 		videoId: string;
 	},
-): Promise<YouTubeResolvedResource> {
+) {
 	const contentStream = await step.do(
 		'acquire-youtube-v1',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY)).body!,
 	);
 	const acquired = await new Response(contentStream).json<YouTubeAcquisition>();
-	const { transcript, ...material } = acquired;
+	const { transcript } = acquired;
 	const highlights =
 		transcript.segments.length && transcript.chapters.length === 0
 			? await step
@@ -353,9 +349,21 @@ export async function stageYouTubeAcquisition(
 					})
 			: null;
 	return {
-		...materializePlatformResource(material, input.hints, { kind: 'video', url: `https://youtube.com/watch?v=${input.videoId}` }),
+		kind: 'video',
+		resourcePlatform: 'youtube',
+		resourceIdentifiers: [{ preferred: true, scheme: 'youtube', value: input.videoId }],
+		url: `https://youtube.com/watch?v=${input.videoId}`,
+		title: acquired.title.trim(),
+		content: acquired.markdown,
+		source: acquired.source,
+		...resolveResourceHints(acquired, input.hints),
+		creators: acquired.creators,
+		kindMetadata: acquired.kindMetadata,
+		fileType: acquired.fileType,
+		previewImageUrl: acquired.previewImageUrl?.trim() || null,
+		subject: null,
 		youtube: { transcript, highlights },
-	};
+	} satisfies AcquiredResource & { youtube: YouTubeResourceData };
 }
 
 const YouTubeHighlightSchema = z

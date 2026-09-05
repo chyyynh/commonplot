@@ -38,9 +38,9 @@ Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content
 | **Web**              | Scraper   | Saved URL     | Article extraction, redirect/platform detection, PDF detection, OG metadata |
 | **App Inputs**       | Ingestion | Real-time     | Service-binding RPC — saved URL/blob acquisition + enrichment; membership stays app-owned |
 
-One URL detector selects the owning platform adapter. Each adapter acquires and
-materializes the same resolved Resource shape for the shared analysis, image,
-and persistence tail.
+One URL detector selects the owning platform adapter. Each platform/kind adapter owns its source parsing, identity, and Resource output.
+Only the output contract and small source-hint rules are shared; there is no generic materializer.
+The Workflow passes those outputs to analysis, image hosting, and persistence.
 
 ## How it works
 
@@ -51,7 +51,7 @@ Content arrives (source monitor / saved URL / uploaded blob / resync)
   │
   ├─ 1. Acquire ─────────────── Fetch a URL draft, or load/extract an app-owned blob
   ├─ 2. Resolve ─────────────── Finalize kind/platform identity, paper metadata, and subject intent
-  ├─ 3. AI Analysis ─────────── One structured call → tags, keywords, original language
+  ├─ 3. AI Analysis ─────────── One call → tags, keywords, original language; fill a missing summary
   ├─ 4. Host Images ─────────── Stream canonical remote images to Cloudflare Images
   ├─ 5. Finalize DB ─────────── Create or update a canonical URL resource; enrich an existing stored blob
   └─ 6. Follow-ups ──────────── Apply user save; enqueue translation, subject, and corpus-search jobs
@@ -72,6 +72,8 @@ short native Workflow retention. Each durable step retries independently.
 | **Retrieval Index**   | Cloudflare AI Search  | Hybrid keyword and semantic retrieval over enriched corpus documents                              |
 
 Resource analysis is one structured call. Translation runs later in its own Workflow, so localization failure cannot invalidate an already persisted canonical Resource.
+
+Core preserves a nonblank source summary or abstract. When it is missing, the existing analysis call also generates a summary in the original language; a body excerpt is not a source summary. Metadata localization translates the persisted summary in full and never creates one from the body. Existing records without a summary receive title-only metadata translation until reprocessed. Run `pnpm check:resource-identity` and `pnpm check:platform-acquisition` to check original-summary selection.
 
 ## Stack
 
@@ -159,7 +161,7 @@ Or run locally with `pnpm dev` (uses `wrangler dev --test-scheduled`, so you can
 
 Core exposes no product HTTP API; its default fetch handler only returns 404. App URL imports call a Cloudflare service-binding RPC with a Workflow instance ID, URL, and user-owned `saveTarget`; monitors and derived subjects enqueue the same draft target internally without one. Uploaded blobs and explicit resyncs use persisted resource IDs. URL acquisition is an internal stage of the canonical resource Workflow.
 
-URL/platform acquisition and app-owned R2 PDF reads both materialize one canonical processing aggregate. Core selects any academic replacement content first, commits canonical Resource state through Drizzle/Hyperdrive, and then runs a separate durable Web step only when user save/container/file ownership must be updated.
+URL/platform acquisition and app-owned R2 PDF reads each produce one canonical processing aggregate. Core selects any academic replacement content first, commits canonical Resource state through Drizzle/Hyperdrive, and then runs a separate durable Web step only when user save/container/file ownership must be updated.
 
 ## Hosted MCP
 

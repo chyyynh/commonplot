@@ -54,7 +54,6 @@ type ResourceTranslationInputRow = {
 	url: string | null;
 };
 
-const METADATA_CONTENT_MAX_LENGTH = 10000;
 const PARTIAL_CONTENT_TRANSLATION_RATIO = 0.2;
 const MIN_TRANSLATABLE_TEXT_LENGTH = 20;
 const AI_RATE_LIMIT_ERROR = /\b(?:3021|3040|429)\b|rate limit|too many requests|capacity temporarily exceeded/iu;
@@ -81,38 +80,15 @@ function privateUploadedPdfTranslationSqlAdmission() {
 	)`;
 }
 
-const ZhHantMetadataTranslationSchema = z.object({
-	title: z.string().min(1),
-	summary: z.string().min(1),
-});
-
-const ZhHantTitleTranslationSchema = ZhHantMetadataTranslationSchema.pick({ title: true });
-
-type ZhHantMetadataTranslationTask = 'article-title-summary' | 'paper-title' | 'paper-title-summary' | 'post-title';
-
-type ZhHantTranslationPlan = {
-	metadata: ZhHantMetadataTranslationTask | null;
-	content: 'translate' | null;
-};
+type ZhHantTranslationPlan = { metadata: boolean; content: boolean };
+const MetadataTranslationSchema = z.object({ title: z.string().trim().min(1), summary: z.string().trim().min(1) });
 
 type MachineZhHantTranslationPatch = Partial<
-	z.infer<typeof ZhHantMetadataTranslationSchema> & NonNullable<Awaited<ReturnType<typeof translatePlannedContent>>>
+	z.infer<typeof MetadataTranslationSchema> & NonNullable<Awaited<ReturnType<typeof translatePlannedContent>>>
 >;
 
 function isBlank(value: string | null | undefined): boolean {
 	return !value?.trim();
-}
-
-function metadataTranslationTask(resource: ResourceTranslationInput, force: boolean): ZhHantMetadataTranslationTask | null {
-	const translation = resource.zhHantTranslation;
-	if (resource.kind === 'post') {
-		return force || isBlank(translation?.title) ? 'post-title' : null;
-	}
-	if (resource.kind === 'paper') {
-		if (isBlank(resource.summary)) return force || isBlank(translation?.title) ? 'paper-title' : null;
-		return force || isBlank(translation?.title) || isBlank(translation?.summary) ? 'paper-title-summary' : null;
-	}
-	return force || isBlank(translation?.title) || isBlank(translation?.summary) ? 'article-title-summary' : null;
 }
 
 function hasTranslatableContent(content: string): boolean {
@@ -139,81 +115,18 @@ function planZhHantTranslation(resource: ResourceTranslationInput, force: boolea
 		isBlank(resource.content) ||
 		translation?.source === 'human'
 	) {
-		return { metadata: null, content: null };
+		return { metadata: false, content: false };
 	}
 
-	const metadata = metadataTranslationTask(resource, force);
-	if (!hasTranslatableContent(resource.content) || (!force && !needsMachineContentTranslation(resource))) {
-		return { metadata, content: null };
-	}
-	return { metadata, content: 'translate' };
+	return {
+		metadata: force || isBlank(translation?.title) || (!isBlank(resource.summary) && isBlank(translation?.summary)),
+		content: hasTranslatableContent(resource.content) && (force || needsMachineContentTranslation(resource)),
+	};
 }
 
-function metadataTranslationRequest(task: ZhHantMetadataTranslationTask) {
-	switch (task) {
-		case 'post-title':
-			return {
-				schema: ZhHantTitleTranslationSchema,
-				maxOutputTokens: 400,
-				system: `你是專業的新聞翻譯編輯。請只輸出符合 schema 的繁體中文結果。
-
-任務：
-- title: 將標題翻譯成自然流暢的繁體中文
-
-規則：
-- 忠實保留原文語氣，不要新增資訊
-- 若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然繁體中文
-- 不要使用 Markdown。`,
-			};
-		case 'paper-title':
-		case 'paper-title-summary':
-			return {
-				schema: task === 'paper-title' ? ZhHantTitleTranslationSchema : ZhHantMetadataTranslationSchema,
-				maxOutputTokens: task === 'paper-title' ? 500 : 2400,
-				system: `你是專業的學術翻譯編輯。請只輸出符合 schema 的繁體中文結果。
-
-任務：
-- title: 將論文標題翻譯成自然、準確的繁體中文
-${task === 'paper-title-summary' ? '- summary: 將作者原始摘要完整翻譯成繁體中文，不要濃縮或改寫' : ''}
-
-規則：
-- 忠實保留學術術語、論證與限定語
-- 不要新增資訊，不要把摘要改寫成 AI summary
-- 不要使用 Markdown。`,
-			};
-		case 'article-title-summary':
-			return {
-				schema: ZhHantMetadataTranslationSchema,
-				maxOutputTokens: 700,
-				system: `你是專業的新聞翻譯編輯。請只輸出符合 schema 的台灣繁體中文結果。
-
-任務：
-- title: 將標題翻譯成自然流暢的繁體中文
-- summary: 若原文提供摘要，忠實完整翻譯該摘要；只有原文摘要缺失時，才根據內容產生 1-2 句繁體中文摘要
-
-規則：
-- 忠實保留原文語氣、限定與不確定性，不要推論或新增資訊
-- 使用台灣常用詞彙與標點；若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然的台灣繁體中文
-- 不要使用 Markdown。`,
-			};
-	}
-}
-
-async function generateZhHantMetadataTranslation(
-	resource: ResourceTranslationInput,
-	env: CoreEnv,
-	task: ZhHantMetadataTranslationTask,
-): Promise<z.infer<typeof ZhHantMetadataTranslationSchema> | z.infer<typeof ZhHantTitleTranslationSchema>> {
-	const content = resource.content.trim();
-	if (!content) throw new Error(`Resource ${resource.id} has no content`);
-	const summaryLine = resource.summary?.trim() ? `\n摘要：${resource.summary.trim()}` : '';
-	const prompt = `原文資訊：
-資源種類：${resource.kind}
-資源平台：${resource.resourcePlatform ?? 'none'}
-標題：${resource.title}${summaryLine}
-內容：
-${content.slice(0, METADATA_CONTENT_MAX_LENGTH)}`;
-	const request = metadataTranslationRequest(task);
+/** Translate persisted metadata only; missing summaries are resolved during original enrichment. */
+async function translateResourceMetadata(resource: ResourceTranslationInput, env: CoreEnv) {
+	const summary = resource.summary?.trim();
 	const { finishReason, output } = await generateText({
 		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
 			...CORE_STRUCTURED_MODEL_SETTINGS,
@@ -229,14 +142,21 @@ ${content.slice(0, METADATA_CONTENT_MAX_LENGTH)}`;
 			},
 			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
 		}),
-		prompt,
-		system: request.system,
+		system: `Translate the supplied resource metadata into natural Taiwan Traditional Chinese (zh-Hant).
+Translate the title faithfully.
+${summary ? 'Translate the supplied summary in full. Preserve its length and meaning; do not summarize it again.' : 'Translate only the title. No source summary is available; do not create one.'}
+Preserve attribution, tone, technical terminology, qualifications, and uncertainty. Do not add information.
+For papers, preserve the academic claims and limitations of the supplied abstract or summary.
+Use Taiwan vocabulary and punctuation. Return only the requested schema fields as plain text without Markdown.`,
+		prompt: `Original language: ${resource.originalLang}
+Resource kind: ${resource.kind}
+Title: ${resource.title}${summary ? `\nSummary: ${summary}` : ''}`,
 		output: Output.object({
 			name: 'resource_translation_metadata',
-			description: 'Faithful Taiwan Traditional Chinese localization of the requested resource metadata fields.',
-			schema: request.schema,
+			description: 'Faithful Taiwan Traditional Chinese localization of the supplied resource metadata.',
+			schema: summary ? MetadataTranslationSchema : MetadataTranslationSchema.pick({ title: true }),
 		}),
-		maxOutputTokens: request.maxOutputTokens,
+		maxOutputTokens: summary ? 2400 : 500,
 		temperature: 0.3,
 		reasoning: 'none',
 		maxRetries: 0,
@@ -252,7 +172,7 @@ async function translatePlannedContent(
 	resourceId: string,
 	step: WorkflowStep,
 ) {
-	if (plan !== 'translate') return null;
+	if (!plan) return null;
 	let markdownPlan: ReturnType<typeof planMarkdownTranslation>;
 	try {
 		markdownPlan = planMarkdownTranslation(content);
@@ -339,7 +259,7 @@ async function translatePlannedContent(
 	}
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v27';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v28';
 const ResourceTranslationRevisionSchema = z.hash('md5').lowercase();
 const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 
@@ -530,20 +450,19 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 
 		const resource = input.resource;
 		const translationPlan = planZhHantTranslation(resource, force);
-		const metadataTask = translationPlan.metadata;
-		if (!metadataTask && translationPlan.content !== 'translate') return;
+		if (!translationPlan.metadata && !translationPlan.content) return;
 		const initialContent = resource.content.trim();
 		if (!initialContent) throw new Error(`Resource ${resourceId} has no persisted original content`);
 
 		const patch: MachineZhHantTranslationPatch = {};
-		if (metadataTask) {
+		if (translationPlan.metadata) {
 			const translatedMetadata = await step.do(
-				'translate-zh-hant-title-summary-v2',
+				'translate-zh-hant-title-summary-v3',
 				{
 					retries: { limit: 5, delay: translationRetryDelay },
 					timeout: '180 seconds',
 				},
-				() => generateZhHantMetadataTranslation(resource, this.env, metadataTask),
+				() => translateResourceMetadata(resource, this.env),
 			);
 			Object.assign(patch, translatedMetadata);
 		}
