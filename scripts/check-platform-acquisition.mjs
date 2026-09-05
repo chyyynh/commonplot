@@ -17,14 +17,14 @@ registerHooks({
 const [
 	{ stageHackerNewsAcquisition },
 	{ stageLessWrongAcquisition },
-	{ stageTwitterAcquisition },
+	{ stageUrlAcquisition },
 	{ stageYouTubeAcquisition },
 	{ stagePaperResolution },
 	{ stageWebAcquisition },
 ] = await Promise.all([
 	import('../src/ingest/platforms/hackernews.ts'),
 	import('../src/ingest/platforms/lesswrong.ts'),
-	import('../src/ingest/platforms/twitter-acquisition.ts'),
+	import('../src/ingest/acquisition.ts'),
 	import('../src/ingest/platforms/youtube.ts'),
 	import('../src/ingest/platforms/paper.ts'),
 	import('../src/ingest/platforms/web.ts'),
@@ -141,7 +141,13 @@ async function acquire(input = {}) {
 				case 'lesswrong':
 					return await stageLessWrongAcquisition(step, input.platformId, hints);
 				case 'twitter':
-					return await stageTwitterAcquisition(env, step, { ...context, tweetId: input.platformId });
+					return await stageUrlAcquisition(env, step, {
+						url: input.url ?? `https://x.com/i/status/${input.platformId}`,
+						hints,
+						processingId: context.processingId,
+						paidPdfFallback: null,
+						allowCitoidLookup: false,
+					});
 				case 'youtube':
 					return await stageYouTubeAcquisition(env, step, { ...context, videoId: input.platformId });
 			}
@@ -323,6 +329,51 @@ const cases = [
 		},
 		expected: { title: 'Longform title', content: 'Longform content' },
 	},
+	...[
+		['https://product.com/article'],
+		['https://example.com/?next=https://t.co/link', 'https://example.com/?next=https%3A%2F%2Ft.co%2Flink'],
+		['https://examplex.com/i/article/132'],
+		['https://example.com/?next=https://x.com/i/article/132', 'https://example.com/?next=https%3A%2F%2Fx.com%2Fi%2Farticle%2F132'],
+	].map(([linkedUrl, normalizedUrl = linkedUrl]) => ({
+		name: `Twitter keeps the external subject ${linkedUrl}`,
+		input: {
+			resourcePlatform: 'twitter',
+			platformId: '132',
+			tweet: { text: 'Comment https://t.co/link', urls: [{ url: 'https://t.co/link', expanded_url: linkedUrl }] },
+		},
+		expected: {
+			content: 'Comment',
+			subject: { identifiers: [], normalizedUrl, publishedDate: '2026-09-01T00:00:00.000Z' },
+		},
+	})),
+	...[
+		['https://example.com/author/status/132/photo/1', 'Before https://example.com/author/status/132/photo/1 after'],
+		['https://x.com/author/status/132/photo/1', 'Before after'],
+		['https://x.com/author?next=/status/132/photo/1', 'Before https://x.com/author?next=/status/132/photo/1 after'],
+	].map(([linkedUrl, content]) => ({
+		name: `Twitter only hides media URLs on its own domain and path: ${linkedUrl}`,
+		input: {
+			resourcePlatform: 'twitter',
+			platformId: '132',
+			tweet: { text: 'Before https://t.co/link after', urls: [{ url: 'https://t.co/link', expanded_url: linkedUrl }] },
+		},
+		expected: { content },
+	})),
+	...['https://t.co/link', 'https://WWW.X.COM/author', 'https://mobile.twitter.com/author'].map((linkedUrl) => ({
+		name: `Twitter skips the platform link ${linkedUrl}`,
+		input: { resourcePlatform: 'twitter', platformId: '132', tweet: { urls: [{ expanded_url: linkedUrl }] } },
+		expected: { subject: null },
+	})),
+	...['https://X.COM/i/article/132', 'https://mobile.twitter.com/i/article/132'].map((linkedUrl) => ({
+		name: `Twitter recognizes the article URL ${linkedUrl}`,
+		input: {
+			resourcePlatform: 'twitter',
+			platformId: '132',
+			tweet: { urls: [{ expanded_url: linkedUrl }] },
+			article: { status: 'success', article: { title: 'Longform title', contents: [{ type: 'unstyled', text: 'Longform content' }] } },
+		},
+		expected: { title: 'Longform title', content: 'Longform content', subject: null },
+	})),
 	{
 		name: 'YouTube uses transcript content and preserves the source summary',
 		input: {

@@ -41,16 +41,11 @@ function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {
 	return tweet.author;
 }
 
-const NON_RESOURCE_LINK_HOSTS = new Set(['twitter.com', 'x.com', 'instagram.com', 'tiktok.com', 'facebook.com', 'threads.net']);
+const NON_RESOURCE_LINK_HOSTS = ['t.co', 'twitter.com', 'x.com', 'instagram.com', 'tiktok.com', 'facebook.com', 'threads.net'];
 
 function isNonResourceLinkUrl(url: string): boolean {
-	let hostname = URL.parse(url)?.hostname.toLowerCase();
-	if (!hostname) return false;
-	if (hostname.startsWith('www.')) hostname = hostname.slice(4);
-	for (const host of NON_RESOURCE_LINK_HOSTS) {
-		if (hostname === host || hostname.endsWith(`.${host}`)) return true;
-	}
-	return false;
+	const hostname = URL.parse(url)?.hostname;
+	return !hostname || NON_RESOURCE_LINK_HOSTS.some((host) => hostname === host || hostname.endsWith(`.${host}`));
 }
 
 function tweetAttachments(tweet: Tweet) {
@@ -88,7 +83,9 @@ function expandTweetUrls(text: string, tweet: Tweet): string {
 		const token = entity.url?.trim();
 		const expanded = entity.expanded_url?.trim();
 		if (!token || !expanded) continue;
-		replacements.set(token, /\/status\/\d+\/(?:photo|video)\/\d+/.test(expanded) ? '' : expanded);
+		const parsed = URL.parse(expanded);
+		const mediaLink = parsed && isTwitterHostname(parsed.hostname) && /\/status\/\d+\/(?:photo|video)\/\d+/.test(parsed.pathname);
+		replacements.set(token, mediaLink ? '' : expanded);
 	}
 	const quoted = tweet.quoted_tweet;
 	const quotedTweetUrl = quoted ? URL.parse(quoted.url) : null;
@@ -207,8 +204,11 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 		const expandedUrl = url.expanded_url?.trim();
 		return expandedUrl ? [expandedUrl] : [];
 	});
-	const longformUrl = [tweet.url, ...expandedUrls].find((url): url is string => !!url && /(?:twitter\.com|x\.com)\/i\/article\//.test(url));
-	const linkedContentUrl = expandedUrls.find((url) => !/t\.co/.test(url) && !isNonResourceLinkUrl(url));
+	const longformUrl = [tweet.url, ...expandedUrls].find((url) => {
+		const parsed = URL.parse(url);
+		return parsed && isTwitterHostname(parsed.hostname) && parsed.pathname.startsWith('/i/article/');
+	});
+	const linkedContentUrl = expandedUrls.find((url) => !isNonResourceLinkUrl(url));
 
 	if (longformUrl) {
 		console.info({ tag: 'TWITTER', msg: 'Detected Twitter longform', longformUrl });
