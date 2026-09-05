@@ -17,12 +17,12 @@ type YouTubeTranscript = Readonly<{
 	language: string | null;
 	chapters: YouTubeChapter[];
 }>;
-type YouTubeHighlights = Readonly<{
-	version: '1.0';
-	model: string;
-	highlights: ReadonlyArray<Readonly<{ title: string; summary: string; startTime: number; endTime: number }>>;
-	generatedAt: string;
-}>;
+type YouTubeHighlights = z.infer<typeof YouTubeHighlightsSchema> &
+	Readonly<{
+		version: '1.0';
+		model: string;
+		generatedAt: string;
+	}>;
 export type YouTubeResourceData = Readonly<{
 	transcript: YouTubeTranscript;
 	highlights: YouTubeHighlights | null;
@@ -87,9 +87,7 @@ const YouTubeChannelsResponseSchema = z.object({
 	items: z
 		.array(
 			z.object({
-				id: z.string().min(1),
 				snippet: z.object({
-					title: z.string(),
 					thumbnails: YouTubeThumbnailsSchema,
 				}),
 			}),
@@ -98,7 +96,6 @@ const YouTubeChannelsResponseSchema = z.object({
 	error: YouTubeApiErrorSchema.optional(),
 });
 type YouTubeThumbnails = z.infer<typeof YouTubeThumbnailsSchema>;
-type YouTubeVideosResponse = z.infer<typeof YouTubeVideosResponseSchema>;
 type YouTubeAcquisition = Awaited<ReturnType<typeof scrapeYouTube>>;
 
 function bestThumbnailUrl(thumbnails: YouTubeThumbnails): string | null {
@@ -111,17 +108,12 @@ function parseChaptersFromDescription(description: string): YouTubeChapter[] {
 	const chapterRegex = /(?:^|\n)(\d{1,2}:)?(\d{1,2}):(\d{2})\s+(.+?)(?=\n|$)/g;
 	const chapters: YouTubeChapter[] = [];
 
-	let match: RegExpExecArray | null;
-	// biome-ignore lint/suspicious/noAssignInExpressions: idiomatic regex.exec loop
-	while ((match = chapterRegex.exec(description)) !== null) {
-		const hours = match[1] ? parseInt(match[1].replace(':', ''), 10) : 0;
-		const minutes = parseInt(match[2], 10);
-		const seconds = parseInt(match[3], 10);
-		const title = match[4].trim();
+	for (const [, hours, minutes, seconds, chapterTitle] of description.matchAll(chapterRegex)) {
+		const title = chapterTitle.trim();
 
 		if (title.length < 2 || /^\d+:\d+/.test(title)) continue;
 
-		const startTime = hours * 3600 + minutes * 60 + seconds;
+		const startTime = Number.parseInt(hours ?? '0', 10) * 3600 + Number(minutes) * 60 + Number(seconds);
 		chapters.push({ title, startTime });
 	}
 
@@ -156,7 +148,7 @@ function toSeconds(value: string | number | undefined, field: string, videoId: s
 	return parsed;
 }
 
-async function fetchYouTubeVideoData(videoId: string, youtubeApiKey: string): Promise<YouTubeVideosResponse> {
+async function fetchYouTubeVideoData(videoId: string, youtubeApiKey: string) {
 	const url = new URL('https://www.googleapis.com/youtube/v3/videos');
 	url.searchParams.set('id', videoId);
 	url.searchParams.set('part', 'snippet,contentDetails,statistics');
@@ -178,17 +170,14 @@ async function fetchYouTubeVideoData(videoId: string, youtubeApiKey: string): Pr
 	}
 }
 
-async function fetchYouTubeChannel(
-	youtubeApiKey: string,
-	channelId: string,
-): Promise<{ id: string; title: string | null; avatarUrl: string | null } | null> {
-	if (!youtubeApiKey) throw new Error('YouTube channel lookup is not configured');
+async function fetchChannelAvatar(youtubeApiKey: string, channelId: string): Promise<string | null> {
 	const url = new URL('https://www.googleapis.com/youtube/v3/channels');
 	url.searchParams.set('id', channelId);
 	url.searchParams.set('part', 'snippet');
 	url.searchParams.set('key', youtubeApiKey);
 
 	try {
+		if (!youtubeApiKey) throw new Error('YouTube channel lookup is not configured');
 		const response = await fetch(url, { signal: AbortSignal.timeout(YOUTUBE_API_TIMEOUT_MS) });
 		if (!response.ok) {
 			await response.body?.cancel();
@@ -198,15 +187,16 @@ async function fetchYouTubeChannel(
 		const channelData = YouTubeChannelsResponseSchema.parse(await response.json());
 		if (channelData.error) throw new Error(channelData.error.message);
 		const channel = channelData.items?.[0];
-		if (!channel) return null;
-		return {
-			id: channel.id,
-			title: channel.snippet.title.trim() || null,
-			avatarUrl: bestThumbnailUrl(channel.snippet.thumbnails),
-		};
+		return channel ? bestThumbnailUrl(channel.snippet.thumbnails) : null;
 	} catch (error) {
 		const message = String(error);
-		throw new Error(`YouTube channel lookup failed: ${message.replaceAll(youtubeApiKey, '[redacted]')}`);
+		console.warn({
+			tag: 'YOUTUBE',
+			msg: 'Channel avatar unavailable',
+			channelId,
+			error: youtubeApiKey ? message.replaceAll(youtubeApiKey, '[redacted]') : message,
+		});
+		return null;
 	}
 }
 
@@ -261,20 +251,7 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string, hints: Reso
 	const chapters = parseChaptersFromDescription(snippet.description);
 
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching transcript', videoId });
-	const [channelAvatar, transcript] = await Promise.all([
-		fetchYouTubeChannel(youtubeApiKey, snippet.channelId)
-			.then((channel) => channel?.avatarUrl ?? null)
-			.catch((error) => {
-				console.warn({
-					tag: 'YOUTUBE',
-					msg: 'Channel avatar unavailable',
-					channelId: snippet.channelId,
-					error: error instanceof Error ? error.message : String(error),
-				});
-				return null;
-			}),
-		fetchTranscript(videoId),
-	]);
+	const [channelAvatar, transcript] = await Promise.all([fetchChannelAvatar(youtubeApiKey, snippet.channelId), fetchTranscript(videoId)]);
 	const channelTitle = snippet.channelTitle.trim();
 
 	console.info({ tag: 'YOUTUBE', msg: 'Video fetched', title: snippet.title });

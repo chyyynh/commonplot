@@ -34,7 +34,7 @@
 | **RSS 訂閱**    | 監控   | 每 5 分鐘  | 抓取 feed、依 URL 去重、偵測 HN 連結             |
 | **Twitter/X**   | 監控   | 每 6 小時  | 透過 Kaito API 追蹤用戶 — 推文、長文、媒體       |
 | **YouTube**     | 監控   | 每 30 分鐘 | Atom feed → 影片資訊、字幕、章節、AI 精華段落    |
-| **Hacker News** | 處理器 | 經由 RSS   | 偵測 HN 連結 → Algolia 取評論 → 生成編輯筆記     |
+| **Hacker News** | 處理器 | 經由 RSS   | Firebase 排序留言 → 本機 HTML 轉 Markdown → 討論摘要 |
 | **網頁**        | 爬蟲   | saved URL  | 文章擷取、redirect/platform 與 PDF 偵測、OG metadata |
 | **App 輸入**    | 入口   | 即時       | Service-binding RPC — saved URL/blob acquisition + enrichment；membership 由 app 擁有 |
 

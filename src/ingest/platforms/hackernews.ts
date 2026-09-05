@@ -1,6 +1,10 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { generateText } from 'ai';
+import { fromHtml } from 'hast-util-from-html';
+import { toMdast } from 'hast-util-to-mdast';
+import { gfmToMarkdown } from 'mdast-util-gfm';
+import { toMarkdown } from 'mdast-util-to-markdown';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import {
@@ -30,15 +34,8 @@ export function parseHackerNewsResourceUrl(url: URL) {
 		: null;
 }
 
-const optionalStringSchema = z
-	.string()
-	.nullish()
-	.transform((value) => value ?? undefined);
-const optionalNonnegativeIntegerSchema = z
-	.int()
-	.nonnegative()
-	.nullish()
-	.transform((value) => value ?? undefined);
+const optionalStringSchema = z.string().nullish();
+const optionalNonnegativeIntegerSchema = z.int().nonnegative().nullish();
 
 const HackerNewsItemSchema = z.object({
 	by: optionalStringSchema,
@@ -46,10 +43,7 @@ const HackerNewsItemSchema = z.object({
 	deleted: z.boolean().optional(),
 	descendants: optionalNonnegativeIntegerSchema,
 	id: z.int().positive(),
-	kids: z
-		.array(z.int().positive())
-		.nullish()
-		.transform((value) => value ?? undefined),
+	kids: z.array(z.int().positive()).nullish(),
 	score: optionalNonnegativeIntegerSchema,
 	text: optionalStringSchema,
 	time: optionalNonnegativeIntegerSchema,
@@ -90,7 +84,27 @@ async function fetchHnItems(itemIds: readonly number[]): Promise<Map<number, Hac
 	return items;
 }
 
-async function scrapeHackerNews(env: CoreEnv, { hints, itemId, processingId, resolveSubject }: HackerNewsAcquisitionInput) {
+function isReadableComment(item: HackerNewsItem | undefined): item is HackerNewsItem & { text: string } {
+	return Boolean(item?.text && !item.deleted && !item.dead && item.type === 'comment');
+}
+
+function hnMarkdown(html: string): string {
+	return toMarkdown(
+		toMdast(fromHtml(`<base href="https://news.ycombinator.com/">${html}`, { fragment: true }), { nodeHandlers: { comment() {} } }),
+		{ extensions: [gfmToMarkdown()] },
+	).trim();
+}
+
+function discussionExcerpt(markdown: string, maxChars: number): string {
+	return markdown.length <= maxChars
+		? markdown
+		: `${markdown
+				.slice(0, maxChars)
+				.replace(/\s+\S*$/, '')
+				.trimEnd()}…`;
+}
+
+async function scrapeHackerNews({ hints, itemId, resolveSubject }: HackerNewsAcquisitionInput) {
 	console.info({ tag: 'HN', msg: 'Fetching item and ranked discussion', itemId });
 	const item = await fetchHnItem(itemId);
 	if (!item) throw new NonRetryableError(`Hacker News item ${itemId} was not found`);
@@ -98,52 +112,13 @@ async function scrapeHackerNews(env: CoreEnv, { hints, itemId, processingId, res
 
 	const rankedThreadIds = (item.kids ?? []).slice(0, HN_TOP_LEVEL_THREAD_LIMIT);
 	const fetchedThreads = await fetchHnItems(rankedThreadIds);
-	const rankedThreads = rankedThreadIds
-		.map((id) => fetchedThreads.get(id))
-		.filter((thread): thread is HackerNewsItem & { text: string } =>
-			Boolean(thread?.text && !thread.deleted && !thread.dead && thread.type === 'comment'),
-		);
+	const rankedThreads = rankedThreadIds.map((id) => fetchedThreads.get(id)).filter(isReadableComment);
 	const replyIds = rankedThreads.flatMap((thread) => (thread.kids ?? []).slice(0, HN_REPLIES_PER_THREAD_LIMIT));
 	const fetchedReplies = await fetchHnItems(replyIds);
-	const replies = [...fetchedReplies.values()].filter((reply): reply is HackerNewsItem & { text: string } =>
-		Boolean(reply.text && !reply.deleted && !reply.dead && reply.type === 'comment'),
-	);
+	if (!item.title && !item.text && !rankedThreads.length) throw new NonRetryableError(`Hacker News item ${itemId} has no content`);
 
-	const titleDocumentName = `title-${item.id}.html`;
-	const postDocumentName = `item-${item.id}.html`;
-	const fragments = [
-		...(item.title ? [{ name: titleDocumentName, html: item.title }] : []),
-		...(item.text ? [{ name: postDocumentName, html: item.text }] : []),
-		...[...rankedThreads, ...replies].map((comment) => ({ name: `comment-${comment.id}.html`, html: comment.text })),
-	];
-	if (!fragments.length) throw new NonRetryableError(`Hacker News item ${itemId} has no content`);
-	const convertedResults = await env.AI.toMarkdown(
-		fragments.map(({ html, name }) => ({ name, blob: new Blob([html], { type: 'text/html' }) })),
-		{
-			gateway: {
-				id: 'core-ingest',
-				collectLog: true,
-				retries: { maxAttempts: 1 },
-				metadata: {
-					feature: 'hn-html-to-markdown',
-					environment: env.AI_GATEWAY_ENVIRONMENT,
-					processing_id: processingId,
-				},
-			},
-			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
-			conversionOptions: { html: { hostname: 'news.ycombinator.com' } },
-		},
-	);
-	const conversionError = convertedResults.find((result) => result.format === 'error');
-	if (conversionError?.format === 'error') {
-		throw new Error(`Workers AI toMarkdown failed for ${conversionError.name}: ${conversionError.error}`);
-	}
-	const converted = new Map(
-		convertedResults.flatMap((result) => (result.format === 'error' ? [] : [[result.name, result.data.trim()] as const])),
-	);
-
-	const convertedTitle = item.title ? converted.get(titleDocumentName) : null;
-	if (item.title && !convertedTitle) throw new Error(`Workers AI toMarkdown returned no title for Hacker News item ${itemId}`);
+	const convertedTitle = item.title ? hnMarkdown(item.title) : null;
+	if (item.title && !convertedTitle) throw new Error(`Hacker News item ${itemId} has no readable title`);
 	const title =
 		convertedTitle ||
 		(item.type === 'comment'
@@ -151,31 +126,20 @@ async function scrapeHackerNews(env: CoreEnv, { hints, itemId, processingId, res
 			: ['poll', 'pollopt'].includes(item.type ?? '')
 				? `Hacker News poll #${itemId}`
 				: `Hacker News item #${itemId}`);
-	const hnText = item.text ? converted.get(postDocumentName) : null;
-	if (item.text && !hnText) throw new Error(`Workers AI toMarkdown returned no body for Hacker News item ${itemId}`);
+	const hnText = item.text ? hnMarkdown(item.text) : null;
+	if (item.text && !hnText) throw new Error(`Hacker News item ${itemId} has no readable body`);
 	if (item.type === 'comment' && !hnText) throw new Error(`Hacker News comment ${itemId} has no text`);
 
 	const threadBlocks = rankedThreads.flatMap((thread, index) => {
-		const fullTopLevel = converted.get(`comment-${thread.id}.html`);
+		const fullTopLevel = hnMarkdown(thread.text);
 		if (!fullTopLevel) return [];
-		const topLevel =
-			fullTopLevel.length <= HN_TOP_LEVEL_TEXT_MAX_CHARS
-				? fullTopLevel
-				: `${fullTopLevel
-						.slice(0, HN_TOP_LEVEL_TEXT_MAX_CHARS)
-						.replace(/\s+\S*$/, '')
-						.trimEnd()}…`;
+		const topLevel = discussionExcerpt(fullTopLevel, HN_TOP_LEVEL_TEXT_MAX_CHARS);
 		const directReplies = (thread.kids ?? []).slice(0, HN_REPLIES_PER_THREAD_LIMIT).flatMap((replyId) => {
-			const fullReply = converted.get(`comment-${replyId}.html`);
+			const reply = fetchedReplies.get(replyId);
+			if (!isReadableComment(reply)) return [];
+			const fullReply = hnMarkdown(reply.text);
 			if (!fullReply) return [];
-			const reply =
-				fullReply.length <= HN_REPLY_TEXT_MAX_CHARS
-					? fullReply
-					: `${fullReply
-							.slice(0, HN_REPLY_TEXT_MAX_CHARS)
-							.replace(/\s+\S*$/, '')
-							.trimEnd()}…`;
-			return [`Direct reply: ${reply}`];
+			return [`Direct reply: ${discussionExcerpt(fullReply, HN_REPLY_TEXT_MAX_CHARS)}`];
 		});
 		return [
 			{ commentCount: 1 + directReplies.length, text: [`Thread ${index + 1}`, `Top-level: ${topLevel}`, ...directReplies].join('\n') },
@@ -189,7 +153,6 @@ async function scrapeHackerNews(env: CoreEnv, { hints, itemId, processingId, res
 	else if (/^Show HN:/i.test(title)) itemType = 'show';
 	else if (item.type === 'story') itemType = 'story';
 	const markdown = [`# ${title}`, hnText].filter(Boolean).join('\n\n');
-	if (!markdown) throw new Error(`Hacker News item ${itemId} has no content`);
 	console.info({
 		tag: 'HN',
 		msg: 'Item and ranked discussion fetched',
@@ -216,7 +179,7 @@ async function scrapeHackerNews(env: CoreEnv, { hints, itemId, processingId, res
 			source: 'Hacker News',
 			...resolvedHints,
 			creators: submitter ? [{ role: 'submitter', literal: submitter }] : [],
-			kindMetadata: { points: item.score, commentCount: totalCommentCount },
+			kindMetadata: { points: item.score ?? undefined, commentCount: totalCommentCount },
 			fileType: null,
 			previewImageUrl: null,
 			subject: subject && { ...subject, publishedDate: resolvedHints.publishedDate },
@@ -235,7 +198,7 @@ export async function stageHackerNewsAcquisition(env: CoreEnv, step: WorkflowSte
 	const contentStream = await step.do(
 		'acquire-hackernews-ranked-v4',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await scrapeHackerNews(env, input)).body!,
+		async () => Response.json(await scrapeHackerNews(input)).body!,
 	);
 	const { resource, discussion } = await new Response(contentStream).json<HackerNewsAcquisition>();
 	const digest = await step.do(

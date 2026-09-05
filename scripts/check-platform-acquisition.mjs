@@ -75,6 +75,7 @@ async function acquire(input = {}) {
 				text: acquired.markdown,
 				time: acquired.publishedDate ? Date.parse(acquired.publishedDate) / 1000 : undefined,
 				url: input.subject?.normalizedUrl,
+				...input.hnItem,
 			},
 			'/graphql': {
 				data: {
@@ -120,7 +121,7 @@ async function acquire(input = {}) {
 					},
 				],
 			},
-			'/youtube/v3/channels': { items: [] },
+			'/youtube/v3/channels': input.youtubeChannel ?? { items: [] },
 		};
 		const originalFetch = globalThis.fetch;
 		globalThis.fetch = async (request) => {
@@ -132,9 +133,6 @@ async function acquire(input = {}) {
 		const env = {
 			YOUTUBE_API_KEY: 'fixture',
 			KAITO_API_KEY: 'fixture',
-			AI: {
-				toMarkdown: (files) => Promise.all(files.map(async ({ name, blob }) => ({ name, format: 'markdown', data: await blob.text() }))),
-			},
 		};
 		try {
 			switch (input.resourcePlatform) {
@@ -274,6 +272,48 @@ const cases = [
 		expected: { kind, resourcePlatform, resourceIdentifiers: [{ preferred: true, scheme: resourcePlatform, value: platformId }] },
 	})),
 	{
+		name: 'HN HTML preserves entities, paragraphs, relative links, and code without an AI binding',
+		input: {
+			resourcePlatform: 'hackernews',
+			platformId: '129',
+			hnItem: {
+				title: 'Ask HN: A &amp; B',
+				text: '<p>First <i>point</i></p><p><a href="item?id=123">Discussion</a></p><pre><code>const n = 1;\n</code></pre>',
+			},
+		},
+		expected: {
+			title: 'Ask HN: A & B',
+			content: '# Ask HN: A & B\n\nFirst *point*\n\n[Discussion](https://news.ycombinator.com/item?id=123)\n\n```\nconst n = 1;\n```',
+		},
+	},
+	{
+		name: 'HN comment keeps its fallback title and omits HTML comments',
+		input: {
+			resourcePlatform: 'hackernews',
+			platformId: '130',
+			hnItem: { type: 'comment', title: undefined, text: '<!-- hidden --><p>Hello &amp; welcome</p>' },
+		},
+		expected: { title: 'Hacker News comment #130', content: '# Hacker News comment #130\n\nHello & welcome' },
+	},
+	{
+		name: 'YouTube channel lookup consumes only the avatar fields',
+		input: {
+			resourcePlatform: 'youtube',
+			platformId: 'abcdefghijk',
+			youtubeChannel: { items: [{ snippet: { thumbnails: { high: { url: 'https://example.com/avatar.jpg' } } } }] },
+		},
+		expected: {
+			creators: [
+				{
+					role: 'channel',
+					literal: 'Example Channel',
+					avatarUrl: 'https://example.com/avatar.jpg',
+					profileUrl: 'https://www.youtube.com/channel/example',
+				},
+			],
+		},
+	},
+	{
 		name: 'Twitter longform keeps its article content',
 		input: {
 			resourcePlatform: 'twitter',
@@ -314,7 +354,13 @@ assert.equal(unknownLanguage.originalLang, 'und', 'unknown acquisition language 
 for (const testCase of cases) {
 	const actual = await acquire(testCase.input);
 	assert.deepEqual(Object.fromEntries(Object.keys(testCase.expected).map((key) => [key, actual[key]])), testCase.expected, testCase.name);
-	assert.equal(prepareResolvedResource(actual, analysis, []).kind, actual.kind, testCase.name);
+	const images = resourceImageSourceUrls({ ...actual, ogImageUrl: actual.previewImageUrl }).map((sourceUrl, index) => ({
+		sourceUrl,
+		deliveryUrl: `https://imagedelivery.net/account/resource-${index.toString(16).padStart(64, '0')}/public`,
+		height: null,
+		width: null,
+	}));
+	assert.equal(prepareResolvedResource(actual, analysis, images).kind, actual.kind, testCase.name);
 }
 
 const blog = await acquire();
