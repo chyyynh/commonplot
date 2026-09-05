@@ -112,7 +112,15 @@ const formattedDocument = {
 	content: [
 		{
 			type: 'table',
-			content: [{ type: 'tablerow', content: ['A | B', 'C'].map((value) => ({ type: 'tablecell', content: [text(value)] })) }],
+			content: [
+				{
+					type: 'tablerow',
+					content: [
+						{ type: 'tablecell', content: [text('A | B')] },
+						{ type: 'tablecell', content: ['one', 'two'].map((value) => ({ type: 'paragraph', content: [text(value)] })) },
+					],
+				},
+			],
 		},
 		{ type: 'preformatted', content: [text('before\n```\nafter')] },
 	],
@@ -127,7 +135,77 @@ assert.deepEqual(
 );
 assert.equal(formatted[0].children[0].children.length, 2);
 assert.equal(formatted[0].children[0].children[0].children[0].value, 'A | B');
+assert.equal(formatted[0].children[0].children[1].children[0].value, 'one two');
 assert.equal(formatted[1].value, 'before\n```\nafter');
+
+const prose = (...content) => ({ type: 'paragraph', content });
+const cite = () => text('[1]', { refs: [[1]] });
+const nestedDocument = {
+	...document,
+	catalog: { ...document.catalog, outline: [{ title: 'Nested heading', ref: [0, 1, 0, 0] }] },
+	content: [
+		{
+			type: 'blockquote',
+			content: [
+				prose(text('Quoted 😀 '), cite()),
+				{
+					type: 'list',
+					ordered: true,
+					startIndex: 10,
+					content: [
+						{
+							type: 'listitem',
+							content: [
+								{ type: 'heading', content: [text('Nested heading')] },
+								prose(text('First paragraph '), cite()),
+								prose(text('Second paragraph '), cite()),
+								{ type: 'list', content: [{ type: 'listitem', content: [text('Child '), cite()] }] },
+							],
+						},
+					],
+				},
+			],
+		},
+		{ type: 'paragraph', reference: true, content: [text('[1] Example reference.')] },
+	],
+};
+const nested = normalizeStructuredPdf(nestedDocument);
+const quote = fromMarkdown(nested.markdown).children[0];
+assert.equal(quote.type, 'blockquote');
+const list = quote.children[1];
+assert.equal(list.type, 'list');
+assert.equal(list.start, 10);
+assert.deepEqual(
+	list.children[0].children.map(({ type }) => type),
+	['heading', 'paragraph', 'paragraph', 'list'],
+);
+assert.equal(nested.mentions.length, 4);
+assert.equal(nested.mentions[0].section, null);
+for (const mention of nested.mentions.slice(1)) assert.equal(mention.section, 'Nested heading');
+for (const mention of nested.mentions) assert.equal(nested.markdown.slice(mention.contentStart, mention.contentEnd), '[1]');
+
+const formatting = normalizeStructuredPdf({
+	...document,
+	content: [
+		...['# Literal heading', '- Literal bullet', '1. Literal number', '<script>alert(1)</script>'].map((value) => prose(text(value))),
+		prose(text('em', { style: { italic: true } }), text('phasis', { style: { italic: true } })),
+		prose(text('left'), text(' bold ', { style: { bold: true } }), text('right')),
+		prose(text('unsafe', { target: { url: 'javascript:alert(1)' } })),
+		prose(text('credentials', { target: { url: 'https://user:pass@example.com' } })),
+		prose(text('safe', { target: { url: 'https://example.com/a_(b)' } })),
+	],
+});
+const formattedProse = fromMarkdown(formatting.markdown).children;
+assert.ok(formattedProse.every(({ type }) => type === 'paragraph'));
+assert.equal(formattedProse[0].children[0].value, '# Literal heading');
+assert.equal(formattedProse[3].children[0].value, '<script>alert(1)</script>');
+assert.equal(formattedProse[4].children[0].type, 'emphasis');
+assert.equal(formattedProse[4].children[0].children[0].value, 'emphasis');
+assert.equal(formattedProse[5].children[1].type, 'strong');
+assert.equal(formattedProse[5].children[1].children[0].value, ' bold ');
+assert.equal(formattedProse[6].children[0].type, 'text');
+assert.equal(formattedProse[7].children[0].type, 'text');
+assert.equal(formattedProse[8].children[0].url, 'https://example.com/a_(b)');
 
 const positionedText = (value, page) =>
 	text(value, {
@@ -145,7 +223,7 @@ const paragraph = (value, pageRects, options = {}) => ({
 
 const splitReferenceDocument = JSON.parse(JSON.stringify(document));
 splitReferenceDocument.catalog.pages = [{ contentRange: [[0], [5]], textSource: 'born-digital' }];
-splitReferenceDocument.content[2].content[1].refs = [[5]];
+splitReferenceDocument.content[2].content = [text('Prior work '), text('[41]', { refs: [[5]] })];
 splitReferenceDocument.content[4] = paragraph('[41] Kane, G.C.; Alavi, M.;', [[0, 54, 80, 295, 120]], {
 	nextPart: [5],
 	reference: true,
@@ -165,6 +243,7 @@ assert.deepEqual(splitReferenceNormalized.references, [
 	},
 ]);
 assert.deepEqual(splitReferenceNormalized.mentions[0].targetKeys, ['sdt-1']);
+assert.equal(splitReferenceNormalized.mentions[0].markerText, '[41]');
 
 const seamDocument = {
 	...document,

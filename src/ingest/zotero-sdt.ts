@@ -1,6 +1,6 @@
-import type { Table } from 'mdast';
+import type { BlockContent, Heading, PhrasingContent, Root, Table, Text } from 'mdast';
 import { gfmToMarkdown } from 'mdast-util-gfm';
-import { toMarkdown } from 'mdast-util-to-markdown';
+import { defaultHandlers, type Handle, type Info, toMarkdown } from 'mdast-util-to-markdown';
 import type {
 	ContentBlockNode,
 	PdfAnchor,
@@ -17,6 +17,7 @@ import {
 	shouldDropHardHyphenAtPartBoundary,
 } from 'structured-document-text/src/parts.js';
 import { isContentBoundary, isLeafBlock, refKey } from 'structured-document-text/src/range.js';
+import { getNestedBlockPlainText, mergeTextNodes } from 'structured-document-text/src/text.js';
 
 const MAX_DOCUMENT_NODES = 100_000;
 const MAX_DOCUMENT_TEXT_CHARS = 2_000_000;
@@ -253,11 +254,7 @@ function safeHttpUrl(value: string | undefined): string | null {
 	if (!value || value.length > 2_048) return null;
 	const url = URL.parse(value);
 	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) return null;
-	return url.toString().replaceAll('\\', '%5C').replaceAll('(', '%28').replaceAll(')', '%29');
-}
-
-function escapeMarkdownText(value: string): string {
-	return value.replace(/([\\`*_<>[\]])/gu, '\\$1');
+	return url.toString();
 }
 
 function statisticalReferenceNodes(nodes: readonly SdtNode[], referenceKeyByPath: ReadonlyMap<string, string>): ReadonlySet<SdtTextNode> {
@@ -282,76 +279,6 @@ function statisticalReferenceNodes(nodes: readonly SdtNode[], referenceKeyByPath
 		for (const node of run) ignored.add(node);
 	}
 	return ignored;
-}
-
-class MarkdownWriter {
-	private readonly chunks: string[] = [];
-	private length = 0;
-	readonly mentions: StructuredPdfCitationMention[] = [];
-
-	append(value: string): void {
-		const chunk = this.length === 0 ? value.trimStart() : value;
-		if (!chunk) return;
-		this.chunks.push(chunk);
-		this.length += chunk.length;
-	}
-
-	appendCitation(markerText: string, context: string, section: string | null, targetKeys: readonly string[]): void {
-		const normalized = markerText.replace(/\s+/gu, ' ');
-		const trimmed = normalized.trim();
-		if (!trimmed || trimmed.length > MAX_CITATION_MARKER_CHARS || this.mentions.length >= MAX_CITATION_MENTIONS) {
-			this.append(escapeMarkdownText(normalized));
-			return;
-		}
-		const leading = normalized.length - normalized.trimStart().length;
-		const trailing = normalized.length - normalized.trimEnd().length;
-		if (leading) this.append(escapeMarkdownText(normalized.slice(0, leading)));
-		const contentStart = this.length;
-		this.append(trimmed);
-		const contentEnd = this.length;
-		this.mentions.push({
-			contentEnd,
-			contentStart,
-			context: boundedText(cleanText(context), MAX_CITATION_CONTEXT_CHARS),
-			markerText: trimmed,
-			section: section ? boundedText(cleanText(section), MAX_SECTION_CHARS) : null,
-			targetKeys: [...new Set(targetKeys)],
-		});
-		if (trailing) this.append(escapeMarkdownText(normalized.slice(normalized.length - trailing)));
-	}
-
-	toString(): string {
-		return this.chunks.join('').trimEnd();
-	}
-}
-
-function renderInline(
-	writer: MarkdownWriter,
-	nodes: readonly SdtNode[],
-	context: string,
-	section: string | null,
-	referenceKeyByPath: ReadonlyMap<string, string>,
-): void {
-	const ignoredReferences = statisticalReferenceNodes(nodes, referenceKeyByPath);
-	for (const node of nodes) {
-		if (!('text' in node)) {
-			renderInline(writer, node.content, context, section, referenceKeyByPath);
-			continue;
-		}
-		const citationTargets = ignoredReferences.has(node)
-			? []
-			: (node.refs ?? []).flatMap((path) => referenceKeyByPath.get(refKey(path)) ?? []);
-		if (citationTargets.length) {
-			writer.appendCitation(node.text, context, section, citationTargets);
-			continue;
-		}
-		const normalized = node.text.replace(/\s+/gu, ' ');
-		let text = escapeMarkdownText(normalized);
-		if (node.style?.bold && text) text = `**${text}**`;
-		if (node.style?.italic && text) text = `_${text}_`;
-		const url = safeHttpUrl(node.target?.url);
-		writer.append(url && cleanText(normalized) ? `[${text}](${url})` : text);
-	}
 }
 
 /**
@@ -400,98 +327,6 @@ export function structuredPdfSourceCropUrl(inputContentHash: string, cropId: str
 	return `/api/media/asset/pdf-crops/${inputContentHash}/${cropId}.png`;
 }
 
-function renderBlock(
-	writer: MarkdownWriter,
-	node: SdtBlockNode,
-	path: RefPath,
-	section: string | null,
-	referenceKeyByPath: ReadonlyMap<string, string>,
-	headingLevelByPath: ReadonlyMap<string, number>,
-	sourceCropsByBlock: ReadonlyMap<string, readonly Readonly<{ altText: string; url: string }>[]>,
-): string | null {
-	if (node.flowClass === 'excluded') return section;
-	const context = cleanText(nodeText(node));
-	const sourceCrops = sourceCropsByBlock.get(refKey(path));
-	if (sourceCrops?.length) {
-		for (const crop of sourceCrops) writer.append(`![${escapeMarkdownText(crop.altText)}](${crop.url})\n\n`);
-		return section;
-	}
-	if (node.type === 'heading') {
-		const nextSection = context || section;
-		const level = headingLevelByPath.get(refKey(path)) ?? 2;
-		writer.append(`${'#'.repeat(level)} `);
-		renderInline(writer, node.content, context, nextSection, referenceKeyByPath);
-		writer.append('\n\n');
-		return nextSection;
-	}
-	if (node.type === 'paragraph' || node.type === 'caption' || node.type === 'image' || node.type === 'math' || node.type === 'note') {
-		if (node.type === 'caption') writer.append('_');
-		if (node.type === 'math') writer.append('$$ ');
-		renderInline(writer, node.content, context, section, referenceKeyByPath);
-		if (node.type === 'math') writer.append(' $$');
-		if (node.type === 'caption') writer.append('_');
-		writer.append('\n\n');
-		return section;
-	}
-	if (node.type === 'preformatted') {
-		writer.append(`${toMarkdown({ type: 'code', lang: 'text', value: nodeText(node).replaceAll('\0', '').trimEnd() })}\n`);
-		return section;
-	}
-	if (node.type === 'blockquote') {
-		for (const child of node.content) {
-			if ('text' in child) {
-				writer.append('> ');
-				renderInline(writer, [child], context, section, referenceKeyByPath);
-				writer.append('\n');
-			} else {
-				section = renderBlock(writer, child, path, section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
-			}
-		}
-		writer.append('\n');
-		return section;
-	}
-	if (node.type === 'list') {
-		for (const [index, item] of node.content.entries()) {
-			if ('text' in item) continue;
-			writer.append(node.ordered ? `${(node.startIndex ?? 1) + index}. ` : '- ');
-			const itemContext = cleanText(nodeText(item));
-			if (isLeafBlock(item)) renderInline(writer, item.content, itemContext, section, referenceKeyByPath);
-			else {
-				for (const child of item.content) {
-					if ('text' in child) renderInline(writer, [child], itemContext, section, referenceKeyByPath);
-					else section = renderBlock(writer, child, [...path, index], section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
-				}
-			}
-			writer.append('\n');
-		}
-		writer.append('\n');
-		return section;
-	}
-	if (node.type === 'table') {
-		const children: Table['children'] = [];
-		for (const row of node.content) {
-			if ('text' in row || row.type !== 'tablerow') continue;
-			const cells = row.content.filter((cell): cell is SdtBlockNode => !('text' in cell) && cell.type === 'tablecell');
-			children.push({
-				type: 'tableRow',
-				children: cells.map((cell) => ({ type: 'tableCell', children: [{ type: 'text', value: cleanText(nodeText(cell)) }] })),
-			});
-		}
-		if (children.length) writer.append(toMarkdown({ type: 'table', children }, { extensions: [gfmToMarkdown({ tablePipeAlign: false })] }));
-		else renderInline(writer, node.content, context, section, referenceKeyByPath);
-		writer.append('\n');
-		return section;
-	}
-	if (isLeafBlock(node)) renderInline(writer, node.content, context, section, referenceKeyByPath);
-	else {
-		for (const [index, child] of node.content.entries()) {
-			if ('text' in child) renderInline(writer, [child], context, section, referenceKeyByPath);
-			else section = renderBlock(writer, child, [...path, index], section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
-		}
-	}
-	return section;
-}
-
 function firstPageIdentifierText(document: StructuredPdfDocument): string | null {
 	const fulltextDocument = document as unknown as Parameters<typeof getFulltextFromStructuredText>[0];
 	const pageText = cleanText(getFulltextFromStructuredText(fulltextDocument, [0]));
@@ -531,7 +366,6 @@ export function normalizeStructuredPdf(
 		);
 		if (parsed.text) references.push({ key, ...parsed });
 	}
-	const writer = new MarkdownWriter();
 	const headingLevelByPath = headingLevels(document.catalog.outline);
 	const sourceCropsByBlock = new Map<string, Array<{ altText: string; url: string }>>();
 	if (options.inputContentHash && options.readySourceCrops?.length) {
@@ -543,6 +377,129 @@ export function normalizeStructuredPdf(
 		}
 	}
 	let section: string | null = null;
+	const citations = new Map<Text, Omit<StructuredPdfCitationMention, 'contentStart' | 'contentEnd'>>();
+	function inline(nodes: readonly SdtNode[]): PhrasingContent[] {
+		const children: PhrasingContent[] = [];
+		const context = boundedText(cleanText(nodes.map(nodeText).join('')), MAX_CITATION_CONTEXT_CHARS);
+		const ignoredReferences = statisticalReferenceNodes(nodes, referenceKeyByPath);
+		let plain: SdtTextNode[] = [];
+		function flush() {
+			// PDF glyph runs have different anchors. Once projected to prose, let SDT
+			// merge equal styles/links so adjacent emphasis delimiters cannot collide.
+			for (const node of mergeTextNodes(plain)) {
+				let child: PhrasingContent = { type: 'text', value: node.text };
+				if (node.style?.bold) child = { type: 'strong', children: [child] };
+				if (node.style?.italic) child = { type: 'emphasis', children: [child] };
+				if (node.target?.url && node.text.trim()) child = { type: 'link', url: node.target.url, children: [child] };
+				children.push(child);
+			}
+			plain = [];
+		}
+		for (const node of nodes) {
+			if (!('text' in node)) continue;
+			const value = node.text.replaceAll('\0', '').replace(/\s+/gu, ' ');
+			const markerText = value.trim();
+			const targetKeys = ignoredReferences.has(node) ? [] : (node.refs ?? []).flatMap((path) => referenceKeyByPath.get(refKey(path)) ?? []);
+			if (
+				context &&
+				targetKeys.length &&
+				markerText &&
+				markerText.length <= MAX_CITATION_MARKER_CHARS &&
+				citations.size < MAX_CITATION_MENTIONS
+			) {
+				flush();
+				if (value.startsWith(' ')) children.push({ type: 'text', value: ' ' });
+				const child: Text = { type: 'text', value: markerText };
+				citations.set(child, {
+					context,
+					markerText,
+					section: section ? boundedText(cleanText(section), MAX_SECTION_CHARS) : null,
+					targetKeys: [...new Set(targetKeys)],
+				});
+				children.push(child);
+				if (value.endsWith(' ')) children.push({ type: 'text', value: ' ' });
+			} else if (value) {
+				const url = safeHttpUrl(node.target?.url);
+				plain.push({ text: value, style: { bold: !!node.style?.bold, italic: !!node.style?.italic }, ...(url ? { target: { url } } : {}) });
+			}
+		}
+		flush();
+		return children;
+	}
+	function blocks(nodes: readonly SdtNode[], path: RefPath): BlockContent[] {
+		const children: BlockContent[] = [];
+		let phrasing: SdtTextNode[] = [];
+		function flush() {
+			if (phrasing.length) children.push({ type: 'paragraph', children: inline(phrasing) });
+			phrasing = [];
+		}
+		for (const [index, node] of nodes.entries()) {
+			if ('text' in node) phrasing.push(node);
+			else {
+				flush();
+				children.push(...toBlock(node, [...path, index]));
+			}
+		}
+		flush();
+		return children;
+	}
+	function toBlock(node: SdtBlockNode, path: RefPath): BlockContent[] {
+		if (node.flowClass === 'excluded') return [];
+		const crops = sourceCropsByBlock.get(refKey(path));
+		if (crops?.length) return crops.map(({ altText, url }) => ({ type: 'paragraph', children: [{ type: 'image', alt: altText, url }] }));
+		if (node.type === 'heading') {
+			section = cleanText(nodeText(node)) || section;
+			return [{ type: 'heading', depth: (headingLevelByPath.get(refKey(path)) ?? 2) as Heading['depth'], children: inline(node.content) }];
+		}
+		if (node.type === 'preformatted') return [{ type: 'code', lang: 'text', value: nodeText(node).replaceAll('\0', '').trimEnd() }];
+		if (node.type === 'blockquote') return [{ type: 'blockquote', children: blocks(node.content, path) }];
+		if (node.type === 'list') {
+			return [
+				{
+					type: 'list',
+					ordered: node.ordered ?? false,
+					start: node.startIndex ?? 1,
+					children: node.content.flatMap((item, index) =>
+						'text' in item || item.flowClass === 'excluded'
+							? []
+							: [
+									{
+										type: 'listItem' as const,
+										children: blocks(item.content, [...path, index]),
+									},
+								],
+					),
+				},
+			];
+		}
+		if (node.type === 'table' && !isLeafBlock(node)) {
+			const children: Table['children'] = [];
+			for (const row of node.content) {
+				if ('text' in row || row.type !== 'tablerow' || row.flowClass === 'excluded') continue;
+				children.push({
+					type: 'tableRow',
+					children: row.content.flatMap((cell) =>
+						'text' in cell || cell.type !== 'tablecell'
+							? []
+							: [
+									{
+										type: 'tableCell' as const,
+										// GFM has inline-only cells. SDT's native plain-text projection
+										// keeps separators between nested cell paragraphs.
+										children: [{ type: 'text' as const, value: cleanText(getNestedBlockPlainText(cell as ContentBlockNode)) }],
+									},
+								],
+					),
+				});
+			}
+			return children.length ? [{ type: 'table', children }] : blocks(node.content, path);
+		}
+		if (!isLeafBlock(node)) return blocks(node.content, path);
+		const children = inline(node.content);
+		// SDT math contains extracted text, not guaranteed LaTeX; do not invent TeX.
+		return children.length ? [{ type: 'paragraph', children: node.type === 'caption' ? [{ type: 'emphasis', children }] : children }] : [];
+	}
+	const tree: Root = { type: 'root', children: [] };
 	const renderedPartPaths = new Set<string>();
 	for (let index = 0; index < document.content.length; index += 1) {
 		const block = document.content[index];
@@ -557,9 +514,32 @@ export function normalizeStructuredPdf(
 		const partChain = parts.length >= 2 && parts[0]?.ref[0] === index ? (parts as Array<{ block: SdtBlockNode; ref: SdtRefPath }>) : null;
 		const renderableBlock = partChain ? mergeParagraphParts(partChain) : block;
 		for (const part of partChain?.slice(1) ?? []) renderedPartPaths.add(refKey(part.ref));
-		section = renderBlock(writer, renderableBlock, blockPath, section, referenceKeyByPath, headingLevelByPath, sourceCropsByBlock);
+		tree.children.push(...toBlock(renderableBlock, blockPath));
 	}
-	const markdown = writer.toString();
+	const positions: Array<{ node: Text; now: Info['now'] }> = [];
+	const citationText: Handle & { peek?: Handle } = (node: Text, parent, state, info) => {
+		if (!citations.has(node)) return defaultHandlers.text(node, parent, state, info);
+		positions.push({ node, now: info.now });
+		return node.value;
+	};
+	// Phrasing handlers look ahead: peek must not record a speculative position.
+	citationText.peek = (node: Text, parent, state, info) =>
+		(citations.has(node) ? node.value : defaultHandlers.text(node, parent, state, info)).charAt(0);
+	const markdown = toMarkdown(tree, {
+		bullet: '-',
+		emphasis: '_',
+		extensions: [gfmToMarkdown({ tablePipeAlign: false })],
+		handlers: { text: citationText },
+	}).trimEnd();
+	const lineStarts = [0];
+	for (let index = 0; index < markdown.length; index += 1) if (markdown[index] === '\n') lineStarts.push(index + 1);
+	const mentions: StructuredPdfCitationMention[] = positions.flatMap(({ node, now }) => {
+		const contentStart = (lineStarts[now.line - 1] ?? markdown.length) + now.column - 1;
+		const contentEnd = contentStart + node.value.length;
+		// Native indentation/escaping can shift positions. Never attach a citation
+		// unless the final serialized slice still matches the source marker exactly.
+		return markdown.slice(contentStart, contentEnd) === node.value ? [{ ...citations.get(node)!, contentStart, contentEnd }] : [];
+	});
 	const fallbackReasons = new Set<string>();
 	if (!markdown) fallbackReasons.add('empty-output');
 	if (document.catalog.pages.some(({ extractionDegraded }) => extractionDegraded === true)) fallbackReasons.add('degraded-page');
@@ -567,7 +547,7 @@ export function normalizeStructuredPdf(
 	const fullPageImagePages = document.catalog.pages.filter((_, index) => !getFulltextFromStructuredText(fulltextDocument, [index])).length;
 	return {
 		markdown,
-		mentions: writer.mentions.filter(({ context }) => context),
+		mentions,
 		paperIdentifierText: firstPageIdentifierText(document),
 		parse: {
 			fallbackReasons: [...fallbackReasons].sort(),
