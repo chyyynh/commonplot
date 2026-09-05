@@ -180,22 +180,25 @@ async function resolveCrossrefUpdates(step: WorkflowStep, references: readonly s
 	const updates: CrossrefMetadataUpdate[] = [];
 	for (let offset = 0; offset < references.length; offset += CROSSREF_BATCH_SIZE) {
 		const batch = references.slice(offset, offset + CROSSREF_BATCH_SIZE);
-		let resolutions: Array<Awaited<ReturnType<typeof resolveCrossrefReference>>> = [];
-		try {
-			resolutions = await step.do(
-				`resolve-crossref-reference-batch-v1-${offset / CROSSREF_BATCH_SIZE}`,
-				{ retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() => Promise.all(batch.map((text) => resolveCrossrefReference(text))),
-			);
-		} catch (error) {
-			console.warn({
-				tag: 'CROSSREF',
-				event: 'reference_resolution_batch_failed',
-				first_ordinal: offset + 1,
-				reference_count: batch.length,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
+		const resolutions = await Promise.all(
+			batch.map((text, index) =>
+				step
+					.do(
+						`resolve-crossref-reference-v2-${offset + index + 1}`,
+						{ retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+						() => resolveCrossrefReference(text),
+					)
+					.catch((error) => {
+						console.warn({
+							tag: 'CROSSREF',
+							event: 'reference_resolution_failed',
+							ordinal: offset + index + 1,
+							error: error instanceof Error ? error.message : String(error),
+						});
+						return null;
+					}),
+			),
+		);
 		for (const [index, resolution] of resolutions.entries()) {
 			if (resolution) updates.push({ ...resolution, ordinal: offset + index + 1 });
 		}
