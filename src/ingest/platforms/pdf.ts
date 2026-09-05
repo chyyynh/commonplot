@@ -7,7 +7,6 @@ import {
 	type AcquiredResource,
 	canonicalizeResourceLang,
 	type ResourceAcquisitionHints,
-	type ResourceCreator,
 	ResourceCreatorsSchema,
 	resolveResourceHints,
 } from '../../shared/resource';
@@ -36,7 +35,7 @@ const CROSSREF_PAPER_CANDIDATE_STEP = {
 	timeout: '30 seconds',
 } as const;
 
-export type PdfAcquisition = Readonly<{
+type PdfAcquisition = Readonly<{
 	resource: AcquiredResource & { kind: 'file'; resourcePlatform: null; paperIdentifierText: string | null };
 	parse: LocalPdfSummary;
 }>;
@@ -59,11 +58,6 @@ function localPdfResult(normalized: ReturnType<typeof normalizeStructuredPdf>, s
 	return { markdown, paperIdentifierText, parse };
 }
 
-function requireUsablePdf(acquisition: PdfAcquisition, sourceLabel: string): PdfAcquisition['resource'] {
-	if (!acquisition.resource.content) throw new NonRetryableError(`${sourceLabel} has no usable text; OCR is required`);
-	return acquisition.resource;
-}
-
 /** Finish a direct public PDF after the retrying fetch/local-parse step has ended. */
 export async function completeFetchedPdfAcquisition(
 	env: CoreEnv,
@@ -81,7 +75,10 @@ export async function completeFetchedPdfAcquisition(
 		processingId: input.processingId,
 		source: { kind: 'public-url', url: input.sourceUrl },
 	});
-	if (!cloudMarkdown) return requireUsablePdf(input.acquisition, 'Fetched PDF');
+	if (!cloudMarkdown) {
+		if (!input.acquisition.resource.content) throw new NonRetryableError('Fetched PDF has no usable text; OCR is required');
+		return input.acquisition.resource;
+	}
 	return {
 		...input.acquisition.resource,
 		content: cloudMarkdown,
@@ -93,22 +90,22 @@ export async function completeFetchedPdfAcquisition(
 export async function stageOpenAlexPdfMarkdown(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
 	try {
 		const contentStream = await step.do(
-			'acquire-openalex-content-pdf-v9',
+			'acquire-openalex-content-pdf-v10',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 			async () => {
 				const response = await fetchOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
-				return Response.json(await acquireFetchedPdfResponse(env, response, input.contentPdfUrl)).body!;
+				return new Response((await parseFetchedPdfResponse(env, response)).markdown).body!;
 			},
 		);
-		const local = await new Response(contentStream).json<PdfAcquisition>();
-		const acquired = requireUsablePdf(local, 'OpenAlex content PDF');
+		const markdown = await new Response(contentStream).text();
+		if (!markdown) throw new NonRetryableError('OpenAlex content PDF has no usable text; OCR is required');
 		console.info({
 			tag: 'OPENALEX_CONTENT',
 			event: 'pdf_acquired',
 			processing_id: input.processingId,
-			chars: acquired.content.length,
+			chars: markdown.length,
 		});
-		return acquired.content;
+		return markdown;
 	} catch (error) {
 		console.error({
 			tag: 'OPENALEX_CONTENT',
@@ -253,12 +250,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 	};
 }
 
-export async function acquireFetchedPdfResponse(
-	env: CoreEnv,
-	response: Response,
-	finalUrl: string,
-	hints: ResourceAcquisitionHints = { originalLang: null, publishedDate: null, summary: null },
-): Promise<PdfAcquisition> {
+async function parseFetchedPdfResponse(env: CoreEnv, response: Response) {
 	const declaredLength = Number(response.headers.get('content-length'));
 	if (Number.isFinite(declaredLength) && declaredLength > MAX_PDF_BYTES) {
 		await response.body?.cancel('Fetched PDF size is outside the supported range');
@@ -267,8 +259,18 @@ export async function acquireFetchedPdfResponse(
 	if (!response.body) throw new NonRetryableError('Fetched PDF response body is empty');
 	const body = limitByteStream(response.body, MAX_PDF_BYTES, () => new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`));
 	const attempt = await parsePdfArtifactStream(env, body, null, 'Fetched PDF');
-	const parsed = 'schemaVersion' in attempt ? localPdfResult(normalizeStructuredPdf(attempt), 'Fetched PDF') : attempt;
-	let fileName = new URL(finalUrl).pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';
+	return 'schemaVersion' in attempt ? localPdfResult(normalizeStructuredPdf(attempt), 'Fetched PDF') : attempt;
+}
+
+export async function acquireFetchedPdfResponse(
+	env: CoreEnv,
+	response: Response,
+	finalUrl: string,
+	hints: ResourceAcquisitionHints,
+): Promise<PdfAcquisition> {
+	const parsed = await parseFetchedPdfResponse(env, response);
+	const url = new URL(finalUrl);
+	let fileName = url.pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';
 	try {
 		fileName = decodeURIComponent(fileName) || 'document.pdf';
 	} catch {
@@ -276,7 +278,7 @@ export async function acquireFetchedPdfResponse(
 	}
 	const title = fileName.replace(/\.[a-z0-9]+$/i, '').trim();
 	if (!title) throw new NonRetryableError(`File name has no title: ${fileName}`);
-	const source = new URL(finalUrl).hostname.replace(/^www\./, '');
+	const source = url.hostname.replace(/^www\./, '');
 	return {
 		resource: {
 			kind: 'file',
@@ -375,9 +377,7 @@ export async function stageStoredPdfAcquisition(
 		...acquisition.resource,
 		paperIdentifierText,
 		...(paperHeader?.title ? { title: paperHeader.title.trim() } : {}),
-		...(paperHeader?.authors.length
-			? { creators: paperHeader.authors.map((literal): ResourceCreator => ({ literal, role: 'author' })) }
-			: {}),
+		...(paperHeader?.authors.length ? { creators: paperHeader.authors.map((literal) => ({ literal, role: 'author' as const })) } : {}),
 	};
 	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
 		grant: target.paidPdfFallback ?? null,
@@ -388,6 +388,7 @@ export async function stageStoredPdfAcquisition(
 			storageKey: resource.storageKey,
 		},
 	});
-	if (!cloudMarkdown) requireUsablePdf(acquisition, `Stored PDF ${target.resourceId}`);
+	if (!cloudMarkdown && !acquired.content)
+		throw new NonRetryableError(`Stored PDF ${target.resourceId} has no usable text; OCR is required`);
 	return cloudMarkdown ? { ...acquired, content: cloudMarkdown } : acquired;
 }
