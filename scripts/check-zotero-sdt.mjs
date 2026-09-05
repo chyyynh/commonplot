@@ -184,6 +184,67 @@ assert.equal(nested.mentions[0].section, null);
 for (const mention of nested.mentions.slice(1)) assert.equal(mention.section, 'Nested heading');
 for (const mention of nested.mentions) assert.equal(nested.markdown.slice(mention.contentStart, mention.contentEnd), '[1]');
 
+const nestedParts = structuredClone(nestedDocument);
+const itemParts = nestedParts.content[0].content[1].content[0].content;
+itemParts[1].content.push(text(' '));
+itemParts[1].nextPart = [0, 1, 0, 2];
+itemParts[2].previousPart = [0, 1, 0, 1];
+const joinedNested = normalizeStructuredPdf(nestedParts);
+assert.match(joinedNested.markdown, /First paragraph \[1\] Second paragraph \[1\]/u);
+assert.equal(joinedNested.mentions.length, 4);
+for (const mention of joinedNested.mentions) assert.equal(joinedNested.markdown.slice(mention.contentStart, mention.contentEnd), '[1]');
+
+// Part links must not duplicate text or move it between independent containers.
+for (const [content, expected] of [
+	[
+		[
+			{ ...prose(text('First')), nextPart: [2] },
+			{ ...prose(text('Second')), nextPart: [2] },
+			{ ...prose(text('shared.')), previousPart: [0] },
+		],
+		'First shared.\n\nSecond',
+	],
+	[
+		[
+			{ type: 'blockquote', content: [{ ...prose(text('Inside')), nextPart: [1] }] },
+			{ ...prose(text('Outside')), previousPart: [0, 0] },
+		],
+		'> Inside\n\nOutside',
+	],
+]) {
+	assert.equal(normalizeStructuredPdf({ ...document, content }).markdown, expected);
+}
+
+// Hidden and empty references must not become durable bibliography/mention data.
+for (const reference of [
+	{ ...prose(text('Hidden reference')), reference: true, flowClass: 'excluded' },
+	{ type: 'blockquote', flowClass: 'excluded', content: [{ ...prose(text('Hidden reference')), reference: true }] },
+	{ ...prose(text('')), reference: true },
+]) {
+	const target = reference.type === 'blockquote' ? [1, 0] : [1];
+	const result = normalizeStructuredPdf({ ...document, content: [prose(text('See '), text('[1]', { refs: [target] })), reference] });
+	assert.deepEqual(result.references, []);
+	assert.deepEqual(result.mentions, []);
+	assert.equal(fromMarkdown(result.markdown).children[0].children[0].value, 'See [1]');
+}
+
+const hiddenContinuation = normalizeStructuredPdf({
+	...document,
+	content: [
+		{ ...prose(text('[1] Visible reference.')), reference: true, nextPart: [1, 0] },
+		{
+			type: 'blockquote',
+			flowClass: 'excluded',
+			content: [{ ...prose(text('Hidden continuation')), reference: true, previousPart: [0] }],
+		},
+	],
+});
+assert.deepEqual(hiddenContinuation.references, [{ key: 'sdt-1', label: '1', text: 'Visible reference.' }]);
+
+let deepBlock = prose(text('Nested'));
+for (let depth = 0; depth < 100; depth += 1) deepBlock = { type: 'blockquote', content: [deepBlock] };
+assert.throws(() => parseStructuredPdfDocumentJson(JSON.stringify({ ...document, content: [deepBlock] })), /depth/u);
+
 const formatting = normalizeStructuredPdf({
 	...document,
 	content: [

@@ -18,7 +18,7 @@ import {
 	getPartChain,
 	shouldDropHardHyphenAtPartBoundary,
 } from 'structured-document-text/src/parts.js';
-import { isContentBoundary, isLeafBlock, refKey } from 'structured-document-text/src/range.js';
+import { isContentBoundary, isLeafBlock, refKey, sameRef } from 'structured-document-text/src/range.js';
 import { getNestedBlockPlainText, mergeTextNodes } from 'structured-document-text/src/text.js';
 
 const MAX_DOCUMENT_NODES = 100_000;
@@ -129,8 +129,9 @@ const BLOCK_TYPES = new Set([
 	'tablerow',
 ]);
 
-function assertSdtNodes(value: unknown, state: { characters: number; nodes: number }, path: string): asserts value is SdtNode[] {
+function assertSdtNodes(value: unknown, state: { characters: number; nodes: number }, path: string, depth = 1): asserts value is SdtNode[] {
 	if (!Array.isArray(value)) throw new Error(`Zotero SDT ${path} is not an array`);
+	if (value.length && depth > MAX_REF_PATH_DEPTH) throw new Error(`Zotero SDT exceeded ${MAX_REF_PATH_DEPTH} node path depth`);
 	for (const [index, node] of value.entries()) {
 		state.nodes += 1;
 		if (state.nodes > MAX_DOCUMENT_NODES) throw new Error(`Zotero SDT exceeded ${MAX_DOCUMENT_NODES} nodes`);
@@ -147,7 +148,7 @@ function assertSdtNodes(value: unknown, state: { characters: number; nodes: numb
 			}
 			if (node.previousPart !== undefined) assertRefPath(node.previousPart, `${path}[${index}].previousPart`);
 			if (node.nextPart !== undefined) assertRefPath(node.nextPart, `${path}[${index}].nextPart`);
-			assertSdtNodes(node.content, state, `${path}[${index}].content`);
+			assertSdtNodes(node.content, state, `${path}[${index}].content`, depth + 1);
 		}
 		if (node.anchor !== undefined) assertAnchor(node.anchor, `${path}[${index}].anchor`);
 		if (node.refs !== undefined) assertRefPaths(node.refs, `${path}[${index}].refs`);
@@ -221,13 +222,9 @@ function mergeParagraphParts(chain: readonly { block: SdtBlockNode }[]): SdtBloc
 	return { ...first, content };
 }
 
-function isReferencePart(_path: SdtRefPath, value: unknown): boolean {
-	const block = value as Partial<SdtBlockNode>;
-	return block.reference === true && block.flowClass !== 'excluded' && isLeafBlock(block);
-}
-
 function walkNodes(nodes: readonly SdtNode[], parentPath: RefPath = []): Array<{ node: SdtNode; path: number[] }> {
 	return nodes.flatMap((node, index) => {
+		if ('content' in node && node.flowClass === 'excluded') return [];
 		const path = [...parentPath, index];
 		return [{ node, path }, ...('content' in node ? walkNodes(node.content, path) : [])];
 	});
@@ -352,20 +349,23 @@ export function normalizeStructuredPdf(
 	const referenceKeyByPath = new Map<string, string>();
 	const visitedReferencePaths = new Set<string>();
 	const references: Array<{ key: string; label: string | null; text: string }> = [];
-	let referenceSequence = 0;
+	const referencePaths = new Set(referenceEntries.map(({ path }) => refKey(path)));
+	const includeReferencePart = (path: SdtRefPath, value: unknown) =>
+		referencePaths.has(refKey(path)) && !visitedReferencePaths.has(refKey(path)) && isLeafBlock(value as Partial<SdtBlockNode>);
 	for (const { node, path } of referenceEntries) {
 		if (visitedReferencePaths.has(refKey(path))) continue;
-		const chain = getPartChain(document, path as SdtRefPath, { include: isReferencePart });
+		const candidate = getPartChain(document, path as SdtRefPath, { include: includeReferencePart });
+		const chain = candidate.some((part) => sameRef(part.ref, path)) ? candidate : [];
 		const parts = chain.length ? chain : [{ block: node, ref: path }];
-		const key = `sdt-${++referenceSequence}`;
+		const parsed = referenceLabelAndText(
+			chain.length ? getLogicalBlockText(document, chain[0]!.ref, { include: includeReferencePart }) : nodeText(node),
+		);
+		const key = `sdt-${references.length + 1}`;
 		for (const part of parts) {
 			const partKey = refKey(part.ref);
 			visitedReferencePaths.add(partKey);
-			referenceKeyByPath.set(partKey, key);
+			if (parsed.text) referenceKeyByPath.set(partKey, key);
 		}
-		const parsed = referenceLabelAndText(
-			chain.length ? getLogicalBlockText(document, chain[0]!.ref, { include: isReferencePart }) : nodeText(node),
-		);
 		if (parsed.text) references.push({ key, ...parsed });
 	}
 	const headingLevelByPath = headingLevels(document.catalog.outline);
@@ -379,6 +379,7 @@ export function normalizeStructuredPdf(
 		}
 	}
 	let section: string | null = null;
+	const renderedPartPaths = new Set<string>();
 	const citations = new Map<string, Omit<StructuredPdfCitationMention, 'contentStart' | 'contentEnd'>>();
 	function inline(nodes: readonly SdtNode[], inheritedItalic = false): PhrasingContent[] {
 		const children: PhrasingContent[] = [];
@@ -453,7 +454,25 @@ export function normalizeStructuredPdf(
 		return children;
 	}
 	function toBlock(node: SdtBlockNode, path: RefPath): BlockContent[] {
-		if (node.flowClass === 'excluded') return [];
+		if (node.flowClass === 'excluded' || renderedPartPaths.has(refKey(path))) return [];
+		const parentPath = path.slice(0, -1);
+		const parts = getPartChain(document, path as SdtRefPath, {
+			include: (partPath, value) => {
+				const part = value as Partial<SdtBlockNode>;
+				return (
+					sameRef(partPath.slice(0, -1), parentPath) &&
+					!renderedPartPaths.has(refKey(partPath)) &&
+					part.type === 'paragraph' &&
+					part.flowClass !== 'excluded' &&
+					isLeafBlock(part)
+				);
+			},
+		});
+		if (parts.length >= 2 && sameRef(parts[0]!.ref, path)) {
+			node = mergeParagraphParts(parts as Array<{ block: SdtBlockNode }>);
+			for (const part of parts.slice(1)) renderedPartPaths.add(refKey(part.ref));
+		}
+		renderedPartPaths.add(refKey(path));
 		const crops = sourceCropsByBlock.get(refKey(path));
 		if (crops?.length) return crops.map(({ altText, url }) => ({ type: 'paragraph', children: [{ type: 'image', alt: altText, url }] }));
 		if (node.type === 'heading') {
@@ -508,23 +527,7 @@ export function normalizeStructuredPdf(
 		// SDT math contains extracted text, not guaranteed LaTeX; do not invent TeX.
 		return children.length ? [{ type: 'paragraph', children: node.type === 'caption' ? [{ type: 'emphasis', children }] : children }] : [];
 	}
-	const tree: Root = { type: 'root', children: [] };
-	const renderedPartPaths = new Set<string>();
-	for (let index = 0; index < document.content.length; index += 1) {
-		const block = document.content[index];
-		const blockPath: RefPath = [index];
-		if (block.flowClass === 'excluded' || renderedPartPaths.has(refKey(blockPath))) continue;
-		const parts = getPartChain(document, blockPath as SdtRefPath, {
-			include: (path, value) => {
-				const part = value as Partial<SdtBlockNode>;
-				return path.length === 1 && part.type === 'paragraph' && part.flowClass !== 'excluded' && isLeafBlock(part);
-			},
-		});
-		const partChain = parts.length >= 2 && parts[0]?.ref[0] === index ? (parts as Array<{ block: SdtBlockNode; ref: SdtRefPath }>) : null;
-		const renderableBlock = partChain ? mergeParagraphParts(partChain) : block;
-		for (const part of partChain?.slice(1) ?? []) renderedPartPaths.add(refKey(part.ref));
-		tree.children.push(...toBlock(renderableBlock, blockPath));
-	}
+	const tree: Root = { type: 'root', children: blocks(document.content, []) };
 	const serialized = toMarkdown(tree, {
 		bullet: '-',
 		emphasis: '_',
