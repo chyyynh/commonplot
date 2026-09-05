@@ -20,7 +20,7 @@ const PREPARATION_FAILED = 'LLAMA_PARSE_PREPARATION_FAILED';
 const REJECTED_MUTATION = 'LLAMA_PARSE_MUTATION_REJECTED';
 const READ_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '60 seconds' } as const;
 const CLEANUP_STEP = { retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '90 seconds' } as const;
-const CREATE_ONCE_STEP = { retries: { limit: 1, delay: '1 second' }, timeout: '60 seconds' } as const;
+const CREATE_ONCE_STEP = { retries: { limit: 0, delay: '1 second' }, timeout: '60 seconds' } as const;
 const UPLOAD_STEP = { retries: { limit: 2, delay: '5 seconds' }, timeout: '180 seconds' } as const;
 const TERMINAL_STATUSES = new Set(['COMPLETED', 'FAILED', 'CANCELLED']);
 
