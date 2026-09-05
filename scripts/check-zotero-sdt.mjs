@@ -207,6 +207,28 @@ assert.equal(formattedProse[6].children[0].type, 'text');
 assert.equal(formattedProse[7].children[0].type, 'text');
 assert.equal(formattedProse[8].children[0].url, 'https://example.com/a_(b)');
 
+// PDF glyph runs may switch between italic and bold-italic without a space.
+// Round-trip visible text, not a particular choice of Markdown delimiters.
+const visibleText = (node) => node.value ?? (node.children ?? []).map(visibleText).join('');
+const styles = [{}, { bold: true }, { italic: true }, { bold: true, italic: true }];
+for (const type of ['paragraph', 'caption']) {
+	for (const left of styles) {
+		for (const right of styles) {
+			const styled = normalizeStructuredPdf({
+				...document,
+				content: [
+					{ type, content: [text('one', { style: left }), text(' two* ', { style: right }), cite()] },
+					{ type: 'paragraph', reference: true, content: [text('[1] Example.')] },
+				],
+			});
+			assert.equal(visibleText(fromMarkdown(styled.markdown).children[0]), 'one two* [1]');
+			assert.equal(styled.mentions.length, 1);
+			const [mention] = styled.mentions;
+			assert.equal(styled.markdown.slice(mention.contentStart, mention.contentEnd), '[1]');
+		}
+	}
+}
+
 const positionedText = (value, page) =>
 	text(value, {
 		anchor: {

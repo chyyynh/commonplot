@@ -1,6 +1,8 @@
-import type { BlockContent, Heading, PhrasingContent, Root, Table, Text } from 'mdast';
-import { gfmToMarkdown } from 'mdast-util-gfm';
-import { defaultHandlers, type Handle, type Info, toMarkdown } from 'mdast-util-to-markdown';
+import type { BlockContent, Heading, PhrasingContent, Root, RootContent, Table } from 'mdast';
+import { fromMarkdown } from 'mdast-util-from-markdown';
+import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm';
+import { toMarkdown } from 'mdast-util-to-markdown';
+import { gfm } from 'micromark-extension-gfm';
 import type {
 	ContentBlockNode,
 	PdfAnchor,
@@ -377,8 +379,8 @@ export function normalizeStructuredPdf(
 		}
 	}
 	let section: string | null = null;
-	const citations = new Map<Text, Omit<StructuredPdfCitationMention, 'contentStart' | 'contentEnd'>>();
-	function inline(nodes: readonly SdtNode[]): PhrasingContent[] {
+	const citations = new Map<string, Omit<StructuredPdfCitationMention, 'contentStart' | 'contentEnd'>>();
+	function inline(nodes: readonly SdtNode[], inheritedItalic = false): PhrasingContent[] {
 		const children: PhrasingContent[] = [];
 		const context = boundedText(cleanText(nodes.map(nodeText).join('')), MAX_CITATION_CONTEXT_CHARS);
 		const ignoredReferences = statisticalReferenceNodes(nodes, referenceKeyByPath);
@@ -391,7 +393,9 @@ export function normalizeStructuredPdf(
 				if (node.style?.bold) child = { type: 'strong', children: [child] };
 				if (node.style?.italic) child = { type: 'emphasis', children: [child] };
 				if (node.target?.url && node.text.trim()) child = { type: 'link', url: node.target.url, children: [child] };
-				children.push(child);
+				const previous = children.at(-1);
+				if (child.type === 'emphasis' && previous?.type === 'emphasis') previous.children.push(...child.children);
+				else children.push(child);
 			}
 			plain = [];
 		}
@@ -409,18 +413,23 @@ export function normalizeStructuredPdf(
 			) {
 				flush();
 				if (value.startsWith(' ')) children.push({ type: 'text', value: ' ' });
-				const child: Text = { type: 'text', value: markerText };
-				citations.set(child, {
+				// Only the adapter creates fragment URLs; source links must be HTTP(S).
+				const url = `#sdt-citation-${citations.size}`;
+				citations.set(url, {
 					context,
 					markerText,
 					section: section ? boundedText(cleanText(section), MAX_SECTION_CHARS) : null,
 					targetKeys: [...new Set(targetKeys)],
 				});
-				children.push(child);
+				children.push({ type: 'link', url, children: [{ type: 'text', value: markerText }] });
 				if (value.endsWith(' ')) children.push({ type: 'text', value: ' ' });
 			} else if (value) {
 				const url = safeHttpUrl(node.target?.url);
-				plain.push({ text: value, style: { bold: !!node.style?.bold, italic: !!node.style?.italic }, ...(url ? { target: { url } } : {}) });
+				plain.push({
+					text: value,
+					style: { bold: !!node.style?.bold, italic: !inheritedItalic && !!node.style?.italic },
+					...(url ? { target: { url } } : {}),
+				});
 			}
 		}
 		flush();
@@ -495,7 +504,7 @@ export function normalizeStructuredPdf(
 			return children.length ? [{ type: 'table', children }] : blocks(node.content, path);
 		}
 		if (!isLeafBlock(node)) return blocks(node.content, path);
-		const children = inline(node.content);
+		const children = inline(node.content, node.type === 'caption');
 		// SDT math contains extracted text, not guaranteed LaTeX; do not invent TeX.
 		return children.length ? [{ type: 'paragraph', children: node.type === 'caption' ? [{ type: 'emphasis', children }] : children }] : [];
 	}
@@ -516,30 +525,32 @@ export function normalizeStructuredPdf(
 		for (const part of partChain?.slice(1) ?? []) renderedPartPaths.add(refKey(part.ref));
 		tree.children.push(...toBlock(renderableBlock, blockPath));
 	}
-	const positions: Array<{ node: Text; now: Info['now'] }> = [];
-	const citationText: Handle & { peek?: Handle } = (node: Text, parent, state, info) => {
-		if (!citations.has(node)) return defaultHandlers.text(node, parent, state, info);
-		positions.push({ node, now: info.now });
-		return node.value;
-	};
-	// Phrasing handlers look ahead: peek must not record a speculative position.
-	citationText.peek = (node: Text, parent, state, info) =>
-		(citations.has(node) ? node.value : defaultHandlers.text(node, parent, state, info)).charAt(0);
-	const markdown = toMarkdown(tree, {
+	const serialized = toMarkdown(tree, {
 		bullet: '-',
 		emphasis: '_',
 		extensions: [gfmToMarkdown({ tablePipeAlign: false })],
-		handlers: { text: citationText },
 	}).trimEnd();
-	const lineStarts = [0];
-	for (let index = 0; index < markdown.length; index += 1) if (markdown[index] === '\n') lineStarts.push(index + 1);
-	const mentions: StructuredPdfCitationMention[] = positions.flatMap(({ node, now }) => {
-		const contentStart = (lineStarts[now.line - 1] ?? markdown.length) + now.column - 1;
-		const contentEnd = contentStart + node.value.length;
-		// Native indentation/escaping can shift positions. Never attach a citation
-		// unless the final serialized slice still matches the source marker exactly.
-		return markdown.slice(contentStart, contentEnd) === node.value ? [{ ...citations.get(node)!, contentStart, contentEnd }] : [];
-	});
+	let markdown = '';
+	let cursor = 0;
+	const mentions: StructuredPdfCitationMention[] = [];
+	function unwrapCitations(nodes: readonly RootContent[]): void {
+		for (const node of nodes) {
+			const citation = node.type === 'link' ? citations.get(node.url) : undefined;
+			const start = node.position?.start.offset;
+			const end = node.position?.end.offset;
+			if (citation && start !== undefined && end !== undefined && start >= cursor) {
+				markdown += serialized.slice(cursor, start);
+				const contentStart = markdown.length;
+				markdown += citation.markerText;
+				mentions.push({ ...citation, contentStart, contentEnd: markdown.length });
+				cursor = end;
+			} else if ('children' in node) unwrapCitations(node.children);
+		}
+	}
+	// Parse final output for real offsets: serializer trackers can drift when
+	// emphasis retroactively escapes preceding text. Temporary links never persist.
+	if (citations.size) unwrapCitations(fromMarkdown(serialized, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }).children);
+	markdown += serialized.slice(cursor);
 	const fallbackReasons = new Set<string>();
 	if (!markdown) fallbackReasons.add('empty-output');
 	if (document.catalog.pages.some(({ extractionDegraded }) => extractionDegraded === true)) fallbackReasons.add('degraded-page');
