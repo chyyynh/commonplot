@@ -11,7 +11,7 @@ import {
 	isPaperIdentifier,
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
-import { type ProcessingResource, stageStoredResourceAcquisition, stageUrlAcquisition } from './acquisition';
+import { stageStoredResourceAcquisition, stageUrlAcquisition } from './acquisition';
 import { analyzeResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { LLAMA_PARSE_MAX_PAGES } from './platforms/pdf-fallback-policy';
@@ -173,12 +173,7 @@ async function loadResourceReacquisitionInput(db: NodePgDatabase, resourceId: st
 	};
 }
 
-async function resolveProcessingResource(
-	env: CoreEnv,
-	step: WorkflowStep,
-	target: ResourceProcessingTarget,
-	instanceId: string,
-): Promise<ProcessingResource> {
+async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, target: ResourceProcessingTarget, instanceId: string) {
 	if (target.kind === 'draft') {
 		return stageUrlAcquisition(env, step, {
 			hints: {

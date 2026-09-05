@@ -2,15 +2,17 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { type HostedResourceImage, hostedResourceImageFields } from '../shared/image-mapping';
 import {
+	type AcquiredResource,
 	canonicalizeResourceLang,
 	isPaperIdentifier,
-	RESOURCE_TYPES,
+	RESOURCE_KIND_METADATA,
+	RESOURCE_PLATFORMS,
 	ResourceCreatorsSchema,
 	type ResourceIdentifier,
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
-import type { ProcessingResource } from './acquisition';
 import type { ResourceAnalysis } from './analysis';
+import type { YouTubeResourceData } from './platforms/youtube';
 import { persistYouTubeData } from './platforms/youtube-persistence';
 
 export type ResourceDraftRelation =
@@ -41,7 +43,7 @@ function httpUrl(value: string | null, field: string): string | null {
 }
 
 export function prepareResolvedResource(
-	resource: ProcessingResource,
+	resource: AcquiredResource & { youtube?: YouTubeResourceData },
 	analysis: ResourceAnalysis,
 	hostedImages: readonly HostedResourceImage[],
 ) {
@@ -51,27 +53,21 @@ export function prepareResolvedResource(
 	if (!title || !content) throw new TypeError('Resolved Resource requires title and content');
 	if (!sourceName) throw new TypeError('Resolved Resource requires a source name');
 	const creators = ResourceCreatorsSchema.parse(resource.creators);
-	const kindMetadata = RESOURCE_TYPES[resource.kind].metadata.parse(resource.kindMetadata);
+	const kindMetadata = RESOURCE_KIND_METADATA[resource.kind].parse(resource.kindMetadata);
 	const media = hostedResourceImageFields({ creators, kindMetadata, ogImageUrl: resource.previewImageUrl }, hostedImages);
 	const identifiers = ResourceIdentifiersSchema.parse(resource.resourceIdentifiers);
-	if (resource.kind === 'paper' && !identifiers.some(isPaperIdentifier)) {
-		throw new TypeError('Paper Resource requires a DOI, arXiv, or OpenAlex identifier');
-	}
 	if (
-		identifiers.some((identifier) =>
-			resource.resourcePlatform !== null
-				? identifier.scheme !== resource.resourcePlatform
-				: resource.kind !== 'paper' || !isPaperIdentifier(identifier),
-		)
+		resource.resourcePlatform !== null
+			? RESOURCE_PLATFORMS[resource.resourcePlatform].kind !== resource.kind ||
+				!identifiers.length ||
+				identifiers.some(({ scheme }) => scheme !== resource.resourcePlatform)
+			: resource.kind === 'paper'
+				? !identifiers.length || identifiers.some((identifier) => !isPaperIdentifier(identifier))
+				: identifiers.length > 0
 	) {
 		throw new TypeError('Resource identifiers do not match its identity');
 	}
-	if (resource.resourcePlatform !== null && !identifiers.some(({ scheme }) => scheme === resource.resourcePlatform)) {
-		throw new TypeError('Platform Resource requires its exact identifier');
-	}
-	const isYouTubeResource =
-		resource.kind === 'video' && resource.resourcePlatform === 'youtube' && identifiers.some(({ scheme }) => scheme === 'youtube');
-	if (('youtube' in resource && resource.youtube !== undefined) !== isYouTubeResource) {
+	if (resource.resourcePlatform === 'youtube' ? !resource.youtube : resource.youtube !== undefined) {
 		throw new TypeError('YouTube data requires a YouTube video Resource');
 	}
 	const url = httpUrl(resource.url, 'Resource URL');
@@ -83,7 +79,9 @@ export function prepareResolvedResource(
 				normalizedUrl: httpUrl(resource.subject.normalizedUrl, 'Normalized subject URL')!,
 			}
 		: null;
-	const prepared = {
+	return {
+		kind: resource.kind,
+		resourcePlatform: resource.resourcePlatform,
 		content,
 		creators: media.creators,
 		fileType: resource.fileType ?? null,
@@ -102,21 +100,8 @@ export function prepareResolvedResource(
 		tags: [...analysis.tags],
 		title,
 		url,
+		youtube: resource.youtube ?? null,
 	};
-	if (resource.resourcePlatform === 'youtube') {
-		return {
-			...prepared,
-			kind: resource.kind,
-			resourcePlatform: resource.resourcePlatform,
-			youtube: resource.youtube,
-		} as const;
-	}
-	return {
-		...prepared,
-		kind: resource.kind,
-		resourcePlatform: resource.resourcePlatform,
-		youtube: null,
-	} as const;
 }
 
 async function lockResource(db: NodePgDatabase, resourceId: string): Promise<LockedResource> {
@@ -285,7 +270,7 @@ async function writeCanonicalResource(
 				updated_at = NOW()
 		`);
 	}
-	if (resource.resourcePlatform === 'youtube') {
+	if (resource.youtube) {
 		await persistYouTubeData(db, resourceId, resource.youtube);
 	}
 	const original = await db.execute<{ revision: string }>(sql`

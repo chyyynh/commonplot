@@ -95,8 +95,6 @@ export async function stageUrlAcquisition(
 	}
 }
 
-export type ProcessingResource = Awaited<ReturnType<typeof stageUrlAcquisition>>;
-
 export async function stageStoredResourceAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,

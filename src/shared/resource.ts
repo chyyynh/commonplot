@@ -77,56 +77,45 @@ const PaperRelationSnapshotSchema = z.object({ total: z.int().nonnegative(), ite
 export type PaperRelationItem = Readonly<z.infer<typeof PaperRelationItemSchema>>;
 export type PaperRelationSnapshot = Readonly<z.infer<typeof PaperRelationSnapshotSchema>>;
 
-export const RESOURCE_TYPES = {
-	blog: {
-		platforms: [{ name: 'lesswrong', identifier: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/) }],
-		metadata: z.object({ siteName: z.string().trim().min(1).optional() }).nullable(),
-	},
-	forum: {
-		platforms: [{ name: 'hackernews', identifier: z.string().regex(/^[1-9]\d*$/) }],
-		metadata: z.object({
-			points: z.int().nonnegative().optional(),
-			commentCount: z.int().nonnegative().optional(),
-		}),
-	},
-	post: {
-		platforms: [{ name: 'twitter', identifier: z.string().regex(/^\d+$/) }],
-		metadata: z.object({ attachments: z.array(ResourceMediaAttachmentSchema).max(16), quote: PostQuoteSchema.optional() }),
-	},
-	video: {
-		platforms: [{ name: 'youtube', identifier: z.string().regex(/^[A-Za-z0-9_-]{11}$/) }],
-		metadata: z.object({
-			durationSeconds: z.int().positive().optional(),
-			viewCount: z.int().nonnegative().optional(),
-			likeCount: z.int().nonnegative().optional(),
-			commentCount: z.int().nonnegative().optional(),
-		}),
-	},
-	paper: {
-		platforms: [],
-		metadata: z.object({
-			venue: z.string().trim().min(1).optional(),
-			year: z.int().positive().optional(),
-			citedByCount: z.int().nonnegative().optional(),
-			referenceCount: z.int().nonnegative().optional(),
-			pdfUrl: optionalHttpUrl.optional(),
-			references: PaperRelationSnapshotSchema.optional(),
-			citations: PaperRelationSnapshotSchema.optional(),
-		}),
-	},
-	image: { platforms: [], metadata: z.null() },
-	file: { platforms: [], metadata: z.null() },
-} as const satisfies Readonly<Record<string, { platforms: readonly { name: string; identifier: z.ZodString }[]; metadata: z.ZodType }>>;
+export const RESOURCE_KIND_METADATA = {
+	blog: z.object({ siteName: z.string().trim().min(1).optional() }).nullable(),
+	forum: z.object({
+		points: z.int().nonnegative().optional(),
+		commentCount: z.int().nonnegative().optional(),
+	}),
+	post: z.object({ attachments: z.array(ResourceMediaAttachmentSchema).max(16), quote: PostQuoteSchema.optional() }),
+	video: z.object({
+		durationSeconds: z.int().positive().optional(),
+		viewCount: z.int().nonnegative().optional(),
+		likeCount: z.int().nonnegative().optional(),
+		commentCount: z.int().nonnegative().optional(),
+	}),
+	paper: z.object({
+		venue: z.string().trim().min(1).optional(),
+		year: z.int().positive().optional(),
+		citedByCount: z.int().nonnegative().optional(),
+		referenceCount: z.int().nonnegative().optional(),
+		pdfUrl: optionalHttpUrl.optional(),
+		references: PaperRelationSnapshotSchema.optional(),
+		citations: PaperRelationSnapshotSchema.optional(),
+	}),
+	image: z.null(),
+	file: z.null(),
+} as const;
 
-export type ForumKindMetadata = z.infer<(typeof RESOURCE_TYPES)['forum']['metadata']>;
-export type PostKindMetadata = z.infer<(typeof RESOURCE_TYPES)['post']['metadata']>;
-export type PaperKindMetadata = z.infer<(typeof RESOURCE_TYPES)['paper']['metadata']>;
-export type ResourceKind = keyof typeof RESOURCE_TYPES;
-export type ResourcePlatform = (typeof RESOURCE_TYPES)[ResourceKind]['platforms'][number]['name'];
-export type ResourceKindMetadataFor<TKind extends ResourceKind> = z.infer<(typeof RESOURCE_TYPES)[TKind]['metadata']>;
-export type ResourceKindMetadata = {
-	[K in ResourceKind]: ResourceKindMetadataFor<K>;
-}[ResourceKind];
+export type ResourceKind = keyof typeof RESOURCE_KIND_METADATA;
+export type ForumKindMetadata = z.infer<typeof RESOURCE_KIND_METADATA.forum>;
+export type PostKindMetadata = z.infer<typeof RESOURCE_KIND_METADATA.post>;
+export type PaperKindMetadata = z.infer<typeof RESOURCE_KIND_METADATA.paper>;
+export type ResourceKindMetadata = z.infer<(typeof RESOURCE_KIND_METADATA)[ResourceKind]>;
+
+export const RESOURCE_PLATFORMS = {
+	lesswrong: { kind: 'blog', identifier: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/) },
+	hackernews: { kind: 'forum', identifier: z.string().regex(/^[1-9]\d*$/) },
+	twitter: { kind: 'post', identifier: z.string().regex(/^\d+$/) },
+	youtube: { kind: 'video', identifier: z.string().regex(/^[A-Za-z0-9_-]{11}$/) },
+} as const satisfies Record<string, { kind: ResourceKind; identifier: z.ZodString }>;
+export type ResourcePlatform = keyof typeof RESOURCE_PLATFORMS;
 
 // Adapters share an output contract; each adapter owns its mapping and identity.
 export type AcquiredResource = {
@@ -169,10 +158,7 @@ export function literalCreator(
 
 export const ResourceCreatorsSchema = z.array(ResourceCreatorSchema);
 
-const ResourceIdentifierSchemeSchema = z.enum([
-	...PAPER_IDENTIFIER_SCHEMES,
-	...Object.values(RESOURCE_TYPES).flatMap(({ platforms }) => platforms.map(({ name }) => name)),
-]);
+const ResourceIdentifierSchemeSchema = z.enum([...PAPER_IDENTIFIER_SCHEMES, ...(Object.keys(RESOURCE_PLATFORMS) as ResourcePlatform[])]);
 
 function canonicalIdentifierValue(scheme: z.infer<typeof ResourceIdentifierSchemeSchema>, value: string): string | null {
 	if (isPaperIdentifierScheme(scheme)) {
@@ -185,14 +171,8 @@ function canonicalIdentifierValue(scheme: z.infer<typeof ResourceIdentifierSchem
 				return normalizeOpenAlexId(value);
 		}
 	}
-	for (const { platforms } of Object.values(RESOURCE_TYPES)) {
-		for (const platform of platforms) {
-			if (platform.name !== scheme) continue;
-			const identifier = platform.identifier.safeParse(value);
-			return identifier.success ? identifier.data : null;
-		}
-	}
-	return null;
+	const identifier = RESOURCE_PLATFORMS[scheme].identifier.safeParse(value);
+	return identifier.success ? identifier.data : null;
 }
 
 const ResourceIdentifierSchema = z

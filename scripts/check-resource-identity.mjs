@@ -13,30 +13,12 @@ registerHooks({
 	},
 });
 
-const [resource, paper, hackerNews, lessWrong, twitter, youtube, { analyzeResource }] = await Promise.all([
+const [resource, paper, { resolvePlatformResourceUrl }, { analyzeResource }] = await Promise.all([
 	import('../src/shared/resource.ts'),
 	import('../src/shared/paper-identity.ts'),
-	import('../src/ingest/platforms/hackernews.ts'),
-	import('../src/ingest/platforms/lesswrong.ts'),
-	import('../src/ingest/platforms/twitter-acquisition.ts'),
-	import('../src/ingest/platforms/youtube.ts'),
+	import('../src/ingest/acquisition.ts'),
 	import('../src/ingest/analysis.ts'),
 ]);
-
-function detectResourceUrl(value) {
-	const url = URL.parse(value);
-	if (!url) return null;
-	const hostname = url.hostname.toLowerCase();
-	if (hostname === 'ycombinator.com' || hostname.endsWith('.ycombinator.com')) return hackerNews.parseHackerNewsResourceUrl(url);
-	if (hostname === 'lesswrong.com' || hostname.endsWith('.lesswrong.com')) return lessWrong.parseLessWrongResourceUrl(url);
-	if (hostname === 'twitter.com' || hostname.endsWith('.twitter.com') || hostname === 'x.com' || hostname.endsWith('.x.com')) {
-		return twitter.parseTwitterResourceUrl(url);
-	}
-	if (hostname === 'youtube.com' || hostname.endsWith('.youtube.com') || hostname === 'youtu.be' || hostname.endsWith('.youtu.be')) {
-		return youtube.parseYouTubeResourceUrl(url);
-	}
-	return null;
-}
 
 const platformUrlCases = [
 	['https://twitter.com/openai/status/1234567890?s=20', ['twitter', '1234567890', 'https://x.com/i/status/1234567890']],
@@ -58,7 +40,7 @@ const platformUrlCases = [
 	['https://lesswrong.com/posts/short', null],
 ];
 for (const [input, expected] of platformUrlCases) {
-	const actual = detectResourceUrl(input);
+	const actual = resolvePlatformResourceUrl(new URL(input));
 	assert.deepEqual(actual ? [actual.resourcePlatform, actual.platformId, actual.canonicalUrl] : null, expected, input);
 }
 

@@ -4,7 +4,7 @@ import { normalizedResourceImageUrl } from '../../shared/image-mapping';
 import {
 	type AcquiredResource,
 	literalCreator,
-	RESOURCE_TYPES,
+	RESOURCE_PLATFORMS,
 	type ResourceAcquisitionHints,
 	resolveResourceHints,
 } from '../../shared/resource';
@@ -12,7 +12,7 @@ import {
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
 
 export function parseLessWrongResourceUrl(url: URL) {
-	const postId = RESOURCE_TYPES.blog.platforms[0].identifier.safeParse(url.pathname.match(/^\/posts\/([^/]+)(?:\/|$)/)?.[1]);
+	const postId = RESOURCE_PLATFORMS.lesswrong.identifier.safeParse(url.pathname.match(/^\/posts\/([^/]+)(?:\/|$)/)?.[1]);
 	return postId.success
 		? {
 				resourcePlatform: 'lesswrong' as const,

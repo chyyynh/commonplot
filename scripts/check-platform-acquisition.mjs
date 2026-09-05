@@ -40,6 +40,8 @@ import {
 } from '../src/shared/image-mapping.ts';
 
 const { YoutubeTranscript } = await import('youtube-transcript');
+const { prepareResolvedResource } = await import('../src/ingest/resource-persistence.ts');
+const analysis = { tags: ['Research'], keywords: ['fixture'], originalLang: 'en', summary: 'Fixture summary' };
 
 const base = {
 	url: 'https://example.com/article',
@@ -285,6 +287,23 @@ assert.equal(unknownLanguage.originalLang, 'und', 'unknown acquisition language 
 for (const testCase of cases) {
 	const actual = await acquire(testCase.input);
 	assert.deepEqual(Object.fromEntries(Object.keys(testCase.expected).map((key) => [key, actual[key]])), testCase.expected, testCase.name);
+	assert.equal(prepareResolvedResource(actual, analysis, []).kind, actual.kind, testCase.name);
+}
+
+const blog = await acquire();
+const video = await acquire({ resourcePlatform: 'youtube', platformId: 'abcdefghijk' });
+const invalidResources = [
+	{ ...blog, kind: 'paper', kindMetadata: {} },
+	{ ...blog, resourcePlatform: 'lesswrong' },
+	{ ...blog, resourcePlatform: 'twitter', resourceIdentifiers: [{ preferred: true, scheme: 'twitter', value: '123' }] },
+	{ ...blog, resourceIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }] },
+	{ ...video, resourceIdentifiers: [...video.resourceIdentifiers, { preferred: true, scheme: 'doi', value: '10.1000/example' }] },
+	{ ...video, youtube: undefined },
+	{ ...video, youtube: null },
+	{ ...blog, youtube: video.youtube },
+];
+for (const invalid of invalidResources) {
+	assert.throws(() => prepareResolvedResource(invalid, analysis, []), /Resource identifiers do not match|YouTube data requires/);
 }
 
 const migratedCarrier = await acquire({
@@ -390,4 +409,4 @@ const summaryCases = [
 ];
 for (const { expected, ...input } of summaryCases) assert.equal((await acquire(input)).summary, expected);
 
-console.info(`Platform acquisition contract checks passed (${cases.length + 7 + summaryCases.length} cases).`);
+console.info(`Platform acquisition contract checks passed (${cases.length + 7 + summaryCases.length + invalidResources.length} cases).`);

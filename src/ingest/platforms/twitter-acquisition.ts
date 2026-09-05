@@ -4,7 +4,7 @@ import {
 	type AcquiredResource,
 	literalCreator,
 	type PostKindMetadata,
-	RESOURCE_TYPES,
+	RESOURCE_PLATFORMS,
 	type ResourceAcquisitionHints,
 	type ResourceCreator,
 	type ResourceMediaAttachment,
@@ -21,7 +21,7 @@ function isTwitterHostname(hostname: string): boolean {
 
 export function parseTwitterResourceUrl(url: URL) {
 	const candidate = url.pathname.match(/^\/[^/]+\/status\/(\d+)(?:\/|$)/)?.[1] ?? url.pathname.match(/^\/i\/article\/(\d+)(?:\/|$)/)?.[1];
-	const tweetId = RESOURCE_TYPES.post.platforms[0].identifier.safeParse(candidate);
+	const tweetId = RESOURCE_PLATFORMS.twitter.identifier.safeParse(candidate);
 	return tweetId.success
 		? {
 				resourcePlatform: 'twitter' as const,

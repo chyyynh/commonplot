@@ -7,7 +7,7 @@ import {
 	type AcquiredResource,
 	type ForumKindMetadata,
 	literalCreator,
-	RESOURCE_TYPES,
+	RESOURCE_PLATFORMS,
 	type ResourceAcquisitionHints,
 	type ResourceSubjectIdentity,
 	resolveResourceHints,
@@ -22,7 +22,7 @@ const HN_TOP_LEVEL_TEXT_MAX_CHARS = 1_000;
 const HN_REPLY_TEXT_MAX_CHARS = 350;
 
 export function parseHackerNewsResourceUrl(url: URL) {
-	const itemId = RESOURCE_TYPES.forum.platforms[0].identifier.safeParse(url.searchParams.get('id'));
+	const itemId = RESOURCE_PLATFORMS.hackernews.identifier.safeParse(url.searchParams.get('id'));
 	return itemId.success
 		? {
 				resourcePlatform: 'hackernews' as const,

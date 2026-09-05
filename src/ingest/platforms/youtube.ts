@@ -7,7 +7,7 @@ import { z } from 'zod';
 import {
 	type AcquiredResource,
 	literalCreator,
-	RESOURCE_TYPES,
+	RESOURCE_PLATFORMS,
 	type ResourceAcquisitionHints,
 	resolveResourceHints,
 } from '../../shared/resource';
@@ -47,7 +47,7 @@ export function parseYouTubeResourceUrl(url: URL) {
 			: ['embed', 'shorts', 'live', 'v'].includes(kind ?? '')
 				? maybeId
 				: null);
-	const videoId = RESOURCE_TYPES.video.platforms[0].identifier.safeParse(candidate);
+	const videoId = RESOURCE_PLATFORMS.youtube.identifier.safeParse(candidate);
 	return videoId.success
 		? {
 				resourcePlatform: 'youtube' as const,

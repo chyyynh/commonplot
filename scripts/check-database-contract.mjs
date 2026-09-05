@@ -3,7 +3,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { RESOURCE_TYPES } from '../src/shared/resource.ts';
+import { RESOURCE_KIND_METADATA, RESOURCE_PLATFORMS } from '../src/shared/resource.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const prismaPath = resolve(root, '../../web-tanstack/prisma/schema.prisma');
@@ -78,12 +78,8 @@ for (const retiredConstraint of ['resources_kind_check', 'resources_resource_pla
 	}
 }
 
-const resourceKinds = Object.keys(RESOURCE_TYPES);
-const platformKindEntries = Object.entries(RESOURCE_TYPES).flatMap(([kind, { platforms }]) => platforms.map(({ name }) => [name, kind]));
-const platformKinds = new Map(platformKindEntries);
-if (platformKinds.size !== platformKindEntries.length) {
-	errors.push('RESOURCE_TYPES platform names must be globally unique');
-}
+const resourceKinds = Object.keys(RESOURCE_KIND_METADATA);
+const platformKindEntries = Object.entries(RESOURCE_PLATFORMS).map(([platform, { kind }]) => [platform, kind]);
 
 const resourceModelBody = prismaSource.match(/model Resource \{([\s\S]*?)\n\}/)?.[1] ?? '';
 if (!/^\s*kind\s+String\s*$/m.test(resourceModelBody)) {
@@ -183,7 +179,7 @@ if (!normalizedManualIndexes.includes('CREATE INDEX IF NOT EXISTS resource_citat
 }
 
 const constrainedIdentity = parseResourceIdentityConstraint(manualIndexesSource);
-const expectedPlatformKinds = [...platformKinds].map(([platform, kind]) => `${platform}:${kind}`);
+const expectedPlatformKinds = platformKindEntries.map(([platform, kind]) => `${platform}:${kind}`);
 const actualPlatformKinds = constrainedIdentity?.platformKinds.map(([platform, kind]) => `${platform}:${kind}`) ?? [];
 if (
 	!constrainedIdentity ||
@@ -191,7 +187,7 @@ if (
 	constrainedIdentity.platformKinds.length !== new Set(actualPlatformKinds).size ||
 	!sameMembers(actualPlatformKinds, expectedPlatformKinds)
 ) {
-	errors.push('resources_identity_check differs from RESOURCE_TYPES');
+	errors.push('resources_identity_check differs from Core kind/platform contracts');
 }
 
 const sourceModelBody = prismaSource.match(/model Source \{([\s\S]*?)\n\}/)?.[1] ?? '';

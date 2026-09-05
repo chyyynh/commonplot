@@ -1,7 +1,7 @@
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import { RESOURCE_TYPES } from './shared/resource';
+import { RESOURCE_KIND_METADATA, RESOURCE_PLATFORMS, type ResourceKind, type ResourcePlatform } from './shared/resource';
 
 // Postgres is canonical; AI Search is its derived public-corpus index.
 export const AI_SEARCH_ITEM_PREFIX = 'resources/';
@@ -16,14 +16,14 @@ const RELATED_QUERY_MAX_CHARS = 1_000;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 const RESULT_LIMIT_MAX = 50;
 const RELATED_RESULT_LIMIT_MAX = RESULT_LIMIT_MAX - 1;
-const SEARCHABLE_RESOURCE_KIND_COUNT = Object.keys(RESOURCE_TYPES).filter((kind) => kind !== 'image').length;
+const SEARCHABLE_RESOURCE_KIND_COUNT = Object.keys(RESOURCE_KIND_METADATA).filter((kind) => kind !== 'image').length;
 
 export const SEARCHABLE_CORPUS_RESOURCE_SQL = sql`(
 	r.kind <> 'image'
 	AND (r.kind <> 'file' OR r.file_type = 'application/pdf')
 )`;
 
-type SearchableResourceKind = Exclude<keyof typeof RESOURCE_TYPES, 'image'>;
+type SearchableResourceKind = Exclude<ResourceKind, 'image'>;
 
 export type PublicResourceSearchInput = {
 	query: string;
@@ -32,7 +32,7 @@ export type PublicResourceSearchInput = {
 	filters?: {
 		publishedAfter?: Date;
 		kinds?: SearchableResourceKind[];
-		resourcePlatforms?: ((typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null)[];
+		resourcePlatforms?: (ResourcePlatform | null)[];
 	};
 };
 
@@ -68,7 +68,7 @@ type CorpusDocument = {
 	id: string;
 	source_id: string | null;
 	kind: SearchableResourceKind;
-	resource_platform: (typeof RESOURCE_TYPES)[keyof typeof RESOURCE_TYPES]['platforms'][number]['name'] | null;
+	resource_platform: ResourcePlatform | null;
 	original_lang: string;
 	published_at: Date | string | null;
 	tags: string[] | null;
@@ -244,15 +244,11 @@ function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSea
 		throw new Error('Invalid publishedAfter');
 	}
 	const kinds = filters.kinds === undefined ? undefined : [...new Set(filters.kinds)];
-	if (kinds?.some((value) => !Object.hasOwn(RESOURCE_TYPES, value) || String(value) === 'image')) {
+	if (kinds?.some((value) => !Object.hasOwn(RESOURCE_KIND_METADATA, value) || String(value) === 'image')) {
 		throw new Error('Invalid resource kinds');
 	}
 	const resourcePlatforms = filters.resourcePlatforms === undefined ? undefined : [...new Set(filters.resourcePlatforms)];
-	if (
-		resourcePlatforms?.some(
-			(value) => value !== null && !Object.values(RESOURCE_TYPES).some(({ platforms }) => platforms.some(({ name }) => name === value)),
-		)
-	) {
+	if (resourcePlatforms?.some((value) => value !== null && (typeof value !== 'string' || !Object.hasOwn(RESOURCE_PLATFORMS, value)))) {
 		throw new Error('Invalid resource platforms');
 	}
 	return {
