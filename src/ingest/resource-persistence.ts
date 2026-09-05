@@ -1,3 +1,4 @@
+import { NonRetryableError } from 'cloudflare:workflows';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { type HostedResourceImage, hostedResourceImageFields } from '../shared/image-mapping';
@@ -17,7 +18,7 @@ import { persistYouTubeData } from './platforms/youtube-persistence';
 
 export type ResourceDraftRelation =
 	| Readonly<{ kind: 'source'; sourceId: string }>
-	| Readonly<{ kind: 'subject'; parentResourceId: string }>;
+	| Readonly<{ kind: 'subject'; parentResourceId: string; parentAcquisitionRevision: string }>;
 
 export type ResourcePersistenceTarget =
 	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation }>
@@ -273,8 +274,9 @@ async function writeCanonicalResource(
 	if (resource.youtube) {
 		await persistYouTubeData(db, resourceId, resource.youtube);
 	}
-	const original = await db.execute<{ revision: string }>(sql`
-		SELECT MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS revision
+	const original = await db.execute<{ revision: string; acquisition_revision: string }>(sql`
+		SELECT MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS revision,
+		       MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) AS acquisition_revision
 		FROM resource_translations original
 		JOIN resources resource ON resource.id = original.resource_id
 		WHERE resource.id = ${resourceId}::uuid AND original.lang = resource.original_lang
@@ -282,7 +284,7 @@ async function writeCanonicalResource(
 	`);
 	const authoritativeOriginal = original.rows[0];
 	if (!authoritativeOriginal) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
-	return authoritativeOriginal.revision;
+	return { translationRevision: authoritativeOriginal.revision, acquisitionRevision: authoritativeOriginal.acquisition_revision };
 }
 
 async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relation: ResourceDraftRelation) {
@@ -301,8 +303,9 @@ async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relati
 		  AND scope = 'corpus'
 		  AND enrichment_status = 'enriched'
 		  AND id <> ${resourceId}::uuid
+		  AND MD5(EXTRACT(EPOCH FROM scraped_date)::text) = ${relation.parentAcquisitionRevision}
 	`);
-	if (attached.rowCount !== 1) throw new Error('Subject parent is no longer eligible for attachment');
+	if (attached.rowCount !== 1) throw new NonRetryableError('Subject parent was reacquired or is no longer eligible for attachment');
 }
 
 export async function persistResolvedResource(db: NodePgDatabase, resource: PreparedResource, target: ResourcePersistenceTarget) {
@@ -320,7 +323,7 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 		const root = target.kind === 'draft' ? await draftRoot(tx, resource) : await lockResource(tx, target.resourceId);
 		const resolvedSubjectId = resource.subject ? await existingSubject(tx, root.id, resource.subject) : null;
 		const subjectResourceId = resolvedSubjectId ?? root.subject_resource_id;
-		const translationRevision = await writeCanonicalResource(tx, root.id, resource, root.original_lang, subjectResourceId);
+		const revisions = await writeCanonicalResource(tx, root.id, resource, root.original_lang, subjectResourceId);
 		if (target.kind === 'draft' && target.relation) {
 			await applyDraftRelation(tx, root.id, target.relation);
 		}
@@ -328,7 +331,7 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 			resourceId: root.id,
 			scope: root.scope,
 			subjectAttached: resolvedSubjectId !== null,
-			translationRevision,
+			...revisions,
 		};
 	});
 }

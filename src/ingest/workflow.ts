@@ -28,7 +28,7 @@ import { enqueueResourceTranslation } from './translation-workflow';
 
 const ResourceDraftRelationSchema: z.ZodType<ResourceDraftRelation> = z.discriminatedUnion('kind', [
 	z.strictObject({ kind: z.literal('source'), sourceId: z.uuid() }),
-	z.strictObject({ kind: z.literal('subject'), parentResourceId: z.uuid() }),
+	z.strictObject({ kind: z.literal('subject'), parentResourceId: z.uuid(), parentAcquisitionRevision: z.hash('md5') }),
 ]);
 
 const PaidPdfFallbackGrantSchema = z.strictObject({ maxPages: z.int().min(1).max(LLAMA_PARSE_MAX_PAGES) });
@@ -244,11 +244,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		]);
 		const preparedResource = prepareResolvedResource(resource, analysis, hostedImages);
 		const persistence = await step.do(
-			'persist-resolved-resource-scope-v2',
+			'persist-resolved-resource-scope-v3',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 			async () => persistResolvedResource(await connectCoreDb(this.env), preparedResource, persistenceTarget),
 		);
-		const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision } = persistence;
+		const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision, acquisitionRevision } = persistence;
 		const forceProcessingRunKey = target.kind === 'reacquire' ? (await sha256Hex(event.instanceId)).slice(0, 16) : undefined;
 		if (saveTarget) {
 			await step.do(
@@ -282,12 +282,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				: undefined,
 			subject && !subjectAttached
 				? step.do(
-						'enqueue-resolved-subject-child-v1',
+						'enqueue-resolved-subject-child-v2',
 						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 						async () => {
 							const subjectTarget = ResourceDraftTargetSchema.parse({
 								kind: 'draft',
-								relation: { kind: 'subject', parentResourceId: persistedResourceId },
+								relation: { kind: 'subject', parentResourceId: persistedResourceId, parentAcquisitionRevision: acquisitionRevision },
 								// Carrier-resolved hints only; the subject page still wins when it states its own date.
 								...(subject.publishedDate ? { sourceHints: { publishedDate: subject.publishedDate } } : {}),
 								url: subject.normalizedUrl,
