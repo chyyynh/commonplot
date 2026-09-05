@@ -250,7 +250,7 @@ async function fetchTranscript(videoId: string): Promise<Pick<YouTubeTranscript,
 	return { segments, language };
 }
 
-async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
+async function scrapeYouTube(videoId: string, youtubeApiKey: string, hints: ResourceAcquisitionHints) {
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching video', videoId });
 
 	const videoData = await fetchYouTubeVideoData(videoId, youtubeApiKey);
@@ -289,29 +289,38 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 	console.info({ tag: 'YOUTUBE', msg: 'Video fetched', title: snippet.title });
 
 	return {
+		kind: 'video',
+		resourcePlatform: 'youtube',
+		resourceIdentifiers: [{ preferred: true, scheme: 'youtube', value: videoId }],
+		url: `https://youtube.com/watch?v=${videoId}`,
 		fileType: null,
-		title: snippet.title,
-		markdown:
+		title: snippet.title.trim(),
+		content:
 			transcript.segments
 				.map((segment) => segment.text.trim())
 				.filter(Boolean)
 				.join('\n') || snippet.description.trim(),
-		summary: snippet.description.trim() || null,
 		source: snippet.channelTitle.trim() || 'YouTube',
-		originalLang: transcript.language ?? snippet.defaultAudioLanguage ?? null,
-		publishedDate: snippet.publishedAt,
+		...resolveResourceHints(
+			{
+				originalLang: transcript.language ?? snippet.defaultAudioLanguage ?? null,
+				publishedDate: snippet.publishedAt,
+				summary: snippet.description,
+			},
+			hints,
+		),
 		creators,
 		kindMetadata: {
 			...(durationSeconds === null ? {} : { durationSeconds }),
 			...stats,
 		},
-		previewImageUrl: thumbnailUrl,
-		transcript: {
-			segments: transcript.segments,
-			language: transcript.language ?? snippet.defaultAudioLanguage ?? null,
-			chapters,
+		previewImageUrl: thumbnailUrl?.trim() || null,
+		subject: null,
+		youtube: {
+			transcript: { ...transcript, language: transcript.language ?? snippet.defaultAudioLanguage ?? null, chapters },
+			highlights: null,
 		},
-	};
+	} satisfies AcquiredResource & { youtube: YouTubeResourceData };
 }
 
 export async function stageYouTubeAcquisition(
@@ -324,12 +333,12 @@ export async function stageYouTubeAcquisition(
 	},
 ) {
 	const contentStream = await step.do(
-		'acquire-youtube-v1',
+		'acquire-youtube-v2',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY)).body!,
+		async () => Response.json(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY, input.hints)).body!,
 	);
 	const acquired = await new Response(contentStream).json<YouTubeAcquisition>();
-	const { transcript } = acquired;
+	const { transcript } = acquired.youtube;
 	const highlights =
 		transcript.segments.length && transcript.chapters.length === 0
 			? await step
@@ -348,22 +357,7 @@ export async function stageYouTubeAcquisition(
 						return null;
 					})
 			: null;
-	return {
-		kind: 'video',
-		resourcePlatform: 'youtube',
-		resourceIdentifiers: [{ preferred: true, scheme: 'youtube', value: input.videoId }],
-		url: `https://youtube.com/watch?v=${input.videoId}`,
-		title: acquired.title.trim(),
-		content: acquired.markdown,
-		source: acquired.source,
-		...resolveResourceHints(acquired, input.hints),
-		creators: acquired.creators,
-		kindMetadata: acquired.kindMetadata,
-		fileType: acquired.fileType,
-		previewImageUrl: acquired.previewImageUrl?.trim() || null,
-		subject: null,
-		youtube: { transcript, highlights },
-	} satisfies AcquiredResource & { youtube: YouTubeResourceData };
+	return { ...acquired, youtube: { transcript, highlights } };
 }
 
 const YouTubeHighlightSchema = z

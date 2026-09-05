@@ -1,8 +1,7 @@
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { canonicalizeResourceLang } from '../shared/resource';
-import type { ProcessingResource } from './acquisition';
+import { type AcquiredResource, canonicalizeResourceLang } from '../shared/resource';
 import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 
 const ANALYSIS_CONTENT_MAX_LENGTH = 10_000;
@@ -44,7 +43,7 @@ const RESOURCE_ANALYSIS_SYSTEM_PROMPT = `你是專業的新聞分類分析師。
 - 新聞性質: Review, Opinion, Analysis, Feature, Interview, Tutorial, Announcement`;
 
 export async function analyzeResource(
-	resource: ProcessingResource,
+	resource: AcquiredResource,
 	keywordHints: readonly string[],
 	env: CoreEnv,
 	processingId: string,

@@ -58,6 +58,12 @@ interface TwitterMetadata extends TwitterAuthorFields {
 }
 
 type TwitterResourceFields = { creators: ResourceCreator[]; kindMetadata: PostKindMetadata; subjectUrl?: string };
+type TwitterAcquisitionInput = {
+	hints: ResourceAcquisitionHints;
+	processingId: string;
+	resolveSubject: (url: string | null | undefined) => ResourceSubjectIdentity | null;
+	tweetId: string;
+};
 
 function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {
 	if (!tweet.author?.userName.trim() || !tweet.author.name.trim()) {
@@ -263,13 +269,9 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
 	console.info({ tag: 'TWITTER', msg: 'Longform fetched', title });
 
 	return {
-		fileType: null,
 		title,
-		markdown: contentText,
-		source: 'Twitter',
-		originalLang: tweet.lang ?? null,
+		content: contentText,
 		publishedDate,
-		summary: null,
 		...buildTwitterLongformFields(author, longform.cover_media_img_url ?? undefined),
 	};
 }
@@ -281,13 +283,9 @@ function buildExternalLinkTweet(tweet: Tweet, externalUrl: string, media: Twitte
 	const title = `@${author.userName}: ${stripTweetUrls(tweetText) || tweetText}`.slice(0, 120);
 	const expandedText = expandTweetUrls(tweetText, tweet);
 	return {
-		fileType: null,
 		title,
-		markdown: stripTrailingExternalUrl(expandedText, externalUrl),
-		source: 'Twitter',
-		originalLang: tweet.lang ?? null,
+		content: stripTrailingExternalUrl(expandedText, externalUrl),
 		publishedDate: tweet.createdAt,
-		summary: null,
 		...buildTweetFields(tweet, {
 			media,
 			externalUrl,
@@ -319,18 +317,14 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 	console.info({ tag: 'TWITTER', msg: 'Tweet fetched', userName: author.userName });
 
 	return {
-		fileType: null,
 		title,
-		markdown: expandTweetUrls(tweet.text, tweet),
-		source: 'Twitter',
-		originalLang: tweet.lang ?? null,
+		content: expandTweetUrls(tweet.text, tweet),
 		publishedDate: tweet.createdAt,
-		summary: null,
 		...buildTweetFields(tweet),
 	};
 }
 
-async function scrapeTweet(tweetId: string, apiKey: string) {
+async function scrapeTweet({ tweetId, hints, resolveSubject }: TwitterAcquisitionInput, apiKey: string) {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
 	const response = await fetch(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, {
 		headers: { 'x-api-key': apiKey },
@@ -350,21 +344,30 @@ async function scrapeTweet(tweetId: string, apiKey: string) {
 	const tweets = parseTwitterTweetsResponse(await response.json());
 	const tweet = tweets[0];
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
-	return resolveTweetContent(tweet, apiKey);
+	const { subjectUrl, ...content } = await resolveTweetContent(tweet, apiKey);
+	const resolvedHints = resolveResourceHints(
+		{ originalLang: tweet.lang ?? null, publishedDate: content.publishedDate, summary: null },
+		hints,
+	);
+	const subject = resolveSubject(subjectUrl);
+	return {
+		...content,
+		kind: 'post',
+		resourcePlatform: 'twitter',
+		resourceIdentifiers: [{ preferred: true, scheme: 'twitter', value: tweetId }],
+		url: `https://x.com/i/status/${tweetId}`,
+		title: content.title.trim(),
+		source: 'Twitter',
+		...resolvedHints,
+		fileType: null,
+		previewImageUrl: null,
+		subject: subject && { ...subject, publishedDate: resolvedHints.publishedDate },
+	} satisfies AcquiredResource;
 }
 
-export async function stageTwitterAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: {
-		hints: ResourceAcquisitionHints;
-		processingId: string;
-		resolveSubject: (url: string | null | undefined) => ResourceSubjectIdentity | null;
-		tweetId: string;
-	},
-) {
+export async function stageTwitterAcquisition(env: CoreEnv, step: WorkflowStep, input: TwitterAcquisitionInput) {
 	const contentStream = await step.do(
-		'acquire-twitter-v1',
+		'acquire-twitter-v2',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async (ctx) => {
 			console.info({
@@ -373,27 +376,10 @@ export async function stageTwitterAcquisition(
 				processing_id: input.processingId,
 				attempt: ctx.attempt,
 			});
-			return Response.json(await scrapeTweet(input.tweetId, env.KAITO_API_KEY)).body!;
+			return Response.json(await scrapeTweet(input, env.KAITO_API_KEY)).body!;
 		},
 	);
-	const acquired = await new Response(contentStream).json<Awaited<ReturnType<typeof scrapeTweet>>>();
-	const hints = resolveResourceHints(acquired, input.hints);
-	const subject = input.resolveSubject(acquired.subjectUrl);
-	return {
-		kind: 'post',
-		resourcePlatform: 'twitter',
-		resourceIdentifiers: [{ preferred: true, scheme: 'twitter', value: input.tweetId }],
-		url: `https://x.com/i/status/${input.tweetId}`,
-		title: acquired.title.trim(),
-		content: acquired.markdown,
-		source: acquired.source,
-		...hints,
-		creators: acquired.creators,
-		kindMetadata: acquired.kindMetadata,
-		fileType: acquired.fileType,
-		previewImageUrl: null,
-		subject: subject && { ...subject, publishedDate: hints.publishedDate },
-	} satisfies AcquiredResource;
+	return new Response(contentStream).json<Awaited<ReturnType<typeof scrapeTweet>>>();
 }
 
 function twitterCreator(data: TwitterMetadata): ResourceCreator[] {

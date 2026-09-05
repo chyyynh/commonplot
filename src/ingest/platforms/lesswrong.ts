@@ -53,7 +53,7 @@ type LessWrongGraphqlResponse = {
 	errors?: Array<{ message?: string }>;
 };
 
-async function scrapeLessWrong(postId: string) {
+async function scrapeLessWrong(postId: string, hints: ResourceAcquisitionHints) {
 	const response = await fetch(LESSWRONG_GRAPHQL_URL, {
 		method: 'POST',
 		headers: {
@@ -77,42 +77,30 @@ async function scrapeLessWrong(postId: string) {
 	if (!markdown) throw new NonRetryableError(`LessWrong post ${postId} has no Markdown content`);
 	const author = post.user?.displayName?.trim() || post.user?.username?.trim() || null;
 	return {
+		kind: 'blog',
+		resourcePlatform: 'lesswrong',
+		resourceIdentifiers: [{ preferred: true, scheme: 'lesswrong', value: postId }],
+		url: `https://lesswrong.com/posts/${postId}`,
 		fileType: null,
 		title,
-		markdown,
+		content: markdown,
 		previewImageUrl: normalizedResourceImageUrl(
 			post.socialPreviewImageUrl?.trim() || post.socialPreviewImageAutoUrl?.trim(),
 			LESSWRONG_GRAPHQL_URL,
 		),
 		source: 'LessWrong',
-		originalLang: null,
-		publishedDate: post.postedAt?.trim() || null,
-		summary: null,
+		...resolveResourceHints({ originalLang: null, publishedDate: post.postedAt?.trim() || null, summary: null }, hints),
 		creators: literalCreator('author', author),
 		kindMetadata: { siteName: 'LessWrong' },
-	};
+		subject: null,
+	} satisfies AcquiredResource;
 }
 
 export async function stageLessWrongAcquisition(step: WorkflowStep, postId: string, hints: ResourceAcquisitionHints) {
 	const contentStream = await step.do(
-		'acquire-lesswrong-v1',
+		'acquire-lesswrong-v2',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await scrapeLessWrong(postId)).body!,
+		async () => Response.json(await scrapeLessWrong(postId, hints)).body!,
 	);
-	const acquired = await new Response(contentStream).json<Awaited<ReturnType<typeof scrapeLessWrong>>>();
-	return {
-		kind: 'blog',
-		resourcePlatform: 'lesswrong',
-		resourceIdentifiers: [{ preferred: true, scheme: 'lesswrong', value: postId }],
-		url: `https://lesswrong.com/posts/${postId}`,
-		title: acquired.title.trim(),
-		content: acquired.markdown,
-		source: acquired.source,
-		...resolveResourceHints(acquired, hints),
-		creators: acquired.creators,
-		kindMetadata: acquired.kindMetadata,
-		fileType: acquired.fileType,
-		previewImageUrl: acquired.previewImageUrl?.trim() || null,
-		subject: null,
-	} satisfies AcquiredResource;
+	return new Response(contentStream).json<Awaited<ReturnType<typeof scrapeLessWrong>>>();
 }

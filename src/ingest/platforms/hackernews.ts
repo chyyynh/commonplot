@@ -63,6 +63,12 @@ const HackerNewsItemSchema = z.object({
 type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
 
 type HackerNewsAcquisition = Awaited<ReturnType<typeof scrapeHackerNews>>;
+type HackerNewsAcquisitionInput = {
+	hints: ResourceAcquisitionHints;
+	itemId: string;
+	processingId: string;
+	resolveSubject: (url: string | null | undefined) => ResourceSubjectIdentity | null;
+};
 
 async function fetchHnItem(itemId: number | string): Promise<HackerNewsItem | null> {
 	const response = await fetch(`${HN_ITEM_API}/${itemId}.json`, { signal: AbortSignal.timeout(15_000) });
@@ -86,7 +92,7 @@ async function fetchHnItems(itemIds: readonly number[]): Promise<Map<number, Hac
 	return items;
 }
 
-async function scrapeHackerNews(env: CoreEnv, itemId: string, processingId: string) {
+async function scrapeHackerNews(env: CoreEnv, { hints, itemId, processingId, resolveSubject }: HackerNewsAcquisitionInput) {
 	console.info({ tag: 'HN', msg: 'Fetching item and ranked discussion', itemId });
 	const item = await fetchHnItem(itemId);
 	if (!item) throw new NonRetryableError(`Hacker News item ${itemId} was not found`);
@@ -195,17 +201,27 @@ async function scrapeHackerNews(env: CoreEnv, itemId: string, processingId: stri
 		subjectUrl: item.url ?? null,
 		totalComments: totalCommentCount,
 	});
+	const resolvedHints = resolveResourceHints(
+		{ originalLang: null, publishedDate: item.time ? new Date(item.time * 1000).toISOString() : null, summary: null },
+		hints,
+	);
+	const subject = resolveSubject(item.url);
 	return {
-		fileType: null,
-		title,
-		markdown,
-		source: 'Hacker News',
-		originalLang: null,
-		publishedDate: item.time ? new Date(item.time * 1000).toISOString() : null,
-		summary: null,
-		...(item.url ? { subjectUrl: item.url } : {}),
-		creators: literalCreator('submitter', item.by),
-		kindMetadata: { points: item.score, commentCount: totalCommentCount } satisfies ForumKindMetadata,
+		resource: {
+			kind: 'forum',
+			resourcePlatform: 'hackernews',
+			resourceIdentifiers: [{ preferred: true, scheme: 'hackernews', value: itemId }],
+			url: `https://news.ycombinator.com/item?id=${itemId}`,
+			title: title.trim(),
+			content: markdown,
+			source: 'Hacker News',
+			...resolvedHints,
+			creators: literalCreator('submitter', item.by),
+			kindMetadata: { points: item.score, commentCount: totalCommentCount } satisfies ForumKindMetadata,
+			fileType: null,
+			previewImageUrl: null,
+			subject: subject && { ...subject, publishedDate: resolvedHints.publishedDate },
+		} satisfies AcquiredResource,
 		discussion: {
 			commentCount: sampledCommentCount,
 			commentInput: threadBlocks.map((block) => block.text).join('\n\n'),
@@ -216,27 +232,17 @@ async function scrapeHackerNews(env: CoreEnv, itemId: string, processingId: stri
 	};
 }
 
-export async function stageHackerNewsAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: {
-		hints: ResourceAcquisitionHints;
-		itemId: string;
-		processingId: string;
-		resolveSubject: (url: string | null | undefined) => ResourceSubjectIdentity | null;
-	},
-) {
+export async function stageHackerNewsAcquisition(env: CoreEnv, step: WorkflowStep, input: HackerNewsAcquisitionInput) {
 	const contentStream = await step.do(
-		'acquire-hackernews-ranked-v3',
+		'acquire-hackernews-ranked-v4',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await scrapeHackerNews(env, input.itemId, input.processingId)).body!,
+		async () => Response.json(await scrapeHackerNews(env, input)).body!,
 	);
-	const acquired = await new Response(contentStream).json<HackerNewsAcquisition>();
+	const { resource, discussion } = await new Response(contentStream).json<HackerNewsAcquisition>();
 	const digest = await step.do(
 		'build-hacker-news-annotation-ranked-v3',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
 		async () => {
-			const discussion = acquired.discussion;
 			if (discussion.commentCount < 4 || discussion.threadCount < 2) return null;
 			const hnPostSection = discussion.hnText ? `HN post text:\n${discussion.hnText}\n\n` : '';
 			const digestFocus =
@@ -259,7 +265,7 @@ export async function stageHackerNewsAcquisition(
 					},
 					extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
 				}),
-				prompt: `Title: ${acquired.title}
+				prompt: `Title: ${resource.title}
 ${hnPostSection}Ranked HN discussion sample (${discussion.commentCount} comments from ${discussion.threadCount} top-level threads):
 ${discussion.commentInput}
 
@@ -288,23 +294,7 @@ Rules:
 			return generatedDigest;
 		},
 	);
-	const hints = resolveResourceHints(acquired, input.hints);
-	const subject = input.resolveSubject(acquired.subjectUrl);
-	return {
-		kind: 'forum',
-		resourcePlatform: 'hackernews',
-		resourceIdentifiers: [{ preferred: true, scheme: 'hackernews', value: input.itemId }],
-		url: `https://news.ycombinator.com/item?id=${input.itemId}`,
-		title: acquired.title.trim(),
-		content: digest ? [acquired.markdown, '---', digest].join('\n\n') : acquired.markdown,
-		source: acquired.source,
-		...hints,
-		creators: acquired.creators,
-		kindMetadata: acquired.kindMetadata,
-		fileType: acquired.fileType,
-		previewImageUrl: null,
-		subject: subject && { ...subject, publishedDate: hints.publishedDate },
-	} satisfies AcquiredResource;
+	return { ...resource, content: digest ? [resource.content, '---', digest].join('\n\n') : resource.content };
 }
 
 const HN_DISCUSSION_SYSTEM =
