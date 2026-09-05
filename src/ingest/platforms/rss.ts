@@ -1,4 +1,4 @@
-import { type FeedEntry as ExtractedFeedEntry, extractFromJson, extractFromXml, type FeedData } from '@extractus/feed-extractor';
+import { type FeedEntry as ExtractedFeedEntry, extractFromJson, extractFromXml } from '@extractus/feed-extractor';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { limitByteStream } from '../../shared/response';
@@ -91,21 +91,16 @@ async function loadFeed(feed: MonitoredFeedSource) {
 		throw new Error('Feed redirected to an invalid URL.');
 	}
 
-	let parsed: FeedData;
-	try {
-		const body = response.body && limitByteStream(response.body, MAX_FEED_BYTES, () => new Error(`Feed exceeded ${MAX_FEED_BYTES} bytes`));
-		const content = await new Response(body).text();
-		const parserOptions = {
-			baseUrl: effectiveUrl.toString(),
-			descriptionMaxLen: FEED_SUMMARY_MAX_CHARS,
-		};
-		parsed =
-			response.headers.get('content-type')?.toLowerCase().includes('json') || content.trimStart().startsWith('{')
-				? extractFromJson(content, parserOptions)
-				: extractFromXml(content, parserOptions);
-	} catch {
-		throw new Error('URL did not return a readable feed.');
-	}
+	const body = response.body && limitByteStream(response.body, MAX_FEED_BYTES, () => new Error(`Feed exceeded ${MAX_FEED_BYTES} bytes`));
+	const content = await new Response(body).text();
+	const parserOptions = {
+		baseUrl: effectiveUrl.toString(),
+		descriptionMaxLen: FEED_SUMMARY_MAX_CHARS,
+	};
+	const parsed =
+		response.headers.get('content-type')?.toLowerCase().includes('json') || content.trimStart().startsWith('{')
+			? extractFromJson(content, parserOptions)
+			: extractFromXml(content, parserOptions);
 	const items = (parsed.entries ?? []).slice(0, MAX_FEED_ITEMS);
 	return {
 		itemCount: items.length,
@@ -117,11 +112,6 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeed
 	const { drafts, itemCount } = await loadFeed(feed);
 	const skipped = itemCount - drafts.length;
 	if (skipped) console.warn({ tag: 'RSS', msg: 'Skipped invalid or duplicate feed items', feed: feed.name, count: skipped });
-	if (!drafts.length) {
-		console.info({ tag: 'RSS', msg: itemCount ? 'Feed has no valid item URLs' : 'Feed has no items', feed: feed.name });
-		await markSourcesScraped(db, [feed.id]);
-		return;
-	}
 
 	const created = await enqueueSourceDrafts(env, db, drafts);
 	console.info({
@@ -149,13 +139,14 @@ export async function handleRSSCron(env: CoreEnv, db: NodePgDatabase): Promise<v
 		    OR scraped_at IS NULL
 		    OR scraped_at < NOW() - INTERVAL '30 minutes')
 	`);
+	const failures: unknown[] = [];
 	for (let index = 0; index < feeds.length; index += FEED_CONCURRENCY) {
 		const batch = feeds.slice(index, index + FEED_CONCURRENCY);
 		const results = await Promise.allSettled(batch.map((feed) => processFeed(env, db, feed)));
 		for (const [resultIndex, result] of results.entries()) {
 			if (result.status === 'fulfilled') continue;
 			const failedFeed = batch[resultIndex];
-			if (!failedFeed) continue;
+			failures.push(result.reason);
 			console.error({
 				tag: 'RSS',
 				msg: 'Feed processing failed',
@@ -166,5 +157,6 @@ export async function handleRSSCron(env: CoreEnv, db: NodePgDatabase): Promise<v
 		}
 	}
 
-	console.info({ tag: 'RSS', msg: 'end' });
+	console.info({ tag: 'RSS', msg: 'end', sources: feeds.length, failed_sources: failures.length });
+	if (failures.length) throw new AggregateError(failures, `${failures.length} feed monitor operations failed`);
 }
