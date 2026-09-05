@@ -20,15 +20,13 @@ const [
 	{ stageTwitterAcquisition },
 	{ stageYouTubeAcquisition },
 	{ stagePaperResolution },
-	{ pdfResource },
-	{ webResource },
+	{ stageWebAcquisition },
 ] = await Promise.all([
 	import('../src/ingest/platforms/hackernews.ts'),
 	import('../src/ingest/platforms/lesswrong.ts'),
 	import('../src/ingest/platforms/twitter-acquisition.ts'),
 	import('../src/ingest/platforms/youtube.ts'),
 	import('../src/ingest/platforms/paper.ts'),
-	import('../src/ingest/platforms/pdf.ts'),
 	import('../src/ingest/platforms/web.ts'),
 ]);
 
@@ -153,16 +151,45 @@ async function acquire(input = {}) {
 			globalThis.fetch = originalFetch;
 		}
 	}
-	return (
-		(await stagePaperResolution({}, step, {
-			acquiredContent: acquired,
-			hints,
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async () => {
+		const htmlAttribute = (value) => (value ?? '').replaceAll('&', '&amp;').replaceAll('"', '&quot;');
+		const html = `<html><head><title>Example</title><meta property="og:site_name" content="Example">${input.htmlMetadata ?? `<meta name="description" content="${htmlAttribute(acquired.summary)}">`}</head><body><article><h1>Example</h1><p>${'Example content. '.repeat(20)}</p></article></body></html>`;
+		const response = new Response(html, { headers: { 'content-type': input.fileType ?? 'text/html' } });
+		Object.defineProperty(response, 'url', { value: url ?? base.url });
+		return response;
+	};
+	const env = {
+		ZOTERO_SDT: {
+			getByName: () => ({
+				processPdf: async (body) => {
+					await new Response(body).text();
+					return Response.json({
+						schemaVersion: '1.0.0',
+						catalog: { outline: [], pages: [{ contentRange: [[0], [0]], textSource: 'born-digital' }] },
+						content: [{ type: 'paragraph', content: [{ text: acquired.markdown }] }],
+						metadata: {
+							characterCount: acquired.markdown.length,
+							processor: { type: 'pdf', version: 2 },
+							source: { contentType: 'application/pdf', hash: 'a'.repeat(32), properties: {} },
+						},
+					});
+				},
+			}),
+		},
+	};
+	try {
+		const resource = await stageWebAcquisition(env, step, { ...context, url: url ?? base.url, paidPdfFallback: null }, () => null);
+		return await stagePaperResolution({}, step, {
+			resource: { ...resource, url: url === null ? null : resource.url },
 			processingId: context.processingId,
 			seedIdentifiers: input.resourceIdentifiers ?? [],
 			sourceUrl: url,
 			allowCitoidLookup: false,
-		})) ?? (input.fileType === 'application/pdf' ? pdfResource(acquired, hints, url) : webResource(acquired, hints, url))
-	);
+		});
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
 }
 
 const cases = [
@@ -406,6 +433,21 @@ const summaryCases = [
 	{ summary: null, summaryHint: 'Feed description', expected: 'Feed description' },
 	{ summary: '   ', summaryHint: 'Feed description', expected: 'Feed description' },
 	{ summary: '   ', summaryHint: '   ', expected: null },
+	{
+		htmlMetadata: '<script type="application/ld+json">{"@type":"BlogPosting","description":"Publisher abstract"}</script>',
+		expected: 'Publisher abstract',
+	},
+	{
+		htmlMetadata:
+			'<script type="application/ld+json">{"@graph":[{"@type":"Organization","description":"Site marketing"},{"@type":"NewsArticle","description":"Article abstract"}]}</script>',
+		expected: 'Article abstract',
+	},
+	{
+		htmlMetadata: '<script type="application/ld+json">{"@type":"Organization","description":"Site marketing"}</script>',
+		summaryHint: 'Feed description',
+		expected: 'Feed description',
+	},
+	{ htmlMetadata: '<script type="application/ld+json">invalid</script>', summaryHint: 'Feed description', expected: 'Feed description' },
 ];
 for (const { expected, ...input } of summaryCases) assert.equal((await acquire(input)).summary, expected);
 

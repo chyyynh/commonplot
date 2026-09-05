@@ -6,58 +6,10 @@ import { toMdast } from 'hast-util-to-mdast';
 import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
-import {
-	type AcquiredResource,
-	literalCreator,
-	type ResourceAcquisitionHints,
-	type ResourceCreator,
-	type ResourceKindMetadata,
-	resolveResourceHints,
-} from '../../shared/resource';
+import type { PlatformResourceUrl } from '../../shared/resource';
+import { type AcquiredResource, literalCreator, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
 import { limitByteStream } from '../../shared/response';
-import type { PlatformResourceUrl } from '../acquisition';
-import {
-	acquireFetchedPdfResponse,
-	completeFetchedPdfAcquisition,
-	type PaidPdfFallbackGrant,
-	PDF_MIME,
-	type PdfAcquisitionDraft,
-} from './pdf';
-
-export type WebAcquiredContent = {
-	resourcePlatform: null;
-	canonicalUrl?: string;
-	kind?: never;
-	fileType: string | null;
-	title: string;
-	markdown: string;
-	previewImageUrl?: string | null;
-	source: string;
-	originalLang: string | null;
-	publishedDate: string | null;
-	summary: string | null;
-	creators: ResourceCreator[];
-	kindMetadata: ResourceKindMetadata;
-	paperIdentifierText?: string | null;
-};
-
-export function webResource(content: WebAcquiredContent, hints: ResourceAcquisitionHints, url: string) {
-	return {
-		kind: 'blog',
-		resourcePlatform: null,
-		resourceIdentifiers: [],
-		url: content.canonicalUrl?.trim() || url,
-		title: content.title.trim(),
-		content: content.markdown,
-		source: content.source,
-		...resolveResourceHints(content, hints),
-		creators: content.creators,
-		kindMetadata: content.kindMetadata,
-		fileType: content.fileType,
-		previewImageUrl: content.previewImageUrl?.trim() || null,
-		subject: null,
-	} satisfies AcquiredResource;
-}
+import { acquireFetchedPdfResponse, completeFetchedPdfAcquisition, type PaidPdfFallbackGrant, PDF_MIME } from './pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
@@ -129,10 +81,9 @@ addTransformations({
 	},
 });
 
-async function acquireHtmlArticle(html: string, url: string): Promise<WebAcquiredContent> {
+async function acquireHtmlArticle(html: string, url: string, hints: ResourceAcquisitionHints) {
 	const article = await extractFromHtml(html, url, {
 		contentLengthThreshold: MIN_ARTICLE_CONTENT_CHARS,
-		descriptionLengthThreshold: 0,
 	});
 	if (!article?.content?.trim()) throw new NonRetryableError('No readable article content found');
 	const articleHtml = article.content.trim();
@@ -155,28 +106,75 @@ async function acquireHtmlArticle(html: string, url: string): Promise<WebAcquire
 		throw new NonRetryableError(`Extracted HTML content is too short (${content.length} chars)`);
 	}
 	return {
+		kind: 'blog',
 		resourcePlatform: null,
+		resourceIdentifiers: [],
+		url,
 		fileType: null,
 		title,
-		markdown: content,
+		content,
 		source: siteName,
-		originalLang: null,
-		publishedDate: article.published?.trim() || null,
-		summary: article.description?.trim() || null,
+		...resolveResourceHints(
+			{ originalLang: null, publishedDate: article.published?.trim() || null, summary: sourceHtmlSummary(html) },
+			hints,
+		),
 		creators: literalCreator('author', article.author),
 		kindMetadata: { siteName },
 		previewImageUrl: normalizedResourceImageUrl(article.image, url),
-	};
+		subject: null,
+	} satisfies AcquiredResource;
 }
 
-type PlatformResolution = { platform: PlatformResourceUrl };
-type WebAcquisition = WebAcquiredContent | PdfAcquisitionDraft | PlatformResolution;
+// The extractor's description may be a generated body excerpt. Only publisher
+// metadata counts as a source summary; otherwise feed hints or analysis supply it.
+function sourceHtmlSummary(html: string): string | null {
+	const nodes = [...fromHtml(html).children];
+	let metaSummary: string | null = null;
+	let schemaSummary: string | null = null;
+	function schemaDescription(value: unknown): string | null {
+		if (Array.isArray(value)) return value.map(schemaDescription).find(Boolean) ?? null;
+		if (!value || typeof value !== 'object') return null;
+		const entry = value as Record<string, unknown>;
+		const types = Array.isArray(entry['@type']) ? entry['@type'] : [entry['@type']];
+		if (types.some((type) => typeof type === 'string' && /(?:Article|BlogPosting|Report|Review|WebPage)$/.test(type))) {
+			if (typeof entry.description === 'string' && entry.description.trim()) return entry.description.trim();
+		}
+		return schemaDescription(entry['@graph']);
+	}
+	for (const node of nodes) {
+		if (node.type !== 'element') continue;
+		nodes.push(...node.children);
+		if (node.tagName === 'meta') {
+			const names = [node.properties.name, node.properties.property, node.properties.itemProp];
+			if (
+				names.some(
+					(name) => typeof name === 'string' && /^(?:description|og:description|twitter:description|parsely-description)$/i.test(name),
+				)
+			) {
+				const content = node.properties.content;
+				if (typeof content === 'string' && content.trim()) metaSummary ??= content.trim();
+			}
+		}
+		if (node.tagName === 'script' && node.properties.type === 'application/ld+json') {
+			try {
+				const text = node.children.map((child) => (child.type === 'text' ? child.value : '')).join('');
+				schemaSummary ??= schemaDescription(JSON.parse(text));
+			} catch {
+				// Malformed optional metadata does not make the article unreadable.
+			}
+		}
+	}
+	return schemaSummary ?? metaSummary;
+}
+
+type WebAcquisition = Awaited<ReturnType<typeof acquireWebResource>>;
 
 async function acquireWebResource(
 	env: CoreEnv,
 	url: string,
+	hints: ResourceAcquisitionHints,
 	platformUrl: (url: URL) => PlatformResourceUrl | null,
-): Promise<WebAcquisition> {
+) {
 	const response = await fetch(url, {
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
@@ -211,8 +209,7 @@ async function acquireWebResource(
 
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
 	if (contentType.includes(PDF_MIME) || parsedFinalUrl.pathname.toLowerCase().endsWith('.pdf')) {
-		const acquired = await acquireFetchedPdfResponse(env, response, finalUrl);
-		return { ...acquired, material: { ...acquired.material, canonicalUrl: finalUrl } };
+		return acquireFetchedPdfResponse(env, response, finalUrl, hints);
 	}
 	if (
 		contentType &&
@@ -233,31 +230,31 @@ async function acquireWebResource(
 			() => new NonRetryableError(`HTML response exceeded ${GENERIC_HTML_MAX_BYTES} bytes`),
 		);
 	const html = await new Response(body).text();
-	return { ...(await acquireHtmlArticle(html, finalUrl)), canonicalUrl: finalUrl };
+	return acquireHtmlArticle(html, finalUrl, hints);
 }
 
 export async function stageWebAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string },
+	input: { hints: ResourceAcquisitionHints; paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string },
 	platformUrl: (url: URL) => PlatformResourceUrl | null,
 ) {
 	const result = await step.do(
-		'acquire-web-v7',
+		'acquire-web-v8',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 		async () => {
-			const acquired = await acquireWebResource(env, input.url, platformUrl);
+			const acquired = await acquireWebResource(env, input.url, input.hints, platformUrl);
 			return 'platform' in acquired ? acquired : Response.json(acquired).body!;
 		},
 	);
 	if ('platform' in result) return result;
-	const acquired = await new Response(result).json<WebAcquiredContent | PdfAcquisitionDraft>();
-	return acquired.kind === 'local-pdf'
+	const acquired = await new Response(result).json<Exclude<WebAcquisition, { platform: PlatformResourceUrl }>>();
+	return 'parse' in acquired
 		? completeFetchedPdfAcquisition(env, step, {
 				acquisition: acquired,
 				grant: input.paidPdfFallback,
 				processingId: input.processingId,
-				sourceUrl: acquired.material.canonicalUrl ?? input.url,
+				sourceUrl: acquired.resource.url ?? input.url,
 			})
 		: acquired;
 }

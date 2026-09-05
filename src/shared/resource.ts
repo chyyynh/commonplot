@@ -116,6 +116,7 @@ export const RESOURCE_PLATFORMS = {
 	youtube: { kind: 'video', identifier: z.string().regex(/^[A-Za-z0-9_-]{11}$/) },
 } as const satisfies Record<string, { kind: ResourceKind; identifier: z.ZodString }>;
 export type ResourcePlatform = keyof typeof RESOURCE_PLATFORMS;
+export type PlatformResourceUrl = { resourcePlatform: ResourcePlatform; platformId: string; canonicalUrl: string };
 
 // Adapters share an output contract; each adapter owns its mapping and identity.
 export type AcquiredResource = {

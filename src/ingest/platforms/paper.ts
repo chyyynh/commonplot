@@ -11,11 +11,10 @@ import {
 	paperIdentityFromText,
 	resolveExactPaperInput,
 } from '../../shared/paper-identity';
-import { type AcquiredResource, literalCreator, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
+import { type AcquiredResource, literalCreator } from '../../shared/resource';
 import { resolveCrossrefPaper } from '../crossref';
 import { type PaperMetadata, resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME, stageOpenAlexPdfMarkdown } from './pdf';
-import type { WebAcquiredContent } from './web';
 
 const CITOID_IDENTIFIER_SCAN_CHARS = 3_000;
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
@@ -32,31 +31,6 @@ const CitoidResponseSchema = z.array(
 	}),
 );
 const ACADEMIC_ITEM_TYPES = new Set(['journalArticle', 'conferencePaper', 'preprint', 'thesis', 'manuscript']);
-
-function applyPaperMetadata(
-	acquiredContent: WebAcquiredContent,
-	metadata: PaperMetadata | null,
-	publishedDate: string | null,
-): { acquiredContent: WebAcquiredContent; publishedDate: string | null } {
-	if (!metadata) return { acquiredContent, publishedDate };
-	const { abstract: rawAbstract, authors, publicationDate, title: rawTitle, ...kindMetadata } = metadata;
-	if (!publishedDate && publicationDate) {
-		const candidate = new Date(`${publicationDate}T00:00:00.000Z`);
-		if (!Number.isNaN(candidate.getTime())) publishedDate = candidate.toISOString();
-	}
-	const abstract = rawAbstract?.trim();
-	const title = rawTitle?.trim();
-	return {
-		acquiredContent: {
-			...acquiredContent,
-			...(title ? { title } : {}),
-			...(abstract ? { summary: abstract } : {}),
-			creators: authors.flatMap((author) => literalCreator('author', author)),
-			kindMetadata,
-		},
-		publishedDate,
-	};
-}
 
 function choosePreferredIdentifiers(identifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
 	const normalized = normalizePaperIdentifiers(identifiers.map((identifier) => ({ ...identifier, preferred: false })));
@@ -230,24 +204,20 @@ export async function stagePaperResolution(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		acquiredContent: WebAcquiredContent;
-		hints: ResourceAcquisitionHints;
+		resource: AcquiredResource & { resourcePlatform: null; paperIdentifierText?: string | null };
 		processingId: string;
 		seedIdentifiers: readonly PaperIdentifier[];
 		sourceUrl: string | null;
 		allowCitoidLookup: boolean;
 	},
 ) {
-	const { publishedDate } = resolveResourceHints(input.acquiredContent, input.hints);
-	const canonicalUrl = input.acquiredContent.canonicalUrl?.trim() || input.sourceUrl;
+	const { paperIdentifierText, ...resource } = input.resource;
+	const canonicalUrl = resource.url;
 	const exactIdentifiers = [input.sourceUrl, canonicalUrl === input.sourceUrl ? null : canonicalUrl].flatMap((value) => {
 		const resolved = resolveExactPaperInput(value);
 		return resolved ? paperIdentifiersFromIdentity(resolved.identity) : [];
 	});
-	const textIdentity =
-		input.acquiredContent.fileType === PDF_MIME && input.acquiredContent.paperIdentifierText?.trim()
-			? paperIdentityFromText(input.acquiredContent.paperIdentifierText)
-			: null;
+	const textIdentity = resource.fileType === PDF_MIME && paperIdentifierText?.trim() ? paperIdentityFromText(paperIdentifierText) : null;
 	const identifiers = choosePreferredIdentifiers([
 		...exactIdentifiers,
 		...(textIdentity ? paperIdentifiersFromIdentity(textIdentity) : []),
@@ -255,11 +225,11 @@ export async function stagePaperResolution(
 	]);
 	const doi = paperIdentityFromIdentifiers(identifiers)?.doi;
 	const citoidIdentifiers =
-		input.acquiredContent.fileType !== PDF_MIME && !identifiers.length && input.allowCitoidLookup && canonicalUrl
+		resource.fileType !== PDF_MIME && !identifiers.length && input.allowCitoidLookup && canonicalUrl
 			? await stageCitoidPaperIdentifiers(step, { citoidUrl: canonicalUrl, processingId: input.processingId })
 			: [];
 	const resolution =
-		input.acquiredContent.fileType === PDF_MIME
+		resource.fileType === PDF_MIME
 			? {
 					contentPdfUrl: null,
 					identifiers,
@@ -269,40 +239,37 @@ export async function stagePaperResolution(
 					identifiers: choosePreferredIdentifiers([...identifiers, ...citoidIdentifiers]),
 					processingId: input.processingId,
 				});
-	const enriched = applyPaperMetadata(input.acquiredContent, resolution.metadata, publishedDate);
 	const pdfMarkdown =
-		input.acquiredContent.fileType === PDF_MIME || !resolution.contentPdfUrl
+		resource.fileType === PDF_MIME || !resolution.contentPdfUrl
 			? null
 			: await stageOpenAlexPdfMarkdown(env, step, {
 					contentPdfUrl: resolution.contentPdfUrl,
 					processingId: input.processingId,
 				});
-	const acquiredContent = pdfMarkdown
-		? {
-				...enriched.acquiredContent,
-				fileType: PDF_MIME,
-				markdown: pdfMarkdown,
-				source: enriched.acquiredContent.source.trim() || (canonicalUrl ? new URL(canonicalUrl).hostname : 'OpenAlex'),
-			}
-		: enriched.acquiredContent;
+	const content = pdfMarkdown ?? resource.content;
+	if (!content.trim()) throw new Error(`Processing ${input.processingId} has no extractable content`);
 	const resourceIdentifiers = choosePreferredIdentifiers([...identifiers, ...resolution.identifiers]);
-	if (!acquiredContent.markdown.trim()) throw new Error(`Processing ${input.processingId} has no extractable content`);
 	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
-	if (!identity) return null;
+	if (!identity) return resource;
+	const { abstract, authors, publicationDate, title, ...kindMetadata } = resolution.metadata ?? {};
+	let publishedDate = resource.publishedDate;
+	if (!publishedDate && publicationDate) {
+		const candidate = new Date(`${publicationDate}T00:00:00.000Z`);
+		if (!Number.isNaN(candidate.getTime())) publishedDate = candidate.toISOString();
+	}
 	return {
+		...resource,
 		kind: 'paper',
 		resourcePlatform: null,
 		resourceIdentifiers,
 		url: canonicalUrl ?? canonicalPaperUrl(identity),
-		title: acquiredContent.title.trim(),
-		content: acquiredContent.markdown,
-		source: acquiredContent.source,
-		...resolveResourceHints(acquiredContent, input.hints),
-		publishedDate: enriched.publishedDate,
-		creators: acquiredContent.creators,
-		kindMetadata: acquiredContent.kindMetadata ?? {},
-		fileType: acquiredContent.fileType,
-		previewImageUrl: acquiredContent.previewImageUrl?.trim() || null,
-		subject: null,
+		title: title?.trim() || resource.title,
+		summary: abstract?.trim() || resource.summary,
+		content,
+		source: pdfMarkdown ? resource.source.trim() || (canonicalUrl ? new URL(canonicalUrl).hostname : 'OpenAlex') : resource.source,
+		publishedDate,
+		creators: authors ? authors.flatMap((author) => literalCreator('author', author)) : resource.creators,
+		kindMetadata,
+		fileType: pdfMarkdown ? PDF_MIME : resource.fileType,
 	} satisfies AcquiredResource;
 }

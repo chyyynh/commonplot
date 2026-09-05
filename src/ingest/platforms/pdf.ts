@@ -25,7 +25,6 @@ import { fetchOpenAlexPdf } from './openalex';
 import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
 import type { LocalPdfSummary, PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
-import type { WebAcquiredContent } from './web';
 
 export { PDF_MIME } from './pdf-constants';
 export type { PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
@@ -37,27 +36,8 @@ const CROSSREF_PAPER_CANDIDATE_STEP = {
 	timeout: '30 seconds',
 } as const;
 
-export function pdfResource(content: WebAcquiredContent, hints: ResourceAcquisitionHints, url: string | null) {
-	return {
-		kind: 'file',
-		resourcePlatform: null,
-		resourceIdentifiers: [],
-		url: content.canonicalUrl?.trim() || url,
-		title: content.title.trim(),
-		content: content.markdown,
-		source: content.source,
-		...resolveResourceHints(content, hints),
-		creators: content.creators,
-		kindMetadata: null,
-		fileType: PDF_MIME,
-		previewImageUrl: content.previewImageUrl?.trim() || null,
-		subject: null,
-	} satisfies AcquiredResource;
-}
-
-export type PdfAcquisitionDraft = Readonly<{
-	kind: 'local-pdf';
-	material: WebAcquiredContent;
+export type PdfAcquisition = Readonly<{
+	resource: AcquiredResource & { kind: 'file'; resourcePlatform: null; paperIdentifierText: string | null };
 	parse: LocalPdfSummary;
 }>;
 
@@ -79,9 +59,9 @@ function localPdfResult(normalized: ReturnType<typeof normalizeStructuredPdf>, s
 	return { markdown, paperIdentifierText, parse };
 }
 
-function requireUsablePdf(acquisition: PdfAcquisitionDraft, sourceLabel: string): WebAcquiredContent {
-	if (!acquisition.material.markdown) throw new NonRetryableError(`${sourceLabel} has no usable text; OCR is required`);
-	return acquisition.material;
+function requireUsablePdf(acquisition: PdfAcquisition, sourceLabel: string): PdfAcquisition['resource'] {
+	if (!acquisition.resource.content) throw new NonRetryableError(`${sourceLabel} has no usable text; OCR is required`);
+	return acquisition.resource;
 }
 
 /** Finish a direct public PDF after the retrying fetch/local-parse step has ended. */
@@ -89,12 +69,12 @@ export async function completeFetchedPdfAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		acquisition: PdfAcquisitionDraft;
+		acquisition: PdfAcquisition;
 		grant: PaidPdfFallbackGrant | null;
 		processingId: string;
 		sourceUrl: string;
 	},
-): Promise<WebAcquiredContent> {
+): Promise<PdfAcquisition['resource']> {
 	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
 		grant: input.grant,
 		local: input.acquisition.parse,
@@ -103,8 +83,8 @@ export async function completeFetchedPdfAcquisition(
 	});
 	if (!cloudMarkdown) return requireUsablePdf(input.acquisition, 'Fetched PDF');
 	return {
-		...input.acquisition.material,
-		markdown: cloudMarkdown,
+		...input.acquisition.resource,
+		content: cloudMarkdown,
 		paperIdentifierText: cloudMarkdown.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS),
 	};
 }
@@ -113,22 +93,22 @@ export async function completeFetchedPdfAcquisition(
 export async function stageOpenAlexPdfMarkdown(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
 	try {
 		const contentStream = await step.do(
-			'acquire-openalex-content-pdf-v8',
+			'acquire-openalex-content-pdf-v9',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 			async () => {
 				const response = await fetchOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
 				return Response.json(await acquireFetchedPdfResponse(env, response, input.contentPdfUrl)).body!;
 			},
 		);
-		const local = await new Response(contentStream).json<PdfAcquisitionDraft>();
+		const local = await new Response(contentStream).json<PdfAcquisition>();
 		const acquired = requireUsablePdf(local, 'OpenAlex content PDF');
 		console.info({
 			tag: 'OPENALEX_CONTENT',
 			event: 'pdf_acquired',
 			processing_id: input.processingId,
-			chars: acquired.markdown.length,
+			chars: acquired.content.length,
 		});
-		return acquired.markdown;
+		return acquired.content;
 	} catch (error) {
 		console.error({
 			tag: 'OPENALEX_CONTENT',
@@ -212,7 +192,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 
 type StoredPdfInput = Awaited<ReturnType<typeof loadStoredPdfInput>>;
 
-async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resourceId: string): Promise<PdfAcquisitionDraft> {
+async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resourceId: string): Promise<PdfAcquisition> {
 	const sourceLabel = `Stored PDF ${resourceId}`;
 	let attempt: StructuredPdfDocument | LocalPdfParseResult | null = null;
 	try {
@@ -259,17 +239,19 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 		);
 	} else parsed = attempt;
 	return {
-		kind: 'local-pdf',
-		material: {
+		resource: {
+			kind: 'file',
+			resourceIdentifiers: [],
+			subject: null,
+			previewImageUrl: null,
 			resourcePlatform: null,
 			fileType: PDF_MIME,
+			url: null,
 			title: resource.title,
-			markdown: parsed.markdown,
+			content: parsed.markdown,
 			paperIdentifierText: parsed.paperIdentifierText,
 			source: resource.source,
-			originalLang: resource.originalLang,
-			publishedDate: resource.publishedDate,
-			summary: resource.summary,
+			...resolveResourceHints(resource, resource),
 			creators: resource.creators,
 			kindMetadata: null,
 		},
@@ -277,7 +259,12 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 	};
 }
 
-export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response, finalUrl: string): Promise<PdfAcquisitionDraft> {
+export async function acquireFetchedPdfResponse(
+	env: CoreEnv,
+	response: Response,
+	finalUrl: string,
+	hints: ResourceAcquisitionHints = { originalLang: null, publishedDate: null, summary: null },
+): Promise<PdfAcquisition> {
 	const declaredLength = Number(response.headers.get('content-length'));
 	if (Number.isFinite(declaredLength) && declaredLength > MAX_PDF_BYTES) {
 		await response.body?.cancel('Fetched PDF size is outside the supported range');
@@ -297,17 +284,19 @@ export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response
 	if (!title) throw new NonRetryableError(`File name has no title: ${fileName}`);
 	const source = new URL(finalUrl).hostname.replace(/^www\./, '');
 	return {
-		kind: 'local-pdf',
-		material: {
+		resource: {
+			kind: 'file',
+			resourceIdentifiers: [],
+			subject: null,
+			previewImageUrl: null,
 			resourcePlatform: null,
 			fileType: PDF_MIME,
+			url: finalUrl,
 			title,
-			markdown: parsed.markdown,
+			content: parsed.markdown,
 			paperIdentifierText: parsed.paperIdentifierText,
 			source,
-			originalLang: null,
-			publishedDate: null,
-			summary: null,
+			...resolveResourceHints(hints, hints),
 			creators: [],
 			kindMetadata: null,
 		},
@@ -322,7 +311,7 @@ export async function stageStoredPdfAcquisition(
 		paidPdfFallback?: PaidPdfFallbackGrant;
 		resourceId: string;
 	}>,
-): Promise<WebAcquiredContent> {
+): Promise<PdfAcquisition['resource']> {
 	const resource = await step.do(
 		'load-stored-pdf-input-v1',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
@@ -339,7 +328,7 @@ export async function stageStoredPdfAcquisition(
 	);
 	const [contentStream, grobidHeader] = await Promise.all([
 		step.do(
-			'acquire-stored-pdf-v7',
+			'acquire-stored-pdf-v8',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 			async () => Response.json(await acquireStoredPdf(env, resource, target.resourceId)).body!,
 		),
@@ -359,7 +348,7 @@ export async function stageStoredPdfAcquisition(
 				return null;
 			}),
 	]);
-	const acquisition = await new Response(contentStream).json<PdfAcquisitionDraft>();
+	const acquisition = await new Response(contentStream).json<PdfAcquisition>();
 	let paperIdentifierText = grobidHeader?.paperIdentifierText ?? null;
 	const grobidTitle = grobidHeader?.title;
 	if (!paperIdentifierText && grobidTitle && grobidHeader.authors.length) {
@@ -388,10 +377,10 @@ export async function stageStoredPdfAcquisition(
 		}
 	}
 	const paperHeader = paperIdentifierText ? grobidHeader : null;
-	const material: WebAcquiredContent = {
-		...acquisition.material,
+	const acquired = {
+		...acquisition.resource,
 		paperIdentifierText,
-		...(paperHeader?.title ? { title: paperHeader.title } : {}),
+		...(paperHeader?.title ? { title: paperHeader.title.trim() } : {}),
 		...(paperHeader?.authors.length
 			? { creators: paperHeader.authors.map((literal): ResourceCreator => ({ literal, role: 'author' })) }
 			: {}),
@@ -406,5 +395,5 @@ export async function stageStoredPdfAcquisition(
 		},
 	});
 	if (!cloudMarkdown) requireUsablePdf(acquisition, `Stored PDF ${target.resourceId}`);
-	return cloudMarkdown ? { ...material, markdown: cloudMarkdown } : material;
+	return cloudMarkdown ? { ...acquired, content: cloudMarkdown } : acquired;
 }
