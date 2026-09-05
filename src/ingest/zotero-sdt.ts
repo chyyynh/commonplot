@@ -19,7 +19,7 @@ import {
 	shouldDropHardHyphenAtPartBoundary,
 } from 'structured-document-text/src/parts.js';
 import { isContentBoundary, isLeafBlock, refKey, sameRef } from 'structured-document-text/src/range.js';
-import { getNestedBlockPlainText, mergeTextNodes } from 'structured-document-text/src/text.js';
+import { mergeTextNodes } from 'structured-document-text/src/text.js';
 
 const MAX_DOCUMENT_NODES = 100_000;
 const MAX_DOCUMENT_TEXT_CHARS = 2_000_000;
@@ -379,6 +379,7 @@ export function normalizeStructuredPdf(
 		}
 	}
 	let section: string | null = null;
+	let tableDepth = 0;
 	const renderedPartPaths = new Set<string>();
 	const citations = new Map<string, Omit<StructuredPdfCitationMention, 'contentStart' | 'contentEnd'>>();
 	function inline(nodes: readonly SdtNode[], inheritedItalic = false): PhrasingContent[] {
@@ -410,6 +411,8 @@ export function normalizeStructuredPdf(
 				targetKeys.length &&
 				markerText &&
 				markerText.length <= MAX_CITATION_MARKER_CHARS &&
+				// Raw marker offsets cannot represent an escaped GFM cell delimiter.
+				!(tableDepth && markerText.includes('|')) &&
 				citations.size < MAX_CITATION_MENTIONS
 			) {
 				flush();
@@ -452,6 +455,19 @@ export function normalizeStructuredPdf(
 		}
 		flush();
 		return children;
+	}
+	function cellPhrasing(nodes: readonly RootContent[]): PhrasingContent[] {
+		return nodes.flatMap((node, index): PhrasingContent[] => {
+			const children: PhrasingContent[] =
+				node.type === 'paragraph' || node.type === 'heading'
+					? node.children
+					: 'value' in node
+						? [{ type: 'text', value: cleanText(node.value) }]
+						: 'children' in node
+							? cellPhrasing(node.children)
+							: [];
+			return index && children.length ? [{ type: 'text', value: ' ' }, ...children] : children;
+		});
 	}
 	function toBlock(node: SdtBlockNode, path: RefPath): BlockContent[] {
 		if (node.flowClass === 'excluded' || renderedPartPaths.has(refKey(path))) return [];
@@ -501,25 +517,23 @@ export function normalizeStructuredPdf(
 			];
 		}
 		if (node.type === 'table' && !isLeafBlock(node)) {
+			tableDepth += 1;
 			const children: Table['children'] = [];
-			for (const row of node.content) {
+			for (const [rowIndex, row] of node.content.entries()) {
 				if ('text' in row || row.type !== 'tablerow' || row.flowClass === 'excluded') continue;
 				children.push({
 					type: 'tableRow',
-					children: row.content.flatMap((cell) =>
-						'text' in cell || cell.type !== 'tablecell'
-							? []
-							: [
-									{
-										type: 'tableCell' as const,
-										// GFM has inline-only cells. SDT's native plain-text projection
-										// keeps separators between nested cell paragraphs.
-										children: [{ type: 'text' as const, value: cleanText(getNestedBlockPlainText(cell as ContentBlockNode)) }],
-									},
-								],
-					),
+					children: row.content.flatMap((cell, cellIndex) => {
+						if ('text' in cell || cell.type !== 'tablecell') return [];
+						// GFM cells are inline-only; reuse the block pipeline before flattening.
+						const parentSection = section;
+						const content = cellPhrasing(toBlock(cell, [...path, rowIndex, cellIndex]));
+						section = parentSection;
+						return [{ type: 'tableCell' as const, children: content }];
+					}),
 				});
 			}
+			tableDepth -= 1;
 			return children.length ? [{ type: 'table', children }] : blocks(node.content, path);
 		}
 		if (!isLeafBlock(node)) return blocks(node.content, path);

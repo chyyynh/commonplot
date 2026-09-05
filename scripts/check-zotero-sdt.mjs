@@ -290,6 +290,66 @@ for (const type of ['paragraph', 'caption']) {
 	}
 }
 
+// Table cells must retain readable content and citation offsets through the same
+// block normalization as the body, without leaking cell headings into its section.
+const tableCite = () => text('[1]', { refs: [[2]] });
+const richTableDocument = {
+	...document,
+	content: [
+		{ type: 'heading', content: [text('Results')] },
+		{
+			type: 'table',
+			content: [
+				{
+					type: 'tablerow',
+					content: [
+						{
+							type: 'tablecell',
+							content: [
+								{ ...prose(text('First ', { style: { italic: true } }), tableCite()), nextPart: [1, 0, 0, 1] },
+								{ ...prose(text(' continuation', { style: { bold: true } })), previousPart: [1, 0, 0, 0] },
+								{ ...prose(text('Excluded')), flowClass: 'excluded' },
+								{ type: 'blockquote', content: [prose(text('Quote')), { ...prose(text('Hidden')), flowClass: 'excluded' }] },
+							],
+						},
+						{
+							type: 'tablecell',
+							content: [
+								{ type: 'heading', content: [text('Cell heading')] },
+								prose(text('A | B '), text('source', { target: { url: 'https://example.com/table' } }), text(' '), tableCite()),
+								{ type: 'list', content: [{ type: 'listitem', content: [prose(text('One')), prose(text('Two'))] }] },
+							],
+						},
+					],
+				},
+			],
+		},
+		{ ...prose(text('[1] Example reference.')), reference: true },
+		prose(text('After table '), tableCite()),
+	],
+};
+const richTable = normalizeStructuredPdf(richTableDocument);
+const richCells = fromMarkdown(richTable.markdown, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }).children[1].children[0]
+	.children;
+assert.deepEqual(richCells.map(visibleText), ['First [1] continuation Quote', 'Cell heading A | B source [1] One Two']);
+assert.ok(richCells[0].children.some(({ type }) => type === 'emphasis'));
+assert.ok(richCells[0].children.some(({ type }) => type === 'strong'));
+assert.ok(richCells[1].children.some((node) => node.type === 'link' && node.url === 'https://example.com/table'));
+assert.deepEqual(
+	richTable.mentions.map(({ section }) => section),
+	['Results', 'Cell heading', 'Results'],
+);
+for (const mention of richTable.mentions) assert.equal(richTable.markdown.slice(mention.contentStart, mention.contentEnd), '[1]');
+assert.doesNotMatch(richTable.markdown, /#sdt-citation-/u);
+
+const pipeMarkerDocument = structuredClone(richTableDocument);
+pipeMarkerDocument.content[1].content[0].content[0].content[0].content[1].text = '[A|B]';
+const pipeMarkerTable = normalizeStructuredPdf(pipeMarkerDocument);
+const pipeCells = fromMarkdown(pipeMarkerTable.markdown, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }).children[1]
+	.children[0].children;
+assert.equal(visibleText(pipeCells[0]), 'First [A|B] continuation Quote');
+assert.equal(pipeMarkerTable.mentions.length, 2);
+
 const positionedText = (value, page) =>
 	text(value, {
 		anchor: {
