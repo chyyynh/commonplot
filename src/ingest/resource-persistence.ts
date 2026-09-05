@@ -327,7 +327,7 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 		return {
 			resourceId: root.id,
 			scope: root.scope,
-			subjectAttached: subjectResourceId !== null,
+			subjectAttached: resolvedSubjectId !== null,
 			translationRevision,
 		};
 	});
