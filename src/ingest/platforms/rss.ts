@@ -4,7 +4,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { limitByteStream } from '../../shared/response';
 import { resolvePlatformResourceUrl } from '../acquisition';
 import { markSourcesScraped, recordSourceFailure } from '../source-monitor-state';
-import { enqueueSourceDrafts } from '../workflow';
+import { enqueueSourceDrafts, type SourceResourceDraft } from '../workflow';
 import { canonicalizeWebResourceUrl } from './web';
 
 const MAX_FEED_BYTES = 3 * 1024 * 1024;
@@ -12,13 +12,6 @@ const MAX_FEED_ITEMS = 30;
 const FEED_SUMMARY_MAX_CHARS = 500;
 const RSS_FETCH_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const FEED_CONCURRENCY = 4;
-
-type FeedEntry = {
-	url: string;
-	summary: string | null;
-	publishedDate: Date | null;
-	originalLang?: string;
-};
 
 type MonitoredFeedSource = {
 	id: string;
@@ -48,13 +41,14 @@ function feedEntryUrl(item: ExtractedFeedEntry): string | null {
 	return canonicalizeWebResourceUrl(itemUrl);
 }
 
-function normalizeFeedEntries(items: ExtractedFeedEntry[], feedLanguage?: string): FeedEntry[] {
-	const entries = new Map<string, FeedEntry>();
+function createFeedDrafts(items: ExtractedFeedEntry[], sourceId: string, feedLanguage?: string) {
+	const entries = new Map<string, SourceResourceDraft>();
 	for (const item of items) {
 		const url = feedEntryUrl(item);
 		if (!url || entries.has(url)) continue;
 		const date = item.published ? new Date(item.published) : null;
 		entries.set(url, {
+			sourceId,
 			url,
 			summary: item.description?.slice(0, FEED_SUMMARY_MAX_CHARS) || null,
 			publishedDate: date && !Number.isNaN(date.getTime()) ? date : null,
@@ -64,11 +58,8 @@ function normalizeFeedEntries(items: ExtractedFeedEntry[], feedLanguage?: string
 	return [...entries.values()];
 }
 
-async function loadFeed(feedUrl: string): Promise<{
-	itemCount: number;
-	entries: FeedEntry[];
-}> {
-	const requestedUrl = URL.parse(feedUrl);
+async function loadFeed(feed: MonitoredFeedSource) {
+	const requestedUrl = URL.parse(feed.handle);
 	if (
 		!requestedUrl ||
 		(requestedUrl.protocol !== 'http:' && requestedUrl.protocol !== 'https:') ||
@@ -116,30 +107,22 @@ async function loadFeed(feedUrl: string): Promise<{
 		throw new Error('URL did not return a readable feed.');
 	}
 	const items = (parsed.entries ?? []).slice(0, MAX_FEED_ITEMS);
-	const entries = normalizeFeedEntries(items, parsed.language?.trim() || undefined);
 	return {
 		itemCount: items.length,
-		entries,
+		drafts: createFeedDrafts(items, feed.id, parsed.language?.trim() || undefined),
 	};
 }
 
 async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeedSource): Promise<void> {
-	const { entries, itemCount } = await loadFeed(feed.handle);
-	const skipped = itemCount - entries.length;
+	const { drafts, itemCount } = await loadFeed(feed);
+	const skipped = itemCount - drafts.length;
 	if (skipped) console.warn({ tag: 'RSS', msg: 'Skipped invalid or duplicate feed items', feed: feed.name, count: skipped });
-	if (!entries.length) {
+	if (!drafts.length) {
 		console.info({ tag: 'RSS', msg: itemCount ? 'Feed has no valid item URLs' : 'Feed has no items', feed: feed.name });
 		await markSourcesScraped(db, [feed.id]);
 		return;
 	}
 
-	const drafts = entries.map((item) => ({
-		sourceId: feed.id,
-		url: item.url,
-		publishedDate: item.publishedDate,
-		summary: item.summary,
-		originalLang: item.originalLang,
-	}));
 	const created = await enqueueSourceDrafts(env, db, drafts);
 	console.info({
 		tag: 'RSS',

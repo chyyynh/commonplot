@@ -33,77 +33,8 @@ async function loadTwitterSources(db: NodePgDatabase): Promise<TwitterSource[]> 
 	return result.rows;
 }
 
-function monitoredAuthorUserName(tweet: Tweet): string | null {
-	const userName = tweet.retweetedBy?.authorUserName || tweet.author?.userName;
-	return userName?.trim().toLowerCase() || null;
-}
-
-function normalizeRetweet(tweet: Tweet): Tweet {
-	if (tweet.retweeted_tweet) {
-		const retweeter = tweet.author;
-		if (!retweeter?.userName.trim()) {
-			throw new Error(`Retweet ${tweet.id ?? tweet.url} has no complete author`);
-		}
-		const normalized = {
-			...tweet.retweeted_tweet,
-			retweetedBy: {
-				authorUserName: retweeter.userName,
-			},
-		};
-		if (!normalized.author?.name.trim() || !normalized.author.userName.trim()) {
-			throw new Error(`Retweeted tweet ${normalized.id ?? normalized.url} has no complete author`);
-		}
-		return normalized;
-	}
-	// Keep a carrier when the provider omits or changes its nested retweet
-	// payload. Its canonical URL is fetched again by the Resource Workflow.
-	if (tweet.text.startsWith('RT @')) {
-		console.warn({ tag: 'TWITTER', event: 'twitter_retweet_carrier_preserved', tweetId: tweet.id, url: tweet.url });
-		return tweet;
-	}
-	if (!tweet.author?.name.trim() || !tweet.author.userName.trim()) {
-		throw new Error(`Tweet ${tweet.id ?? tweet.url} has no complete author`);
-	}
-	return tweet;
-}
-
-type TwitterSourceFetch = {
-	tweets: Tweet[];
-	providerTweets: number;
-	pages: number;
-	skippedItems: number;
-};
-
-function normalizeFetchedTweets(tweets: Tweet[], monitoredUserName: string): Pick<TwitterSourceFetch, 'skippedItems' | 'tweets'> {
-	const normalizedTweets: Tweet[] = [];
-	let skippedItems = 0;
-	for (const tweet of tweets) {
-		try {
-			const normalized = normalizeRetweet(tweet);
-			const attributedUserName = monitoredAuthorUserName(normalized);
-			if (attributedUserName !== monitoredUserName) {
-				throw new Error(
-					`Tweet ${normalized.id ?? normalized.url} was attributed to @${attributedUserName ?? 'unknown'}, expected @${monitoredUserName}`,
-				);
-			}
-			normalizedTweets.push(normalized);
-		} catch (error) {
-			skippedItems++;
-			console.error({
-				tag: 'TWITTER',
-				event: 'twitter_item_skipped',
-				stage: 'normalization',
-				tweetId: tweet.id,
-				userName: monitoredUserName,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-	}
-	return { tweets: normalizedTweets, skippedItems };
-}
-
 /** Fetch one fixed monitoring window using twitterapi.io's native cursor. */
-async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime: number, untilTime: number): Promise<TwitterSourceFetch> {
+async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime: number, untilTime: number) {
 	const normalizedUserName = userName.replace(/^@/, '').trim().toLowerCase();
 	if (!/^[a-z0-9_]{1,15}$/.test(normalizedUserName)) throw new Error('Twitter source has an invalid handle');
 	if (!Number.isSafeInteger(sinceTime) || !Number.isSafeInteger(untilTime) || sinceTime < 0 || sinceTime >= untilTime) {
@@ -150,29 +81,46 @@ async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime:
 		seenCursors.add(apiRes.nextCursor);
 		cursor = apiRes.nextCursor;
 	}
-	const normalized = normalizeFetchedTweets([...terminalTweets.values()], userName);
-	skippedItems += normalized.skippedItems;
-
 	console.info({
 		tag: 'TWITTER',
 		event: 'twitter_search_completed',
 		userName,
 		pages,
 		provider_tweets: providerTweets,
-		normalized_tweets: normalized.tweets.length,
+		unique_tweets: terminalTweets.size,
 		skipped_items: skippedItems,
 	});
-	return { tweets: normalized.tweets, providerTweets, pages, skippedItems };
+	return { tweets: terminalTweets.values(), providerTweets, pages, skippedItems };
 }
 
-async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Tweet[], source: TwitterSource) {
+async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Iterable<Tweet>, source: TwitterSource) {
 	const drafts = new Map<string, SourceResourceDraft>();
 	let skippedItems = 0;
-	for (const tweet of tweets) {
+	let normalizedTweets = 0;
+	for (const carrier of tweets) {
+		const tweet = carrier.retweeted_tweet ?? carrier;
+		let stage = 'normalization';
 		try {
-			const userName = monitoredAuthorUserName(tweet);
-			if (!userName) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no monitored author identity`);
-			if (userName !== source.handle) throw new Error(`Tweet ${tweet.id ?? tweet.url} is not attributed to @${source.handle}`);
+			if (carrier.retweeted_tweet) {
+				if (!carrier.author?.userName.trim()) throw new Error(`Retweet ${carrier.id ?? carrier.url} has no complete author`);
+				if (!tweet.author?.name.trim() || !tweet.author.userName.trim()) {
+					throw new Error(`Retweeted tweet ${tweet.id ?? tweet.url} has no complete author`);
+				}
+			} else if (tweet.text.startsWith('RT @')) {
+				// A missing nested retweet keeps its carrier URL for acquisition to resolve.
+				console.warn({ tag: 'TWITTER', event: 'twitter_retweet_carrier_preserved', tweetId: tweet.id, url: tweet.url });
+			} else if (!tweet.author?.name.trim() || !tweet.author.userName.trim()) {
+				throw new Error(`Tweet ${tweet.id ?? tweet.url} has no complete author`);
+			}
+			const attributedAuthor = carrier.retweeted_tweet
+				? carrier.author?.userName
+				: carrier.retweetedBy?.authorUserName || carrier.author?.userName;
+			const userName = attributedAuthor?.trim().toLowerCase() || null;
+			if (userName !== source.handle) {
+				throw new Error(`Tweet ${tweet.id ?? tweet.url} was attributed to @${userName ?? 'unknown'}, expected @${source.handle}`);
+			}
+			normalizedTweets++;
+			stage = 'draft';
 			const tweetId = tweet.id?.trim();
 			if (!tweetId || !/^\d+$/.test(tweetId)) throw new Error(`Tweet ${tweet.url} has no valid provider id`);
 			const url = `https://x.com/i/status/${tweetId}`;
@@ -191,7 +139,7 @@ async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Tweet[], 
 			console.error({
 				tag: 'TWITTER',
 				event: 'twitter_item_skipped',
-				stage: 'draft',
+				stage,
 				userName: source.handle,
 				tweetId: tweet.id,
 				url: tweet.url,
@@ -201,36 +149,22 @@ async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Tweet[], 
 	}
 	const pending = [...drafts.values()];
 	const created = pending.length ? await enqueueSourceDrafts(env, db, pending) : 0;
-	return { admittedDrafts: pending.length, created, deduplicated: pending.length - created, skippedItems };
+	return { admittedDrafts: pending.length, created, deduplicated: pending.length - created, normalizedTweets, skippedItems };
 }
 
-type TwitterSourceMetrics = {
-	admittedDrafts: number;
-	created: number;
-	deduplicated: number;
-	normalizedTweets: number;
-	pages: number;
-	providerTweets: number;
-	skippedItems: number;
-	sourceId: string;
-};
+type TwitterSourceMetrics = Awaited<ReturnType<typeof processTwitterSource>>;
 
-async function processTwitterSource(
-	env: CoreEnv,
-	db: NodePgDatabase,
-	source: TwitterSource,
-	windowEnd: Date,
-): Promise<TwitterSourceMetrics> {
+async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: TwitterSource, windowEnd: Date) {
 	const sinceTime = Math.floor(new Date(source.scrapedAt ?? source.createdAt).getTime() / 1000);
 	const untilTime = Math.floor(windowEnd.getTime() / 1000);
 	try {
 		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, sinceTime, untilTime);
 		const admission = await enqueueTweets(env, db, fetched.tweets, source);
-		const metrics: TwitterSourceMetrics = {
+		const metrics = {
 			admittedDrafts: admission.admittedDrafts,
 			created: admission.created,
 			deduplicated: admission.deduplicated,
-			normalizedTweets: fetched.tweets.length,
+			normalizedTweets: admission.normalizedTweets,
 			pages: fetched.pages,
 			providerTweets: fetched.providerTweets,
 			skippedItems: fetched.skippedItems + admission.skippedItems,
