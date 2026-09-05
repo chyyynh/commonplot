@@ -42,6 +42,11 @@ One URL detector selects the owning platform adapter. Each platform/kind adapter
 Only the output contract and small source-hint rules are shared; there is no generic materializer.
 The Workflow passes those outputs to analysis, image hosting, and persistence.
 
+Web and PDF adapters produce readable Resources directly; paper resolution adds bibliographic identity to that Resource.
+For platform changes, start in its adapter and keep the dispatcher limited to routing. A new platform also needs its
+identity contract in `src/shared/resource.ts` and matching database constraints. Debug the acquisition step's Resource
+output before checking analysis, canonical persistence, and the separate app-save/follow-up steps.
+
 ## How it works
 
 Each resource goes through an automated workflow with independent retries:

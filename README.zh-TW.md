@@ -42,6 +42,11 @@
 自行負責來源解析、identity 與 Resource 輸出；共用部分只有輸出契約與來源提示小工具，
 沒有泛型 materializer。Workflow 再將輸出交給 analysis、image hosting 與 persistence。
 
+Web 與 PDF adapter 直接產出可讀的 Resource；paper resolution 在這份 Resource 上補齊書目 identity。
+修改平台行為從對應 adapter 開始，dispatcher 只負責路由。新增平台也要同步更新
+`src/shared/resource.ts` 的 identity 契約與資料庫 constraints。Debug 時先檢查 acquisition step
+輸出的 Resource，再追 analysis、canonical persistence，以及獨立的 app save／後續工作。
+
 ## 運作流程
 
 每個 resource 經過自動化 workflow，各步驟獨立重試：

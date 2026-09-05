@@ -144,13 +144,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 					resource.creators->0->>'literal',
 					CONCAT_WS(' ', resource.creators->0->>'given', resource.creators->0->>'family')
 				)), ''),
-				CASE resource.resource_platform
-					WHEN 'twitter' THEN 'Twitter'
-					WHEN 'youtube' THEN 'YouTube'
-					WHEN 'hackernews' THEN 'Hacker News'
-					WHEN 'lesswrong' THEN 'LessWrong'
-				END,
-				INITCAP(resource.kind)
+				'File'
 			) AS source,
 			resource.published_date,
 			resource.creators,
