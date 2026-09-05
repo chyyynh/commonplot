@@ -224,38 +224,29 @@ export async function enqueueResourceReferenceEnrichment(
 export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<CoreEnv, ResourceReferenceEnrichmentPayload> {
 	async run(event: WorkflowEvent<ResourceReferenceEnrichmentPayload>, step: WorkflowStep): Promise<void> {
 		const input = ResourceReferenceEnrichmentPayloadSchema.parse(event.payload);
-		try {
-			const source = await step.do('load-uploaded-pdf-reference-source-v2', REFERENCE_DB_STEP, async () =>
-				loadUploadedPdfSource(await connectCoreDb(this.env), input.resourceId, input.source.fileResourceId, input.referenceRevision),
-			);
-			const stored = await step.do('replace-uploaded-pdf-citations-v2', REFERENCE_SDT_STEP, async () => {
-				const document = await readStructuredPdfArtifact(this.env, source.storageKey, source.contentHash);
-				if (!document) throw new NonRetryableError('Structured PDF artifact is missing or stale');
-				const db = await connectCoreDb(this.env);
-				return replaceStoredCitationData(db, input.resourceId, input.referenceRevision, document, source.contentHash);
-			});
-			const crossrefUpdates = await resolveCrossrefUpdates(step, stored.referenceTexts);
-			const enrichedCount = crossrefUpdates.length
-				? await step.do('persist-crossref-reference-metadata-v1', REFERENCE_DB_STEP, async () =>
-						persistCrossrefMetadata(await connectCoreDb(this.env), input.resourceId, input.referenceRevision, crossrefUpdates),
-					)
-				: 0;
-			console.info({
-				tag: 'RESOURCE_REFERENCES',
-				event: 'reference_enrichment_completed',
-				resource_id: input.resourceId,
-				stored_reference_count: stored.referenceTexts.length,
-				stored_mention_count: stored.mentionCount,
-				aligned_mention_count: stored.alignedMentionCount,
-				crossref_enriched_count: enrichedCount,
-			});
-		} catch (error) {
-			console.warn({
-				tag: 'RESOURCE_REFERENCES',
-				event: 'reference_enrichment_skipped',
-				resource_id: input.resourceId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
+		const source = await step.do('load-uploaded-pdf-reference-source-v2', REFERENCE_DB_STEP, async () =>
+			loadUploadedPdfSource(await connectCoreDb(this.env), input.resourceId, input.source.fileResourceId, input.referenceRevision),
+		);
+		const stored = await step.do('replace-uploaded-pdf-citations-v2', REFERENCE_SDT_STEP, async () => {
+			const document = await readStructuredPdfArtifact(this.env, source.storageKey, source.contentHash);
+			if (!document) throw new NonRetryableError('Structured PDF artifact is missing or stale');
+			const db = await connectCoreDb(this.env);
+			return replaceStoredCitationData(db, input.resourceId, input.referenceRevision, document, source.contentHash);
+		});
+		const crossrefUpdates = await resolveCrossrefUpdates(step, stored.referenceTexts);
+		const enrichedCount = crossrefUpdates.length
+			? await step.do('persist-crossref-reference-metadata-v1', REFERENCE_DB_STEP, async () =>
+					persistCrossrefMetadata(await connectCoreDb(this.env), input.resourceId, input.referenceRevision, crossrefUpdates),
+				)
+			: 0;
+		console.info({
+			tag: 'RESOURCE_REFERENCES',
+			event: 'reference_enrichment_completed',
+			resource_id: input.resourceId,
+			stored_reference_count: stored.referenceTexts.length,
+			stored_mention_count: stored.mentionCount,
+			aligned_mention_count: stored.alignedMentionCount,
+			crossref_enriched_count: enrichedCount,
+		});
 	}
 }
