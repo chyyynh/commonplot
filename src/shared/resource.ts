@@ -72,8 +72,6 @@ const PaperRelationItemSchema = z.object({
 	citedByCount: z.int().nonnegative().optional(),
 });
 const PaperRelationSnapshotSchema = z.object({ total: z.int().nonnegative(), items: z.array(PaperRelationItemSchema) });
-export type PaperRelationItem = Readonly<z.infer<typeof PaperRelationItemSchema>>;
-export type PaperRelationSnapshot = Readonly<z.infer<typeof PaperRelationSnapshotSchema>>;
 
 export const RESOURCE_KIND_METADATA = {
 	blog: z.object({ siteName: z.string().trim().min(1).optional() }).nullable(),
@@ -103,7 +101,6 @@ export const RESOURCE_KIND_METADATA = {
 
 export type ResourceKind = keyof typeof RESOURCE_KIND_METADATA;
 export type PostKindMetadata = z.infer<typeof RESOURCE_KIND_METADATA.post>;
-export type PaperKindMetadata = z.infer<typeof RESOURCE_KIND_METADATA.paper>;
 export type ResourceKindMetadata = z.infer<(typeof RESOURCE_KIND_METADATA)[ResourceKind]>;
 
 export const RESOURCE_PLATFORMS = {

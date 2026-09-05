@@ -364,6 +364,38 @@ for (const testCase of cases) {
 }
 
 const blog = await acquire();
+const citoidCases = [
+	{ itemType: 'journalArticle', openAlexStatus: 503, kind: 'paper' },
+	{ itemType: 'journalArticle', openAlexStatus: 404, kind: 'paper' },
+	{ itemType: 'webpage', openAlexStatus: 503, kind: 'blog' },
+];
+for (const { itemType, openAlexStatus, kind } of citoidCases) {
+	const originalFetch = globalThis.fetch;
+	globalThis.fetch = async (request) =>
+		new URL(request).hostname === 'en.wikipedia.org'
+			? Response.json([{ itemType, DOI: '10.1000/example' }])
+			: Response.json(null, { status: openAlexStatus });
+	try {
+		const resource = await stagePaperResolution(
+			{ OPENALEX_API_KEY: 'fixture' },
+			{ do: (_name, _options, run) => run() },
+			{
+				resource: { ...blog, summary: 'Source summary' },
+				processingId: 'contract',
+				seedIdentifiers: [],
+				sourceUrl: blog.url,
+				allowCitoidLookup: true,
+			},
+		);
+		assert.equal(resource.kind, kind, `Citoid ${itemType} identity survives OpenAlex HTTP ${openAlexStatus}`);
+		assert.deepEqual(resource.resourceIdentifiers, kind === 'paper' ? [{ preferred: true, scheme: 'doi', value: '10.1000/example' }] : []);
+		assert.equal(resource.content, blog.content);
+		assert.equal(resource.summary, 'Source summary');
+		assert.equal(prepareResolvedResource(resource, analysis, []).kind, kind);
+	} finally {
+		globalThis.fetch = originalFetch;
+	}
+}
 const video = await acquire({ resourcePlatform: 'youtube', platformId: 'abcdefghijk' });
 const invalidResources = [
 	{ ...blog, kind: 'paper', kindMetadata: {} },
@@ -497,4 +529,6 @@ const summaryCases = [
 ];
 for (const { expected, ...input } of summaryCases) assert.equal((await acquire(input)).summary, expected);
 
-console.info(`Platform acquisition contract checks passed (${cases.length + 7 + summaryCases.length + invalidResources.length} cases).`);
+console.info(
+	`Platform acquisition contract checks passed (${cases.length + 7 + summaryCases.length + invalidResources.length + citoidCases.length} cases).`,
+);

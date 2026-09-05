@@ -13,7 +13,7 @@ import {
 } from '../../shared/paper-identity';
 import type { AcquiredResource } from '../../shared/resource';
 import { resolveCrossrefPaper } from '../crossref';
-import { type PaperMetadata, resolveOpenAlexPaper } from './openalex';
+import { resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME, stageOpenAlexPdfMarkdown } from './pdf';
 
 const CITOID_IDENTIFIER_SCAN_CHARS = 3_000;
@@ -117,10 +117,10 @@ async function stageOpenAlexPaperEnrichment(
 		processingId: string;
 	},
 ) {
-	if (candidate.identifiers.length === 0) return { contentPdfUrl: null, identifiers: [], metadata: null };
+	if (candidate.identifiers.length === 0) return null;
 	const attemptStartedAt = Date.now();
 	try {
-		const resolved = await step.do(
+		return await step.do(
 			'resolve-paper-openalex-with-citations-v4',
 			{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 			async () => {
@@ -141,11 +141,6 @@ async function stageOpenAlexPaperEnrichment(
 				return paper;
 			},
 		);
-		return {
-			contentPdfUrl: resolved?.contentPdfUrl ?? null,
-			identifiers: resolved?.identifiers ?? [...candidate.identifiers],
-			metadata: resolved?.metadata ?? null,
-		};
 	} catch (error) {
 		console.warn({
 			tag: 'PAPER_PROVIDER',
@@ -155,7 +150,7 @@ async function stageOpenAlexPaperEnrichment(
 			latency_ms: Date.now() - attemptStartedAt,
 			error: error instanceof Error ? error.message : String(error),
 		});
-		return { contentPdfUrl: null, identifiers: [], metadata: null };
+		return null;
 	}
 }
 
@@ -165,7 +160,7 @@ async function stageCrossrefPaperEnrichment(
 		doi: string;
 		processingId: string;
 	},
-): Promise<PaperMetadata | null> {
+) {
 	const attemptStartedAt = Date.now();
 	try {
 		return await step.do(
@@ -218,40 +213,32 @@ export async function stagePaperResolution(
 		return resolved ? paperIdentifiersFromIdentity(resolved.identity) : [];
 	});
 	const textIdentity = resource.fileType === PDF_MIME && paperIdentifierText?.trim() ? paperIdentityFromText(paperIdentifierText) : null;
-	const identifiers = choosePreferredIdentifiers([
+	let identifiers = choosePreferredIdentifiers([
 		...exactIdentifiers,
 		...(textIdentity ? paperIdentifiersFromIdentity(textIdentity) : []),
 		...input.seedIdentifiers,
 	]);
-	const doi = paperIdentityFromIdentifiers(identifiers)?.doi;
-	const citoidIdentifiers =
-		resource.fileType !== PDF_MIME && !identifiers.length && input.allowCitoidLookup && canonicalUrl
-			? await stageCitoidPaperIdentifiers(step, { citoidUrl: canonicalUrl, processingId: input.processingId })
-			: [];
-	const resolution =
+	if (resource.fileType !== PDF_MIME && !identifiers.length && input.allowCitoidLookup && canonicalUrl) {
+		identifiers = choosePreferredIdentifiers(
+			await stageCitoidPaperIdentifiers(step, { citoidUrl: canonicalUrl, processingId: input.processingId }),
+		);
+	}
+	const openAlex =
 		resource.fileType === PDF_MIME
-			? {
-					contentPdfUrl: null,
-					identifiers,
-					metadata: doi ? await stageCrossrefPaperEnrichment(step, { doi, processingId: input.processingId }) : null,
-				}
-			: await stageOpenAlexPaperEnrichment(env, step, {
-					identifiers: choosePreferredIdentifiers([...identifiers, ...citoidIdentifiers]),
-					processingId: input.processingId,
-				});
-	const pdfMarkdown =
-		resource.fileType === PDF_MIME || !resolution.contentPdfUrl
 			? null
-			: await stageOpenAlexPdfMarkdown(env, step, {
-					contentPdfUrl: resolution.contentPdfUrl,
-					processingId: input.processingId,
-				});
+			: await stageOpenAlexPaperEnrichment(env, step, { identifiers, processingId: input.processingId });
+	const doi = paperIdentityFromIdentifiers(identifiers)?.doi;
+	const crossref =
+		resource.fileType === PDF_MIME && doi ? await stageCrossrefPaperEnrichment(step, { doi, processingId: input.processingId }) : null;
+	const { abstract, authors, publicationDate, title, ...kindMetadata } = { ...openAlex?.metadata, ...crossref };
+	const pdfMarkdown = openAlex?.contentPdfUrl
+		? await stageOpenAlexPdfMarkdown(env, step, { contentPdfUrl: openAlex.contentPdfUrl, processingId: input.processingId })
+		: null;
 	const content = pdfMarkdown ?? resource.content;
 	if (!content.trim()) throw new Error(`Processing ${input.processingId} has no extractable content`);
-	const resourceIdentifiers = choosePreferredIdentifiers([...identifiers, ...resolution.identifiers]);
+	const resourceIdentifiers = choosePreferredIdentifiers([...identifiers, ...(openAlex?.identifiers ?? [])]);
 	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
 	if (!identity) return resource;
-	const { abstract, authors, publicationDate, title, ...kindMetadata } = resolution.metadata ?? {};
 	let publishedDate = resource.publishedDate;
 	if (!publishedDate && publicationDate) {
 		const candidate = new Date(`${publicationDate}T00:00:00.000Z`);

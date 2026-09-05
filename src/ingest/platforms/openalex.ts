@@ -8,11 +8,6 @@ import {
 	type PaperIdentity,
 	paperIdentityFromIdentifiers,
 } from '../../shared/paper-identity';
-import type { PaperKindMetadata, PaperRelationItem, PaperRelationSnapshot } from '../../shared/resource';
-
-export type PaperMetadata = Readonly<
-	PaperKindMetadata & { abstract?: string; authors: string[]; publicationDate?: string; title?: string }
->;
 
 const OPENALEX_BASE = 'https://api.openalex.org';
 const OPENALEX_CONTENT_HOST = 'content.openalex.org';
@@ -121,7 +116,7 @@ function resolvedWorkIdentifiers(work: OpenAlexWork, inputIdentifiers: readonly 
 	]);
 }
 
-function normalizeRelationItem(work: OpenAlexWork): PaperRelationItem | null {
+function normalizeRelationItem(work: OpenAlexWork) {
 	const openAlexId = normalizeOpenAlexId(work.id);
 	const title = work.title?.trim();
 	if (!openAlexId || !title) return null;
@@ -137,24 +132,22 @@ function normalizeRelationItem(work: OpenAlexWork): PaperRelationItem | null {
 	};
 }
 
-function relationSnapshot(input: { items: OpenAlexWork[]; total: number }): PaperRelationSnapshot {
-	const items = input.items.map(normalizeRelationItem).filter((item) => item !== null);
+function relationSnapshot(list: z.infer<typeof OpenAlexListSchema>, total = list.meta.count) {
 	return {
-		items,
-		total: input.total,
+		items: list.results.map(normalizeRelationItem).filter((item) => item !== null),
+		total,
 	};
 }
 
 function normalizeOpenAlexWork(
 	work: OpenAlexWork,
 	inputIdentifiers: readonly PaperIdentifier[],
-	relations?: { citations: PaperRelationSnapshot; references: PaperRelationSnapshot },
+	relations?: Awaited<ReturnType<typeof fetchOpenAlexRelations>>,
 ) {
 	const pdfUrl = licensedPdfUrl(work);
 	const identifiers = resolvedWorkIdentifiers(work, inputIdentifiers);
 	const identity = paperIdentityFromIdentifiers(identifiers);
 	const openAlexId = identity?.openAlexId;
-	const referenceCount = work.referenced_works_count ?? undefined;
 	const abstract =
 		Object.entries(work.abstract_inverted_index ?? {})
 			.flatMap(([word, positions]) => positions.map((position) => ({ position, word })))
@@ -177,9 +170,9 @@ function normalizeOpenAlexWork(
 			year: work.publication_year ?? undefined,
 			publicationDate: work.publication_date ?? undefined,
 			citedByCount: work.cited_by_count ?? undefined,
-			referenceCount,
+			referenceCount: work.referenced_works_count ?? undefined,
 			...(pdfUrl ? { pdfUrl } : {}),
-			...(relations ? { citations: relations.citations, references: relations.references } : {}),
+			...relations,
 		},
 	};
 }
@@ -197,10 +190,7 @@ async function fetchOpenAlexJson(path: string, apiKey: string): Promise<unknown 
 	throw new Error(`OpenAlex request failed with HTTP ${response.status}${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
 }
 
-async function fetchOpenAlexRelations(input: {
-	apiKey: string;
-	work: OpenAlexWork;
-}): Promise<{ citations: PaperRelationSnapshot; references: PaperRelationSnapshot }> {
+async function fetchOpenAlexRelations(input: { apiKey: string; work: OpenAlexWork }) {
 	const openAlexId = normalizeOpenAlexId(input.work.id);
 	if (!openAlexId) throw new Error('OpenAlex work response has no valid id');
 	const referencedIds = (input.work.referenced_works ?? [])
@@ -231,11 +221,8 @@ async function fetchOpenAlexRelations(input: {
 	const references = OpenAlexListSchema.parse(referenceJson);
 	const citations = OpenAlexListSchema.parse(citationJson);
 	return {
-		citations: relationSnapshot({ items: citations.results, total: citations.meta.count }),
-		references: relationSnapshot({
-			items: references.results,
-			total: input.work.referenced_works_count ?? references.meta.count,
-		}),
+		citations: relationSnapshot(citations),
+		references: relationSnapshot(references, input.work.referenced_works_count ?? undefined),
 	};
 }
 
