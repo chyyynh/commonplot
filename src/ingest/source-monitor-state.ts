@@ -1,19 +1,18 @@
-import { inArray, sql } from 'drizzle-orm';
+import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
-export async function markSourcesScraped(db: NodePgDatabase, sourceIds: string[], scrapedAt: Date = new Date()): Promise<number> {
-	if (!sourceIds.length) return 0;
+export async function markSourceScraped(db: NodePgDatabase, sourceId: string, scrapedAt: Date = new Date()): Promise<boolean> {
 	if (!Number.isFinite(scrapedAt.getTime())) throw new Error('Source watermark is invalid');
 	const updated = await db.execute(sql`
 		UPDATE sources
 		SET scraped_at = ${scrapedAt},
 		    updated_at = NOW(),
 		    scrape_state = NULL
-		WHERE ${inArray(sql`id`, sourceIds)}
+		WHERE id = ${sourceId}::uuid
 		  AND (scraped_at IS NULL OR scraped_at <= ${scrapedAt})
 		RETURNING id
 	`);
-	return updated.rows.length;
+	return updated.rows.length > 0;
 }
 
 // Operator-managed sources keep monitoring through transient provider

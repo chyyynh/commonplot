@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { limitByteStream } from '../../shared/response';
 import { resolvePlatformResourceUrl } from '../acquisition';
-import { markSourcesScraped, recordSourceFailure } from '../source-monitor-state';
+import { markSourceScraped, recordSourceFailure } from '../source-monitor-state';
 import { enqueueSourceDrafts, type SourceResourceDraft } from '../workflow';
 import { canonicalizeWebResourceUrl } from './web';
 
@@ -122,7 +122,7 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeed
 		deduplicated: drafts.length - created,
 		totalCount: itemCount,
 	});
-	await markSourcesScraped(db, [feed.id]);
+	await markSourceScraped(db, feed.id);
 }
 
 export async function handleRSSCron(env: CoreEnv, db: NodePgDatabase): Promise<void> {

@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
-import { markSourcesScraped, recordSourceFailure } from '../source-monitor-state';
+import { markSourceScraped, recordSourceFailure } from '../source-monitor-state';
 import { enqueueSourceDrafts, type SourceResourceDraft } from '../workflow';
 import { parseTwitterAdvancedSearchPage, type Tweet } from './twitter-data';
 
@@ -158,6 +158,7 @@ async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: Tw
 	try {
 		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, sinceTime, untilTime);
 		const admission = await enqueueTweets(env, db, fetched.tweets, source);
+		const advanced = await markSourceScraped(db, source.id, windowEnd);
 		console.info({
 			tag: 'TWITTER',
 			event: 'twitter_source_processed',
@@ -171,8 +172,8 @@ async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: Tw
 			skipped_items: fetched.skippedItems + admission.skippedItems,
 			created: admission.created,
 			deduplicated: admission.deduplicated,
+			watermark_advanced: advanced,
 		});
-		return source.id;
 	} catch (error) {
 		await recordSourceFailure(db, source.id, error);
 		console.error({
@@ -200,31 +201,12 @@ export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date
 
 	const groups = Math.ceil(sources.length / TWITTER_SOURCE_CONCURRENCY);
 	console.info({ tag: 'TWITTER', msg: 'Fetching via Advanced Search', sources: sources.length, groups });
-	const completedSourceIds: string[] = [];
 	const systemFailures: unknown[] = [];
 	for (let offset = 0; offset < sources.length; offset += TWITTER_SOURCE_CONCURRENCY) {
 		const group = sources.slice(offset, offset + TWITTER_SOURCE_CONCURRENCY);
 		const results = await Promise.allSettled(group.map((source) => processTwitterSource(env, db, source, windowEnd)));
 		for (const result of results) {
-			if (result.status === 'fulfilled') completedSourceIds.push(result.value);
-			else systemFailures.push(result.reason);
-		}
-	}
-
-	let advancedSources = 0;
-	let watermarkFailures = 0;
-	if (completedSourceIds.length) {
-		try {
-			advancedSources = await markSourcesScraped(db, completedSourceIds, windowEnd);
-		} catch (error) {
-			watermarkFailures = completedSourceIds.length;
-			systemFailures.push(error);
-			console.error({
-				tag: 'TWITTER',
-				event: 'twitter_watermark_update_failed',
-				sources: completedSourceIds.length,
-				error: error instanceof Error ? error.message : String(error),
-			});
+			if (result.status === 'rejected') systemFailures.push(result.reason);
 		}
 	}
 
@@ -233,9 +215,7 @@ export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date
 		msg: 'end',
 		sources: sources.length,
 		groups,
-		advanced_sources: advancedSources,
-		superseded_sources: completedSourceIds.length - advancedSources - watermarkFailures,
-		incomplete_sources: sources.length - completedSourceIds.length + watermarkFailures,
+		failed_sources: systemFailures.length,
 	});
 	if (systemFailures.length) {
 		throw new AggregateError(systemFailures, `${systemFailures.length} Twitter monitor operations failed`);
