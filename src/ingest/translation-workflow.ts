@@ -368,35 +368,13 @@ async function persistMachineZhHantTranslation(
 			ARRAY[]::text[], 'machine', NOW()
 		FROM target_resource
 		ON CONFLICT (resource_id, lang) DO UPDATE SET
-			title = CASE
-				WHEN current_translation.source IN ('human', 'original') OR ${patch.title === undefined}
-					THEN current_translation.title
-				ELSE EXCLUDED.title
-			END,
-			summary = CASE
-				WHEN current_translation.source IN ('human', 'original') OR ${patch.summary === undefined}
-					THEN current_translation.summary
-				ELSE EXCLUDED.summary
-			END,
-			content = CASE
-				WHEN current_translation.source IN ('human', 'original') OR ${patch.content === undefined}
-					THEN current_translation.content
-				ELSE EXCLUDED.content
-			END,
-			alignment = CASE
-				WHEN current_translation.source IN ('human', 'original') OR ${patch.content === undefined}
-					THEN current_translation.alignment
-				ELSE EXCLUDED.alignment
-			END,
-			keywords = CASE
-				WHEN current_translation.source IN ('human', 'original') THEN current_translation.keywords
-				ELSE EXCLUDED.keywords
-			END,
-			source = CASE
-				WHEN current_translation.source IN ('human', 'original') THEN current_translation.source
-				ELSE EXCLUDED.source
-			END,
+			title = COALESCE(EXCLUDED.title, current_translation.title),
+			summary = COALESCE(EXCLUDED.summary, current_translation.summary),
+			content = COALESCE(EXCLUDED.content, current_translation.content),
+			alignment = COALESCE(EXCLUDED.alignment, current_translation.alignment),
+			keywords = EXCLUDED.keywords,
 			updated_at = NOW()
+		WHERE current_translation.source = 'machine'
 		RETURNING resource_id::text
 	`);
 	return result.rows.length > 0;

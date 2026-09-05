@@ -125,10 +125,12 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 			const input = ResourceSearchSyncMessageSchema.safeParse(message.body);
 			if (!input.success) {
 				console.warn({ tag: 'AI_SEARCH', msg: 'Invalid resource sync message', message_id: message.id });
+				message.ack();
 				continue;
 			}
 			try {
 				await syncCorpusItem(this.env, db, input.data.resourceId);
+				message.ack();
 			} catch (error) {
 				console.error({
 					tag: 'AI_SEARCH',

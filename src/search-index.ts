@@ -231,7 +231,6 @@ async function deleteCorpusItem(instance: AiSearchInstance, index: 'corpus' | 'r
 }
 
 export async function syncCorpusItem(env: CoreEnv, db: NodePgDatabase, resourceId: string): Promise<void> {
-	if (!z.validate(ResourceIdSchema, resourceId)) return;
 	if ((await upsertCorpusItems(env, db, [resourceId])) === 0) {
 		await Promise.all([deleteCorpusItem(env.AI_SEARCH, 'corpus', resourceId), deleteCorpusItem(env.RELATED_SEARCH, 'related', resourceId)]);
 	}
