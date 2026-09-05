@@ -9,12 +9,12 @@
 	"workers_dev": false,
 	"compatibility_date": "2026-08-30",
 	/**
-	 * A full AI Search rebuild performs one upload subrequest per corpus item, so
-	 * keep enough headroom for the 500k-file instance limit.
+	 * Rebuilding 500k resources uploads 1M items across both search indexes.
+	 * Reserve additional subrequests for deltas, reconciliation, and retries.
 	 */
 	"limits": {
 		"cpu_ms": 180000,
-		"subrequests": 1000000
+		"subrequests": 5000000
 	},
 	/** PDF parsers stream uploaded PDFs from R2; their models and scratch disks are intentionally ephemeral. */
 	"containers": [
@@ -119,7 +119,9 @@
 		{
 			"binding": "SEARCH_INDEX_REBUILD_WORKFLOW",
 			"name": "newsence-search-index-rebuild",
-			"class_name": "SearchIndexRebuildWorkflow"
+			"class_name": "SearchIndexRebuildWorkflow",
+			/** 500k resources need 10k upload steps before deltas, pruning, and readiness checks. */
+			"limits": { "steps": 25000 }
 		}
 	],
 	/**
