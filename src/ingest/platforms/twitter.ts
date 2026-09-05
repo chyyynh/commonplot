@@ -152,39 +152,27 @@ async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Iterable<
 	return { admittedDrafts: pending.length, created, deduplicated: pending.length - created, normalizedTweets, skippedItems };
 }
 
-type TwitterSourceMetrics = Awaited<ReturnType<typeof processTwitterSource>>;
-
 async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: TwitterSource, windowEnd: Date) {
 	const sinceTime = Math.floor(new Date(source.scrapedAt ?? source.createdAt).getTime() / 1000);
 	const untilTime = Math.floor(windowEnd.getTime() / 1000);
 	try {
 		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, sinceTime, untilTime);
 		const admission = await enqueueTweets(env, db, fetched.tweets, source);
-		const metrics = {
-			admittedDrafts: admission.admittedDrafts,
-			created: admission.created,
-			deduplicated: admission.deduplicated,
-			normalizedTweets: admission.normalizedTweets,
-			pages: fetched.pages,
-			providerTweets: fetched.providerTweets,
-			skippedItems: fetched.skippedItems + admission.skippedItems,
-			sourceId: source.id,
-		};
 		console.info({
 			tag: 'TWITTER',
 			event: 'twitter_source_processed',
 			userName: source.handle,
 			since_time: sinceTime,
 			until_time: untilTime,
-			pages: metrics.pages,
-			provider_tweets: metrics.providerTweets,
-			normalized_tweets: metrics.normalizedTweets,
-			admitted_drafts: metrics.admittedDrafts,
-			skipped_items: metrics.skippedItems,
-			created: metrics.created,
-			deduplicated: metrics.deduplicated,
+			pages: fetched.pages,
+			provider_tweets: fetched.providerTweets,
+			normalized_tweets: admission.normalizedTweets,
+			admitted_drafts: admission.admittedDrafts,
+			skipped_items: fetched.skippedItems + admission.skippedItems,
+			created: admission.created,
+			deduplicated: admission.deduplicated,
 		});
-		return metrics;
+		return source.id;
 	} catch (error) {
 		await recordSourceFailure(db, source.id, error);
 		console.error({
@@ -199,19 +187,30 @@ async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: Tw
 	}
 }
 
-async function processTwitterSources(env: CoreEnv, db: NodePgDatabase, sources: TwitterSource[], windowEnd: Date) {
-	const completed: TwitterSourceMetrics[] = [];
+export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date()): Promise<void> {
+	if (!env.KAITO_API_KEY) throw new Error('KAITO_API_KEY is not configured');
+	if (!Number.isFinite(windowEnd.getTime())) throw new Error('Twitter monitor window end is invalid');
+	const db = await connectCoreDb(env);
+	console.info({ tag: 'TWITTER', msg: 'start', window_end: windowEnd.toISOString() });
+	const sources = await loadTwitterSources(db);
+	if (!sources.length) {
+		console.info({ tag: 'TWITTER', msg: 'No twitter sources configured' });
+		return;
+	}
+
+	const groups = Math.ceil(sources.length / TWITTER_SOURCE_CONCURRENCY);
+	console.info({ tag: 'TWITTER', msg: 'Fetching via Advanced Search', sources: sources.length, groups });
+	const completedSourceIds: string[] = [];
 	const systemFailures: unknown[] = [];
 	for (let offset = 0; offset < sources.length; offset += TWITTER_SOURCE_CONCURRENCY) {
 		const group = sources.slice(offset, offset + TWITTER_SOURCE_CONCURRENCY);
 		const results = await Promise.allSettled(group.map((source) => processTwitterSource(env, db, source, windowEnd)));
 		for (const result of results) {
-			if (result.status === 'fulfilled') completed.push(result.value);
+			if (result.status === 'fulfilled') completedSourceIds.push(result.value);
 			else systemFailures.push(result.reason);
 		}
 	}
 
-	const completedSourceIds = completed.map(({ sourceId }) => sourceId);
 	let advancedSources = 0;
 	let watermarkFailures = 0;
 	if (completedSourceIds.length) {
@@ -229,65 +228,16 @@ async function processTwitterSources(env: CoreEnv, db: NodePgDatabase, sources: 
 		}
 	}
 
-	const totals = {
-		admittedDrafts: 0,
-		created: 0,
-		deduplicated: 0,
-		normalizedTweets: 0,
-		pages: 0,
-		providerTweets: 0,
-		skippedItems: 0,
-	};
-	for (const metrics of completed) {
-		totals.admittedDrafts += metrics.admittedDrafts;
-		totals.created += metrics.created;
-		totals.deduplicated += metrics.deduplicated;
-		totals.normalizedTweets += metrics.normalizedTweets;
-		totals.pages += metrics.pages;
-		totals.providerTweets += metrics.providerTweets;
-		totals.skippedItems += metrics.skippedItems;
-	}
-	return {
-		...totals,
-		advancedSources,
-		incompleteSources: sources.length - completed.length + watermarkFailures,
-		supersededSources: completedSourceIds.length - advancedSources - watermarkFailures,
-		systemFailures,
-	};
-}
-
-export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date()): Promise<void> {
-	if (!env.KAITO_API_KEY) throw new Error('KAITO_API_KEY is not configured');
-	if (!Number.isFinite(windowEnd.getTime())) throw new Error('Twitter monitor window end is invalid');
-	const db = await connectCoreDb(env);
-	console.info({ tag: 'TWITTER', msg: 'start', window_end: windowEnd.toISOString() });
-	const sources = await loadTwitterSources(db);
-	if (!sources.length) {
-		console.info({ tag: 'TWITTER', msg: 'No twitter sources configured' });
-		return;
-	}
-
-	const groups = Math.ceil(sources.length / TWITTER_SOURCE_CONCURRENCY);
-	console.info({ tag: 'TWITTER', msg: 'Fetching via Advanced Search', sources: sources.length, groups });
-	const outcome = await processTwitterSources(env, db, sources, windowEnd);
-
 	console.info({
 		tag: 'TWITTER',
 		msg: 'end',
 		sources: sources.length,
 		groups,
-		provider_tweets: outcome.providerTweets,
-		normalized_tweets: outcome.normalizedTweets,
-		skipped_items: outcome.skippedItems,
-		pages: outcome.pages,
-		admitted_drafts: outcome.admittedDrafts,
-		created: outcome.created,
-		deduplicated: outcome.deduplicated,
-		advanced_sources: outcome.advancedSources,
-		superseded_sources: outcome.supersededSources,
-		incomplete_sources: outcome.incompleteSources,
+		advanced_sources: advancedSources,
+		superseded_sources: completedSourceIds.length - advancedSources - watermarkFailures,
+		incomplete_sources: sources.length - completedSourceIds.length + watermarkFailures,
 	});
-	if (outcome.systemFailures.length) {
-		throw new AggregateError(outcome.systemFailures, `${outcome.systemFailures.length} Twitter monitor operations failed`);
+	if (systemFailures.length) {
+		throw new AggregateError(systemFailures, `${systemFailures.length} Twitter monitor operations failed`);
 	}
 }
