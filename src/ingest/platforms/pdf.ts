@@ -135,14 +135,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 			original.title,
 			original.summary,
 			resource.original_lang,
-			COALESCE(
-				NULLIF(BTRIM(monitored_source.name), ''),
-				NULLIF(BTRIM(COALESCE(
-					resource.creators->0->>'literal',
-					CONCAT_WS(' ', resource.creators->0->>'given', resource.creators->0->>'family')
-				)), ''),
-				'File'
-			) AS source,
+			COALESCE(resource.source_name, 'File') AS source,
 			resource.published_date,
 			resource.creators,
 			resource.storage_key
@@ -150,7 +143,6 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 		JOIN resource_translations original
 		  ON original.resource_id = resource.id
 		 AND original.lang = resource.original_lang
-		LEFT JOIN sources monitored_source ON monitored_source.id = resource.source_id
 		WHERE resource.id = ${resourceId}::uuid
 		  AND resource.scope = 'private'
 		  AND resource.kind = 'file'
@@ -174,7 +166,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 		creators: creators.data,
 		originalLang: canonicalizeResourceLang(row.original_lang),
 		publishedDate: publishedDate?.toISOString() ?? null,
-		source: row.source.trim(),
+		source: row.source,
 		storageKey: row.storage_key,
 		summary: row.summary,
 		title,

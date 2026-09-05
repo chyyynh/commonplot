@@ -156,20 +156,7 @@ async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly str
 		       r.original_lang,
 		       r.published_date AS published_at,
 		       r.tags,
-		       COALESCE(
-		         NULLIF(BTRIM(s.name), ''),
-		         NULLIF(BTRIM(COALESCE(
-		           r.creators->0->>'literal',
-		           CONCAT_WS(' ', r.creators->0->>'given', r.creators->0->>'family')
-		         )), ''),
-		         CASE r.resource_platform
-		           WHEN 'twitter' THEN 'Twitter'
-		           WHEN 'youtube' THEN 'YouTube'
-		           WHEN 'hackernews' THEN 'Hacker News'
-		           WHEN 'lesswrong' THEN 'LessWrong'
-		         END,
-		         INITCAP(r.kind)
-		       ) AS source,
+		       COALESCE(r.source_name, 'File') AS source,
 		       COALESCE((
 		         SELECT jsonb_agg(
 		           jsonb_build_object(
@@ -186,7 +173,6 @@ async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly str
 		           AND (translation.lang = r.original_lang OR ${inArray(sql`translation.lang`, INDEX_TRANSLATION_LANGS)})
 		       ), '[]'::jsonb) AS translations
 		FROM resources r
-		LEFT JOIN sources s ON s.id = r.source_id
 		WHERE ${inArray(sql`r.id`, resourceIds)}
 		  AND r.scope = 'corpus'
 		  AND r.enrichment_status = 'enriched'
