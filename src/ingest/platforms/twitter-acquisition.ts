@@ -2,12 +2,8 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import {
 	type AcquiredResource,
-	literalCreator,
-	type PostKindMetadata,
 	RESOURCE_PLATFORMS,
 	type ResourceAcquisitionHints,
-	type ResourceCreator,
-	type ResourceMediaAttachment,
 	type ResourceSubjectIdentity,
 	resolveResourceHints,
 } from '../../shared/resource';
@@ -31,33 +27,6 @@ export function parseTwitterResourceUrl(url: URL) {
 		: null;
 }
 
-interface TwitterMedia {
-	url: string;
-	type: 'photo' | 'video' | 'animated_gif';
-	width?: number;
-	height?: number;
-}
-
-interface TwitterAuthorFields {
-	authorName: string;
-	authorUserName: string;
-	authorProfilePicture?: string;
-	authorVerified?: boolean;
-}
-
-interface QuotedTweetData {
-	authorName: string;
-	authorUserName: string;
-	authorProfilePicture?: string;
-	text: string;
-}
-
-interface TwitterMetadata extends TwitterAuthorFields {
-	media?: TwitterMedia[];
-	quotedTweet?: QuotedTweetData;
-}
-
-type TwitterResourceFields = { creators: ResourceCreator[]; kindMetadata: PostKindMetadata; subjectUrl?: string };
 type TwitterAcquisitionInput = {
 	hints: ResourceAcquisitionHints;
 	processingId: string;
@@ -84,26 +53,18 @@ function isNonResourceLinkUrl(url: string): boolean {
 	return false;
 }
 
-function extractTweetAuthor(tweet: Tweet): TwitterAuthorFields {
-	const author = requiredTweetAuthor(tweet);
-	return {
-		authorName: author.name,
-		authorUserName: author.userName,
-		authorProfilePicture: author.profilePicture,
-		authorVerified: author.isBlueVerified,
-	};
-}
-
-function extractTweetMedia(tweet: Tweet): TwitterMedia[] {
+function tweetAttachments(tweet: Tweet) {
 	return (
-		tweet.extendedEntities?.media?.flatMap((m) => {
-			if (!m.media_url_https) return [];
-			const result: TwitterMedia = { url: m.media_url_https, type: m.type as TwitterMedia['type'] };
-			if (m.sizes?.large) {
-				result.width = m.sizes.large.w;
-				result.height = m.sizes.large.h;
-			}
-			return [result];
+		tweet.extendedEntities?.media?.flatMap((media) => {
+			const url = media.media_url_https.trim();
+			if (!url) return [];
+			return [
+				{
+					kind: media.type === 'photo' ? 'image' : media.type === 'animated_gif' ? 'animated' : 'video',
+					url,
+					...(media.sizes?.large ? { width: media.sizes.large.w, height: media.sizes.large.h } : {}),
+				} as const,
+			];
 		}) ?? []
 	);
 }
@@ -175,19 +136,13 @@ function stripTweetUrls(text: string): string {
 	return text.replace(/https?:\/\/\S+/g, '').trim();
 }
 
-function extractQuotedTweet(tweet: Tweet): QuotedTweetData | undefined {
-	const q = tweet.quoted_tweet;
-	if (!q) return undefined;
-	const authorName = q.author?.name?.trim();
-	const authorUserName = q.author?.userName?.trim();
-	const text = typeof q.text === 'string' ? expandTweetUrls(q.text, q) : '';
-	if (!authorName || !authorUserName || !text) return undefined;
-	return {
-		authorName,
-		authorUserName,
-		authorProfilePicture: q.author?.profilePicture,
-		text,
-	};
+function tweetQuote(tweet: Tweet) {
+	const quote = tweet.quoted_tweet;
+	const author = quote?.author;
+	if (!quote || !author?.name.trim() || !author.userName.trim()) return undefined;
+	const text = expandTweetUrls(quote.text, quote);
+	const creator = twitterCreator({ name: author.name.trim(), userName: author.userName.trim(), profilePicture: author.profilePicture });
+	return text ? { creator, text } : undefined;
 }
 
 export function buildTweetTitle(tweet: Tweet, maxLength = 100): string {
@@ -198,38 +153,6 @@ export function buildTweetTitle(tweet: Tweet, maxLength = 100): string {
 	if (!text) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no text`);
 	const suffix = text.length > maxLength ? '...' : '';
 	return `@${author.userName}: ${text.substring(0, maxLength)}${suffix}`;
-}
-
-function buildTweetFields(
-	tweet: Tweet,
-	options: {
-		externalUrl?: string;
-		media?: TwitterMedia[];
-		quotedTweet?: QuotedTweetData;
-	} = {},
-): TwitterResourceFields {
-	const media = options.media ?? extractTweetMedia(tweet);
-	const metadata: TwitterMetadata = {
-		...extractTweetAuthor(tweet),
-		media,
-		quotedTweet: options.quotedTweet ?? extractQuotedTweet(tweet),
-	};
-	return {
-		creators: twitterCreator(metadata),
-		kindMetadata: postMetadata(metadata),
-		...(options.externalUrl ? { subjectUrl: options.externalUrl } : {}),
-	};
-}
-
-function buildTwitterLongformFields(author: NonNullable<Tweet['author']>, coverImageUrl?: string): TwitterResourceFields {
-	const metadata: TwitterMetadata = {
-		authorName: author.name,
-		authorUserName: author.userName,
-		authorProfilePicture: author.profilePicture,
-		authorVerified: author.isBlueVerified,
-		media: coverImageUrl ? [{ url: coverImageUrl, type: 'photo' }] : [],
-	};
-	return { creators: twitterCreator(metadata), kindMetadata: postMetadata(metadata) };
 }
 
 async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
@@ -265,6 +188,7 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
 	};
 	const publishedDate = longform.createdAt?.trim() || tweet.createdAt;
 	if (Number.isNaN(new Date(publishedDate).getTime())) throw new Error(`Twitter longform ${tweetId} requires a valid published date`);
+	const coverImageUrl = longform.cover_media_img_url?.trim();
 
 	console.info({ tag: 'TWITTER', msg: 'Longform fetched', title });
 
@@ -272,29 +196,13 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
 		title,
 		content: contentText,
 		publishedDate,
-		...buildTwitterLongformFields(author, longform.cover_media_img_url ?? undefined),
-	};
-}
-
-function buildExternalLinkTweet(tweet: Tweet, externalUrl: string, media: TwitterMedia[]) {
-	const author = requiredTweetAuthor(tweet);
-	const tweetText = tweet.text.trim();
-	if (!tweetText) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no text`);
-	const title = `@${author.userName}: ${stripTweetUrls(tweetText) || tweetText}`.slice(0, 120);
-	const expandedText = expandTweetUrls(tweetText, tweet);
-	return {
-		title,
-		content: stripTrailingExternalUrl(expandedText, externalUrl),
-		publishedDate: tweet.createdAt,
-		...buildTweetFields(tweet, {
-			media,
-			externalUrl,
-		}),
+		creators: [twitterCreator(author)],
+		kindMetadata: { attachments: coverImageUrl ? [{ kind: 'image' as const, url: coverImageUrl }] : [] },
+		subjectUrl: null,
 	};
 }
 
 async function resolveTweetContent(tweet: Tweet, apiKey: string) {
-	const media = extractTweetMedia(tweet);
 	const expandedUrls = tweetUrlEntities(tweet).flatMap((url) => {
 		const expandedUrl = url.expanded_url?.trim();
 		return expandedUrl ? [expandedUrl] : [];
@@ -307,20 +215,22 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 		return scrapeTwitterLongform(tweet, apiKey);
 	}
 
-	if (linkedContentUrl) {
-		return buildExternalLinkTweet(tweet, linkedContentUrl, media);
-	}
-
 	const author = requiredTweetAuthor(tweet);
-	const title = buildTweetTitle(tweet, 80);
+	const text = tweet.text.trim();
+	if (!text) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no text`);
+	const title = linkedContentUrl ? `@${author.userName}: ${stripTweetUrls(text) || text}`.slice(0, 120) : buildTweetTitle(tweet, 80);
+	const content = expandTweetUrls(text, tweet);
+	const quote = tweetQuote(tweet);
 
 	console.info({ tag: 'TWITTER', msg: 'Tweet fetched', userName: author.userName });
 
 	return {
 		title,
-		content: expandTweetUrls(tweet.text, tweet),
+		content: linkedContentUrl ? stripTrailingExternalUrl(content, linkedContentUrl) : content,
 		publishedDate: tweet.createdAt,
-		...buildTweetFields(tweet),
+		creators: [twitterCreator(author)],
+		kindMetadata: { attachments: tweetAttachments(tweet), ...(quote ? { quote } : {}) },
+		subjectUrl: linkedContentUrl,
 	};
 }
 
@@ -382,40 +292,15 @@ export async function stageTwitterAcquisition(env: CoreEnv, step: WorkflowStep, 
 	return new Response(contentStream).json<Awaited<ReturnType<typeof scrapeTweet>>>();
 }
 
-function twitterCreator(data: TwitterMetadata): ResourceCreator[] {
-	const handle = data.authorUserName?.replace(/^@/, '').trim();
+function twitterCreator(author: NonNullable<Tweet['author']>) {
+	const handle = author.userName.replace(/^@/, '').trim();
 	const profileUrl = handle ? `https://x.com/${encodeURIComponent(handle)}` : undefined;
-	return literalCreator('author', data.authorName || handle, {
-		...(handle ? { handle } : {}),
-		...(data.authorProfilePicture?.trim() ? { avatarUrl: data.authorProfilePicture.trim() } : {}),
-		...(profileUrl ? { profileUrl } : {}),
-		...(data.authorVerified === undefined ? {} : { verified: data.authorVerified }),
-	});
-}
-
-function postMetadata(data: TwitterMetadata): PostKindMetadata {
-	const attachments: ResourceMediaAttachment[] = (data.media ?? []).flatMap((media) => {
-		if (!media.url?.trim()) return [];
-		return [
-			{
-				kind: media.type === 'photo' ? 'image' : media.type === 'animated_gif' ? 'animated' : 'video',
-				url: media.url.trim(),
-				...(media.width === undefined ? {} : { width: media.width }),
-				...(media.height === undefined ? {} : { height: media.height }),
-			},
-		];
-	});
-	const quoted = data.quotedTweet;
-	const quoteHandle = quoted?.authorUserName?.replace(/^@/, '').trim();
-	const quoteCreator = quoted
-		? literalCreator('author', quoted.authorName || quoted.authorUserName, {
-				...(quoteHandle ? { handle: quoteHandle } : {}),
-				...(quoted.authorProfilePicture?.trim() ? { avatarUrl: quoted.authorProfilePicture.trim() } : {}),
-				...(quoteHandle ? { profileUrl: `https://x.com/${encodeURIComponent(quoteHandle)}` } : {}),
-			})[0]
-		: undefined;
 	return {
-		attachments,
-		...(quoted?.text.trim() && quoteCreator ? { quote: { creator: quoteCreator, text: quoted.text.trim() } } : {}),
+		role: 'author' as const,
+		literal: author.name.trim(),
+		...(handle ? { handle } : {}),
+		...(author.profilePicture?.trim() ? { avatarUrl: author.profilePicture.trim() } : {}),
+		...(profileUrl ? { profileUrl } : {}),
+		...(author.isBlueVerified === undefined ? {} : { verified: author.isBlueVerified }),
 	};
 }

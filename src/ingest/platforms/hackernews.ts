@@ -5,8 +5,6 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import {
 	type AcquiredResource,
-	type ForumKindMetadata,
-	literalCreator,
 	RESOURCE_PLATFORMS,
 	type ResourceAcquisitionHints,
 	type ResourceSubjectIdentity,
@@ -206,6 +204,7 @@ async function scrapeHackerNews(env: CoreEnv, { hints, itemId, processingId, res
 		hints,
 	);
 	const subject = resolveSubject(item.url);
+	const submitter = item.by?.trim();
 	return {
 		resource: {
 			kind: 'forum',
@@ -216,8 +215,8 @@ async function scrapeHackerNews(env: CoreEnv, { hints, itemId, processingId, res
 			content: markdown,
 			source: 'Hacker News',
 			...resolvedHints,
-			creators: literalCreator('submitter', item.by),
-			kindMetadata: { points: item.score, commentCount: totalCommentCount } satisfies ForumKindMetadata,
+			creators: submitter ? [{ role: 'submitter', literal: submitter }] : [],
+			kindMetadata: { points: item.score, commentCount: totalCommentCount },
 			fileType: null,
 			previewImageUrl: null,
 			subject: subject && { ...subject, publishedDate: resolvedHints.publishedDate },

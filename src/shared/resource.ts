@@ -61,8 +61,6 @@ const ResourceMediaAttachmentSchema = z.object({
 	height: z.int().positive().optional(),
 });
 
-export type ResourceMediaAttachment = Readonly<z.infer<typeof ResourceMediaAttachmentSchema>>;
-
 const PostQuoteSchema = z.object({ creator: ResourceCreatorSchema, text: z.string().trim().min(1) });
 const PaperRelationItemSchema = z.object({
 	openAlexId: z.string().regex(/^W\d+$/),
@@ -104,7 +102,6 @@ export const RESOURCE_KIND_METADATA = {
 } as const;
 
 export type ResourceKind = keyof typeof RESOURCE_KIND_METADATA;
-export type ForumKindMetadata = z.infer<typeof RESOURCE_KIND_METADATA.forum>;
 export type PostKindMetadata = z.infer<typeof RESOURCE_KIND_METADATA.post>;
 export type PaperKindMetadata = z.infer<typeof RESOURCE_KIND_METADATA.paper>;
 export type ResourceKindMetadata = z.infer<(typeof RESOURCE_KIND_METADATA)[ResourceKind]>;
@@ -146,15 +143,6 @@ export function resolveResourceHints(acquired: ResourceAcquisitionHints, hints: 
 		publishedDate: Number.isNaN(parsedDate) ? hints.publishedDate : new Date(parsedDate).toISOString(),
 		summary: acquired.summary?.trim() || hints.summary?.trim() || null,
 	};
-}
-
-export function literalCreator(
-	role: ResourceCreator['role'],
-	literal: string | null | undefined,
-	extra: Omit<ResourceCreator, 'literal' | 'role'> = {},
-): ResourceCreator[] {
-	const name = literal?.trim();
-	return name ? [{ role, literal: name, ...extra }] : [];
 }
 
 export const ResourceCreatorsSchema = z.array(ResourceCreatorSchema);

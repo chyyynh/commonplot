@@ -1,13 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
-import {
-	type AcquiredResource,
-	literalCreator,
-	RESOURCE_PLATFORMS,
-	type ResourceAcquisitionHints,
-	resolveResourceHints,
-} from '../../shared/resource';
+import { type AcquiredResource, RESOURCE_PLATFORMS, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
 
@@ -90,7 +84,7 @@ async function scrapeLessWrong(postId: string, hints: ResourceAcquisitionHints) 
 		),
 		source: 'LessWrong',
 		...resolveResourceHints({ originalLang: null, publishedDate: post.postedAt?.trim() || null, summary: null }, hints),
-		creators: literalCreator('author', author),
+		creators: author ? [{ role: 'author', literal: author }] : [],
 		kindMetadata: { siteName: 'LessWrong' },
 		subject: null,
 	} satisfies AcquiredResource;

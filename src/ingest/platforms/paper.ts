@@ -11,7 +11,7 @@ import {
 	paperIdentityFromText,
 	resolveExactPaperInput,
 } from '../../shared/paper-identity';
-import { type AcquiredResource, literalCreator } from '../../shared/resource';
+import type { AcquiredResource } from '../../shared/resource';
 import { resolveCrossrefPaper } from '../crossref';
 import { type PaperMetadata, resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME, stageOpenAlexPdfMarkdown } from './pdf';
@@ -268,7 +268,12 @@ export async function stagePaperResolution(
 		content,
 		source: pdfMarkdown ? resource.source.trim() || (canonicalUrl ? new URL(canonicalUrl).hostname : 'OpenAlex') : resource.source,
 		publishedDate,
-		creators: authors ? authors.flatMap((author) => literalCreator('author', author)) : resource.creators,
+		creators: authors
+			? authors
+					.map((author) => author.trim())
+					.filter(Boolean)
+					.map((literal) => ({ role: 'author', literal }))
+			: resource.creators,
 		kindMetadata,
 		fileType: pdfMarkdown ? PDF_MIME : resource.fileType,
 	} satisfies AcquiredResource;

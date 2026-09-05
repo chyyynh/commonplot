@@ -7,7 +7,7 @@ import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
 import type { PlatformResourceUrl } from '../../shared/resource';
-import { type AcquiredResource, literalCreator, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
+import { type AcquiredResource, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
 import { limitByteStream } from '../../shared/response';
 import { acquireFetchedPdfResponse, completeFetchedPdfAcquisition, type PaidPdfFallbackGrant, PDF_MIME } from './pdf';
 
@@ -91,6 +91,7 @@ async function acquireHtmlArticle(html: string, url: string, hints: ResourceAcqu
 	if (!title) throw new NonRetryableError('Extracted article has no title');
 	const siteName = article.source?.trim();
 	if (!siteName) throw new NonRetryableError('Extracted article has no source');
+	const author = article.author?.trim();
 
 	const content = toMarkdown(
 		toMdast(fromHtml(articleHtml, { fragment: true }), {
@@ -118,7 +119,7 @@ async function acquireHtmlArticle(html: string, url: string, hints: ResourceAcqu
 			{ originalLang: null, publishedDate: article.published?.trim() || null, summary: sourceHtmlSummary(html) },
 			hints,
 		),
-		creators: literalCreator('author', article.author),
+		creators: author ? [{ role: 'author', literal: author }] : [],
 		kindMetadata: { siteName },
 		previewImageUrl: normalizedResourceImageUrl(article.image, url),
 		subject: null,

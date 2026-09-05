@@ -4,13 +4,7 @@ import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import type { TranscriptResponse } from 'youtube-transcript';
 import { z } from 'zod';
-import {
-	type AcquiredResource,
-	literalCreator,
-	RESOURCE_PLATFORMS,
-	type ResourceAcquisitionHints,
-	resolveResourceHints,
-} from '../../shared/resource';
+import { type AcquiredResource, RESOURCE_PLATFORMS, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
 import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
@@ -281,10 +275,7 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string, hints: Reso
 			}),
 		fetchTranscript(videoId),
 	]);
-	const creators = literalCreator('channel', snippet.channelTitle, {
-		...(channelAvatar?.trim() ? { avatarUrl: channelAvatar.trim() } : {}),
-		...(snippet.channelId.trim() ? { profileUrl: `https://www.youtube.com/channel/${encodeURIComponent(snippet.channelId.trim())}` } : {}),
-	});
+	const channelTitle = snippet.channelTitle.trim();
 
 	console.info({ tag: 'YOUTUBE', msg: 'Video fetched', title: snippet.title });
 
@@ -300,7 +291,7 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string, hints: Reso
 				.map((segment) => segment.text.trim())
 				.filter(Boolean)
 				.join('\n') || snippet.description.trim(),
-		source: snippet.channelTitle.trim() || 'YouTube',
+		source: channelTitle || 'YouTube',
 		...resolveResourceHints(
 			{
 				originalLang: transcript.language ?? snippet.defaultAudioLanguage ?? null,
@@ -309,7 +300,18 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string, hints: Reso
 			},
 			hints,
 		),
-		creators,
+		creators: channelTitle
+			? [
+					{
+						role: 'channel',
+						literal: channelTitle,
+						...(channelAvatar?.trim() ? { avatarUrl: channelAvatar.trim() } : {}),
+						...(snippet.channelId.trim()
+							? { profileUrl: `https://www.youtube.com/channel/${encodeURIComponent(snippet.channelId.trim())}` }
+							: {}),
+					},
+				]
+			: [],
 		kindMetadata: {
 			...(durationSeconds === null ? {} : { durationSeconds }),
 			...stats,
