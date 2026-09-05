@@ -1,3 +1,6 @@
+import type { Table } from 'mdast';
+import { gfmToMarkdown } from 'mdast-util-gfm';
+import { toMarkdown } from 'mdast-util-to-markdown';
 import type {
 	ContentBlockNode,
 	PdfAnchor,
@@ -238,15 +241,11 @@ function referenceLabelAndText(value: string): { label: string | null; text: str
 	};
 }
 
-function headingLevels(outline: readonly SdtOutlineItem[]): Map<string, number> {
-	const levels = new Map<string, number>();
-	const visit = (items: readonly SdtOutlineItem[], depth: number) => {
-		for (const item of items) {
-			if (item.ref) levels.set(refKey(item.ref), Math.min(6, Math.max(1, depth)));
-			if (item.children) visit(item.children, depth + 1);
-		}
-	};
-	visit(outline, 2);
+function headingLevels(outline: readonly SdtOutlineItem[], depth = 2, levels = new Map<string, number>()): Map<string, number> {
+	for (const item of outline) {
+		if (item.ref) levels.set(refKey(item.ref), Math.min(depth, levels.get(refKey(item.ref)) ?? 6));
+		if (item.children) headingLevels(item.children, depth + 1, levels);
+	}
 	return levels;
 }
 
@@ -401,11 +400,6 @@ export function structuredPdfSourceCropUrl(inputContentHash: string, cropId: str
 	return `/api/media/asset/pdf-crops/${inputContentHash}/${cropId}.png`;
 }
 
-function renderTableRow(writer: MarkdownWriter, row: SdtBlockNode): void {
-	const cells = row.content.filter((node): node is SdtBlockNode => !('text' in node) && node.type === 'tablecell');
-	writer.append(`| ${cells.map((cell) => escapeMarkdownText(cleanText(nodeText(cell)))).join(' | ')} |\n`);
-}
-
 function renderBlock(
 	writer: MarkdownWriter,
 	node: SdtBlockNode,
@@ -440,9 +434,7 @@ function renderBlock(
 		return section;
 	}
 	if (node.type === 'preformatted') {
-		writer.append('```text\n');
-		writer.append(nodeText(node).replaceAll('\0', '').trimEnd());
-		writer.append('\n```\n\n');
+		writer.append(`${toMarkdown({ type: 'code', lang: 'text', value: nodeText(node).replaceAll('\0', '').trimEnd() })}\n`);
 		return section;
 	}
 	if (node.type === 'blockquote') {
@@ -476,15 +468,17 @@ function renderBlock(
 		return section;
 	}
 	if (node.type === 'table') {
-		const rows = node.content.filter((child): child is SdtBlockNode => !('text' in child) && child.type === 'tablerow');
-		if (rows.length) {
-			renderTableRow(writer, rows[0]!);
-			const columns = rows[0]!.content.filter((child) => !('text' in child) && child.type === 'tablecell').length;
-			writer.append(`| ${Array.from({ length: columns }, () => '---').join(' | ')} |\n`);
-			for (const row of rows.slice(1)) renderTableRow(writer, row);
-		} else {
-			renderInline(writer, node.content, context, section, referenceKeyByPath);
+		const children: Table['children'] = [];
+		for (const row of node.content) {
+			if ('text' in row || row.type !== 'tablerow') continue;
+			const cells = row.content.filter((cell): cell is SdtBlockNode => !('text' in cell) && cell.type === 'tablecell');
+			children.push({
+				type: 'tableRow',
+				children: cells.map((cell) => ({ type: 'tableCell', children: [{ type: 'text', value: cleanText(nodeText(cell)) }] })),
+			});
 		}
+		if (children.length) writer.append(toMarkdown({ type: 'table', children }, { extensions: [gfmToMarkdown({ tablePipeAlign: false })] }));
+		else renderInline(writer, node.content, context, section, referenceKeyByPath);
 		writer.append('\n');
 		return section;
 	}

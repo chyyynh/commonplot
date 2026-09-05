@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { fromMarkdown } from 'mdast-util-from-markdown';
+import { gfmFromMarkdown } from 'mdast-util-gfm';
+import { gfm } from 'micromark-extension-gfm';
 import {
 	normalizeStructuredPdf,
 	parseStructuredPdfDocumentJson,
@@ -17,7 +20,7 @@ const text = (value, options = {}) => ({
 const document = {
 	catalog: {
 		outline: [
-			{ ref: [1], title: 'Introduction' },
+			{ ref: [1], title: 'Introduction', children: [{ ref: [1], title: 'Duplicate outline target' }] },
 			{ ref: [4], title: 'References' },
 		],
 		pages: [{ contentRange: [[0], [4]], textSource: 'born-digital' }],
@@ -103,6 +106,28 @@ assert.deepEqual(parseStructuredPdfFailure(500, 'not-json'), {
 	message: 'Zotero SDT parse failed with 500',
 	totalPages: null,
 });
+
+const formattedDocument = {
+	...document,
+	content: [
+		{
+			type: 'table',
+			content: [{ type: 'tablerow', content: ['A | B', 'C'].map((value) => ({ type: 'tablecell', content: [text(value)] })) }],
+		},
+		{ type: 'preformatted', content: [text('before\n```\nafter')] },
+	],
+};
+const formatted = fromMarkdown(normalizeStructuredPdf(formattedDocument).markdown, {
+	extensions: [gfm()],
+	mdastExtensions: [gfmFromMarkdown()],
+}).children;
+assert.deepEqual(
+	formatted.map(({ type }) => type),
+	['table', 'code'],
+);
+assert.equal(formatted[0].children[0].children.length, 2);
+assert.equal(formatted[0].children[0].children[0].children[0].value, 'A | B');
+assert.equal(formatted[1].value, 'before\n```\nafter');
 
 const positionedText = (value, page) =>
 	text(value, {
