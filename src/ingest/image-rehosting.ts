@@ -75,12 +75,14 @@ function deliveryUrl(image: ImageMetadata): string {
 
 async function probeImageDimensions(
 	images: ImagesBinding,
-	body: ReadableStream<Uint8Array>,
+	body: ReadableStream<Uint8Array> | Promise<ReadableStream<Uint8Array> | null>,
 	imageId: string,
 	sourceUrl: string,
 ): Promise<ImageDimensions> {
 	try {
-		const info = await images.info(body);
+		const input = await body;
+		if (!input) return NULL_IMAGE_DIMENSIONS;
+		const info = await images.info(input);
 		if (
 			!('width' in info) ||
 			!Number.isSafeInteger(info.width) ||
@@ -103,29 +105,17 @@ async function probeImageDimensions(
 	}
 }
 
-async function probeHostedImageDimensions(images: ImagesBinding, imageId: string, sourceUrl: string): Promise<ImageDimensions> {
-	try {
-		const body = await images.hosted.image(imageId).bytes();
-		return body ? await probeImageDimensions(images, body, imageId, sourceUrl) : NULL_IMAGE_DIMENSIONS;
-	} catch (error) {
-		console.warn({
-			tag: 'RESOURCE_IMAGE',
-			event: 'dimensions_unavailable',
-			image_id: imageId,
-			source_host: new URL(sourceUrl).hostname,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return NULL_IMAGE_DIMENSIONS;
-	}
-}
-
 async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Promise<HostedResourceImage> {
 	if (normalizedResourceImageUrl(sourceUrl) !== sourceUrl) throw new TypeError('Resource image source URL is invalid');
 	const alreadyHosted = hostedResourceImageUrl(sourceUrl);
 	if (alreadyHosted) {
 		const imageId = new URL(alreadyHosted).pathname.split('/').at(-2);
 		if (!imageId) throw failure('images_read_error', 'hosted image ID missing');
-		return { deliveryUrl: alreadyHosted, sourceUrl, ...(await probeHostedImageDimensions(images, imageId, sourceUrl)) };
+		return {
+			deliveryUrl: alreadyHosted,
+			sourceUrl,
+			...(await probeImageDimensions(images, images.hosted.image(imageId).bytes(), imageId, sourceUrl)),
+		};
 	}
 	const imageId = `resource-${await sha256Hex(sourceUrl)}`;
 	let existing: ImageMetadata | null;
@@ -138,7 +128,7 @@ async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Pr
 		return {
 			deliveryUrl: deliveryUrl(existing),
 			sourceUrl,
-			...(await probeHostedImageDimensions(images, existing.id, sourceUrl)),
+			...(await probeImageDimensions(images, images.hosted.image(existing.id).bytes(), existing.id, sourceUrl)),
 		};
 	}
 
@@ -181,7 +171,7 @@ async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Pr
 			.catch(() => null);
 		if (!raced) throw uploadError;
 		image = raced;
-		dimensions = await probeHostedImageDimensions(images, image.id, sourceUrl);
+		dimensions = await probeImageDimensions(images, images.hosted.image(image.id).bytes(), image.id, sourceUrl);
 	}
 	console.info({
 		tag: 'RESOURCE_IMAGE',
@@ -200,17 +190,22 @@ export async function stageResourceImages(
 	sourceUrls: readonly string[],
 ): Promise<HostedResourceImage[]> {
 	if (sourceUrls.length === 0) return [];
-	const images = await step.do(
-		'rehost-resource-images-v3',
-		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '10 minutes' },
-		async () => {
-			const hosted: HostedResourceImage[] = [];
-			for (let offset = 0; offset < sourceUrls.length; offset += 3) {
-				hosted.push(...(await Promise.all(sourceUrls.slice(offset, offset + 3).map((url) => rehostResourceImage(env.IMAGES, url)))));
-			}
-			return hosted;
-		},
-	);
+	const images: HostedResourceImage[] = [];
+	for (let offset = 0; offset < sourceUrls.length; offset += 3) {
+		images.push(
+			...(await Promise.all(
+				sourceUrls
+					.slice(offset, offset + 3)
+					.map((url, index) =>
+						step.do(
+							`rehost-resource-image-v4-${offset + index}`,
+							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '10 minutes' },
+							() => rehostResourceImage(env.IMAGES, url),
+						),
+					),
+			)),
+		);
+	}
 	console.info({ tag: 'RESOURCE_IMAGE', event: 'eager_rehost_completed', processing_id: processingId, ready: images.length });
 	return images;
 }
