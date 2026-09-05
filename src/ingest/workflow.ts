@@ -1,4 +1,5 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
+import { NonRetryableError } from 'cloudflare:workflows';
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
@@ -157,13 +158,13 @@ async function loadResourceReacquisitionInput(db: NodePgDatabase, resourceId: st
 		LIMIT 1
 	`);
 	const row = result.rows[0];
-	if (!row) throw new Error(`Failed to fetch resource ${resourceId}: not found`);
+	if (!row) throw new NonRetryableError(`Failed to fetch resource ${resourceId}: not found`);
 	const url = row.url ? URL.parse(row.url) : null;
 	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) {
-		throw new Error(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
+		throw new NonRetryableError(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
 	}
 	const publishedDate = row.published_date instanceof Date ? row.published_date : row.published_date ? new Date(row.published_date) : null;
-	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new Error('Invalid published_date: expected date');
+	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new NonRetryableError('Invalid published_date: expected date');
 	return {
 		originalLang: canonicalizeResourceLang(row.original_lang),
 		paperIdentifiers: ResourceIdentifiersSchema.parse(row.resource_identifiers ?? []).filter(isPaperIdentifier),
