@@ -165,33 +165,8 @@ Title: ${resource.title}${summary ? `\nSummary: ${summary}` : ''}`,
 	return output;
 }
 
-async function translatePlannedContent(
-	content: string,
-	plan: ZhHantTranslationPlan['content'],
-	env: CoreEnv,
-	resourceId: string,
-	step: WorkflowStep,
-) {
-	if (!plan) return null;
-	let markdownPlan: ReturnType<typeof planMarkdownTranslation>;
-	try {
-		markdownPlan = planMarkdownTranslation(content);
-	} catch (error) {
-		console.error({
-			tag: 'RESOURCE_TRANSLATION',
-			event: 'markdown_validation_failed',
-			reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
-			resource_id: resourceId,
-		});
-		console.info({
-			tag: 'RESOURCE_TRANSLATION',
-			event: 'content_translation_outcome',
-			outcome: 'original-fallback',
-			reason: 'source-markdown-invalid',
-			resource_id: resourceId,
-		});
-		throw error;
-	}
+async function translatePlannedContent(content: string, env: CoreEnv, resourceId: string, step: WorkflowStep) {
+	const markdownPlan = planMarkdownTranslation(content);
 	console.info({
 		tag: 'RESOURCE_TRANSLATION',
 		event: 'markdown_translation_planned',
@@ -204,7 +179,7 @@ async function translatePlannedContent(
 		console.info({
 			tag: 'RESOURCE_TRANSLATION',
 			event: 'content_translation_outcome',
-			outcome: 'original-fallback',
+			outcome: 'skipped',
 			reason: 'no-translatable-prose',
 			resource_id: resourceId,
 		});
@@ -212,51 +187,22 @@ async function translatePlannedContent(
 	}
 	const translatedSegments: MarkdownSegmentTranslation[] = [];
 	for (const batch of markdownPlan.batches) {
-		try {
-			const translatedBatch = await step.do(
-				`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v14`,
-				{ retries: { limit: 3, delay: translationRetryDelay }, timeout: '300 seconds' },
-				(context) => translateMarkdownBatchToZhHant(batch, env, resourceId, context.attempt),
-			);
-			translatedSegments.push(...translatedBatch);
-		} catch (error) {
-			console.info({
-				tag: 'RESOURCE_TRANSLATION',
-				event: 'content_translation_outcome',
-				outcome: 'original-fallback',
-				reason: 'batch-recovery-exhausted',
-				batch_id: batch.id,
-				resource_id: resourceId,
-			});
-			throw error;
-		}
+		const translatedBatch = await step.do(
+			`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v14`,
+			{ retries: { limit: 3, delay: translationRetryDelay }, timeout: '300 seconds' },
+			(context) => translateMarkdownBatchToZhHant(batch, env, resourceId, context.attempt),
+		);
+		translatedSegments.push(...translatedBatch);
 	}
-	try {
-		const translated = compileMarkdownTranslationArtifact(markdownPlan, translatedSegments);
-		console.info({
-			tag: 'RESOURCE_TRANSLATION',
-			event: 'markdown_translation_compiled',
-			resource_id: resourceId,
-			aligned_blocks: translated.alignment.blocks.length,
-			translated_characters: translated.content.length,
-		});
-		return translated;
-	} catch (error) {
-		console.error({
-			tag: 'RESOURCE_TRANSLATION',
-			event: 'markdown_validation_failed',
-			reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
-			resource_id: resourceId,
-		});
-		console.info({
-			tag: 'RESOURCE_TRANSLATION',
-			event: 'content_translation_outcome',
-			outcome: 'original-fallback',
-			reason: 'markdown-structure-invalid',
-			resource_id: resourceId,
-		});
-		throw error;
-	}
+	const translated = compileMarkdownTranslationArtifact(markdownPlan, translatedSegments);
+	console.info({
+		tag: 'RESOURCE_TRANSLATION',
+		event: 'markdown_translation_compiled',
+		resource_id: resourceId,
+		aligned_blocks: translated.alignment.blocks.length,
+		translated_characters: translated.content.length,
+	});
+	return translated;
 }
 
 const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v28';
@@ -429,8 +375,6 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		const resource = input.resource;
 		const translationPlan = planZhHantTranslation(resource, force);
 		if (!translationPlan.metadata && !translationPlan.content) return;
-		const initialContent = resource.content.trim();
-		if (!initialContent) throw new Error(`Resource ${resourceId} has no persisted original content`);
 
 		const patch: MachineZhHantTranslationPatch = {};
 		if (translationPlan.metadata) {
@@ -445,8 +389,22 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			Object.assign(patch, translatedMetadata);
 		}
 
-		const translated = await translatePlannedContent(initialContent, translationPlan.content, this.env, resourceId, step);
-		if (translated) Object.assign(patch, translated);
+		if (translationPlan.content) {
+			try {
+				const translated = await translatePlannedContent(resource.content.trim(), this.env, resourceId, step);
+				if (translated) Object.assign(patch, translated);
+			} catch (error) {
+				console.error({
+					tag: 'RESOURCE_TRANSLATION',
+					event: 'content_translation_outcome',
+					outcome: 'failed',
+					reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
+					error: error instanceof Error ? error.message : String(error),
+					resource_id: resourceId,
+				});
+				throw error;
+			}
+		}
 		if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) return;
 
 		const persisted = await step.do(
