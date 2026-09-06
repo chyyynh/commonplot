@@ -137,7 +137,7 @@ async function corpusUrlOwner(db: NodePgDatabase, normalizedUrl: string | null):
 	return result.rows[0]?.id ?? null;
 }
 
-async function draftRoot(db: NodePgDatabase, resource: PreparedResource): Promise<LockedResource> {
+async function draftRoot(db: NodePgDatabase, resource: PreparedResource): Promise<LockedResource | null> {
 	const owners = await identifierOwners(db, resource.identifiers);
 	if (owners.length > 1) throw new Error('Resolved identifiers belong to different Resources');
 	const identifierOwner = owners[0] ?? null;
@@ -146,23 +146,10 @@ async function draftRoot(db: NodePgDatabase, resource: PreparedResource): Promis
 		throw new Error('Resolved identifiers and URL belong to different Resources');
 	}
 	const existingId = identifierOwner ?? urlOwner;
-	if (existingId) {
-		const existing = await lockResource(db, existingId);
-		if (existing.scope !== 'corpus') throw new Error('A URL draft cannot resolve to a private Resource');
-		return existing;
-	}
-	const result = await db.execute<LockedResource>(sql`
-		INSERT INTO resources (
-			kind, resource_platform, scope, url, normalized_url, original_lang, source_name,
-			tags, creators, enrichment_status, updated_at
-		) VALUES (
-			${resource.kind}, ${resource.resourcePlatform}, 'corpus', ${resource.url}, ${resource.normalizedUrl}, ${resource.originalLang},
-			${resource.sourceName},
-			ARRAY[]::text[], '[]'::jsonb, 'enriched', NOW()
-		)
-		RETURNING enrichment_status, id::text, original_lang, scope, subject_resource_id::text
-	`);
-	return result.rows[0]!;
+	if (!existingId) return null;
+	const existing = await lockResource(db, existingId);
+	if (existing.scope !== 'corpus') throw new Error('A URL draft cannot resolve to a private Resource');
+	return existing;
 }
 
 async function existingSubject(db: NodePgDatabase, parentId: string, subject: NonNullable<PreparedResource['subject']>) {
@@ -181,23 +168,28 @@ async function writeCanonicalResource(
 	db: NodePgDatabase,
 	resourceId: string,
 	resource: PreparedResource,
-	previousOriginalLang: string,
+	previousOriginalLang: string | undefined,
 	subjectResourceId: string | null,
 ) {
-	const current = await db.execute<{
-		content: string | null;
-		lang: string;
-		source: string;
-		summary: string | null;
-		title: string | null;
-	}>(sql`
-		SELECT content, lang, source, summary, title
-		FROM resource_translations
-		WHERE resource_id = ${resourceId}::uuid
-		  AND lang IN (${previousOriginalLang}, ${resource.originalLang})
-	`);
-	const previousOriginal = current.rows.find(({ lang }) => lang === previousOriginalLang);
-	const incomingOriginal = current.rows.find(({ lang }) => lang === resource.originalLang);
+	const current =
+		previousOriginalLang === undefined
+			? []
+			: (
+					await db.execute<{
+						content: string | null;
+						lang: string;
+						source: string;
+						summary: string | null;
+						title: string | null;
+					}>(sql`
+						SELECT content, lang, source, summary, title
+						FROM resource_translations
+						WHERE resource_id = ${resourceId}::uuid
+						  AND lang IN (${previousOriginalLang}, ${resource.originalLang})
+					`)
+				).rows;
+	const previousOriginal = current.find(({ lang }) => lang === previousOriginalLang);
+	const incomingOriginal = current.find(({ lang }) => lang === resource.originalLang);
 	const currentOriginal =
 		(previousOriginal?.source === 'human' ? previousOriginal : null) ??
 		(incomingOriginal?.source === 'human' ? incomingOriginal : null) ??
@@ -212,29 +204,36 @@ async function writeCanonicalResource(
 				currentOriginal.summary !== resource.summary ||
 				currentOriginal.content !== resource.content));
 
-	await db.execute(sql`
-		UPDATE resources SET
-			kind = ${resource.kind},
-			resource_platform = ${resource.resourcePlatform},
-			source_name = ${resource.sourceName},
-			url = ${resource.url},
-			normalized_url = ${resource.normalizedUrl},
-			file_type = ${resource.fileType},
-			original_lang = ${originalLang},
-			published_date = ${resource.publishedDate},
-			scraped_date = NOW(),
-			tags = ${sql.param(resource.tags)}::text[],
-			og_image_url = ${resource.ogImageUrl},
-			og_image_width = ${resource.ogImageWidth},
-			og_image_height = ${resource.ogImageHeight},
-			creators = ${JSON.stringify(resource.creators)}::jsonb,
-			kind_metadata = ${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb,
-			subject_resource_id = ${subjectResourceId}::uuid,
-			enrichment_status = 'enriched',
-			updated_at = NOW()
-		WHERE id = ${resourceId}::uuid
-	`);
-	await db.execute(sql`DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid`);
+	const columns = sql`
+		kind, resource_platform, source_name, url, normalized_url, file_type, original_lang, published_date,
+		tags, og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id,
+		enrichment_status, scraped_date, updated_at
+	`;
+	const values = sql`
+		${resource.kind}, ${resource.resourcePlatform}, ${resource.sourceName}, ${resource.url}, ${resource.normalizedUrl},
+		${resource.fileType}, ${originalLang}, ${resource.publishedDate}, ${sql.param(resource.tags)}::text[],
+		${resource.ogImageUrl}, ${resource.ogImageWidth}, ${resource.ogImageHeight}, ${JSON.stringify(resource.creators)}::jsonb,
+		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
+		'enriched', NOW(), NOW()
+	`;
+	await db.execute(
+		previousOriginalLang === undefined
+			? sql`INSERT INTO resources (id, scope, ${columns}) VALUES (${resourceId}::uuid, 'corpus', ${values})`
+			: sql`UPDATE resources SET (${columns}) = (${values}) WHERE id = ${resourceId}::uuid`,
+	);
+	if (previousOriginalLang !== undefined) {
+		await db.execute(sql`DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid`);
+		if (originalChanged) {
+			await db.execute(sql`DELETE FROM resource_citation_mentions WHERE resource_id = ${resourceId}::uuid`);
+			await db.execute(sql`DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid`);
+		}
+		// A former original is not a translation of the newly acquired content.
+		await db.execute(sql`
+			DELETE FROM resource_translations
+			WHERE resource_id = ${resourceId}::uuid
+			  AND ((source = 'machine' AND ${originalChanged}) OR (source = 'original' AND lang <> ${originalLang}))
+		`);
+	}
 	if (resource.identifiers.length) {
 		await db.execute(sql`
 			INSERT INTO resource_identifiers (resource_id, scheme, value, is_preferred)
@@ -242,16 +241,6 @@ async function writeCanonicalResource(
 			FROM jsonb_to_recordset(${JSON.stringify(resource.identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
 		`);
 	}
-	if (originalChanged) {
-		await db.execute(sql`DELETE FROM resource_citation_mentions WHERE resource_id = ${resourceId}::uuid`);
-		await db.execute(sql`DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid`);
-		await db.execute(sql`DELETE FROM resource_translations WHERE resource_id = ${resourceId}::uuid AND source = 'machine'`);
-	}
-	// A former original is not a translation of the newly acquired content.
-	await db.execute(sql`
-		DELETE FROM resource_translations
-		WHERE resource_id = ${resourceId}::uuid AND lang <> ${originalLang} AND source = 'original'
-	`);
 	if (!preserveHuman) {
 		await db.execute(sql`
 			INSERT INTO resource_translations (resource_id, lang, title, summary, content, keywords, source, updated_at)
@@ -318,15 +307,16 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 			await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`newsence:resource:${key}`}, 0))`);
 		}
 		const root = target.kind === 'draft' ? await draftRoot(tx, resource) : await lockResource(tx, target.resourceId);
-		const resolvedSubjectId = resource.subject ? await existingSubject(tx, root.id, resource.subject) : null;
-		const subjectResourceId = resolvedSubjectId ?? root.subject_resource_id;
-		const revisions = await writeCanonicalResource(tx, root.id, resource, root.original_lang, subjectResourceId);
+		const resourceId = root?.id ?? crypto.randomUUID();
+		const resolvedSubjectId = resource.subject ? await existingSubject(tx, resourceId, resource.subject) : null;
+		const subjectResourceId = resolvedSubjectId ?? root?.subject_resource_id ?? null;
+		const revisions = await writeCanonicalResource(tx, resourceId, resource, root?.original_lang, subjectResourceId);
 		if (target.kind === 'draft' && target.relation) {
-			await applyDraftRelation(tx, root.id, target.relation);
+			await applyDraftRelation(tx, resourceId, target.relation);
 		}
 		return {
-			resourceId: root.id,
-			scope: root.scope,
+			resourceId,
+			scope: root?.scope ?? 'corpus',
 			subjectAttached: resolvedSubjectId !== null,
 			...revisions,
 		};
