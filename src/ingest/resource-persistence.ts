@@ -243,18 +243,16 @@ async function writeCanonicalResource(
 	}
 	if (!preserveHuman) {
 		await db.execute(sql`
-			INSERT INTO resource_translations (resource_id, lang, title, summary, content, keywords, source, updated_at)
+			INSERT INTO resource_translations AS stored (resource_id, lang, title, summary, content, keywords, source, updated_at)
 			VALUES (
 				${resourceId}::uuid, ${originalLang}, ${resource.title}, ${resource.summary}, ${resource.content},
 				${sql.param(resource.keywords)}::text[], 'original', NOW()
 			)
 			ON CONFLICT (resource_id, lang) DO UPDATE SET
-				title = EXCLUDED.title,
-				summary = EXCLUDED.summary,
-				content = EXCLUDED.content,
-				keywords = EXCLUDED.keywords,
-				source = 'original',
-				updated_at = NOW()
+				(title, summary, content, keywords, source, updated_at) =
+				(EXCLUDED.title, EXCLUDED.summary, EXCLUDED.content, EXCLUDED.keywords, EXCLUDED.source, EXCLUDED.updated_at)
+			WHERE (stored.title, stored.summary, stored.content, stored.keywords, stored.source)
+			  IS DISTINCT FROM (EXCLUDED.title, EXCLUDED.summary, EXCLUDED.content, EXCLUDED.keywords, EXCLUDED.source)
 		`);
 	}
 	if (resource.youtube) {
