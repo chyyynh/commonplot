@@ -250,22 +250,26 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		);
 		const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision, acquisitionRevision } = persistence;
 		const forceProcessingRunKey = target.kind === 'reacquire' ? (await sha256Hex(event.instanceId)).slice(0, 16) : undefined;
-		if (saveTarget) {
-			await step.do(
-				'complete-resource-save-v1',
-				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() => this.env.APP.completeResourceSave(persistedResourceId, saveTarget),
-			);
-		}
+		const save = saveTarget
+			? step.do(
+					'complete-resource-save-v1',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					() => this.env.APP.completeResourceSave(persistedResourceId, saveTarget),
+				)
+			: Promise.resolve();
 		const subject = resource.subject;
-		await Promise.all([
-			uploadedPaper
-				? step.do(
-						'enqueue-resource-reference-enrichment-v3',
-						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						() => enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, target.resourceId),
-					)
-				: undefined,
+		// Only uploaded PDF references require the app's completed profile attachment.
+		// Let every independent handoff finish its retries before reporting failures.
+		const followups = await Promise.allSettled([
+			save.then(() =>
+				uploadedPaper
+					? step.do(
+							'enqueue-resource-reference-enrichment-v3',
+							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+							() => enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, target.resourceId),
+						)
+					: undefined,
+			),
 			scope === 'corpus'
 				? step.do(
 						'enqueue-resolved-ai-search-sync-v1',
@@ -299,6 +303,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					)
 				: undefined,
 		]);
+		const failures = followups.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+		if (failures.length) throw new AggregateError(failures, 'Resource persisted, but one or more follow-ups failed');
 
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
 		return { resourceId: persistedResourceId };
