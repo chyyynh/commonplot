@@ -247,12 +247,9 @@ async function writeCanonicalResource(
 		await db.execute(sql`DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid`);
 		await db.execute(sql`DELETE FROM resource_translations WHERE resource_id = ${resourceId}::uuid AND source = 'machine'`);
 	}
-	if (previousOriginalLang === 'und' && originalLang !== 'und') {
-		await db.execute(sql`DELETE FROM resource_translations WHERE resource_id = ${resourceId}::uuid AND lang = 'und'`);
-	}
+	// A former original is not a translation of the newly acquired content.
 	await db.execute(sql`
-		UPDATE resource_translations
-		SET source = 'machine', updated_at = NOW()
+		DELETE FROM resource_translations
 		WHERE resource_id = ${resourceId}::uuid AND lang <> ${originalLang} AND source = 'original'
 	`);
 	if (!preserveHuman) {
