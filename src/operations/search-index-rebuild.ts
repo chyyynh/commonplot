@@ -1,7 +1,13 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { AI_SEARCH_ITEM_PREFIX, resourceIdFromAiSearchItemKey, SEARCHABLE_CORPUS_RESOURCE_SQL, upsertCorpusItems } from '../search-index';
+import {
+	AI_SEARCH_ITEM_PREFIX,
+	loadCorpusDocuments,
+	resourceIdFromAiSearchItemKey,
+	SEARCHABLE_CORPUS_RESOURCE_SQL,
+	upsertCorpusItem,
+} from '../search-index';
 import { connectCoreDb } from '../shared/db';
 
 // Cloudflare AI Search allows at most five custom metadata fields per instance.
@@ -94,16 +100,14 @@ async function listCorpusIdsAfter(db: NodePgDatabase, cursor: string | null): Pr
 }
 
 async function uploadCorpusIds(env: CoreEnv, db: NodePgDatabase, ids: readonly string[]): Promise<number> {
-	let uploaded = 0;
-	for (let offset = 0; offset < ids.length; offset += REINDEX_AI_SEARCH_CONCURRENCY) {
-		const batch = ids.slice(offset, offset + REINDEX_AI_SEARCH_CONCURRENCY);
-		const batchUploaded = await upsertCorpusItems(env, db, batch);
-		if (batchUploaded !== batch.length) {
-			throw new Error(`Corpus changed while rebuilding: loaded ${batchUploaded}/${batch.length} documents`);
-		}
-		uploaded += batchUploaded;
+	const documents = await loadCorpusDocuments(db, ids);
+	if (documents.length !== ids.length) {
+		throw new Error(`Corpus changed while rebuilding: loaded ${documents.length}/${ids.length} documents`);
 	}
-	return uploaded;
+	for (let offset = 0; offset < documents.length; offset += REINDEX_AI_SEARCH_CONCURRENCY) {
+		await Promise.all(documents.slice(offset, offset + REINDEX_AI_SEARCH_CONCURRENCY).map((document) => upsertCorpusItem(env, document)));
+	}
+	return documents.length;
 }
 
 async function listCorpusDeltaAfter(db: NodePgDatabase, startedAt: string, cursor: SearchDeltaCursor | null): Promise<SearchDeltaRow[]> {

@@ -12,6 +12,7 @@ import { type ResourceDraftTarget, ResourceDraftTargetSchema, ResourceProcessing
 import { ZoteroSdtContainer } from './ingest/zotero-sdt-container';
 import { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
 import {
+	loadCorpusDocuments,
 	type PublicResourceSearchInput,
 	type RelatedResourceSearchInput,
 	searchPublicResourceIds,
@@ -92,7 +93,7 @@ async function reconcilePendingBlobProcessing(env: CoreEnv, db: NodePgDatabase):
 	});
 }
 
-const ResourceSearchSyncMessageSchema = z.strictObject({ resourceId: z.uuid() });
+const ResourceSearchSyncMessageSchema = z.strictObject({ resourceId: z.uuid().toLowerCase() });
 const ResourceWorkflowOutputSchema = z.object({ resourceId: z.uuid() });
 
 async function runFiveMinuteCycle(env: CoreEnv): Promise<void> {
@@ -120,7 +121,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	override async queue(batch: MessageBatch<unknown>): Promise<void> {
-		const db = await connectCoreDb(this.env);
+		const pending = new Map<string, Message<unknown>[]>();
 		for (const message of batch.messages) {
 			const input = ResourceSearchSyncMessageSchema.safeParse(message.body);
 			if (!input.success) {
@@ -128,18 +129,35 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 				message.ack();
 				continue;
 			}
+			const messages = pending.get(input.data.resourceId) ?? [];
+			messages.push(message);
+			pending.set(input.data.resourceId, messages);
+		}
+		if (!pending.size) return;
+		let documents: Awaited<ReturnType<typeof loadCorpusDocuments>>;
+		try {
+			documents = await loadCorpusDocuments(await connectCoreDb(this.env), [...pending.keys()]);
+		} catch (error) {
+			console.error({ tag: 'AI_SEARCH', msg: 'Resource sync batch could not be loaded', error });
+			for (const messages of pending.values()) {
+				for (const message of messages) message.retry();
+			}
+			return;
+		}
+		const documentsById = new Map(documents.map((document) => [document.id, document]));
+		for (const [resourceId, messages] of pending) {
 			try {
-				await syncCorpusItem(this.env, db, input.data.resourceId);
-				message.ack();
+				await syncCorpusItem(this.env, resourceId, documentsById.get(resourceId));
+				for (const message of messages) message.ack();
 			} catch (error) {
 				console.error({
 					tag: 'AI_SEARCH',
 					msg: 'Resource sync failed',
-					resource_id: input.data.resourceId,
-					attempt: message.attempts,
+					resource_id: resourceId,
+					attempt: Math.max(...messages.map((message) => message.attempts)),
 					error,
 				});
-				message.retry();
+				for (const message of messages) message.retry();
 			}
 		}
 	}

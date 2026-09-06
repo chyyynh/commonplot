@@ -33,7 +33,9 @@ Web hydrates and authoritatively filters every returned Resource ID.
 ## Runtime sync
 
 Resource and translation Workflows enqueue a Resource ID after persistence.
-The `resource-search-sync` Queue consumer calls `syncCorpusItem`; eligible
+The `resource-search-sync` Queue consumer deduplicates IDs within each batch,
+loads their current corpus documents in one query, and calls `syncCorpusItem` per Resource.
+Each Resource's messages are acknowledged or retried together; eligible
 Resources upload to `resources/<resource-id>.md`, while ineligible or deleted
 Resources remove that exact key through the native AI Search `key` filter.
 Canonical resource readiness never depends on this derived index. There is no

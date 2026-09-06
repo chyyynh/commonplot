@@ -146,7 +146,7 @@ function serializeRelatedQuery(row: CorpusDocument): string {
 		.slice(0, RELATED_QUERY_MAX_CHARS);
 }
 
-async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly string[]): Promise<CorpusDocument[]> {
+export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly string[]): Promise<CorpusDocument[]> {
 	if (!resourceIds.length) return [];
 	const result = await db.execute<CorpusDocument>(sql`
 		SELECT r.id::text,
@@ -163,7 +163,8 @@ async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly str
 		             'lang', translation.lang,
 		             'title', translation.title,
 		             'summary', translation.summary,
-		             'content', translation.content,
+		             'content', LEFT(translation.content, CASE WHEN translation.lang = r.original_lang
+		               THEN ${ORIGINAL_CONTENT_MAX_CHARS}::integer ELSE ${TRANSLATED_CONTENT_MAX_CHARS}::integer END),
 		             'keywords', translation.keywords
 		           )
 		           ORDER BY (translation.lang = r.original_lang) DESC, translation.lang
@@ -181,30 +182,24 @@ async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly str
 	return result.rows;
 }
 
-export async function upsertCorpusItems(env: CoreEnv, db: NodePgDatabase, resourceIds: readonly string[]): Promise<number> {
-	const documents = await loadCorpusDocuments(db, resourceIds);
-	await Promise.all(
-		documents.flatMap((document) => {
-			const publishedAt = document.published_at === null ? null : new Date(document.published_at);
-			if (publishedAt && Number.isNaN(publishedAt.getTime())) {
-				throw new Error(`AI Search document ${document.id} has invalid publication date`);
-			}
-			const options = {
-				metadata: {
-					...(publishedAt ? { published_at: publishedAt.toISOString() } : {}),
-					...(document.source_id ? { source_id: document.source_id } : {}),
-					kind: document.kind,
-					resource_platform: document.resource_platform ?? NULL_RESOURCE_PLATFORM_METADATA,
-				},
-			};
-			const key = aiSearchItemKey(document.id);
-			return [
-				env.AI_SEARCH.items.upload(key, serializeDocument(document), options),
-				env.RELATED_SEARCH.items.upload(key, serializeRelatedDocument(document), options),
-			];
-		}),
-	);
-	return documents.length;
+export async function upsertCorpusItem(env: CoreEnv, document: CorpusDocument): Promise<void> {
+	const publishedAt = document.published_at === null ? null : new Date(document.published_at);
+	if (publishedAt && Number.isNaN(publishedAt.getTime())) {
+		throw new Error(`AI Search document ${document.id} has invalid publication date`);
+	}
+	const options = {
+		metadata: {
+			...(publishedAt ? { published_at: publishedAt.toISOString() } : {}),
+			...(document.source_id ? { source_id: document.source_id } : {}),
+			kind: document.kind,
+			resource_platform: document.resource_platform ?? NULL_RESOURCE_PLATFORM_METADATA,
+		},
+	};
+	const key = aiSearchItemKey(document.id);
+	await Promise.all([
+		env.AI_SEARCH.items.upload(key, serializeDocument(document), options),
+		env.RELATED_SEARCH.items.upload(key, serializeRelatedDocument(document), options),
+	]);
 }
 
 async function deleteCorpusItem(instance: AiSearchInstance, index: 'corpus' | 'related', resourceId: string): Promise<void> {
@@ -216,8 +211,10 @@ async function deleteCorpusItem(instance: AiSearchInstance, index: 'corpus' | 'r
 	console.info({ tag: 'AI_SEARCH', msg: 'Corpus item deleted', index, resource_id: resourceId, item_id: item.id });
 }
 
-export async function syncCorpusItem(env: CoreEnv, db: NodePgDatabase, resourceId: string): Promise<void> {
-	if ((await upsertCorpusItems(env, db, [resourceId])) === 0) {
+export async function syncCorpusItem(env: CoreEnv, resourceId: string, document: CorpusDocument | undefined): Promise<void> {
+	if (document) {
+		await upsertCorpusItem(env, document);
+	} else {
 		await Promise.all([deleteCorpusItem(env.AI_SEARCH, 'corpus', resourceId), deleteCorpusItem(env.RELATED_SEARCH, 'related', resourceId)]);
 	}
 }
