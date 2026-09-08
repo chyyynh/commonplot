@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { fromMarkdown } from 'mdast-util-from-markdown';
 
 const {
 	MarkdownTranslationInvariantError,
@@ -186,6 +187,56 @@ assert.match(
 	/^\*增強量\* \*量化：\*/u,
 	'adjacent emphasis must retain two nodes when target-language spacing is removed',
 );
+
+function textWithStrongDepth(node, depth = 0) {
+	if (node.type === 'text') return [[node.value, depth]];
+	return (node.children ?? []).flatMap((child) => textWithStrongDepth(child, depth + Number(node.type === 'strong')));
+}
+
+for (const { source, replacements, expected } of [
+	{
+		source: '**Listen to this **post**:**',
+		replacements: { 'Listen to this ': '聽聽這篇', post: '貼文', ':': '：' },
+		expected: [
+			['聽聽這篇', 1],
+			['貼文', 2],
+			['：', 1],
+		],
+	},
+	{
+		source: '**Read __the full report__ now.** Plain **end.**',
+		replacements: {
+			'Read ': '閱讀',
+			'the full report': '這份完整報告',
+			' now.': '。',
+			' Plain ': '一般',
+			'end.': '結尾。',
+		},
+		expected: [
+			['閱讀', 1],
+			['這份完整報告', 2],
+			['。', 1],
+			['一般', 0],
+			['結尾。', 1],
+		],
+	},
+]) {
+	const nestedStrongPlan = planMarkdownTranslation(source);
+	const artifact = compileMarkdownTranslationArtifact(
+		nestedStrongPlan,
+		nestedStrongPlan.segments.map((segment) => targetFromSource(segment, (value) => replacements[value] ?? value)),
+	);
+	assert.deepEqual(
+		textWithStrongDepth(fromMarkdown(artifact.content)),
+		expected,
+		'translation must retain nested bold scopes and exact prose',
+	);
+	assert.deepEqual(
+		textWithStrongDepth(fromMarkdown(artifact.alignment.blocks[0].translatedMarkdown)),
+		expected,
+		'aligned reader blocks must preserve the same translated text and bold scopes as the full body',
+	);
+}
 
 const duplicatedSequencePlan = planMarkdownTranslation(
 	'*Plume Delineation:* Precisely segmenting the shape and boundaries of a plume, even when multiple plumes overlap.',

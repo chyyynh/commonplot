@@ -1,9 +1,9 @@
-import type { Heading, Link, Nodes, Paragraph, Parents, PhrasingContent, Root, TableCell } from 'mdast';
+import type { Heading, Link, Nodes, Paragraph, Parents, PhrasingContent, Root, Strong, TableCell } from 'mdast';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { frontmatterFromMarkdown, frontmatterToMarkdown } from 'mdast-util-frontmatter';
 import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm';
 import { mathFromMarkdown, mathToMarkdown } from 'mdast-util-math';
-import { toMarkdown } from 'mdast-util-to-markdown';
+import { defaultHandlers, type Info, type State, toMarkdown } from 'mdast-util-to-markdown';
 import { frontmatter } from 'micromark-extension-frontmatter';
 import { gfm } from 'micromark-extension-gfm';
 import { math } from 'micromark-extension-math';
@@ -115,9 +115,27 @@ function parseMarkdown(markdown: string): Root {
 	return parseMarkdownOnce(escaped);
 }
 
+function strongMarker(state: State): '*' | '_' {
+	return state.stack.filter((construct) => construct === 'strong').length % 2 === 0 ? '*' : '_';
+}
+
+// Reusing ** for nested strong nodes can change delimiter pairing when translated text loses English word boundaries.
+// Alternate markers by nesting depth; the native handler also escapes intraword underscores without adding visible spaces.
+function serializeStrong(node: Strong, parent: Parents | undefined, state: State, info: Info): string {
+	const previousMarker = state.options.strong;
+	state.options.strong = strongMarker(state);
+	try {
+		return defaultHandlers.strong(node, parent, state, info);
+	} finally {
+		state.options.strong = previousMarker;
+	}
+}
+serializeStrong.peek = (_node: Strong, _parent: Parents | undefined, state: State): string => strongMarker(state);
+
 function serializeMarkdown(tree: Root): string {
 	return toMarkdown(tree, {
 		extensions: [frontmatterToMarkdown(FRONTMATTER_PRESETS), mathToMarkdown(), gfmToMarkdown()],
+		handlers: { strong: serializeStrong },
 	}).trimEnd();
 }
 
