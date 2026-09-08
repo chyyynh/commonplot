@@ -14,7 +14,7 @@
 	 */
 	"limits": {
 		"cpu_ms": 180000,
-		"subrequests": 5000000
+		"subrequests": 5000000,
 	},
 	/** PDF parsers stream uploaded PDFs from R2; their models and scratch disks are intentionally ephemeral. */
 	"containers": [
@@ -22,36 +22,36 @@
 			"class_name": "GrobidContainer",
 			"image": "registry.cloudflare.com/f62c923a073e06d7b88040b743b2ee0a/newsence-core-grobidcontainer:crf-0.9.1-amd64",
 			"instance_type": "standard-4",
-			"max_instances": 1
+			"max_instances": 1,
 		},
 		{
 			"class_name": "ZoteroSdtContainer",
 			"image": "./containers/zotero-sdt/Dockerfile",
 			"instance_type": "basic",
-			"max_instances": 1
-		}
+			"max_instances": 1,
+		},
 	],
 	"durable_objects": {
 		"bindings": [
 			{
 				"name": "GROBID",
-				"class_name": "GrobidContainer"
+				"class_name": "GrobidContainer",
 			},
 			{
 				"name": "ZOTERO_SDT",
-				"class_name": "ZoteroSdtContainer"
-			}
-		]
+				"class_name": "ZoteroSdtContainer",
+			},
+		],
 	},
 	"migrations": [
 		{
 			"tag": "grobid-v1",
-			"new_sqlite_classes": ["GrobidContainer"]
+			"new_sqlite_classes": ["GrobidContainer"],
 		},
 		{
 			"tag": "zotero-sdt-v1",
-			"new_sqlite_classes": ["ZoteroSdtContainer"]
-		}
+			"new_sqlite_classes": ["ZoteroSdtContainer"],
+		},
 	],
 	"observability": {
 		"enabled": true,
@@ -60,13 +60,13 @@
 			"enabled": true,
 			"head_sampling_rate": 1,
 			"persist": true,
-			"invocation_logs": true
+			"invocation_logs": true,
 		},
 		"traces": {
 			"enabled": true,
 			"persist": true,
-			"head_sampling_rate": 0.05
-		}
+			"head_sampling_rate": 0.05,
+		},
 	},
 	/**
 	 * Schedule Triggers
@@ -75,24 +75,24 @@
 	"triggers": {
 		"crons": [
 			"*/5 * * * *", // RSS monitor, incl. YouTube channel feeds (every 5 minutes)
-			"0 */6 * * *" // Twitter monitor (every 6 hours)
-		]
+			"0 */6 * * *", // Twitter monitor (every 6 hours)
+		],
 	},
 	/** AI Search is a derived index; this Queue keeps it off canonical Resource Workflows. */
 	"queues": {
 		"producers": [
 			{
 				"binding": "RESOURCE_SEARCH_SYNC_QUEUE",
-				"queue": "resource-search-sync"
-			}
+				"queue": "resource-search-sync",
+			},
 		],
 		"consumers": [
 			{
 				"queue": "resource-search-sync",
 				"max_batch_size": 10,
-				"max_batch_timeout": 5
-			}
-		]
+				"max_batch_timeout": 5,
+			},
+		],
 	},
 	/**
 	 * Workflows
@@ -102,46 +102,46 @@
 		{
 			"binding": "RESOURCE_PROCESSING_V2_WORKFLOW",
 			"name": "newsence-resource-processing-v2",
-			"class_name": "ResourceProcessingV2Workflow"
+			"class_name": "ResourceProcessingV2Workflow",
 		},
 		{
 			"binding": "RESOURCE_TRANSLATION_V2_WORKFLOW",
 			"name": "newsence-resource-translation-v2",
 			"class_name": "ResourceTranslationV2Workflow",
-			"default_retention": { "success_retention": "1 day", "error_retention": "7 days" }
+			"default_retention": { "success_retention": "1 day", "error_retention": "7 days" },
 		},
 		{
 			"binding": "RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW",
 			"name": "newsence-resource-reference-enrichment",
 			"class_name": "ResourceReferenceEnrichmentWorkflow",
-			"default_retention": { "success_retention": "1 day", "error_retention": "7 days" }
+			"default_retention": { "success_retention": "1 day", "error_retention": "7 days" },
 		},
 		{
 			"binding": "SEARCH_INDEX_REBUILD_WORKFLOW",
 			"name": "newsence-search-index-rebuild",
 			"class_name": "SearchIndexRebuildWorkflow",
 			/** 500k resources need 10k upload steps before deltas, pruning, and readiness checks. */
-			"limits": { "steps": 25000 }
-		}
+			"limits": { "steps": 25000 },
+		},
 	],
 	/**
 	 * Workers AI Binding
 	 * https://developers.cloudflare.com/workers-ai/get-started/workers-wrangler/
 	 */
 	"ai": {
-		"binding": "AI"
+		"binding": "AI",
 	},
 	"ai_search": [
 		{
 			"binding": "AI_SEARCH",
 			"instance_name": "newsence-corpus-v6",
-			"remote": true
+			"remote": true,
 		},
 		{
 			"binding": "RELATED_SEARCH",
 			"instance_name": "newsence-related-v1",
-			"remote": true
-		}
+			"remote": true,
+		},
 	],
 	/**
 	 * Hyperdrive — PlanetScale PostgreSQL connection pooling
@@ -150,12 +150,12 @@
 	"hyperdrive": [
 		{
 			"binding": "HYPERDRIVE",
-			"id": "5d7b16cf287e4dcc8b36d43461ccbf5c"
-		}
+			"id": "5d7b16cf287e4dcc8b36d43461ccbf5c",
+		},
 	],
 	/** Cloudflare Images — hosted resource previews and creator avatars. */
 	"images": {
-		"binding": "IMAGES"
+		"binding": "IMAGES",
 	},
 	/**
 	 * R2 buckets.
@@ -167,21 +167,21 @@
 	"r2_buckets": [
 		{
 			"binding": "R2",
-			"bucket_name": "newsence"
-		}
+			"bucket_name": "newsence",
+		},
 	],
 	"services": [
 		{
 			"binding": "APP",
 			"service": "newsence-web-tanstack",
-			"entrypoint": "DomainRpc"
-		}
+			"entrypoint": "DomainRpc",
+		},
 	],
 	/**
 	 * Smart Placement — run close to database
 	 */
 	"placement": {
-		"mode": "smart"
+		"mode": "smart",
 	},
 	/**
 	 * `AI_GATEWAY_ENVIRONMENT` — trusted deployment label attached to Gateway logs.
@@ -196,9 +196,9 @@
 	 *   deployment's Llama Cloud project; development uses separate values.
 	 */
 	"secrets": {
-		"required": ["KAITO_API_KEY", "YOUTUBE_API_KEY", "OPENALEX_API_KEY", "LLAMA_CLOUD_API_KEY", "LLAMA_CLOUD_PROJECT_ID"]
+		"required": ["KAITO_API_KEY", "YOUTUBE_API_KEY", "OPENALEX_API_KEY", "LLAMA_CLOUD_API_KEY", "LLAMA_CLOUD_PROJECT_ID"],
 	},
 	"vars": {
-		"AI_GATEWAY_ENVIRONMENT": "production"
-	}
+		"AI_GATEWAY_ENVIRONMENT": "production",
+	},
 }

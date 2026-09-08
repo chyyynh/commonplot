@@ -1,6 +1,6 @@
+import { addTransformations, extractFromHtml } from '@extractus/article-extractor';
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { addTransformations, extractFromHtml } from '@extractus/article-extractor';
 import { fromHtml } from 'hast-util-from-html';
 import { toMdast } from 'hast-util-to-mdast';
 import { gfmToMarkdown } from 'mdast-util-gfm';

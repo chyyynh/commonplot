@@ -1,6 +1,6 @@
+import { generateText, Output } from 'ai';
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import type { TranscriptResponse } from 'youtube-transcript';
 import { z } from 'zod';

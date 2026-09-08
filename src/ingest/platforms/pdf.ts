@@ -13,13 +13,13 @@ import {
 import { limitByteStream } from '../../shared/response';
 import { resolveCrossrefPaperCandidate } from '../crossref';
 import type { GrobidPdfHeader } from '../grobid-tei';
-import { normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfSourceCrops } from '../zotero-sdt.ts';
 import {
 	ensureStructuredPdfSourceCrops,
 	parsePdfArtifactStream,
 	readStructuredPdfArtifact,
 	writeStructuredPdfArtifact,
 } from '../zotero-sdt-service.ts';
+import { normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfSourceCrops } from '../zotero-sdt.ts';
 import { fetchOpenAlexPdf } from './openalex';
 import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
 import type { LocalPdfSummary, PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';

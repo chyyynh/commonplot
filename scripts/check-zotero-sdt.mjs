@@ -251,6 +251,7 @@ const formatting = normalizeStructuredPdf({
 		...['# Literal heading', '- Literal bullet', '1. Literal number', '<script>alert(1)</script>'].map((value) => prose(text(value))),
 		prose(text('em', { style: { italic: true } }), text('phasis', { style: { italic: true } })),
 		prose(text('left'), text(' bold ', { style: { bold: true } }), text('right')),
+		// oxlint-disable-next-line eslint/no-script-url -- Verify rejection of malicious provider links.
 		prose(text('unsafe', { target: { url: 'javascript:alert(1)' } })),
 		prose(text('credentials', { target: { url: 'https://user:pass@example.com' } })),
 		prose(text('safe', { target: { url: 'https://example.com/a_(b)' } })),

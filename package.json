@@ -22,9 +22,11 @@
 		"cf-typegen": "wrangler types --env-interface CoreBindings -c wrangler.jsonc",
 		"typecheck": "tsc --noEmit",
 		"typecheck:types": "wrangler types --check --env-interface CoreBindings -c wrangler.jsonc",
-		"lint": "pnpm lint:oxlint && biome check .",
-		"lint:fix": "oxlint . --fix && biome check --write .",
-		"lint:oxlint": "oxlint . --deny-warnings --report-unused-disable-directives"
+		"lint": "pnpm lint:oxlint && pnpm format:check",
+		"lint:fix": "oxlint . --fix && pnpm format",
+		"lint:oxlint": "oxlint . --deny-warnings --report-unused-disable-directives",
+		"format:check": "oxfmt --check \"**/*.{js,cjs,mjs,ts,tsx,json,jsonc}\"",
+		"format": "oxfmt --write \"**/*.{js,cjs,mjs,ts,tsx,json,jsonc}\""
 	},
 	"dependencies": {
 		"@cloudflare/containers": "^0.3.7",
@@ -51,10 +53,10 @@
 		"zod": "^4.5.4"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "^2.5.11",
 		"@types/mdast": "^4.0.4",
 		"@types/node": "^22.19.7",
 		"@types/pg": "^8.23.1",
+		"oxfmt": "0.67.0",
 		"oxlint": "1.82.0",
 		"typescript": "^5.9.3",
 		"wrangler": "^4.127.1"

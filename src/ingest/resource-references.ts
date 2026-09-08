@@ -7,8 +7,8 @@ import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
 import { resolveCrossrefReference } from './crossref';
 import { PDF_MIME } from './platforms/pdf-constants';
-import { normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfSourceCrops, structuredPdfSourceCropUrl } from './zotero-sdt.ts';
 import { readStructuredPdfArtifact } from './zotero-sdt-service.ts';
+import { normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfSourceCrops, structuredPdfSourceCropUrl } from './zotero-sdt.ts';
 
 const CROSSREF_BATCH_SIZE = 3;
 const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
