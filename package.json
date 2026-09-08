@@ -22,8 +22,9 @@
 		"cf-typegen": "wrangler types --env-interface CoreBindings -c wrangler.jsonc",
 		"typecheck": "tsc --noEmit",
 		"typecheck:types": "wrangler types --check --env-interface CoreBindings -c wrangler.jsonc",
-		"lint": "biome check .",
-		"lint:fix": "biome check --write ."
+		"lint": "pnpm lint:oxlint && biome check .",
+		"lint:fix": "oxlint . --fix && biome check --write .",
+		"lint:oxlint": "oxlint . --deny-warnings --report-unused-disable-directives"
 	},
 	"dependencies": {
 		"@cloudflare/containers": "^0.3.7",
@@ -54,6 +55,7 @@
 		"@types/mdast": "^4.0.4",
 		"@types/node": "^22.19.7",
 		"@types/pg": "^8.23.1",
+		"oxlint": "1.82.0",
 		"typescript": "^5.9.3",
 		"wrangler": "^4.127.1"
 	}
