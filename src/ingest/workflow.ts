@@ -16,7 +16,7 @@ import { stageStoredResourceAcquisition, stageUrlAcquisition } from './acquisiti
 import { analyzeResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { LLAMA_PARSE_MAX_PAGES } from './platforms/pdf-fallback-policy';
-import { enqueueSearchProgress, progressStep, sealProgressTask, startProgressTask } from './progress';
+import { createResourceTask, enqueueSearchProgress, registerResourceTask, type ResourceTask } from './progress';
 import {
 	persistResolvedResource,
 	publishPublicPdfCrops,
@@ -38,6 +38,7 @@ const PaidPdfFallbackGrantSchema = z.strictObject({ maxPages: z.int().min(1).max
 
 export const ResourceDraftTargetSchema = z.strictObject({
 	kind: z.literal('draft'),
+	progress: z.boolean().optional(),
 	paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
 	relation: ResourceDraftRelationSchema.optional(),
 	saveTarget: z.record(z.string(), z.json()).optional(),
@@ -175,7 +176,7 @@ async function loadResourceReacquisitionInput(db: NodePgDatabase, resourceId: st
 	};
 }
 
-async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, target: ResourceProcessingTarget, instanceId: string) {
+async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, target: ResourceProcessingTarget, task: ResourceTask) {
 	if (target.kind === 'draft') {
 		return stageUrlAcquisition(env, step, {
 			hints: {
@@ -185,13 +186,13 @@ async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, targe
 			},
 			allowCitoidLookup: target.relation?.kind !== 'source',
 			paidPdfFallback: target.paidPdfFallback ?? null,
-			processingId: instanceId,
+			processingId: task.taskId,
 			url: target.url,
 		});
 	}
 
 	if (target.kind === 'storedBlob') {
-		return stageStoredResourceAcquisition(env, step, { ...target, progressTaskId: instanceId });
+		return stageStoredResourceAcquisition(env, step, target, task);
 	}
 
 	const snapshot = await step.do(
@@ -212,6 +213,9 @@ async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, targe
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep) {
 		const target = ResourceProcessingTargetSchema.parse(event.payload);
+		const required =
+			target.kind === 'storedBlob' || (target.kind === 'draft' && target.relation?.kind !== 'source' && target.progress !== false);
+		const task = createResourceTask(this.env, step, event.instanceId, required ? 'required' : 'none');
 		let publishedResourceId: string | undefined;
 		try {
 			if (target.kind === 'storedBlob') {
@@ -219,14 +223,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					this.env.APP.verifyStoredBlobProcessing(target.resourceId, event.instanceId),
 				);
 				if (!current) {
-					await progressStep(this.env, step, 'superseded', { taskId: event.instanceId, stage: 'acquiring', status: 'superseded' });
+					await task.report('superseded', { stage: 'acquiring', status: 'superseded' });
 					return { resourceId: target.resourceId };
 				}
 			}
-			if (!(await startProgressTask(this.env, step, event.instanceId, target.kind === 'storedBlob' ? 'parsing' : 'acquiring')))
+			if (!(await task.start(target.kind === 'storedBlob' ? 'parsing' : 'acquiring')))
 				return target.kind === 'draft' ? {} : { resourceId: target.resourceId };
 			const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
-			const resource = await resolveProcessingResource(this.env, step, target, event.instanceId);
+			const resource = await resolveProcessingResource(this.env, step, target, task);
 			const uploadedPaper = target.kind === 'storedBlob' && resource.kind === 'paper';
 			const ownedBlobId = target.kind === 'storedBlob' ? target.resourceId : undefined;
 			const persistenceTarget: ResourcePersistenceTarget =
@@ -250,7 +254,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				processing_id: processingId,
 				target_kind: target.kind,
 			});
-			await progressStep(this.env, step, 'analysis', { taskId: event.instanceId, stage: 'analyzing', status: 'running' });
+			await task.report('analysis', { stage: 'analyzing', status: 'running' });
 			const imageSources = resourceImageSourceUrls({ ...resource, ogImageUrl: resource.previewImageUrl });
 			const [analysis, hostedImages] = await Promise.all([
 				step.do('analyze-resource-v2', { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' }, () =>
@@ -258,7 +262,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				),
 				stageResourceImages(this.env, step, processingId, imageSources),
 			]);
-			await progressStep(this.env, step, 'persisting', { taskId: event.instanceId, stage: 'persisting', status: 'running' });
+			await task.report('persisting', { stage: 'persisting', status: 'running' });
 			let privateTranslation: { resourceId: string; translationRevision: string } | undefined;
 			if (uploadedPaper) {
 				const privateRendition = prepareResolvedResource(
@@ -305,8 +309,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					() => this.env.APP.completeResourceSave(persistedResourceId, saveTarget),
 				);
 			publishedResourceId = persistedResourceId;
-			await progressStep(this.env, step, 'ready', {
-				taskId: event.instanceId,
+			await task.report('ready', {
 				stage: 'persisting',
 				status: 'complete',
 				resourceId: persistedResourceId,
@@ -319,15 +322,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					? step.do(
 							'enqueue-resource-reference-enrichment-v4',
 							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							() =>
-								enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, target.resourceId, event.instanceId),
+							() => enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, target.resourceId, task),
 						)
 					: undefined,
 				scope === 'corpus'
 					? step.do(
 							'enqueue-resolved-ai-search-sync-v2',
 							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							() => enqueueSearchProgress(this.env, persistedResourceId, event.instanceId, translationRevision),
+							() => enqueueSearchProgress(this.env, persistedResourceId, task, translationRevision),
 						)
 					: undefined,
 				privateTranslation
@@ -340,7 +342,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 									privateTranslation!.resourceId,
 									privateTranslation!.translationRevision,
 									undefined,
-									event.instanceId,
+									task,
 								),
 						)
 					: undefined,
@@ -348,7 +350,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					? step.do(
 							'enqueue-resource-translation-v4',
 							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision, forceProcessingRunKey, event.instanceId),
+							() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision, forceProcessingRunKey, task),
 						)
 					: undefined,
 				subject && !subjectAttached
@@ -363,27 +365,31 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 									...(subject.publishedDate ? { sourceHints: { publishedDate: subject.publishedDate } } : {}),
 									url: subject.normalizedUrl,
 								});
-								const id = `subject-draft-v4-${await sha256Hex(JSON.stringify(subjectTarget))}`;
-								await this.env.APP.registerResourceProgressTask({ taskId: id, kind: 'processing', parentTaskId: event.instanceId });
-								await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: subjectTarget }]);
+								// User subjects keep their existing IDs. Automatic subjects own
+								// a separate execution: a simultaneous first import may acquire
+								// twice, but cannot inherit an untracked task. Canonical identity
+								// and the downstream shared translation ID remain unchanged.
+								const prefix = task.required ? 'subject-draft-v4' : 'subject-draft-auto-v1';
+								const id = `${prefix}-${await sha256Hex(JSON.stringify(subjectTarget))}`;
+								await registerResourceTask(this.env, { taskId: id, kind: 'processing' }, task);
+								await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { ...subjectTarget, progress: task.required } }]);
 								return id;
 							},
 						)
 					: undefined,
 			]);
 			const failures = followups.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
-			await sealProgressTask(this.env, step, event.instanceId, failures.length ? 'followup_dispatch_failed' : undefined);
+			await task.seal(failures.length ? 'followup_dispatch_failed' : undefined);
 			if (failures.length) throw new AggregateError(failures, 'Resource persisted, but one or more follow-ups failed');
 
 			console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
 			return { resourceId: persistedResourceId };
 		} catch (error) {
-			await progressStep(this.env, step, 'outcome-after-error', {
-				taskId: event.instanceId,
+			await task.report('outcome-after-error', {
 				status: publishedResourceId ? 'complete' : 'failed',
 				...(publishedResourceId ? { resourceId: publishedResourceId } : { errorCode: 'processing_failed' }),
 			});
-			if (publishedResourceId) await sealProgressTask(this.env, step, event.instanceId, 'followup_dispatch_failed');
+			if (publishedResourceId) await task.seal('followup_dispatch_failed');
 			throw error;
 		}
 	}

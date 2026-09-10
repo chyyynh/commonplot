@@ -7,7 +7,7 @@ import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
 import { resolveCrossrefReference } from './crossref';
 import { PDF_MIME } from './platforms/pdf-constants';
-import { progressStep, sealProgressTask, startProgressTask } from './progress';
+import { createResourceTask, registerResourceTask, type ResourceTaskContext } from './progress';
 import { readStructuredPdfArtifact } from './zotero-sdt-service.ts';
 import { matchesUploadedPdfRendition, normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfSourceCrops } from './zotero-sdt.ts';
 
@@ -16,6 +16,7 @@ const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'e
 const REFERENCE_SDT_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '90 seconds' } as const;
 const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v3';
 const ResourceReferenceEnrichmentPayloadSchema = z.strictObject({
+	progress: z.boolean().optional(),
 	referenceRevision: z.hash('md5').lowercase(),
 	resourceId: z.uuid(),
 	source: z.strictObject({ fileResourceId: z.uuid(), kind: z.literal('uploadedPdf') }),
@@ -217,15 +218,22 @@ export async function enqueueResourceReferenceEnrichment(
 	resourceId: string,
 	referenceRevision: string,
 	uploadedPdfResourceId: string,
-	parentTaskId?: string,
+	parent?: ResourceTaskContext,
 ) {
 	const id = `rr-v6-${await sha256Hex(
-		[RESOURCE_REFERENCE_WORKFLOW_REVISION, resourceId, referenceRevision, uploadedPdfResourceId, parentTaskId ?? 'idempotent'].join('\n'),
+		[RESOURCE_REFERENCE_WORKFLOW_REVISION, resourceId, referenceRevision, uploadedPdfResourceId, parent?.taskId ?? 'idempotent'].join('\n'),
 	)}`;
-	if (parentTaskId)
-		await env.APP.registerResourceProgressTask({ taskId: id, kind: 'references', resourceId, revision: referenceRevision, parentTaskId });
+	await registerResourceTask(env, { taskId: id, kind: 'references', resourceId, revision: referenceRevision }, parent);
 	await env.RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW.createBatch([
-		{ id, params: { referenceRevision, resourceId, source: { fileResourceId: uploadedPdfResourceId, kind: 'uploadedPdf' } } },
+		{
+			id,
+			params: {
+				progress: parent?.required ?? false,
+				referenceRevision,
+				resourceId,
+				source: { fileResourceId: uploadedPdfResourceId, kind: 'uploadedPdf' },
+			},
+		},
 	]);
 }
 
@@ -233,8 +241,9 @@ export async function enqueueResourceReferenceEnrichment(
 export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<CoreEnv, ResourceReferenceEnrichmentPayload> {
 	async run(event: WorkflowEvent<ResourceReferenceEnrichmentPayload>, step: WorkflowStep): Promise<void> {
 		const input = ResourceReferenceEnrichmentPayloadSchema.parse(event.payload);
+		const task = createResourceTask(this.env, step, event.instanceId, input.progress === false ? 'none' : 'required');
 		try {
-			if (!(await startProgressTask(this.env, step, event.instanceId, 'references'))) return;
+			if (!(await task.start('references'))) return;
 			const source = await step.do('load-uploaded-pdf-reference-source-v2', REFERENCE_DB_STEP, async () =>
 				loadUploadedPdfSource(await connectCoreDb(this.env), input.resourceId, input.source.fileResourceId, input.referenceRevision),
 			);
@@ -259,15 +268,13 @@ export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<Core
 				aligned_mention_count: stored.alignedMentionCount,
 				crossref_enriched_count: enrichedCount,
 			});
-			await progressStep(this.env, step, 'complete', {
-				taskId: event.instanceId,
+			await task.report('complete', {
 				stage: 'references',
 				status: 'complete',
 				resourceId: input.resourceId,
 			});
 		} catch (error) {
-			await progressStep(this.env, step, 'failed', {
-				taskId: event.instanceId,
+			await task.report('failed', {
 				stage: 'references',
 				status: 'failed',
 				resourceId: input.resourceId,
@@ -275,7 +282,7 @@ export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<Core
 			});
 			throw error;
 		} finally {
-			await sealProgressTask(this.env, step, event.instanceId);
+			await task.seal();
 		}
 	}
 }

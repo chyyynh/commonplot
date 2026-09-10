@@ -4,6 +4,7 @@ import type {} from './env';
 import { GrobidContainer } from './ingest/grobid-container';
 import { handleRSSCron } from './ingest/platforms/rss';
 import { handleTwitterCron } from './ingest/platforms/twitter';
+import { readResourceTaskStatus, reportResourceTask, sealResourceTask } from './ingest/progress';
 import { ResourceReferenceEnrichmentWorkflow } from './ingest/resource-references';
 import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import {
@@ -57,13 +58,13 @@ async function retrySearchMessages(env: CoreEnv, messages: Message<unknown>[], i
 	}
 	for (const [taskId, deliveries] of tasks) {
 		if (deliveries.every((message) => message.attempts > SEARCH_SYNC_MAX_RETRIES)) {
-			await env.APP.reportResourceProgress({
+			await reportResourceTask(env, {
 				taskId,
 				stage: 'indexing',
 				status: indexedOutcome ?? 'failed',
 				...(indexedOutcome ? {} : { errorCode: 'index_failed' }),
 			});
-			await env.APP.sealResourceProgressTask(taskId);
+			await sealResourceTask(env, taskId);
 		}
 	}
 	for (const message of messages) message.retry();
@@ -122,18 +123,17 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 						}),
 					),
 				];
-				for (const taskId of taskIds)
-					await this.env.APP.reportResourceProgress({ taskId, stage: 'indexing', status: 'running', resourceId });
+				for (const taskId of taskIds) await reportResourceTask(this.env, { taskId, stage: 'indexing', status: 'running', resourceId });
 				await syncCorpusItem(this.env, resourceId, documentsById.get(resourceId));
 				indexedOutcome = documentsById.has(resourceId) ? 'complete' : 'skipped';
 				for (const taskId of taskIds) {
-					await this.env.APP.reportResourceProgress({
+					await reportResourceTask(this.env, {
 						taskId,
 						stage: 'indexing',
 						status: documentsById.has(resourceId) ? 'complete' : 'skipped',
 						resourceId,
 					});
-					await this.env.APP.sealResourceProgressTask(taskId);
+					await sealResourceTask(this.env, taskId);
 				}
 				for (const message of messages) message.ack();
 			} catch (error) {
@@ -178,6 +178,10 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 			params: { kind: 'reacquire', ...(grant ? { paidPdfFallback: grant } : {}), resourceId: id },
 		});
 		return instance.id;
+	}
+
+	getResourceTaskStatus(input: Parameters<typeof readResourceTaskStatus>[1]) {
+		return readResourceTaskStatus(this.env, input);
 	}
 
 	/** Ranked AI Search candidates; the app Worker authoritatively filters and hydrates them. */

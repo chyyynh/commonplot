@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { registerHooks } from 'node:module';
 
 const workflowMocks = {
@@ -172,43 +173,101 @@ console.info({
 const { ResourceProcessingV2Workflow } = await import('../src/ingest/workflow.ts');
 const workflowResourceId = '30000000-0000-4000-8000-000000000001';
 const workflowRawId = '30000000-0000-4000-8000-000000000002';
+const workflowInstanceId = 'app-ingest-v1-30000000-0000-4000-8000-000000000003';
+const acquisitionRevision = '0123456789abcdef0123456789abcdef';
+const subjectTarget = {
+	kind: 'draft',
+	relation: { kind: 'subject', parentResourceId: workflowResourceId, parentAcquisitionRevision: acquisitionRevision },
+	url: 'https://example.com/subject',
+	sourceHints: { publishedDate: '2026-09-11T00:00:00.000Z' },
+};
+// This existing ID is an execution/idempotency contract: progress policy must
+// not change the serialized target hashed by already-admitted user children.
+const subjectHash = createHash('sha256').update(JSON.stringify(subjectTarget)).digest('hex');
+const sourcePayload = {
+	kind: 'draft',
+	relation: { kind: 'source', sourceId: '30000000-0000-4000-8000-000000000004' },
+	url: 'https://example.com/paper.pdf',
+};
 const workflowCases = [
-	'published-pdf',
-	'private-pdf-resolved',
-	'crops-failed',
-	'analysis-failed',
-	'ready-delivery-failed',
-	'followup-failed',
-	'superseded-raw',
-	'expired-admission',
+	...[
+		'published-pdf',
+		'private-pdf-resolved',
+		'crops-failed',
+		'analysis-failed',
+		'ready-delivery-failed',
+		'followup-failed',
+		'superseded-raw',
+		'expired-admission',
+	].map((name) => ({ name })),
+	{ name: 'automatic-source', payload: sourcePayload, instanceId: 'source-contract-first', appUnavailable: true, subject: true },
+	{ name: 'automatic-source-repeat', payload: sourcePayload, instanceId: 'source-contract-repeat', appUnavailable: true, subject: true },
+	{
+		name: 'automatic-reacquire',
+		payload: { kind: 'reacquire', resourceId: workflowResourceId },
+		instanceId: 'reacquire-contract',
+		appUnavailable: true,
+		subject: true,
+	},
+	{
+		name: 'managed-progress-opt-out',
+		payload: { kind: 'draft', url: 'https://example.com/paper.pdf', progress: false },
+		rejectStart: true,
+	},
+	{ name: 'legacy-subject', payload: subjectTarget, instanceId: `subject-draft-v4-${subjectHash}`, rejectStart: true },
+	{
+		name: 'automatic-subject',
+		payload: { ...subjectTarget, progress: false },
+		instanceId: `subject-draft-auto-v1-${subjectHash}`,
+		appUnavailable: true,
+	},
+	{ name: 'user-subject', subject: true },
 ];
+const subjectIds = new Map();
 const providerFetch = globalThis.fetch;
 globalThis.fetch = async () => {
 	throw new Error('Workflow contract attempted an external provider request');
 };
 try {
-	for (const scenario of workflowCases) {
+	for (const {
+		name: scenario,
+		payload: inputPayload,
+		instanceId = workflowInstanceId,
+		appUnavailable = false,
+		subject = false,
+		rejectStart = false,
+	} of workflowCases) {
 		const effects = [];
 		const reports = [];
 		const warnings = [];
+		const appCalls = [];
+		const registrations = [];
+		const searchMessages = [];
+		const translations = [];
+		const references = [];
+		const children = [];
 		let rejectReady = scenario === 'ready-delivery-failed';
 		const acquired = {
-			kind: 'paper',
+			kind: subject ? 'blog' : 'paper',
 			url: 'https://example.com/paper.pdf',
 			resourcePlatform: null,
-			fileType: 'application/pdf',
+			fileType: subject ? 'text/html' : 'application/pdf',
 			originalLang: 'en',
 			content: 'An original research paper with readable content.',
 			resourceImages: [],
 			resourceIdentifiers: [],
-			subject: null,
+			subject: subject ? { normalizedUrl: subjectTarget.url, publishedDate: subjectTarget.sourceHints.publishedDate } : null,
 		};
 		const acquire = () => {
 			effects.push('acquired');
 			return acquired;
 		};
 		globalThis.resourceWorkflowContract = {
-			connectCoreDb: async () => ({}),
+			connectCoreDb: async () => ({
+				execute: async () => ({
+					rows: [{ original_lang: 'en', published_date: null, resource_identifiers: [], summary: null, url: acquired.url }],
+				}),
+			}),
 			stageStoredResourceAcquisition: acquire,
 			stageUrlAcquisition: acquire,
 			analyzeResource: async () => {
@@ -218,25 +277,31 @@ try {
 			stageResourceImages: async () => [],
 			prepareResolvedResource: (value) => value,
 			persistResolvedResource: async (_db, _resource, target) => {
-				const privateRendition = target.kind === 'existing';
+				const privateRendition = target.kind === 'existing' && target.ownedBlobId === workflowRawId;
 				effects.push(privateRendition ? 'private-persisted' : 'corpus-persisted');
 				return {
 					resourceId: privateRendition ? workflowRawId : workflowResourceId,
 					scope: privateRendition ? 'private' : 'corpus',
 					translationRevision: 'fixture-revision',
-					acquisitionRevision: 'fixture-acquisition',
+					acquisitionRevision,
 				};
 			},
 			publishPublicPdfCrops: async () => {
 				if (scenario === 'crops-failed') throw new Error('Crop publication unavailable');
 				effects.push('public-crops');
 			},
-			enqueueResourceReferenceEnrichment: async () => effects.push('references-enqueued'),
-			enqueueResourceTranslation: async () => effects.push('translation-enqueued'),
+			enqueueResourceReferenceEnrichment: async (...args) => {
+				references.push(args.at(-1));
+				effects.push('references-enqueued');
+			},
+			enqueueResourceTranslation: async (...args) => {
+				translations.push(args.at(-1));
+				effects.push('translation-enqueued');
+			},
 		};
 		const app = {
 			verifyStoredBlobProcessing: async () => scenario !== 'superseded-raw',
-			startResourceProgressTask: async () => scenario !== 'expired-admission',
+			startResourceProgressTask: async () => scenario !== 'expired-admission' && !rejectStart,
 			reportResourceProgress: async (report) => {
 				reports.push(report);
 				if (report.status === 'complete') {
@@ -248,36 +313,86 @@ try {
 				}
 			},
 			completeResourceSave: async () => effects.push('profile-attached'),
-			registerResourceProgressTask: async () => true,
+			registerResourceProgressTask: async (input) => {
+				registrations.push(input);
+				return true;
+			},
 			sealResourceProgressTask: async (_taskId, errorCode) => warnings.push(errorCode),
 		};
 		const workflow = new ResourceProcessingV2Workflow(
 			{},
 			{
-				APP: app,
+				APP: new Proxy(app, {
+					get(target, method) {
+						return async (...args) => {
+							appCalls.push(method);
+							if (appUnavailable) throw new Error('App unavailable');
+							return target[method](...args);
+						};
+					},
+				}),
+				RESOURCE_PROCESSING_V2_WORKFLOW: {
+					createBatch: async (instances) => {
+						children.push(...instances);
+						return instances.map(({ id }) => ({ id }));
+					},
+				},
 				RESOURCE_SEARCH_SYNC_QUEUE: {
-					send: async () => {
+					send: async (message) => {
 						if (scenario === 'followup-failed') throw new Error('Search queue unavailable');
+						searchMessages.push(message);
 						effects.push('search-enqueued');
 					},
 				},
 			},
 		);
 		const owned = scenario === 'private-pdf-resolved' || scenario === 'superseded-raw';
-		const payload = owned
-			? { kind: 'storedBlob', resourceId: workflowRawId }
-			: { kind: 'draft', url: 'https://example.com/paper.pdf', saveTarget: { kind: 'profileSave', userId: 'fixture-user' } };
+		const payload =
+			inputPayload ??
+			(owned
+				? { kind: 'storedBlob', resourceId: workflowRawId }
+				: { kind: 'draft', url: 'https://example.com/paper.pdf', saveTarget: { kind: 'profileSave', userId: 'fixture-user' } });
 		const step = { do: async (_name, ...args) => args.at(-1)({ attempt: 1 }) };
-		const result = workflow.run({ instanceId: 'app-ingest-v1-30000000-0000-4000-8000-000000000003', payload }, step);
+		const result = workflow.run({ instanceId, payload }, step);
 		if (scenario.endsWith('-failed')) await assert.rejects(result, undefined, scenario);
 		else await result;
-		if (scenario === 'superseded-raw' || scenario === 'expired-admission') {
+		if (scenario === 'superseded-raw' || scenario === 'expired-admission' || rejectStart) {
 			assert.deepEqual(effects, [], `${scenario}: rejected attempts must not run providers or persist`);
 			assert.equal(
 				reports.some((report) => report.status === 'complete'),
 				false,
 				scenario,
 			);
+			if (rejectStart) {
+				assert.deepEqual(appCalls, ['startResourceProgressTask'], `${scenario}: the durable admission gate remains mandatory`);
+			}
+			continue;
+		}
+		if (subject) {
+			const childId = `${appUnavailable ? 'subject-draft-auto-v1' : 'subject-draft-v4'}-${subjectHash}`;
+			assert.deepEqual(children, [{ id: childId, params: { ...subjectTarget, progress: !appUnavailable } }], scenario);
+			subjectIds.set(scenario, childId);
+			if (!appUnavailable) {
+				assert.ok(effects.includes('profile-attached'), `${scenario}: user save still completes`);
+				assert.deepEqual(
+					registrations.find(({ taskId }) => taskId === childId),
+					{ taskId: childId, kind: 'processing', parentTaskId: instanceId },
+					`${scenario}: child progress belongs to the initiating import`,
+				);
+			}
+		}
+		if (appUnavailable) {
+			assert.deepEqual(appCalls, [], `${scenario}: automatic work must not depend on any app method`);
+			assert.ok(effects.includes('acquired') && effects.includes('corpus-persisted'), `${scenario}: acquisition and persistence finish`);
+			assert.deepEqual(searchMessages, [{ resourceId: workflowResourceId }], `${scenario}: search delivery has no user task ledger`);
+			assert.equal(translations.length, 1, `${scenario}: translation still enqueues`);
+			assert.equal(translations[0].taskId, instanceId, scenario);
+			assert.equal(translations[0].required, false, `${scenario}: follow-up inherits automatic execution policy`);
+			continue;
+		}
+		if (subject) {
+			assert.equal(reports.at(-1).status, 'complete', scenario);
+			assert.equal(translations[0].required, true, `${scenario}: follow-up inherits the managed task policy`);
 			continue;
 		}
 		if (scenario === 'analysis-failed' || scenario === 'crops-failed') {
@@ -307,6 +422,10 @@ try {
 			assert.ok(effects.includes('private-persisted'));
 			assert.ok(effects.indexOf('private-persisted') < effects.indexOf('corpus-persisted'));
 			assert.ok(effects.indexOf('profile-attached') < effects.indexOf('references-enqueued'));
+			assert.equal(references[0].taskId, instanceId);
+			assert.equal(references[0].required, true);
+			assert.equal(translations.length, 2, 'Both private and canonical translations are admitted');
+			assert.ok(translations.every((parent) => parent.taskId === instanceId && parent.required === true));
 		}
 		if (scenario === 'followup-failed')
 			assert.ok(effects.includes('translation-enqueued'), 'Independent handoffs still run after a failure');
@@ -314,6 +433,13 @@ try {
 			assert.ok(warnings.includes('followup_dispatch_failed'), scenario);
 		}
 	}
+	assert.equal(subjectIds.get('automatic-source'), subjectIds.get('automatic-source-repeat'), 'Automatic parent reruns reuse one child ID');
+	assert.equal(subjectIds.get('automatic-source'), subjectIds.get('automatic-reacquire'), 'The same automatic subject target keeps its ID');
+	assert.notEqual(
+		subjectIds.get('automatic-source'),
+		subjectIds.get('user-subject'),
+		'User and automatic subjects have separate executions',
+	);
 } finally {
 	globalThis.fetch = providerFetch;
 	delete globalThis.resourceWorkflowContract;

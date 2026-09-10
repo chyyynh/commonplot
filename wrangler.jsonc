@@ -109,7 +109,7 @@
 			"binding": "RESOURCE_TRANSLATION_V2_WORKFLOW",
 			"name": "newsence-resource-translation-v2",
 			"class_name": "ResourceTranslationV2Workflow",
-			"default_retention": { "success_retention": "1 day", "error_retention": "7 days" },
+			"default_retention": { "success_retention": "7 days", "error_retention": "7 days" },
 		},
 		{
 			"binding": "RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW",

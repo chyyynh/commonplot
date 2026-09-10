@@ -1,4 +1,14 @@
-import { enqueueSearchProgress, progressStep, sealProgressTask, startProgressTask } from './progress';
+import {
+	createResourceTask,
+	enqueueSearchProgress,
+	registerResourceTask,
+	reportResourceTask,
+	sealResourceTask,
+	ResourceTaskOutcomeSchema,
+	type ResourceTask,
+	type ResourceTaskContext,
+	type ResourceTaskOutcome,
+} from './progress';
 // Durable translation execution; resource processing only enqueues this Workflow.
 import { generateText, Output } from 'ai';
 import { type WorkflowDynamicDelayContext, WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
@@ -20,7 +30,7 @@ import { translateMarkdownBatchToZhHant } from './markdown-translation-model';
 import { PDF_MIME } from './platforms/pdf-constants';
 import { type ResourceTranslationCandidate, shouldEnqueueResourceTranslation } from './translation-policy';
 
-type ResourceTranslationPayload = { force?: boolean; resourceId: string; translationRevision: string };
+type ResourceTranslationPayload = { progress?: boolean; force?: boolean; resourceId: string; translationRevision: string };
 const ResourceTranslationSourceSchema = z.enum(['original', 'machine', 'human']);
 
 type ResourceTranslationInput = ResourceTranslationCandidate & {
@@ -167,7 +177,7 @@ Title: ${resource.title}${summary ? `\nSummary: ${summary}` : ''}`,
 	return output;
 }
 
-async function translatePlannedContent(content: string, env: CoreEnv, resourceId: string, step: WorkflowStep, taskId: string) {
+async function translatePlannedContent(content: string, env: CoreEnv, resourceId: string, step: WorkflowStep, task: ResourceTask) {
 	const markdownPlan = planMarkdownTranslation(content);
 	console.info({
 		tag: 'RESOURCE_TRANSLATION',
@@ -187,8 +197,7 @@ async function translatePlannedContent(content: string, env: CoreEnv, resourceId
 		});
 		return null;
 	}
-	await progressStep(env, step, 'batches-start', {
-		taskId,
+	await task.report('batches-start', {
 		stage: 'translating',
 		status: 'running',
 		completed: 0,
@@ -203,8 +212,7 @@ async function translatePlannedContent(content: string, env: CoreEnv, resourceId
 			(context) => translateMarkdownBatchToZhHant(batch, env, resourceId, context.attempt),
 		);
 		translatedSegments.push(...translatedBatch);
-		await progressStep(env, step, `batch-${batch.id}`, {
-			taskId,
+		await task.report(`batch-${batch.id}`, {
 			stage: 'translating',
 			status: 'running',
 			completed: batchIndex + 1,
@@ -348,15 +356,15 @@ async function persistMachineZhHantTranslation(
 async function currentTranslationAttempt(env: CoreEnv, resourceId: string, translationRevision: string) {
 	let id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
 	for (let attempt = 0; attempt < 16; attempt++) {
-		let status: string;
+		let snapshot: Awaited<ReturnType<WorkflowInstance['status']>>;
 		try {
-			status = (await (await env.RESOURCE_TRANSLATION_V2_WORKFLOW.get(id)).status()).status;
+			snapshot = await (await env.RESOURCE_TRANSLATION_V2_WORKFLOW.get(id)).status();
 		} catch {
 			// An unavailable control plane cannot justify another physical task.
 			// createBatch recovers this exact ID, including a lost response.
-			return id;
+			return { id };
 		}
-		if (status !== 'errored' && status !== 'terminated') return id;
+		if (snapshot.status !== 'errored' && snapshot.status !== 'terminated') return { id, snapshot };
 		if (attempt === 15) throw new Error('Translation retry limit reached');
 		id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-retry-${resourceId}-${(await sha256Hex(id)).slice(0, 16)}`;
 	}
@@ -370,38 +378,52 @@ export async function enqueueResourceTranslation(
 	resourceId: string,
 	translationRevision: string,
 	forceRunKey?: string,
-	parentTaskId?: string,
+	parent?: ResourceTaskContext,
 ): Promise<string> {
 	ResourceTranslationRevisionSchema.parse(translationRevision);
 	const validatedForceRunKey = forceRunKey === undefined ? null : ForcedTranslationRunKeySchema.parse(forceRunKey);
 	let id = validatedForceRunKey
 		? `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-force-${resourceId}-${validatedForceRunKey}`
 		: `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
-	if (!validatedForceRunKey && parentTaskId) id = await currentTranslationAttempt(env, resourceId, translationRevision);
+	let completedOutcome: ResourceTaskOutcome | undefined;
+	if (!validatedForceRunKey && parent) {
+		const attempt = await currentTranslationAttempt(env, resourceId, translationRevision);
+		id = attempt.id;
+		if (attempt.snapshot?.status === 'complete') {
+			const outcome = ResourceTaskOutcomeSchema.safeParse(attempt.snapshot.output);
+			// Older completed Workflows returned void. There is no new work to queue,
+			// and native completion alone does not prove a translated domain result.
+			if (!outcome.success) return id;
+			completedOutcome = outcome.data;
+		}
+	}
 
-	if (parentTaskId)
-		await env.APP.registerResourceProgressTask({
-			taskId: id,
-			kind: 'translation',
-			resourceId,
-			revision: translationRevision,
-			parentTaskId,
-		});
+	await registerResourceTask(env, { taskId: id, kind: 'translation', resourceId, revision: translationRevision, reconcile: true }, parent);
+	if (completedOutcome) {
+		// Project the captured result before retention can expire; active shared
+		// executions are recovered by the subscriber's sparse reconciliation.
+		if (parent?.required) {
+			await reportResourceTask(env, { taskId: id, ...completedOutcome });
+			await sealResourceTask(env, id, completedOutcome.errorCode);
+		}
+		return id;
+	}
 	await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([
 		{
 			id,
-			params: { ...(validatedForceRunKey ? { force: true } : {}), resourceId, translationRevision },
+			params: { progress: parent?.required ?? false, ...(validatedForceRunKey ? { force: true } : {}), resourceId, translationRevision },
 		},
 	]);
 	return id;
 }
 
 export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceTranslationPayload> {
-	async run(event: WorkflowEvent<ResourceTranslationPayload>, step: WorkflowStep) {
+	async run(event: WorkflowEvent<ResourceTranslationPayload>, step: WorkflowStep): Promise<ResourceTaskOutcome> {
 		const { force = false, resourceId, translationRevision } = event.payload;
+		const task = createResourceTask(this.env, step, event.instanceId, event.payload.progress === false ? 'optional' : 'required');
 		let translationPublished = false;
 		try {
-			if (!(await startProgressTask(this.env, step, event.instanceId, 'translating'))) return;
+			if (!(await task.start('translating'))) return { status: 'superseded', resourceId };
 			const inputStream = await step.do<ReadableStream<Uint8Array> | null>(
 				'load-resource-translation-input-stream-v4',
 				{
@@ -416,25 +438,24 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			const input = inputStream ? await new Response(inputStream).json<Awaited<ReturnType<typeof loadResourceTranslationInput>>>() : null;
 			if (!input) {
 				console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Resource original is unavailable; skipping', resource_id: resourceId });
-				await progressStep(this.env, step, 'missing', { taskId: event.instanceId, stage: 'translating', status: 'skipped', resourceId });
-				return;
+				await task.report('missing', { stage: 'translating', status: 'skipped', resourceId });
+				return { status: 'skipped', resourceId };
 			}
 			if (input.translationRevision !== translationRevision) {
 				console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Translation revision was superseded; skipping', resource_id: resourceId });
-				await progressStep(this.env, step, 'superseded', {
-					taskId: event.instanceId,
+				await task.report('superseded', {
 					stage: 'translating',
 					status: 'superseded',
 					resourceId,
 				});
-				return;
+				return { status: 'superseded', resourceId };
 			}
 
 			const resource = input.resource;
 			const translationPlan = planZhHantTranslation(resource, force);
 			if (!translationPlan.metadata && !translationPlan.content) {
-				await progressStep(this.env, step, 'unneeded', { taskId: event.instanceId, stage: 'translating', status: 'skipped', resourceId });
-				return;
+				await task.report('unneeded', { stage: 'translating', status: 'skipped', resourceId });
+				return { status: 'skipped', resourceId };
 			}
 
 			const patch: MachineZhHantTranslationPatch = {};
@@ -452,7 +473,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 
 			if (translationPlan.content) {
 				try {
-					const translated = await translatePlannedContent(resource.content.trim(), this.env, resourceId, step, event.instanceId);
+					const translated = await translatePlannedContent(resource.content.trim(), this.env, resourceId, step, task);
 					if (translated) Object.assign(patch, translated);
 				} catch (error) {
 					console.error({
@@ -467,8 +488,8 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				}
 			}
 			if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) {
-				await progressStep(this.env, step, 'empty', { taskId: event.instanceId, stage: 'translating', status: 'skipped', resourceId });
-				return;
+				await task.report('empty', { stage: 'translating', status: 'skipped', resourceId });
+				return { status: 'skipped', resourceId };
 			}
 
 			const persisted = await step.do(
@@ -480,8 +501,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				async () => persistMachineZhHantTranslation(await connectCoreDb(this.env), resourceId, translationRevision, patch),
 			);
 			if (!persisted) {
-				await progressStep(this.env, step, 'persist-superseded', {
-					taskId: event.instanceId,
+				await task.report('persist-superseded', {
 					stage: 'translating',
 					status: 'superseded',
 					resourceId,
@@ -494,7 +514,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 						resource_id: resourceId,
 					});
 				}
-				return;
+				return { status: 'superseded', resourceId };
 			}
 			if (patch.content !== undefined) {
 				console.info({
@@ -506,26 +526,32 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				});
 			}
 			translationPublished = true;
-			await progressStep(this.env, step, 'complete', { taskId: event.instanceId, stage: 'translating', status: 'complete', resourceId });
+			await task.report('complete', { stage: 'translating', status: 'complete', resourceId });
 			if (resource.scope === 'corpus') {
 				await step.do(
 					'enqueue-translated-ai-search-sync-v1',
 					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() => enqueueSearchProgress(this.env, resourceId, event.instanceId, `${translationRevision}-zh-hant`),
+					() => enqueueSearchProgress(this.env, resourceId, task, `${translationRevision}-zh-hant`),
 				);
 			}
 			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Completed', resource_id: resourceId, scope: resource.scope });
+			return { status: 'complete', resourceId };
 		} catch (error) {
-			await progressStep(this.env, step, 'outcome-after-error', {
-				taskId: event.instanceId,
+			await task.report('outcome-after-error', {
 				status: translationPublished ? 'complete' : 'failed',
 				resourceId,
 				...(translationPublished ? {} : { errorCode: 'translation_failed' }),
 			});
-			if (translationPublished) await sealProgressTask(this.env, step, event.instanceId, 'followup_dispatch_failed');
+			if (translationPublished) {
+				await task.seal('followup_dispatch_failed');
+				if (!task.required) {
+					console.error({ tag: 'RESOURCE_TRANSLATION', event: 'followup_dispatch_failed', resource_id: resourceId, error });
+					return { status: 'complete', resourceId, errorCode: 'followup_dispatch_failed' };
+				}
+			}
 			throw error;
 		} finally {
-			await sealProgressTask(this.env, step, event.instanceId);
+			await task.seal();
 		}
 	}
 }
