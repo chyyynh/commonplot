@@ -4,7 +4,6 @@ import type {} from './env';
 import { GrobidContainer } from './ingest/grobid-container';
 import { handleRSSCron } from './ingest/platforms/rss';
 import { handleTwitterCron } from './ingest/platforms/twitter';
-import { readResourceTaskStatus, reportResourceTask, sealResourceTask } from './ingest/progress';
 import { ResourceReferenceEnrichmentWorkflow } from './ingest/resource-references';
 import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import {
@@ -48,28 +47,6 @@ const ResourceSearchSyncMessageSchema = z.strictObject({
 	taskId: z.string().min(1).max(150).optional(),
 });
 
-// Kept aligned with resource-search-sync.max_retries in wrangler.jsonc.
-const SEARCH_SYNC_MAX_RETRIES = 3;
-async function retrySearchMessages(env: CoreEnv, messages: Message<unknown>[], indexedOutcome?: 'complete' | 'skipped') {
-	const tasks = new Map<string, Message<unknown>[]>();
-	for (const message of messages) {
-		const body = ResourceSearchSyncMessageSchema.parse(message.body);
-		if (body.taskId) tasks.set(body.taskId, [...(tasks.get(body.taskId) ?? []), message]);
-	}
-	for (const [taskId, deliveries] of tasks) {
-		if (deliveries.every((message) => message.attempts > SEARCH_SYNC_MAX_RETRIES)) {
-			await reportResourceTask(env, {
-				taskId,
-				stage: 'indexing',
-				status: indexedOutcome ?? 'failed',
-				...(indexedOutcome ? {} : { errorCode: 'index_failed' }),
-			});
-			await sealResourceTask(env, taskId);
-		}
-	}
-	for (const message of messages) message.retry();
-}
-
 export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	override fetch(_request: Request): Response {
 		return new Response('Not found', { status: 404 });
@@ -88,7 +65,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	override async queue(batch: MessageBatch<unknown>): Promise<void> {
-		const pending = new Map<string, Message<unknown>[]>();
+		const pending = new Map<string, { messages: Message<unknown>[]; taskIds: Set<string> }>();
 		for (const message of batch.messages) {
 			const input = ResourceSearchSyncMessageSchema.safeParse(message.body);
 			if (!input.success) {
@@ -96,9 +73,10 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 				message.ack();
 				continue;
 			}
-			const messages = pending.get(input.data.resourceId) ?? [];
-			messages.push(message);
-			pending.set(input.data.resourceId, messages);
+			const group = pending.get(input.data.resourceId) ?? { messages: [], taskIds: new Set<string>() };
+			group.messages.push(message);
+			if (input.data.taskId) group.taskIds.add(input.data.taskId);
+			pending.set(input.data.resourceId, group);
 		}
 		if (!pending.size) return;
 		let documents: Awaited<ReturnType<typeof loadCorpusDocuments>>;
@@ -106,34 +84,22 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 			documents = await loadCorpusDocuments(await connectCoreDb(this.env), [...pending.keys()]);
 		} catch (error) {
 			console.error({ tag: 'AI_SEARCH', msg: 'Resource sync batch could not be loaded', error });
-			for (const messages of pending.values()) {
-				await retrySearchMessages(this.env, messages);
+			for (const { messages } of pending.values()) {
+				for (const message of messages) message.retry();
 			}
 			return;
 		}
 		const documentsById = new Map(documents.map((document) => [document.id, document]));
-		for (const [resourceId, messages] of pending) {
-			let indexedOutcome: 'complete' | 'skipped' | undefined;
+		for (const [resourceId, { messages, taskIds }] of pending) {
 			try {
-				const taskIds = [
-					...new Set(
-						messages.flatMap((message) => {
-							const body = ResourceSearchSyncMessageSchema.parse(message.body);
-							return body.taskId ? [body.taskId] : [];
-						}),
-					),
-				];
-				for (const taskId of taskIds) await reportResourceTask(this.env, { taskId, stage: 'indexing', status: 'running', resourceId });
 				await syncCorpusItem(this.env, resourceId, documentsById.get(resourceId));
-				indexedOutcome = documentsById.has(resourceId) ? 'complete' : 'skipped';
 				for (const taskId of taskIds) {
-					await reportResourceTask(this.env, {
+					await this.env.APP.reportResourceProgress({
 						taskId,
 						stage: 'indexing',
 						status: documentsById.has(resourceId) ? 'complete' : 'skipped',
 						resourceId,
 					});
-					await sealResourceTask(this.env, taskId);
 				}
 				for (const message of messages) message.ack();
 			} catch (error) {
@@ -144,7 +110,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 					attempt: Math.max(...messages.map((message) => message.attempts)),
 					error,
 				});
-				await retrySearchMessages(this.env, messages, indexedOutcome);
+				for (const message of messages) message.retry();
 			}
 		}
 	}
@@ -178,10 +144,6 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 			params: { kind: 'reacquire', ...(grant ? { paidPdfFallback: grant } : {}), resourceId: id },
 		});
 		return instance.id;
-	}
-
-	getResourceTaskStatus(input: Parameters<typeof readResourceTaskStatus>[1]) {
-		return readResourceTaskStatus(this.env, input);
 	}
 
 	/** Ranked AI Search candidates; the app Worker authoritatively filters and hydrates them. */

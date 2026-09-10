@@ -215,7 +215,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const target = ResourceProcessingTargetSchema.parse(event.payload);
 		const required =
 			target.kind === 'storedBlob' || (target.kind === 'draft' && target.relation?.kind !== 'source' && target.progress !== false);
-		const task = createResourceTask(this.env, step, event.instanceId, required ? 'required' : 'none');
+		const task = createResourceTask(this.env, step, event.instanceId, required);
 		let publishedResourceId: string | undefined;
 		try {
 			if (target.kind === 'storedBlob') {
@@ -317,7 +317,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const subject = resource.subject;
 			// Only uploaded PDF references require the app's completed profile attachment.
 			// Let every independent handoff finish its retries before reporting failures.
-			const followups = await Promise.allSettled([
+			const [references, index, ...followups] = await Promise.allSettled([
 				uploadedPaper
 					? step.do(
 							'enqueue-resource-reference-enrichment-v4',
@@ -378,6 +378,10 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						)
 					: undefined,
 			]);
+			for (const outcome of [references, index]) {
+				if (outcome.status === 'rejected')
+					console.error({ tag: 'WORKFLOW', msg: 'Background handoff failed', resource_id: persistedResourceId, error: outcome.reason });
+			}
 			const failures = followups.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
 			await task.seal(failures.length ? 'followup_dispatch_failed' : undefined);
 			if (failures.length) throw new AggregateError(failures, 'Resource persisted, but one or more follow-ups failed');

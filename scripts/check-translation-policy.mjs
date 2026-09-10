@@ -57,8 +57,6 @@ registerHooks({
 const { enqueueResourceTranslation, ResourceTranslationV2Workflow } = await import('../src/ingest/translation-workflow.ts');
 const queued = [];
 const registered = [];
-const reports = [];
-const sealed = [];
 const parent = (taskId, required = true) => ({ taskId, required });
 const statuses = new Map();
 let unavailable = false;
@@ -66,14 +64,6 @@ const env = {
 	APP: {
 		registerResourceProgressTask: async (input) => {
 			registered.push(input);
-			return true;
-		},
-		reportResourceProgress: async (input) => {
-			reports.push(input);
-			return true;
-		},
-		sealResourceProgressTask: async (id) => {
-			sealed.push(id);
 			return true;
 		},
 	},
@@ -125,66 +115,29 @@ assert.equal(
 );
 console.info({ event: 'translation_retry_contract_passed', cases: 6 });
 
-const { readResourceTaskStatus, reportResourceTask } = await import('../src/ingest/progress.ts');
 const automaticRevision = 'b'.repeat(32);
-const registrationsBeforeAutomatic = registered.length;
 const automatic = await enqueueResourceTranslation(env, resourceId, automaticRevision, undefined, parent('source-draft', false));
-assert.equal(registered.length, registrationsBeforeAutomatic, 'automatic producers do not depend on Web task registration');
-assert.equal(queued.at(-1).params.progress, false);
+assert.deepEqual(registered.at(-1), { taskId: automatic, kind: 'translation', resourceId });
+assert.equal('progress' in queued.at(-1).params, false);
 assert.equal(await enqueueResourceTranslation(env, resourceId, automaticRevision, undefined, parent('late-user')), automatic);
-assert.equal(registered.at(-1).reconcile, true, 'a user adopting automatic translation can recover lost optional delivery');
-assert.equal(
-	queued.find(({ id }) => id === automatic).params.progress,
-	false,
-	'late subscription preserves the original automatic execution payload',
+assert.equal(registered.at(-1).parentTaskId, 'late-user', 'a later user attaches to the original shared ledger');
+statuses.set(automatic, 'complete');
+const creationCount = queued.length;
+assert.equal(await enqueueResourceTranslation(env, resourceId, automaticRevision, undefined, parent('late-complete')), automatic);
+assert.equal(queued.length, creationCount, 'completed work does not rerun a provider');
+assert.equal(registered.at(-1).parentTaskId, 'late-user', 'completed work creates no new subscription or queued ledger');
+await assert.rejects(
+	enqueueResourceTranslation(
+		{ ...env, APP: { registerResourceProgressTask: async () => false } },
+		resourceId,
+		'c'.repeat(32),
+		undefined,
+		parent('missing-parent'),
+	),
+	/registration was rejected/,
 );
-for (const status of ['complete', 'skipped', 'superseded']) {
-	statuses.set(automatic, { status: 'complete', output: { status, resourceId } });
-	const creationCount = queued.length;
-	assert.equal(await enqueueResourceTranslation(env, resourceId, automaticRevision, undefined, parent(`late-${status}`)), automatic);
-	assert.equal(queued.length, creationCount, 'a retained terminal snapshot does not rerun a provider');
-	assert.equal(reports.at(-1).status, status, 'captured native domain outcome is delivered before native retention can expire');
-	assert.equal(sealed.at(-1), automatic);
-	assert.deepEqual(await readResourceTaskStatus(env, { taskId: automatic, kind: 'translation' }), { status, resourceId });
-}
-statuses.set(automatic, { status: 'complete' });
-const registrationsBeforeLegacy = registered.length;
-await enqueueResourceTranslation(env, resourceId, automaticRevision, undefined, parent('late-legacy'));
-assert.equal(registered.length, registrationsBeforeLegacy, 'already completed legacy execution has no new queued work');
-assert.deepEqual(await readResourceTaskStatus(env, { taskId: automatic, kind: 'translation' }), {
-	status: 'complete',
-	errorCode: 'native_outcome_unavailable',
-});
-for (const [status, expected] of [
-	['queued', { status: 'queued' }],
-	['paused', { status: 'running' }],
-	['unknown', null],
-	['errored', { status: 'failed', errorCode: 'native_workflow_failed' }],
-	['terminated', { status: 'failed', errorCode: 'native_workflow_terminated' }],
-]) {
-	statuses.set(automatic, status);
-	assert.deepEqual(await readResourceTaskStatus(env, { taskId: automatic, kind: 'translation' }), expected);
-}
-unavailable = true;
-await assert.rejects(readResourceTaskStatus(env, { taskId: automatic, kind: 'translation' }), /unavailable/);
-unavailable = false;
-const boundedDelivery = reportResourceTask(
-	{ APP: { reportResourceProgress: () => new Promise(() => {}) } },
-	{ taskId: automatic, status: 'running' },
-	false,
-);
-let deadline;
-try {
-	await Promise.race([
-		boundedDelivery,
-		new Promise((_resolve, reject) => {
-			deadline = setTimeout(() => reject(new Error('Optional delivery did not finish within its bound')), 2500);
-		}),
-	]);
-} finally {
-	clearTimeout(deadline);
-}
-console.info({ event: 'shared_translation_recovery_contract_passed' });
+assert.equal(queued.length, creationCount, 'failed registration cannot admit paid work');
+console.info({ event: 'shared_translation_ledger_contract_passed' });
 
 // Execute the actual translation Workflow with provider/DB boundaries controlled.
 const { createMarkdownTranslationTemplate } = await import('../src/ingest/markdown-translation.ts');
@@ -193,7 +146,7 @@ globalThis.fetch = async () => {
 	throw new Error('Translation contract attempted an external provider request');
 };
 try {
-	for (const scenario of ['optional-app-unavailable', 'optional-index-unavailable', 'legacy-required-app-unavailable']) {
+	for (const scenario of ['app-unavailable', 'index-unavailable', 'complete']) {
 		const effects = [];
 		const appCalls = [];
 		let reads = 0;
@@ -244,9 +197,10 @@ try {
 		const app = Object.fromEntries(
 			['startResourceProgressTask', 'reportResourceProgress', 'registerResourceProgressTask', 'sealResourceProgressTask'].map((name) => [
 				name,
-				async () => {
-					appCalls.push(name);
-					throw new Error('APP unavailable');
+				async (input) => {
+					appCalls.push({ name, input });
+					if (scenario === 'app-unavailable') throw new Error('APP unavailable');
+					return true;
 				},
 			]),
 		);
@@ -256,8 +210,9 @@ try {
 				APP: app,
 				RESOURCE_SEARCH_SYNC_QUEUE: {
 					send: async (body) => {
-						assert.deepEqual(body, { resourceId }, 'automatic indexing carries no untracked task ID');
-						if (scenario === 'optional-index-unavailable') throw new Error('Queue unavailable');
+						assert.equal(body.resourceId, resourceId);
+						assert.ok(body.taskId, 'translation indexing registers a child task');
+						if (scenario === 'index-unavailable') throw new Error('Queue unavailable');
 						effects.push('indexed');
 					},
 				},
@@ -266,23 +221,22 @@ try {
 		const result = workflow.run(
 			{
 				instanceId: 'shared-translation-contract',
-				payload: { resourceId, translationRevision: revision, ...(scenario.startsWith('optional') ? { progress: false } : {}) },
+				payload: { resourceId, translationRevision: revision },
 			},
 			{ do: async (_name, ...args) => args.at(-1)({ attempt: 1 }) },
 		);
-		if (scenario.startsWith('optional')) {
-			assert.deepEqual(await result, {
-				status: 'complete',
-				resourceId,
-				...(scenario === 'optional-index-unavailable' ? { errorCode: 'followup_dispatch_failed' } : {}),
-			});
-			assert.ok(effects.includes('provider') && effects.includes('persisted'));
-			assert.equal(appCalls.includes('startResourceProgressTask'), false, 'optional translation does not acquire a required user gate');
-			assert.equal(appCalls.includes('registerResourceProgressTask'), false, 'optional descendants do not create stranded task ledgers');
-			assert.ok(appCalls.includes('reportResourceProgress') && appCalls.includes('sealResourceProgressTask'));
-		} else {
+		if (scenario === 'app-unavailable') {
 			await assert.rejects(result, /APP unavailable/);
-			assert.deepEqual(effects, [], 'legacy child payloads remain gated before paid provider execution');
+			assert.deepEqual(effects, [], 'progress admission gates paid provider execution');
+		} else {
+			assert.deepEqual(await result, { status: 'complete', resourceId });
+			assert.ok(effects.includes('provider') && effects.includes('persisted'));
+			const outcomes = appCalls.filter(({ name }) => name === 'reportResourceProgress').map(({ input }) => input);
+			assert.ok(outcomes.some(({ status }) => status === 'complete'));
+			assert.ok(
+				outcomes.every(({ errorCode }) => errorCode === undefined),
+				'index handoff failure does not fail published content',
+			);
 		}
 	}
 } finally {
@@ -320,7 +274,8 @@ export class UnavailableApp extends WorkerEntrypoint {
 export class TaskFixture extends WorkflowEntrypoint {
  async run(event,step){
   const taskEnv={...this.env,RESOURCE_SEARCH_SYNC_QUEUE:{send:async body=>{if(body.taskId)throw new Error('Untracked child task');}}};
-  const task=createResourceTask(taskEnv,step,event.instanceId,event.payload.delivery);
+  const immediateStep={do:(name,config,callback)=>step.do(name,{...config,retries:{limit:0,delay:'1 second'}},callback)};
+  const task=createResourceTask(taskEnv,immediateStep,event.instanceId,event.payload.tracked);
   await task.start('acquiring');
   const persisted=await step.do('provider-and-persist',async()=>({resourceId:${JSON.stringify(resourceId)}}));
   await task.report('complete',{status:'complete',resourceId:persisted.resourceId});
@@ -332,7 +287,7 @@ export class TaskFixture extends WorkflowEntrypoint {
 }
 export default {async fetch(request,env){
  const path=new URL(request.url).pathname.slice(1);
- if(request.method==='POST'){await env.TASK.create({id:path,params:{delivery:path}});return Response.json({id:path});}
+ if(request.method==='POST'){await env.TASK.create({id:path,params:{tracked:path==='tracked'}});return Response.json({id:path});}
  return Response.json(await (await env.TASK.get(path)).status());
 }};
 `,
@@ -355,7 +310,7 @@ export default {async fetch(request,env){
 		logLevel: 'error',
 		experimental: { disableDevRegistry: true, disableExperimentalWarning: true, watch: false, enableContainers: false },
 	});
-	for (const delivery of ['none', 'optional']) {
+	for (const delivery of ['untracked', 'tracked']) {
 		const response = await runtime.fetch(`/${delivery}`, { method: 'POST' });
 		assert.equal(response.status, 200, await response.clone().text());
 		const deadline = Date.now() + 25_000;
@@ -365,8 +320,8 @@ export default {async fetch(request,env){
 			if (['complete', 'errored'].includes(snapshot.status)) break;
 			await new Promise((resolve) => setTimeout(resolve, 100));
 		} while (Date.now() < deadline);
-		assert.equal(snapshot.status, 'complete', JSON.stringify(snapshot));
-		assert.deepEqual(snapshot.output, { status: 'complete', resourceId });
+		assert.equal(snapshot.status, delivery === 'tracked' ? 'errored' : 'complete', JSON.stringify(snapshot));
+		if (delivery === 'untracked') assert.deepEqual(snapshot.output, { status: 'complete', resourceId });
 	}
 	console.info({ event: 'resource_task_native_workflow_outage_passed', cases: 2 });
 } finally {

@@ -16,7 +16,7 @@ const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'e
 const REFERENCE_SDT_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '90 seconds' } as const;
 const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v3';
 const ResourceReferenceEnrichmentPayloadSchema = z.strictObject({
-	progress: z.boolean().optional(),
+	progress: z.boolean(),
 	referenceRevision: z.hash('md5').lowercase(),
 	resourceId: z.uuid(),
 	source: z.strictObject({ fileResourceId: z.uuid(), kind: z.literal('uploadedPdf') }),
@@ -223,7 +223,7 @@ export async function enqueueResourceReferenceEnrichment(
 	const id = `rr-v6-${await sha256Hex(
 		[RESOURCE_REFERENCE_WORKFLOW_REVISION, resourceId, referenceRevision, uploadedPdfResourceId, parent?.taskId ?? 'idempotent'].join('\n'),
 	)}`;
-	await registerResourceTask(env, { taskId: id, kind: 'references', resourceId, revision: referenceRevision }, parent);
+	await registerResourceTask(env, { taskId: id, kind: 'references', resourceId }, parent);
 	await env.RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW.createBatch([
 		{
 			id,
@@ -241,9 +241,8 @@ export async function enqueueResourceReferenceEnrichment(
 export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<CoreEnv, ResourceReferenceEnrichmentPayload> {
 	async run(event: WorkflowEvent<ResourceReferenceEnrichmentPayload>, step: WorkflowStep): Promise<void> {
 		const input = ResourceReferenceEnrichmentPayloadSchema.parse(event.payload);
-		const task = createResourceTask(this.env, step, event.instanceId, input.progress === false ? 'none' : 'required');
+		const task = createResourceTask(this.env, step, event.instanceId, input.progress);
 		try {
-			if (!(await task.start('references'))) return;
 			const source = await step.do('load-uploaded-pdf-reference-source-v2', REFERENCE_DB_STEP, async () =>
 				loadUploadedPdfSource(await connectCoreDb(this.env), input.resourceId, input.source.fileResourceId, input.referenceRevision),
 			);
@@ -281,8 +280,6 @@ export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<Core
 				errorCode: 'references_failed',
 			});
 			throw error;
-		} finally {
-			await task.seal();
 		}
 	}
 }

@@ -11,9 +11,7 @@ declare global {
 					taskId: string;
 					kind: 'processing' | 'translation' | 'references' | 'index';
 					resourceId?: string;
-					revision?: string;
 					parentTaskId?: string;
-					reconcile?: true;
 				}): Promise<boolean>;
 				reportResourceProgress(input: ProgressReport): Promise<boolean>;
 				startResourceProgressTask(taskId: string, stage: NonNullable<ProgressReport['stage']>): Promise<boolean>;

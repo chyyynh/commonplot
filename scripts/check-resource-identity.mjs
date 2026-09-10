@@ -196,7 +196,8 @@ const workflowCases = [
 		'crops-failed',
 		'analysis-failed',
 		'ready-delivery-failed',
-		'followup-failed',
+		'background-handoff-failed',
+		'translation-handoff-failed',
 		'superseded-raw',
 		'expired-admission',
 	].map((name) => ({ name })),
@@ -295,6 +296,7 @@ try {
 				effects.push('references-enqueued');
 			},
 			enqueueResourceTranslation: async (...args) => {
+				if (scenario === 'translation-handoff-failed') throw new Error('Translation dispatch unavailable');
 				translations.push(args.at(-1));
 				effects.push('translation-enqueued');
 			},
@@ -339,7 +341,7 @@ try {
 				},
 				RESOURCE_SEARCH_SYNC_QUEUE: {
 					send: async (message) => {
-						if (scenario === 'followup-failed') throw new Error('Search queue unavailable');
+						if (scenario === 'background-handoff-failed') throw new Error('Search queue unavailable');
 						searchMessages.push(message);
 						effects.push('search-enqueued');
 					},
@@ -354,7 +356,7 @@ try {
 				: { kind: 'draft', url: 'https://example.com/paper.pdf', saveTarget: { kind: 'profileSave', userId: 'fixture-user' } });
 		const step = { do: async (_name, ...args) => args.at(-1)({ attempt: 1 }) };
 		const result = workflow.run({ instanceId, payload }, step);
-		if (scenario.endsWith('-failed')) await assert.rejects(result, undefined, scenario);
+		if (scenario.endsWith('-failed') && scenario !== 'background-handoff-failed') await assert.rejects(result, undefined, scenario);
 		else await result;
 		if (scenario === 'superseded-raw' || scenario === 'expired-admission' || rejectStart) {
 			assert.deepEqual(effects, [], `${scenario}: rejected attempts must not run providers or persist`);
@@ -427,9 +429,14 @@ try {
 			assert.equal(translations.length, 2, 'Both private and canonical translations are admitted');
 			assert.ok(translations.every((parent) => parent.taskId === instanceId && parent.required === true));
 		}
-		if (scenario === 'followup-failed')
+		if (scenario === 'background-handoff-failed')
 			assert.ok(effects.includes('translation-enqueued'), 'Independent handoffs still run after a failure');
-		if (scenario === 'ready-delivery-failed' || scenario === 'followup-failed') {
+		if (scenario === 'background-handoff-failed')
+			assert.ok(
+				warnings.every((warning) => warning === undefined),
+				'Background dispatch cannot mark readable content as pending',
+			);
+		if (scenario === 'ready-delivery-failed' || scenario === 'translation-handoff-failed') {
 			assert.ok(warnings.includes('followup_dispatch_failed'), scenario);
 		}
 	}

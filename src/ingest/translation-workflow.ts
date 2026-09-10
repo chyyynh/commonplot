@@ -1,14 +1,4 @@
-import {
-	createResourceTask,
-	enqueueSearchProgress,
-	registerResourceTask,
-	reportResourceTask,
-	sealResourceTask,
-	ResourceTaskOutcomeSchema,
-	type ResourceTask,
-	type ResourceTaskContext,
-	type ResourceTaskOutcome,
-} from './progress';
+import { createResourceTask, enqueueSearchProgress, type ResourceTask, type ResourceTaskContext } from './progress';
 // Durable translation execution; resource processing only enqueues this Workflow.
 import { generateText, Output } from 'ai';
 import { type WorkflowDynamicDelayContext, WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
@@ -30,7 +20,7 @@ import { translateMarkdownBatchToZhHant } from './markdown-translation-model';
 import { PDF_MIME } from './platforms/pdf-constants';
 import { type ResourceTranslationCandidate, shouldEnqueueResourceTranslation } from './translation-policy';
 
-type ResourceTranslationPayload = { progress?: boolean; force?: boolean; resourceId: string; translationRevision: string };
+type ResourceTranslationPayload = { force?: boolean; resourceId: string; translationRevision: string };
 const ResourceTranslationSourceSchema = z.enum(['original', 'machine', 'human']);
 
 type ResourceTranslationInput = ResourceTranslationCandidate & {
@@ -364,7 +354,7 @@ async function currentTranslationAttempt(env: CoreEnv, resourceId: string, trans
 			// createBatch recovers this exact ID, including a lost response.
 			return { id };
 		}
-		if (snapshot.status !== 'errored' && snapshot.status !== 'terminated') return { id, snapshot };
+		if (snapshot.status !== 'errored' && snapshot.status !== 'terminated') return { id, status: snapshot.status };
 		if (attempt === 15) throw new Error('Translation retry limit reached');
 		id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-retry-${resourceId}-${(await sha256Hex(id)).slice(0, 16)}`;
 	}
@@ -385,42 +375,38 @@ export async function enqueueResourceTranslation(
 	let id = validatedForceRunKey
 		? `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-force-${resourceId}-${validatedForceRunKey}`
 		: `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
-	let completedOutcome: ResourceTaskOutcome | undefined;
-	if (!validatedForceRunKey && parent) {
+	if (!validatedForceRunKey) {
 		const attempt = await currentTranslationAttempt(env, resourceId, translationRevision);
 		id = attempt.id;
-		if (attempt.snapshot?.status === 'complete') {
-			const outcome = ResourceTaskOutcomeSchema.safeParse(attempt.snapshot.output);
-			// Older completed Workflows returned void. There is no new work to queue,
-			// and native completion alone does not prove a translated domain result.
-			if (!outcome.success) return id;
-			completedOutcome = outcome.data;
-		}
+		// Completed work already lives in ResourceTranslation. There is no new
+		// execution to subscribe to, and no second source of progress to project.
+		if (attempt.status === 'complete') return id;
 	}
-
-	await registerResourceTask(env, { taskId: id, kind: 'translation', resourceId, revision: translationRevision, reconcile: true }, parent);
-	if (completedOutcome) {
-		// Project the captured result before retention can expire; active shared
-		// executions are recovered by the subscriber's sparse reconciliation.
-		if (parent?.required) {
-			await reportResourceTask(env, { taskId: id, ...completedOutcome });
-			await sealResourceTask(env, id, completedOutcome.errorCode);
-		}
-		return id;
-	}
+	// Shared work owns a ledger from the beginning, including automatic work.
+	// A later user subscribes to the same durable reports instead of polling it.
+	const registered = await env.APP.registerResourceProgressTask({
+		taskId: id,
+		kind: 'translation',
+		resourceId,
+		...(parent?.required ? { parentTaskId: parent.taskId } : {}),
+	});
+	if (!registered) throw new Error('Translation progress registration was rejected');
 	await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([
 		{
 			id,
-			params: { progress: parent?.required ?? false, ...(validatedForceRunKey ? { force: true } : {}), resourceId, translationRevision },
+			params: { ...(validatedForceRunKey ? { force: true } : {}), resourceId, translationRevision },
 		},
 	]);
 	return id;
 }
 
 export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceTranslationPayload> {
-	async run(event: WorkflowEvent<ResourceTranslationPayload>, step: WorkflowStep): Promise<ResourceTaskOutcome> {
+	async run(
+		event: WorkflowEvent<ResourceTranslationPayload>,
+		step: WorkflowStep,
+	): Promise<{ status: 'complete' | 'skipped' | 'superseded'; resourceId: string }> {
 		const { force = false, resourceId, translationRevision } = event.payload;
-		const task = createResourceTask(this.env, step, event.instanceId, event.payload.progress === false ? 'optional' : 'required');
+		const task = createResourceTask(this.env, step, event.instanceId);
 		let translationPublished = false;
 		try {
 			if (!(await task.start('translating'))) return { status: 'superseded', resourceId };
@@ -543,11 +529,8 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				...(translationPublished ? {} : { errorCode: 'translation_failed' }),
 			});
 			if (translationPublished) {
-				await task.seal('followup_dispatch_failed');
-				if (!task.required) {
-					console.error({ tag: 'RESOURCE_TRANSLATION', event: 'followup_dispatch_failed', resource_id: resourceId, error });
-					return { status: 'complete', resourceId, errorCode: 'followup_dispatch_failed' };
-				}
+				console.error({ tag: 'RESOURCE_TRANSLATION', event: 'followup_dispatch_failed', resource_id: resourceId, error });
+				return { status: 'complete', resourceId };
 			}
 			throw error;
 		} finally {
