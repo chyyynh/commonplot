@@ -8,6 +8,7 @@ import { type PaidPdfFallbackGrant, stageStoredPdfAcquisition } from './platform
 import { parseTwitterResourceUrl, stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { canonicalizeWebResourceUrl, stageWebAcquisition } from './platforms/web';
 import { parseYouTubeResourceUrl, stageYouTubeAcquisition } from './platforms/youtube';
+import { progressStep } from './progress';
 
 export function resolvePlatformResourceUrl(url: URL): PlatformResourceUrl | null {
 	const hostname = url.hostname.toLowerCase();
@@ -95,11 +96,14 @@ export async function stageStoredResourceAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	target: Readonly<{
+		progressTaskId?: string;
 		paidPdfFallback?: PaidPdfFallbackGrant;
 		resourceId: string;
 	}>,
 ) {
 	const acquired = await stageStoredPdfAcquisition(env, step, target);
+	if (target.progressTaskId)
+		await progressStep(env, step, 'metadata', { taskId: target.progressTaskId, stage: 'metadata', status: 'running' });
 	return stagePaperResolution(env, step, {
 		resource: acquired,
 		processingId: target.resourceId,

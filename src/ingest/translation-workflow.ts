@@ -1,3 +1,4 @@
+import { enqueueSearchProgress, progressStep, sealProgressTask, startProgressTask } from './progress';
 // Durable translation execution; resource processing only enqueues this Workflow.
 import { generateText, Output } from 'ai';
 import { type WorkflowDynamicDelayContext, WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
@@ -6,6 +7,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
+import { sha256Hex } from '../shared/hash';
 import { canonicalizeResourceLang } from '../shared/resource';
 import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
@@ -165,7 +167,7 @@ Title: ${resource.title}${summary ? `\nSummary: ${summary}` : ''}`,
 	return output;
 }
 
-async function translatePlannedContent(content: string, env: CoreEnv, resourceId: string, step: WorkflowStep) {
+async function translatePlannedContent(content: string, env: CoreEnv, resourceId: string, step: WorkflowStep, taskId: string) {
 	const markdownPlan = planMarkdownTranslation(content);
 	console.info({
 		tag: 'RESOURCE_TRANSLATION',
@@ -185,14 +187,30 @@ async function translatePlannedContent(content: string, env: CoreEnv, resourceId
 		});
 		return null;
 	}
+	await progressStep(env, step, 'batches-start', {
+		taskId,
+		stage: 'translating',
+		status: 'running',
+		completed: 0,
+		total: markdownPlan.batches.length,
+		resourceId,
+	});
 	const translatedSegments: MarkdownSegmentTranslation[] = [];
-	for (const batch of markdownPlan.batches) {
+	for (const [batchIndex, batch] of markdownPlan.batches.entries()) {
 		const translatedBatch = await step.do(
 			`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v14`,
 			{ retries: { limit: 3, delay: translationRetryDelay }, timeout: '300 seconds' },
 			(context) => translateMarkdownBatchToZhHant(batch, env, resourceId, context.attempt),
 		);
 		translatedSegments.push(...translatedBatch);
+		await progressStep(env, step, `batch-${batch.id}`, {
+			taskId,
+			stage: 'translating',
+			status: 'running',
+			completed: batchIndex + 1,
+			total: markdownPlan.batches.length,
+			resourceId,
+		});
 	}
 	const translated = compileMarkdownTranslationArtifact(markdownPlan, translatedSegments);
 	console.info({
@@ -205,7 +223,7 @@ async function translatePlannedContent(content: string, env: CoreEnv, resourceId
 	return translated;
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v28';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v29';
 const ResourceTranslationRevisionSchema = z.hash('md5').lowercase();
 const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 
@@ -326,6 +344,25 @@ async function persistMachineZhHantTranslation(
 	return result.rows.length > 0;
 }
 
+/** Follow one shared recovery chain, so concurrent imports cannot multiply paid work. */
+async function currentTranslationAttempt(env: CoreEnv, resourceId: string, translationRevision: string) {
+	let id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
+	for (let attempt = 0; attempt < 16; attempt++) {
+		let status: string;
+		try {
+			status = (await (await env.RESOURCE_TRANSLATION_V2_WORKFLOW.get(id)).status()).status;
+		} catch {
+			// An unavailable control plane cannot justify another physical task.
+			// createBatch recovers this exact ID, including a lost response.
+			return { id, status: null };
+		}
+		if (status !== 'errored' && status !== 'terminated') return { id, status };
+		if (attempt === 15) throw new Error('Translation retry limit reached');
+		id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-retry-${resourceId}-${(await sha256Hex(id)).slice(0, 16)}`;
+	}
+	throw new Error('Translation retry limit reached');
+}
+
 // Normal ingestion dedupes by source revision. Explicit reacquisition supplies a deterministic run key so every operator resync
 // receives a fresh instance while retries of the same processing Workflow remain idempotent.
 export async function enqueueResourceTranslation(
@@ -333,12 +370,23 @@ export async function enqueueResourceTranslation(
 	resourceId: string,
 	translationRevision: string,
 	forceRunKey?: string,
+	parentTaskId?: string,
 ): Promise<string> {
 	ResourceTranslationRevisionSchema.parse(translationRevision);
 	const validatedForceRunKey = forceRunKey === undefined ? null : ForcedTranslationRunKeySchema.parse(forceRunKey);
-	const id = validatedForceRunKey
+	let id = validatedForceRunKey
 		? `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-force-${resourceId}-${validatedForceRunKey}`
 		: `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
+	if (!validatedForceRunKey && parentTaskId) id = (await currentTranslationAttempt(env, resourceId, translationRevision)).id;
+
+	if (parentTaskId)
+		await env.APP.registerResourceProgressTask({
+			taskId: id,
+			kind: 'translation',
+			resourceId,
+			revision: translationRevision,
+			parentTaskId,
+		});
 	await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([
 		{
 			id,
@@ -361,8 +409,7 @@ export async function readResourceTranslationStatus(env: CoreEnv, resourceId: st
 	const revision = result.rows[0]?.revision;
 	if (!revision) return null;
 	try {
-		const instance = await env.RESOURCE_TRANSLATION_V2_WORKFLOW.get(`rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${id}-${revision}`);
-		return (await instance.status()).status;
+		return (await currentTranslationAttempt(env, id, revision)).status;
 	} catch (error) {
 		console.warn({
 			tag: 'RESOURCE_TRANSLATION',
@@ -377,97 +424,133 @@ export async function readResourceTranslationStatus(env: CoreEnv, resourceId: st
 export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceTranslationPayload> {
 	async run(event: WorkflowEvent<ResourceTranslationPayload>, step: WorkflowStep) {
 		const { force = false, resourceId, translationRevision } = event.payload;
-		const inputStream = await step.do<ReadableStream<Uint8Array> | null>(
-			'load-resource-translation-input-stream-v4',
-			{
-				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
-				timeout: '30 seconds',
-			},
-			async () => {
-				const input = await loadResourceTranslationInput(await connectCoreDb(this.env), resourceId);
-				return input ? Response.json(input).body! : null;
-			},
-		);
-		const input = inputStream ? await new Response(inputStream).json<Awaited<ReturnType<typeof loadResourceTranslationInput>>>() : null;
-		if (!input) {
-			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Resource original is unavailable; skipping', resource_id: resourceId });
-			return;
-		}
-		if (input.translationRevision !== translationRevision) {
-			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Translation revision was superseded; skipping', resource_id: resourceId });
-			return;
-		}
-
-		const resource = input.resource;
-		const translationPlan = planZhHantTranslation(resource, force);
-		if (!translationPlan.metadata && !translationPlan.content) return;
-
-		const patch: MachineZhHantTranslationPatch = {};
-		if (translationPlan.metadata) {
-			const translatedMetadata = await step.do(
-				'translate-zh-hant-title-summary-v3',
+		let translationPublished = false;
+		try {
+			if (!(await startProgressTask(this.env, step, event.instanceId, 'translating'))) return;
+			const inputStream = await step.do<ReadableStream<Uint8Array> | null>(
+				'load-resource-translation-input-stream-v4',
 				{
-					retries: { limit: 5, delay: translationRetryDelay },
-					timeout: '180 seconds',
+					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
+					timeout: '30 seconds',
 				},
-				() => translateResourceMetadata(resource, this.env),
+				async () => {
+					const input = await loadResourceTranslationInput(await connectCoreDb(this.env), resourceId);
+					return input ? Response.json(input).body! : null;
+				},
 			);
-			Object.assign(patch, translatedMetadata);
-		}
-
-		if (translationPlan.content) {
-			try {
-				const translated = await translatePlannedContent(resource.content.trim(), this.env, resourceId, step);
-				if (translated) Object.assign(patch, translated);
-			} catch (error) {
-				console.error({
-					tag: 'RESOURCE_TRANSLATION',
-					event: 'content_translation_outcome',
-					outcome: 'failed',
-					reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
-					error: error instanceof Error ? error.message : String(error),
-					resource_id: resourceId,
-				});
-				throw error;
+			const input = inputStream ? await new Response(inputStream).json<Awaited<ReturnType<typeof loadResourceTranslationInput>>>() : null;
+			if (!input) {
+				console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Resource original is unavailable; skipping', resource_id: resourceId });
+				await progressStep(this.env, step, 'missing', { taskId: event.instanceId, stage: 'translating', status: 'skipped', resourceId });
+				return;
 			}
-		}
-		if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) return;
+			if (input.translationRevision !== translationRevision) {
+				console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Translation revision was superseded; skipping', resource_id: resourceId });
+				await progressStep(this.env, step, 'superseded', {
+					taskId: event.instanceId,
+					stage: 'translating',
+					status: 'superseded',
+					resourceId,
+				});
+				return;
+			}
 
-		const persisted = await step.do(
-			'persist-zh-hant-translation-v2',
-			{
-				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
-				timeout: '30 seconds',
-			},
-			async () => persistMachineZhHantTranslation(await connectCoreDb(this.env), resourceId, translationRevision, patch),
-		);
-		if (!persisted) {
+			const resource = input.resource;
+			const translationPlan = planZhHantTranslation(resource, force);
+			if (!translationPlan.metadata && !translationPlan.content) {
+				await progressStep(this.env, step, 'unneeded', { taskId: event.instanceId, stage: 'translating', status: 'skipped', resourceId });
+				return;
+			}
+
+			const patch: MachineZhHantTranslationPatch = {};
+			if (translationPlan.metadata) {
+				const translatedMetadata = await step.do(
+					'translate-zh-hant-title-summary-v3',
+					{
+						retries: { limit: 5, delay: translationRetryDelay },
+						timeout: '180 seconds',
+					},
+					() => translateResourceMetadata(resource, this.env),
+				);
+				Object.assign(patch, translatedMetadata);
+			}
+
+			if (translationPlan.content) {
+				try {
+					const translated = await translatePlannedContent(resource.content.trim(), this.env, resourceId, step, event.instanceId);
+					if (translated) Object.assign(patch, translated);
+				} catch (error) {
+					console.error({
+						tag: 'RESOURCE_TRANSLATION',
+						event: 'content_translation_outcome',
+						outcome: 'failed',
+						reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
+						error: error instanceof Error ? error.message : String(error),
+						resource_id: resourceId,
+					});
+					throw error;
+				}
+			}
+			if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) {
+				await progressStep(this.env, step, 'empty', { taskId: event.instanceId, stage: 'translating', status: 'skipped', resourceId });
+				return;
+			}
+
+			const persisted = await step.do(
+				'persist-zh-hant-translation-v2',
+				{
+					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
+					timeout: '30 seconds',
+				},
+				async () => persistMachineZhHantTranslation(await connectCoreDb(this.env), resourceId, translationRevision, patch),
+			);
+			if (!persisted) {
+				await progressStep(this.env, step, 'persist-superseded', {
+					taskId: event.instanceId,
+					stage: 'translating',
+					status: 'superseded',
+					resourceId,
+				});
+				if (patch.content !== undefined) {
+					console.info({
+						tag: 'RESOURCE_TRANSLATION',
+						event: 'content_translation_outcome',
+						outcome: 'superseded',
+						resource_id: resourceId,
+					});
+				}
+				return;
+			}
 			if (patch.content !== undefined) {
 				console.info({
 					tag: 'RESOURCE_TRANSLATION',
 					event: 'content_translation_outcome',
-					outcome: 'superseded',
+					outcome: 'persisted',
 					resource_id: resourceId,
+					translated_characters: patch.content.length,
 				});
 			}
-			return;
-		}
-		if (patch.content !== undefined) {
-			console.info({
-				tag: 'RESOURCE_TRANSLATION',
-				event: 'content_translation_outcome',
-				outcome: 'persisted',
-				resource_id: resourceId,
-				translated_characters: patch.content.length,
+			translationPublished = true;
+			await progressStep(this.env, step, 'complete', { taskId: event.instanceId, stage: 'translating', status: 'complete', resourceId });
+			if (resource.scope === 'corpus') {
+				await step.do(
+					'enqueue-translated-ai-search-sync-v1',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					() => enqueueSearchProgress(this.env, resourceId, event.instanceId, `${translationRevision}-zh-hant`),
+				);
+			}
+			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Completed', resource_id: resourceId, scope: resource.scope });
+		} catch (error) {
+			await progressStep(this.env, step, 'outcome-after-error', {
+				taskId: event.instanceId,
+				status: translationPublished ? 'complete' : 'failed',
+				resourceId,
+				...(translationPublished ? {} : { errorCode: 'translation_failed' }),
 			});
+			if (translationPublished) await sealProgressTask(this.env, step, event.instanceId, 'followup_dispatch_failed');
+			throw error;
+		} finally {
+			await sealProgressTask(this.env, step, event.instanceId);
 		}
-		if (resource.scope === 'corpus') {
-			await step.do(
-				'enqueue-translated-ai-search-sync-v1',
-				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() => this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId }),
-			);
-		}
-		console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Completed', resource_id: resourceId, scope: resource.scope });
 	}
 }

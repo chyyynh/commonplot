@@ -22,12 +22,13 @@ export type ResourceDraftRelation =
 	| Readonly<{ kind: 'source'; sourceId: string }>
 	| Readonly<{ kind: 'subject'; parentResourceId: string; parentAcquisitionRevision: string }>;
 
-export type ResourcePersistenceTarget =
+export type ResourcePersistenceTarget = { ownedBlobId?: string } & (
 	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation; preservePublishedPdf?: boolean }>
-	| Readonly<{ kind: 'existing'; resourceId: string }>;
+	| Readonly<{ kind: 'existing'; resourceId: string }>
+);
 
 type LockedResource = Readonly<{
-	enrichment_status: string;
+	has_original: boolean;
 	id: string;
 	original_lang: string;
 	scope: 'corpus' | 'private';
@@ -109,9 +110,15 @@ export function prepareResolvedResource(
 
 async function lockResource(db: NodePgDatabase, resourceId: string): Promise<LockedResource> {
 	const result = await db.execute<LockedResource>(sql`
-		SELECT enrichment_status, id::text, original_lang, scope, subject_resource_id::text
-		FROM resources
-		WHERE id = ${resourceId}::uuid
+		SELECT resource.id::text, resource.original_lang, resource.scope, resource.subject_resource_id::text,
+		       EXISTS (
+		         SELECT 1 FROM resource_translations original
+		         WHERE original.resource_id = resource.id AND original.lang = resource.original_lang
+		           AND BTRIM(COALESCE(original.title, '')) <> ''
+		           AND BTRIM(COALESCE(original.content, '')) <> ''
+		       ) AS has_original
+		FROM resources resource
+		WHERE resource.id = ${resourceId}::uuid
 		FOR UPDATE
 	`);
 	const resource = result.rows[0];
@@ -163,7 +170,7 @@ async function existingSubject(db: NodePgDatabase, parentId: string, subject: No
 	const existingId = identifierOwner ?? urlOwner;
 	if (!existingId || existingId === parentId) return null;
 	const existing = await lockResource(db, existingId);
-	return existing.scope === 'corpus' && existing.enrichment_status === 'enriched' ? existing.id : null;
+	return existing.scope === 'corpus' && existing.has_original ? existing.id : null;
 }
 
 async function writeCanonicalResource(
@@ -209,14 +216,14 @@ async function writeCanonicalResource(
 	const columns = sql`
 		kind, resource_platform, source_name, url, normalized_url, file_type, original_lang, published_date,
 		tags, og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id,
-		enrichment_status, scraped_date, updated_at
+		scraped_date, updated_at
 	`;
 	const values = sql`
 		${resource.kind}, ${resource.resourcePlatform}, ${resource.sourceName}, ${resource.url}, ${resource.normalizedUrl},
 		${resource.fileType}, ${originalLang}, ${resource.publishedDate}, ${sql.param(resource.tags)}::text[],
 		${resource.ogImageUrl}, ${resource.ogImageWidth}, ${resource.ogImageHeight}, ${JSON.stringify(resource.creators)}::jsonb,
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
-		'enriched', NOW(), NOW()
+		NOW(), NOW()
 	`;
 	await db.execute(
 		previousOriginalLang === undefined
@@ -287,7 +294,11 @@ async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relati
 		UPDATE resources SET subject_resource_id = ${resourceId}::uuid, updated_at = NOW()
 		WHERE id = ${relation.parentResourceId}::uuid
 		  AND scope = 'corpus'
-		  AND enrichment_status = 'enriched'
+		  AND EXISTS (
+		    SELECT 1 FROM resource_translations original
+		    WHERE original.resource_id = resources.id AND original.lang = resources.original_lang
+		      AND BTRIM(COALESCE(original.content, '')) <> ''
+		  )
 		  AND id <> ${resourceId}::uuid
 		  AND MD5(EXTRACT(EPOCH FROM scraped_date)::text) = ${relation.parentAcquisitionRevision}
 	`);
@@ -327,11 +338,15 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 		for (const key of [...new Set(lockKeys)].sort()) {
 			await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`newsence:resource:${key}`}, 0))`);
 		}
+		if (target.ownedBlobId) {
+			const owned = await tx.execute(sql`SELECT resource_id FROM user_files WHERE resource_id = ${target.ownedBlobId}::uuid FOR UPDATE`);
+			if (!owned.rows.length) throw new NonRetryableError('Uploaded PDF ownership was deleted');
+		}
 		const root = target.kind === 'draft' ? await draftRoot(tx, resource) : await lockResource(tx, target.resourceId);
 		const resourceId = root?.id ?? crypto.randomUUID();
 		// A private rendition may enrich a new paper, but must not replace an
 		// independently acquired public rendition (and its public images).
-		if (target.kind === 'draft' && target.preservePublishedPdf && root?.enrichment_status === 'enriched') {
+		if (target.kind === 'draft' && target.preservePublishedPdf && root?.has_original) {
 			const original = await tx.execute<{ content: string | null; translation_revision: string; acquisition_revision: string }>(sql`
 				SELECT original.content,
 				       MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS translation_revision,
@@ -378,7 +393,7 @@ export async function publishPublicPdfCrops(db: NodePgDatabase, env: CoreEnv, re
 		SELECT original.content
 		FROM resources resource
 		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
-		WHERE resource.id = ${resourceId}::uuid AND resource.scope = 'corpus' AND resource.enrichment_status = 'enriched'
+		WHERE resource.id = ${resourceId}::uuid AND resource.scope = 'corpus'
 	`);
 	const content = result.rows[0]?.content;
 	if (!content) return;

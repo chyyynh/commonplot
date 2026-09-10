@@ -21,6 +21,12 @@ const SEARCHABLE_RESOURCE_KIND_COUNT = Object.keys(RESOURCE_KIND_METADATA).filte
 export const SEARCHABLE_CORPUS_RESOURCE_SQL = sql`(
 	r.kind <> 'image'
 	AND (r.kind <> 'file' OR r.file_type = 'application/pdf')
+	AND EXISTS (
+		SELECT 1 FROM resource_translations original
+		WHERE original.resource_id = r.id AND original.lang = r.original_lang
+		  AND BTRIM(COALESCE(original.title, '')) <> ''
+		  AND BTRIM(COALESCE(original.content, '')) <> ''
+	)
 )`;
 
 type SearchableResourceKind = Exclude<ResourceKind, 'image'>;
@@ -176,7 +182,6 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 		FROM resources r
 		WHERE ${inArray(sql`r.id`, resourceIds)}
 		  AND r.scope = 'corpus'
-		  AND r.enrichment_status = 'enriched'
 		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		`);
 	return result.rows;

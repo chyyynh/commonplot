@@ -1,6 +1,4 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { sql } from 'drizzle-orm';
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import type {} from './env';
 import { GrobidContainer } from './ingest/grobid-container';
@@ -30,77 +28,37 @@ export {
 	ZoteroSdtContainer,
 };
 
-type AppResourceDraftInput = Readonly<{
-	instanceId: string;
-	paidPdfFallback?: ResourceDraftTarget['paidPdfFallback'];
-	url: string;
-	saveTarget: Exclude<ResourceDraftTarget['saveTarget'], undefined>;
-}>;
-
 const StoredPdfProcessingInputSchema = z.strictObject({
 	paidPdfFallback: ResourceDraftTargetSchema.shape.paidPdfFallback,
 	resourceId: z.uuid(),
 	retry: z.boolean().optional(),
 });
 
-const APP_RESOURCE_BATCH_LIMIT = 20;
-const AppDraftWorkflowIdSchema = z.templateLiteral(['app-draft-v1-', z.uuidv4()]);
-const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
-const PENDING_BLOB_RECONCILE_LIMIT = 50;
-const STORED_BLOB_WORKFLOW_REVISION = 'stored-resource-v13';
-function storedBlobWorkflowInstance(resourceId: string, paidPdfFallback?: ResourceDraftTarget['paidPdfFallback'], retryId?: string) {
-	return {
-		id: retryId ? `${STORED_BLOB_WORKFLOW_REVISION}-${resourceId}-retry-${retryId}` : `${STORED_BLOB_WORKFLOW_REVISION}-${resourceId}`,
-		params: { kind: 'storedBlob' as const, ...(paidPdfFallback ? { paidPdfFallback } : {}), resourceId },
-		retention: {
-			successRetention: '5 minutes',
-			errorRetention: '1 hour',
-		} as const,
-	};
-}
+const ResourceSearchSyncMessageSchema = z.strictObject({
+	resourceId: z.uuid().toLowerCase(),
+	taskId: z.string().min(1).max(150).optional(),
+});
 
-/** Repairs only interrupted DB-to-Workflow handoffs for record-first app-owned blobs. */
-async function reconcilePendingBlobProcessing(env: CoreEnv, db: NodePgDatabase): Promise<void> {
-	const result = await db.execute<{ resource_id: string }>(sql`
-		SELECT resource.id::text AS resource_id
-		FROM resources resource
-		WHERE resource.enrichment_status = 'pending'
-		  AND resource.scope = 'private'
-		  AND resource.kind = 'file'
-		  AND resource.resource_platform IS NULL
-		  AND resource.file_type = 'application/pdf'
-		  AND resource.storage_key IS NOT NULL
-		  AND EXISTS (
-		    SELECT 1
-		    FROM user_files
-		    WHERE user_files.resource_id = resource.id
-		  )
-		  AND resource.updated_at < ${new Date(Date.now() - PENDING_BLOB_GRACE_MS)}
-		ORDER BY resource.updated_at ASC, resource.id ASC
-		LIMIT ${PENDING_BLOB_RECONCILE_LIMIT}
-	`);
-	const resourceIds = result.rows.map((row) => row.resource_id);
-	if (!resourceIds.length) return;
-	const created = await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(
-		resourceIds.map((resourceId) => storedBlobWorkflowInstance(resourceId)),
-	);
-	console.info({
-		tag: 'RESOURCE_WORKFLOW',
-		event: 'pending_blob_reconciliation_completed',
-		attempted: resourceIds.length,
-		created: created.length,
-		existing: resourceIds.length - created.length,
-	});
-}
-
-const ResourceSearchSyncMessageSchema = z.strictObject({ resourceId: z.uuid().toLowerCase() });
-const ResourceWorkflowOutputSchema = z.object({ resourceId: z.uuid() });
-
-async function runFiveMinuteCycle(env: CoreEnv): Promise<void> {
-	const db = await connectCoreDb(env);
-	const results = await Promise.allSettled([handleRSSCron(env, db), reconcilePendingBlobProcessing(env, db)]);
-	const failures = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
-	if (failures.length) throw new AggregateError(failures, 'One or more five-minute core jobs failed');
+// Kept aligned with resource-search-sync.max_retries in wrangler.jsonc.
+const SEARCH_SYNC_MAX_RETRIES = 3;
+async function retrySearchMessages(env: CoreEnv, messages: Message<unknown>[], indexedOutcome?: 'complete' | 'skipped') {
+	const tasks = new Map<string, Message<unknown>[]>();
+	for (const message of messages) {
+		const body = ResourceSearchSyncMessageSchema.parse(message.body);
+		if (body.taskId) tasks.set(body.taskId, [...(tasks.get(body.taskId) ?? []), message]);
+	}
+	for (const [taskId, deliveries] of tasks) {
+		if (deliveries.every((message) => message.attempts > SEARCH_SYNC_MAX_RETRIES)) {
+			await env.APP.reportResourceProgress({
+				taskId,
+				stage: 'indexing',
+				status: indexedOutcome ?? 'failed',
+				...(indexedOutcome ? {} : { errorCode: 'index_failed' }),
+			});
+			await env.APP.sealResourceProgressTask(taskId);
+		}
+	}
+	for (const message of messages) message.retry();
 }
 
 export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
@@ -114,7 +72,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		// YouTube channels ride the feed monitor through their Atom URLs; Core
 		// derives their slower polling cadence from the canonical feed URL.
 		if (event.cron === '*/5 * * * *') {
-			this.ctx.waitUntil(runFiveMinuteCycle(this.env));
+			this.ctx.waitUntil(connectCoreDb(this.env).then((db) => handleRSSCron(this.env, db)));
 		} else if (event.cron === '0 */6 * * *') {
 			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
 		}
@@ -140,14 +98,35 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		} catch (error) {
 			console.error({ tag: 'AI_SEARCH', msg: 'Resource sync batch could not be loaded', error });
 			for (const messages of pending.values()) {
-				for (const message of messages) message.retry();
+				await retrySearchMessages(this.env, messages);
 			}
 			return;
 		}
 		const documentsById = new Map(documents.map((document) => [document.id, document]));
 		for (const [resourceId, messages] of pending) {
+			let indexedOutcome: 'complete' | 'skipped' | undefined;
 			try {
+				const taskIds = [
+					...new Set(
+						messages.flatMap((message) => {
+							const body = ResourceSearchSyncMessageSchema.parse(message.body);
+							return body.taskId ? [body.taskId] : [];
+						}),
+					),
+				];
+				for (const taskId of taskIds)
+					await this.env.APP.reportResourceProgress({ taskId, stage: 'indexing', status: 'running', resourceId });
 				await syncCorpusItem(this.env, resourceId, documentsById.get(resourceId));
+				indexedOutcome = documentsById.has(resourceId) ? 'complete' : 'skipped';
+				for (const taskId of taskIds) {
+					await this.env.APP.reportResourceProgress({
+						taskId,
+						stage: 'indexing',
+						status: documentsById.has(resourceId) ? 'complete' : 'skipped',
+						resourceId,
+					});
+					await this.env.APP.sealResourceProgressTask(taskId);
+				}
 				for (const message of messages) message.ack();
 			} catch (error) {
 				console.error({
@@ -157,7 +136,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 					attempt: Math.max(...messages.map((message) => message.attempts)),
 					error,
 				});
-				for (const message of messages) message.retry();
+				await retrySearchMessages(this.env, messages, indexedOutcome);
 			}
 		}
 	}
@@ -168,26 +147,37 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	/** Enqueue an app-owned blob after its R2 object and private ownership row exist. */
 	async enqueueResourceProcessing(input: z.infer<typeof StoredPdfProcessingInputSchema>) {
 		const parsed = StoredPdfProcessingInputSchema.parse(input);
-		const instance = storedBlobWorkflowInstance(parsed.resourceId, parsed.paidPdfFallback, parsed.retry ? crypto.randomUUID() : undefined);
-		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([instance]);
-		return instance.id;
+		return this.env.APP.admitStoredBlobProcessing(parsed);
 	}
 
-	/** Process external URLs before their canonical Resources and user relations become visible. */
-	async enqueueResourceDrafts(inputs: AppResourceDraftInput[]): Promise<void> {
-		if (!Array.isArray(inputs) || !inputs.length || inputs.length > APP_RESOURCE_BATCH_LIMIT) {
-			throw new Error(`Resource draft batch must contain 1-${APP_RESOURCE_BATCH_LIMIT} items`);
-		}
-		const instances = inputs.map((input) => ({
-			id: AppDraftWorkflowIdSchema.parse(input.instanceId),
-			params: ResourceDraftTargetSchema.parse({
-				kind: 'draft',
-				...(input.paidPdfFallback ? { paidPdfFallback: input.paidPdfFallback } : {}),
-				saveTarget: input.saveTarget,
-				url: input.url,
-			}),
-		}));
-		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(instances);
+	/** Durable admission outbox: the caller persists this immutable ID and payload first. */
+	async dispatchResourceImport(input: {
+		workflowId: string;
+		payload:
+			| { kind: 'storedBlob'; resourceId: string; paidPdfFallback?: { maxPages: number } }
+			| { kind: 'draft'; url: string; saveTarget?: ResourceDraftTarget['saveTarget']; paidPdfFallback?: { maxPages: number } };
+	}): Promise<void> {
+		const parsed = z
+			.strictObject({
+				workflowId: z.templateLiteral(['app-ingest-v1-', z.uuidv4()]),
+				payload: z.discriminatedUnion('kind', [
+					ResourceDraftTargetSchema,
+					z.strictObject({
+						kind: z.literal('storedBlob'),
+						resourceId: z.uuid(),
+						paidPdfFallback: ResourceDraftTargetSchema.shape.paidPdfFallback,
+					}),
+				]),
+			})
+			.parse(input);
+		if (
+			parsed.payload.kind === 'storedBlob' &&
+			!(await this.env.APP.verifyStoredBlobProcessing(parsed.payload.resourceId, parsed.workflowId))
+		)
+			throw new Error('Uploaded PDF attempt is not ready or no longer current');
+		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
+			{ id: parsed.workflowId, params: parsed.payload, retention: { successRetention: '5 minutes', errorRetention: '7 days' } },
+		]);
 	}
 
 	/** Reacquire a URL-backed resource through the enrichment workflow. */
@@ -214,31 +204,5 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	/** Read the current translation revision's status after app-owned authorization. */
 	getResourceTranslationStatus(resourceId: string): Promise<string | null> {
 		return readResourceTranslationStatus(this.env, resourceId);
-	}
-
-	/** Read a bounded set of workflow statuses for app-side polling. */
-	async getResourceWorkflowStatuses(instanceIds: string[]) {
-		const ids = z.array(z.string().trim().min(1).max(100)).min(1).max(APP_RESOURCE_BATCH_LIMIT).parse(instanceIds);
-		return Promise.all(
-			ids.map(async (instanceId) => {
-				try {
-					const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.get(instanceId);
-					const state = await instance.status();
-					const output = ResourceWorkflowOutputSchema.safeParse(state.output);
-					return {
-						status: state.status,
-						...(output.success ? { resourceId: output.data.resourceId } : {}),
-					};
-				} catch (error) {
-					console.error({
-						tag: 'RESOURCE_WORKFLOW',
-						event: 'status_unavailable',
-						instance_id: instanceId,
-						error,
-					});
-					return null;
-				}
-			}),
-		);
 	}
 }

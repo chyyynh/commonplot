@@ -16,6 +16,7 @@ import { stageStoredResourceAcquisition, stageUrlAcquisition } from './acquisiti
 import { analyzeResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { LLAMA_PARSE_MAX_PAGES } from './platforms/pdf-fallback-policy';
+import { enqueueSearchProgress, progressStep, sealProgressTask, startProgressTask } from './progress';
 import {
 	persistResolvedResource,
 	publishPublicPdfCrops,
@@ -92,7 +93,6 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, draf
 		SELECT resource.url, resource.normalized_url
 		FROM resources resource
 		WHERE resource.scope = 'corpus'
-		  AND resource.enrichment_status = 'enriched'
 		  AND resource.source_id IS NOT NULL
 		  AND (${inArray(sql`resource.url`, urls)} OR ${inArray(sql`resource.normalized_url`, urls)})
 	`);
@@ -192,7 +192,7 @@ async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, targe
 	}
 
 	if (target.kind === 'storedBlob') {
-		return stageStoredResourceAcquisition(env, step, target);
+		return stageStoredResourceAcquisition(env, step, { ...target, progressTaskId: instanceId });
 	}
 
 	const snapshot = await step.do(
@@ -213,133 +213,179 @@ async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, targe
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep) {
 		const target = ResourceProcessingTargetSchema.parse(event.payload);
-		const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
-		const resource = await resolveProcessingResource(this.env, step, target, processingId);
-		const uploadedPaper = target.kind === 'storedBlob' && resource.kind === 'paper';
-		const persistenceTarget: ResourcePersistenceTarget =
-			target.kind === 'draft'
-				? { kind: 'draft', ...(target.relation ? { relation: target.relation } : {}) }
-				: uploadedPaper
-					? { kind: 'draft', preservePublishedPdf: true }
-					: { kind: 'existing', resourceId: target.resourceId };
-		const saveTarget =
-			target.kind === 'draft'
-				? (target.saveTarget ?? null)
-				: uploadedPaper
-					? ({ kind: 'userFilePaper', fileResourceId: target.resourceId } as const)
-					: null;
+		let publishedResourceId: string | undefined;
+		try {
+			if (target.kind === 'storedBlob') {
+				const current = await step.do('start-owned-pdf-attempt-v1', () =>
+					this.env.APP.verifyStoredBlobProcessing(target.resourceId, event.instanceId),
+				);
+				if (!current) {
+					await progressStep(this.env, step, 'superseded', { taskId: event.instanceId, stage: 'acquiring', status: 'superseded' });
+					return { resourceId: target.resourceId };
+				}
+			}
+			if (!(await startProgressTask(this.env, step, event.instanceId, target.kind === 'storedBlob' ? 'parsing' : 'acquiring')))
+				return target.kind === 'draft' ? {} : { resourceId: target.resourceId };
+			const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
+			const resource = await resolveProcessingResource(this.env, step, target, event.instanceId);
+			const uploadedPaper = target.kind === 'storedBlob' && resource.kind === 'paper';
+			const ownedBlobId = target.kind === 'storedBlob' ? target.resourceId : undefined;
+			const persistenceTarget: ResourcePersistenceTarget =
+				target.kind === 'draft'
+					? { kind: 'draft', ...(target.relation ? { relation: target.relation } : {}) }
+					: uploadedPaper
+						? { kind: 'draft', preservePublishedPdf: true, ownedBlobId }
+						: { kind: 'existing', resourceId: target.resourceId, ...(ownedBlobId ? { ownedBlobId } : {}) };
+			const saveTarget =
+				target.kind === 'draft'
+					? (target.saveTarget ?? null)
+					: target.kind === 'storedBlob'
+						? ({ kind: 'userFileResult', fileResourceId: target.resourceId, workflowId: event.instanceId } as const)
+						: null;
 
-		console.info({
-			tag: 'WORKFLOW',
-			msg: 'Starting',
-			resourceKind: resource.kind,
-			resourcePlatform: resource.resourcePlatform,
-			processing_id: processingId,
-			target_kind: target.kind,
-		});
-		const imageSources = resourceImageSourceUrls({ ...resource, ogImageUrl: resource.previewImageUrl });
-		const [analysis, hostedImages] = await Promise.all([
-			step.do('analyze-resource-v2', { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' }, () =>
-				analyzeResource(resource, target.kind === 'draft' ? (target.sourceHints?.keywords ?? []) : [], this.env, processingId),
-			),
-			stageResourceImages(this.env, step, processingId, imageSources),
-		]);
-		if (uploadedPaper) {
-			const privateRendition = prepareResolvedResource(
-				{ ...resource, kind: 'file', kindMetadata: null, resourcePlatform: null, resourceIdentifiers: [], url: null, subject: null },
+			console.info({
+				tag: 'WORKFLOW',
+				msg: 'Starting',
+				resourceKind: resource.kind,
+				resourcePlatform: resource.resourcePlatform,
+				processing_id: processingId,
+				target_kind: target.kind,
+			});
+			await progressStep(this.env, step, 'analysis', { taskId: event.instanceId, stage: 'analyzing', status: 'running' });
+			const imageSources = resourceImageSourceUrls({ ...resource, ogImageUrl: resource.previewImageUrl });
+			const [analysis, hostedImages] = await Promise.all([
+				step.do('analyze-resource-v2', { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' }, () =>
+					analyzeResource(resource, target.kind === 'draft' ? (target.sourceHints?.keywords ?? []) : [], this.env, processingId),
+				),
+				stageResourceImages(this.env, step, processingId, imageSources),
+			]);
+			await progressStep(this.env, step, 'persisting', { taskId: event.instanceId, stage: 'persisting', status: 'running' });
+			let privateTranslation: { resourceId: string; translationRevision: string } | undefined;
+			if (uploadedPaper) {
+				const privateRendition = prepareResolvedResource(
+					{ ...resource, kind: 'file', kindMetadata: null, resourcePlatform: null, resourceIdentifiers: [], url: null, subject: null },
+					analysis,
+					hostedImages,
+				);
+				const privatePersistence = await step.do(
+					'persist-private-pdf-rendition-v1',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					async () =>
+						persistResolvedResource(await connectCoreDb(this.env), privateRendition, {
+							kind: 'existing',
+							resourceId: target.resourceId,
+							ownedBlobId,
+						}),
+				);
+				if (shouldEnqueueResourceTranslation({ ...privateRendition, scope: 'private' })) privateTranslation = privatePersistence;
+			}
+			const preparedResource = prepareResolvedResource(
+				uploadedPaper ? { ...resource, content: withoutPrivatePdfImages(resource.content) } : resource,
 				analysis,
 				hostedImages,
 			);
-			const privatePersistence = await step.do(
-				'persist-private-pdf-rendition-v1',
+			const persistence = await step.do(
+				'persist-resolved-resource-scope-v4',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				async () =>
-					persistResolvedResource(await connectCoreDb(this.env), privateRendition, { kind: 'existing', resourceId: target.resourceId }),
+				async () => persistResolvedResource(await connectCoreDb(this.env), preparedResource, persistenceTarget),
 			);
-			if (shouldEnqueueResourceTranslation({ ...privateRendition, scope: 'private' })) {
+			const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision, acquisitionRevision } = persistence;
+			const forceProcessingRunKey = target.kind === 'reacquire' ? (await sha256Hex(event.instanceId)).slice(0, 16) : undefined;
+			if (scope === 'corpus' && preparedResource.fileType === 'application/pdf') {
 				await step.do(
-					'enqueue-private-pdf-translation-v1',
+					'publish-public-pdf-crops-v1',
 					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() => enqueueResourceTranslation(this.env, privatePersistence.resourceId, privatePersistence.translationRevision),
+					async () => publishPublicPdfCrops(await connectCoreDb(this.env), this.env, persistedResourceId),
 				);
 			}
-		}
-		const preparedResource = prepareResolvedResource(
-			uploadedPaper ? { ...resource, content: withoutPrivatePdfImages(resource.content) } : resource,
-			analysis,
-			hostedImages,
-		);
-		const persistence = await step.do(
-			'persist-resolved-resource-scope-v4',
-			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			async () => persistResolvedResource(await connectCoreDb(this.env), preparedResource, persistenceTarget),
-		);
-		const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision, acquisitionRevision } = persistence;
-		const forceProcessingRunKey = target.kind === 'reacquire' ? (await sha256Hex(event.instanceId)).slice(0, 16) : undefined;
-		const save = saveTarget
-			? step.do(
-					'complete-resource-save-v1',
+
+			if (saveTarget)
+				await step.do(
+					'complete-resource-save-v2',
 					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 					() => this.env.APP.completeResourceSave(persistedResourceId, saveTarget),
-				)
-			: Promise.resolve();
-		const subject = resource.subject;
-		// Only uploaded PDF references require the app's completed profile attachment.
-		// Let every independent handoff finish its retries before reporting failures.
-		const followups = await Promise.allSettled([
-			scope === 'corpus' && preparedResource.fileType === 'application/pdf'
-				? step.do(
-						'publish-public-pdf-crops-v1',
-						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						async () => publishPublicPdfCrops(await connectCoreDb(this.env), this.env, persistedResourceId),
-					)
-				: undefined,
-			save.then(() =>
+				);
+			publishedResourceId = persistedResourceId;
+			await progressStep(this.env, step, 'ready', {
+				taskId: event.instanceId,
+				stage: 'persisting',
+				status: 'complete',
+				resourceId: persistedResourceId,
+			});
+			const subject = resource.subject;
+			// Only uploaded PDF references require the app's completed profile attachment.
+			// Let every independent handoff finish its retries before reporting failures.
+			const followups = await Promise.allSettled([
 				uploadedPaper
 					? step.do(
 							'enqueue-resource-reference-enrichment-v4',
 							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							() => enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, target.resourceId),
+							() =>
+								enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, target.resourceId, event.instanceId),
 						)
 					: undefined,
-			),
-			scope === 'corpus'
-				? step.do(
-						'enqueue-resolved-ai-search-sync-v2',
-						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						() => this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId: persistedResourceId }),
-					)
-				: undefined,
-			shouldEnqueueResourceTranslation({ ...preparedResource, scope })
-				? step.do(
-						'enqueue-resource-translation-v4',
-						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision, forceProcessingRunKey),
-					)
-				: undefined,
-			subject && !subjectAttached
-				? step.do(
-						'enqueue-resolved-subject-child-v2',
-						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						async () => {
-							const subjectTarget = ResourceDraftTargetSchema.parse({
-								kind: 'draft',
-								relation: { kind: 'subject', parentResourceId: persistedResourceId, parentAcquisitionRevision: acquisitionRevision },
-								// Carrier-resolved hints only; the subject page still wins when it states its own date.
-								...(subject.publishedDate ? { sourceHints: { publishedDate: subject.publishedDate } } : {}),
-								url: subject.normalizedUrl,
-							});
-							const id = `subject-draft-v4-${await sha256Hex(JSON.stringify(subjectTarget))}`;
-							await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: subjectTarget }]);
-							return id;
-						},
-					)
-				: undefined,
-		]);
-		const failures = followups.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
-		if (failures.length) throw new AggregateError(failures, 'Resource persisted, but one or more follow-ups failed');
+				scope === 'corpus'
+					? step.do(
+							'enqueue-resolved-ai-search-sync-v2',
+							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+							() => enqueueSearchProgress(this.env, persistedResourceId, event.instanceId, translationRevision),
+						)
+					: undefined,
+				privateTranslation
+					? step.do(
+							'enqueue-private-pdf-translation-v2',
+							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+							() =>
+								enqueueResourceTranslation(
+									this.env,
+									privateTranslation!.resourceId,
+									privateTranslation!.translationRevision,
+									undefined,
+									event.instanceId,
+								),
+						)
+					: undefined,
+				shouldEnqueueResourceTranslation({ ...preparedResource, scope })
+					? step.do(
+							'enqueue-resource-translation-v4',
+							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+							() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision, forceProcessingRunKey, event.instanceId),
+						)
+					: undefined,
+				subject && !subjectAttached
+					? step.do(
+							'enqueue-resolved-subject-child-v2',
+							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+							async () => {
+								const subjectTarget = ResourceDraftTargetSchema.parse({
+									kind: 'draft',
+									relation: { kind: 'subject', parentResourceId: persistedResourceId, parentAcquisitionRevision: acquisitionRevision },
+									// Carrier-resolved hints only; the subject page still wins when it states its own date.
+									...(subject.publishedDate ? { sourceHints: { publishedDate: subject.publishedDate } } : {}),
+									url: subject.normalizedUrl,
+								});
+								const id = `subject-draft-v4-${await sha256Hex(JSON.stringify(subjectTarget))}`;
+								await this.env.APP.registerResourceProgressTask({ taskId: id, kind: 'processing', parentTaskId: event.instanceId });
+								await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: subjectTarget }]);
+								return id;
+							},
+						)
+					: undefined,
+			]);
+			const failures = followups.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+			await sealProgressTask(this.env, step, event.instanceId, failures.length ? 'followup_dispatch_failed' : undefined);
+			if (failures.length) throw new AggregateError(failures, 'Resource persisted, but one or more follow-ups failed');
 
-		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
-		return { resourceId: persistedResourceId };
+			console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
+			return { resourceId: persistedResourceId };
+		} catch (error) {
+			await progressStep(this.env, step, 'outcome-after-error', {
+				taskId: event.instanceId,
+				status: publishedResourceId ? 'complete' : 'failed',
+				...(publishedResourceId ? { resourceId: publishedResourceId } : { errorCode: 'processing_failed' }),
+			});
+			if (publishedResourceId) await sealProgressTask(this.env, step, event.instanceId, 'followup_dispatch_failed');
+			throw error;
+		}
 	}
 }

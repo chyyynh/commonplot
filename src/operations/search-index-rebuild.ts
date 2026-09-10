@@ -76,7 +76,6 @@ async function loadCorpusCount(db: NodePgDatabase): Promise<number> {
 		SELECT COUNT(*)::text AS count
 		FROM resources r
 		WHERE r.scope = 'corpus'
-		  AND r.enrichment_status = 'enriched'
 		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 	`);
 	const [row] = result.rows;
@@ -90,7 +89,6 @@ async function listCorpusIdsAfter(db: NodePgDatabase, cursor: string | null): Pr
 		SELECT r.id::text
 		FROM resources r
 		WHERE r.scope = 'corpus'
-		  AND r.enrichment_status = 'enriched'
 		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		  AND (${cursor}::uuid IS NULL OR r.id > ${cursor}::uuid)
 		ORDER BY r.id
@@ -118,7 +116,6 @@ async function listCorpusDeltaAfter(db: NodePgDatabase, startedAt: string, curso
 		  FROM resources r
 		  LEFT JOIN resource_translations translation ON translation.resource_id = r.id
 		  WHERE r.scope = 'corpus'
-		    AND r.enrichment_status = 'enriched'
 		    AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		  GROUP BY r.id, r.updated_at
 		)
@@ -143,7 +140,6 @@ async function loadEligibleCorpusIds(db: NodePgDatabase, resourceIds: readonly s
 		FROM resources r
 		WHERE ${inArray(sql`r.id`, resourceIds)}
 		  AND r.scope = 'corpus'
-		  AND r.enrichment_status = 'enriched'
 		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 	`);
 	return new Set(result.rows.map((row) => row.id));

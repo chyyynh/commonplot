@@ -1,8 +1,30 @@
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 
+const workflowMocks = {
+	'../shared/db': ['connectCoreDb'],
+	'./acquisition': ['stageStoredResourceAcquisition', 'stageUrlAcquisition'],
+	'./analysis': ['analyzeResource'],
+	'./image-rehosting': ['stageResourceImages'],
+	'./resource-persistence': ['persistResolvedResource', 'publishPublicPdfCrops', 'prepareResolvedResource'],
+	'./resource-references': ['enqueueResourceReferenceEnrichment'],
+	'./translation-workflow': ['enqueueResourceTranslation'],
+};
+
 registerHooks({
 	resolve(specifier, context, nextResolve) {
+		if (specifier === 'cloudflare:workers') {
+			return {
+				shortCircuit: true,
+				url: 'data:text/javascript,export class WorkflowEntrypoint { constructor(_ctx,env) { this.env = env; } }',
+			};
+		}
+		if (context.parentURL?.endsWith('/ingest/workflow.ts') && workflowMocks[specifier]) {
+			const source = workflowMocks[specifier]
+				.map((name) => `export const ${name} = (...args) => globalThis.resourceWorkflowContract[${JSON.stringify(name)}](...args);`)
+				.join('\n');
+			return { shortCircuit: true, url: `data:text/javascript,${encodeURIComponent(source)}` };
+		}
 		if (specifier === 'cloudflare:workflows') {
 			return { shortCircuit: true, url: 'data:text/javascript,export class NonRetryableError extends Error {}' };
 		}
@@ -143,3 +165,157 @@ console.info({
 	identifierContractCases: 5,
 	urlCases: platformUrlCases.length,
 });
+
+// Run the real main Workflow against controlled provider/persistence boundaries.
+// The fake durable step executes callbacks once; native retry timing is outside
+// this Node test.
+const { ResourceProcessingV2Workflow } = await import('../src/ingest/workflow.ts');
+const workflowResourceId = '30000000-0000-4000-8000-000000000001';
+const workflowRawId = '30000000-0000-4000-8000-000000000002';
+const workflowCases = [
+	'published-pdf',
+	'private-pdf-resolved',
+	'crops-failed',
+	'analysis-failed',
+	'ready-delivery-failed',
+	'followup-failed',
+	'superseded-raw',
+	'expired-admission',
+];
+const providerFetch = globalThis.fetch;
+globalThis.fetch = async () => {
+	throw new Error('Workflow contract attempted an external provider request');
+};
+try {
+	for (const scenario of workflowCases) {
+		const effects = [];
+		const reports = [];
+		const warnings = [];
+		let rejectReady = scenario === 'ready-delivery-failed';
+		const acquired = {
+			kind: 'paper',
+			url: 'https://example.com/paper.pdf',
+			resourcePlatform: null,
+			fileType: 'application/pdf',
+			originalLang: 'en',
+			content: 'An original research paper with readable content.',
+			resourceImages: [],
+			resourceIdentifiers: [],
+			subject: null,
+		};
+		const acquire = () => {
+			effects.push('acquired');
+			return acquired;
+		};
+		globalThis.resourceWorkflowContract = {
+			connectCoreDb: async () => ({}),
+			stageStoredResourceAcquisition: acquire,
+			stageUrlAcquisition: acquire,
+			analyzeResource: async () => {
+				if (scenario === 'analysis-failed') throw new Error('Analysis unavailable');
+				return {};
+			},
+			stageResourceImages: async () => [],
+			prepareResolvedResource: (value) => value,
+			persistResolvedResource: async (_db, _resource, target) => {
+				const privateRendition = target.kind === 'existing';
+				effects.push(privateRendition ? 'private-persisted' : 'corpus-persisted');
+				return {
+					resourceId: privateRendition ? workflowRawId : workflowResourceId,
+					scope: privateRendition ? 'private' : 'corpus',
+					translationRevision: 'fixture-revision',
+					acquisitionRevision: 'fixture-acquisition',
+				};
+			},
+			publishPublicPdfCrops: async () => {
+				if (scenario === 'crops-failed') throw new Error('Crop publication unavailable');
+				effects.push('public-crops');
+			},
+			enqueueResourceReferenceEnrichment: async () => effects.push('references-enqueued'),
+			enqueueResourceTranslation: async () => effects.push('translation-enqueued'),
+		};
+		const app = {
+			verifyStoredBlobProcessing: async () => scenario !== 'superseded-raw',
+			startResourceProgressTask: async () => scenario !== 'expired-admission',
+			reportResourceProgress: async (report) => {
+				reports.push(report);
+				if (report.status === 'complete') {
+					if (rejectReady) {
+						rejectReady = false;
+						throw new Error('Progress delivery unavailable after publication');
+					}
+					effects.push('ready');
+				}
+			},
+			completeResourceSave: async () => effects.push('profile-attached'),
+			registerResourceProgressTask: async () => true,
+			sealResourceProgressTask: async (_taskId, errorCode) => warnings.push(errorCode),
+		};
+		const workflow = new ResourceProcessingV2Workflow(
+			{},
+			{
+				APP: app,
+				RESOURCE_SEARCH_SYNC_QUEUE: {
+					send: async () => {
+						if (scenario === 'followup-failed') throw new Error('Search queue unavailable');
+						effects.push('search-enqueued');
+					},
+				},
+			},
+		);
+		const owned = scenario === 'private-pdf-resolved' || scenario === 'superseded-raw';
+		const payload = owned
+			? { kind: 'storedBlob', resourceId: workflowRawId }
+			: { kind: 'draft', url: 'https://example.com/paper.pdf', saveTarget: { kind: 'profileSave', userId: 'fixture-user' } };
+		const step = { do: async (_name, ...args) => args.at(-1)({ attempt: 1 }) };
+		const result = workflow.run({ instanceId: 'app-ingest-v1-30000000-0000-4000-8000-000000000003', payload }, step);
+		if (scenario.endsWith('-failed')) await assert.rejects(result, undefined, scenario);
+		else await result;
+		if (scenario === 'superseded-raw' || scenario === 'expired-admission') {
+			assert.deepEqual(effects, [], `${scenario}: rejected attempts must not run providers or persist`);
+			assert.equal(
+				reports.some((report) => report.status === 'complete'),
+				false,
+				scenario,
+			);
+			continue;
+		}
+		if (scenario === 'analysis-failed' || scenario === 'crops-failed') {
+			assert.equal(reports.at(-1).status, 'failed', scenario);
+			assert.equal(reports.at(-1).stage, undefined, `${scenario}: failure must retain the last reported stage`);
+			assert.equal(
+				reports.filter((report) => report.status === 'running').at(-1).stage,
+				scenario === 'analysis-failed' ? 'analyzing' : 'persisting',
+				scenario,
+			);
+			assert.equal(effects.includes('profile-attached'), false, scenario);
+			assert.equal(effects.includes('ready'), false, scenario);
+			continue;
+		}
+		assert.ok(effects.includes('public-crops'), `${scenario}: public PDF images are published`);
+		assert.ok(effects.includes('profile-attached'), `${scenario}: resource reaches its owner`);
+		assert.ok(effects.indexOf('public-crops') < effects.indexOf('profile-attached'), `${scenario}: crops precede profile publication`);
+		assert.ok(effects.indexOf('profile-attached') < effects.indexOf('ready'), `${scenario}: ready includes the owner attachment`);
+		assert.equal(reports.at(-1).status, 'complete', scenario);
+		assert.equal(reports.at(-1).resourceId, workflowResourceId, scenario);
+		assert.equal(
+			reports.some((report) => report.status === 'failed'),
+			false,
+			`${scenario}: follow-ups cannot undo publication`,
+		);
+		if (scenario === 'private-pdf-resolved') {
+			assert.ok(effects.includes('private-persisted'));
+			assert.ok(effects.indexOf('private-persisted') < effects.indexOf('corpus-persisted'));
+			assert.ok(effects.indexOf('profile-attached') < effects.indexOf('references-enqueued'));
+		}
+		if (scenario === 'followup-failed')
+			assert.ok(effects.includes('translation-enqueued'), 'Independent handoffs still run after a failure');
+		if (scenario === 'ready-delivery-failed' || scenario === 'followup-failed') {
+			assert.ok(warnings.includes('followup_dispatch_failed'), scenario);
+		}
+	}
+} finally {
+	globalThis.fetch = providerFetch;
+	delete globalThis.resourceWorkflowContract;
+}
+console.info({ event: 'resource_workflow_contract_passed', cases: workflowCases.length });

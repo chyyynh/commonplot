@@ -238,15 +238,6 @@ export async function stageStoredPdfAcquisition(
 		'load-stored-pdf-input-v1',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 		async () => loadStoredPdfInput(await connectCoreDb(env), target.resourceId),
-		{
-			rollback: async () => {
-				await env.APP.markStoredBlobProcessingFailed(target.resourceId);
-			},
-			rollbackConfig: {
-				retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
-				timeout: '30 seconds',
-			},
-		},
 	);
 	const [contentStream, grobidHeader] = await Promise.all([
 		step.do(

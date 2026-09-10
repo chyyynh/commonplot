@@ -7,6 +7,7 @@ import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
 import { resolveCrossrefReference } from './crossref';
 import { PDF_MIME } from './platforms/pdf-constants';
+import { progressStep, sealProgressTask, startProgressTask } from './progress';
 import { readStructuredPdfArtifact } from './zotero-sdt-service.ts';
 import { matchesUploadedPdfRendition, normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfSourceCrops } from './zotero-sdt.ts';
 
@@ -216,10 +217,13 @@ export async function enqueueResourceReferenceEnrichment(
 	resourceId: string,
 	referenceRevision: string,
 	uploadedPdfResourceId: string,
+	parentTaskId?: string,
 ) {
-	const id = `rr-v5-${await sha256Hex(
-		[RESOURCE_REFERENCE_WORKFLOW_REVISION, resourceId, referenceRevision, uploadedPdfResourceId, 'idempotent'].join('\n'),
+	const id = `rr-v6-${await sha256Hex(
+		[RESOURCE_REFERENCE_WORKFLOW_REVISION, resourceId, referenceRevision, uploadedPdfResourceId, parentTaskId ?? 'idempotent'].join('\n'),
 	)}`;
+	if (parentTaskId)
+		await env.APP.registerResourceProgressTask({ taskId: id, kind: 'references', resourceId, revision: referenceRevision, parentTaskId });
 	await env.RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW.createBatch([
 		{ id, params: { referenceRevision, resourceId, source: { fileResourceId: uploadedPdfResourceId, kind: 'uploadedPdf' } } },
 	]);
@@ -229,29 +233,49 @@ export async function enqueueResourceReferenceEnrichment(
 export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<CoreEnv, ResourceReferenceEnrichmentPayload> {
 	async run(event: WorkflowEvent<ResourceReferenceEnrichmentPayload>, step: WorkflowStep): Promise<void> {
 		const input = ResourceReferenceEnrichmentPayloadSchema.parse(event.payload);
-		const source = await step.do('load-uploaded-pdf-reference-source-v2', REFERENCE_DB_STEP, async () =>
-			loadUploadedPdfSource(await connectCoreDb(this.env), input.resourceId, input.source.fileResourceId, input.referenceRevision),
-		);
-		const stored = await step.do('replace-uploaded-pdf-citations-v3', REFERENCE_SDT_STEP, async () => {
-			const document = await readStructuredPdfArtifact(this.env, source.storageKey, source.contentHash);
-			if (!document) throw new NonRetryableError('Structured PDF artifact is missing or stale');
-			const db = await connectCoreDb(this.env);
-			return replaceStoredCitationData(db, input.resourceId, input.referenceRevision, document, source.contentHash);
-		});
-		const crossrefUpdates = await resolveCrossrefUpdates(step, stored.referenceTexts);
-		const enrichedCount = crossrefUpdates.length
-			? await step.do('persist-crossref-reference-metadata-v1', REFERENCE_DB_STEP, async () =>
-					persistCrossrefMetadata(await connectCoreDb(this.env), input.resourceId, input.referenceRevision, crossrefUpdates),
-				)
-			: 0;
-		console.info({
-			tag: 'RESOURCE_REFERENCES',
-			event: 'reference_enrichment_completed',
-			resource_id: input.resourceId,
-			stored_reference_count: stored.referenceTexts.length,
-			stored_mention_count: stored.mentionCount,
-			aligned_mention_count: stored.alignedMentionCount,
-			crossref_enriched_count: enrichedCount,
-		});
+		try {
+			if (!(await startProgressTask(this.env, step, event.instanceId, 'references'))) return;
+			const source = await step.do('load-uploaded-pdf-reference-source-v2', REFERENCE_DB_STEP, async () =>
+				loadUploadedPdfSource(await connectCoreDb(this.env), input.resourceId, input.source.fileResourceId, input.referenceRevision),
+			);
+			const stored = await step.do('replace-uploaded-pdf-citations-v3', REFERENCE_SDT_STEP, async () => {
+				const document = await readStructuredPdfArtifact(this.env, source.storageKey, source.contentHash);
+				if (!document) throw new NonRetryableError('Structured PDF artifact is missing or stale');
+				const db = await connectCoreDb(this.env);
+				return replaceStoredCitationData(db, input.resourceId, input.referenceRevision, document, source.contentHash);
+			});
+			const crossrefUpdates = await resolveCrossrefUpdates(step, stored.referenceTexts);
+			const enrichedCount = crossrefUpdates.length
+				? await step.do('persist-crossref-reference-metadata-v1', REFERENCE_DB_STEP, async () =>
+						persistCrossrefMetadata(await connectCoreDb(this.env), input.resourceId, input.referenceRevision, crossrefUpdates),
+					)
+				: 0;
+			console.info({
+				tag: 'RESOURCE_REFERENCES',
+				event: 'reference_enrichment_completed',
+				resource_id: input.resourceId,
+				stored_reference_count: stored.referenceTexts.length,
+				stored_mention_count: stored.mentionCount,
+				aligned_mention_count: stored.alignedMentionCount,
+				crossref_enriched_count: enrichedCount,
+			});
+			await progressStep(this.env, step, 'complete', {
+				taskId: event.instanceId,
+				stage: 'references',
+				status: 'complete',
+				resourceId: input.resourceId,
+			});
+		} catch (error) {
+			await progressStep(this.env, step, 'failed', {
+				taskId: event.instanceId,
+				stage: 'references',
+				status: 'failed',
+				resourceId: input.resourceId,
+				errorCode: 'references_failed',
+			});
+			throw error;
+		} finally {
+			await sealProgressTask(this.env, step, event.instanceId);
+		}
 	}
 }
