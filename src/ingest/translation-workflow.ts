@@ -348,6 +348,32 @@ export async function enqueueResourceTranslation(
 	return id;
 }
 
+/** Service-bound callers authorize the resource before requesting this bounded status. */
+export async function readResourceTranslationStatus(env: CoreEnv, resourceId: string): Promise<string | null> {
+	const id = z.uuid().parse(resourceId);
+	const db = await connectCoreDb(env);
+	const result = await db.execute<{ revision: string }>(sql`
+		SELECT MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS revision
+		FROM resources resource
+		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+		WHERE resource.id = ${id}::uuid AND (resource.scope = 'corpus' OR ${privateUploadedPdfTranslationSqlAdmission()})
+	`);
+	const revision = result.rows[0]?.revision;
+	if (!revision) return null;
+	try {
+		const instance = await env.RESOURCE_TRANSLATION_V2_WORKFLOW.get(`rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${id}-${revision}`);
+		return (await instance.status()).status;
+	} catch (error) {
+		console.warn({
+			tag: 'RESOURCE_TRANSLATION',
+			event: 'status_unavailable',
+			resource_id: id,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	}
+}
+
 export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceTranslationPayload> {
 	async run(event: WorkflowEvent<ResourceTranslationPayload>, step: WorkflowStep) {
 		const { force = false, resourceId, translationRevision } = event.payload;

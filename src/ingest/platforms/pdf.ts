@@ -10,18 +10,11 @@ import {
 	ResourceCreatorsSchema,
 	resolveResourceHints,
 } from '../../shared/resource';
-import { limitByteStream } from '../../shared/response';
 import { resolveCrossrefPaperCandidate } from '../crossref';
 import type { GrobidPdfHeader } from '../grobid-tei';
-import {
-	ensureStructuredPdfSourceCrops,
-	parsePdfArtifactStream,
-	readStructuredPdfArtifact,
-	writeStructuredPdfArtifact,
-} from '../zotero-sdt-service.ts';
-import { normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfSourceCrops } from '../zotero-sdt.ts';
+import { parsePublicPdfResponse, parseStoredPdfRepresentation, PermanentPdfArtifactError } from '../zotero-sdt-service.ts';
 import { fetchOpenAlexPdf } from './openalex';
-import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
+import { PDF_MIME } from './pdf-constants';
 import type { LocalPdfSummary, PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
 
@@ -40,22 +33,13 @@ type PdfAcquisition = Readonly<{
 	parse: LocalPdfSummary;
 }>;
 
-type LocalPdfParseResult = { markdown: string; paperIdentifierText: string | null; parse: LocalPdfSummary };
-
-function localPdfResult(normalized: ReturnType<typeof normalizeStructuredPdf>, sourceLabel: string): LocalPdfParseResult {
-	const { markdown, paperIdentifierText, parse } = normalized;
-	console.info({
-		tag: 'PDF_PARSE',
-		event: 'zotero_sdt_completed',
-		fallback_reasons: parse.fallbackReasons,
-		full_page_image_pages: parse.fullPageImagePages,
-		mention_count: normalized.mentions.length,
-		parser_version: parse.parserVersion,
-		reference_count: normalized.references.length,
-		source: sourceLabel,
-		total_pages: parse.totalPages,
-	});
-	return { markdown, paperIdentifierText, parse };
+async function localPdfAttempt<T>(attempt: Promise<T>): Promise<T> {
+	try {
+		return await attempt;
+	} catch (error) {
+		if (error instanceof PermanentPdfArtifactError) throw new NonRetryableError(error.message);
+		throw error;
+	}
 }
 
 /** Finish a direct public PDF after the retrying fetch/local-parse step has ended. */
@@ -90,11 +74,11 @@ export async function completeFetchedPdfAcquisition(
 export async function stageOpenAlexPdfMarkdown(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
 	try {
 		const contentStream = await step.do(
-			'acquire-openalex-content-pdf-v10',
+			'acquire-openalex-content-pdf-v11',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 			async () => {
 				const response = await fetchOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
-				return new Response((await parseFetchedPdfResponse(env, response)).markdown).body!;
+				return new Response((await localPdfAttempt(parsePublicPdfResponse(env, response, input.contentPdfUrl))).markdown).body!;
 			},
 		);
 		const markdown = await new Response(contentStream).text();
@@ -176,51 +160,13 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 type StoredPdfInput = Awaited<ReturnType<typeof loadStoredPdfInput>>;
 
 async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resourceId: string): Promise<PdfAcquisition> {
-	const sourceLabel = `Stored PDF ${resourceId}`;
-	let attempt: StructuredPdfDocument | LocalPdfParseResult | null = null;
-	try {
-		attempt = await readStructuredPdfArtifact(env, resource.storageKey, resource.contentHash);
-	} catch (error) {
-		console.warn({
-			tag: 'PDF_PARSE',
-			event: 'zotero_sdt_artifact_invalid',
-			resource_id: resourceId,
-			error: error instanceof Error ? error.message : String(error),
-		});
-	}
-	if (attempt) {
-		console.info({
-			tag: 'PDF_PARSE',
-			event: 'zotero_sdt_artifact_reused',
-			parser_version: `zotero-pdf-${attempt.metadata.processor.version}/sdt-${attempt.schemaVersion}`,
-			resource_id: resourceId,
-		});
-	} else {
-		const object = await env.R2.get(resource.storageKey);
-		if (!object) throw new NonRetryableError(`PDF source object missing: ${resource.storageKey}`);
-		if (object.size < 1 || object.size > MAX_PDF_BYTES) {
-			await object.body.cancel('Stored PDF size is outside the supported range');
-			throw new NonRetryableError(`PDF source object must contain 1-${MAX_PDF_BYTES} bytes`);
-		}
-		attempt = await parsePdfArtifactStream(env, object.body, object.size, sourceLabel);
-		if ('schemaVersion' in attempt) await writeStructuredPdfArtifact(env, resource.storageKey, resource.contentHash, attempt);
-	}
-	let parsed: LocalPdfParseResult;
-	if ('schemaVersion' in attempt) {
-		const readySourceCrops = await ensureStructuredPdfSourceCrops(env, {
-			crops: structuredPdfSourceCrops(attempt),
-			inputContentHash: resource.contentHash,
+	const parsed = await localPdfAttempt(
+		parseStoredPdfRepresentation(env, {
 			pdfStorageKey: resource.storageKey,
-			resourceId,
-		});
-		parsed = localPdfResult(
-			normalizeStructuredPdf(attempt, {
-				inputContentHash: resource.contentHash,
-				readySourceCrops,
-			}),
-			sourceLabel,
-		);
-	} else parsed = attempt;
+			inputContentHash: resource.contentHash,
+			sourceLabel: `Stored PDF ${resourceId}`,
+		}),
+	);
 	return {
 		resource: {
 			kind: 'file',
@@ -242,25 +188,13 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 	};
 }
 
-async function parseFetchedPdfResponse(env: CoreEnv, response: Response) {
-	const declaredLength = Number(response.headers.get('content-length'));
-	if (Number.isFinite(declaredLength) && declaredLength > MAX_PDF_BYTES) {
-		await response.body?.cancel('Fetched PDF size is outside the supported range');
-		throw new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`);
-	}
-	if (!response.body) throw new NonRetryableError('Fetched PDF response body is empty');
-	const body = limitByteStream(response.body, MAX_PDF_BYTES, () => new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`));
-	const attempt = await parsePdfArtifactStream(env, body, null, 'Fetched PDF');
-	return 'schemaVersion' in attempt ? localPdfResult(normalizeStructuredPdf(attempt), 'Fetched PDF') : attempt;
-}
-
 export async function acquireFetchedPdfResponse(
 	env: CoreEnv,
 	response: Response,
 	finalUrl: string,
 	hints: ResourceAcquisitionHints,
 ): Promise<PdfAcquisition> {
-	const parsed = await parseFetchedPdfResponse(env, response);
+	const parsed = await localPdfAttempt(parsePublicPdfResponse(env, response, finalUrl));
 	const url = new URL(finalUrl);
 	let fileName = url.pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';
 	try {
@@ -316,7 +250,7 @@ export async function stageStoredPdfAcquisition(
 	);
 	const [contentStream, grobidHeader] = await Promise.all([
 		step.do(
-			'acquire-stored-pdf-v8',
+			'acquire-stored-pdf-v9',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 			async () => Response.json(await acquireStoredPdf(env, resource, target.resourceId)).body!,
 		),

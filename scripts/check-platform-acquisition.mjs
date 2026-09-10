@@ -163,7 +163,28 @@ async function acquire(input = {}) {
 		Object.defineProperty(response, 'url', { value: url ?? base.url });
 		return response;
 	};
+	const pdfObjects = new Map();
 	const env = {
+		R2: {
+			async put(key, body, options = {}) {
+				pdfObjects.set(key, { bytes: await new Response(body).arrayBuffer(), ...options });
+			},
+			async head(key) {
+				const object = pdfObjects.get(key);
+				return object ? { size: object.bytes.byteLength, customMetadata: object.customMetadata } : null;
+			},
+			async get(key) {
+				const object = pdfObjects.get(key);
+				return object
+					? {
+							size: object.bytes.byteLength,
+							customMetadata: object.customMetadata,
+							body: new Response(object.bytes).body,
+							text: () => new Response(object.bytes).text(),
+						}
+					: null;
+			},
+		},
 		ZOTERO_SDT: {
 			getByName: () => ({
 				processPdf: async (body) => {

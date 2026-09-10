@@ -6,14 +6,15 @@ import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
 import { resolveCrossrefReference } from './crossref';
+import { matchesUploadedPdfRendition } from './pdf-rendition';
 import { PDF_MIME } from './platforms/pdf-constants';
 import { readStructuredPdfArtifact } from './zotero-sdt-service.ts';
-import { normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfSourceCrops, structuredPdfSourceCropUrl } from './zotero-sdt.ts';
+import { normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfSourceCrops } from './zotero-sdt.ts';
 
 const CROSSREF_BATCH_SIZE = 3;
 const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 const REFERENCE_SDT_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '90 seconds' } as const;
-const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v2';
+const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v3';
 const ResourceReferenceEnrichmentPayloadSchema = z.strictObject({
 	referenceRevision: z.hash('md5').lowercase(),
 	resourceId: z.uuid(),
@@ -72,10 +73,12 @@ async function replaceStoredCitationData(
 	`);
 	const content = source.rows[0]?.content;
 	if (content === undefined) throw new NonRetryableError('Paper revision changed before structured citations could be stored');
-	const readySourceCrops = structuredPdfSourceCrops(document).filter((crop) =>
-		content.includes(structuredPdfSourceCropUrl(inputContentHash, crop.id)),
-	);
+	const readySourceCrops = structuredPdfSourceCrops(document);
 	const structured = normalizeStructuredPdf(document, { inputContentHash, readySourceCrops });
+	if (!matchesUploadedPdfRendition(content, structured.markdown)) {
+		console.info({ tag: 'RESOURCE_REFERENCES', event: 'retained_public_rendition', resource_id: resourceId });
+		return { referenceTexts: [] as string[], mentionCount: 0, alignedMentionCount: 0 };
+	}
 	const hasExactStructuredContent = content === structured.markdown;
 	const referenceOrdinalByKey = new Map(structured.references.map(({ key }, index) => [key, index + 1]));
 	const mentions = structured.mentions.flatMap(({ contentEnd, contentStart, context, markerText, section, targetKeys }) => {
@@ -230,7 +233,7 @@ export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<Core
 		const source = await step.do('load-uploaded-pdf-reference-source-v2', REFERENCE_DB_STEP, async () =>
 			loadUploadedPdfSource(await connectCoreDb(this.env), input.resourceId, input.source.fileResourceId, input.referenceRevision),
 		);
-		const stored = await step.do('replace-uploaded-pdf-citations-v2', REFERENCE_SDT_STEP, async () => {
+		const stored = await step.do('replace-uploaded-pdf-citations-v3', REFERENCE_SDT_STEP, async () => {
 			const document = await readStructuredPdfArtifact(this.env, source.storageKey, source.contentHash);
 			if (!document) throw new NonRetryableError('Structured PDF artifact is missing or stale');
 			const db = await connectCoreDb(this.env);

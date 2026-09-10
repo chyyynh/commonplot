@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { BlockContent, Heading, PhrasingContent, Root, RootContent, Table } from 'mdast';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm';
@@ -32,7 +33,7 @@ const MAX_SECTION_CHARS = 300;
 const MAX_SOURCE_CROP_ALT_CHARS = 500;
 const MAX_SOURCE_CROPS = 64;
 const MAX_REF_PATH_DEPTH = 16;
-export const ZOTERO_SDT_ARTIFACT_VERSION = 'newsence-zotero-sdt-v1';
+export const ZOTERO_SDT_ARTIFACT_VERSION = 'newsence-zotero-sdt-v2-02100446';
 
 export function parseStructuredPdfFailure(status: number, body: string): { message: string; totalPages: number | null } {
 	let message = `Zotero SDT parse failed with ${status}`;
@@ -280,50 +281,264 @@ function statisticalReferenceNodes(nodes: readonly SdtNode[], referenceKeyByPath
 	return ignored;
 }
 
-/**
- * Zotero Reading Mode renders semantic image nodes and flat tables by
- * cropping their source rectangles from the PDF. Keep the same geometry as a
- * durable, bounded contract so the original PDF remains the rendering source.
- */
-export function structuredPdfSourceCrops(document: StructuredPdfDocument) {
-	const crops = [];
-	for (const [blockIndex, block] of document.content.entries()) {
-		if (block.flowClass === 'excluded' || (block.type !== 'image' && (block.type !== 'table' || !isLeafBlock(block)))) continue;
-		const rectByPage = new Map<number, [number, number, number, number]>();
-		for (const [pageIndex, x1, y1, x2, y2] of block.anchor?.pageRects ?? []) {
-			if (!Number.isInteger(pageIndex) || pageIndex < 0 || pageIndex >= document.catalog.pages.length || !(x2 > x1) || !(y2 > y1)) {
-				continue;
+type PdfRect = [number, number, number, number];
+type PageRect = [number, number, number, number, number];
+const SOURCE_CROP_RECIPE_VERSION = 'caption-regions-v2';
+
+export type StructuredPdfSourceCrop = Readonly<{
+	altText: string;
+	blockPath: string;
+	figureId: string | null;
+	id: string;
+	pageIndex: number;
+	placement: 'before' | 'replace';
+	rect: PdfRect;
+	source: 'semantic' | 'caption-region';
+	suppressedBlockPaths: readonly string[];
+}>;
+
+type MissingFigure = Readonly<{ figureId: string; reason: string }>;
+
+function pageRects(node: SdtNode): PageRect[] {
+	const rects = node.anchor && 'pageRects' in node.anchor ? node.anchor.pageRects : [];
+	return (rects ?? []).filter((rect): rect is PageRect => Number.isInteger(rect[0]) && rect[3] > rect[1] && rect[4] > rect[2]);
+}
+
+/** Text-map runs, unlike block bounds, do not include nearby unrecognized graphics. */
+function textRects(node: SdtNode): PageRect[] {
+	if ('content' in node) return node.content.flatMap(textRects);
+	if (node.anchor && 'textMap' in node.anchor && node.anchor.textMap) {
+		try {
+			const runs: unknown = JSON.parse(node.anchor.textMap);
+			if (Array.isArray(runs)) {
+				const rects: PageRect[] = [];
+				for (const run of runs) {
+					if (!Array.isArray(run) || run.length < 6 || !run.slice(0, 6).every((part) => typeof part === 'number' && Number.isFinite(part)))
+						continue;
+					const [, page, x1, y1, x2, y2] = run as number[];
+					if (Number.isInteger(page) && x2! > x1! && y2! > y1!) rects.push([page!, x1!, y1!, x2!, y2!]);
+				}
+				if (rects.length) return rects;
 			}
+		} catch {
+			// The SDT text-map contract permits unknown encodings. Use bounded anchors.
+		}
+	}
+	return pageRects(node);
+}
+
+function blockRects(node: SdtBlockNode): PageRect[] {
+	const rects = pageRects(node);
+	return rects.length ? rects : textRects(node);
+}
+
+function figureLabel(node: SdtBlockNode): string | null {
+	if (node.type !== 'caption' || node.flowClass === 'excluded') return null;
+	const match = /^(?:figure|fig\.?)\s+(\d+[a-z]?)(?=[\s:.,])/iu.exec(cleanText(nodeText(node)));
+	return match ? `Figure ${match[1]}` : null;
+}
+
+function authorTablePaths(document: StructuredPdfDocument): Set<string> {
+	const firstBody = document.content.findIndex(
+		(node) =>
+			node.type === 'caption' || (node.type === 'heading' && /^(?:abstract|(?:1\.?\s+)?introduction)$/iu.test(cleanText(nodeText(node)))),
+	);
+	if (firstBody < 1) return new Set();
+	const front = document.content.slice(0, firstBody);
+	const emails = front.filter((node) => /[\w.+-]+@[\w.-]+\.[a-z]{2,}/iu.test(nodeText(node)));
+	if (emails.length < 2 || !front.some((node) => /\b(?:university|institute|laborator(?:y|ies))\b/iu.test(nodeText(node))))
+		return new Set();
+	return new Set(
+		front.flatMap((node, index) => {
+			const rects = blockRects(node);
+			return node.type === 'table' &&
+				isLeafBlock(node) &&
+				cleanText(nodeText(node)).length <= 240 &&
+				rects.length &&
+				rects.every(([page, , y1, , y2]) => page === 0 && y2 - y1 <= 50)
+				? [String(index)]
+				: [];
+		}),
+	);
+}
+
+function horizontalOverlap(a: PdfRect, b: PdfRect): number {
+	return Math.max(0, Math.min(a[2], b[2]) - Math.max(a[0], b[0]));
+}
+
+function isChartLabels(node: SdtBlockNode, caption: PageRect): boolean {
+	if (node.type !== 'paragraph') return false;
+	const value = cleanText(nodeText(node));
+	if (value.length > 700 || !/\d/u.test(value) || /[.!?]\s+[A-Z]/u.test(value) || /[.!?]$/u.test(value)) return false;
+	const rects = blockRects(node);
+	const rect = rects.length === 1 ? rects[0] : null;
+	if (!rect || rect[0] !== caption[0] || rect[2] < caption[4] || rect[2] - caption[4] > 40 || rect[4] - rect[2] < 48) return false;
+	const area = (rect[3] - rect[1]) * (rect[4] - rect[2]);
+	const runs = textRects(node);
+	return value.length / area < 0.01 && runs.length >= 3 && new Set(runs.map((run) => Math.round(run[2] / 10))).size >= 3;
+}
+
+/** Plan semantic crops plus conservative caption-bounded recoveries; never infer an entire page. */
+export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
+	const crops: StructuredPdfSourceCrop[] = [];
+	const missing: MissingFigure[] = [];
+	const excludedAuthorTables = authorTablePaths(document);
+	const captions = document.content.flatMap((node, index) => {
+		const figureId = figureLabel(node);
+		return figureId ? [{ node, index, figureId }] : [];
+	});
+	function addCrop(crop: Omit<StructuredPdfSourceCrop, 'id'>) {
+		if (crops.length >= MAX_SOURCE_CROPS) return false;
+		const digest = createHash('sha256')
+			.update(
+				JSON.stringify([
+					ZOTERO_SDT_ARTIFACT_VERSION,
+					document.schemaVersion,
+					document.metadata.processor.version,
+					SOURCE_CROP_RECIPE_VERSION,
+					crop.blockPath,
+					crop.source,
+					crop.pageIndex,
+					crop.rect,
+				]),
+			)
+			.digest('hex')
+			.slice(0, 16);
+		crops.push({ ...crop, id: `${crop.blockPath}-p${crop.pageIndex}-${digest}` });
+		return true;
+	}
+	for (const [blockIndex, block] of document.content.entries()) {
+		if (
+			block.flowClass === 'excluded' ||
+			excludedAuthorTables.has(String(blockIndex)) ||
+			(block.type !== 'image' && (block.type !== 'table' || !isLeafBlock(block)))
+		)
+			continue;
+		const rectByPage = new Map<number, PdfRect>();
+		for (const [pageIndex, x1, y1, x2, y2] of blockRects(block)) {
+			if (pageIndex < 0 || pageIndex >= document.catalog.pages.length) continue;
 			const current = rectByPage.get(pageIndex);
 			if (current) {
 				current[0] = Math.min(current[0], x1);
 				current[1] = Math.min(current[1], y1);
 				current[2] = Math.max(current[2], x2);
 				current[3] = Math.max(current[3], y2);
-			} else {
-				rectByPage.set(pageIndex, [x1, y1, x2, y2]);
-			}
+			} else rectByPage.set(pageIndex, [x1, y1, x2, y2]);
 		}
-		const blockPath = String(blockIndex);
-		const altText = boundedText(cleanText(nodeText(block)), MAX_SOURCE_CROP_ALT_CHARS);
+		if (!rectByPage.size) missing.push({ figureId: `block-${blockIndex}`, reason: 'graphic-geometry-unavailable' });
 		for (const [pageIndex, rect] of [...rectByPage].sort((left, right) => left[0] - right[0])) {
-			if (crops.length >= MAX_SOURCE_CROPS) return crops;
-			crops.push({
-				altText,
-				blockPath,
-				id: `${blockPath}-p${pageIndex}`,
+			const added = addCrop({
+				altText: boundedText(cleanText(nodeText(block)), MAX_SOURCE_CROP_ALT_CHARS),
+				blockPath: String(blockIndex),
+				figureId: null,
 				pageIndex,
+				placement: 'replace',
 				rect,
+				source: 'semantic',
+				suppressedBlockPaths: [],
 			});
+			if (!added) missing.push({ figureId: `block-${blockIndex}-p${pageIndex}`, reason: 'crop-budget-exceeded' });
 		}
 	}
-	return crops;
+	if (captions.length > MAX_SOURCE_CROPS)
+		missing.push({ figureId: `${captions.length - MAX_SOURCE_CROPS} additional figures`, reason: 'visual-analysis-budget-exceeded' });
+	const barriers = document.content.map((node) => (node.type === 'paragraph' ? textRects(node) : blockRects(node)));
+	for (const { node, index, figureId } of captions.slice(0, MAX_SOURCE_CROPS)) {
+		const anchors = blockRects(node);
+		if (anchors.length !== 1) {
+			missing.push({ figureId, reason: 'caption-geometry-ambiguous' });
+			continue;
+		}
+		const caption = anchors[0]!;
+		const [pageIndex, x1, , x2, top] = caption;
+		if (pageIndex < 0 || pageIndex >= document.catalog.pages.length) {
+			missing.push({ figureId, reason: 'caption-page-unavailable' });
+			continue;
+		}
+		const captionRect: PdfRect = [x1, caption[2], x2, top];
+		const semantic = crops.filter(
+			(crop) =>
+				crop.source === 'semantic' &&
+				crop.figureId === null &&
+				crop.pageIndex === pageIndex &&
+				horizontalOverlap(crop.rect, captionRect) >= Math.min(crop.rect[2] - crop.rect[0], x2 - x1) * 0.5 &&
+				crop.rect[1] >= top - 1 &&
+				crop.rect[1] - top <= 64,
+		);
+		if (semantic.length === 1) {
+			const cropIndex = crops.indexOf(semantic[0]!);
+			crops[cropIndex] = { ...semantic[0]!, figureId };
+			continue;
+		}
+		if (semantic.length > 1) {
+			missing.push({ figureId, reason: 'multiple-adjacent-graphics' });
+			continue;
+		}
+		if (crops.length >= MAX_SOURCE_CROPS) {
+			missing.push({ figureId, reason: 'crop-budget-exceeded' });
+			continue;
+		}
+		const view = document.catalog.pages[pageIndex]?.viewRect;
+		if (!view || view.length !== 4 || !view.every(Number.isFinite)) {
+			missing.push({ figureId, reason: 'page-geometry-unavailable' });
+			continue;
+		}
+		const previous = document.content[index - 1];
+		const chartPath = previous && isChartLabels(previous, caption) ? String(index - 1) : null;
+		const left = Math.max(view[0], x1 - 1),
+			right = Math.min(view[2], x2 + 1),
+			bottom = top + 6;
+		let upper = view[3] - 24;
+		let intersectsProse = false;
+		for (const [otherIndex, otherRects] of barriers.entries()) {
+			if (otherIndex === index || String(otherIndex) === chartPath) continue;
+			// Image/table boxes are barriers. For paragraphs prefer actual glyph geometry.
+			for (const [page, rx1, ry1, rx2, ry2] of otherRects) {
+				if (
+					page !== pageIndex ||
+					horizontalOverlap([left, bottom, right, upper], [rx1, ry1, rx2, ry2]) < Math.min(right - left, rx2 - rx1) * 0.15
+				)
+					continue;
+				if (ry1 >= bottom) upper = Math.min(upper, ry1 - 3);
+				else if (ry2 > bottom) intersectsProse = true;
+			}
+		}
+		const height = upper - bottom,
+			width = right - left;
+		if (
+			intersectsProse ||
+			height < 48 ||
+			width < 60 ||
+			height > (view[3] - view[1]) * 0.58 ||
+			width * height > (view[2] - view[0]) * (view[3] - view[1]) * 0.6
+		) {
+			missing.push({ figureId, reason: intersectsProse ? 'region-overlaps-text' : 'region-not-bounded' });
+			continue;
+		}
+		const rect: PdfRect = [left, bottom, right, upper].map((value) => Math.round(value * 100) / 100) as PdfRect;
+		if (
+			!addCrop({
+				altText: boundedText(cleanText(nodeText(node)), MAX_SOURCE_CROP_ALT_CHARS),
+				blockPath: String(index),
+				figureId,
+				pageIndex,
+				placement: 'before',
+				rect,
+				source: 'caption-region',
+				suppressedBlockPaths: chartPath ? [chartPath] : [],
+			})
+		)
+			missing.push({ figureId, reason: 'crop-budget-exceeded' });
+	}
+	return { crops, excludedAuthorTables: [...excludedAuthorTables], missing };
 }
 
-export type StructuredPdfSourceCrop = Readonly<ReturnType<typeof structuredPdfSourceCrops>[number]>;
+export function structuredPdfSourceCrops(document: StructuredPdfDocument): StructuredPdfSourceCrop[] {
+	return structuredPdfVisualPlan(document).crops;
+}
 
-export function structuredPdfSourceCropUrl(inputContentHash: string, cropId: string): string {
-	return `/api/media/asset/pdf-crops/${inputContentHash}/${cropId}.png`;
+export function structuredPdfSourceCropUrl(inputContentHash: string, cropId: string, cropUrlPrefix = '/api/media/asset/pdf-crops'): string {
+	return `${cropUrlPrefix}/${inputContentHash}/${cropId}.png`;
 }
 
 function firstPageIdentifierText(document: StructuredPdfDocument): string | null {
@@ -339,7 +554,7 @@ function firstPageIdentifierText(document: StructuredPdfDocument): string | null
 
 export function normalizeStructuredPdf(
 	document: StructuredPdfDocument,
-	options: Readonly<{ inputContentHash?: string; readySourceCrops?: readonly StructuredPdfSourceCrop[] }> = {},
+	options: Readonly<{ cropUrlPrefix?: string; inputContentHash?: string; readySourceCrops?: readonly StructuredPdfSourceCrop[] }> = {},
 ) {
 	const entries = walkNodes(document.content);
 	const referenceEntries = entries.filter(
@@ -369,10 +584,18 @@ export function normalizeStructuredPdf(
 		if (parsed.text) references.push({ key, ...parsed });
 	}
 	const headingLevelByPath = headingLevels(document.catalog.outline);
-	const sourceCropsByBlock = new Map<string, Array<{ altText: string; url: string }>>();
+	const visualPlan = structuredPdfVisualPlan(document);
+	const suppressedBlockPaths = new Set<string>();
+	const sourceCropsByBlock = new Map<string, Array<{ altText: string; placement: 'before' | 'replace'; url: string }>>();
 	if (options.inputContentHash && options.readySourceCrops?.length) {
-		for (const crop of options.readySourceCrops) {
-			const entry = { altText: crop.altText, url: structuredPdfSourceCropUrl(options.inputContentHash, crop.id) };
+		const readyIds = new Set(options.readySourceCrops.map(({ id }) => id));
+		for (const crop of visualPlan.crops.filter(({ id }) => readyIds.has(id))) {
+			const entry = {
+				altText: crop.altText,
+				placement: crop.placement,
+				url: structuredPdfSourceCropUrl(options.inputContentHash, crop.id, options.cropUrlPrefix),
+			};
+			for (const path of crop.suppressedBlockPaths) suppressedBlockPaths.add(path);
 			const existing = sourceCropsByBlock.get(crop.blockPath);
 			if (existing) existing.push(entry);
 			else sourceCropsByBlock.set(crop.blockPath, [entry]);
@@ -489,8 +712,17 @@ export function normalizeStructuredPdf(
 			for (const part of parts.slice(1)) renderedPartPaths.add(refKey(part.ref));
 		}
 		renderedPartPaths.add(refKey(path));
+		if (suppressedBlockPaths.has(refKey(path))) return [];
 		const crops = sourceCropsByBlock.get(refKey(path));
-		if (crops?.length) return crops.map(({ altText, url }) => ({ type: 'paragraph', children: [{ type: 'image', alt: altText, url }] }));
+		if (crops?.length) {
+			const images: BlockContent[] = crops.map(({ altText, url }) => ({
+				type: 'paragraph',
+				children: [{ type: 'image', alt: altText, url }],
+			}));
+			if (crops[0]?.placement === 'before')
+				images.push({ type: 'paragraph', children: [{ type: 'emphasis', children: inline(node.content, true) }] });
+			return images;
+		}
 		if (node.type === 'heading') {
 			section = cleanText(nodeText(node)) || section;
 			return [{ type: 'heading', depth: (headingLevelByPath.get(refKey(path)) ?? 2) as Heading['depth'], children: inline(node.content) }];
@@ -568,7 +800,18 @@ export function normalizeStructuredPdf(
 	// emphasis retroactively escapes preceding text. Temporary links never persist.
 	if (citations.size) unwrapCitations(fromMarkdown(serialized, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }).children);
 	markdown += serialized.slice(cursor);
+	const readyCropIds = new Set((options.readySourceCrops ?? []).map(({ id }) => id));
+	const missingCrops = visualPlan.crops.filter(({ id }) => !readyCropIds.has(id));
+	const visual = {
+		planned: visualPlan.crops.length,
+		ready: visualPlan.crops.length - missingCrops.length,
+		missing: [...visualPlan.missing, ...missingCrops.map(({ figureId, id }) => ({ figureId: figureId ?? id, reason: 'crop-not-ready' }))],
+		inferred: visualPlan.crops.filter(({ source }) => source === 'caption-region').length,
+		excludedAuthorTables: visualPlan.excludedAuthorTables.length,
+	};
 	const fallbackReasons = new Set<string>();
+	if (visual.missing.length) fallbackReasons.add('incomplete-visuals');
+	if (visual.inferred) fallbackReasons.add('caption-region-inferred');
 	if (!markdown) fallbackReasons.add('empty-output');
 	if (document.catalog.pages.some(({ extractionDegraded }) => extractionDegraded === true)) fallbackReasons.add('degraded-page');
 	const fulltextDocument = document as unknown as Parameters<typeof getFulltextFromStructuredText>[0];
@@ -579,6 +822,7 @@ export function normalizeStructuredPdf(
 		paperIdentifierText: firstPageIdentifierText(document),
 		parse: {
 			fallbackReasons: [...fallbackReasons].sort(),
+			visual,
 			fullPageImagePages,
 			parserVersion: `zotero-pdf-${document.metadata.processor.version}/sdt-${document.schemaVersion}`,
 			totalPages: document.catalog.pages.length,

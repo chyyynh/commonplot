@@ -13,6 +13,7 @@ import {
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
 import type { ResourceAnalysis } from './analysis';
+import { hasPrivatePdfImages, withoutPrivatePdfImages } from './pdf-rendition';
 import type { YouTubeResourceData } from './platforms/youtube';
 import { persistYouTubeData } from './platforms/youtube-persistence';
 
@@ -21,7 +22,7 @@ export type ResourceDraftRelation =
 	| Readonly<{ kind: 'subject'; parentResourceId: string; parentAcquisitionRevision: string }>;
 
 export type ResourcePersistenceTarget =
-	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation }>
+	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation; preservePublishedPdf?: boolean }>
 	| Readonly<{ kind: 'existing'; resourceId: string }>;
 
 type LockedResource = Readonly<{
@@ -292,6 +293,27 @@ async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relati
 	if (attached.rowCount !== 1) throw new NonRetryableError('Subject parent was reacquired or is no longer eligible for attachment');
 }
 
+/** Reprocessing owns this repair; reads never rewrite existing user or corpus content. */
+async function removeStoredPrivatePdfImages(db: NodePgDatabase, resourceId: string) {
+	const translations = await db.execute<{ content: string; lang: string }>(sql`
+		SELECT content, lang FROM resource_translations
+		WHERE resource_id = ${resourceId}::uuid AND content LIKE '%/api/media/asset/pdf-crops/%'
+	`);
+	for (const translation of translations.rows) {
+		if (!hasPrivatePdfImages(translation.content)) continue;
+		await db.execute(sql`
+			UPDATE resource_translations SET content = ${withoutPrivatePdfImages(translation.content)}, alignment = NULL, updated_at = NOW()
+			WHERE resource_id = ${resourceId}::uuid AND lang = ${translation.lang}
+		`);
+		// Removing image blocks changes byte offsets and aligned translation blocks.
+		// The reference followup rebuilds offsets against the authoritative original.
+		await db.execute(sql`
+			UPDATE resource_citation_mentions SET content_start = NULL, content_end = NULL
+			WHERE resource_id = ${resourceId}::uuid AND content_start IS NOT NULL
+		`);
+	}
+}
+
 export async function persistResolvedResource(db: NodePgDatabase, resource: PreparedResource, target: ResourcePersistenceTarget) {
 	const lockKeys = [
 		...(resource.normalizedUrl ? [`url:${resource.normalizedUrl}`] : []),
@@ -306,6 +328,31 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 		}
 		const root = target.kind === 'draft' ? await draftRoot(tx, resource) : await lockResource(tx, target.resourceId);
 		const resourceId = root?.id ?? crypto.randomUUID();
+		// A private rendition may enrich a new paper, but must not replace an
+		// independently acquired public rendition (and its public images).
+		if (target.kind === 'draft' && target.preservePublishedPdf && root?.enrichment_status === 'enriched') {
+			const original = await tx.execute<{ content: string | null; translation_revision: string; acquisition_revision: string }>(sql`
+				SELECT original.content,
+				       MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS translation_revision,
+				       MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) AS acquisition_revision
+				FROM resources resource
+				JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+				WHERE resource.id = ${resourceId}::uuid
+			`);
+			const published = original.rows[0];
+			// Human text and translations remain authoritative, but old private asset
+			// links cannot stay on a shared rendition after this explicit reprocess.
+			await removeStoredPrivatePdfImages(tx, resourceId);
+			if (published?.content?.trim() && !hasPrivatePdfImages(published.content)) {
+				return {
+					resourceId,
+					scope: root.scope,
+					subjectAttached: root.subject_resource_id !== null,
+					translationRevision: published.translation_revision,
+					acquisitionRevision: published.acquisition_revision,
+				};
+			}
+		}
 		const resolvedSubjectId = resource.subject ? await existingSubject(tx, resourceId, resource.subject) : null;
 		const subjectResourceId = resolvedSubjectId ?? root?.subject_resource_id ?? null;
 		const revisions = await writeCanonicalResource(tx, resourceId, resource, root?.original_lang, subjectResourceId);

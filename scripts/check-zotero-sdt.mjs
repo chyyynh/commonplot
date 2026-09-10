@@ -9,6 +9,7 @@ import {
 	structuredPdfSourceCrops,
 	structuredPdfSourceCropUrl,
 	structuredPdfStorageKey,
+	structuredPdfVisualPlan,
 } from '../src/ingest/zotero-sdt.ts';
 
 const text = (value, options = {}) => ({
@@ -457,15 +458,14 @@ const cropDocument = {
 const parsedCropDocument = parseStructuredPdfDocumentJson(JSON.stringify(cropDocument));
 const sourceCrops = structuredPdfSourceCrops(parsedCropDocument);
 assert.deepEqual(
-	sourceCrops.map(({ blockPath, id, pageIndex, rect }) => ({
+	sourceCrops.map(({ blockPath, pageIndex, rect }) => ({
 		blockPath,
-		id,
 		pageIndex,
 		rect,
 	})),
 	[
-		{ blockPath: '0', id: '0-p0', pageIndex: 0, rect: [20, 40, 220, 180] },
-		{ blockPath: '1', id: '1-p0', pageIndex: 0, rect: [30, 200, 260, 500] },
+		{ blockPath: '0', pageIndex: 0, rect: [20, 40, 220, 180] },
+		{ blockPath: '1', pageIndex: 0, rect: [30, 200, 260, 500] },
 	],
 );
 const cropWithoutManifest = normalizeStructuredPdf(parsedCropDocument, { inputContentHash: 'a'.repeat(64) });
@@ -474,14 +474,127 @@ const partiallyReadyCrop = normalizeStructuredPdf(parsedCropDocument, {
 	inputContentHash: 'a'.repeat(64),
 	readySourceCrops: sourceCrops.slice(0, 1),
 });
-assert.match(partiallyReadyCrop.markdown, /\/0-p0\.png/u);
-assert.doesNotMatch(partiallyReadyCrop.markdown, /\/1-p0\.png/u);
+assert.match(partiallyReadyCrop.markdown, /\/0-p0-[a-f\d]{16}\.png/u);
+assert.doesNotMatch(partiallyReadyCrop.markdown, /\/1-p0-[a-f\d]{16}\.png/u);
 const cropNormalized = normalizeStructuredPdf(parsedCropDocument, {
 	inputContentHash: 'a'.repeat(64),
 	readySourceCrops: sourceCrops,
 });
-assert.match(cropNormalized.markdown, /!\[Research model\]\(\/api\/media\/asset\/pdf-crops\/a{64}\/0-p0\.png\)/u);
+assert.match(cropNormalized.markdown, /!\[Research model\]\(\/api\/media\/asset\/pdf-crops\/a{64}\/0-p0-[a-f\d]{16}\.png\)/u);
 assert.match(cropNormalized.markdown, /!\[Visible cues Social inferences Representative quote\]/u);
+
+// Caption geometry recovers raster/vector figures without converting an author grid
+// into images, swallowing prose, or losing the caption when crops are ready.
+const anchored = (type, value, page, rect, extra = {}) => ({
+	type,
+	anchor: { pageRects: [[page, ...rect]] },
+	content: [{ text: value, anchor: { textMap: JSON.stringify([[0, page, ...rect, 4]]) } }],
+	...extra,
+});
+const visualDocument = {
+	...document,
+	catalog: { outline: [], pages: [0, 1, 2].map(() => ({ viewRect: [0, 0, 612, 792], contentRange: [[0], [13]] })) },
+	content: [
+		anchored('heading', 'An example research paper', 0, [54, 700, 558, 720]),
+		anchored('table', 'University of Example', 0, [54, 580, 250, 595]),
+		anchored('table', 'alice@example.edu', 0, [54, 560, 250, 575]),
+		anchored('table', 'Institute of Example', 0, [318, 580, 558, 595]),
+		anchored('table', 'bob@example.edu', 0, [318, 560, 558, 575]),
+		anchored('caption', 'Figure 1: A diagram without an SDT image node.', 0, [54, 300, 558, 330]),
+		anchored('heading', 'Abstract', 0, [54, 270, 250, 285]),
+		anchored('table', 'Group Measure 1 42 2 81', 0, [54, 100, 558, 240]),
+		// Upstream incorrectly includes graphics in this excluded running-header block.
+		{
+			...anchored('paragraph', 'Running header', 1, [54, 723, 558, 729], { flowClass: 'excluded' }),
+			anchor: { pageRects: [[1, 54, 450, 558, 729]] },
+		},
+		anchored('caption', 'Figure 2: A single-column screenshot.', 1, [54, 370, 294, 430]),
+		anchored('paragraph', 'Unrelated right-column prose must remain outside the recovered image.', 1, [318, 430, 558, 705]),
+		anchored('caption', 'The preceding graphic caption.', 2, [54, 425, 558, 473]),
+		{
+			...anchored('paragraph', '12345 Cocoa Baseline Steerability', 2, [54, 291, 558, 410]),
+			content: [
+				{
+					text: '12345 Cocoa Baseline Steerability',
+					anchor: {
+						textMap: JSON.stringify([
+							[0, 2, 88, 291, 217, 303, 4],
+							[0, 2, 65, 367, 86, 379, 4],
+							[0, 2, 132, 395, 184, 410, 4],
+						]),
+					},
+				},
+			],
+		},
+		anchored('caption', 'Figure 9: Ratings across the two conditions.', 2, [54, 256, 558, 274]),
+	],
+};
+const visualPlan = structuredPdfVisualPlan(visualDocument);
+assert.equal(visualPlan.excludedAuthorTables.length, 4);
+assert.ok(
+	visualPlan.crops.some(({ blockPath }) => blockPath === '7'),
+	'the real data table stays renderable',
+);
+for (const figureId of ['Figure 1', 'Figure 2', 'Figure 9']) {
+	assert.equal(visualPlan.crops.filter((crop) => crop.figureId === figureId).length, 1);
+}
+const narrowFigure = visualPlan.crops.find(({ figureId }) => figureId === 'Figure 2');
+assert.ok(narrowFigure.rect[2] < 318, 'single-column crop cannot include adjacent prose');
+assert.ok(narrowFigure.rect[3] < 723, 'excluded header remains outside the image');
+assert.ok(visualPlan.crops.find(({ figureId }) => figureId === 'Figure 1').rect[3] < 560, 'author metadata remains outside the image');
+const visualReady = normalizeStructuredPdf(visualDocument, {
+	inputContentHash: 'b'.repeat(64),
+	readySourceCrops: visualPlan.crops,
+	cropUrlPrefix: '/api/media/asset/public-pdf-crops/example-source',
+});
+assert.match(visualReady.markdown, /alice\\?@example\.edu/u);
+assert.match(visualReady.markdown, /bob\\?@example\.edu/u);
+assert.match(visualReady.markdown, /Unrelated right-column prose/u);
+assert.match(visualReady.markdown, /_Figure 9: Ratings across the two conditions\._/u);
+assert.doesNotMatch(visualReady.markdown, /12345 Cocoa Baseline Steerability/u);
+assert.match(visualReady.markdown, /\/public-pdf-crops\/example-source\/b{64}\//u);
+assert.equal(visualReady.parse.visual.inferred, 3);
+assert.ok(visualReady.parse.fallbackReasons.includes('caption-region-inferred'));
+const chartUnavailable = normalizeStructuredPdf(visualDocument, {
+	inputContentHash: 'b'.repeat(64),
+	readySourceCrops: visualPlan.crops.filter(({ figureId }) => figureId !== 'Figure 9'),
+});
+assert.match(chartUnavailable.markdown, /12345 Cocoa Baseline Steerability/u);
+assert.ok(chartUnavailable.parse.visual.missing.some(({ figureId, reason }) => figureId === 'Figure 9' && reason === 'crop-not-ready'));
+assert.ok(chartUnavailable.parse.fallbackReasons.includes('incomplete-visuals'));
+const obstructedDocument = {
+	...visualDocument,
+	content: [...visualDocument.content, anchored('paragraph', 'Prose crossing the candidate region.', 1, [54, 425, 294, 490])],
+};
+const obstructed = structuredPdfVisualPlan(obstructedDocument);
+assert.ok(!obstructed.crops.some(({ figureId }) => figureId === 'Figure 2'));
+assert.ok(obstructed.missing.some(({ figureId, reason }) => figureId === 'Figure 2' && reason === 'region-overlaps-text'));
+const changedGeometry = structuredClone(visualDocument);
+changedGeometry.content[9].anchor.pageRects[0][4] += 5;
+assert.notEqual(structuredPdfVisualPlan(changedGeometry).crops.find(({ figureId }) => figureId === 'Figure 2').id, narrowFigure.id);
+const changedProcessor = structuredClone(visualDocument);
+changedProcessor.metadata.processor.version += 1;
+assert.notEqual(structuredPdfVisualPlan(changedProcessor).crops.find(({ figureId }) => figureId === 'Figure 2').id, narrowFigure.id);
+
+const oversizedVisuals = structuredPdfVisualPlan({
+	...visualDocument,
+	content: Array.from({ length: 65 }, (_, index) => anchored('image', `Image ${index}`, 0, [54, 500, 558, 700])),
+});
+assert.equal(oversizedVisuals.crops.length, 64);
+assert.ok(oversizedVisuals.missing.some(({ reason }) => reason === 'crop-budget-exceeded'));
+const unavailableGeometry = structuredPdfVisualPlan({
+	...visualDocument,
+	content: [{ type: 'image', content: [] }, anchored('caption', 'Figure 4: Invalid page.', 100, [54, 300, 558, 320])],
+});
+assert.ok(unavailableGeometry.missing.some(({ reason }) => reason === 'graphic-geometry-unavailable'));
+assert.ok(unavailableGeometry.missing.some(({ reason }) => reason === 'caption-page-unavailable'));
+assert.equal(
+	structuredPdfVisualPlan({
+		...visualDocument,
+		content: [anchored('caption', 'Figure 9: Excluded caption.', 0, [54, 300, 558, 320], { flowClass: 'excluded' })],
+	}).crops.length,
+	0,
+);
 
 console.info({
 	event: 'zotero_sdt_contract_passed',

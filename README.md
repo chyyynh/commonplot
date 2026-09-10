@@ -68,6 +68,8 @@ their ownership, quota, and blob locator already exist. Source monitors filter c
 canonical Resources in PostgreSQL before enqueueing; only in-flight and failed attempts use
 short native Workflow retention. Each durable step retries independently.
 
+For PDF geometry, source ownership, cache invalidation, and operator recovery, see [PDF processing](PDF_PROCESSING.md).
+
 ## AI Pipeline
 
 | Stage                   | Model             | What it does                                                                                      |

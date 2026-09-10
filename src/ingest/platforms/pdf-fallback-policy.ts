@@ -7,7 +7,12 @@ const DOCUMENT_FALLBACK_REASONS = new Set(['empty-output', 'parse-failed']);
 export type PaidPdfFallbackGrant = Readonly<{ maxPages: number }>;
 export type LlamaParseSource = Readonly<{ kind: 'private-upload' }> | Readonly<{ kind: 'public-url'; url: string }>;
 
-export type LocalPdfSummary = Omit<ReturnType<typeof normalizeStructuredPdf>['parse'], 'totalPages'> & { totalPages: number | null };
+type StructuredPdfSummary = ReturnType<typeof normalizeStructuredPdf>['parse'];
+export type LocalPdfSummary = Omit<StructuredPdfSummary, 'totalPages' | 'visual'> & {
+	totalPages: number | null;
+	/** Absent when the parser could not inspect the document at all. */
+	visual?: StructuredPdfSummary['visual'];
+};
 
 /** Route image-backed PDFs only when the signal describes the document, not an isolated cover page. */
 export function localPdfNeedsFallback(local: Pick<LocalPdfSummary, 'fallbackReasons' | 'fullPageImagePages' | 'totalPages'>): boolean {

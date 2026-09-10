@@ -42,4 +42,24 @@ export class ZoteroSdtContainer extends Container<CoreEnv> {
 			method: 'POST',
 		});
 	}
+
+	async renderPdfAreas(
+		input: ReadableStream<Uint8Array>,
+		byteLength: number,
+		crops: readonly Readonly<{ id: string; pageIndex: number; rect: readonly [number, number, number, number] }>[],
+	): Promise<Response> {
+		if (!crops.length || crops.length > 8) {
+			await input.cancel('PDF crop batches must contain 1–8 areas');
+			throw new Error('PDF crop batches must contain 1–8 areas');
+		}
+		await this.ensureReady(input);
+		return this.containerFetch('http://zotero-sdt/render-areas', {
+			body: input.pipeThrough(new FixedLengthStream(byteLength)),
+			headers: {
+				'content-type': 'application/pdf',
+				'x-pdf-crops': JSON.stringify(crops.map(({ id, pageIndex, rect }) => ({ id, pageIndex, rect }))),
+			},
+			method: 'POST',
+		});
+	}
 }

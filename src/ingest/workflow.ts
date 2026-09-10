@@ -15,6 +15,8 @@ import {
 import { stageStoredResourceAcquisition, stageUrlAcquisition } from './acquisition';
 import { analyzeResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
+import { publishPublicPdfCrops } from './pdf-publication';
+import { withoutPrivatePdfImages } from './pdf-rendition';
 import { LLAMA_PARSE_MAX_PAGES } from './platforms/pdf-fallback-policy';
 import {
 	persistResolvedResource,
@@ -218,7 +220,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			target.kind === 'draft'
 				? { kind: 'draft', ...(target.relation ? { relation: target.relation } : {}) }
 				: uploadedPaper
-					? { kind: 'draft' }
+					? { kind: 'draft', preservePublishedPdf: true }
 					: { kind: 'existing', resourceId: target.resourceId };
 		const saveTarget =
 			target.kind === 'draft'
@@ -242,9 +244,36 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			),
 			stageResourceImages(this.env, step, processingId, imageSources),
 		]);
-		const preparedResource = prepareResolvedResource(resource, analysis, hostedImages);
+		const privateRendition = uploadedPaper
+			? prepareResolvedResource(
+					{ ...resource, kind: 'file', kindMetadata: null, resourcePlatform: null, resourceIdentifiers: [], url: null, subject: null },
+					analysis,
+					hostedImages,
+				)
+			: null;
+		const privatePersistence =
+			privateRendition && target.kind === 'storedBlob'
+				? await step.do(
+						'persist-private-pdf-rendition-v1',
+						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+						async () =>
+							persistResolvedResource(await connectCoreDb(this.env), privateRendition, { kind: 'existing', resourceId: target.resourceId }),
+					)
+				: null;
+		if (privateRendition && privatePersistence && shouldEnqueueResourceTranslation({ ...privateRendition, scope: 'private' })) {
+			await step.do(
+				'enqueue-private-pdf-translation-v1',
+				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+				() => enqueueResourceTranslation(this.env, privatePersistence.resourceId, privatePersistence.translationRevision),
+			);
+		}
+		const preparedResource = prepareResolvedResource(
+			uploadedPaper ? { ...resource, content: withoutPrivatePdfImages(resource.content) } : resource,
+			analysis,
+			hostedImages,
+		);
 		const persistence = await step.do(
-			'persist-resolved-resource-scope-v3',
+			'persist-resolved-resource-scope-v4',
 			{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 			async () => persistResolvedResource(await connectCoreDb(this.env), preparedResource, persistenceTarget),
 		);
@@ -261,10 +290,17 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		// Only uploaded PDF references require the app's completed profile attachment.
 		// Let every independent handoff finish its retries before reporting failures.
 		const followups = await Promise.allSettled([
+			scope === 'corpus' && preparedResource.fileType === 'application/pdf'
+				? step.do(
+						'publish-public-pdf-crops-v1',
+						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+						() => publishPublicPdfCrops(this.env, persistedResourceId),
+					)
+				: undefined,
 			save.then(() =>
 				uploadedPaper
 					? step.do(
-							'enqueue-resource-reference-enrichment-v3',
+							'enqueue-resource-reference-enrichment-v4',
 							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 							() => enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, target.resourceId),
 						)
@@ -272,14 +308,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			),
 			scope === 'corpus'
 				? step.do(
-						'enqueue-resolved-ai-search-sync-v1',
+						'enqueue-resolved-ai-search-sync-v2',
 						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 						() => this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId: persistedResourceId }),
 					)
 				: undefined,
 			shouldEnqueueResourceTranslation({ ...preparedResource, scope })
 				? step.do(
-						'enqueue-resource-translation-v3',
+						'enqueue-resource-translation-v4',
 						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 						() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision, forceProcessingRunKey),
 					)

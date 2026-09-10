@@ -7,7 +7,7 @@ import { GrobidContainer } from './ingest/grobid-container';
 import { handleRSSCron } from './ingest/platforms/rss';
 import { handleTwitterCron } from './ingest/platforms/twitter';
 import { ResourceReferenceEnrichmentWorkflow } from './ingest/resource-references';
-import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
+import { readResourceTranslationStatus, ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import { type ResourceDraftTarget, ResourceDraftTargetSchema, ResourceProcessingV2Workflow } from './ingest/workflow';
 import { ZoteroSdtContainer } from './ingest/zotero-sdt-container';
 import { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
@@ -47,7 +47,7 @@ const APP_RESOURCE_BATCH_LIMIT = 20;
 const AppDraftWorkflowIdSchema = z.templateLiteral(['app-draft-v1-', z.uuidv4()]);
 const PENDING_BLOB_GRACE_MS = 10 * 60 * 1000;
 const PENDING_BLOB_RECONCILE_LIMIT = 50;
-const STORED_BLOB_WORKFLOW_REVISION = 'stored-resource-v12';
+const STORED_BLOB_WORKFLOW_REVISION = 'stored-resource-v13';
 function storedBlobWorkflowInstance(resourceId: string, paidPdfFallback?: ResourceDraftTarget['paidPdfFallback'], retryId?: string) {
 	return {
 		id: retryId ? `${STORED_BLOB_WORKFLOW_REVISION}-${resourceId}-retry-${retryId}` : `${STORED_BLOB_WORKFLOW_REVISION}-${resourceId}`,
@@ -209,6 +209,11 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	/** Resource-level semantic neighbors; the app Worker authoritatively filters and hydrates them. */
 	async searchRelatedResourceIds(input: RelatedResourceSearchInput) {
 		return searchRelatedResourceIds(this.env, await connectCoreDb(this.env), input);
+	}
+
+	/** Read the current translation revision's status after app-owned authorization. */
+	getResourceTranslationStatus(resourceId: string): Promise<string | null> {
+		return readResourceTranslationStatus(this.env, resourceId);
 	}
 
 	/** Read a bounded set of workflow statuses for app-side polling. */
