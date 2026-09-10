@@ -113,14 +113,13 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, draf
 	return created;
 }
 
-const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
-	z.strictObject({
-		kind: z.enum(['storedBlob', 'reacquire']),
-		paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
-		resourceId: z.uuid(),
-	}),
-	ResourceDraftTargetSchema,
-]);
+export const StoredResourceTargetSchema = z.strictObject({
+	kind: z.enum(['storedBlob', 'reacquire']),
+	paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
+	resourceId: z.uuid(),
+});
+
+const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [StoredResourceTargetSchema, ResourceDraftTargetSchema]);
 
 type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSchema>;
 

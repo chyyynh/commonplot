@@ -6,7 +6,12 @@ import { handleRSSCron } from './ingest/platforms/rss';
 import { handleTwitterCron } from './ingest/platforms/twitter';
 import { ResourceReferenceEnrichmentWorkflow } from './ingest/resource-references';
 import { readResourceTranslationStatus, ResourceTranslationV2Workflow } from './ingest/translation-workflow';
-import { type ResourceDraftTarget, ResourceDraftTargetSchema, ResourceProcessingV2Workflow } from './ingest/workflow';
+import {
+	type ResourceDraftTarget,
+	ResourceDraftTargetSchema,
+	ResourceProcessingV2Workflow,
+	StoredResourceTargetSchema,
+} from './ingest/workflow';
 import { ZoteroSdtContainer } from './ingest/zotero-sdt-container';
 import { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
 import {
@@ -28,10 +33,13 @@ export {
 	ZoteroSdtContainer,
 };
 
-const StoredPdfProcessingInputSchema = z.strictObject({
-	paidPdfFallback: ResourceDraftTargetSchema.shape.paidPdfFallback,
-	resourceId: z.uuid(),
+const StoredPdfProcessingInputSchema = StoredResourceTargetSchema.omit({ kind: true }).extend({
 	retry: z.boolean().optional(),
+});
+
+const ResourceImportDispatchSchema = z.strictObject({
+	workflowId: z.string().pipe(z.templateLiteral(['app-ingest-v1-', z.uuidv4()])),
+	payload: z.discriminatedUnion('kind', [ResourceDraftTargetSchema, StoredResourceTargetSchema.extend({ kind: z.literal('storedBlob') })]),
 });
 
 const ResourceSearchSyncMessageSchema = z.strictObject({
@@ -151,30 +159,11 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	/** Durable admission outbox: the caller persists this immutable ID and payload first. */
-	async dispatchResourceImport(input: {
-		workflowId: string;
-		payload:
-			| { kind: 'storedBlob'; resourceId: string; paidPdfFallback?: { maxPages: number } }
-			| { kind: 'draft'; url: string; saveTarget?: ResourceDraftTarget['saveTarget']; paidPdfFallback?: { maxPages: number } };
-	}): Promise<void> {
-		const parsed = z
-			.strictObject({
-				workflowId: z.templateLiteral(['app-ingest-v1-', z.uuidv4()]),
-				payload: z.discriminatedUnion('kind', [
-					ResourceDraftTargetSchema,
-					z.strictObject({
-						kind: z.literal('storedBlob'),
-						resourceId: z.uuid(),
-						paidPdfFallback: ResourceDraftTargetSchema.shape.paidPdfFallback,
-					}),
-				]),
-			})
-			.parse(input);
-		if (
-			parsed.payload.kind === 'storedBlob' &&
-			!(await this.env.APP.verifyStoredBlobProcessing(parsed.payload.resourceId, parsed.workflowId))
-		)
-			throw new Error('Uploaded PDF attempt is not ready or no longer current');
+	async dispatchResourceImport(input: z.input<typeof ResourceImportDispatchSchema>): Promise<void> {
+		const parsed = ResourceImportDispatchSchema.parse(input);
+		// The admission DO waits for committed ownership. The Workflow rechecks
+		// ownership and the latest attempt before provider execution, after any
+		// queueing delay; another callback here cannot replace that execution gate.
 		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
 			{ id: parsed.workflowId, params: parsed.payload, retention: { successRetention: '5 minutes', errorRetention: '7 days' } },
 		]);
