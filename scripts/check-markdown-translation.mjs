@@ -336,6 +336,35 @@ const autolinkMarkdown = compileMarkdownTranslation(autolinkPlan, [
 ]);
 assert.equal(autolinkMarkdown, '請聯絡<verify@amazon.com>取得協助。', 'Core must restore the exact email autolink after translation');
 
+for (const reference of ['https://arxiv.org/abs/2504.01167', 'verify@amazon.com']) {
+	const referencePlan = planMarkdownTranslation(`A research preprint at <${reference}> (2025).`);
+	const referenceSegment = referencePlan.segments[0];
+	assert.ok(referenceSegment);
+	const [beforeId, afterId] = textIdsInSequence(createMarkdownTranslationTemplate(referenceSegment));
+	assert.ok(beforeId && afterId);
+	const copiedReference = withTranslatedTexts(targetFromSource(referenceSegment), {
+		[beforeId]: `研究預印本，見 ${reference}（2025 年）。`,
+		[afterId]: '',
+	});
+	assert.throws(
+		() => validateMarkdownBatchTranslations(referencePlan.batches[0], [copiedReference]),
+		(error) =>
+			error instanceof MarkdownTranslationInvariantError &&
+			error.code === 'invalid-result' &&
+			error.message.includes(referenceSegment.id) &&
+			error.message.includes('copied protected link'),
+		'copied protected addresses must fail inside the retryable batch, before full-document reconstruction',
+	);
+	const correctedReference = withTranslatedTexts(targetFromSource(referenceSegment), {
+		[beforeId]: '研究預印本，見 ',
+		[afterId]: '（2025 年）。',
+	});
+	validateMarkdownBatchTranslations(referencePlan.batches[0], [correctedReference]);
+	const correctedMarkdown = compileMarkdownTranslation(referencePlan, [correctedReference]);
+	assert.equal(correctedMarkdown.split(reference).length - 1, 1, 'a corrected translation must preserve the address exactly once');
+	assert.match(correctedMarkdown, /（2025 年）。$/u, 'text after the protected address must remain after it');
+}
+
 const emptyLinkPlan = planMarkdownTranslation('[](https://example.com/heading)A complementary portfolio of models');
 const emptyLinkSegment = emptyLinkPlan.segments[0];
 assert.ok(emptyLinkSegment, 'empty-link fixture must produce one prose segment');

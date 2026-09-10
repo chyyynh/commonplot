@@ -667,6 +667,19 @@ function compileMarkdownTranslationTarget(segment: MarkdownTranslationSegment, t
 					`Source inline sequence ${sequenceId} references unknown inline ${partId}`,
 				);
 			}
+			if (inline.kind === 'atom' && isAutolink(inline.node)) {
+				const reference = protectedPlainText(inline.node);
+				const sourceText = partIds.map((id) => template.texts[id] ?? '').join('\0');
+				const targetText = partIds.map((id) => target.texts[id] ?? '').join('\0');
+				// Core restores this link itself. A copied model-facing reference would add another visible address and
+				// may become an extra GFM autolink on serialization. Reject inside the batch step so its retries can recover.
+				if (reference && targetText.split(reference).length > sourceText.split(reference).length) {
+					throw new MarkdownTranslationInvariantError(
+						'invalid-result',
+						`Translated segment ${segment.id} copied protected link ${partId} into prose`,
+					);
+				}
+			}
 			compiled += inline.kind === 'atom' ? inline.token : `${inline.open}${compileSourceSequence(partId)}${inline.close}`;
 		}
 		const sourceHasProse = partIds.some((partId) => isTranslatableProse(template.texts[partId] ?? ''));
