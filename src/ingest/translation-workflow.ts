@@ -354,9 +354,9 @@ async function currentTranslationAttempt(env: CoreEnv, resourceId: string, trans
 		} catch {
 			// An unavailable control plane cannot justify another physical task.
 			// createBatch recovers this exact ID, including a lost response.
-			return { id, status: null };
+			return id;
 		}
-		if (status !== 'errored' && status !== 'terminated') return { id, status };
+		if (status !== 'errored' && status !== 'terminated') return id;
 		if (attempt === 15) throw new Error('Translation retry limit reached');
 		id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-retry-${resourceId}-${(await sha256Hex(id)).slice(0, 16)}`;
 	}
@@ -377,7 +377,7 @@ export async function enqueueResourceTranslation(
 	let id = validatedForceRunKey
 		? `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-force-${resourceId}-${validatedForceRunKey}`
 		: `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
-	if (!validatedForceRunKey && parentTaskId) id = (await currentTranslationAttempt(env, resourceId, translationRevision)).id;
+	if (!validatedForceRunKey && parentTaskId) id = await currentTranslationAttempt(env, resourceId, translationRevision);
 
 	if (parentTaskId)
 		await env.APP.registerResourceProgressTask({
@@ -394,31 +394,6 @@ export async function enqueueResourceTranslation(
 		},
 	]);
 	return id;
-}
-
-/** Service-bound callers authorize the resource before requesting this bounded status. */
-export async function readResourceTranslationStatus(env: CoreEnv, resourceId: string): Promise<string | null> {
-	const id = z.uuid().parse(resourceId);
-	const db = await connectCoreDb(env);
-	const result = await db.execute<{ revision: string }>(sql`
-		SELECT MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS revision
-		FROM resources resource
-		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
-		WHERE resource.id = ${id}::uuid AND (resource.scope = 'corpus' OR ${privateUploadedPdfTranslationSqlAdmission()})
-	`);
-	const revision = result.rows[0]?.revision;
-	if (!revision) return null;
-	try {
-		return (await currentTranslationAttempt(env, id, revision)).status;
-	} catch (error) {
-		console.warn({
-			tag: 'RESOURCE_TRANSLATION',
-			event: 'status_unavailable',
-			resource_id: id,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return null;
-	}
 }
 
 export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceTranslationPayload> {

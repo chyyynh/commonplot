@@ -5,7 +5,7 @@ import { GrobidContainer } from './ingest/grobid-container';
 import { handleRSSCron } from './ingest/platforms/rss';
 import { handleTwitterCron } from './ingest/platforms/twitter';
 import { ResourceReferenceEnrichmentWorkflow } from './ingest/resource-references';
-import { readResourceTranslationStatus, ResourceTranslationV2Workflow } from './ingest/translation-workflow';
+import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import {
 	type ResourceDraftTarget,
 	ResourceDraftTargetSchema,
@@ -188,10 +188,5 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	/** Resource-level semantic neighbors; the app Worker authoritatively filters and hydrates them. */
 	async searchRelatedResourceIds(input: RelatedResourceSearchInput) {
 		return searchRelatedResourceIds(this.env, await connectCoreDb(this.env), input);
-	}
-
-	/** Read the current translation revision's status after app-owned authorization. */
-	getResourceTranslationStatus(resourceId: string): Promise<string | null> {
-		return readResourceTranslationStatus(this.env, resourceId);
 	}
 }
