@@ -78,7 +78,6 @@ export default {
 				contentType: object?.httpMetadata?.contentType,
 			});
 		}
-		const quality = await env.R2.get(`${pdfStorageKey}.structured-crops/${inputContentHash}/quality.json`);
 		return Response.json({
 			phase,
 			error,
@@ -89,7 +88,6 @@ export default {
 			sourceHash,
 			pdfStorageKey,
 			manifest: manifest ? await manifest.json() : null,
-			quality: quality ? await quality.json() : null,
 			storedCrops,
 			sourceMetadata: source?.customMetadata,
 			objectKeys: (await env.R2.list()).objects.map(({ key }) => key),

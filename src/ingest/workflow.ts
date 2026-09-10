@@ -15,11 +15,10 @@ import {
 import { stageStoredResourceAcquisition, stageUrlAcquisition } from './acquisition';
 import { analyzeResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
-import { publishPublicPdfCrops } from './pdf-publication';
-import { withoutPrivatePdfImages } from './pdf-rendition';
 import { LLAMA_PARSE_MAX_PAGES } from './platforms/pdf-fallback-policy';
 import {
 	persistResolvedResource,
+	publishPublicPdfCrops,
 	prepareResolvedResource,
 	type ResourceDraftRelation,
 	type ResourcePersistenceTarget,
@@ -27,6 +26,7 @@ import {
 import { enqueueResourceReferenceEnrichment } from './resource-references';
 import { shouldEnqueueResourceTranslation } from './translation-policy';
 import { enqueueResourceTranslation } from './translation-workflow';
+import { withoutPrivatePdfImages } from './zotero-sdt.ts';
 
 const ResourceDraftRelationSchema: z.ZodType<ResourceDraftRelation> = z.discriminatedUnion('kind', [
 	z.strictObject({ kind: z.literal('source'), sourceId: z.uuid() }),
@@ -244,28 +244,25 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			),
 			stageResourceImages(this.env, step, processingId, imageSources),
 		]);
-		const privateRendition = uploadedPaper
-			? prepareResolvedResource(
-					{ ...resource, kind: 'file', kindMetadata: null, resourcePlatform: null, resourceIdentifiers: [], url: null, subject: null },
-					analysis,
-					hostedImages,
-				)
-			: null;
-		const privatePersistence =
-			privateRendition && target.kind === 'storedBlob'
-				? await step.do(
-						'persist-private-pdf-rendition-v1',
-						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						async () =>
-							persistResolvedResource(await connectCoreDb(this.env), privateRendition, { kind: 'existing', resourceId: target.resourceId }),
-					)
-				: null;
-		if (privateRendition && privatePersistence && shouldEnqueueResourceTranslation({ ...privateRendition, scope: 'private' })) {
-			await step.do(
-				'enqueue-private-pdf-translation-v1',
-				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				() => enqueueResourceTranslation(this.env, privatePersistence.resourceId, privatePersistence.translationRevision),
+		if (uploadedPaper) {
+			const privateRendition = prepareResolvedResource(
+				{ ...resource, kind: 'file', kindMetadata: null, resourcePlatform: null, resourceIdentifiers: [], url: null, subject: null },
+				analysis,
+				hostedImages,
 			);
+			const privatePersistence = await step.do(
+				'persist-private-pdf-rendition-v1',
+				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+				async () =>
+					persistResolvedResource(await connectCoreDb(this.env), privateRendition, { kind: 'existing', resourceId: target.resourceId }),
+			);
+			if (shouldEnqueueResourceTranslation({ ...privateRendition, scope: 'private' })) {
+				await step.do(
+					'enqueue-private-pdf-translation-v1',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					() => enqueueResourceTranslation(this.env, privatePersistence.resourceId, privatePersistence.translationRevision),
+				);
+			}
 		}
 		const preparedResource = prepareResolvedResource(
 			uploadedPaper ? { ...resource, content: withoutPrivatePdfImages(resource.content) } : resource,
@@ -294,7 +291,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				? step.do(
 						'publish-public-pdf-crops-v1',
 						{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						() => publishPublicPdfCrops(this.env, persistedResourceId),
+						async () => publishPublicPdfCrops(await connectCoreDb(this.env), this.env, persistedResourceId),
 					)
 				: undefined,
 			save.then(() =>

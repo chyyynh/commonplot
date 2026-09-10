@@ -97,9 +97,10 @@ export async function ensureStructuredPdfSourceCrops(
 		crops: readonly StructuredPdfSourceCrop[];
 		inputContentHash: string;
 		pdfStorageKey: string;
+		quality?: ReturnType<typeof normalizeStructuredPdf>['parse'];
 		resourceId: string;
 	}>,
-): Promise<StructuredPdfSourceCrop[]> {
+): Promise<void> {
 	const prefix = `${input.pdfStorageKey}.structured-crops/${input.inputContentHash}/`;
 	const plannedIds = new Set(input.crops.map(({ id }) => id));
 	if (plannedIds.size !== input.crops.length) throw new Error('Structured PDF crop IDs must be unique');
@@ -129,6 +130,7 @@ export async function ensureStructuredPdfSourceCrops(
 					.filter((id) => !readyCropIds.has(id))
 					.map((id) => ({ id, ...(failed.get(id) ?? { reason: 'pending', retryable: true }) })),
 				state: readyCropIds.size === plannedIds.size ? 'complete' : 'partial',
+				quality: readyCropIds.size === plannedIds.size ? (input.quality ?? null) : null,
 			}),
 			{ httpMetadata: { contentType: 'application/json' } },
 		);
@@ -186,7 +188,6 @@ export async function ensureStructuredPdfSourceCrops(
 		const ErrorType = retryable ? Error : PermanentPdfArtifactError;
 		throw new ErrorType(`Structured PDF crops incomplete: ${readyCropIds.size}/${plannedIds.size}; inspect missing crops in the manifest`);
 	}
-	return input.crops.filter((crop) => readyCropIds.has(crop.id));
 }
 
 export async function parsePdfArtifactStream(
@@ -284,23 +285,16 @@ export async function parseStoredPdfRepresentation(
 		document = attempt;
 		await writeStructuredPdfArtifact(env, input.pdfStorageKey, input.inputContentHash, document);
 	}
-	const readySourceCrops = await ensureStructuredPdfSourceCrops(env, {
+	const crops = structuredPdfSourceCrops(document);
+	const normalized = normalizeStructuredPdf(document, { ...input, readySourceCrops: crops });
+	// Stage the complete body once. It becomes readable only after every planned
+	// crop is stored and its quality is committed in the same completion manifest.
+	await ensureStructuredPdfSourceCrops(env, {
 		...input,
-		crops: structuredPdfSourceCrops(document),
+		crops,
+		quality: normalized.parse,
 		resourceId: input.sourceLabel,
 	});
-	const normalized = normalizeStructuredPdf(document, { ...input, readySourceCrops });
-	// Quality survives the Workflow checkpoint and is available for diagnostics
-	// even when all planned crops rendered but caption-based detection is uncertain.
-	await putPdfDerivative(
-		env,
-		input.pdfStorageKey,
-		`${input.pdfStorageKey}.structured-crops/${input.inputContentHash}/quality.json`,
-		JSON.stringify(normalized.parse),
-		{
-			httpMetadata: { contentType: 'application/json' },
-		},
-	);
 	console.info({ tag: 'PDF_PARSE', event: 'zotero_sdt_completed', source: input.sourceLabel, ...normalized.parse });
 	return { markdown: normalized.markdown, paperIdentifierText: normalized.paperIdentifierText, parse: normalized.parse };
 }

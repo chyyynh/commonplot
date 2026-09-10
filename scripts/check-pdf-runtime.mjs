@@ -8,7 +8,8 @@ import { fileURLToPath } from 'node:url';
 process.env.WRANGLER_SEND_METRICS = 'false';
 process.env.CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV = 'false';
 const temporaryDirectory = await mkdtemp(join(tmpdir(), 'opennews-pdf-runtime-'));
-process.env.WRANGLER_LOG_PATH = join(temporaryDirectory, 'wrangler.log');
+// Wrangler can flush teardown logs after stop(); keep them outside the config directory we remove.
+process.env.WRANGLER_LOG_PATH = join(tmpdir(), `opennews-pdf-runtime-${process.pid}.log`);
 const { unstable_dev } = await import('wrangler');
 const config = join(temporaryDirectory, 'wrangler.json');
 let worker;
@@ -41,7 +42,7 @@ try {
 	assert.equal(partial.manifest.ready.length, 1);
 	assert.equal(partial.manifest.failed[0].retryable, true);
 	assert.equal(partial.storedCrops.filter(({ validBytes }) => validBytes).length, 1);
-	assert.equal(partial.quality, null, 'partial acquisition cannot publish complete quality');
+	assert.equal(partial.manifest.quality, null, 'partial acquisition cannot publish complete quality');
 
 	const recovered = await phase('recover');
 	assert.equal(recovered.error, null);
@@ -49,7 +50,8 @@ try {
 	assert.deepEqual(recovered.batches, [[partial.manifest.failed[0].id]], 'only missing crop is rerendered');
 	assert.equal(recovered.manifest.state, 'complete');
 	assert.equal(recovered.result.parse.visual.ready, 2);
-	assert.equal(recovered.quality.visual.ready, 2);
+	assert.deepEqual(recovered.manifest.quality, recovered.result.parse, 'crop readiness and quality are committed together');
+	assert.ok(!recovered.objectKeys.some((key) => key.endsWith('/quality.json')), 'quality needs no separate artifact');
 	assert.ok(recovered.storedCrops.every(({ validBytes, contentType }) => validBytes && contentType === 'image/png'));
 	assert.match(recovered.result.markdown, /\/api\/media\/asset\/pdf-crops\//);
 	assert.equal((await phase('warm')).batches.length, 0);

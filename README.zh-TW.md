@@ -68,7 +68,7 @@ URL、source 與 derived-subject 都以 immutable Workflow draft 傳遞，只有
 Resource 過濾已完成項目；只有 in-flight 與 failed attempts 使用短期原生 Workflow
 retention。每個 durable step 各自重試。
 
-PDF 圖片辨識、來源權限、快取版本與重新處理流程，見 [PDF processing](PDF_PROCESSING.md)。
+PDF 圖片辨識、來源權限、快取版本與重新處理流程，見 [PDF processing](README.md#pdf-processing-and-recovery)。
 
 ## AI 管線
 
