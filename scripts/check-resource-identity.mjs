@@ -175,9 +175,12 @@ for (const [summary, originalLang, expectedLang] of [
 				assert.equal(model, 'google/gemini-3.5-flash-lite');
 				assert.equal(options.gateway.id, 'core-ingest');
 				assert.equal(options.extraHeaders['cf-aig-collect-log-payload'], 'false');
-				assert.deepEqual(Object.keys(request.response_format.json_schema.properties), ['summary']);
+				assert.deepEqual(Object.keys(request.response_format.json_schema.schema.properties), ['summary']);
 				assert.equal(request.chat_template_kwargs, undefined);
-				return { choices: [{ message: { content: JSON.stringify(output) }, finish_reason: 'stop' }] };
+				assert.equal(options.returnRawResponse, true);
+				return Response.json({
+					choices: [{ index: 0, message: { role: 'assistant', content: JSON.stringify(output) }, finish_reason: 'stop' }],
+				});
 			},
 		},
 		AI_GATEWAY_ENVIRONMENT: 'development',
@@ -199,8 +202,10 @@ const classificationEnv = {
 		run: async (model, request, options) => {
 			assert.equal(model, 'google/gemini-3.5-flash-lite');
 			assert.equal(options.gateway.id, 'core-ingest');
-			assert.deepEqual(Object.keys(request.response_format.json_schema.properties), ['tags', 'keywords']);
-			return { choices: [{ message: { content: JSON.stringify(classificationOutput) }, finish_reason: 'stop' }] };
+			assert.deepEqual(Object.keys(request.response_format.json_schema.schema.properties), ['tags', 'keywords']);
+			return Response.json({
+				choices: [{ index: 0, message: { role: 'assistant', content: JSON.stringify(classificationOutput) }, finish_reason: 'stop' }],
+			});
 		},
 	},
 	AI_GATEWAY_ENVIRONMENT: 'development',
@@ -329,7 +334,13 @@ try {
 				}),
 			}),
 			stageStoredResourceAcquisition: acquire,
-			stageUrlAcquisition: acquire,
+			stageUrlAcquisition: (_env, _step, input) => {
+				if (scenario === 'automatic-reacquire') {
+					assert.deepEqual(input.hints, { originalLang: null, publishedDate: null, summary: null });
+					assert.equal(input.paperIdentifiers, undefined);
+				}
+				return acquire();
+			},
 			analyzeResource: async () => {
 				if (scenario === 'analysis-failed') throw new Error('Analysis unavailable');
 				return { tags: [], keywords: [], originalLang: 'en', summary: 'Fixture summary' };
@@ -347,7 +358,10 @@ try {
 				effects.push('classification-persisted');
 				return true;
 			},
-			stageResourceImages: async () => [],
+			stageResourceImages: async (_env, _step, _processingId, _sources, refreshKey) => {
+				assert.equal(refreshKey, scenario === 'automatic-reacquire' ? instanceId : undefined);
+				return [];
+			},
 			prepareResolvedResource: (value) => value,
 			persistResolvedResource: async (_db, _resource, target) => {
 				const privateRendition = target.kind === 'existing' && target.ownedBlobId === workflowRawId;

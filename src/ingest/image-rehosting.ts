@@ -105,7 +105,7 @@ async function probeImageDimensions(
 	}
 }
 
-async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Promise<HostedResourceImage> {
+async function rehostResourceImage(images: ImagesBinding, sourceUrl: string, refreshKey?: string): Promise<HostedResourceImage> {
 	if (normalizedResourceImageUrl(sourceUrl) !== sourceUrl) throw new TypeError('Resource image source URL is invalid');
 	const alreadyHosted = hostedResourceImageUrl(sourceUrl);
 	if (alreadyHosted) {
@@ -117,7 +117,7 @@ async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Pr
 			...(await probeImageDimensions(images, images.hosted.image(imageId).bytes(), imageId, sourceUrl)),
 		};
 	}
-	const imageId = `resource-${await sha256Hex(sourceUrl)}`;
+	const imageId = `resource-${await sha256Hex(refreshKey ? `${sourceUrl}:${refreshKey}` : sourceUrl)}`;
 	let existing: ImageMetadata | null;
 	try {
 		existing = await images.hosted.image(imageId).details();
@@ -188,6 +188,7 @@ export async function stageResourceImages(
 	step: WorkflowStep,
 	processingId: string,
 	sourceUrls: readonly string[],
+	refreshKey?: string,
 ): Promise<HostedResourceImage[]> {
 	if (sourceUrls.length === 0) return [];
 	const images: HostedResourceImage[] = [];
@@ -200,7 +201,7 @@ export async function stageResourceImages(
 						step.do(
 							`rehost-resource-image-v4-${offset + index}`,
 							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '10 minutes' },
-							() => rehostResourceImage(env.IMAGES, url),
+							() => rehostResourceImage(env.IMAGES, url, refreshKey),
 						),
 					),
 			)),

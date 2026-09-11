@@ -33,6 +33,7 @@
 		"format": "oxfmt --write \"**/*.{js,cjs,mjs,ts,tsx,json,jsonc}\""
 	},
 	"dependencies": {
+		"@ai-sdk/openai": "^4.0.65",
 		"@cloudflare/containers": "^0.3.7",
 		"@extractus/article-extractor": "^9.0.1",
 		"@extractus/feed-extractor": "8.0.3",

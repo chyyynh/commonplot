@@ -1,5 +1,6 @@
 import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
+import { openai } from 'workers-ai-provider/openai';
 import { z } from 'zod';
 import { type AcquiredResource, canonicalizeResourceLang } from '../shared/resource';
 import { detectResourceLanguage } from './resource-language';
@@ -31,6 +32,7 @@ const RESOURCE_ANALYSIS_SYSTEM_PROMPT = `你是專業的新聞分類分析師。
 function analysisModel(env: CoreEnv, processingId: string, feature: string) {
 	return createWorkersAI({
 		binding: env.AI,
+		providers: [openai],
 		gateway: {
 			id: 'core-ingest',
 			collectLog: true,

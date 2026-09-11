@@ -6,12 +6,7 @@ import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
 import { resourceImageSourceUrls } from '../shared/image-mapping';
-import {
-	canonicalizeOptionalResourceLang,
-	canonicalizeResourceLang,
-	isPaperIdentifier,
-	ResourceIdentifiersSchema,
-} from '../shared/resource';
+import { canonicalizeOptionalResourceLang } from '../shared/resource';
 import { stageStoredResourceAcquisition, stageUrlAcquisition } from './acquisition';
 import { analyzeResource, classifyResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
@@ -125,40 +120,9 @@ const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [StoredResou
 
 type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSchema>;
 
-type ResourceReacquisitionRow = {
-	original_lang: string;
-	published_date: Date | string | null;
-	resource_identifiers: unknown;
-	summary: string | null;
-	url: string | null;
-};
-
-async function loadResourceReacquisitionInput(db: NodePgDatabase, resourceId: string) {
-	const result = await db.execute<ResourceReacquisitionRow>(sql`
-		SELECT
-			original.summary,
-			resource.original_lang,
-			(
-				SELECT jsonb_agg(
-					jsonb_build_object(
-						'preferred', identifier.is_preferred,
-						'scheme', identifier.scheme,
-						'value', identifier.value
-					)
-					ORDER BY identifier.scheme, identifier.is_preferred DESC, identifier.value
-				)
-				FROM resource_identifiers identifier
-				WHERE identifier.resource_id = resource.id
-				  AND identifier.scheme IN ('doi', 'arxiv', 'openalex')
-			) AS resource_identifiers,
-			resource.url,
-			resource.published_date
-		FROM resources resource
-		JOIN resource_translations original
-		  ON original.resource_id = resource.id
-		 AND original.lang = resource.original_lang
-		WHERE resource.id = ${resourceId}::uuid
-		LIMIT 1
+async function loadResourceReacquisitionUrl(db: NodePgDatabase, resourceId: string) {
+	const result = await db.execute<{ url: string | null }>(sql`
+		SELECT url FROM resources WHERE id = ${resourceId}::uuid LIMIT 1
 	`);
 	const row = result.rows[0];
 	if (!row) throw new NonRetryableError(`Failed to fetch resource ${resourceId}: not found`);
@@ -166,15 +130,7 @@ async function loadResourceReacquisitionInput(db: NodePgDatabase, resourceId: st
 	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) {
 		throw new NonRetryableError(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
 	}
-	const publishedDate = row.published_date instanceof Date ? row.published_date : row.published_date ? new Date(row.published_date) : null;
-	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new NonRetryableError('Invalid published_date: expected date');
-	return {
-		originalLang: canonicalizeResourceLang(row.original_lang),
-		paperIdentifiers: ResourceIdentifiersSchema.parse(row.resource_identifiers ?? []).filter(isPaperIdentifier),
-		publishedDate: publishedDate?.toISOString() ?? null,
-		summary: row.summary,
-		url: url.toString(),
-	};
+	return url.toString();
 }
 
 async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, target: ResourceProcessingTarget, task: ResourceTask) {
@@ -195,17 +151,16 @@ async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, targe
 		return stageStoredResourceAcquisition(env, step, target, task);
 	}
 
-	const snapshot = await step.do(
-		'load-resource-reacquisition-input-v1',
+	const url = await step.do(
+		'load-resource-reacquisition-url-v2',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-		async () => loadResourceReacquisitionInput(await connectCoreDb(env), target.resourceId),
+		async () => loadResourceReacquisitionUrl(await connectCoreDb(env), target.resourceId),
 	);
 	return stageUrlAcquisition(env, step, {
-		hints: snapshot,
-		paperIdentifiers: snapshot.paperIdentifiers,
+		hints: { originalLang: null, publishedDate: null, summary: null },
 		paidPdfFallback: target.paidPdfFallback ?? null,
 		processingId: target.resourceId,
-		url: snapshot.url,
+		url,
 	});
 }
 
@@ -261,7 +216,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
 					() => analyzeResource(resource, target.kind === 'draft' ? (target.sourceHints?.keywords ?? []) : [], this.env, processingId),
 				),
-				stageResourceImages(this.env, step, processingId, imageSources),
+				stageResourceImages(this.env, step, processingId, imageSources, target.kind === 'reacquire' ? event.instanceId : undefined),
 			]);
 			await task.report('persisting', { stage: 'persisting', status: 'running' });
 			let privateTranslation: { resourceId: string; translationRevision: string } | undefined;
