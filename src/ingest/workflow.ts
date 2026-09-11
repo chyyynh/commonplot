@@ -248,7 +248,21 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const persistence = await step.do(
 				'persist-resolved-resource-scope-v4',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				async () => persistResolvedResource(await connectCoreDb(this.env), preparedResource, persistenceTarget),
+				async () => {
+					const startedAt = Date.now();
+					const db = await connectCoreDb(this.env);
+					const connectedAt = Date.now();
+					const result = await persistResolvedResource(db, preparedResource, persistenceTarget);
+					const completedAt = Date.now();
+					console.info('resource-persistence-timing', {
+						instanceId: event.instanceId,
+						resourceId: result.resourceId,
+						connectMs: connectedAt - startedAt,
+						transactionMs: completedAt - connectedAt,
+						totalMs: completedAt - startedAt,
+					});
+					return result;
+				},
 			);
 			const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision, acquisitionRevision } = persistence;
 			if (persistence.originalWritten) classificationTargets.push(persistence);

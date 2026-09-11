@@ -215,11 +215,13 @@ async function writeCanonicalResource(
 					await db.execute<{
 						content: string | null;
 						lang: string;
+						revision: string;
 						source: string;
 						summary: string | null;
 						title: string | null;
 					}>(sql`
-						SELECT content, lang, source, summary, title
+						SELECT content, lang, source, summary, title,
+						       MD5(jsonb_build_array(lang, title, summary, content)::text) AS revision
 						FROM resource_translations
 						WHERE resource_id = ${resourceId}::uuid
 						  AND lang IN (${previousOriginalLang}, ${resource.originalLang})
@@ -253,19 +255,24 @@ async function writeCanonicalResource(
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
 		NOW(), NOW()
 	`;
-	await db.execute(
-		previousOriginalLang === undefined
-			? sql`INSERT INTO resources (id, scope, ${columns}) VALUES (${resourceId}::uuid, 'corpus', ${values})`
-			: sql`UPDATE resources SET (${columns}) = (${values}) WHERE id = ${resourceId}::uuid`,
-	);
-	if (previousOriginalLang !== undefined) {
-		await db.execute(sql`DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid`);
-		if (originalChanged) {
-			await db.execute(sql`DELETE FROM resource_citation_mentions WHERE resource_id = ${resourceId}::uuid`);
-			await db.execute(sql`DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid`);
+	const acquisition = await db.execute<{ acquisition_revision: string }>(sql`
+		${
+			previousOriginalLang === undefined
+				? sql`INSERT INTO resources (id, scope, ${columns}) VALUES (${resourceId}::uuid, 'corpus', ${values})`
+				: sql`UPDATE resources SET (${columns}) = (${values}) WHERE id = ${resourceId}::uuid`
 		}
+		RETURNING MD5(EXTRACT(EPOCH FROM scraped_date)::text) AS acquisition_revision
+	`);
+	if (previousOriginalLang !== undefined) {
 		// A former original is not a translation of the newly acquired content.
 		await db.execute(sql`
+			WITH cleared_identifiers AS (
+				DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid
+			), cleared_mentions AS (
+				DELETE FROM resource_citation_mentions WHERE resource_id = ${resourceId}::uuid AND ${originalChanged}
+			), cleared_references AS (
+				DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid AND ${originalChanged}
+			)
 			DELETE FROM resource_translations
 			WHERE resource_id = ${resourceId}::uuid
 			  AND ((source = 'machine' AND ${originalChanged}) OR (source = 'original' AND lang <> ${originalLang}))
@@ -278,8 +285,10 @@ async function writeCanonicalResource(
 			FROM jsonb_to_recordset(${JSON.stringify(resource.identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
 		`);
 	}
+	// Unchanged UPSERTs return no row; retained human originals are not written.
+	let translationRevision = currentOriginal?.revision;
 	if (!preserveHuman) {
-		await db.execute(sql`
+		const original = await db.execute<{ revision: string }>(sql`
 			INSERT INTO resource_translations AS stored (resource_id, lang, title, summary, content, keywords, source, updated_at)
 			VALUES (
 				${resourceId}::uuid, ${originalLang}, ${resource.title}, ${resource.summary}, ${resource.content},
@@ -290,22 +299,15 @@ async function writeCanonicalResource(
 				(EXCLUDED.title, EXCLUDED.summary, EXCLUDED.content, EXCLUDED.keywords, EXCLUDED.source, EXCLUDED.updated_at)
 			WHERE (stored.title, stored.summary, stored.content, stored.keywords, stored.source)
 			  IS DISTINCT FROM (EXCLUDED.title, EXCLUDED.summary, EXCLUDED.content, EXCLUDED.keywords, EXCLUDED.source)
+			RETURNING MD5(jsonb_build_array(lang, title, summary, content)::text) AS revision
 		`);
+		translationRevision = original.rows[0]?.revision ?? translationRevision;
 	}
 	if (resource.youtube) {
 		await persistYouTubeData(db, resourceId, resource.youtube);
 	}
-	const original = await db.execute<{ revision: string; acquisition_revision: string }>(sql`
-		SELECT MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS revision,
-		       MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) AS acquisition_revision
-		FROM resource_translations original
-		JOIN resources resource ON resource.id = original.resource_id
-		WHERE resource.id = ${resourceId}::uuid AND original.lang = resource.original_lang
-		LIMIT 1
-	`);
-	const authoritativeOriginal = original.rows[0];
-	if (!authoritativeOriginal) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
-	return { translationRevision: authoritativeOriginal.revision, acquisitionRevision: authoritativeOriginal.acquisition_revision };
+	if (!translationRevision) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
+	return { translationRevision, acquisitionRevision: acquisition.rows[0]!.acquisition_revision };
 }
 
 async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relation: ResourceDraftRelation) {
