@@ -1,3 +1,4 @@
+import { normalizeExtractedPdfMarkdown } from '../extracted-pdf-markdown.ts';
 import type { normalizeStructuredPdf } from '../zotero-sdt.ts';
 
 export const LLAMA_PARSE_MAX_PAGES = 100;
@@ -64,10 +65,12 @@ export function wholeDocumentMarkdown(pages: readonly MarkdownPage[] | null | un
 	const ordered = [...pages].sort((left, right) => left.page_number - right.page_number);
 	if (ordered.some((page, index) => !page.success || page.page_number !== index + 1 || typeof page.markdown !== 'string')) return null;
 	return (
-		ordered
-			.map((page) => page.markdown)
-			.join('\n\n')
-			.replaceAll('\0', '')
-			.trim() || null
+		normalizeExtractedPdfMarkdown(
+			ordered
+				.map((page) => page.markdown)
+				.join('\n\n')
+				.replaceAll('\0', '')
+				.trim(),
+		) || null
 	);
 }
