@@ -13,12 +13,13 @@ import {
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
 import { stageStoredResourceAcquisition, stageUrlAcquisition } from './acquisition';
-import { analyzeResource } from './analysis';
+import { analyzeResource, classifyResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { LLAMA_PARSE_MAX_PAGES } from './platforms/pdf-fallback-policy';
 import { createResourceTask, enqueueSearchProgress, registerResourceTask, type ResourceTask } from './progress';
 import {
 	persistResolvedResource,
+	persistResourceClassification,
 	publishPublicPdfCrops,
 	prepareResolvedResource,
 	type ResourceDraftRelation,
@@ -255,13 +256,16 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			await task.report('analysis', { stage: 'analyzing', status: 'running' });
 			const imageSources = resourceImageSourceUrls({ ...resource, ogImageUrl: resource.previewImageUrl });
 			const [analysis, hostedImages] = await Promise.all([
-				step.do('analyze-resource-v2', { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' }, () =>
-					analyzeResource(resource, target.kind === 'draft' ? (target.sourceHints?.keywords ?? []) : [], this.env, processingId),
+				step.do(
+					'summarize-resource-v1',
+					{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
+					() => analyzeResource(resource, target.kind === 'draft' ? (target.sourceHints?.keywords ?? []) : [], this.env, processingId),
 				),
 				stageResourceImages(this.env, step, processingId, imageSources),
 			]);
 			await task.report('persisting', { stage: 'persisting', status: 'running' });
 			let privateTranslation: { resourceId: string; translationRevision: string } | undefined;
+			const classificationTargets: Parameters<typeof persistResourceClassification>[1][] = [];
 			if (uploadedPaper) {
 				const privateRendition = prepareResolvedResource(
 					{ ...resource, kind: 'file', kindMetadata: null, resourcePlatform: null, resourceIdentifiers: [], url: null, subject: null },
@@ -279,6 +283,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						}),
 				);
 				if (shouldEnqueueResourceTranslation({ ...privateRendition, scope: 'private' })) privateTranslation = privatePersistence;
+				classificationTargets.push(privatePersistence);
 			}
 			const preparedResource = prepareResolvedResource(
 				uploadedPaper ? { ...resource, content: withoutPrivatePdfImages(resource.content) } : resource,
@@ -291,6 +296,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				async () => persistResolvedResource(await connectCoreDb(this.env), preparedResource, persistenceTarget),
 			);
 			const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision, acquisitionRevision } = persistence;
+			if (persistence.originalWritten) classificationTargets.push(persistence);
 			const forceProcessingRunKey = target.kind === 'reacquire' ? (await sha256Hex(event.instanceId)).slice(0, 16) : undefined;
 			if (scope === 'corpus' && preparedResource.fileType === 'application/pdf') {
 				await step.do(
@@ -323,13 +329,33 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							() => enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, target.resourceId, task),
 						)
 					: undefined,
-				scope === 'corpus'
-					? step.do(
-							'enqueue-resolved-ai-search-sync-v2',
+				(async () => {
+					try {
+						const classification = await step.do(
+							'classify-published-resource-v1',
+							{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
+							() =>
+								classifyResource({ ...resource, originalLang: analysis.originalLang, summary: analysis.summary }, this.env, processingId),
+						);
+						if (analysis.keywords.length) classification.keywords = analysis.keywords;
+						await step.do(
+							'persist-resource-classification-v1',
 							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							() => enqueueSearchProgress(this.env, persistedResourceId, task, translationRevision),
-						)
-					: undefined,
+							async () => {
+								const db = await connectCoreDb(this.env);
+								for (const target of classificationTargets) await persistResourceClassification(db, target, classification);
+							},
+						);
+					} finally {
+						// Even failed classification leaves the published title/body searchable.
+						if (scope === 'corpus')
+							await step.do(
+								'enqueue-resolved-ai-search-sync-v2',
+								{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+								() => enqueueSearchProgress(this.env, persistedResourceId, task, translationRevision),
+							);
+					}
+				})(),
 				privateTranslation
 					? step.do(
 							'enqueue-private-pdf-translation-v2',

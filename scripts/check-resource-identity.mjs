@@ -5,9 +5,14 @@ import { registerHooks } from 'node:module';
 const workflowMocks = {
 	'../shared/db': ['connectCoreDb'],
 	'./acquisition': ['stageStoredResourceAcquisition', 'stageUrlAcquisition'],
-	'./analysis': ['analyzeResource'],
+	'./analysis': ['analyzeResource', 'classifyResource'],
 	'./image-rehosting': ['stageResourceImages'],
-	'./resource-persistence': ['persistResolvedResource', 'publishPublicPdfCrops', 'prepareResolvedResource'],
+	'./resource-persistence': [
+		'persistResolvedResource',
+		'persistResourceClassification',
+		'publishPublicPdfCrops',
+		'prepareResolvedResource',
+	],
 	'./resource-references': ['enqueueResourceReferenceEnrichment'],
 	'./translation-workflow': ['enqueueResourceTranslation'],
 };
@@ -36,7 +41,7 @@ registerHooks({
 	},
 });
 
-const [resource, paper, { resolvePlatformResourceUrl }, { analyzeResource }] = await Promise.all([
+const [resource, paper, { resolvePlatformResourceUrl }, { analyzeResource, classifyResource }] = await Promise.all([
 	import('../src/shared/resource.ts'),
 	import('../src/shared/paper-identity.ts'),
 	import('../src/ingest/acquisition.ts'),
@@ -133,33 +138,80 @@ assert.deepEqual(
 );
 assert.equal(resource.ResourceIdentifiersSchema.safeParse([{ preferred: true, scheme: 'youtube', value: 'too-short' }]).success, false);
 
+const { detectResourceLanguage } = await import('../src/ingest/resource-language.ts');
+const languageCases = [
+	['A preliminary evaluation found improved accuracy on two datasets.', 'en'],
+	['這是一篇介紹人工智慧與機器學習的研究文章，探討模型如何理解語言並改善回答品質。', 'zh-Hant'],
+	['这是一篇介绍人工智能与机器学习的研究文章，探讨模型如何理解语言并改善回答质量。', 'zh-Hans'],
+	['この研究では人工知能の新しいモデルを評価し、回答の品質と処理速度を比較しています。', 'ja'],
+	['今天介紹 OpenAI 的 GPT 模型，透過 API 提升開發效率，也能協助研究人員整理資料。', 'zh-Hant'],
+	['Researchers compared GPT and Claude on several tasks. A short Chinese quote follows: 你好。 The results remain preliminary.', 'en'],
+	['Cette recherche compare les performances de plusieurs modèles et analyse les limites de leurs résultats.', 'fr'],
+	['Diese Untersuchung vergleicht verschiedene Sprachmodelle und beschreibt die Grenzen der Ergebnisse.', 'de'],
+	['Hello', 'und'],
+	['', 'und'],
+	['12345', 'und'],
+	['```js\nconst example = "this is English code";\n```', 'und'],
+];
+for (const [text, expected] of languageCases) assert.equal(detectResourceLanguage(text), expected, text);
+assert.equal(detectResourceLanguage('短文', 'zh-Hant'), 'zh-Hant');
+assert.equal(detectResourceLanguage(languageCases[1][0], 'zh'), 'zh-Hant');
+assert.equal(detectResourceLanguage(languageCases[2][0], 'zh'), 'zh-Hans');
+
 const generatedSummary = 'A preliminary evaluation found improved accuracy on two datasets.';
-for (const [summary, originalLang, detectedLang, expectedLang] of [
-	['Existing source abstract, including its limitations.', 'en', 'ja', 'en'],
-	[null, 'und', 'en', 'en'],
-	['', 'zh-Hant', 'zh-Hant', 'zh-Hant'],
-	['   ', 'und', 'ja', 'ja'],
+for (const [summary, originalLang, expectedLang] of [
+	['Existing source abstract, including its limitations.', 'en', 'en'],
+	[null, 'und', 'en'],
+	['', 'zh-Hant', 'zh-Hant'],
+	['   ', 'und', 'en'],
 ]) {
 	const input = { title: 'Evaluation', source: 'Example', kind: 'blog', content: generatedSummary, summary, originalLang };
-	const output = {
-		tags: ['Research'],
-		keywords: ['evaluation'],
-		originalLang: detectedLang,
-		summary: summary?.trim() ? null : generatedSummary,
-	};
+	let calls = 0;
+	const output = { summary: generatedSummary };
 	const env = {
-		AI: { run: async () => ({ response: JSON.stringify(output), finish_reason: 'stop' }) },
+		AI: {
+			run: async (model, request, options) => {
+				calls++;
+				assert.equal(model, 'google/gemini-3.5-flash-lite');
+				assert.equal(options.gateway.id, 'core-ingest');
+				assert.equal(options.extraHeaders['cf-aig-collect-log-payload'], 'false');
+				assert.deepEqual(Object.keys(request.response_format.json_schema.properties), ['summary']);
+				assert.equal(request.chat_template_kwargs, undefined);
+				return { choices: [{ message: { content: JSON.stringify(output) }, finish_reason: 'stop' }] };
+			},
+		},
 		AI_GATEWAY_ENVIRONMENT: 'development',
 	};
 	const analysis = await analyzeResource(input, ['source-keyword'], env, 'analysis-contract');
 	assert.equal(analysis.summary, summary?.trim() || generatedSummary);
 	assert.equal(analysis.originalLang, expectedLang);
+	assert.deepEqual(analysis.tags, []);
 	assert.deepEqual(analysis.keywords, ['source-keyword']);
+	assert.equal(calls, summary?.trim() ? 0 : 1, 'source summary must avoid the publication-time AI request');
 	if (!summary?.trim()) {
 		output.summary = '   ';
 		await assert.rejects(analyzeResource(input, [], env, 'analysis-contract'));
 	}
 }
+const classificationOutput = { tags: ['Research'], keywords: ['evaluation'] };
+const classificationEnv = {
+	AI: {
+		run: async (model, request, options) => {
+			assert.equal(model, 'google/gemini-3.5-flash-lite');
+			assert.equal(options.gateway.id, 'core-ingest');
+			assert.deepEqual(Object.keys(request.response_format.json_schema.properties), ['tags', 'keywords']);
+			return { choices: [{ message: { content: JSON.stringify(classificationOutput) }, finish_reason: 'stop' }] };
+		},
+	},
+	AI_GATEWAY_ENVIRONMENT: 'development',
+};
+const classificationInput = { title: 'Evaluation', source: 'Example', kind: 'blog', content: generatedSummary, originalLang: 'en' };
+assert.deepEqual(await classifyResource(classificationInput, classificationEnv, 'classification-contract'), classificationOutput);
+classificationOutput.tags = Array.from({ length: 6 }, () => 'Research');
+await assert.rejects(classifyResource(classificationInput, classificationEnv, 'classification-contract'));
+classificationOutput.tags = ['Research'];
+classificationOutput.keywords = Array.from({ length: 9 }, () => 'evaluation');
+await assert.rejects(classifyResource(classificationInput, classificationEnv, 'classification-contract'));
 
 console.info({
 	event: 'resource_contract_smoke_passed',
@@ -190,9 +242,12 @@ const sourcePayload = {
 	url: 'https://example.com/paper.pdf',
 };
 const workflowCases = [
+	{ name: 'classification-delayed' },
+	{ name: 'classification-failed' },
 	...[
 		'published-pdf',
 		'private-pdf-resolved',
+		'private-pdf-existing-public',
 		'crops-failed',
 		'analysis-failed',
 		'ready-delivery-failed',
@@ -247,6 +302,10 @@ try {
 		const translations = [];
 		const references = [];
 		const children = [];
+		let releaseClassification;
+		const classificationGate = new Promise((resolve) => {
+			releaseClassification = resolve;
+		});
 		let rejectReady = scenario === 'ready-delivery-failed';
 		const acquired = {
 			kind: subject ? 'blog' : 'paper',
@@ -273,7 +332,20 @@ try {
 			stageUrlAcquisition: acquire,
 			analyzeResource: async () => {
 				if (scenario === 'analysis-failed') throw new Error('Analysis unavailable');
-				return {};
+				return { tags: [], keywords: [], originalLang: 'en', summary: 'Fixture summary' };
+			},
+			classifyResource: async () => {
+				if (!appUnavailable) assert.ok(effects.includes('ready'), 'classification starts after publication');
+				if (scenario === 'classification-delayed') await classificationGate;
+				if (scenario === 'classification-failed') throw new Error('Classification unavailable');
+				effects.push('classified');
+				return { tags: ['Research'], keywords: ['evaluation'] };
+			},
+			persistResourceClassification: async (_db, target) => {
+				assert.equal(target.acquisitionRevision, acquisitionRevision);
+				if (scenario === 'private-pdf-existing-public') assert.equal(target.resourceId, workflowRawId);
+				effects.push('classification-persisted');
+				return true;
 			},
 			stageResourceImages: async () => [],
 			prepareResolvedResource: (value) => value,
@@ -283,6 +355,7 @@ try {
 				return {
 					resourceId: privateRendition ? workflowRawId : workflowResourceId,
 					scope: privateRendition ? 'private' : 'corpus',
+					originalWritten: privateRendition || scenario !== 'private-pdf-existing-public',
 					translationRevision: 'fixture-revision',
 					acquisitionRevision,
 				};
@@ -348,7 +421,7 @@ try {
 				},
 			},
 		);
-		const owned = scenario === 'private-pdf-resolved' || scenario === 'superseded-raw';
+		const owned = ['private-pdf-resolved', 'private-pdf-existing-public', 'superseded-raw'].includes(scenario);
 		const payload =
 			inputPayload ??
 			(owned
@@ -356,7 +429,17 @@ try {
 				: { kind: 'draft', url: 'https://example.com/paper.pdf', saveTarget: { kind: 'profileSave', userId: 'fixture-user' } });
 		const step = { do: async (_name, ...args) => args.at(-1)({ attempt: 1 }) };
 		const result = workflow.run({ instanceId, payload }, step);
-		if (scenario.endsWith('-failed') && scenario !== 'background-handoff-failed') await assert.rejects(result, undefined, scenario);
+		if (scenario === 'classification-delayed') {
+			await new Promise((resolve) => setImmediate(resolve));
+			assert.ok(
+				effects.includes('ready') && effects.includes('translation-enqueued'),
+				'slow classification must not block reading or translation',
+			);
+			assert.ok(!effects.includes('search-enqueued'), 'search waits for classification');
+			releaseClassification();
+		}
+		if (scenario.endsWith('-failed') && !['background-handoff-failed', 'classification-failed'].includes(scenario))
+			await assert.rejects(result, undefined, scenario);
 		else await result;
 		if (scenario === 'superseded-raw' || scenario === 'expired-admission' || rejectStart) {
 			assert.deepEqual(effects, [], `${scenario}: rejected attempts must not run providers or persist`);
@@ -420,6 +503,13 @@ try {
 			false,
 			`${scenario}: follow-ups cannot undo publication`,
 		);
+		if (scenario === 'classification-failed') {
+			assert.ok(effects.includes('translation-enqueued') && effects.includes('search-enqueued'));
+			assert.ok(!effects.includes('classification-persisted'));
+		}
+		if (effects.includes('classification-persisted') && effects.includes('search-enqueued')) {
+			assert.ok(effects.indexOf('classification-persisted') < effects.indexOf('search-enqueued'));
+		}
 		if (scenario === 'private-pdf-resolved') {
 			assert.ok(effects.includes('private-persisted'));
 			assert.ok(effects.indexOf('private-persisted') < effects.indexOf('corpus-persisted'));

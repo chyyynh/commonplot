@@ -12,7 +12,7 @@ import {
 	type ResourceIdentifier,
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
-import type { ResourceAnalysis } from './analysis';
+import type { ResourceAnalysis, ResourceClassification } from './analysis';
 import type { YouTubeResourceData } from './platforms/youtube';
 import { persistYouTubeData } from './platforms/youtube-persistence';
 import { structuredPdfCropManifestKey } from './zotero-sdt-service.ts';
@@ -36,6 +36,34 @@ type LockedResource = Readonly<{
 }>;
 
 type PreparedResource = ReturnType<typeof prepareResolvedResource>;
+
+/** Update only the original that this acquisition published, never a newer import or human edit. */
+export async function persistResourceClassification(
+	db: NodePgDatabase,
+	target: { resourceId: string; acquisitionRevision: string; translationRevision: string },
+	classification: ResourceClassification,
+) {
+	const updated = await db.execute(sql`
+		WITH target AS (
+			SELECT resource.id, resource.original_lang
+			FROM resources resource
+			JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+			WHERE resource.id = ${target.resourceId}::uuid AND original.source = 'original'
+			  AND MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) = ${target.acquisitionRevision}
+			  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${target.translationRevision}
+			FOR UPDATE OF resource, original
+		), updated_resource AS (
+			UPDATE resources SET tags = ${sql.param(classification.tags)}::text[], updated_at = NOW()
+			FROM target WHERE resources.id = target.id
+			RETURNING resources.id, resources.original_lang
+		)
+		UPDATE resource_translations SET keywords = ${sql.param(classification.keywords)}::text[], updated_at = NOW()
+		FROM updated_resource
+		WHERE resource_translations.resource_id = updated_resource.id AND resource_translations.lang = updated_resource.original_lang
+		RETURNING resource_translations.resource_id
+	`);
+	return updated.rowCount === 1;
+}
 
 function httpUrl(value: string | null, field: string): string | null {
 	if (value === null) return null;
@@ -366,6 +394,7 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 					subjectAttached: root.subject_resource_id !== null,
 					translationRevision: published.translation_revision,
 					acquisitionRevision: published.acquisition_revision,
+					originalWritten: false,
 				};
 			}
 		}
@@ -379,6 +408,7 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 			resourceId,
 			scope: root?.scope ?? 'corpus',
 			subjectAttached: resolvedSubjectId !== null,
+			originalWritten: true,
 			...revisions,
 		};
 	});
