@@ -746,3 +746,16 @@ console.info({
 	longBodyBatchCount: longPlan.batches.length,
 	segmentCount: plan.segments.length,
 });
+
+const nativePaperNotes = 'Claim[^paper-sdt-1]. Again[^paper-sdt-1].\n\n[^paper-sdt-1]: Author. Original work. 2024.';
+const nativePaperPlan = planMarkdownTranslation(nativePaperNotes);
+assert.equal(nativePaperPlan.segments.length, 2, 'Body and footnote prose both use the ordinary translation pipeline');
+const nativePaperArtifact = compileMarkdownTranslationArtifact(
+	nativePaperPlan,
+	nativePaperPlan.segments.map((segment) =>
+		targetFromSource(segment, (text) => text.replace('Claim', '論點').replace('Again', '再次').replace('Original work', '原始作品')),
+	),
+);
+assert.match(nativePaperArtifact.content, /論點\[\^paper-sdt-1\]/u);
+assert.match(nativePaperArtifact.content, /\[\^paper-sdt-1\]: Author\. 原始作品\. 2024\./u);
+assert.equal(nativePaperArtifact.alignment.blocks.length, 2);

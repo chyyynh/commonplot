@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { fromMarkdown } from 'mdast-util-from-markdown';
+import { fromMarkdown as parseMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
 import {
@@ -14,6 +14,8 @@ import {
 	structuredPdfStorageKey,
 	structuredPdfVisualPlan,
 } from '../src/ingest/zotero-sdt.ts';
+
+const fromMarkdown = (source, options = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }) => parseMarkdown(source, options);
 
 const text = (value, options = {}) => ({
 	anchor: { pageRects: [[0, 10, 10, 20, 20]], textMap: JSON.stringify([[0, 0, 0, value.length, 10, 10, 20, 20]]) },
@@ -91,7 +93,7 @@ assert.deepEqual(normalized.references[0], {
 });
 assert.equal(normalized.mentions.length, 1);
 assert.deepEqual(normalized.mentions[0].targetKeys, ['sdt-1']);
-assert.equal(normalized.markdown.slice(normalized.mentions[0].contentStart, normalized.mentions[0].contentEnd), '[1]');
+assert.match(normalized.markdown, /\[\^paper-sdt-1\]/u);
 assert.match(normalized.mentions[0].context, /Prior work reported t \(46\), F \(1, 44\) and \[1\] established the result2\./u);
 assert.equal(normalized.mentions[0].section, 'Introduction');
 assert.doesNotMatch(normalized.markdown, /Running header|<sup>|<sub>/u);
@@ -186,7 +188,7 @@ assert.deepEqual(
 assert.equal(nested.mentions.length, 4);
 assert.equal(nested.mentions[0].section, null);
 for (const mention of nested.mentions.slice(1)) assert.equal(mention.section, 'Nested heading');
-for (const mention of nested.mentions) assert.equal(nested.markdown.slice(mention.contentStart, mention.contentEnd), '[1]');
+assert.match(nested.markdown, /\[\^paper-sdt-1\]:/u);
 
 const nestedParts = structuredClone(nestedDocument);
 const itemParts = nestedParts.content[0].content[1].content[0].content;
@@ -194,9 +196,9 @@ itemParts[1].content.push(text(' '));
 itemParts[1].nextPart = [0, 1, 0, 2];
 itemParts[2].previousPart = [0, 1, 0, 1];
 const joinedNested = normalizeStructuredPdf(nestedParts);
-assert.match(joinedNested.markdown, /First paragraph \[1\] Second paragraph \[1\]/u);
+assert.match(joinedNested.markdown, /First paragraph \[\^paper-sdt-1\] Second paragraph \[\^paper-sdt-1\]/u);
 assert.equal(joinedNested.mentions.length, 4);
-for (const mention of joinedNested.mentions) assert.equal(joinedNested.markdown.slice(mention.contentStart, mention.contentEnd), '[1]');
+assert.match(joinedNested.markdown, /\[\^paper-sdt-1\]:/u);
 
 // Part links must not duplicate text or move it between independent containers.
 for (const [content, expected] of [
@@ -275,7 +277,7 @@ assert.equal(formattedProse[8].children[0].url, 'https://example.com/a_(b)');
 
 // PDF glyph runs may switch between italic and bold-italic without a space.
 // Round-trip visible text, not a particular choice of Markdown delimiters.
-const visibleText = (node) => node.value ?? (node.children ?? []).map(visibleText).join('');
+const visibleText = (node) => (node.type === 'footnoteReference' ? '[1]' : (node.value ?? (node.children ?? []).map(visibleText).join('')));
 const styles = [{}, { bold: true }, { italic: true }, { bold: true, italic: true }];
 for (const type of ['paragraph', 'caption']) {
 	for (const left of styles) {
@@ -289,8 +291,7 @@ for (const type of ['paragraph', 'caption']) {
 			});
 			assert.equal(visibleText(fromMarkdown(styled.markdown).children[0]), 'one two* [1]');
 			assert.equal(styled.mentions.length, 1);
-			const [mention] = styled.mentions;
-			assert.equal(styled.markdown.slice(mention.contentStart, mention.contentEnd), '[1]');
+			assert.match(styled.markdown, /\[\^paper-sdt-1\]:/u);
 		}
 	}
 }
@@ -344,7 +345,7 @@ assert.deepEqual(
 	richTable.mentions.map(({ section }) => section),
 	['Results', 'Cell heading', 'Results'],
 );
-for (const mention of richTable.mentions) assert.equal(richTable.markdown.slice(mention.contentStart, mention.contentEnd), '[1]');
+assert.match(richTable.markdown, /\[\^paper-sdt-1\]:/u);
 assert.doesNotMatch(richTable.markdown, /#sdt-citation-/u);
 
 const pipeMarkerDocument = structuredClone(richTableDocument);
@@ -352,8 +353,8 @@ pipeMarkerDocument.content[1].content[0].content[0].content[0].content[1].text =
 const pipeMarkerTable = normalizeStructuredPdf(pipeMarkerDocument);
 const pipeCells = fromMarkdown(pipeMarkerTable.markdown, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }).children[1]
 	.children[0].children;
-assert.equal(visibleText(pipeCells[0]), 'First [A|B] continuation Quote');
-assert.equal(pipeMarkerTable.mentions.length, 2);
+assert.equal(visibleText(pipeCells[0]), 'First [1] continuation Quote');
+assert.equal(pipeMarkerTable.mentions.length, 3);
 
 const positionedText = (value, page) =>
 	text(value, {
@@ -623,4 +624,30 @@ console.info({
 	assert.equal(matchesUploadedPdfRendition(source, source), true);
 	assert.equal(matchesUploadedPdfRendition('A different published version and bibliography.', source), false);
 	console.info('PDF private/public rendition contract checks passed');
+}
+
+// Stored footnote identifiers survive image removal and repeated/grouped citations.
+{
+	const notes = (markdown) => {
+		const definitions = [];
+		const references = [];
+		const visit = (node) => {
+			if (node.type === 'footnoteDefinition') definitions.push(node.identifier);
+			if (node.type === 'footnoteReference') references.push(node.identifier);
+			for (const child of node.children ?? []) visit(child);
+		};
+		visit(fromMarkdown(markdown));
+		return { definitions, references };
+	};
+	for (const result of [normalized, nested, richTable]) {
+		const actual = notes(result.markdown);
+		assert.equal(actual.definitions.length, new Set(actual.definitions).size);
+		assert.equal(
+			actual.references.length,
+			result.mentions.reduce((total, mention) => total + mention.targetKeys.length, 0),
+		);
+		assert.ok(actual.references.every((id) => actual.definitions.includes(id)));
+		const withImage = `![Figure](/api/media/asset/pdf-crops/example.png)\n\n${result.markdown}`;
+		assert.deepEqual(notes(withoutPrivatePdfImages(withImage)), actual);
+	}
 }

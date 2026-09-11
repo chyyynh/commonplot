@@ -14,7 +14,7 @@ import { matchesUploadedPdfRendition, normalizeStructuredPdf, type StructuredPdf
 const CROSSREF_BATCH_SIZE = 3;
 const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 const REFERENCE_SDT_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '90 seconds' } as const;
-const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v3';
+const RESOURCE_REFERENCE_WORKFLOW_REVISION = 'pdf-sdt-xr-v4';
 const ResourceReferenceEnrichmentPayloadSchema = z.strictObject({
 	progress: z.boolean(),
 	referenceRevision: z.hash('md5').lowercase(),
@@ -80,16 +80,15 @@ async function replaceStoredCitationData(
 		console.info({ tag: 'RESOURCE_REFERENCES', event: 'retained_public_rendition', resource_id: resourceId });
 		return { referenceTexts: [] as string[], mentionCount: 0, alignedMentionCount: 0 };
 	}
-	const hasExactStructuredContent = content === structured.markdown;
 	const referenceOrdinalByKey = new Map(structured.references.map(({ key }, index) => [key, index + 1]));
-	const mentions = structured.mentions.flatMap(({ contentEnd, contentStart, context, markerText, section, targetKeys }) => {
+	const mentions = structured.mentions.flatMap(({ context, markerText, section, targetKeys }) => {
 		const referenceOrdinals = [...new Set(targetKeys.flatMap((key) => referenceOrdinalByKey.get(key) ?? []))];
 		if (!referenceOrdinals.length) return [];
-		const exactOffset = hasExactStructuredContent && content.slice(contentStart, contentEnd) === markerText;
 		return [
 			{
-				contentEnd: exactOffset ? contentEnd : null,
-				contentStart: exactOffset ? contentStart : null,
+				// Persist relations for enrichment; native Markdown footnotes own reader links.
+				contentEnd: null,
+				contentStart: null,
 				context,
 				markerText,
 				referenceOrdinals,
@@ -246,7 +245,7 @@ export class ResourceReferenceEnrichmentWorkflow extends WorkflowEntrypoint<Core
 			const source = await step.do('load-uploaded-pdf-reference-source-v2', REFERENCE_DB_STEP, async () =>
 				loadUploadedPdfSource(await connectCoreDb(this.env), input.resourceId, input.source.fileResourceId, input.referenceRevision),
 			);
-			const stored = await step.do('replace-uploaded-pdf-citations-v3', REFERENCE_SDT_STEP, async () => {
+			const stored = await step.do('replace-uploaded-pdf-citations-v4', REFERENCE_SDT_STEP, async () => {
 				const document = await readStructuredPdfArtifact(this.env, source.storageKey, source.contentHash);
 				if (!document) throw new NonRetryableError('Structured PDF artifact is missing or stale');
 				const db = await connectCoreDb(this.env);

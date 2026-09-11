@@ -1,9 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { BlockContent, Heading, Nodes, PhrasingContent, Root, RootContent, Table } from 'mdast';
 import { fromMarkdown } from 'mdast-util-from-markdown';
-import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm';
+import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
-import { gfm } from 'micromark-extension-gfm';
 import type {
 	ContentBlockNode,
 	PdfAnchor,
@@ -76,8 +75,6 @@ export type StructuredPdfDocument = Readonly<{
 }>;
 
 type StructuredPdfCitationMention = Readonly<{
-	contentEnd: number;
-	contentStart: number;
 	context: string;
 	markerText: string;
 	section: string | null;
@@ -602,9 +599,9 @@ export function normalizeStructuredPdf(
 		}
 	}
 	let section: string | null = null;
-	let tableDepth = 0;
 	const renderedPartPaths = new Set<string>();
-	const citations = new Map<string, Omit<StructuredPdfCitationMention, 'contentStart' | 'contentEnd'>>();
+	const mentions: StructuredPdfCitationMention[] = [];
+	const citedKeys = new Set<string>();
 	function inline(nodes: readonly SdtNode[], inheritedItalic = false): PhrasingContent[] {
 		const children: PhrasingContent[] = [];
 		const context = boundedText(cleanText(nodes.map(nodeText).join('')), MAX_CITATION_CONTEXT_CHARS);
@@ -634,21 +631,20 @@ export function normalizeStructuredPdf(
 				targetKeys.length &&
 				markerText &&
 				markerText.length <= MAX_CITATION_MARKER_CHARS &&
-				// Raw marker offsets cannot represent an escaped GFM cell delimiter.
-				!(tableDepth && markerText.includes('|')) &&
-				citations.size < MAX_CITATION_MENTIONS
+				mentions.length < MAX_CITATION_MENTIONS
 			) {
 				flush();
 				if (value.startsWith(' ')) children.push({ type: 'text', value: ' ' });
-				// Only the adapter creates fragment URLs; source links must be HTTP(S).
-				const url = `#sdt-citation-${citations.size}`;
-				citations.set(url, {
+				mentions.push({
 					context,
 					markerText,
 					section: section ? boundedText(cleanText(section), MAX_SECTION_CHARS) : null,
 					targetKeys: [...new Set(targetKeys)],
 				});
-				children.push({ type: 'link', url, children: [{ type: 'text', value: markerText }] });
+				for (const key of new Set(targetKeys)) {
+					citedKeys.add(key);
+					children.push({ type: 'footnoteReference', identifier: `paper-${key}` });
+				}
 				if (value.endsWith(' ')) children.push({ type: 'text', value: ' ' });
 			} else if (value) {
 				const url = safeHttpUrl(node.target?.url);
@@ -749,7 +745,6 @@ export function normalizeStructuredPdf(
 			];
 		}
 		if (node.type === 'table' && !isLeafBlock(node)) {
-			tableDepth += 1;
 			const children: Table['children'] = [];
 			for (const [rowIndex, row] of node.content.entries()) {
 				if ('text' in row || row.type !== 'tablerow' || row.flowClass === 'excluded') continue;
@@ -765,7 +760,6 @@ export function normalizeStructuredPdf(
 					}),
 				});
 			}
-			tableDepth -= 1;
 			return children.length ? [{ type: 'table', children }] : blocks(node.content, path);
 		}
 		if (!isLeafBlock(node)) return blocks(node.content, path);
@@ -774,32 +768,21 @@ export function normalizeStructuredPdf(
 		return children.length ? [{ type: 'paragraph', children: node.type === 'caption' ? [{ type: 'emphasis', children }] : children }] : [];
 	}
 	const tree: Root = { type: 'root', children: blocks(document.content, []) };
-	const serialized = toMarkdown(tree, {
+	// Citation identity is native Markdown, so removing images or translating prose
+	// never requires remapping character offsets. The printed bibliography stays intact.
+	for (const reference of references) {
+		if (!citedKeys.has(reference.key)) continue;
+		tree.children.push({
+			type: 'footnoteDefinition',
+			identifier: `paper-${reference.key}`,
+			children: [{ type: 'paragraph', children: [{ type: 'text', value: reference.text }] }],
+		});
+	}
+	const markdown = toMarkdown(tree, {
 		bullet: '-',
 		emphasis: '_',
 		extensions: [gfmToMarkdown({ tablePipeAlign: false })],
 	}).trimEnd();
-	let markdown = '';
-	let cursor = 0;
-	const mentions: StructuredPdfCitationMention[] = [];
-	function unwrapCitations(nodes: readonly RootContent[]): void {
-		for (const node of nodes) {
-			const citation = node.type === 'link' ? citations.get(node.url) : undefined;
-			const start = node.position?.start.offset;
-			const end = node.position?.end.offset;
-			if (citation && start !== undefined && end !== undefined && start >= cursor) {
-				markdown += serialized.slice(cursor, start);
-				const contentStart = markdown.length;
-				markdown += citation.markerText;
-				mentions.push({ ...citation, contentStart, contentEnd: markdown.length });
-				cursor = end;
-			} else if ('children' in node) unwrapCitations(node.children);
-		}
-	}
-	// Parse final output for real offsets: serializer trackers can drift when
-	// emphasis retroactively escapes preceding text. Temporary links never persist.
-	if (citations.size) unwrapCitations(fromMarkdown(serialized, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }).children);
-	markdown += serialized.slice(cursor);
 	const readyCropIds = new Set((options.readySourceCrops ?? []).map(({ id }) => id));
 	const missingCrops = visualPlan.crops.filter(({ id }) => !readyCropIds.has(id));
 	const visual = {
