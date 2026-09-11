@@ -1,4 +1,4 @@
-import { francAll } from 'franc-min';
+import { franc } from 'franc-min';
 import { Converter } from 'opencc-js';
 import { canonicalizeResourceLang } from '../shared/resource';
 
@@ -14,9 +14,8 @@ export function detectResourceLanguage(content: string, knownLanguage = 'und'): 
 		.trim()
 		.slice(0, 20_000);
 	if ((text.match(/\p{L}/gu)?.length ?? 0) < 20) return known;
-	const [candidate, runnerUp] = francAll(text, { minLength: 20 });
-	if (!candidate || candidate[0] === 'und' || (runnerUp && candidate[1] - runnerUp[1] < 0.1)) return known;
-	const detected = canonicalizeResourceLang(candidate[0]);
+	const detected = canonicalizeResourceLang(franc(text, { minLength: 20 }));
+	if (detected === 'und') return known;
 	if (detected !== 'zh') return detected;
 	chineseConverters ??= {
 		toTraditional: Converter({ from: 'cn', to: 't' }),

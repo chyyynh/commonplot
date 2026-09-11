@@ -154,6 +154,15 @@ const languageCases = [
 	['```js\nconst example = "this is English code";\n```', 'und'],
 ];
 for (const [text, expected] of languageCases) assert.equal(detectResourceLanguage(text), expected, text);
+assert.equal(
+	detectResourceLanguage(
+		'The researchers studied how people respond to each other in conversations. Their model aims to represent differences between people, situations, and choices over time. They compared the results with several other models and discussed the limitations of the evaluation. '.repeat(
+			100,
+		),
+	),
+	'en',
+	'Long English articles remain classifiable; franc distance scores are not confidence probabilities',
+);
 assert.equal(detectResourceLanguage('短文', 'zh-Hant'), 'zh-Hant');
 assert.equal(detectResourceLanguage(languageCases[1][0], 'zh'), 'zh-Hant');
 assert.equal(detectResourceLanguage(languageCases[2][0], 'zh'), 'zh-Hans');
