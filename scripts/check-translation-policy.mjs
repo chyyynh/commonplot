@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { shouldEnqueueResourceTranslation } from '../src/ingest/translation-policy.ts';
 
 const candidate = (overrides = {}) => ({
@@ -146,15 +147,22 @@ globalThis.fetch = async () => {
 	throw new Error('Translation contract attempted an external provider request');
 };
 try {
-	for (const scenario of ['app-unavailable', 'index-unavailable', 'complete']) {
+	for (const scenario of ['app-unavailable', 'index-unavailable', 'complete', 'parallel', 'parallel-failure']) {
+		const parallel = scenario.startsWith('parallel');
 		const effects = [];
 		const appCalls = [];
 		let reads = 0;
+		let active = 0;
+		let peak = 0;
+		let persistedContent;
 		globalThis.translationWorkflowContract = {
 			connectCoreDb: async () => ({
-				execute: async () => {
+				execute: async (query) => {
 					reads++;
 					if (reads > 1) {
+						persistedContent = new PgDialect()
+							.sqlToQuery(query)
+							.params.find((value) => typeof value === 'string' && value.startsWith('譯文'));
 						effects.push('persisted');
 						return { rows: [{ resource_id: resourceId }] };
 					}
@@ -169,7 +177,11 @@ try {
 								scope: 'corpus',
 								title: 'A research paper',
 								summary: null,
-								content: 'This is the original readable content of a research paper that requires translation.',
+								content: parallel
+									? Array.from({ length: 496 }, (_, index) => `Original research paragraph number ${index + 1} requires translation.`).join(
+											'\n\n',
+										)
+									: 'This is the original readable content of a research paper that requires translation.',
 								zh_hant_title: '研究論文',
 								zh_hant_summary: null,
 								zh_hant_content: null,
@@ -184,11 +196,17 @@ try {
 			}),
 			translateMarkdownBatchToZhHant: async (batch) => {
 				effects.push('provider');
+				active++;
+				peak = Math.max(peak, active);
+				// Complete out of source order, with more than two full concurrency windows.
+				await new Promise((resolve) => setTimeout(resolve, batch.id === 'b0001' ? 30 : 1));
+				active--;
+				if (scenario === 'parallel-failure' && batch.id === 'b0002') throw new Error('Provider exhausted retries');
 				return batch.segments.map((segment) => ({
 					texts: Object.fromEntries(
 						Object.keys(createMarkdownTranslationTemplate(segment).texts).map((key) => [
 							key,
-							'這是一篇研究論文的可讀原始內容，需要完整翻譯。',
+							parallel ? `譯文 ${segment.id}` : '這是一篇研究論文的可讀原始內容，需要完整翻譯。',
 						]),
 					),
 				}));
@@ -198,6 +216,7 @@ try {
 			['startResourceProgressTask', 'reportResourceProgress', 'registerResourceProgressTask', 'sealResourceProgressTask'].map((name) => [
 				name,
 				async (input) => {
+					if (name === 'sealResourceProgressTask') assert.equal(active, 0, 'all provider work must settle before sealing');
 					appCalls.push({ name, input });
 					if (scenario === 'app-unavailable') throw new Error('APP unavailable');
 					return true;
@@ -228,6 +247,10 @@ try {
 		if (scenario === 'app-unavailable') {
 			await assert.rejects(result, /APP unavailable/);
 			assert.deepEqual(effects, [], 'progress admission gates paid provider execution');
+		} else if (scenario === 'parallel-failure') {
+			await assert.rejects(result, /Provider exhausted retries/);
+			assert.equal(effects.includes('persisted'), false, 'a failed batch cannot publish a partial translation');
+			assert.equal(peak, 15);
 		} else {
 			assert.deepEqual(await result, { status: 'complete', resourceId });
 			assert.ok(effects.includes('provider') && effects.includes('persisted'));
@@ -237,13 +260,27 @@ try {
 				outcomes.every(({ errorCode }) => errorCode === undefined),
 				'index handoff failure does not fail published content',
 			);
+			if (parallel) {
+				assert.equal(peak, 15, 'translation must use, and never exceed, 15 concurrent batches');
+				assert.equal(effects.filter((effect) => effect === 'provider').length, 31, 'every batch runs exactly once');
+				assert.deepEqual(
+					outcomes.filter(({ completed }) => completed !== undefined).map(({ completed }) => completed),
+					Array.from({ length: 32 }, (_, index) => index),
+					'progress must remain monotonic despite out-of-order batches',
+				);
+				assert.equal(
+					persistedContent.trim(),
+					Array.from({ length: 496 }, (_, index) => `譯文 s${String(index + 1).padStart(6, '0')}`).join('\n\n'),
+					'persisted translation must retain original segment order',
+				);
+			}
 		}
 	}
 } finally {
 	globalThis.fetch = originalFetch;
 	delete globalThis.translationWorkflowContract;
 }
-console.info({ event: 'translation_workflow_outage_contract_passed', cases: 3 });
+console.info({ event: 'translation_workflow_outage_and_concurrency_contract_passed', cases: 5 });
 
 // The same policy also runs in workerd with native durable steps and a rejecting
 // service-binding entrypoint. Isolated local config never loads project secrets.
