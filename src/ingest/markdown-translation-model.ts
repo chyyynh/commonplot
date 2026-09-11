@@ -18,29 +18,20 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 				Object.fromEntries(
 					segments.map((segment) => {
 						const template = createMarkdownTranslationTemplate(segment);
+						const requiredTextIds = new Set(
+							Object.values(template.sequences).flatMap((partIds) => {
+								const textIds = partIds.filter((id) => Object.hasOwn(template.texts, id));
+								return textIds.length === 1 && /[\p{L}\p{N}]/u.test(template.texts[textIds[0]!] ?? '') ? textIds : [];
+							}),
+						);
 						return [
 							segment.id,
 							z.strictObject({
-								sequences: z.strictObject(
+								texts: z.strictObject(
 									Object.fromEntries(
-										Object.entries(template.sequences).flatMap(([sequenceId, partIds]) => {
-											const textIds = partIds.filter((partId) => Object.hasOwn(template.texts, partId));
-											if (!textIds.length) return [];
-											const requiredTextId =
-												textIds.length === 1 && /[\p{L}\p{N}]/u.test(template.texts[textIds[0]!] ?? '') ? textIds[0] : null;
-											return [
-												[
-													sequenceId,
-													z.strictObject(
-														Object.fromEntries(
-															textIds.map((textId) => {
-																const text = z.string().describe(`Target-language text for writable position ${textId}.`);
-																return [textId, textId === requiredTextId ? text.min(1) : text];
-															}),
-														),
-													),
-												],
-											];
+										Object.keys(template.texts).map((id) => {
+											const text = z.string();
+											return [id, requiredTextIds.has(id) ? text.min(1) : text];
 										}),
 									),
 								),
@@ -95,14 +86,14 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - 若原文已是繁體中文，保留自然表達；若是簡體中文，轉為自然的台灣繁體中文
 
 格式契約：
-- translations 的每個 key 對應輸入的 segment ID；輸出的 sequences 必須保留輸入中含 t 的 sequence ID，各 sequence 必須保留自己的所有 t ID
+- translations 的每個 key 對應輸入的 segment ID；每個 segment 只輸出 texts，包含該 segment 所有 sequences 的 t ID，不要輸出 sequence ID 或 n ID
 - 每個 t value 只放該位置的譯文純文字，可以是空字串；不要把 n ID、sequence、reference、Markdown 或 HTML 寫進 t value
 - n ID 的次序、數量與結構完全由 Core 還原，不能也不需要在輸出中重複
 - reference 只供理解，不能複製成譯文；URL、Markdown 語法和其他受保護內容由 Core 還原
 - 不要沿用英文在 inline、中文標點或中文字之間的多餘空白，也不要為中文與英文、數字或 inline 邊界額外補空格；英文單字內與連續拉丁文字之間仍保留正常空格
 - 只輸出符合 schema 的結果，不要輸出說明或額外段落；整個 segment 的正文不可全數刪除。若 t 是某個 sequence 唯一的文字位置，schema 會要求它非空；專有名詞、產品名或單一字母若不需翻譯，請照原文保留。`;
 
-function splitSegmentsInHalf(segments: readonly MarkdownTranslationSegment[]): readonly (readonly MarkdownTranslationSegment[])[] {
+export function splitSegmentsInHalf(segments: readonly MarkdownTranslationSegment[]): readonly (readonly MarkdownTranslationSegment[])[] {
 	if (segments.length <= 1) return [segments];
 	const totalCharacters = segments.reduce((total, segment) => total + segment.text.length + (segment.context?.length ?? 0), 0);
 	const targetCharacters = totalCharacters / 2;
@@ -117,24 +108,12 @@ function splitSegmentsInHalf(segments: readonly MarkdownTranslationSegment[]): r
 	return [segments.slice(0, splitIndex), segments.slice(splitIndex)];
 }
 
-function translationGroups(batch: MarkdownTranslationBatch, attempt: number) {
-	const strategy = attempt <= 2 ? 'batch' : attempt === 3 ? 'halves' : 'individual';
-	const groups =
-		strategy === 'batch'
-			? [batch.segments]
-			: strategy === 'halves'
-				? splitSegmentsInHalf(batch.segments)
-				: batch.segments.map((segment) => [segment]);
-	return groups.map((segments, index) => ({ index: index + 1, segments, strategy }));
-}
-
-async function translateGroup(
-	group: ReturnType<typeof translationGroups>[number],
+async function translateBatch(
 	batch: MarkdownTranslationBatch,
 	env: CoreEnv,
 	resourceId: string,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
-	const promptSegments = group.segments.map(markdownTranslationModelInput);
+	const promptSegments = batch.segments.map(markdownTranslationModelInput);
 	const { finishReason, output } = await generateText({
 		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
 			...CORE_STRUCTURED_MODEL_SETTINGS,
@@ -145,9 +124,8 @@ async function translateGroup(
 				metadata: {
 					batch_id: batch.id,
 					feature: 'resource-content-translation',
-					recovery_strategy: group.strategy,
+					recovery_strategy: batch.id.includes('-') ? 'split' : 'batch',
 					resource_id: resourceId,
-					sub_batch_index: group.index,
 				},
 			},
 			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
@@ -161,18 +139,19 @@ async function translateGroup(
 		output: Output.object({
 			name: 'translation_batch',
 			description: 'Complete, faithful, naturally edited Taiwan Traditional Chinese prose blocks keyed by exact input segment IDs.',
-			schema: zhHantMarkdownTranslationsSchema(group.segments),
+			schema: zhHantMarkdownTranslationsSchema(batch.segments),
 		}),
 		maxOutputTokens: 12000,
 		temperature: 0.2,
 		reasoning: 'none',
 		maxRetries: 0,
 	});
-	if (finishReason === 'length') throw new Error('Markdown segment translation hit its output token cap');
+	if (finishReason === 'length')
+		throw new MarkdownTranslationInvariantError('invalid-result', 'Markdown segment translation hit its output token cap');
 	return validateMarkdownBatchTranslations(
-		{ segments: group.segments },
-		group.segments.map((segment) => ({
-			texts: Object.assign({}, ...Object.values(output.translations[segment.id]!.sequences)),
+		{ segments: batch.segments },
+		batch.segments.map((segment) => ({
+			texts: output.translations[segment.id]!.texts,
 		})),
 	);
 }
@@ -187,52 +166,22 @@ function structuredOutputFailure(error: unknown): Record<string, unknown> {
 	};
 }
 
+/** Only malformed model output should split; transport/capacity failures retry the same durable group. */
+export function isMarkdownTranslationFormatError(error: unknown): boolean {
+	return NoObjectGeneratedError.isInstance(error) || (error instanceof MarkdownTranslationInvariantError && error.code !== 'invalid-plan');
+}
+
 export async function translateMarkdownBatchToZhHant(
 	batch: MarkdownTranslationBatch,
 	env: CoreEnv,
 	resourceId: string,
-	attempt: number,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
-	const groups = translationGroups(batch, attempt);
-	if (attempt > 1) {
-		console.warn({
-			tag: 'RESOURCE_TRANSLATION',
-			event: 'markdown_batch_recovery',
-			attempt,
-			batch_id: batch.id,
-			group_count: groups.length,
-			resource_id: resourceId,
-			strategy: groups[0]?.strategy ?? 'individual',
-		});
-	}
 	try {
-		const translated: MarkdownSegmentTranslation[] = [];
-		for (const group of groups) {
-			try {
-				translated.push(...(await translateGroup(group, batch, env, resourceId)));
-			} catch (error) {
-				const segment = group.strategy === 'individual' && group.segments.length === 1 ? group.segments[0] : null;
-				if (segment) {
-					console.error({
-						tag: 'RESOURCE_TRANSLATION',
-						event: 'markdown_segment_translation_failed',
-						attempt,
-						batch_id: batch.id,
-						reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
-						resource_id: resourceId,
-						segment_id: segment.id,
-						...structuredOutputFailure(error),
-					});
-				}
-				throw error;
-			}
-		}
-		return translated;
+		return await translateBatch(batch, env, resourceId);
 	} catch (error) {
 		console.error({
 			tag: 'RESOURCE_TRANSLATION',
 			event: 'markdown_batch_attempt_failed',
-			attempt,
 			batch_id: batch.id,
 			message: error instanceof Error ? error.message : String(error),
 			reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',

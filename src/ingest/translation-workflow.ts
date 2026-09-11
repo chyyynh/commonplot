@@ -13,10 +13,11 @@ import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
 	compileMarkdownTranslationArtifact,
 	type MarkdownSegmentTranslation,
+	type MarkdownTranslationBatch,
 	MarkdownTranslationInvariantError,
 	planMarkdownTranslation,
 } from './markdown-translation';
-import { translateMarkdownBatchToZhHant } from './markdown-translation-model';
+import { isMarkdownTranslationFormatError, splitSegmentsInHalf, translateMarkdownBatchToZhHant } from './markdown-translation-model';
 import { PDF_MIME } from './platforms/pdf-constants';
 import { type ResourceTranslationCandidate, shouldEnqueueResourceTranslation } from './translation-policy';
 
@@ -168,6 +169,39 @@ Title: ${resource.title}${summary ? `\nSummary: ${summary}` : ''}`,
 	return output;
 }
 
+async function translateDurableBatch(
+	batch: MarkdownTranslationBatch,
+	env: CoreEnv,
+	resourceId: string,
+	step: WorkflowStep,
+	depth = 0,
+): Promise<readonly MarkdownSegmentTranslation[]> {
+	const result = await step.do(
+		`translate-zh-hant-markdown-${batch.id}-v15`,
+		{ retries: { limit: 3, delay: translationRetryDelay }, timeout: '300 seconds' },
+		async () => {
+			try {
+				return { ok: true as const, translations: await translateMarkdownBatchToZhHant(batch, env, resourceId) };
+			} catch (error) {
+				if (!isMarkdownTranslationFormatError(error)) throw error;
+				// Persist the format failure so replay goes straight to the same smaller groups.
+				return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+			}
+		},
+	);
+	if (result.ok) return result.translations;
+	if (batch.segments.length === 1) throw new MarkdownTranslationInvariantError('invalid-result', result.error);
+	const groups = depth === 0 ? splitSegmentsInHalf(batch.segments) : batch.segments.map((segment) => [segment]);
+	const translations: MarkdownSegmentTranslation[] = [];
+	for (const [index, segments] of groups.entries()) {
+		// Each subgroup has its own checkpoint; a later failure never redoes an earlier successful group.
+		translations.push(
+			...(await translateDurableBatch({ ...batch, id: `${batch.id}-${index + 1}`, segments }, env, resourceId, step, depth + 1)),
+		);
+	}
+	return translations;
+}
+
 async function translatePlannedContent(content: string, env: CoreEnv, resourceId: string, step: WorkflowStep, task: ResourceTask) {
 	const markdownPlan = planMarkdownTranslation(content);
 	console.info({
@@ -205,11 +239,7 @@ async function translatePlannedContent(content: string, env: CoreEnv, resourceId
 			const batchIndex = nextBatch++;
 			const batch = markdownPlan.batches[batchIndex]!;
 			try {
-				translatedBatches[batchIndex] = await step.do(
-					`translate-zh-hant-markdown-${batch.id}-of-${String(markdownPlan.batches.length).padStart(4, '0')}-v14`,
-					{ retries: { limit: 3, delay: translationRetryDelay }, timeout: '300 seconds' },
-					(context) => translateMarkdownBatchToZhHant(batch, env, resourceId, context.attempt),
-				);
+				translatedBatches[batchIndex] = await translateDurableBatch(batch, env, resourceId, step);
 				const count = ++completed;
 				// Serialize progress delivery; completion order differs from source order and can change on replay.
 				progress = progress.then(() =>
@@ -243,7 +273,7 @@ async function translatePlannedContent(content: string, env: CoreEnv, resourceId
 	return translated;
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v29';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v30';
 const ResourceTranslationRevisionSchema = z.hash('md5').lowercase();
 const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 
@@ -467,34 +497,42 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			}
 
 			const patch: MachineZhHantTranslationPatch = {};
-			if (translationPlan.metadata) {
-				const translatedMetadata = await step.do(
-					'translate-zh-hant-title-summary-v3',
-					{
-						retries: { limit: 5, delay: translationRetryDelay },
-						timeout: '180 seconds',
-					},
-					() => translateResourceMetadata(resource, this.env),
-				);
-				Object.assign(patch, translatedMetadata);
-			}
+			const outcomes = await Promise.allSettled([
+				(async () => {
+					if (translationPlan.metadata) {
+						const translatedMetadata = await step.do(
+							'translate-zh-hant-title-summary-v3',
+							{
+								retries: { limit: 5, delay: translationRetryDelay },
+								timeout: '180 seconds',
+							},
+							() => translateResourceMetadata(resource, this.env),
+						);
+						Object.assign(patch, translatedMetadata);
+					}
+				})(),
+				(async () => {
+					if (translationPlan.content) {
+						try {
+							const translated = await translatePlannedContent(resource.content.trim(), this.env, resourceId, step, task);
+							if (translated) Object.assign(patch, translated);
+						} catch (error) {
+							console.error({
+								tag: 'RESOURCE_TRANSLATION',
+								event: 'content_translation_outcome',
+								outcome: 'failed',
+								reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
+								error: error instanceof Error ? error.message : String(error),
+								resource_id: resourceId,
+							});
+							throw error;
+						}
+					}
+				})(),
+			]);
+			const failure = outcomes.find((outcome) => outcome.status === 'rejected');
+			if (failure) throw failure.reason;
 
-			if (translationPlan.content) {
-				try {
-					const translated = await translatePlannedContent(resource.content.trim(), this.env, resourceId, step, task);
-					if (translated) Object.assign(patch, translated);
-				} catch (error) {
-					console.error({
-						tag: 'RESOURCE_TRANSLATION',
-						event: 'content_translation_outcome',
-						outcome: 'failed',
-						reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
-						error: error instanceof Error ? error.message : String(error),
-						resource_id: resourceId,
-					});
-					throw error;
-				}
-			}
 			if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) {
 				await task.report('empty', { stage: 'translating', status: 'skipped', resourceId });
 				return { status: 'skipped', resourceId };

@@ -44,10 +44,14 @@ registerHooks({
 			context.parentURL?.endsWith('/ingest/translation-workflow.ts') &&
 			(specifier === '../shared/db' || specifier === './markdown-translation-model')
 		) {
+			const exports =
+				specifier === './markdown-translation-model'
+					? `export { isMarkdownTranslationFormatError, splitSegmentsInHalf } from ${JSON.stringify(new URL('../src/ingest/markdown-translation-model.ts', import.meta.url).href)};`
+					: '';
 			const name = specifier === '../shared/db' ? 'connectCoreDb' : 'translateMarkdownBatchToZhHant';
 			return {
 				shortCircuit: true,
-				url: `data:text/javascript,${encodeURIComponent(`export const ${name} = (...args) => globalThis.translationWorkflowContract.${name}(...args);`)}`,
+				url: `data:text/javascript,${encodeURIComponent(`${exports} export const ${name} = (...args) => globalThis.translationWorkflowContract.${name}(...args);`)}`,
 			};
 		}
 		if (specifier.startsWith('.') && !specifier.endsWith('.ts') && context.parentURL?.includes('/workers/core-worker/src/'))
@@ -141,13 +145,22 @@ assert.equal(queued.length, creationCount, 'failed registration cannot admit pai
 console.info({ event: 'shared_translation_ledger_contract_passed' });
 
 // Execute the actual translation Workflow with provider/DB boundaries controlled.
-const { createMarkdownTranslationTemplate } = await import('../src/ingest/markdown-translation.ts');
+const { createMarkdownTranslationTemplate, MarkdownTranslationInvariantError } = await import('../src/ingest/markdown-translation.ts');
 const originalFetch = globalThis.fetch;
 globalThis.fetch = async () => {
 	throw new Error('Translation contract attempted an external provider request');
 };
 try {
-	for (const scenario of ['app-unavailable', 'index-unavailable', 'complete', 'parallel', 'parallel-failure']) {
+	for (const scenario of [
+		'app-unavailable',
+		'index-unavailable',
+		'complete',
+		'parallel',
+		'parallel-failure',
+		'rate-limited',
+		'format-recovery',
+		'metadata-parallel',
+	]) {
 		const parallel = scenario.startsWith('parallel');
 		const effects = [];
 		const appCalls = [];
@@ -155,6 +168,9 @@ try {
 		let active = 0;
 		let peak = 0;
 		let persistedContent;
+		const providerBatches = [];
+		const retryDelays = [];
+		let metadataActive = false;
 		globalThis.translationWorkflowContract = {
 			connectCoreDb: async () => ({
 				execute: async (query) => {
@@ -177,12 +193,18 @@ try {
 								scope: 'corpus',
 								title: 'A research paper',
 								summary: null,
-								content: parallel
-									? Array.from({ length: 496 }, (_, index) => `Original research paragraph number ${index + 1} requires translation.`).join(
-											'\n\n',
-										)
-									: 'This is the original readable content of a research paper that requires translation.',
-								zh_hant_title: '研究論文',
+								content:
+									scenario === 'format-recovery' || scenario === 'rate-limited'
+										? Array.from({ length: 8 }, (_, index) => `A long research paragraph ${index} requires complete translation.`).join(
+												'\n\n',
+											)
+										: parallel
+											? Array.from(
+													{ length: 496 },
+													(_, index) => `Original research paragraph number ${index + 1} requires translation.`,
+												).join('\n\n')
+											: 'This is the original readable content of a research paper that requires translation.',
+								zh_hant_title: scenario === 'metadata-parallel' ? null : '研究論文',
 								zh_hant_summary: null,
 								zh_hant_content: null,
 								zh_hant_alignment_version: null,
@@ -196,11 +218,19 @@ try {
 			}),
 			translateMarkdownBatchToZhHant: async (batch) => {
 				effects.push('provider');
+				providerBatches.push(batch.id);
+				effects.push('body-start');
+				if (scenario === 'rate-limited' && providerBatches.length <= 3) throw new Error('429 rate limit');
+				if (scenario === 'format-recovery') {
+					if (batch.id === 'b0001' || batch.id === 'b0001-2') throw new MarkdownTranslationInvariantError('invalid-result', 'Bad format');
+					if (batch.id === 'b0001-2-1' && providerBatches.filter((id) => id === batch.id).length <= 2) throw new Error('429 rate limit');
+				}
 				active++;
 				peak = Math.max(peak, active);
 				// Complete out of source order, with more than two full concurrency windows.
 				await new Promise((resolve) => setTimeout(resolve, batch.id === 'b0001' ? 30 : 1));
 				active--;
+				effects.push('body-end');
 				if (scenario === 'parallel-failure' && batch.id === 'b0002') throw new Error('Provider exhausted retries');
 				return batch.segments.map((segment) => ({
 					texts: Object.fromEntries(
@@ -216,7 +246,10 @@ try {
 			['startResourceProgressTask', 'reportResourceProgress', 'registerResourceProgressTask', 'sealResourceProgressTask'].map((name) => [
 				name,
 				async (input) => {
-					if (name === 'sealResourceProgressTask') assert.equal(active, 0, 'all provider work must settle before sealing');
+					if (name === 'sealResourceProgressTask') {
+						assert.equal(active, 0, 'all provider work must settle before sealing');
+						assert.equal(metadataActive, false);
+					}
 					appCalls.push({ name, input });
 					if (scenario === 'app-unavailable') throw new Error('APP unavailable');
 					return true;
@@ -227,6 +260,16 @@ try {
 			{},
 			{
 				APP: app,
+				AI: {
+					run: async () => {
+						metadataActive = true;
+						effects.push('metadata-start');
+						await new Promise((resolve) => setTimeout(resolve, 60));
+						metadataActive = false;
+						effects.push('metadata-end');
+						return { response: JSON.stringify({ title: '研究論文' }) };
+					},
+				},
 				RESOURCE_SEARCH_SYNC_QUEUE: {
 					send: async (body) => {
 						assert.equal(body.resourceId, resourceId);
@@ -242,7 +285,18 @@ try {
 				instanceId: 'shared-translation-contract',
 				payload: { resourceId, translationRevision: revision },
 			},
-			{ do: async (_name, ...args) => args.at(-1)({ attempt: 1 }) },
+			{
+				do: async (_name, ...args) => {
+					for (let attempt = 1; ; attempt++) {
+						try {
+							return await args.at(-1)({ attempt });
+						} catch (error) {
+							if (!['rate-limited', 'format-recovery'].includes(scenario) || attempt > args[0].retries.limit) throw error;
+							retryDelays.push(args[0].retries.delay({ ctx: { attempt }, error }));
+						}
+					}
+				},
+			},
 		);
 		if (scenario === 'app-unavailable') {
 			await assert.rejects(result, /APP unavailable/);
@@ -260,6 +314,32 @@ try {
 				outcomes.every(({ errorCode }) => errorCode === undefined),
 				'index handoff failure does not fail published content',
 			);
+			if (scenario === 'metadata-parallel') {
+				assert.ok(effects.indexOf('body-start') < effects.indexOf('metadata-end'));
+				assert.ok(effects.indexOf('metadata-start') < effects.indexOf('body-end'), 'metadata and body must overlap');
+			}
+			if (scenario === 'rate-limited') {
+				assert.deepEqual(
+					providerBatches,
+					Array.from({ length: 4 }, () => 'b0001'),
+					'rate limits never split batches',
+				);
+				assert.deepEqual(retryDelays, [60000, 120000, 180000]);
+			}
+			if (scenario === 'format-recovery') {
+				assert.deepEqual(providerBatches, [
+					'b0001',
+					'b0001-1',
+					'b0001-2',
+					'b0001-2-1',
+					'b0001-2-1',
+					'b0001-2-1',
+					'b0001-2-2',
+					'b0001-2-3',
+					'b0001-2-4',
+				]);
+				assert.deepEqual(retryDelays, [60000, 120000], 'successful first half is not repeated when the second half retries');
+			}
 			if (parallel) {
 				assert.equal(peak, 15, 'translation must use, and never exceed, 15 concurrent batches');
 				assert.equal(effects.filter((effect) => effect === 'provider').length, 31, 'every batch runs exactly once');
@@ -280,7 +360,7 @@ try {
 	globalThis.fetch = originalFetch;
 	delete globalThis.translationWorkflowContract;
 }
-console.info({ event: 'translation_workflow_outage_and_concurrency_contract_passed', cases: 5 });
+console.info({ event: 'translation_workflow_outage_and_concurrency_contract_passed', cases: 8 });
 
 // The same policy also runs in workerd with native durable steps and a rejecting
 // service-binding entrypoint. Isolated local config never loads project secrets.
