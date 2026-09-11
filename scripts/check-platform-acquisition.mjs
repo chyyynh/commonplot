@@ -146,7 +146,6 @@ async function acquire(input = {}) {
 						hints,
 						processingId: context.processingId,
 						paidPdfFallback: null,
-						allowCitoidLookup: false,
 					});
 				case 'youtube':
 					return await stageYouTubeAcquisition(env, step, { ...context, videoId: input.platformId });
@@ -210,7 +209,6 @@ async function acquire(input = {}) {
 			processingId: context.processingId,
 			seedIdentifiers: input.resourceIdentifiers ?? [],
 			sourceUrl: url,
-			allowCitoidLookup: false,
 		});
 	} finally {
 		globalThis.fetch = originalFetch;
@@ -436,34 +434,77 @@ for (const testCase of cases) {
 }
 
 const blog = await acquire();
-const citoidCases = [
-	{ itemType: 'journalArticle', openAlexStatus: 503, kind: 'paper' },
-	{ itemType: 'journalArticle', openAlexStatus: 404, kind: 'paper' },
-	{ itemType: 'webpage', openAlexStatus: 503, kind: 'blog' },
+const paperResolutionCases = [
+	{ url: blog.url, status: 503, kind: 'blog', identifiers: [], provider: null },
+	...[404, 503].map((status) => ({
+		url: 'https://doi.org/10.1000/example',
+		status,
+		kind: 'paper',
+		identifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
+		provider: 'api.openalex.org',
+	})),
+	{
+		url: 'https://arxiv.org/abs/2507.12652',
+		status: 404,
+		kind: 'paper',
+		identifiers: [{ preferred: true, scheme: 'arxiv', value: '2507.12652' }],
+		provider: 'api.openalex.org',
+	},
+	{
+		url: blog.url,
+		status: 404,
+		kind: 'paper',
+		seedIdentifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
+		identifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
+		provider: 'api.openalex.org',
+	},
+	{ url: 'https://example.com/document.pdf', fileType: 'application/pdf', status: 404, kind: 'file', identifiers: [], provider: null },
+	{
+		url: 'https://example.com/document.pdf',
+		fileType: 'application/pdf',
+		paperIdentifierText: 'DOI: 10.1000/example',
+		status: 404,
+		kind: 'paper',
+		identifiers: [{ preferred: true, scheme: 'doi', value: '10.1000/example' }],
+		provider: 'api.crossref.org',
+	},
 ];
-for (const { itemType, openAlexStatus, kind } of citoidCases) {
+for (const testCase of paperResolutionCases) {
 	const originalFetch = globalThis.fetch;
-	globalThis.fetch = async (request) =>
-		new URL(request).hostname === 'en.wikipedia.org'
-			? Response.json([{ itemType, DOI: '10.1000/example' }])
-			: Response.json(null, { status: openAlexStatus });
+	const requestedHosts = [];
+	globalThis.fetch = async (request) => {
+		requestedHosts.push(new URL(request).hostname);
+		return Response.json(null, { status: testCase.status });
+	};
 	try {
 		const resource = await stagePaperResolution(
 			{ OPENALEX_API_KEY: 'fixture' },
 			{ do: (_name, _options, run) => run() },
 			{
-				resource: { ...blog, summary: 'Source summary' },
+				resource: {
+					...blog,
+					url: testCase.url,
+					kind: testCase.fileType ? 'file' : 'blog',
+					fileType: testCase.fileType ?? null,
+					kindMetadata: testCase.fileType ? null : blog.kindMetadata,
+					paperIdentifierText: testCase.paperIdentifierText,
+					summary: 'Source summary',
+				},
 				processingId: 'contract',
-				seedIdentifiers: [],
-				sourceUrl: blog.url,
-				allowCitoidLookup: true,
+				seedIdentifiers: testCase.seedIdentifiers ?? [],
+				sourceUrl: testCase.url,
 			},
 		);
-		assert.equal(resource.kind, kind, `Citoid ${itemType} identity survives OpenAlex HTTP ${openAlexStatus}`);
-		assert.deepEqual(resource.resourceIdentifiers, kind === 'paper' ? [{ preferred: true, scheme: 'doi', value: '10.1000/example' }] : []);
+		assert.equal(resource.kind, testCase.kind, `${testCase.url} classification survives provider HTTP ${testCase.status}`);
+		assert.deepEqual(resource.resourceIdentifiers, testCase.identifiers);
+		assert.deepEqual(
+			requestedHosts,
+			testCase.provider ? [testCase.provider] : [],
+			'only explicit paper identities trigger bibliographic requests',
+		);
 		assert.equal(resource.content, blog.content);
 		assert.equal(resource.summary, 'Source summary');
-		assert.equal(prepareResolvedResource(resource, analysis, []).kind, kind);
+		assert.equal(prepareResolvedResource(resource, analysis, []).kind, testCase.kind);
 	} finally {
 		globalThis.fetch = originalFetch;
 	}
@@ -602,5 +643,5 @@ const summaryCases = [
 for (const { expected, ...input } of summaryCases) assert.equal((await acquire(input)).summary, expected);
 
 console.info(
-	`Platform acquisition contract checks passed (${cases.length + 7 + summaryCases.length + invalidResources.length + citoidCases.length} cases).`,
+	`Platform acquisition contract checks passed (${cases.length + 7 + summaryCases.length + invalidResources.length + paperResolutionCases.length} cases).`,
 );

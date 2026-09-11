@@ -184,7 +184,6 @@ async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, targe
 				publishedDate: target.sourceHints?.publishedDate ?? null,
 				summary: target.sourceHints?.summary ?? null,
 			},
-			allowCitoidLookup: target.relation?.kind !== 'source',
 			paidPdfFallback: target.paidPdfFallback ?? null,
 			processingId: task.taskId,
 			url: target.url,
@@ -202,7 +201,6 @@ async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, targe
 	);
 	return stageUrlAcquisition(env, step, {
 		hints: snapshot,
-		allowCitoidLookup: false,
 		paperIdentifiers: snapshot.paperIdentifiers,
 		paidPdfFallback: target.paidPdfFallback ?? null,
 		processingId: target.resourceId,

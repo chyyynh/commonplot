@@ -1,7 +1,6 @@
 // Provider-independent bibliographic resolution followed by OpenAlex enrichment.
 
 import type { WorkflowStep } from 'cloudflare:workers';
-import { z } from 'zod';
 import {
 	canonicalPaperUrl,
 	normalizePaperIdentifiers,
@@ -16,21 +15,7 @@ import { resolveCrossrefPaper } from '../crossref';
 import { resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME, stageOpenAlexPdfMarkdown } from './pdf';
 
-const CITOID_IDENTIFIER_SCAN_CHARS = 3_000;
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
-const CITOID_BASE = 'https://en.wikipedia.org/api/rest_v1/data/citation/zotero/';
-const CITOID_TIMEOUT_MS = 8_000;
-const CITOID_USER_AGENT = 'Newsence/1.0 (https://www.newsence.app; bibliographic metadata resolver)';
-const CitoidResponseSchema = z.array(
-	z.object({
-		itemType: z.string().nullish(),
-		DOI: z.string().nullish(),
-		archiveID: z.string().nullish(),
-		url: z.string().nullish(),
-		extra: z.string().nullish(),
-	}),
-);
-const ACADEMIC_ITEM_TYPES = new Set(['journalArticle', 'conferencePaper', 'preprint', 'thesis', 'manuscript']);
 
 function choosePreferredIdentifiers(identifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
 	const normalized = normalizePaperIdentifiers(identifiers.map((identifier) => ({ ...identifier, preferred: false })));
@@ -39,74 +24,6 @@ function choosePreferredIdentifiers(identifiers: readonly PaperIdentifier[]): Pa
 	return normalized.map((identifier) =>
 		identifier.scheme === 'doi' ? { ...identifier, preferred: identifier.value === preferredDoi.value } : identifier,
 	);
-}
-
-async function resolveCitoidPaperIdentifiers(value: string): Promise<PaperIdentifier[]> {
-	const parsedUrl = URL.parse(value);
-	if (!parsedUrl || (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') || parsedUrl.username || parsedUrl.password) {
-		return [];
-	}
-	const response = await fetch(`${CITOID_BASE}${encodeURIComponent(parsedUrl.toString())}`, {
-		headers: { Accept: 'application/json', 'Api-User-Agent': CITOID_USER_AGENT, 'User-Agent': CITOID_USER_AGENT },
-		signal: AbortSignal.timeout(CITOID_TIMEOUT_MS),
-	});
-	if (!response.ok) {
-		const retryAfter = response.headers.get('retry-after');
-		await response.body?.cancel();
-		if (response.status === 429) {
-			throw new Error(`Citoid request failed with HTTP 429${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
-		}
-		console.warn({ tag: 'CITOID', event: 'lookup_unavailable', status: response.status });
-		return [];
-	}
-	const items = CitoidResponseSchema.parse(await response.json());
-	const academicItem = items.find((item) => item.itemType && ACADEMIC_ITEM_TYPES.has(item.itemType));
-	if (!academicItem) return [];
-	const identity = paperIdentityFromText(
-		[
-			academicItem.DOI ? `DOI: ${academicItem.DOI}` : '',
-			academicItem.archiveID ?? '',
-			academicItem.url ?? '',
-			academicItem.extra?.slice(0, CITOID_IDENTIFIER_SCAN_CHARS) ?? '',
-		]
-			.filter(Boolean)
-			.join('\n'),
-	);
-	return identity ? paperIdentifiersFromIdentity(identity) : [];
-}
-
-async function stageCitoidPaperIdentifiers(
-	step: WorkflowStep,
-	candidate: {
-		citoidUrl: string;
-		processingId: string;
-	},
-): Promise<PaperIdentifier[]> {
-	try {
-		return await step.do(
-			'resolve-paper-citoid-identifiers-v1',
-			{ retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-			async () =>
-				resolveCitoidPaperIdentifiers(candidate.citoidUrl).catch((error) => {
-					if (error instanceof Error && error.message.includes('HTTP 429')) throw error;
-					console.warn({
-						tag: 'CITOID',
-						event: 'lookup_failed',
-						processing_id: candidate.processingId,
-						error: error instanceof Error ? error.message : String(error),
-					});
-					return [];
-				}),
-		);
-	} catch (error) {
-		console.warn({
-			tag: 'CITOID',
-			event: 'lookup_failed',
-			processing_id: candidate.processingId,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return [];
-	}
 }
 
 async function stageOpenAlexPaperEnrichment(
@@ -203,7 +120,6 @@ export async function stagePaperResolution(
 		processingId: string;
 		seedIdentifiers: readonly PaperIdentifier[];
 		sourceUrl: string | null;
-		allowCitoidLookup: boolean;
 	},
 ) {
 	const { paperIdentifierText, ...resource } = input.resource;
@@ -213,16 +129,11 @@ export async function stagePaperResolution(
 		return resolved ? paperIdentifiersFromIdentity(resolved.identity) : [];
 	});
 	const textIdentity = resource.fileType === PDF_MIME && paperIdentifierText?.trim() ? paperIdentityFromText(paperIdentifierText) : null;
-	let identifiers = choosePreferredIdentifiers([
+	const identifiers = choosePreferredIdentifiers([
 		...exactIdentifiers,
 		...(textIdentity ? paperIdentifiersFromIdentity(textIdentity) : []),
 		...input.seedIdentifiers,
 	]);
-	if (resource.fileType !== PDF_MIME && !identifiers.length && input.allowCitoidLookup && canonicalUrl) {
-		identifiers = choosePreferredIdentifiers(
-			await stageCitoidPaperIdentifiers(step, { citoidUrl: canonicalUrl, processingId: input.processingId }),
-		);
-	}
 	const openAlex =
 		resource.fileType === PDF_MIME
 			? null

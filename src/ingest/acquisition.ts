@@ -44,7 +44,6 @@ export async function stageUrlAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		allowCitoidLookup: boolean;
 		hints: ResourceAcquisitionHints;
 		paperIdentifiers?: readonly PaperIdentifier[];
 		paidPdfFallback: PaidPdfFallbackGrant | null;
@@ -61,7 +60,6 @@ export async function stageUrlAcquisition(
 				processingId: input.processingId,
 				seedIdentifiers: input.paperIdentifiers ?? [],
 				sourceUrl: input.url,
-				allowCitoidLookup: input.allowCitoidLookup,
 			});
 		}
 		detected = web.platform;
@@ -108,6 +106,5 @@ export async function stageStoredResourceAcquisition(
 		processingId: target.resourceId,
 		seedIdentifiers: [],
 		sourceUrl: null,
-		allowCitoidLookup: false,
 	});
 }
