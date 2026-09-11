@@ -266,7 +266,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			);
 			const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision, acquisitionRevision } = persistence;
 			if (persistence.originalWritten) classificationTargets.push(persistence);
-			const forceProcessingRunKey = target.kind === 'reacquire' ? (await sha256Hex(event.instanceId)).slice(0, 16) : undefined;
+			// Overwritten originals have no retained translations, even when their text is unchanged.
+			const forceProcessingRunKey = (await sha256Hex(event.instanceId)).slice(0, 16);
 			if (scope === 'corpus' && preparedResource.fileType === 'application/pdf') {
 				await step.do(
 					'publish-public-pdf-crops-v1',
@@ -334,7 +335,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 									this.env,
 									privateTranslation!.resourceId,
 									privateTranslation!.translationRevision,
-									undefined,
+									forceProcessingRunKey,
 									task,
 								),
 						)
@@ -343,7 +344,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					? step.do(
 							'enqueue-resource-translation-v4',
 							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							() => enqueueResourceTranslation(this.env, persistedResourceId, translationRevision, forceProcessingRunKey, task),
+							() =>
+								enqueueResourceTranslation(
+									this.env,
+									persistedResourceId,
+									translationRevision,
+									persistence.originalWritten ? forceProcessingRunKey : undefined,
+									task,
+								),
 						)
 					: undefined,
 				subject && !subjectAttached

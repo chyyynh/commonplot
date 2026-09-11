@@ -294,6 +294,7 @@ const workflowCases = [
 	{ name: 'user-subject', subject: true },
 ];
 const subjectIds = new Map();
+const translationRuns = new Map();
 const providerFetch = globalThis.fetch;
 globalThis.fetch = async () => {
 	throw new Error('Workflow contract attempted an external provider request');
@@ -393,6 +394,12 @@ try {
 			},
 			enqueueResourceTranslation: async (...args) => {
 				if (scenario === 'translation-handoff-failed') throw new Error('Translation dispatch unavailable');
+				if (scenario === 'private-pdf-existing-public' && args[1] === workflowResourceId) {
+					assert.equal(args[3], undefined, 'Retained public PDFs keep their shared translation');
+				} else {
+					assert.match(args[3], /^[a-f0-9]{16}$/, 'Overwritten content must receive a fresh translation run');
+				}
+				translationRuns.set(scenario, args[3]);
 				translations.push(args.at(-1));
 				effects.push('translation-enqueued');
 			},
@@ -554,6 +561,11 @@ try {
 		}
 	}
 	assert.equal(subjectIds.get('automatic-source'), subjectIds.get('automatic-source-repeat'), 'Automatic parent reruns reuse one child ID');
+	assert.notEqual(
+		translationRuns.get('automatic-source'),
+		translationRuns.get('automatic-source-repeat'),
+		'Reimporting identical content must not reuse a completed translation after clearing it',
+	);
 	assert.equal(subjectIds.get('automatic-source'), subjectIds.get('automatic-reacquire'), 'The same automatic subject target keeps its ID');
 	assert.notEqual(
 		subjectIds.get('automatic-source'),
