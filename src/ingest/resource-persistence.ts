@@ -220,53 +220,52 @@ async function writeCanonicalResource(
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
 		NOW(), NOW()
 	`;
-	const acquisition = await db.execute<{ acquisition_revision: string }>(sql`
-		${
-			!existing
-				? sql`INSERT INTO resources (id, scope, ${columns}) VALUES (${resourceId}::uuid, 'corpus', ${values})`
-				: sql`UPDATE resources SET (${columns}) = (${values}) WHERE id = ${resourceId}::uuid`
-		}
-		RETURNING MD5(EXTRACT(EPOCH FROM scraped_date)::text) AS acquisition_revision
-	`);
-	if (existing) {
-		// Reacquisition replaces the original and invalidates its translations and references.
-		await db.execute(sql`
-			WITH cleared_identifiers AS (
-				DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid
-			), cleared_mentions AS (
-				DELETE FROM resource_citation_mentions WHERE resource_id = ${resourceId}::uuid
-			), cleared_references AS (
-				DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid
-			)
+	// The cleanup excludes the incoming language: no CTE deletes a row another CTE writes.
+	const written = await db.execute<{ revision: string; acquisition_revision: string }>(sql`
+		WITH written_resource AS (
+			${
+				!existing
+					? sql`INSERT INTO resources (id, scope, ${columns}) VALUES (${resourceId}::uuid, 'corpus', ${values})`
+					: sql`UPDATE resources SET (${columns}) = (${values}) WHERE id = ${resourceId}::uuid`
+			}
+			RETURNING id, MD5(EXTRACT(EPOCH FROM scraped_date)::text) AS acquisition_revision
+		), cleared_identifiers AS (
+			DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid AND ${existing}
+		), cleared_mentions AS (
+			DELETE FROM resource_citation_mentions WHERE resource_id = ${resourceId}::uuid AND ${existing}
+		), cleared_references AS (
+			DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid AND ${existing}
+		), cleared_translations AS (
 			DELETE FROM resource_translations
-			WHERE resource_id = ${resourceId}::uuid
+			WHERE resource_id = ${resourceId}::uuid AND ${existing}
 			  AND lang <> ${resource.originalLang}
-		`);
-	}
+		), written_original AS (
+			INSERT INTO resource_translations (resource_id, lang, title, summary, content, keywords, source, updated_at)
+			SELECT id, ${resource.originalLang}, ${resource.title}, ${resource.summary}, ${resource.content},
+			       ${sql.param(resource.keywords)}::text[], 'original', NOW()
+			FROM written_resource
+			WHERE true
+			ON CONFLICT (resource_id, lang) DO UPDATE SET
+				(title, summary, content, keywords, source, alignment, updated_at) =
+				(EXCLUDED.title, EXCLUDED.summary, EXCLUDED.content, EXCLUDED.keywords, EXCLUDED.source, NULL, EXCLUDED.updated_at)
+			RETURNING MD5(jsonb_build_array(lang, title, summary, content)::text) AS revision
+		)
+		SELECT revision, acquisition_revision FROM written_resource CROSS JOIN written_original
+	`);
 	if (resource.identifiers.length) {
+		// Identifier replacement must follow its DELETE; both can target the same keys.
 		await db.execute(sql`
 			INSERT INTO resource_identifiers (resource_id, scheme, value, is_preferred)
 			SELECT ${resourceId}::uuid, scheme, value, preferred
 			FROM jsonb_to_recordset(${JSON.stringify(resource.identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
 		`);
 	}
-	const original = await db.execute<{ revision: string }>(sql`
-		INSERT INTO resource_translations (resource_id, lang, title, summary, content, keywords, source, updated_at)
-		VALUES (
-			${resourceId}::uuid, ${resource.originalLang}, ${resource.title}, ${resource.summary}, ${resource.content},
-			${sql.param(resource.keywords)}::text[], 'original', NOW()
-		)
-		ON CONFLICT (resource_id, lang) DO UPDATE SET
-			(title, summary, content, keywords, source, alignment, updated_at) =
-			(EXCLUDED.title, EXCLUDED.summary, EXCLUDED.content, EXCLUDED.keywords, EXCLUDED.source, NULL, EXCLUDED.updated_at)
-		RETURNING MD5(jsonb_build_array(lang, title, summary, content)::text) AS revision
-	`);
-	const translationRevision = original.rows[0]?.revision;
 	if (resource.youtube) {
 		await persistYouTubeData(db, resourceId, resource.youtube);
 	}
-	if (!translationRevision) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
-	return { translationRevision, acquisitionRevision: acquisition.rows[0]!.acquisition_revision };
+	const original = written.rows[0];
+	if (!original) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
+	return { translationRevision: original.revision, acquisitionRevision: original.acquisition_revision };
 }
 
 async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relation: ResourceDraftRelation) {

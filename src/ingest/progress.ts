@@ -20,19 +20,20 @@ export function createResourceTask(env: CoreEnv, step: WorkflowStep, taskId: str
 		taskId,
 		required,
 		start(stage: NonNullable<ProgressReport['stage']>) {
-			return step.do('start-resource-progress-v1', PROGRESS_STEP, () =>
-				required ? env.APP.startResourceProgressTask(taskId, stage) : Promise.resolve(true),
-			);
+			if (!required) return Promise.resolve(true);
+			return step.do('start-resource-progress-v1', PROGRESS_STEP, () => env.APP.startResourceProgressTask(taskId, stage));
 		},
 		report(key: string, report: Omit<ProgressReport, 'taskId'>) {
+			if (!required) return Promise.resolve();
 			// Delivery retries remain separate from paid provider work.
 			return step.do(`progress-${key}-v1`, PROGRESS_STEP, async () => {
-				if (required) await env.APP.reportResourceProgress({ ...report, taskId });
+				await env.APP.reportResourceProgress({ ...report, taskId });
 			});
 		},
 		seal(errorCode?: string) {
+			if (!required) return Promise.resolve();
 			return step.do('seal-resource-progress-v1', PROGRESS_STEP, async () => {
-				if (required) await env.APP.sealResourceProgressTask(taskId, errorCode);
+				await env.APP.sealResourceProgressTask(taskId, errorCode);
 			});
 		},
 	};

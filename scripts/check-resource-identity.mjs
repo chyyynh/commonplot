@@ -457,7 +457,13 @@ try {
 			(owned
 				? { kind: 'storedBlob', resourceId: workflowRawId }
 				: { kind: 'draft', url: 'https://example.com/paper.pdf', saveTarget: { kind: 'profileSave', userId: 'fixture-user' } });
-		const step = { do: async (_name, ...args) => args.at(-1)({ attempt: 1 }) };
+		const progressSteps = [];
+		const step = {
+			do: async (name, ...args) => {
+				if (/^(start-resource-progress|progress-|seal-resource-progress)/.test(name)) progressSteps.push(name);
+				return args.at(-1)({ attempt: 1 });
+			},
+		};
 		const result = workflow.run({ instanceId, payload }, step);
 		if (scenario === 'classification-delayed') {
 			await new Promise((resolve) => setImmediate(resolve));
@@ -497,6 +503,7 @@ try {
 			}
 		}
 		if (appUnavailable) {
+			assert.deepEqual(progressSteps, [], `${scenario}: no empty durable progress steps`);
 			assert.deepEqual(appCalls, [], `${scenario}: automatic work must not depend on any app method`);
 			assert.ok(effects.includes('acquired') && effects.includes('corpus-persisted'), `${scenario}: acquisition and persistence finish`);
 			assert.deepEqual(searchMessages, [{ resourceId: workflowResourceId }], `${scenario}: search delivery has no user task ledger`);
@@ -505,6 +512,7 @@ try {
 			assert.equal(translations[0].required, false, `${scenario}: follow-up inherits automatic execution policy`);
 			continue;
 		}
+		assert.ok(progressSteps.includes('start-resource-progress-v1'), `${scenario}: managed admission stays durable`);
 		if (subject) {
 			assert.equal(reports.at(-1).status, 'complete', scenario);
 			assert.equal(translations[0].required, true, `${scenario}: follow-up inherits the managed task policy`);
