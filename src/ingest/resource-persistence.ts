@@ -13,6 +13,7 @@ import {
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
 import type { ResourceAnalysis, ResourceClassification } from './analysis';
+import { withoutDuplicatePdfTitle } from './pdf-markdown.ts';
 import type { YouTubeResourceData } from './platforms/youtube';
 import { persistYouTubeData } from './platforms/youtube-persistence';
 import { structuredPdfCropManifestKey } from './zotero-sdt-service.ts';
@@ -80,7 +81,7 @@ export function prepareResolvedResource(
 	hostedImages: readonly HostedResourceImage[],
 ) {
 	const title = resource.title.trim();
-	const content = resource.content.trim();
+	const content = (resource.fileType === 'application/pdf' ? withoutDuplicatePdfTitle(resource.content, title) : resource.content).trim();
 	const sourceName = resource.source.trim();
 	if (!title || !content) throw new TypeError('Resolved Resource requires title and content');
 	if (!sourceName) throw new TypeError('Resolved Resource requires a source name');

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { fromMarkdown as parseMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
+import { withoutDuplicatePdfTitle } from '../src/ingest/pdf-markdown.ts';
 import {
 	hasPrivatePdfImages,
 	matchesUploadedPdfRendition,
@@ -84,6 +85,48 @@ const document = {
 
 const parsed = parseStructuredPdfDocumentJson(JSON.stringify(document));
 const normalized = normalizeStructuredPdf(parsed);
+
+const noteDocument = {
+	...document,
+	catalog: { ...document.catalog, outline: [] },
+	content: [
+		{
+			type: 'paragraph',
+			content: [
+				text('A claim'),
+				text('1', { refs: [[1]], style: { sup: true } }),
+				text(' and again'),
+				text('1', { refs: [[1]] }),
+				text('.'),
+			],
+		},
+		{ type: 'note', flowClass: 'auxiliary', content: [text('1 The qualifying note.')] },
+		{ type: 'note', content: [text('An unlinked table note.')] },
+	],
+};
+const noted = normalizeStructuredPdf(noteDocument);
+assert.match(noted.markdown, /A claim\[\^sdt-note-1\] and again\[\^sdt-note-1\]/u);
+assert.match(noted.markdown, /\[\^sdt-note-1\]: The qualifying note\./u);
+assert.match(noted.markdown, /An unlinked table note\./u);
+assert.equal(noted.references.length, 0, 'explanatory notes are not bibliography entries');
+
+const frontMatterDocument = {
+	...document,
+	catalog: { ...document.catalog, outline: [{ title: 'Introduction', ref: [2] }] },
+	content: [
+		{ type: 'heading', content: [text('A useful paper')] },
+		{ type: 'heading', content: [text('Alex Example', { target: { url: 'https://orcid.org/0000-0000-0000-0001' } })] },
+		{ type: 'heading', content: [text('Introduction')] },
+		{ type: 'paragraph', content: [text('The body.')] },
+	],
+};
+const frontMatterMarkdown = normalizeStructuredPdf(frontMatterDocument).markdown;
+assert.doesNotMatch(frontMatterMarkdown, /^## \[Alex Example\]/mu);
+assert.match(frontMatterMarkdown, /^## Introduction/mu);
+assert.doesNotMatch(withoutDuplicatePdfTitle(frontMatterMarkdown, 'A useful paper'), /^## A useful paper/mu);
+assert.equal(withoutDuplicatePdfTitle(frontMatterMarkdown, 'Different title'), frontMatterMarkdown);
+assert.equal(withoutDuplicatePdfTitle('# Only title', 'Only title'), '# Only title');
+assert.equal(withoutDuplicatePdfTitle('## **Actual** title\n\nBody.', 'Actual title'), 'Body.');
 
 assert.equal(normalized.references.length, 1);
 assert.deepEqual(normalized.references[0], {

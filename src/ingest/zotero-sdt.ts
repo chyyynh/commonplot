@@ -581,6 +581,15 @@ export function normalizeStructuredPdf(
 		if (parsed.text) references.push({ key, ...parsed });
 	}
 	const headingLevelByPath = headingLevels(document.catalog.outline);
+	const properties = document.metadata.source.properties ?? {};
+	const author = typeof properties.Author === 'string' ? cleanText(properties.Author) : '';
+	const firstSection = Math.min(...[...headingLevelByPath.keys()].map((path) => Number(path.split(',')[0])));
+	const noteByPath = new Map(
+		entries.flatMap(({ node, path }) =>
+			!('text' in node) && node.type === 'note' && !node.reference ? [[refKey(path), { node, path }] as const] : [],
+		),
+	);
+	const linkedNotes = new Map<string, Set<string>>();
 	const visualPlan = structuredPdfVisualPlan(document);
 	const suppressedBlockPaths = new Set<string>();
 	const sourceCropsByBlock = new Map<string, Array<{ altText: string; placement: 'before' | 'replace'; url: string }>>();
@@ -596,6 +605,18 @@ export function normalizeStructuredPdf(
 			const existing = sourceCropsByBlock.get(crop.blockPath);
 			if (existing) existing.push(entry);
 			else sourceCropsByBlock.set(crop.blockPath, [entry]);
+		}
+	}
+	for (const { node, path: sourcePath } of entries) {
+		if (!('text' in node) || !node.text.trim()) continue;
+		const ancestors = sourcePath.slice(0, -1).map((_, index) => refKey(sourcePath.slice(0, index + 1)));
+		if (ancestors.some((key) => suppressedBlockPaths.has(key) || sourceCropsByBlock.get(key)?.[0]?.placement === 'replace')) continue;
+		for (const path of node.refs ?? []) {
+			const key = refKey(path);
+			if (!noteByPath.has(key)) continue;
+			const markers = linkedNotes.get(key) ?? new Set<string>();
+			markers.add(cleanText(node.text));
+			linkedNotes.set(key, markers);
 		}
 	}
 	let section: string | null = null;
@@ -625,8 +646,14 @@ export function normalizeStructuredPdf(
 			if (!('text' in node)) continue;
 			const value = node.text.replaceAll('\0', '').replace(/\s+/gu, ' ');
 			const markerText = value.trim();
+			const noteKeys = [...new Set((node.refs ?? []).map(refKey).filter((key) => linkedNotes.has(key)))];
 			const targetKeys = ignoredReferences.has(node) ? [] : (node.refs ?? []).flatMap((path) => referenceKeyByPath.get(refKey(path)) ?? []);
-			if (
+			if (markerText && noteKeys.length) {
+				flush();
+				if (value.startsWith(' ')) children.push({ type: 'text', value: ' ' });
+				for (const key of noteKeys) children.push({ type: 'footnoteReference', identifier: `sdt-note-${key.replaceAll(',', '-')}` });
+				if (value.endsWith(' ')) children.push({ type: 'text', value: ' ' });
+			} else if (
 				context &&
 				targetKeys.length &&
 				markerText &&
@@ -690,6 +717,7 @@ export function normalizeStructuredPdf(
 	}
 	function toBlock(node: SdtBlockNode, path: RefPath): BlockContent[] {
 		if (node.flowClass === 'excluded' || renderedPartPaths.has(refKey(path))) return [];
+		if (linkedNotes.has(refKey(path))) return [];
 		const parentPath = path.slice(0, -1);
 		const parts = getPartChain(document, path as SdtRefPath, {
 			include: (partPath, value) => {
@@ -720,6 +748,16 @@ export function normalizeStructuredPdf(
 			return images;
 		}
 		if (node.type === 'heading') {
+			// Native outline boundaries and explicit author metadata/ORCID links distinguish
+			// front-matter authors from sections without guessing from font size or names.
+			if (
+				Number.isFinite(firstSection) &&
+				path[0]! < firstSection &&
+				!headingLevelByPath.has(refKey(path)) &&
+				((author && cleanText(nodeText(node)) === author) ||
+					node.content.some((child) => 'text' in child && safeHttpUrl(child.target?.url)?.startsWith('https://orcid.org/')))
+			)
+				return [{ type: 'paragraph', children: inline(node.content) }];
 			section = cleanText(nodeText(node)) || section;
 			return [{ type: 'heading', depth: (headingLevelByPath.get(refKey(path)) ?? 2) as Heading['depth'], children: inline(node.content) }];
 		}
@@ -768,6 +806,22 @@ export function normalizeStructuredPdf(
 		return children.length ? [{ type: 'paragraph', children: node.type === 'caption' ? [{ type: 'emphasis', children }] : children }] : [];
 	}
 	const tree: Root = { type: 'root', children: blocks(document.content, []) };
+	for (const [key, markers] of linkedNotes) {
+		const note = noteByPath.get(key)!;
+		const children = blocks(note.node.content, note.path);
+		const first = children[0];
+		const leading = first?.type === 'paragraph' ? first.children[0] : undefined;
+		if (leading?.type === 'text') {
+			// Strip only the exact printed label supplied by a linked marker.
+			for (const marker of markers) {
+				if (leading.value.startsWith(marker) && /^\s/u.test(leading.value.slice(marker.length))) {
+					leading.value = leading.value.slice(marker.length).trimStart();
+					break;
+				}
+			}
+		}
+		tree.children.push({ type: 'footnoteDefinition', identifier: `sdt-note-${key.replaceAll(',', '-')}`, children });
+	}
 	// Citation identity is native Markdown, so removing images or translating prose
 	// never requires remapping character offsets. The printed bibliography stays intact.
 	for (const reference of references) {

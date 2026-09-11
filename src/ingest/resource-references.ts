@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
 import { resolveCrossrefReference } from './crossref';
+import { withoutDuplicatePdfTitle } from './pdf-markdown.ts';
 import { PDF_MIME } from './platforms/pdf-constants';
 import { createResourceTask, registerResourceTask, type ResourceTaskContext } from './progress';
 import { readStructuredPdfArtifact } from './zotero-sdt-service.ts';
@@ -61,8 +62,8 @@ async function replaceStoredCitationData(
 	document: StructuredPdfDocument,
 	inputContentHash: string,
 ) {
-	const source = await db.execute<{ content: string }>(sql`
-		SELECT COALESCE(original.content, '') AS content
+	const source = await db.execute<{ content: string; title: string }>(sql`
+		SELECT COALESCE(original.content, '') AS content, original.title
 		FROM resources resource
 		JOIN resource_translations original
 		  ON original.resource_id = resource.id
@@ -76,7 +77,7 @@ async function replaceStoredCitationData(
 	if (content === undefined) throw new NonRetryableError('Paper revision changed before structured citations could be stored');
 	const readySourceCrops = structuredPdfSourceCrops(document);
 	const structured = normalizeStructuredPdf(document, { inputContentHash, readySourceCrops });
-	if (!matchesUploadedPdfRendition(content, structured.markdown)) {
+	if (!matchesUploadedPdfRendition(content, withoutDuplicatePdfTitle(structured.markdown, source.rows[0]!.title))) {
 		console.info({ tag: 'RESOURCE_REFERENCES', event: 'retained_public_rendition', resource_id: resourceId });
 		return { referenceTexts: [] as string[], mentionCount: 0, alignedMentionCount: 0 };
 	}
