@@ -7,6 +7,7 @@ import { defaultHandlers, type Info, type State, toMarkdown } from 'mdast-util-t
 import { frontmatter } from 'micromark-extension-frontmatter';
 import { gfm } from 'micromark-extension-gfm';
 import { math } from 'micromark-extension-math';
+import { expandHtmlTables, htmlCellMarkdown, isCurrencyMath, serializeHtmlTable } from './html-table.ts';
 
 const DEFAULT_PLAN_OPTIONS = {
 	maxBatchCharacters: 24_000,
@@ -107,12 +108,12 @@ function parseMarkdownOnce(markdown: string): Root {
 function parseMarkdown(markdown: string): Root {
 	const tree = parseMarkdownOnce(markdown);
 	const offsets = currencyDelimiterOffsets(tree, markdown);
-	if (!offsets.length) return tree;
+	if (!offsets.length) return expandHtmlTables(tree);
 	let escaped = markdown;
 	for (const offset of offsets.sort((left, right) => right - left)) {
 		escaped = `${escaped.slice(0, offset)}\\${escaped.slice(offset)}`;
 	}
-	return parseMarkdownOnce(escaped);
+	return expandHtmlTables(parseMarkdownOnce(escaped));
 }
 
 function strongMarker(state: State): '*' | '_' {
@@ -135,7 +136,7 @@ serializeStrong.peek = (_node: Strong, _parent: Parents | undefined, state: Stat
 function serializeMarkdown(tree: Root): string {
 	return toMarkdown(tree, {
 		extensions: [frontmatterToMarkdown(FRONTMATTER_PRESETS), mathToMarkdown(), gfmToMarkdown()],
-		handlers: { strong: serializeStrong },
+		handlers: { strong: serializeStrong, htmlTable: serializeHtmlTable },
 	}).trimEnd();
 }
 
@@ -157,9 +158,7 @@ function currencyDelimiterOffsets(tree: Root, source: string): number[] {
 				end !== undefined &&
 				source[start] === '$' &&
 				source[end - 1] === '$' &&
-				source.slice(start, start + 2) !== '$$' &&
-				/\p{Nd}/u.test(source[start + 1] ?? '') &&
-				/\p{Nd}/u.test(source[end] ?? '')
+				isCurrencyMath(source, start, end)
 			) {
 				offsets.push(start, end - 1);
 			}
@@ -296,6 +295,7 @@ function markdownSkeleton(tree: Root, translatedBlockPaths: readonly (readonly n
 function protectedAtomReference(inline: ProtectedInline): string | undefined {
 	if (inline.kind !== 'atom') return undefined;
 	const node = inline.node;
+	if (node.type === 'html' && node.data?.tableMarkup) return undefined;
 	const value =
 		node.type === 'inlineCode' || node.type === 'inlineMath' || node.type === 'html'
 			? node.value
@@ -969,10 +969,15 @@ export function compileMarkdownTranslationArtifact(
 				// Resource readers render the canonical title separately and remove a
 				// leading H1 from the body. Keep the alignment payload on that same body boundary.
 				if (source.type === 'heading' && target.path.length === 1 && target.path[0] === 0) return [];
+				const parentPath = target.path.slice(0, -1);
+				const sourceParent = nodeAtPath(sourceTree, parentPath);
+				const translatedParent = nodeAtPath(tree, parentPath);
+				const cell = target.path.at(-1)!;
 				return [
 					{
-						sourceMarkdown: serializeProseBlock(source),
-						translatedMarkdown: serializeProseBlock(translated),
+						sourceMarkdown: sourceParent.type === 'htmlTable' ? htmlCellMarkdown(sourceParent, cell) : serializeProseBlock(source),
+						translatedMarkdown:
+							translatedParent.type === 'htmlTable' ? htmlCellMarkdown(translatedParent, cell) : serializeProseBlock(translated),
 						type: source.type,
 					},
 				];

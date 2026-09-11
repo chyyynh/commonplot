@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import { fromHtml } from 'hast-util-from-html';
 import { fromMarkdown } from 'mdast-util-from-markdown';
+import { normalizePdfTables } from '../src/ingest/extracted-pdf-markdown.ts';
 
 const {
 	MarkdownTranslationInvariantError,
@@ -759,3 +761,78 @@ const nativePaperArtifact = compileMarkdownTranslationArtifact(
 assert.match(nativePaperArtifact.content, /論點\[\^paper-sdt-1\]/u);
 assert.match(nativePaperArtifact.content, /\[\^paper-sdt-1\]: Author\. 原始作品\. 2024\./u);
 assert.equal(nativePaperArtifact.alignment.blocks.length, 2);
+
+const tableSource = normalizePdfTables(`Before[^evidence].
+
+<table><caption>Results</caption><thead><tr><th colspan="2" scope="colgroup">Metric</th></tr></thead><tbody>
+<tr><th rowspan="2" scope="row">Condition</th><td><p>The <strong>best</strong> result[^evidence] with <a href="https://example.com/source?q=1&amp;b=2">source</a>.</p><p>Price $5 to $10 is approximate.</p><p>First line
+
+Second line</p><ul><li>*literal* [plain](text)</li></ul></td></tr>
+<tr><td><pre><code>if (a &lt; b) return \`x\`;
+
+[^evidence] is code</code></pre><p>$x &lt; y$</p><p>$$
+E = mc^2
+$$</p></td></tr></tbody></table>
+
+After[^evidence].
+
+[^evidence]: Original evidence.`);
+const htmlPlan = planMarkdownTranslation(tableSource);
+const modelTexts = htmlPlan.segments.map((segment) => createMarkdownTranslationTemplate(segment).texts);
+const tableModelText = JSON.stringify(modelTexts);
+assert.match(tableModelText, /Price \$5 to \$10/u, 'prices remain translatable prose, not protected formulas');
+assert.doesNotMatch(tableModelText, /E = mc|x < y|return|rowspan|colspan|https:\/\/example.com|\[\^evidence\]/u);
+const tableArtifact = compileMarkdownTranslationArtifact(
+	htmlPlan,
+	htmlPlan.segments.map((segment) =>
+		targetFromSource(segment, (value) =>
+			value
+				.replace('Results', '結果')
+				.replace('Metric', '指標')
+				.replace('Condition', '條件')
+				.replace('best', '最好')
+				.replace('result', '結果'),
+		),
+	),
+);
+const identityTable = compileMarkdownTranslation(
+	htmlPlan,
+	htmlPlan.segments.map((segment) => targetFromSource(segment)),
+);
+assert.equal(identityTable, htmlPlan.sourceMarkdown, 'identity translation must preserve canonical tables byte-for-byte');
+function htmlNodes(node) {
+	return [node, ...('children' in node ? node.children.flatMap(htmlNodes) : [])];
+}
+function tableStructure(markdown) {
+	return htmlNodes(fromHtml(markdown, { fragment: true }))
+		.filter((node) => node.type === 'element')
+		.map(({ tagName, properties }) => ({ tagName, properties }));
+}
+assert.deepEqual(
+	tableStructure(tableArtifact.content),
+	tableStructure(htmlPlan.sourceMarkdown),
+	'translation preserves every table tag and attribute',
+);
+assert.match(tableArtifact.content, /<strong>最好<\/strong> 結果\[\^evidence\]/u);
+assert.ok(
+	tableArtifact.alignment.blocks.some((block) => block.type === 'tableCell' && block.sourceMarkdown.includes('<caption>Results</caption>')),
+);
+assert.ok(
+	tableArtifact.alignment.blocks.some((block) => block.type === 'tableCell' && block.translatedMarkdown.includes('<strong>最好</strong>')),
+);
+const translatedNodes = htmlNodes(fromHtml(tableArtifact.content, { fragment: true }));
+assert.ok(translatedNodes.some((node) => node.type === 'text' && node.value.includes('return `x`;\n\n[^evidence] is code')));
+assert.ok(translatedNodes.some((node) => node.type === 'text' && node.value.includes('$$\nE = mc^2\n$$')));
+assert.ok(translatedNodes.some((node) => node.type === 'text' && node.value.includes('*literal* [plain](text)')));
+assert.ok(translatedNodes.some((node) => node.type === 'text' && node.value.includes('First line\n\nSecond line')));
+const injectedTable = compileMarkdownTranslation(
+	htmlPlan,
+	htmlPlan.segments.map((segment) => targetFromSource(segment, (value) => value.replace('Metric', '<img src=x onerror=alert(1)>'))),
+);
+assert.ok(
+	!htmlNodes(fromHtml(injectedTable, { fragment: true })).some((node) => node.type === 'element' && node.tagName === 'img'),
+	'model output remains escaped table text',
+);
+console.info(
+	'HTML table translation passed: spans, headers, captions, notes, code, math, currency, literal text, alignment and injection.',
+);

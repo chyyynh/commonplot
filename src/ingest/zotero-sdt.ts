@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
-import type { BlockContent, Heading, Nodes, PhrasingContent, Root, RootContent, Table } from 'mdast';
+import type { Element } from 'hast';
+import { fromHtml } from 'hast-util-from-html';
+import { toHtml } from 'hast-util-to-html';
+import type { BlockContent, Heading, Nodes, PhrasingContent, Root } from 'mdast';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
@@ -20,6 +23,8 @@ import {
 } from 'structured-document-text/src/parts.js';
 import { isContentBoundary, isLeafBlock, refKey, sameRef } from 'structured-document-text/src/range.js';
 import { mergeTextNodes } from 'structured-document-text/src/text.js';
+import { normalizePdfTables } from './extracted-pdf-markdown.ts';
+import { tableContentHtml } from './html-table.ts';
 
 const MAX_DOCUMENT_NODES = 100_000;
 const MAX_DOCUMENT_TEXT_CHARS = 2_000_000;
@@ -60,6 +65,10 @@ type SdtBlockNode = Readonly<{
 	type: ContentBlockNode['type'] | 'listitem' | 'tablecell' | 'tablerow';
 	ordered?: boolean;
 	startIndex?: number;
+	header?: boolean;
+	axis?: 'row' | 'column';
+	colspan?: number;
+	rowspan?: number;
 }>;
 
 type SdtNode = SdtBlockNode | SdtTextNode;
@@ -146,6 +155,17 @@ function assertSdtNodes(value: unknown, state: { characters: number; nodes: numb
 			}
 			if (node.previousPart !== undefined) assertRefPath(node.previousPart, `${path}[${index}].previousPart`);
 			if (node.nextPart !== undefined) assertRefPath(node.nextPart, `${path}[${index}].nextPart`);
+			if (node.type === 'tablecell') {
+				if (node.header !== undefined && typeof node.header !== 'boolean')
+					throw new Error(`Zotero SDT ${path}[${index}].header is invalid`);
+				if (node.axis !== undefined && node.axis !== 'row' && node.axis !== 'column')
+					throw new Error(`Zotero SDT ${path}[${index}].axis is invalid`);
+				for (const span of ['colspan', 'rowspan'] as const) {
+					if (node[span] !== undefined && (!Number.isInteger(node[span]) || Number(node[span]) < 1)) {
+						throw new Error(`Zotero SDT ${path}[${index}].${span} is invalid`);
+					}
+				}
+			}
 			assertSdtNodes(node.content, state, `${path}[${index}].content`, depth + 1);
 		}
 		if (node.anchor !== undefined) assertAnchor(node.anchor, `${path}[${index}].anchor`);
@@ -702,19 +722,6 @@ export function normalizeStructuredPdf(
 		flush();
 		return children;
 	}
-	function cellPhrasing(nodes: readonly RootContent[]): PhrasingContent[] {
-		return nodes.flatMap((node, index): PhrasingContent[] => {
-			const children: PhrasingContent[] =
-				node.type === 'paragraph' || node.type === 'heading'
-					? node.children
-					: 'value' in node
-						? [{ type: 'text', value: cleanText(node.value) }]
-						: 'children' in node
-							? cellPhrasing(node.children)
-							: [];
-			return index && children.length ? [{ type: 'text', value: ' ' }, ...children] : children;
-		});
-	}
 	function toBlock(node: SdtBlockNode, path: RefPath): BlockContent[] {
 		if (node.flowClass === 'excluded' || renderedPartPaths.has(refKey(path))) return [];
 		if (linkedNotes.has(refKey(path))) return [];
@@ -783,22 +790,36 @@ export function normalizeStructuredPdf(
 			];
 		}
 		if (node.type === 'table' && !isLeafBlock(node)) {
-			const children: Table['children'] = [];
+			const table: Element = { type: 'element', tagName: 'table', properties: {}, children: [] };
 			for (const [rowIndex, row] of node.content.entries()) {
 				if ('text' in row || row.type !== 'tablerow' || row.flowClass === 'excluded') continue;
-				children.push({
-					type: 'tableRow',
-					children: row.content.flatMap((cell, cellIndex) => {
-						if ('text' in cell || cell.type !== 'tablecell') return [];
-						// GFM cells are inline-only; reuse the block pipeline before flattening.
-						const parentSection = section;
-						const content = cellPhrasing(toBlock(cell, [...path, rowIndex, cellIndex]));
-						section = parentSection;
-						return [{ type: 'tableCell' as const, children: content }];
-					}),
-				});
+				const cells: Element[] = [];
+				for (const [cellIndex, cell] of row.content.entries()) {
+					if ('text' in cell || cell.type !== 'tablecell' || cell.flowClass === 'excluded') continue;
+					const parentSection = section;
+					const content = toBlock(cell, [...path, rowIndex, cellIndex]);
+					section = parentSection;
+					// Normalize citations and split blocks once. Only a single paragraph is
+					// inline-only; lists, multiple paragraphs and code keep their structure.
+					const html = tableContentHtml(
+						content.length === 1 && content[0]?.type === 'paragraph'
+							? { type: 'tableCell', children: content[0].children }
+							: { type: 'root', children: content },
+					);
+					cells.push({
+						type: 'element',
+						tagName: cell.header ? 'th' : 'td',
+						properties: {
+							...(cell.header && cell.axis ? { scope: cell.axis === 'column' ? 'col' : 'row' } : {}),
+							...(cell.colspan !== undefined ? { colSpan: cell.colspan } : {}),
+							...(cell.rowspan !== undefined ? { rowSpan: cell.rowspan } : {}),
+						},
+						children: fromHtml(html, { fragment: true }).children.filter((child) => child.type !== 'doctype'),
+					});
+				}
+				if (cells.length) table.children.push({ type: 'element', tagName: 'tr', properties: {}, children: cells });
 			}
-			return children.length ? [{ type: 'table', children }] : blocks(node.content, path);
+			return table.children.length ? [{ type: 'html', value: toHtml(table) }] : blocks(node.content, path);
 		}
 		if (!isLeafBlock(node)) return blocks(node.content, path);
 		const children = inline(node.content, node.type === 'caption');
@@ -832,11 +853,13 @@ export function normalizeStructuredPdf(
 			children: [{ type: 'paragraph', children: [{ type: 'text', value: reference.text }] }],
 		});
 	}
-	const markdown = toMarkdown(tree, {
-		bullet: '-',
-		emphasis: '_',
-		extensions: [gfmToMarkdown({ tablePipeAlign: false })],
-	}).trimEnd();
+	const markdown = normalizePdfTables(
+		toMarkdown(tree, {
+			bullet: '-',
+			emphasis: '_',
+			extensions: [gfmToMarkdown({ tablePipeAlign: false })],
+		}).trimEnd(),
+	);
 	const readyCropIds = new Set((options.readySourceCrops ?? []).map(({ id }) => id));
 	const missingCrops = visualPlan.crops.filter(({ id }) => !readyCropIds.has(id));
 	const visual = {

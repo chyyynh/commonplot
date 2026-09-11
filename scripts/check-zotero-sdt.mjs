@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { fromHtml } from 'hast-util-from-html';
 import { fromMarkdown as parseMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
+import { expandHtmlTables } from '../src/ingest/html-table.ts';
 import { withoutDuplicatePdfTitle } from '../src/ingest/pdf-markdown.ts';
 import {
 	hasPrivatePdfImages,
@@ -17,6 +19,16 @@ import {
 } from '../src/ingest/zotero-sdt.ts';
 
 const fromMarkdown = (source, options = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }) => parseMarkdown(source, options);
+const htmlElements = (source, tagName) => {
+	const elements = [];
+	const visit = (node) => {
+		if (node.type === 'element' && node.tagName === tagName) elements.push(node);
+		if ('children' in node) node.children.forEach(visit);
+	};
+	visit(fromHtml(source, { fragment: true }));
+	return elements;
+};
+const htmlText = (node) => node.value ?? node.children?.map(htmlText).join('') ?? '';
 
 const text = (value, options = {}) => ({
 	anchor: { pageRects: [[0, 10, 10, 20, 20]], textMap: JSON.stringify([[0, 0, 0, value.length, 10, 10, 20, 20]]) },
@@ -180,12 +192,62 @@ const formatted = fromMarkdown(normalizeStructuredPdf(formattedDocument).markdow
 }).children;
 assert.deepEqual(
 	formatted.map(({ type }) => type),
-	['table', 'code'],
+	['html', 'code'],
 );
-assert.equal(formatted[0].children[0].children.length, 2);
-assert.equal(formatted[0].children[0].children[0].children[0].value, 'A | B');
-assert.equal(formatted[0].children[0].children[1].children[0].value, 'one two');
+const formattedCells = htmlElements(formatted[0].value, 'td');
+assert.equal(formattedCells.length, 2);
+assert.equal(htmlText(formattedCells[0]), 'A | B');
+assert.deepEqual(formattedCells[1].children.filter((node) => node.type === 'element').map(htmlText), ['one', 'two']);
 assert.equal(formatted[1].value, 'before\n```\nafter');
+
+const tableCell = (value, properties = {}) => ({
+	type: 'tablecell',
+	...properties,
+	content: [{ type: 'paragraph', content: [text(value)] }],
+});
+const tableRow = (...content) => ({ type: 'tablerow', content });
+const tableMarkdown = (...content) => normalizeStructuredPdf({ ...document, content: [{ type: 'table', content }] }).markdown;
+const simpleTable = fromMarkdown(
+	tableMarkdown(
+		tableRow(tableCell('Group', { header: true, axis: 'column' }), tableCell('Measure', { header: true, axis: 'column' })),
+		tableRow(tableCell('A'), tableCell('42')),
+	),
+).children[0];
+assert.equal(simpleTable.type, 'table');
+assert.deepEqual(
+	simpleTable.children.map((row) => row.children.map((cell) => cell.children.map((node) => node.value).join(''))),
+	[
+		['Group', 'Measure'],
+		['A', '42'],
+	],
+);
+const headlessTable = fromMarkdown(tableMarkdown(tableRow(tableCell('A', { header: false }), tableCell('42')))).children[0];
+assert.equal(headlessTable.type, 'table');
+assert.equal(headlessTable.children.length, 2, 'a headless table gets an empty GFM header, never promotes its first data row');
+assert.ok(headlessTable.children[0].children.every((cell) => cell.children.length === 0));
+assert.deepEqual(
+	headlessTable.children[1].children.map((cell) => cell.children[0].value),
+	['A', '42'],
+);
+const mixedTable = tableMarkdown(tableRow(tableCell('Group', { header: true }), tableCell('A', { header: false })));
+assert.equal(htmlElements(mixedTable, 'th').length, 1);
+assert.equal(htmlElements(mixedTable, 'td').length, 1);
+const semanticTable = tableMarkdown(
+	tableRow(
+		tableCell('Group', { header: true, axis: 'row', rowspan: 2 }),
+		tableCell('Measures', { header: true, axis: 'column', colspan: 2 }),
+	),
+	tableRow(tableCell('42'), tableCell('81'), tableCell('Discarded', { flowClass: 'excluded' })),
+);
+assert.deepEqual(
+	htmlElements(semanticTable, 'th').map(({ properties }) => properties),
+	[
+		{ scope: 'row', rowSpan: 2 },
+		{ scope: 'col', colSpan: 2 },
+	],
+);
+assert.deepEqual(htmlElements(semanticTable, 'td').map(htmlText), ['42', '81']);
+assert.doesNotMatch(semanticTable, /Discarded/u);
 
 const prose = (...content) => ({ type: 'paragraph', content });
 const cite = () => text('[1]', { refs: [[1]] });
@@ -339,7 +401,7 @@ for (const type of ['paragraph', 'caption']) {
 	}
 }
 
-// Table cells must retain readable content and citation offsets through the same
+// Table cells must retain readable content and native citations through the same
 // block normalization as the body, without leaking cell headings into its section.
 const tableCite = () => text('[1]', { refs: [[2]] });
 const richTableDocument = {
@@ -378,12 +440,16 @@ const richTableDocument = {
 	],
 };
 const richTable = normalizeStructuredPdf(richTableDocument);
-const richCells = fromMarkdown(richTable.markdown, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }).children[1].children[0]
-	.children;
-assert.deepEqual(richCells.map(visibleText), ['First [1] continuation Quote', 'Cell heading A | B source [1] One Two']);
-assert.ok(richCells[0].children.some(({ type }) => type === 'emphasis'));
-assert.ok(richCells[0].children.some(({ type }) => type === 'strong'));
-assert.ok(richCells[1].children.some((node) => node.type === 'link' && node.url === 'https://example.com/table'));
+const richCells = htmlElements(richTable.markdown, 'td');
+assert.equal(richCells.length, 2);
+assert.match(htmlText(richCells[0]), /First \[\^paper-sdt-1\] continuation\s*Quote/u);
+assert.match(htmlText(richCells[1]), /Cell heading\s*A \| B source \[\^paper-sdt-1\]\s*One\s*Two/u);
+assert.equal(htmlElements(richTable.markdown, 'em').length, 1);
+assert.equal(htmlElements(richTable.markdown, 'strong').length, 1);
+assert.equal(htmlElements(richTable.markdown, 'blockquote').length, 1);
+assert.equal(htmlElements(richTable.markdown, 'ul').length, 1);
+assert.ok(htmlElements(richTable.markdown, 'a').some(({ properties }) => properties.href === 'https://example.com/table'));
+assert.doesNotMatch(richTable.markdown, /Excluded|Hidden/u);
 assert.deepEqual(
 	richTable.mentions.map(({ section }) => section),
 	['Results', 'Cell heading', 'Results'],
@@ -394,10 +460,40 @@ assert.doesNotMatch(richTable.markdown, /#sdt-citation-/u);
 const pipeMarkerDocument = structuredClone(richTableDocument);
 pipeMarkerDocument.content[1].content[0].content[0].content[0].content[1].text = '[A|B]';
 const pipeMarkerTable = normalizeStructuredPdf(pipeMarkerDocument);
-const pipeCells = fromMarkdown(pipeMarkerTable.markdown, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }).children[1]
-	.children[0].children;
-assert.equal(visibleText(pipeCells[0]), 'First [1] continuation Quote');
+const pipeCells = htmlElements(pipeMarkerTable.markdown, 'td');
+assert.match(htmlText(pipeCells[0]), /First \[\^paper-sdt-1\] continuation\s*Quote/u);
 assert.equal(pipeMarkerTable.mentions.length, 3);
+
+const complexNoteDocument = structuredClone(noteDocument);
+complexNoteDocument.content[0] = {
+	type: 'table',
+	content: [
+		tableRow(
+			{
+				type: 'tablecell',
+				colspan: 2,
+				content: [prose(text('A claim'), text('1', { refs: [[1]] })), { type: 'preformatted', content: [text('if (a < b) return `x`;')] }],
+			},
+			{ type: 'tablecell', flowClass: 'excluded', content: [prose(text('Hidden note'), text('1', { refs: [[1]] }))] },
+		),
+	],
+};
+const complexNoteTable = normalizeStructuredPdf(complexNoteDocument).markdown;
+assert.match(complexNoteTable, /A claim\[\^sdt-note-1\]/u);
+assert.match(complexNoteTable, /\[\^sdt-note-1\]: The qualifying note\./u);
+assert.equal(htmlText(htmlElements(complexNoteTable, 'code')[0]).trimEnd(), 'if (a < b) return `x`;');
+assert.equal(htmlElements(complexNoteTable, 'td').length, 1);
+assert.doesNotMatch(complexNoteTable, /Hidden note/u);
+const simpleNoteDocument = structuredClone(complexNoteDocument);
+simpleNoteDocument.content[0].content[0].content = [
+	{
+		type: 'tablecell',
+		content: [prose(text('A claim'), text('1', { refs: [[1]] }))],
+	},
+];
+const simpleNoteTable = normalizeStructuredPdf(simpleNoteDocument).markdown;
+assert.match(simpleNoteTable, /A claim\[\^sdt-note-1\]/u);
+assert.equal(fromMarkdown(simpleNoteTable).children[0].children[1].children[0].children[1].type, 'footnoteReference');
 
 const positionedText = (value, page) =>
 	text(value, {
@@ -679,7 +775,7 @@ console.info({
 			if (node.type === 'footnoteReference') references.push(node.identifier);
 			for (const child of node.children ?? []) visit(child);
 		};
-		visit(fromMarkdown(markdown));
+		visit(expandHtmlTables(fromMarkdown(markdown)));
 		return { definitions, references };
 	};
 	for (const result of [normalized, nested, richTable]) {

@@ -38,6 +38,12 @@ importers:
       hast-util-from-html:
         specifier: ^2.0.3
         version: 2.0.3
+      hast-util-sanitize:
+        specifier: 5.0.2
+        version: 5.0.2
+      hast-util-to-html:
+        specifier: 9.0.5
+        version: 9.0.5
       hast-util-to-mdast:
         specifier: ^10.1.2
         version: 10.1.2
@@ -53,6 +59,9 @@ importers:
       mdast-util-math:
         specifier: ^3.0.0
         version: 3.0.0
+      mdast-util-to-hast:
+        specifier: 13.2.1
+        version: 13.2.1
       mdast-util-to-markdown:
         specifier: ^2.1.2
         version: 2.1.2
@@ -84,6 +93,9 @@ importers:
         specifier: ^4.5.4
         version: 4.5.4
     devDependencies:
+      '@types/hast':
+        specifier: 3.0.5
+        version: 3.0.5
       '@types/mdast':
         specifier: ^4.0.4
         version: 4.0.4
@@ -1111,6 +1123,9 @@ packages:
 
   hast-util-phrasing@3.0.1:
     resolution: {integrity: sha512-6h60VfI3uBQUxHqTyMymMZnEbNl1XmEGtOxxKYL7stY2o601COo62AWAYBQR9lZbYXYSBoxag8UpPRXK+9fqSQ==}
+
+  hast-util-sanitize@5.0.2:
+    resolution: {integrity: sha512-3yTWghByc50aGS7JlGhk61SPenfE/p1oaFeNwkOOyrscaOkMGrcW9+Cy/QAIOBpZxP1yqDIzFMR0+Np0i0+usg==}
 
   hast-util-to-html@9.0.5:
     resolution: {integrity: sha512-OguPdidb+fbHQSU4Q4ZiLKnzWo8Wwsf5bZfbvu7//a9oTYoqD/fWpe96NuHkoS9h0ccGOTe0C4NGXdtS0iObOw==}
@@ -2252,6 +2267,12 @@ snapshots:
       hast-util-has-property: 3.0.0
       hast-util-is-body-ok-link: 3.0.1
       hast-util-is-element: 3.0.0
+
+  hast-util-sanitize@5.0.2:
+    dependencies:
+      '@types/hast': 3.0.5
+      '@ungap/structured-clone': 1.4.0
+      unist-util-position: 5.0.0
 
   hast-util-to-html@9.0.5:
     dependencies:

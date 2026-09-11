@@ -103,8 +103,13 @@ for (const span of ['-1', '1001', 'invalid', '1.5']) {
 const mergedEntities = normalized(
 	'<table><tr><td colspan="2">A &amp; B &lt;img onerror=x&gt; `a <u>x</u>` $x < y$ [source](https://example.com?a=1&b=2)</td></tr></table>',
 );
-assert.match(mergedEntities, /A &amp; B &lt;img onerror=x&gt;/u);
-assert.match(mergedEntities, /<code>a &lt;u&gt;x&lt;\/u&gt;<\/code>/u);
-assert.match(mergedEntities, /\$x &lt; y\$/u);
-assert.match(mergedEntities, /href="https:\/\/example.com\?a=1&amp;b=2"/u);
+const mergedNodes = nodes(fromHtml(mergedEntities, { fragment: true }));
+assert.ok(mergedNodes.some((node) => node.type === 'text' && node.value.includes('A & B <img onerror=x>')));
+assert.ok(mergedNodes.some((node) => node.type === 'element' && node.tagName === 'code' && node.children[0]?.value === 'a <u>x</u>'));
+assert.ok(mergedNodes.some((node) => node.type === 'text' && node.value.includes('$x < y$')));
+assert.ok(
+	mergedNodes.some((node) => node.type === 'element' && node.tagName === 'a' && node.properties.href === 'https://example.com?a=1&b=2'),
+);
+const unsafeMarkdownLink = normalized('<table><tr><td colspan="2">[click](javascript:alert%281%29)</td></tr></table>');
+assert.ok(!nodes(fromHtml(unsafeMarkdownLink)).some((node) => node.type === 'element' && node.tagName === 'a' && node.properties.href));
 console.info(`Extracted PDF Markdown checks passed (${samples.length} cases).`);

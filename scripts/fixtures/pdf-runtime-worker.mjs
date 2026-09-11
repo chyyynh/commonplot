@@ -1,5 +1,10 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import {
+	planMarkdownTranslation,
+	createMarkdownTranslationTemplate,
+	compileMarkdownTranslationArtifact,
+} from '../../src/ingest/markdown-translation.ts';
 import { parsePublicPdfResponse, parseStoredPdfRepresentation, structuredPdfCropManifestKey } from '../../src/ingest/zotero-sdt-service.ts';
 import { structuredPdfSourceCrops } from '../../src/ingest/zotero-sdt.ts';
 
@@ -13,11 +18,36 @@ const publicKey = `public-pdf/${sourceHash}/${inputContentHash}/source.pdf`;
 const document = {
 	schemaVersion: '1.2.0',
 	metadata: { processor: { type: 'pdf', version: 14 }, source: { properties: {} } },
-	catalog: { outline: [], pages: [{ contentRange: [[0], [2]], textSource: 'born-digital' }] },
+	catalog: { outline: [], pages: [{ contentRange: [[0], [4]], textSource: 'born-digital' }] },
 	content: [
 		{ type: 'paragraph', content: [{ text: 'A document with two graphics.' }] },
 		{ type: 'image', content: [], anchor: { pageRects: [[0, 10, 30, 100, 130]] } },
 		{ type: 'image', content: [], anchor: { pageRects: [[0, 110, 30, 200, 130]] } },
+		{
+			type: 'table',
+			content: [
+				{
+					type: 'tablerow',
+					content: [
+						{
+							type: 'tablecell',
+							header: true,
+							axis: 'column',
+							colspan: 2,
+							content: [{ type: 'paragraph', content: [{ text: 'Runtime result' }] }],
+						},
+					],
+				},
+				{
+					type: 'tablerow',
+					content: [
+						{ type: 'tablecell', content: [{ type: 'paragraph', content: [{ text: 'Evidence' }, { text: '[1]', refs: [[4]] }] }] },
+						{ type: 'tablecell', content: [{ type: 'paragraph', content: [{ text: '42' }] }] },
+					],
+				},
+			],
+		},
+		{ type: 'note', content: [{ type: 'paragraph', content: [{ text: '1 Original evidence.' }] }] },
 	],
 };
 const crops = structuredPdfSourceCrops(document);
@@ -66,6 +96,23 @@ export default {
 			error = cause instanceof Error ? cause.message : String(cause);
 		}
 		const pdfStorageKey = phase === 'public' ? publicKey : privateKey;
+		let translated = null;
+		if (result) {
+			const plan = planMarkdownTranslation(result.markdown);
+			const artifact = compileMarkdownTranslationArtifact(
+				plan,
+				plan.segments.map((segment) => ({
+					texts: Object.fromEntries(
+						Object.entries(createMarkdownTranslationTemplate(segment).texts).map(([id, text]) => [
+							id,
+							text.replace('Runtime result', '執行結果').replace('Evidence', '證據'),
+						]),
+					),
+				})),
+			);
+			await env.R2.put(`${pdfStorageKey}.fixture-translation.md`, artifact.content);
+			translated = await (await env.R2.get(`${pdfStorageKey}.fixture-translation.md`)).text();
+		}
 		const manifest = await env.R2.get(structuredPdfCropManifestKey(pdfStorageKey, inputContentHash));
 		const source = await env.R2.head(pdfStorageKey);
 		const storedCrops = [];
@@ -82,6 +129,7 @@ export default {
 			phase,
 			error,
 			result,
+			translated,
 			parseCalls,
 			batches,
 			inputContentHash,
