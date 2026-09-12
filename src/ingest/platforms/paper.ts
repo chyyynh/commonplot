@@ -13,7 +13,7 @@ import {
 import type { AcquiredResource } from '../../shared/resource';
 import { resolveCrossrefPaper } from '../crossref';
 import { resolveOpenAlexPaper } from './openalex';
-import { PDF_MIME, stageOpenAlexPdfMarkdown } from './pdf';
+import { PDF_MIME, stageOpenAlexPdfContent } from './pdf';
 
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
 
@@ -142,10 +142,10 @@ export async function stagePaperResolution(
 	const crossref =
 		resource.fileType === PDF_MIME && doi ? await stageCrossrefPaperEnrichment(step, { doi, processingId: input.processingId }) : null;
 	const { abstract, authors, publicationDate, title, ...kindMetadata } = { ...openAlex?.metadata, ...crossref };
-	const pdfMarkdown = openAlex?.contentPdfUrl
-		? await stageOpenAlexPdfMarkdown(env, step, { contentPdfUrl: openAlex.contentPdfUrl, processingId: input.processingId })
+	const pdf = openAlex?.contentPdfUrl
+		? await stageOpenAlexPdfContent(env, step, { contentPdfUrl: openAlex.contentPdfUrl, processingId: input.processingId })
 		: null;
-	const content = pdfMarkdown ?? resource.content;
+	const content = pdf?.markdown ?? resource.content;
 	if (!content.trim()) throw new Error(`Processing ${input.processingId} has no extractable content`);
 	const resourceIdentifiers = choosePreferredIdentifiers([...identifiers, ...(openAlex?.identifiers ?? [])]);
 	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
@@ -164,7 +164,8 @@ export async function stagePaperResolution(
 		title: title?.trim() || resource.title,
 		summary: abstract?.trim() || resource.summary,
 		content,
-		source: pdfMarkdown ? resource.source.trim() || (canonicalUrl ? new URL(canonicalUrl).hostname : 'OpenAlex') : resource.source,
+		citations: pdf ? pdf.citations : resource.citations,
+		source: pdf ? resource.source.trim() || (canonicalUrl ? new URL(canonicalUrl).hostname : 'OpenAlex') : resource.source,
 		publishedDate,
 		creators: authors
 			? authors
@@ -173,6 +174,6 @@ export async function stagePaperResolution(
 					.map((literal) => ({ role: 'author', literal }))
 			: resource.creators,
 		kindMetadata,
-		fileType: pdfMarkdown ? PDF_MIME : resource.fileType,
+		fileType: pdf ? PDF_MIME : resource.fileType,
 	} satisfies AcquiredResource;
 }

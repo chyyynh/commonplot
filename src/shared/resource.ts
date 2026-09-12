@@ -112,8 +112,14 @@ export const RESOURCE_PLATFORMS = {
 export type ResourcePlatform = keyof typeof RESOURCE_PLATFORMS;
 export type PlatformResourceUrl = { resourcePlatform: ResourcePlatform; platformId: string; canonicalUrl: string };
 
+export type ResourceCitations = {
+	references: readonly { key: string; label: string | null; text: string }[];
+	mentions: readonly { context: string; markerText: string; section: string | null; targetKeys: readonly string[] }[];
+};
+
 // Adapters share an output contract; each adapter owns its mapping and identity.
 export type AcquiredResource = {
+	citations?: ResourceCitations | null;
 	kind: Exclude<ResourceKind, 'image'>;
 	resourcePlatform: ResourcePlatform | null;
 	resourceIdentifiers: ResourceIdentifier[];

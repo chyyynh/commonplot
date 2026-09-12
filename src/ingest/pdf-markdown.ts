@@ -55,8 +55,3 @@ export function withoutPrivatePdfImages(markdown: string): string {
 export function hasPrivatePdfImages(markdown: string): boolean {
 	return markdown.includes(PRIVATE_PDF_CROP_PATH) && withoutPrivatePdfImages(markdown) !== markdown.trim();
 }
-
-/** A newly attached upload cannot replace citations from a different retained public body. */
-export function matchesUploadedPdfRendition(storedContent: string, uploadedContent: string): boolean {
-	return storedContent === uploadedContent || storedContent === withoutPrivatePdfImages(uploadedContent);
-}

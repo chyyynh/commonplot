@@ -2,13 +2,9 @@ import LlamaCloud, { APIError, NotFoundError } from '@llamaindex/llama-cloud';
 import { VERSION as LLAMA_CLOUD_SDK_VERSION } from '@llamaindex/llama-cloud/version';
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
+import { wholeDocumentMarkdown } from '../extracted-pdf-markdown.ts';
 import { MAX_PDF_BYTES, PDF_MIME } from './pdf-constants';
-import {
-	type LocalPdfSummary,
-	llamaParseAdmissionReason,
-	type PaidPdfFallbackGrant,
-	wholeDocumentMarkdown,
-} from './pdf-fallback-policy.ts';
+import { type LocalPdfSummary, llamaParseAdmissionReason, type PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
 
 const LLAMA_CLOUD_BASE_URL = 'https://api.cloud.llamaindex.ai';
 const LLAMA_PARSE_TIER = 'cost_effective';

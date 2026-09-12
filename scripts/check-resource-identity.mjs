@@ -7,12 +7,8 @@ const workflowMocks = {
 	'./acquisition': ['stageStoredResourceAcquisition', 'stageUrlAcquisition'],
 	'./analysis': ['analyzeResource', 'classifyResource'],
 	'./image-rehosting': ['stageResourceImages'],
-	'./resource-persistence': [
-		'persistResolvedResource',
-		'persistResourceClassification',
-		'publishPublicPdfCrops',
-		'prepareResolvedResource',
-	],
+	'./resource-persistence': ['persistResolvedResource', 'persistResourceClassification', 'loadPublicPdfContent', 'prepareResolvedResource'],
+	'./zotero-sdt-service.ts': ['publishPublicPdfCrops'],
 	'./resource-references': ['enqueueResourceReferenceEnrichment'],
 	'./translation-workflow': ['enqueueResourceTranslation'],
 };
@@ -329,6 +325,7 @@ try {
 			fileType: subject ? 'text/html' : 'application/pdf',
 			originalLang: 'en',
 			content: 'An original research paper with readable content.',
+			citations: subject ? null : { references: [{ key: 'r1', label: '1', text: 'A cited paper.' }], mentions: [] },
 			resourceImages: [],
 			resourceIdentifiers: [],
 			subject: subject ? { normalizedUrl: subjectTarget.url, publishedDate: subjectTarget.sourceHints.publishedDate } : null,
@@ -384,7 +381,9 @@ try {
 					acquisitionRevision,
 				};
 			},
-			publishPublicPdfCrops: async () => {
+			loadPublicPdfContent: async () => 'Persisted canonical PDF content.',
+			publishPublicPdfCrops: async (_env, _resourceId, content) => {
+				assert.equal(content, 'Persisted canonical PDF content.', 'Publish crops from the accepted rendition');
 				if (scenario === 'crops-failed') throw new Error('Crop publication unavailable');
 				effects.push('public-crops');
 			},

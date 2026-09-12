@@ -5,11 +5,9 @@ import { MAX_PDF_BYTES } from './platforms/pdf-constants.ts';
 import {
 	normalizeStructuredPdf,
 	parseStructuredPdfDocumentJson,
-	parseStructuredPdfFailure,
 	type StructuredPdfDocument,
 	type StructuredPdfSourceCrop,
 	structuredPdfVisualPlan,
-	structuredPdfStorageKey,
 	ZOTERO_SDT_ARTIFACT_VERSION,
 } from './zotero-sdt.ts';
 
@@ -22,6 +20,23 @@ const MAX_CROP_PNG_BYTES = 8 * 1024 * 1024;
 const MAX_CROP_ROW_BYTES = Math.ceil(MAX_CROP_PNG_BYTES / 3) * 4 + 4_096;
 
 export class PermanentPdfArtifactError extends Error {}
+
+export function parseStructuredPdfFailure(status: number, body: string): { message: string; totalPages: number | null } {
+	let message = `Zotero SDT parse failed with ${status}`;
+	let totalPages: number | null = null;
+	try {
+		const parsed = JSON.parse(body) as { error?: unknown; totalPages?: unknown };
+		if (typeof parsed.error === 'string' && parsed.error.trim()) message = `${message}: ${parsed.error.trim()}`;
+		if (Number.isInteger(parsed.totalPages) && Number(parsed.totalPages) > 0) totalPages = Number(parsed.totalPages);
+	} catch {
+		// A malformed internal error response still fails safely without page-count admission.
+	}
+	return { message, totalPages };
+}
+
+export function structuredPdfStorageKey(pdfStorageKey: string): string {
+	return `${pdfStorageKey}.structured-document.json`;
+}
 
 function cropFailure(error: unknown) {
 	return {
@@ -206,6 +221,7 @@ export async function parsePdfArtifactStream(
 			// outcome. Busy, startup, transport and malformed responses remain retryable.
 			if (response.status !== 400 && response.status !== 422) throw new Error(failure.message);
 			return {
+				citations: null,
 				markdown: '',
 				paperIdentifierText: null,
 				parse: {
@@ -287,7 +303,11 @@ export async function parseStoredPdfRepresentation(
 	}
 	const visualPlan = structuredPdfVisualPlan(document);
 	const crops = visualPlan.crops;
-	const normalized = normalizeStructuredPdf(document, { ...input, visualPlan, readySourceCrops: crops });
+	const cropUrlPrefix = input.cropUrlPrefix ?? '/api/media/asset/pdf-crops';
+	const normalized = normalizeStructuredPdf(document, {
+		visualPlan,
+		readySourceCrops: crops.map(({ id }) => ({ id, url: `${cropUrlPrefix}/${input.inputContentHash}/${id}.png` })),
+	});
 	// Stage the complete body once. It becomes readable only after every planned
 	// crop is stored and its quality is committed in the same completion manifest.
 	await ensureStructuredPdfSourceCrops(env, {
@@ -297,7 +317,12 @@ export async function parseStoredPdfRepresentation(
 		resourceId: input.sourceLabel,
 	});
 	console.info({ tag: 'PDF_PARSE', event: 'zotero_sdt_completed', source: input.sourceLabel, ...normalized.parse });
-	return { markdown: normalized.markdown, paperIdentifierText: normalized.paperIdentifierText, parse: normalized.parse };
+	return {
+		citations: { references: normalized.references, mentions: normalized.mentions },
+		markdown: normalized.markdown,
+		paperIdentifierText: normalized.paperIdentifierText,
+		parse: normalized.parse,
+	};
 }
 
 /** Public source provenance is kept separate even if its bytes match a private upload. */
@@ -336,4 +361,50 @@ export async function parsePublicPdfResponse(env: CoreEnv, response: Response, s
 		sourceLabel: `Public PDF ${sourceHash}`,
 		cropUrlPrefix: `/api/media/asset/public-pdf-crops/${sourceHash}`,
 	});
+}
+
+const PUBLIC_CROP_PATTERN = /\/api\/media\/asset\/public-pdf-crops\/([a-f\d]{64})\/([a-f\d]{64})\/(\d+(?:\.\d+)*-p\d+-[a-f\d]{16})\.png/gu;
+const MAX_MANIFEST_BYTES = 64 * 1024;
+
+/** Publish only persisted references to crops produced from an independent public fetch. */
+export async function publishPublicPdfCrops(env: CoreEnv, resourceId: string, content: string): Promise<void> {
+	const groups = new Map<string, { sourceHash: string; inputHash: string; cropIds: Set<string> }>();
+	for (const [, sourceHash, inputHash, cropId] of content.matchAll(PUBLIC_CROP_PATTERN)) {
+		const groupKey = `${sourceHash}/${inputHash}`;
+		const group = groups.get(groupKey) ?? { sourceHash: sourceHash!, inputHash: inputHash!, cropIds: new Set<string>() };
+		group.cropIds.add(cropId!);
+		groups.set(groupKey, group);
+	}
+	for (const { sourceHash, inputHash, cropIds } of groups.values()) {
+		const prefix = `public-pdf/${sourceHash}/${inputHash}`;
+		const pdfStorageKey = `${prefix}/source.pdf`;
+		const source = await env.R2.head(pdfStorageKey);
+		if (
+			source?.customMetadata?.scope !== 'corpus' ||
+			source.customMetadata.sourceSha256 !== sourceHash ||
+			source.customMetadata.inputSha256 !== inputHash
+		) {
+			throw new Error('Public PDF crop publication has no independent public source');
+		}
+		const object = await env.R2.get(structuredPdfCropManifestKey(pdfStorageKey, inputHash));
+		if (!object) throw new Error('Public PDF crop publication manifest is missing');
+		if (object.size > MAX_MANIFEST_BYTES) {
+			await object.body.cancel('Invalid public PDF manifest size');
+			throw new Error('Public PDF crop publication manifest is too large');
+		}
+		const manifest: { inputSha256?: unknown; pdfStorageKey?: unknown; ready?: unknown; state?: unknown } = await object.json();
+		const ready = manifest.ready;
+		if (
+			manifest.inputSha256 !== inputHash ||
+			manifest.pdfStorageKey !== pdfStorageKey ||
+			manifest.state !== 'complete' ||
+			!Array.isArray(ready) ||
+			[...cropIds].some((id) => !ready.includes(id))
+		) {
+			throw new Error('Public PDF crop publication includes unready images');
+		}
+		await env.R2.put(`${prefix}/publication.json`, JSON.stringify({ resourceId, cropIds: [...cropIds] }), {
+			httpMetadata: { contentType: 'application/json' },
+		});
+	}
 }

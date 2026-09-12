@@ -65,31 +65,33 @@ export async function completeFetchedPdfAcquisition(
 	}
 	return {
 		...input.acquisition.resource,
+		citations: null,
 		content: cloudMarkdown,
 		paperIdentifierText: cloudMarkdown.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS),
 	};
 }
 
 /** OpenAlex content URLs need our API key, so this optional representation is always local-only. */
-export async function stageOpenAlexPdfMarkdown(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
+export async function stageOpenAlexPdfContent(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
 	try {
 		const contentStream = await step.do(
-			'acquire-openalex-content-pdf-v11',
+			'acquire-openalex-content-pdf-v12',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 			async () => {
 				const response = await fetchOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
-				return new Response((await localPdfAttempt(parsePublicPdfResponse(env, response, input.contentPdfUrl))).markdown).body!;
+				const { markdown, citations } = await localPdfAttempt(parsePublicPdfResponse(env, response, input.contentPdfUrl));
+				return Response.json({ markdown, citations }).body!;
 			},
 		);
-		const markdown = await new Response(contentStream).text();
-		if (!markdown) throw new NonRetryableError('OpenAlex content PDF has no usable text; OCR is required');
+		const content = await new Response(contentStream).json<{ markdown: string; citations: AcquiredResource['citations'] }>();
+		if (!content.markdown) throw new NonRetryableError('OpenAlex content PDF has no usable text; OCR is required');
 		console.info({
 			tag: 'OPENALEX_CONTENT',
 			event: 'pdf_acquired',
 			processing_id: input.processingId,
-			chars: markdown.length,
+			chars: content.markdown.length,
 		});
-		return markdown;
+		return content;
 	} catch (error) {
 		console.error({
 			tag: 'OPENALEX_CONTENT',
@@ -178,6 +180,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 			url: null,
 			title: resource.title,
 			content: parsed.markdown,
+			citations: parsed.citations,
 			paperIdentifierText: parsed.paperIdentifierText,
 			source: resource.source,
 			...resolveResourceHints(resource, resource),
@@ -216,6 +219,7 @@ export async function acquireFetchedPdfResponse(
 			url: finalUrl,
 			title,
 			content: parsed.markdown,
+			citations: parsed.citations,
 			paperIdentifierText: parsed.paperIdentifierText,
 			source,
 			...resolveResourceHints(hints, hints),
@@ -241,7 +245,7 @@ export async function stageStoredPdfAcquisition(
 	);
 	const [contentStream, grobidHeader] = await Promise.all([
 		step.do(
-			'acquire-stored-pdf-v9',
+			'acquire-stored-pdf-v10',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 			async () => Response.json(await acquireStoredPdf(env, resource, target.resourceId)).body!,
 		),
@@ -307,5 +311,5 @@ export async function stageStoredPdfAcquisition(
 	});
 	if (!cloudMarkdown && !acquired.content)
 		throw new NonRetryableError(`Stored PDF ${target.resourceId} has no usable text; OCR is required`);
-	return cloudMarkdown ? { ...acquired, content: cloudMarkdown } : acquired;
+	return cloudMarkdown ? { ...acquired, citations: null, content: cloudMarkdown } : acquired;
 }

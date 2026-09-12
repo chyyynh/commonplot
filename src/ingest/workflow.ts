@@ -16,7 +16,7 @@ import { createResourceTask, enqueueSearchProgress, registerResourceTask, type R
 import {
 	persistResolvedResource,
 	persistResourceClassification,
-	publishPublicPdfCrops,
+	loadPublicPdfContent,
 	prepareResolvedResource,
 	type ResourceDraftRelation,
 	type ResourcePersistenceTarget,
@@ -24,6 +24,7 @@ import {
 import { enqueueResourceReferenceEnrichment } from './resource-references';
 import { shouldEnqueueResourceTranslation } from './translation-policy';
 import { enqueueResourceTranslation } from './translation-workflow';
+import { publishPublicPdfCrops } from './zotero-sdt-service.ts';
 
 const ResourceDraftRelationSchema: z.ZodType<ResourceDraftRelation> = z.discriminatedUnion('kind', [
 	z.strictObject({ kind: z.literal('source'), sourceId: z.uuid() }),
@@ -246,7 +247,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				hostedImages,
 			);
 			const persistence = await step.do(
-				'persist-resolved-resource-scope-v4',
+				'persist-resolved-resource-scope-v5',
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 				async () => {
 					const startedAt = Date.now();
@@ -272,7 +273,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				await step.do(
 					'publish-public-pdf-crops-v1',
 					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					async () => publishPublicPdfCrops(await connectCoreDb(this.env), this.env, persistedResourceId),
+					async () =>
+						publishPublicPdfCrops(
+							this.env,
+							persistedResourceId,
+							await loadPublicPdfContent(await connectCoreDb(this.env), persistedResourceId),
+						),
 				);
 			}
 
@@ -289,14 +295,15 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				resourceId: persistedResourceId,
 			});
 			const subject = resource.subject;
-			// Only uploaded PDF references require the app's completed profile attachment.
 			// Let every independent handoff finish its retries before reporting failures.
 			const [references, index, ...followups] = await Promise.allSettled([
-				uploadedPaper
+				scope === 'corpus' &&
+				preparedResource.kind === 'paper' &&
+				(preparedResource.citations?.references.length || !persistence.originalWritten)
 					? step.do(
-							'enqueue-resource-reference-enrichment-v4',
+							'enqueue-resource-reference-enrichment-v5',
 							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							() => enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, target.resourceId, task),
+							() => enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, task),
 						)
 					: undefined,
 				(async () => {

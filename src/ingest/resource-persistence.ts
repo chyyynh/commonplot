@@ -16,7 +16,6 @@ import type { ResourceAnalysis, ResourceClassification } from './analysis';
 import { hasPrivatePdfImages, withoutPrivatePdfImages, withoutDuplicatePdfTitle } from './pdf-markdown.ts';
 import type { YouTubeResourceData } from './platforms/youtube';
 import { persistYouTubeData } from './platforms/youtube-persistence';
-import { structuredPdfCropManifestKey } from './zotero-sdt-service.ts';
 
 export type ResourceDraftRelation =
 	| Readonly<{ kind: 'source'; sourceId: string }>
@@ -115,6 +114,7 @@ export function prepareResolvedResource(
 		kind: resource.kind,
 		resourcePlatform: resource.resourcePlatform,
 		content,
+		citations: resource.kind === 'paper' ? resource.citations : null,
 		creators: media.creators,
 		fileType: resource.fileType ?? null,
 		identifiers,
@@ -260,6 +260,39 @@ async function writeCanonicalResource(
 			FROM jsonb_to_recordset(${JSON.stringify(resource.identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
 		`);
 	}
+	if (resource.citations?.references.length) {
+		const { references, mentions } = resource.citations;
+		const ordinalByKey = new Map(references.map(({ key }, index) => [key, index + 1]));
+		const linkedMentions = mentions.flatMap(({ targetKeys, ...mention }) => {
+			const referenceOrdinals = [...new Set(targetKeys.flatMap((key) => ordinalByKey.get(key) ?? []))];
+			return referenceOrdinals.length ? [{ ...mention, referenceOrdinals }] : [];
+		});
+		// These references describe exactly the original written in this transaction.
+		await db.execute(sql`
+			INSERT INTO resource_references (resource_id, ordinal, label, text)
+			SELECT ${resourceId}::uuid, incoming.ordinal::integer, incoming.value->>'label', incoming.value->>'text'
+			FROM jsonb_array_elements(${JSON.stringify(references)}::jsonb)
+			WITH ORDINALITY AS incoming(value, ordinal)
+		`);
+		if (linkedMentions.length)
+			await db.execute(sql`
+			WITH incoming AS MATERIALIZED (
+				SELECT ordinal::integer, value->>'markerText' AS marker_text,
+				       value->>'context' AS context, value->>'section' AS section,
+				       value->'referenceOrdinals' AS reference_ordinals
+				FROM jsonb_array_elements(${JSON.stringify(linkedMentions)}::jsonb)
+				WITH ORDINALITY AS mention(value, ordinal)
+			), inserted_mentions AS (
+				INSERT INTO resource_citation_mentions (resource_id, ordinal, marker_text, context, section)
+				SELECT ${resourceId}::uuid, ordinal, marker_text, context, section FROM incoming
+				RETURNING ordinal
+			)
+			INSERT INTO resource_citation_targets (resource_id, mention_ordinal, reference_ordinal)
+			SELECT ${resourceId}::uuid, incoming.ordinal, target.value::integer
+			FROM incoming JOIN inserted_mentions USING (ordinal)
+			CROSS JOIN LATERAL jsonb_array_elements_text(incoming.reference_ordinals) AS target(value)
+		`);
+	}
 	if (resource.youtube) {
 		await persistYouTubeData(db, resourceId, resource.youtube);
 	}
@@ -307,7 +340,6 @@ async function removeStoredPrivatePdfImages(db: NodePgDatabase, resourceId: stri
 			WHERE resource_id = ${resourceId}::uuid AND lang = ${translation.lang}
 		`);
 		// Removing image blocks changes byte offsets and aligned translation blocks.
-		// The reference followup rebuilds offsets against the authoritative original.
 		await db.execute(sql`
 			UPDATE resource_citation_mentions SET content_start = NULL, content_end = NULL
 			WHERE resource_id = ${resourceId}::uuid AND content_start IS NOT NULL
@@ -375,56 +407,13 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 	});
 }
 
-const PUBLIC_CROP_PATTERN = /\/api\/media\/asset\/public-pdf-crops\/([a-f\d]{64})\/([a-f\d]{64})\/(\d+(?:\.\d+)*-p\d+-[a-f\d]{16})\.png/gu;
-const MAX_MANIFEST_BYTES = 64 * 1024;
-
-/** Publish only persisted references to crops produced from an independent public fetch. */
-export async function publishPublicPdfCrops(db: NodePgDatabase, env: CoreEnv, resourceId: string): Promise<void> {
+/** Read the accepted corpus rendition, which may differ from the incoming private PDF. */
+export async function loadPublicPdfContent(db: NodePgDatabase, resourceId: string): Promise<string> {
 	const result = await db.execute<{ content: string }>(sql`
 		SELECT original.content
 		FROM resources resource
 		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 		WHERE resource.id = ${resourceId}::uuid AND resource.scope = 'corpus'
 	`);
-	const content = result.rows[0]?.content;
-	if (!content) return;
-	const groups = new Map<string, { sourceHash: string; inputHash: string; cropIds: Set<string> }>();
-	for (const [, sourceHash, inputHash, cropId] of content.matchAll(PUBLIC_CROP_PATTERN)) {
-		const groupKey = `${sourceHash}/${inputHash}`;
-		const group = groups.get(groupKey) ?? { sourceHash: sourceHash!, inputHash: inputHash!, cropIds: new Set<string>() };
-		group.cropIds.add(cropId!);
-		groups.set(groupKey, group);
-	}
-	for (const { sourceHash, inputHash, cropIds } of groups.values()) {
-		const prefix = `public-pdf/${sourceHash}/${inputHash}`;
-		const pdfStorageKey = `${prefix}/source.pdf`;
-		const source = await env.R2.head(pdfStorageKey);
-		if (
-			source?.customMetadata?.scope !== 'corpus' ||
-			source.customMetadata.sourceSha256 !== sourceHash ||
-			source.customMetadata.inputSha256 !== inputHash
-		) {
-			throw new Error('Public PDF crop publication has no independent public source');
-		}
-		const object = await env.R2.get(structuredPdfCropManifestKey(pdfStorageKey, inputHash));
-		if (!object) throw new Error('Public PDF crop publication manifest is missing');
-		if (object.size > MAX_MANIFEST_BYTES) {
-			await object.body.cancel('Invalid public PDF manifest size');
-			throw new Error('Public PDF crop publication manifest is too large');
-		}
-		const manifest: { inputSha256?: unknown; pdfStorageKey?: unknown; ready?: unknown; state?: unknown } = await object.json();
-		const ready = manifest.ready;
-		if (
-			manifest.inputSha256 !== inputHash ||
-			manifest.pdfStorageKey !== pdfStorageKey ||
-			manifest.state !== 'complete' ||
-			!Array.isArray(ready) ||
-			[...cropIds].some((id) => !ready.includes(id))
-		) {
-			throw new Error('Public PDF crop publication includes unready images');
-		}
-		await env.R2.put(`${prefix}/publication.json`, JSON.stringify({ resourceId, cropIds: [...cropIds] }), {
-			httpMetadata: { contentType: 'application/json' },
-		});
-	}
+	return result.rows[0]?.content ?? '';
 }

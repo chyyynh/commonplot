@@ -4,20 +4,8 @@ import { fromMarkdown as parseMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
 import { expandHtmlTables } from '../src/ingest/markdown-translation.ts';
-import {
-	hasPrivatePdfImages,
-	matchesUploadedPdfRendition,
-	withoutPrivatePdfImages,
-	withoutDuplicatePdfTitle,
-} from '../src/ingest/pdf-markdown.ts';
-import {
-	normalizeStructuredPdf,
-	parseStructuredPdfDocumentJson,
-	parseStructuredPdfFailure,
-	structuredPdfSourceCropUrl,
-	structuredPdfStorageKey,
-	structuredPdfVisualPlan,
-} from '../src/ingest/zotero-sdt.ts';
+import { hasPrivatePdfImages, withoutPrivatePdfImages, withoutDuplicatePdfTitle } from '../src/ingest/pdf-markdown.ts';
+import { normalizeStructuredPdf, parseStructuredPdfDocumentJson, structuredPdfVisualPlan } from '../src/ingest/zotero-sdt.ts';
 
 const fromMarkdown = (source, options = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }) => parseMarkdown(source, options);
 const htmlElements = (source, tagName) => {
@@ -158,16 +146,6 @@ assert.match(normalized.markdown, /^## Introduction/u);
 assert.match(normalized.paperIdentifierText ?? '', /DOI: 10\.1000\/example/u);
 assert.equal(normalized.parse.totalPages, 1);
 assert.equal(normalized.parse.fullPageImagePages, 0);
-assert.equal(structuredPdfStorageKey('users/u/resources/r/source.pdf'), 'users/u/resources/r/source.pdf.structured-document.json');
-assert.equal(structuredPdfSourceCropUrl('a'.repeat(64), '12-p3'), `/api/media/asset/pdf-crops/${'a'.repeat(64)}/12-p3.png`);
-assert.deepEqual(parseStructuredPdfFailure(422, '{"error":"model failed","totalPages":12}'), {
-	message: 'Zotero SDT parse failed with 422: model failed',
-	totalPages: 12,
-});
-assert.deepEqual(parseStructuredPdfFailure(500, 'not-json'), {
-	message: 'Zotero SDT parse failed with 500',
-	totalPages: null,
-});
 
 const formattedDocument = {
 	...document,
@@ -649,17 +627,16 @@ assert.deepEqual(
 		{ blockPath: '1', pageIndex: 0, rect: [30, 200, 260, 500] },
 	],
 );
-const cropWithoutManifest = normalizeStructuredPdf(parsedCropDocument, { inputContentHash: 'a'.repeat(64) });
+const readySourceCrops = sourceCrops.map(({ id }) => ({ id, url: `/api/media/asset/pdf-crops/${'a'.repeat(64)}/${id}.png` }));
+const cropWithoutManifest = normalizeStructuredPdf(parsedCropDocument);
 assert.doesNotMatch(cropWithoutManifest.markdown, /\/api\/media\/asset\/pdf-crops/u);
 const partiallyReadyCrop = normalizeStructuredPdf(parsedCropDocument, {
-	inputContentHash: 'a'.repeat(64),
-	readySourceCrops: sourceCrops.slice(0, 1),
+	readySourceCrops: readySourceCrops.slice(0, 1),
 });
 assert.match(partiallyReadyCrop.markdown, /\/0-p0-[a-f\d]{16}\.png/u);
 assert.doesNotMatch(partiallyReadyCrop.markdown, /\/1-p0-[a-f\d]{16}\.png/u);
 const cropNormalized = normalizeStructuredPdf(parsedCropDocument, {
-	inputContentHash: 'a'.repeat(64),
-	readySourceCrops: sourceCrops,
+	readySourceCrops,
 });
 assert.match(cropNormalized.markdown, /!\[Research model\]\(\/api\/media\/asset\/pdf-crops\/a{64}\/0-p0-[a-f\d]{16}\.png\)/u);
 assert.match(cropNormalized.markdown, /!\[Visible cues Social inferences Representative quote\]/u);
@@ -723,11 +700,11 @@ const narrowFigure = visualPlan.crops.find(({ figureId }) => figureId === 'Figur
 assert.ok(narrowFigure.rect[2] < 318, 'single-column crop cannot include adjacent prose');
 assert.ok(narrowFigure.rect[3] < 723, 'excluded header remains outside the image');
 assert.ok(visualPlan.crops.find(({ figureId }) => figureId === 'Figure 1').rect[3] < 560, 'author metadata remains outside the image');
-const visualReady = normalizeStructuredPdf(visualDocument, {
-	inputContentHash: 'b'.repeat(64),
-	readySourceCrops: visualPlan.crops,
-	cropUrlPrefix: '/api/media/asset/public-pdf-crops/example-source',
-});
+const visualReadyCrops = visualPlan.crops.map((crop) => ({
+	...crop,
+	url: `/api/media/asset/public-pdf-crops/example-source/${'b'.repeat(64)}/${crop.id}.png`,
+}));
+const visualReady = normalizeStructuredPdf(visualDocument, { visualPlan, readySourceCrops: visualReadyCrops });
 assert.match(visualReady.markdown, /alice\\?@example\.edu/u);
 assert.match(visualReady.markdown, /bob\\?@example\.edu/u);
 assert.match(visualReady.markdown, /Unrelated right-column prose/u);
@@ -737,8 +714,8 @@ assert.match(visualReady.markdown, /\/public-pdf-crops\/example-source\/b{64}\//
 assert.equal(visualReady.parse.visual.inferred, 3);
 assert.ok(visualReady.parse.fallbackReasons.includes('caption-region-inferred'));
 const chartUnavailable = normalizeStructuredPdf(visualDocument, {
-	inputContentHash: 'b'.repeat(64),
-	readySourceCrops: visualPlan.crops.filter(({ figureId }) => figureId !== 'Figure 9'),
+	visualPlan,
+	readySourceCrops: visualReadyCrops.filter(({ figureId }) => figureId !== 'Figure 9'),
 });
 assert.match(chartUnavailable.markdown, /12345 Cocoa Baseline Steerability/u);
 assert.ok(chartUnavailable.parse.visual.missing.some(({ figureId, reason }) => figureId === 'Figure 9' && reason === 'crop-not-ready'));
@@ -797,9 +774,6 @@ console.info({
 	assert.equal(withoutPrivatePdfImages(`![Figure][crop]\n\n[crop]: ${privateUrl}`), '');
 	assert.equal(withoutPrivatePdfImages(`![Figure](https://newsence.app${privateUrl})\n\nCaption`), 'Caption');
 	assert.equal(withoutPrivatePdfImages('No images.\n\n$x=y$'), 'No images.\n\n$x=y$');
-	assert.equal(matchesUploadedPdfRendition(projected, source), true);
-	assert.equal(matchesUploadedPdfRendition(source, source), true);
-	assert.equal(matchesUploadedPdfRendition('A different published version and bibliography.', source), false);
 	console.info('PDF private/public rendition contract checks passed');
 }
 

@@ -3,14 +3,27 @@ import { createHash } from 'node:crypto';
 import {
 	ensureStructuredPdfSourceCrops,
 	parsePdfArtifactStream,
+	parseStructuredPdfFailure,
+	publishPublicPdfCrops,
 	parsePublicPdfResponse,
 	parseStoredPdfRepresentation,
 	PermanentPdfArtifactError,
 	readStructuredPdfArtifact,
 	structuredPdfCropManifestKey,
+	structuredPdfStorageKey,
 	writeStructuredPdfArtifact,
 } from '../src/ingest/zotero-sdt-service.ts';
-import { structuredPdfVisualPlan, structuredPdfStorageKey } from '../src/ingest/zotero-sdt.ts';
+import { structuredPdfVisualPlan } from '../src/ingest/zotero-sdt.ts';
+
+assert.equal(structuredPdfStorageKey('users/u/resources/r/source.pdf'), 'users/u/resources/r/source.pdf.structured-document.json');
+assert.deepEqual(parseStructuredPdfFailure(422, '{"error":"model failed","totalPages":12}'), {
+	message: 'Zotero SDT parse failed with 422: model failed',
+	totalPages: 12,
+});
+assert.deepEqual(parseStructuredPdfFailure(500, 'not-json'), {
+	message: 'Zotero SDT parse failed with 500',
+	totalPages: null,
+});
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==', 'base64');
 const pdf = Buffer.from('%PDF-1.7\nfixture');
@@ -18,11 +31,12 @@ const inputHash = createHash('sha256').update(pdf).digest('hex');
 const document = {
 	schemaVersion: '1.2.0',
 	metadata: { processor: { type: 'pdf', version: 14 }, source: { properties: {} } },
-	catalog: { outline: [], pages: [{ contentRange: [[0], [2]], textSource: 'born-digital' }] },
+	catalog: { outline: [], pages: [{ contentRange: [[0], [3]], textSource: 'born-digital' }] },
 	content: [
-		{ type: 'paragraph', content: [{ text: 'A document with two graphics.' }] },
+		{ type: 'paragraph', content: [{ text: 'A document with two graphics.' }, { text: '[1]', refs: [[3]] }] },
 		{ type: 'image', content: [], anchor: { pageRects: [[0, 10, 30, 100, 130]] } },
 		{ type: 'image', content: [], anchor: { pageRects: [[0, 110, 30, 200, 130]] } },
+		{ type: 'paragraph', reference: true, content: [{ text: '[1] Example. Source evidence. 2024.' }] },
 	],
 };
 
@@ -101,6 +115,8 @@ const recovered = await parseStoredPdfRepresentation(env, input);
 assert.equal(env.parseCalls(), 1);
 assert.deepEqual(env.batches, [crops.map(({ id }) => id), [crops[1].id]]);
 assert.equal(recovered.parse.visual.ready, 2);
+assert.equal(recovered.citations.references[0].key, 'sdt-1');
+assert.deepEqual(recovered.citations.mentions[0].targetKeys, ['sdt-1']);
 assert.equal(env.R2.json(manifestKey).state, 'complete');
 assert.deepEqual(env.R2.json(manifestKey).quality, recovered.parse);
 assert.match(recovered.markdown, /\/api\/media\/asset\/pdf-crops\//);
@@ -140,6 +156,20 @@ assert.ok(
 	!env.R2.objects.has(`public-pdf/${sourceHash}/${inputHash}/publication.json`),
 	'acquisition cannot publish before canonical persistence',
 );
+assert.deepEqual(publicResult.citations, recovered.citations, 'both acquisition routes return the already-normalized citations');
+const publicationKey = `public-pdf/${sourceHash}/${inputHash}/publication.json`;
+const publicManifestKey = structuredPdfCropManifestKey(publicKey, inputHash);
+const publicManifest = env.R2.json(publicManifestKey);
+const publicSourceMetadata = env.R2.objects.get(publicKey).customMetadata;
+publicSourceMetadata.scope = 'private';
+await assert.rejects(publishPublicPdfCrops(env, 'paper', publicResult.markdown), /no independent public source/);
+publicSourceMetadata.scope = 'corpus';
+await env.R2.put(publicManifestKey, JSON.stringify({ ...publicManifest, state: 'partial' }));
+await assert.rejects(publishPublicPdfCrops(env, 'paper', publicResult.markdown), /unready images/);
+assert.ok(!env.R2.objects.has(publicationKey));
+await env.R2.put(publicManifestKey, JSON.stringify(publicManifest));
+await publishPublicPdfCrops(env, 'paper', publicResult.markdown);
+assert.deepEqual(env.R2.json(publicationKey), { resourceId: 'paper', cropIds: crops.map(({ id }) => id) });
 
 // Batches transfer one source body per eight crops, and malformed/omitted output
 // cannot fabricate completeness or overwrite an unrelated R2 path.
@@ -171,6 +201,7 @@ invalid.client.processPdf = async () => Response.json({ error: 'invalid PDF', to
 const invalidResult = await parsePdfArtifactStream(invalid, new Response(pdf).body, pdf.length, 'fixture');
 assert.deepEqual(invalidResult.parse.fallbackReasons, ['parse-failed']);
 assert.equal(invalidResult.parse.totalPages, 2);
+assert.equal(invalidResult.citations, null);
 
 const permanent = environment();
 await permanent.R2.put(key, pdf);

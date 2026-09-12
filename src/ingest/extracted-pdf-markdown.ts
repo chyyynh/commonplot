@@ -260,3 +260,21 @@ export function normalizeExtractedPdfMarkdown(markdown: string): string {
 	}
 	return result + normalizeProse(markdown.slice(offset));
 }
+
+type MarkdownPage = Readonly<{ markdown?: string; page_number: number; success: boolean }>;
+
+/** Accept only a complete, exactly-once page set; never persist a truncated cloud result. */
+export function wholeDocumentMarkdown(pages: readonly MarkdownPage[] | null | undefined, expectedPages: number): string | null {
+	if (pages?.length !== expectedPages || expectedPages < 1) return null;
+	const ordered = [...pages].sort((left, right) => left.page_number - right.page_number);
+	if (ordered.some((page, index) => !page.success || page.page_number !== index + 1 || typeof page.markdown !== 'string')) return null;
+	return (
+		normalizeExtractedPdfMarkdown(
+			ordered
+				.map((page) => page.markdown)
+				.join('\n\n')
+				.replaceAll('\0', '')
+				.trim(),
+		) || null
+	);
+}

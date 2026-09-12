@@ -35,19 +35,6 @@ const MAX_SOURCE_CROPS = 64;
 const MAX_REF_PATH_DEPTH = 16;
 export const ZOTERO_SDT_ARTIFACT_VERSION = 'newsence-zotero-sdt-v2-02100446';
 
-export function parseStructuredPdfFailure(status: number, body: string): { message: string; totalPages: number | null } {
-	let message = `Zotero SDT parse failed with ${status}`;
-	let totalPages: number | null = null;
-	try {
-		const parsed = JSON.parse(body) as { error?: unknown; totalPages?: unknown };
-		if (typeof parsed.error === 'string' && parsed.error.trim()) message = `${message}: ${parsed.error.trim()}`;
-		if (Number.isInteger(parsed.totalPages) && Number(parsed.totalPages) > 0) totalPages = Number(parsed.totalPages);
-	} catch {
-		// A malformed internal error response still fails safely without page-count admission.
-	}
-	return { message, totalPages };
-}
-
 type RefPath = readonly number[];
 
 type SdtBlockNode = Readonly<{
@@ -546,10 +533,6 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 	return { crops, excludedAuthorTables: [...excludedAuthorTables], missing };
 }
 
-export function structuredPdfSourceCropUrl(inputContentHash: string, cropId: string, cropUrlPrefix = '/api/media/asset/pdf-crops'): string {
-	return `${cropUrlPrefix}/${inputContentHash}/${cropId}.png`;
-}
-
 function firstPageIdentifierText(document: StructuredPdfDocument): string | null {
 	const fulltextDocument = document as unknown as Parameters<typeof getFulltextFromStructuredText>[0];
 	const pageText = cleanText(getFulltextFromStructuredText(fulltextDocument, [0]));
@@ -564,9 +547,7 @@ function firstPageIdentifierText(document: StructuredPdfDocument): string | null
 export function normalizeStructuredPdf(
 	document: StructuredPdfDocument,
 	options: Readonly<{
-		cropUrlPrefix?: string;
-		inputContentHash?: string;
-		readySourceCrops?: readonly StructuredPdfSourceCrop[];
+		readySourceCrops?: readonly Readonly<{ id: string; url: string }>[];
 		visualPlan?: ReturnType<typeof structuredPdfVisualPlan>;
 	}> = {},
 ) {
@@ -610,19 +591,15 @@ export function normalizeStructuredPdf(
 	const visualPlan = options.visualPlan ?? structuredPdfVisualPlan(document);
 	const suppressedBlockPaths = new Set<string>();
 	const sourceCropsByBlock = new Map<string, Array<{ altText: string; placement: 'before' | 'replace'; url: string }>>();
-	if (options.inputContentHash && options.readySourceCrops?.length) {
-		const readyIds = new Set(options.readySourceCrops.map(({ id }) => id));
-		for (const crop of visualPlan.crops.filter(({ id }) => readyIds.has(id))) {
-			const entry = {
-				altText: crop.altText,
-				placement: crop.placement,
-				url: structuredPdfSourceCropUrl(options.inputContentHash, crop.id, options.cropUrlPrefix),
-			};
-			for (const path of crop.suppressedBlockPaths) suppressedBlockPaths.add(path);
-			const existing = sourceCropsByBlock.get(crop.blockPath);
-			if (existing) existing.push(entry);
-			else sourceCropsByBlock.set(crop.blockPath, [entry]);
-		}
+	const readyCrops = new Map(options.readySourceCrops?.map(({ id, url }) => [id, url]));
+	for (const crop of visualPlan.crops) {
+		const url = readyCrops.get(crop.id);
+		if (url === undefined) continue;
+		const entry = { altText: crop.altText, placement: crop.placement, url };
+		for (const path of crop.suppressedBlockPaths) suppressedBlockPaths.add(path);
+		const existing = sourceCropsByBlock.get(crop.blockPath);
+		if (existing) existing.push(entry);
+		else sourceCropsByBlock.set(crop.blockPath, [entry]);
 	}
 	for (const { node, path: sourcePath } of entries) {
 		if (!('text' in node) || !node.text.trim()) continue;
@@ -899,8 +876,7 @@ export function normalizeStructuredPdf(
 		// Keep persisted table formatting stable while the surrounding prose uses underscores.
 		handlers: { table: (table) => toMarkdown(table, { extensions }).trimEnd() },
 	}).trimEnd();
-	const readyCropIds = new Set((options.readySourceCrops ?? []).map(({ id }) => id));
-	const missingCrops = visualPlan.crops.filter(({ id }) => !readyCropIds.has(id));
+	const missingCrops = visualPlan.crops.filter(({ id }) => !readyCrops.has(id));
 	const visual = {
 		planned: visualPlan.crops.length,
 		ready: visualPlan.crops.length - missingCrops.length,
@@ -928,8 +904,4 @@ export function normalizeStructuredPdf(
 		},
 		references,
 	};
-}
-
-export function structuredPdfStorageKey(pdfStorageKey: string): string {
-	return `${pdfStorageKey}.structured-document.json`;
 }

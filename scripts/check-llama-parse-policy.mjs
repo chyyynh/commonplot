@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
+import { wholeDocumentMarkdown } from '../src/ingest/extracted-pdf-markdown.ts';
 import {
 	isAllowedPublicPdfUrl,
 	LLAMA_PARSE_MAX_PAGES,
 	llamaParseAdmissionReason,
 	localPdfNeedsFallback,
-	wholeDocumentMarkdown,
 } from '../src/ingest/platforms/pdf-fallback-policy.ts';
 
 const local = (overrides = {}) => ({
