@@ -6,7 +6,7 @@ import {
 	compileMarkdownTranslationArtifact,
 } from '../../src/ingest/markdown-translation.ts';
 import { parsePublicPdfResponse, parseStoredPdfRepresentation, structuredPdfCropManifestKey } from '../../src/ingest/zotero-sdt-service.ts';
-import { structuredPdfSourceCrops } from '../../src/ingest/zotero-sdt.ts';
+import { structuredPdfVisualPlan } from '../../src/ingest/zotero-sdt.ts';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==', 'base64');
 const pdf = Buffer.from('%PDF-1.7\nruntime fixture');
@@ -50,7 +50,7 @@ const document = {
 		{ type: 'note', content: [{ type: 'paragraph', content: [{ text: '1 Original evidence.' }] }] },
 	],
 };
-const crops = structuredPdfSourceCrops(document);
+const crops = structuredPdfVisualPlan(document).crops;
 
 export default {
 	async fetch(request, bindings) {

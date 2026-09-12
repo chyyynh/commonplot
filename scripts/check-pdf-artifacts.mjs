@@ -10,7 +10,7 @@ import {
 	structuredPdfCropManifestKey,
 	writeStructuredPdfArtifact,
 } from '../src/ingest/zotero-sdt-service.ts';
-import { structuredPdfSourceCrops, structuredPdfStorageKey } from '../src/ingest/zotero-sdt.ts';
+import { structuredPdfVisualPlan, structuredPdfStorageKey } from '../src/ingest/zotero-sdt.ts';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==', 'base64');
 const pdf = Buffer.from('%PDF-1.7\nfixture');
@@ -85,7 +85,7 @@ const key = 'users/owner/source.pdf';
 const env = environment();
 await env.R2.put(key, pdf);
 const input = { pdfStorageKey: key, inputContentHash: inputHash, sourceLabel: 'fixture' };
-const crops = structuredPdfSourceCrops(document);
+const crops = structuredPdfVisualPlan(document).crops;
 const manifestKey = structuredPdfCropManifestKey(key, inputHash);
 
 // A durable partial failure retries only the missing PNG, retaining both source
@@ -110,7 +110,7 @@ assert.equal(env.batches.length, 2, 'warm cache must not rerender');
 // A geometry update gets an immutable new URL and rerenders only that region.
 const changed = structuredClone(document);
 changed.content[1].anchor.pageRects[0][3] += 5;
-const changedCrops = structuredPdfSourceCrops(changed);
+const changedCrops = structuredPdfVisualPlan(changed).crops;
 assert.notEqual(changedCrops[0].id, crops[0].id);
 await ensureStructuredPdfSourceCrops(env, { ...input, crops: changedCrops, resourceId: 'fixture' });
 assert.deepEqual(env.batches.at(-1), [changedCrops[0].id]);

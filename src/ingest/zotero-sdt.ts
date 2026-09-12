@@ -1,9 +1,6 @@
 import { createHash } from 'node:crypto';
 import type { Element } from 'hast';
-import { fromHtml } from 'hast-util-from-html';
-import { toHtml } from 'hast-util-to-html';
-import type { BlockContent, Heading, Nodes, PhrasingContent, Root } from 'mdast';
-import { fromMarkdown } from 'mdast-util-from-markdown';
+import type { BlockContent, Heading, PhrasingContent, Root, Table } from 'mdast';
 import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import type {
@@ -23,8 +20,7 @@ import {
 } from 'structured-document-text/src/parts.js';
 import { isContentBoundary, isLeafBlock, refKey, sameRef } from 'structured-document-text/src/range.js';
 import { mergeTextNodes } from 'structured-document-text/src/text.js';
-import { normalizePdfTables } from './extracted-pdf-markdown.ts';
-import { tableContentHtml } from './html-table.ts';
+import { sanitizeTable, serializeTableHtml, tableContentHast } from './html-table.ts';
 
 const MAX_DOCUMENT_NODES = 100_000;
 const MAX_DOCUMENT_TEXT_CHARS = 2_000_000;
@@ -550,10 +546,6 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 	return { crops, excludedAuthorTables: [...excludedAuthorTables], missing };
 }
 
-export function structuredPdfSourceCrops(document: StructuredPdfDocument): StructuredPdfSourceCrop[] {
-	return structuredPdfVisualPlan(document).crops;
-}
-
 export function structuredPdfSourceCropUrl(inputContentHash: string, cropId: string, cropUrlPrefix = '/api/media/asset/pdf-crops'): string {
 	return `${cropUrlPrefix}/${inputContentHash}/${cropId}.png`;
 }
@@ -571,7 +563,12 @@ function firstPageIdentifierText(document: StructuredPdfDocument): string | null
 
 export function normalizeStructuredPdf(
 	document: StructuredPdfDocument,
-	options: Readonly<{ cropUrlPrefix?: string; inputContentHash?: string; readySourceCrops?: readonly StructuredPdfSourceCrop[] }> = {},
+	options: Readonly<{
+		cropUrlPrefix?: string;
+		inputContentHash?: string;
+		readySourceCrops?: readonly StructuredPdfSourceCrop[];
+		visualPlan?: ReturnType<typeof structuredPdfVisualPlan>;
+	}> = {},
 ) {
 	const entries = walkNodes(document.content);
 	const referenceEntries = entries.filter(
@@ -610,7 +607,7 @@ export function normalizeStructuredPdf(
 		),
 	);
 	const linkedNotes = new Map<string, Set<string>>();
-	const visualPlan = structuredPdfVisualPlan(document);
+	const visualPlan = options.visualPlan ?? structuredPdfVisualPlan(document);
 	const suppressedBlockPaths = new Set<string>();
 	const sourceCropsByBlock = new Map<string, Array<{ altText: string; placement: 'before' | 'replace'; url: string }>>();
 	if (options.inputContentHash && options.readySourceCrops?.length) {
@@ -790,23 +787,60 @@ export function normalizeStructuredPdf(
 			];
 		}
 		if (node.type === 'table' && !isLeafBlock(node)) {
-			const table: Element = { type: 'element', tagName: 'table', properties: {}, children: [] };
+			const rows: Array<Array<{ source: SdtBlockNode; content: BlockContent[] }>> = [];
 			for (const [rowIndex, row] of node.content.entries()) {
 				if ('text' in row || row.type !== 'tablerow' || row.flowClass === 'excluded') continue;
-				const cells: Element[] = [];
+				const cells: (typeof rows)[number] = [];
 				for (const [cellIndex, cell] of row.content.entries()) {
 					if ('text' in cell || cell.type !== 'tablecell' || cell.flowClass === 'excluded') continue;
 					const parentSection = section;
 					const content = toBlock(cell, [...path, rowIndex, cellIndex]);
 					section = parentSection;
-					// Normalize citations and split blocks once. Only a single paragraph is
-					// inline-only; lists, multiple paragraphs and code keep their structure.
-					const html = tableContentHtml(
-						content.length === 1 && content[0]?.type === 'paragraph'
-							? { type: 'tableCell', children: content[0].children }
-							: { type: 'root', children: content },
-					);
-					cells.push({
+					cells.push({ source: cell, content });
+				}
+				if (cells.length) rows.push(cells);
+			}
+			if (!rows.length) return blocks(node.content, path);
+			// SDT already describes headers, spans and cell blocks. Keep that structure
+			// instead of serializing HTML and asking a text parser to infer it again.
+			const simple = rows.every((cells, rowIndex) =>
+				cells.every(
+					({ source, content }) =>
+						(source.colspan ?? 1) === 1 &&
+						(source.rowspan ?? 1) === 1 &&
+						(!source.header || (rowIndex === 0 && source.axis !== 'row')) &&
+						(rowIndex !== 0 || !!source.header === !!cells[0]!.source.header) &&
+						(content.length === 0 || (content.length === 1 && content[0]?.type === 'paragraph')),
+				),
+			);
+			if (simple) {
+				const table: Table = {
+					type: 'table',
+					align: Array.from({ length: Math.max(...rows.map((cells) => cells.length)) }, () => null),
+					children: rows.map((cells) => ({
+						type: 'tableRow',
+						children: cells.map(({ content }) => {
+							const children = content[0]?.type === 'paragraph' ? content[0].children : [];
+							const first = children[0];
+							const last = children.at(-1);
+							if (first?.type === 'text') first.value = first.value.trimStart();
+							if (last?.type === 'text') last.value = last.value.trimEnd();
+							return { type: 'tableCell', children };
+						}),
+					})),
+				};
+				if (!rows[0]![0]!.source.header) table.children.unshift({ type: 'tableRow', children: [] });
+				return [table];
+			}
+			const body: Element = {
+				type: 'element',
+				tagName: 'tbody',
+				properties: {},
+				children: rows.map((cells) => ({
+					type: 'element',
+					tagName: 'tr',
+					properties: {},
+					children: cells.map(({ source: cell, content }) => ({
 						type: 'element',
 						tagName: cell.header ? 'th' : 'td',
 						properties: {
@@ -814,12 +848,16 @@ export function normalizeStructuredPdf(
 							...(cell.colspan !== undefined ? { colSpan: cell.colspan } : {}),
 							...(cell.rowspan !== undefined ? { rowSpan: cell.rowspan } : {}),
 						},
-						children: fromHtml(html, { fragment: true }).children.filter((child) => child.type !== 'doctype'),
-					});
-				}
-				if (cells.length) table.children.push({ type: 'element', tagName: 'tr', properties: {}, children: cells });
-			}
-			return table.children.length ? [{ type: 'html', value: toHtml(table) }] : blocks(node.content, path);
+						children: tableContentHast(
+							content.length === 1 && content[0]?.type === 'paragraph'
+								? { type: 'tableCell', children: content[0].children }
+								: { type: 'root', children: content },
+						),
+					})),
+				})),
+			};
+			const safe = sanitizeTable({ type: 'element', tagName: 'table', properties: {}, children: [body] });
+			return [{ type: 'html', value: serializeTableHtml(safe), data: { hName: 'table', hChildren: safe.children } }];
 		}
 		if (!isLeafBlock(node)) return blocks(node.content, path);
 		const children = inline(node.content, node.type === 'caption');
@@ -853,13 +891,14 @@ export function normalizeStructuredPdf(
 			children: [{ type: 'paragraph', children: [{ type: 'text', value: reference.text }] }],
 		});
 	}
-	const markdown = normalizePdfTables(
-		toMarkdown(tree, {
-			bullet: '-',
-			emphasis: '_',
-			extensions: [gfmToMarkdown({ tablePipeAlign: false })],
-		}).trimEnd(),
-	);
+	const extensions = [gfmToMarkdown({ tablePipeAlign: false })];
+	const markdown = toMarkdown(tree, {
+		bullet: '-',
+		emphasis: '_',
+		extensions,
+		// Keep persisted table formatting stable while the surrounding prose uses underscores.
+		handlers: { table: (table) => toMarkdown(table, { extensions }).trimEnd() },
+	}).trimEnd();
 	const readyCropIds = new Set((options.readySourceCrops ?? []).map(({ id }) => id));
 	const missingCrops = visualPlan.crops.filter(({ id }) => !readyCropIds.has(id));
 	const visual = {
@@ -893,47 +932,4 @@ export function normalizeStructuredPdf(
 
 export function structuredPdfStorageKey(pdfStorageKey: string): string {
 	return `${pdfStorageKey}.structured-document.json`;
-}
-
-const PRIVATE_PDF_CROP_PATH = '/api/media/asset/pdf-crops/';
-
-function isPrivatePdfCropUrl(value: string): boolean {
-	return value.startsWith(PRIVATE_PDF_CROP_PATH) || URL.parse(value)?.pathname.startsWith(PRIVATE_PDF_CROP_PATH) === true;
-}
-
-/** Private upload visuals stay on the owned rendition, never on shared corpus content. */
-export function withoutPrivatePdfImages(markdown: string): string {
-	const tree = fromMarkdown(markdown);
-	const privateDefinitions = new Set(
-		tree.children.flatMap((node) => (node.type === 'definition' && isPrivatePdfCropUrl(node.url) ? [node.identifier] : [])),
-	);
-	const removals: Array<{ start: number; end: number }> = [];
-	const visit = (node: Nodes): void => {
-		if (
-			(node.type === 'image' && isPrivatePdfCropUrl(node.url)) ||
-			(node.type === 'imageReference' && privateDefinitions.has(node.identifier)) ||
-			(node.type === 'definition' && privateDefinitions.has(node.identifier))
-		) {
-			const start = node.position?.start.offset;
-			const end = node.position?.end.offset;
-			if (start !== undefined && end !== undefined) removals.push({ start, end });
-			return;
-		}
-		if ('children' in node) for (const child of node.children) visit(child);
-	};
-	visit(tree);
-	let content = markdown;
-	for (const { start, end } of removals.sort((left, right) => right.start - left.start)) {
-		content = `${content.slice(0, start)}${content.slice(end)}`;
-	}
-	return content.trim();
-}
-
-export function hasPrivatePdfImages(markdown: string): boolean {
-	return markdown.includes(PRIVATE_PDF_CROP_PATH) && withoutPrivatePdfImages(markdown) !== markdown.trim();
-}
-
-/** A newly attached upload cannot replace citations from a different retained public body. */
-export function matchesUploadedPdfRendition(storedContent: string, uploadedContent: string): boolean {
-	return storedContent === uploadedContent || storedContent === withoutPrivatePdfImages(uploadedContent);
 }

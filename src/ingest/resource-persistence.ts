@@ -13,11 +13,10 @@ import {
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
 import type { ResourceAnalysis, ResourceClassification } from './analysis';
-import { withoutDuplicatePdfTitle } from './pdf-markdown.ts';
+import { hasPrivatePdfImages, withoutPrivatePdfImages, withoutDuplicatePdfTitle } from './pdf-markdown.ts';
 import type { YouTubeResourceData } from './platforms/youtube';
 import { persistYouTubeData } from './platforms/youtube-persistence';
 import { structuredPdfCropManifestKey } from './zotero-sdt-service.ts';
-import { hasPrivatePdfImages, withoutPrivatePdfImages } from './zotero-sdt.ts';
 
 export type ResourceDraftRelation =
 	| Readonly<{ kind: 'source'; sourceId: string }>
@@ -301,9 +300,10 @@ async function removeStoredPrivatePdfImages(db: NodePgDatabase, resourceId: stri
 		WHERE resource_id = ${resourceId}::uuid AND content LIKE '%/api/media/asset/pdf-crops/%'
 	`);
 	for (const translation of translations.rows) {
-		if (!hasPrivatePdfImages(translation.content)) continue;
+		const content = withoutPrivatePdfImages(translation.content);
+		if (content === translation.content.trim()) continue;
 		await db.execute(sql`
-			UPDATE resource_translations SET content = ${withoutPrivatePdfImages(translation.content)}, alignment = NULL, updated_at = NOW()
+			UPDATE resource_translations SET content = ${content}, alignment = NULL, updated_at = NOW()
 			WHERE resource_id = ${resourceId}::uuid AND lang = ${translation.lang}
 		`);
 		// Removing image blocks changes byte offsets and aligned translation blocks.

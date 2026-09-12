@@ -6,11 +6,11 @@ import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
 import { resolveCrossrefReference } from './crossref';
-import { withoutDuplicatePdfTitle } from './pdf-markdown.ts';
+import { matchesUploadedPdfRendition, withoutDuplicatePdfTitle } from './pdf-markdown.ts';
 import { PDF_MIME } from './platforms/pdf-constants';
 import { createResourceTask, registerResourceTask, type ResourceTaskContext } from './progress';
 import { readStructuredPdfArtifact } from './zotero-sdt-service.ts';
-import { matchesUploadedPdfRendition, normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfSourceCrops } from './zotero-sdt.ts';
+import { normalizeStructuredPdf, type StructuredPdfDocument, structuredPdfVisualPlan } from './zotero-sdt.ts';
 
 const CROSSREF_BATCH_SIZE = 3;
 const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
@@ -75,8 +75,8 @@ async function replaceStoredCitationData(
 	`);
 	const content = source.rows[0]?.content;
 	if (content === undefined) throw new NonRetryableError('Paper revision changed before structured citations could be stored');
-	const readySourceCrops = structuredPdfSourceCrops(document);
-	const structured = normalizeStructuredPdf(document, { inputContentHash, readySourceCrops });
+	const visualPlan = structuredPdfVisualPlan(document);
+	const structured = normalizeStructuredPdf(document, { inputContentHash, visualPlan, readySourceCrops: visualPlan.crops });
 	if (!matchesUploadedPdfRendition(content, withoutDuplicatePdfTitle(structured.markdown, source.rows[0]!.title))) {
 		console.info({ tag: 'RESOURCE_REFERENCES', event: 'retained_public_rendition', resource_id: resourceId });
 		return { referenceTexts: [] as string[], mentionCount: 0, alignedMentionCount: 0 };

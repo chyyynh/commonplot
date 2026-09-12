@@ -10,6 +10,7 @@ import { canonicalizeOptionalResourceLang } from '../shared/resource';
 import { stageStoredResourceAcquisition, stageUrlAcquisition } from './acquisition';
 import { analyzeResource, classifyResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
+import { withoutPrivatePdfImages } from './pdf-markdown.ts';
 import { LLAMA_PARSE_MAX_PAGES } from './platforms/pdf-fallback-policy';
 import { createResourceTask, enqueueSearchProgress, registerResourceTask, type ResourceTask } from './progress';
 import {
@@ -23,7 +24,6 @@ import {
 import { enqueueResourceReferenceEnrichment } from './resource-references';
 import { shouldEnqueueResourceTranslation } from './translation-policy';
 import { enqueueResourceTranslation } from './translation-workflow';
-import { withoutPrivatePdfImages } from './zotero-sdt.ts';
 
 const ResourceDraftRelationSchema: z.ZodType<ResourceDraftRelation> = z.discriminatedUnion('kind', [
 	z.strictObject({ kind: z.literal('source'), sourceId: z.uuid() }),

@@ -78,10 +78,10 @@ function normalizeProse(value: string): string {
 	);
 }
 
-function protectedRanges(markdown: string): { all: Range[]; literal: Range[]; inline: Array<Range & { native: boolean }> } {
+function protectedRanges(markdown: string): { all: Range[]; literal: Range[]; inline: Range[] } {
 	const all: Range[] = [];
 	const literal: Range[] = [];
-	const inline: Array<Range & { native: boolean }> = [];
+	const inline: Range[] = [];
 	function visit(node: Nodes): void {
 		const start = node.position?.start.offset;
 		const end = node.position?.end.offset;
@@ -101,7 +101,7 @@ function protectedRanges(markdown: string): { all: Range[]; literal: Range[]; in
 				'delete',
 			].includes(node.type)
 		) {
-			inline.push({ start, end, native: node.type === 'footnoteReference' || node.type === 'inlineMath' });
+			inline.push({ start, end });
 		}
 		const isLiteral = ['code', 'inlineCode', 'math', 'inlineMath'].includes(node.type);
 		if (isLiteral || ['link', 'image', 'definition', 'linkReference', 'imageReference'].includes(node.type)) {
@@ -217,7 +217,8 @@ function normalizeTable(source: string, inline: Range[]): string | null {
 	return restored ? serializeTableHtml(sanitizeTable(restored)) : null;
 }
 
-function normalizePdfMarkdown(markdown: string, prose: (value: string) => string, mixedTableMarkdown: boolean): string {
+/** Normalize LlamaParse PDF output before persistence, leaving native Markdown syntax intact. */
+export function normalizeExtractedPdfMarkdown(markdown: string): string {
 	const ranges = protectedRanges(markdown);
 	const replacements: Replacement[] = [];
 	let tableStart = -1;
@@ -240,7 +241,7 @@ function normalizePdfMarkdown(markdown: string, prose: (value: string) => string
 		const start = tableStart;
 		const end = match.index + match[0].length;
 		const inline = ranges.inline
-			.filter((range) => range.start >= start && range.end <= end && (mixedTableMarkdown || range.native))
+			.filter((range) => range.start >= start && range.end <= end)
 			.map((range) => ({ start: range.start - start, end: range.end - start }));
 		const source = markdown.slice(start, end);
 		const table = normalizeTable(source, inline);
@@ -253,18 +254,9 @@ function normalizePdfMarkdown(markdown: string, prose: (value: string) => string
 	let result = '';
 	for (const range of protectedSource) {
 		if (range.start < offset) continue;
-		result += prose(markdown.slice(offset, range.start));
+		result += normalizeProse(markdown.slice(offset, range.start));
 		result += 'value' in range ? range.value : markdown.slice(range.start, range.end);
 		offset = range.end;
 	}
-	return result + prose(markdown.slice(offset));
-}
-
-export function normalizePdfTables(markdown: string): string {
-	return normalizePdfMarkdown(markdown, (value) => value, false);
-}
-
-/** Normalize LlamaParse PDF output before persistence, leaving native Markdown syntax intact. */
-export function normalizeExtractedPdfMarkdown(markdown: string): string {
-	return normalizePdfMarkdown(markdown, normalizeProse, true);
+	return result + normalizeProse(markdown.slice(offset));
 }

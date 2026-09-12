@@ -3,16 +3,17 @@ import { fromHtml } from 'hast-util-from-html';
 import { fromMarkdown as parseMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
-import { expandHtmlTables } from '../src/ingest/html-table.ts';
-import { withoutDuplicatePdfTitle } from '../src/ingest/pdf-markdown.ts';
+import { expandHtmlTables } from '../src/ingest/markdown-translation.ts';
 import {
 	hasPrivatePdfImages,
 	matchesUploadedPdfRendition,
 	withoutPrivatePdfImages,
+	withoutDuplicatePdfTitle,
+} from '../src/ingest/pdf-markdown.ts';
+import {
 	normalizeStructuredPdf,
 	parseStructuredPdfDocumentJson,
 	parseStructuredPdfFailure,
-	structuredPdfSourceCrops,
 	structuredPdfSourceCropUrl,
 	structuredPdfStorageKey,
 	structuredPdfVisualPlan,
@@ -229,6 +230,21 @@ assert.deepEqual(
 	headlessTable.children[1].children.map((cell) => cell.children[0].value),
 	['A', '42'],
 );
+const raggedTable = fromMarkdown(tableMarkdown(tableRow(tableCell('A')), tableRow(tableCell(''), tableCell('42')))).children[0];
+assert.deepEqual(
+	raggedTable.children.map((row) => row.children.map((cell) => cell.children.map((node) => node.value).join(''))),
+	[
+		['', ''],
+		['A', ''],
+		['', '42'],
+	],
+);
+for (const rows of [
+	[tableRow(tableCell('Group', { header: true, axis: 'row' }))],
+	[tableRow(tableCell('A')), tableRow(tableCell('Group', { header: true }))],
+]) {
+	assert.equal(htmlElements(tableMarkdown(...rows), 'th').length, 1, 'row headers and later headers retain HTML semantics');
+}
 const mixedTable = tableMarkdown(tableRow(tableCell('Group', { header: true }), tableCell('A', { header: false })));
 assert.equal(htmlElements(mixedTable, 'th').length, 1);
 assert.equal(htmlElements(mixedTable, 'td').length, 1);
@@ -248,6 +264,28 @@ assert.deepEqual(
 );
 assert.deepEqual(htmlElements(semanticTable, 'td').map(htmlText), ['42', '81']);
 assert.doesNotMatch(semanticTable, /Discarded/u);
+
+// Native HAST data keeps nested structured tables intact without parsing HTML again.
+for (const properties of [{}, { colspan: 2 }]) {
+	const nestedTable = tableMarkdown(
+		tableRow({
+			type: 'tablecell',
+			content: [
+				{
+					type: 'table',
+					content: [tableRow(tableCell('Nested', properties))],
+				},
+			],
+		}),
+	);
+	assert.equal(htmlElements(nestedTable, 'table').length, 2);
+	assert.equal(htmlText(htmlElements(nestedTable, 'td').at(-1)), 'Nested');
+	if (!properties.colspan) assert.equal(htmlElements(nestedTable, 'th').length, 1, 'native HAST pads the empty header');
+}
+const italicCell = tableCell('italic');
+italicCell.content[0].content[0].style = { italic: true };
+assert.match(tableMarkdown(tableRow(italicCell)), /\| \*italic\* \|/u, 'stored GFM formatting survives the direct conversion');
+assert.equal(tableMarkdown(tableRow(tableCell('  a  b  '))), '| |\n| - |\n| a b |');
 
 const prose = (...content) => ({ type: 'paragraph', content });
 const cite = () => text('[1]', { refs: [[1]] });
@@ -599,7 +637,7 @@ const cropDocument = {
 	],
 };
 const parsedCropDocument = parseStructuredPdfDocumentJson(JSON.stringify(cropDocument));
-const sourceCrops = structuredPdfSourceCrops(parsedCropDocument);
+const sourceCrops = structuredPdfVisualPlan(parsedCropDocument).crops;
 assert.deepEqual(
 	sourceCrops.map(({ blockPath, pageIndex, rect }) => ({
 		blockPath,

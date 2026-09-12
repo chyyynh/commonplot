@@ -8,7 +8,7 @@ import {
 	parseStructuredPdfFailure,
 	type StructuredPdfDocument,
 	type StructuredPdfSourceCrop,
-	structuredPdfSourceCrops,
+	structuredPdfVisualPlan,
 	structuredPdfStorageKey,
 	ZOTERO_SDT_ARTIFACT_VERSION,
 } from './zotero-sdt.ts';
@@ -285,8 +285,9 @@ export async function parseStoredPdfRepresentation(
 		document = attempt;
 		await writeStructuredPdfArtifact(env, input.pdfStorageKey, input.inputContentHash, document);
 	}
-	const crops = structuredPdfSourceCrops(document);
-	const normalized = normalizeStructuredPdf(document, { ...input, readySourceCrops: crops });
+	const visualPlan = structuredPdfVisualPlan(document);
+	const crops = visualPlan.crops;
+	const normalized = normalizeStructuredPdf(document, { ...input, visualPlan, readySourceCrops: crops });
 	// Stage the complete body once. It becomes readable only after every planned
 	// crop is stored and its quality is committed in the same completion manifest.
 	await ensureStructuredPdfSourceCrops(env, {
