@@ -1,7 +1,7 @@
 import { Container } from '@cloudflare/containers';
 import { readBoundedResponseText } from '../shared/response.ts';
 import { type GrobidPdfHeader, parseGrobidPdfHeaderTei } from './grobid-tei.ts';
-import { MAX_PDF_BYTES } from './platforms/pdf-constants.ts';
+import { MAX_PDF_BYTES } from './platforms/pdf-policy.ts';
 
 const MAX_ERROR_BODY_BYTES = 1_000;
 const MAX_GROBID_RESPONSE_BYTES = 8 * 1024 * 1024;

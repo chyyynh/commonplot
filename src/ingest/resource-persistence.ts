@@ -14,7 +14,6 @@ import type { AcquiredResource } from './acquired-resource';
 import type { ResourceAnalysis, ResourceClassification } from './analysis';
 import { hasPrivatePdfImages, withoutPrivatePdfImages, withoutDuplicatePdfTitle } from './pdf-markdown.ts';
 import type { YouTubeResourceData } from './platforms/youtube';
-import { persistYouTubeData } from './platforms/youtube-persistence';
 import { canonicalizeResourceLang } from './resource-language';
 
 export type ResourceDraftRelation =
@@ -269,7 +268,22 @@ async function writeCanonicalResource(
 		`);
 	}
 	if (resource.youtube) {
-		await persistYouTubeData(db, resourceId, resource.youtube);
+		const { transcript, highlights } = resource.youtube;
+		await db.execute(sql`
+			INSERT INTO youtube_transcripts (resource_id, transcript, language, chapters, ai_highlights)
+			VALUES (
+				${resourceId}::uuid, ${JSON.stringify(transcript.segments)}::jsonb, ${transcript.language},
+				${JSON.stringify(transcript.chapters)}::jsonb, ${highlights ? JSON.stringify(highlights) : null}::jsonb
+			)
+			ON CONFLICT (resource_id) DO UPDATE SET
+				transcript = EXCLUDED.transcript,
+				language = EXCLUDED.language,
+				chapters = EXCLUDED.chapters,
+				ai_highlights = CASE
+					WHEN jsonb_array_length(EXCLUDED.chapters) > 0 THEN NULL
+					ELSE COALESCE(EXCLUDED.ai_highlights, youtube_transcripts.ai_highlights)
+				END
+		`);
 	}
 	const original = written.rows[0];
 	if (!original) throw new Error(`Resource ${resourceId} has no authoritative original translation`);

@@ -18,7 +18,7 @@ import {
 	planMarkdownTranslation,
 } from './markdown-translation';
 import { isMarkdownTranslationFormatError, splitSegmentsInHalf, translateMarkdownBatchToZhHant } from './markdown-translation-model';
-import { PDF_MIME } from './platforms/pdf-constants';
+import { PDF_MIME } from './platforms/pdf-policy';
 import { type ResourceTranslationCandidate, shouldEnqueueResourceTranslation } from './translation-policy';
 
 type ResourceTranslationPayload = { force?: boolean; resourceId: string; translationRevision: string };

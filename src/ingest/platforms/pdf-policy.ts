@@ -1,3 +1,6 @@
+export const MAX_PDF_BYTES = 25 * 1024 * 1024;
+export const PDF_MIME = 'application/pdf';
+
 export const LLAMA_PARSE_MAX_PAGES = 100;
 const FULL_PAGE_IMAGE_FALLBACK_RATIO = 0.8;
 const DOCUMENT_FALLBACK_REASONS = new Set(['empty-output', 'parse-failed']);

@@ -1,5 +1,5 @@
 import type { ResourceKind, ResourcePlatform } from '../shared/resource';
-import { PDF_MIME } from './platforms/pdf-constants.ts';
+import { PDF_MIME } from './platforms/pdf-policy.ts';
 
 const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const;
 

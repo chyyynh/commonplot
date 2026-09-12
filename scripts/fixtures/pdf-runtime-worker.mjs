@@ -5,8 +5,16 @@ import {
 	createMarkdownTranslationTemplate,
 	compileMarkdownTranslationArtifact,
 } from '../../src/ingest/markdown-translation.ts';
-import { parsePublicPdfResponse, parseStoredPdfRepresentation, structuredPdfCropManifestKey } from '../../src/ingest/zotero-sdt-service.ts';
-import { structuredPdfVisualPlan } from '../../src/ingest/zotero-sdt.ts';
+import {
+	parsePublicPdfResponse,
+	parseStoredPdfRepresentation,
+	structuredPdfCropManifestKey,
+	publishPublicPdfCrops,
+	readStructuredPdfArtifact,
+	structuredPdfStorageKey,
+	ensureStructuredPdfSourceCrops,
+} from '../../src/ingest/zotero-sdt-service.ts';
+import { normalizeStructuredPdf, structuredPdfVisualPlan } from '../../src/ingest/zotero-sdt.ts';
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLttAAAAABJRU5ErkJggg==', 'base64');
 const pdf = Buffer.from('%PDF-1.7\nruntime fixture');
@@ -55,7 +63,7 @@ const crops = structuredPdfVisualPlan(document).crops;
 export default {
 	async fetch(request, bindings) {
 		const phase = new URL(request.url).pathname.slice(1);
-		if (!['partial', 'recover', 'warm', 'public'].includes(phase)) return new Response('Unknown fixture phase', { status: 404 });
+		if (!['partial', 'recover', 'warm', 'public', 'guards'].includes(phase)) return new Response('Unknown fixture phase', { status: 404 });
 		let parseCalls = 0;
 		const batches = [];
 		const client = {
@@ -84,6 +92,80 @@ export default {
 		};
 		// R2 is the actual workerd binding; only the external parser is deterministic.
 		const env = { R2: bindings.R2, ZOTERO_SDT: { getByName: () => client } };
+
+		if (phase === 'guards') {
+			const errors = {};
+			const rejected = async (name, run) => {
+				try {
+					await run();
+				} catch (error) {
+					errors[name] = error.message;
+				}
+			};
+			const publicSource = await env.R2.head(publicKey);
+			const publicManifestKey = structuredPdfCropManifestKey(publicKey, inputContentHash);
+			const publicManifest = await (await env.R2.get(publicManifestKey)).json();
+			const publicMarkdown = normalizeStructuredPdf(document, {
+				readySourceCrops: crops.map(({ id }) => ({
+					id,
+					url: `/api/media/asset/public-pdf-crops/${sourceHash}/${inputContentHash}/${id}.png`,
+				})),
+			}).markdown;
+			await env.R2.put(publicKey, pdf, { customMetadata: { ...publicSource.customMetadata, scope: 'private' } });
+			await rejected('privatePublication', () => publishPublicPdfCrops(env, 'paper', publicMarkdown));
+			await env.R2.put(publicKey, pdf, { customMetadata: publicSource.customMetadata });
+			await env.R2.put(publicManifestKey, JSON.stringify({ ...publicManifest, state: 'partial' }));
+			await rejected('partialPublication', () => publishPublicPdfCrops(env, 'paper', publicMarkdown));
+			const unpublished = !(await env.R2.head(`public-pdf/${sourceHash}/${inputContentHash}/publication.json`));
+			await env.R2.put(publicManifestKey, JSON.stringify(publicManifest));
+			await publishPublicPdfCrops(env, 'paper', publicMarkdown);
+			const publication = await (await env.R2.get(`public-pdf/${sourceHash}/${inputContentHash}/publication.json`)).json();
+			const mismatchedCache = await readStructuredPdfArtifact(env, privateKey, 'b'.repeat(64));
+			const artifact = await env.R2.head(structuredPdfStorageKey(privateKey));
+			await env.R2.put(structuredPdfStorageKey(privateKey), '{broken', { customMetadata: artifact.customMetadata });
+			const corruptCache = await readStructuredPdfArtifact(env, privateKey, inputContentHash);
+			for (const variant of ['malformed', 'deleted']) {
+				const key = `users/${variant}/source.pdf`;
+				await env.R2.put(key, pdf);
+				const guarded = {
+					...env,
+					ZOTERO_SDT: {
+						getByName: () => ({
+							renderPdfAreas: async (stream, _size, requested) => {
+								await new Response(stream).arrayBuffer();
+								if (variant === 'deleted') await env.R2.delete((await env.R2.list({ prefix: key })).objects.map(({ key }) => key));
+								return new Response(
+									(variant === 'malformed'
+										? [{ id: '../../unrelated', pngBase64: png.toString('base64') }]
+										: requested.map(({ id }) => ({ id, pngBase64: png.toString('base64') }))
+									)
+										.map((row) => JSON.stringify(row))
+										.join('\n'),
+								);
+							},
+						}),
+					},
+				};
+				await rejected(variant, () =>
+					ensureStructuredPdfSourceCrops(guarded, {
+						pdfStorageKey: key,
+						inputContentHash,
+						sourceLabel: 'Guard fixture',
+						crops,
+						resourceId: 'fixture',
+					}),
+				);
+			}
+			return Response.json({
+				errors,
+				unpublished,
+				publication,
+				mismatchedCache,
+				corruptCache,
+				deletedObjects: (await env.R2.list({ prefix: 'users/deleted/' })).objects.length,
+				unrelated: !!(await env.R2.head('../../unrelated')),
+			});
+		}
 		if (phase === 'partial') await env.R2.put(privateKey, pdf, { httpMetadata: { contentType: 'application/pdf' } });
 		let result = null;
 		let error = null;

@@ -71,6 +71,19 @@ try {
 	assert.ok(publicResult.objectKeys.some((key) => key.startsWith('users/runtime-owner/')));
 	assert.ok(publicResult.objectKeys.some((key) => key.startsWith('public-pdf/')));
 	assert.ok(!publicResult.objectKeys.some((key) => key.endsWith('/publication.json')), 'acquisition does not publish canonical media');
+
+	const guards = await phase('guards');
+	assert.match(guards.errors.privatePublication, /no independent public source/);
+	assert.match(guards.errors.partialPublication, /unready images/);
+	assert.equal(guards.unpublished, true);
+	assert.equal(guards.publication.resourceId, 'paper');
+	assert.equal(guards.publication.cropIds.length, 2);
+	assert.equal(guards.mismatchedCache, null);
+	assert.equal(guards.corruptCache, null);
+	assert.match(guards.errors.malformed, /crops incomplete/);
+	assert.ok(guards.errors.deleted);
+	assert.equal(guards.deletedObjects, 0, 'Late renderer output cannot recreate a deleted owned source');
+	assert.equal(guards.unrelated, false);
 	console.info(
 		'PDF workerd/R2 runtime passed: partial manifest, cross-request resume, PNG metadata/bytes, warm cache, private/public isolation.',
 	);

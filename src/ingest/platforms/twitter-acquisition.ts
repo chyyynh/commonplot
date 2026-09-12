@@ -104,10 +104,6 @@ function stripTrailingExternalUrl(text: string, externalUrl: string): string {
 	return match[1].replace(/\/+$/, '') === externalUrl.replace(/\/+$/, '') ? text.slice(0, match.index).trimEnd() : text;
 }
 
-function stripTweetUrls(text: string): string {
-	return text.replace(/https?:\/\/\S+/g, '').trim();
-}
-
 function tweetQuote(tweet: Tweet) {
 	const quote = tweet.quoted_tweet;
 	const author = quote?.author;
@@ -115,16 +111,6 @@ function tweetQuote(tweet: Tweet) {
 	const text = expandTweetUrls(quote.text, quote);
 	const creator = twitterCreator({ name: author.name.trim(), userName: author.userName.trim(), profilePicture: author.profilePicture });
 	return text ? { creator, text } : undefined;
-}
-
-export function buildTweetTitle(tweet: Tweet, maxLength = 100): string {
-	const author = requiredTweetAuthor(tweet);
-	// Titles are display/search strings: drop URLs entirely (expanded ones would
-	// blow the length cap); URL-only tweets fall back to the raw text.
-	const text = stripTweetUrls(tweet.text) || tweet.text.trim();
-	if (!text) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no text`);
-	const suffix = text.length > maxLength ? '...' : '';
-	return `@${author.userName}: ${text.substring(0, maxLength)}${suffix}`;
 }
 
 async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
@@ -193,7 +179,11 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 	const author = requiredTweetAuthor(tweet);
 	const text = tweet.text.trim();
 	if (!text) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no text`);
-	const title = linkedContentUrl ? `@${author.userName}: ${stripTweetUrls(text) || text}`.slice(0, 120) : buildTweetTitle(tweet, 80);
+	// Titles omit URLs unless the tweet contains only a URL.
+	const titleText = text.replace(/https?:\/\/\S+/g, '').trim() || text;
+	const title = linkedContentUrl
+		? `@${author.userName}: ${titleText}`.slice(0, 120)
+		: `@${author.userName}: ${titleText.slice(0, 80)}${titleText.length > 80 ? '...' : ''}`;
 	const content = expandTweetUrls(text, tweet);
 	const quote = tweetQuote(tweet);
 

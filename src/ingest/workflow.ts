@@ -12,7 +12,7 @@ import { stageResourceImages } from './image-rehosting';
 import { withoutPrivatePdfImages } from './pdf-markdown.ts';
 import { stagePaperResolution } from './platforms/paper';
 import { stageStoredPdfAcquisition } from './platforms/pdf';
-import { LLAMA_PARSE_MAX_PAGES } from './platforms/pdf-fallback-policy';
+import { LLAMA_PARSE_MAX_PAGES } from './platforms/pdf-policy';
 import { createResourceTask, enqueueSearchProgress, registerResourceTask, type ResourceTask } from './progress';
 import { canonicalizeOptionalResourceLang } from './resource-language';
 import {
@@ -167,7 +167,6 @@ async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, targe
 	return stagePaperResolution(env, step, {
 		resource,
 		processingId,
-		seedIdentifiers: [],
 		sourceUrl: url,
 	});
 }

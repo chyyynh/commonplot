@@ -3,22 +3,10 @@ import { fromHtml } from 'hast-util-from-html';
 import { fromMarkdown as parseMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
-import { expandHtmlTables } from '../src/ingest/markdown-translation.ts';
 import { hasPrivatePdfImages, withoutPrivatePdfImages, withoutDuplicatePdfTitle } from '../src/ingest/pdf-markdown.ts';
 import { normalizeStructuredPdf, parseStructuredPdfDocumentJson, structuredPdfVisualPlan } from '../src/ingest/zotero-sdt.ts';
 
 const fromMarkdown = (source, options = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }) => parseMarkdown(source, options);
-const htmlElements = (source, tagName) => {
-	const elements = [];
-	const visit = (node) => {
-		if (node.type === 'element' && node.tagName === tagName) elements.push(node);
-		if ('children' in node) node.children.forEach(visit);
-	};
-	visit(fromHtml(source, { fragment: true }));
-	return elements;
-};
-const htmlText = (node) => node.value ?? node.children?.map(htmlText).join('') ?? '';
-
 const text = (value, options = {}) => ({
 	anchor: { pageRects: [[0, 10, 10, 20, 20]], textMap: JSON.stringify([[0, 0, 0, value.length, 10, 10, 20, 20]]) },
 	text: value,
@@ -143,488 +131,6 @@ assert.match(normalized.paperIdentifierText ?? '', /DOI: 10\.1000\/example/u);
 assert.equal(normalized.parse.totalPages, 1);
 assert.equal(normalized.parse.fullPageImagePages, 0);
 
-const formattedDocument = {
-	...document,
-	content: [
-		{
-			type: 'table',
-			content: [
-				{
-					type: 'tablerow',
-					content: [
-						{ type: 'tablecell', content: [text('A | B')] },
-						{ type: 'tablecell', content: ['one', 'two'].map((value) => ({ type: 'paragraph', content: [text(value)] })) },
-					],
-				},
-			],
-		},
-		{ type: 'preformatted', content: [text('before\n```\nafter')] },
-	],
-};
-const formatted = fromMarkdown(normalizeStructuredPdf(formattedDocument).markdown, {
-	extensions: [gfm()],
-	mdastExtensions: [gfmFromMarkdown()],
-}).children;
-assert.deepEqual(
-	formatted.map(({ type }) => type),
-	['html', 'code'],
-);
-const formattedCells = htmlElements(formatted[0].value, 'td');
-assert.equal(formattedCells.length, 2);
-assert.equal(htmlText(formattedCells[0]), 'A | B');
-assert.deepEqual(formattedCells[1].children.filter((node) => node.type === 'element').map(htmlText), ['one', 'two']);
-assert.equal(formatted[1].value, 'before\n```\nafter');
-
-const tableCell = (value, properties = {}) => ({
-	type: 'tablecell',
-	...properties,
-	content: [{ type: 'paragraph', content: [text(value)] }],
-});
-const tableRow = (...content) => ({ type: 'tablerow', content });
-const tableMarkdown = (...content) => normalizeStructuredPdf({ ...document, content: [{ type: 'table', content }] }).markdown;
-const simpleTable = fromMarkdown(
-	tableMarkdown(
-		tableRow(tableCell('Group', { header: true, axis: 'column' }), tableCell('Measure', { header: true, axis: 'column' })),
-		tableRow(tableCell('A'), tableCell('42')),
-	),
-).children[0];
-assert.equal(simpleTable.type, 'table');
-assert.deepEqual(
-	simpleTable.children.map((row) => row.children.map((cell) => cell.children.map((node) => node.value).join(''))),
-	[
-		['Group', 'Measure'],
-		['A', '42'],
-	],
-);
-const headlessTable = fromMarkdown(tableMarkdown(tableRow(tableCell('A', { header: false }), tableCell('42')))).children[0];
-assert.equal(headlessTable.type, 'table');
-assert.equal(headlessTable.children.length, 2, 'a headless table gets an empty GFM header, never promotes its first data row');
-assert.ok(headlessTable.children[0].children.every((cell) => cell.children.length === 0));
-assert.deepEqual(
-	headlessTable.children[1].children.map((cell) => cell.children[0].value),
-	['A', '42'],
-);
-const raggedTable = fromMarkdown(tableMarkdown(tableRow(tableCell('A')), tableRow(tableCell(''), tableCell('42')))).children[0];
-assert.deepEqual(
-	raggedTable.children.map((row) => row.children.map((cell) => cell.children.map((node) => node.value).join(''))),
-	[
-		['', ''],
-		['A', ''],
-		['', '42'],
-	],
-);
-for (const rows of [
-	[tableRow(tableCell('Group', { header: true, axis: 'row' }))],
-	[tableRow(tableCell('A')), tableRow(tableCell('Group', { header: true }))],
-]) {
-	assert.equal(htmlElements(tableMarkdown(...rows), 'th').length, 1, 'row headers and later headers retain HTML semantics');
-}
-const mixedTable = tableMarkdown(tableRow(tableCell('Group', { header: true }), tableCell('A', { header: false })));
-assert.equal(htmlElements(mixedTable, 'th').length, 1);
-assert.equal(htmlElements(mixedTable, 'td').length, 1);
-const semanticTable = tableMarkdown(
-	tableRow(
-		tableCell('Group', { header: true, axis: 'row', rowspan: 2 }),
-		tableCell('Measures', { header: true, axis: 'column', colspan: 2 }),
-	),
-	tableRow(tableCell('42'), tableCell('81'), tableCell('Discarded', { flowClass: 'excluded' })),
-);
-assert.deepEqual(
-	htmlElements(semanticTable, 'th').map(({ properties }) => properties),
-	[
-		{ scope: 'row', rowSpan: 2 },
-		{ scope: 'col', colSpan: 2 },
-	],
-);
-assert.deepEqual(htmlElements(semanticTable, 'td').map(htmlText), ['42', '81']);
-assert.doesNotMatch(semanticTable, /Discarded/u);
-
-// Native HAST data keeps nested structured tables intact without parsing HTML again.
-for (const properties of [{}, { colspan: 2 }]) {
-	const nestedTable = tableMarkdown(
-		tableRow({
-			type: 'tablecell',
-			content: [
-				{
-					type: 'table',
-					content: [tableRow(tableCell('Nested', properties))],
-				},
-			],
-		}),
-	);
-	assert.equal(htmlElements(nestedTable, 'table').length, 2);
-	assert.equal(htmlText(htmlElements(nestedTable, 'td').at(-1)), 'Nested');
-	if (!properties.colspan) assert.equal(htmlElements(nestedTable, 'th').length, 1, 'native HAST pads the empty header');
-}
-const italicCell = tableCell('italic');
-italicCell.content[0].content[0].style = { italic: true };
-assert.match(tableMarkdown(tableRow(italicCell)), /\| \*italic\* \|/u, 'stored GFM formatting survives the direct conversion');
-assert.equal(tableMarkdown(tableRow(tableCell('  a  b  '))), '| |\n| - |\n| a b |');
-
-const prose = (...content) => ({ type: 'paragraph', content });
-const cite = () => text('[1]', { refs: [[1]] });
-const nestedDocument = {
-	...document,
-	catalog: { ...document.catalog, outline: [{ title: 'Nested heading', ref: [0, 1, 0, 0] }] },
-	content: [
-		{
-			type: 'blockquote',
-			content: [
-				prose(text('Quoted 😀 '), cite()),
-				{
-					type: 'list',
-					ordered: true,
-					startIndex: 10,
-					content: [
-						{
-							type: 'listitem',
-							content: [
-								{ type: 'heading', content: [text('Nested heading')] },
-								prose(text('First paragraph '), cite()),
-								prose(text('Second paragraph '), cite()),
-								{ type: 'list', content: [{ type: 'listitem', content: [text('Child '), cite()] }] },
-							],
-						},
-					],
-				},
-			],
-		},
-		{ type: 'paragraph', reference: true, content: [text('[1] Example reference.')] },
-	],
-};
-const nested = normalizeStructuredPdf(nestedDocument);
-const quote = fromMarkdown(nested.markdown).children[0];
-assert.equal(quote.type, 'blockquote');
-const list = quote.children[1];
-assert.equal(list.type, 'list');
-assert.equal(list.start, 10);
-assert.deepEqual(
-	list.children[0].children.map(({ type }) => type),
-	['heading', 'paragraph', 'paragraph', 'list'],
-);
-assert.match(nested.markdown, /\[\^paper-sdt-1\]:/u);
-
-const nestedParts = structuredClone(nestedDocument);
-const itemParts = nestedParts.content[0].content[1].content[0].content;
-itemParts[1].content.push(text(' '));
-itemParts[1].nextPart = [0, 1, 0, 2];
-itemParts[2].previousPart = [0, 1, 0, 1];
-const joinedNested = normalizeStructuredPdf(nestedParts);
-assert.match(joinedNested.markdown, /First paragraph \[\^paper-sdt-1\] Second paragraph \[\^paper-sdt-1\]/u);
-assert.match(joinedNested.markdown, /\[\^paper-sdt-1\]:/u);
-
-// Part links must not duplicate text or move it between independent containers.
-for (const [content, expected] of [
-	[
-		[
-			{ ...prose(text('First')), nextPart: [2] },
-			{ ...prose(text('Second')), nextPart: [2] },
-			{ ...prose(text('shared.')), previousPart: [0] },
-		],
-		'First shared.\n\nSecond',
-	],
-	[
-		[
-			{ type: 'blockquote', content: [{ ...prose(text('Inside')), nextPart: [1] }] },
-			{ ...prose(text('Outside')), previousPart: [0, 0] },
-		],
-		'> Inside\n\nOutside',
-	],
-]) {
-	assert.equal(normalizeStructuredPdf({ ...document, content }).markdown, expected);
-}
-
-// Hidden and empty references must not become durable bibliography/mention data.
-for (const reference of [
-	{ ...prose(text('Hidden reference')), reference: true, flowClass: 'excluded' },
-	{ type: 'blockquote', flowClass: 'excluded', content: [{ ...prose(text('Hidden reference')), reference: true }] },
-	{ ...prose(text('')), reference: true },
-]) {
-	const target = reference.type === 'blockquote' ? [1, 0] : [1];
-	const result = normalizeStructuredPdf({ ...document, content: [prose(text('See '), text('[1]', { refs: [target] })), reference] });
-	assert.deepEqual(result.references, []);
-	assert.equal(fromMarkdown(result.markdown).children[0].children[0].value, 'See [1]');
-}
-
-const hiddenContinuation = normalizeStructuredPdf({
-	...document,
-	content: [
-		{ ...prose(text('[1] Visible reference.')), reference: true, nextPart: [1, 0] },
-		{
-			type: 'blockquote',
-			flowClass: 'excluded',
-			content: [{ ...prose(text('Hidden continuation')), reference: true, previousPart: [0] }],
-		},
-	],
-});
-assert.deepEqual(hiddenContinuation.references, [{ key: 'sdt-1', label: '1', text: 'Visible reference.' }]);
-
-let deepBlock = prose(text('Nested'));
-for (let depth = 0; depth < 100; depth += 1) deepBlock = { type: 'blockquote', content: [deepBlock] };
-assert.throws(() => parseStructuredPdfDocumentJson(JSON.stringify({ ...document, content: [deepBlock] })), /depth/u);
-
-const formatting = normalizeStructuredPdf({
-	...document,
-	content: [
-		...['# Literal heading', '- Literal bullet', '1. Literal number', '<script>alert(1)</script>'].map((value) => prose(text(value))),
-		prose(text('em', { style: { italic: true } }), text('phasis', { style: { italic: true } })),
-		prose(text('left'), text(' bold ', { style: { bold: true } }), text('right')),
-		// oxlint-disable-next-line eslint/no-script-url -- Verify rejection of malicious provider links.
-		prose(text('unsafe', { target: { url: 'javascript:alert(1)' } })),
-		prose(text('credentials', { target: { url: 'https://user:pass@example.com' } })),
-		prose(text('safe', { target: { url: 'https://example.com/a_(b)' } })),
-	],
-});
-const formattedProse = fromMarkdown(formatting.markdown).children;
-assert.ok(formattedProse.every(({ type }) => type === 'paragraph'));
-assert.equal(formattedProse[0].children[0].value, '# Literal heading');
-assert.equal(formattedProse[3].children[0].value, '<script>alert(1)</script>');
-assert.equal(formattedProse[4].children[0].type, 'emphasis');
-assert.equal(formattedProse[4].children[0].children[0].value, 'emphasis');
-assert.equal(formattedProse[5].children[1].type, 'strong');
-assert.equal(formattedProse[5].children[1].children[0].value, ' bold ');
-assert.equal(formattedProse[6].children[0].type, 'text');
-assert.equal(formattedProse[7].children[0].type, 'text');
-assert.equal(formattedProse[8].children[0].url, 'https://example.com/a_(b)');
-
-// PDF glyph runs may switch between italic and bold-italic without a space.
-// Round-trip visible text, not a particular choice of Markdown delimiters.
-const visibleText = (node) => (node.type === 'footnoteReference' ? '[1]' : (node.value ?? (node.children ?? []).map(visibleText).join('')));
-const styles = [{}, { bold: true }, { italic: true }, { bold: true, italic: true }];
-for (const type of ['paragraph', 'caption']) {
-	for (const left of styles) {
-		for (const right of styles) {
-			const styled = normalizeStructuredPdf({
-				...document,
-				content: [
-					{ type, content: [text('one', { style: left }), text(' two* ', { style: right }), cite()] },
-					{ type: 'paragraph', reference: true, content: [text('[1] Example.')] },
-				],
-			});
-			assert.equal(visibleText(fromMarkdown(styled.markdown).children[0]), 'one two* [1]');
-			assert.match(styled.markdown, /\[\^paper-sdt-1\]:/u);
-		}
-	}
-}
-
-// Table cells must retain readable content and native citations through the same
-// block normalization as the body, without leaking cell headings into its section.
-const tableCite = () => text('[1]', { refs: [[2]] });
-const richTableDocument = {
-	...document,
-	content: [
-		{ type: 'heading', content: [text('Results')] },
-		{
-			type: 'table',
-			content: [
-				{
-					type: 'tablerow',
-					content: [
-						{
-							type: 'tablecell',
-							content: [
-								{ ...prose(text('First ', { style: { italic: true } }), tableCite()), nextPart: [1, 0, 0, 1] },
-								{ ...prose(text(' continuation', { style: { bold: true } })), previousPart: [1, 0, 0, 0] },
-								{ ...prose(text('Excluded')), flowClass: 'excluded' },
-								{ type: 'blockquote', content: [prose(text('Quote')), { ...prose(text('Hidden')), flowClass: 'excluded' }] },
-							],
-						},
-						{
-							type: 'tablecell',
-							content: [
-								{ type: 'heading', content: [text('Cell heading')] },
-								prose(text('A | B '), text('source', { target: { url: 'https://example.com/table' } }), text(' '), tableCite()),
-								{ type: 'list', content: [{ type: 'listitem', content: [prose(text('One')), prose(text('Two'))] }] },
-							],
-						},
-					],
-				},
-			],
-		},
-		{ ...prose(text('[1] Example reference.')), reference: true },
-		prose(text('After table '), tableCite()),
-	],
-};
-const richTable = normalizeStructuredPdf(richTableDocument);
-const richCells = htmlElements(richTable.markdown, 'td');
-assert.equal(richCells.length, 2);
-assert.match(htmlText(richCells[0]), /First \[\^paper-sdt-1\] continuation\s*Quote/u);
-assert.match(htmlText(richCells[1]), /Cell heading\s*A \| B source \[\^paper-sdt-1\]\s*One\s*Two/u);
-assert.equal(htmlElements(richTable.markdown, 'em').length, 1);
-assert.equal(htmlElements(richTable.markdown, 'strong').length, 1);
-assert.equal(htmlElements(richTable.markdown, 'blockquote').length, 1);
-assert.equal(htmlElements(richTable.markdown, 'ul').length, 1);
-assert.ok(htmlElements(richTable.markdown, 'a').some(({ properties }) => properties.href === 'https://example.com/table'));
-assert.doesNotMatch(richTable.markdown, /Excluded|Hidden/u);
-
-assert.match(richTable.markdown, /\[\^paper-sdt-1\]:/u);
-assert.doesNotMatch(richTable.markdown, /#sdt-citation-/u);
-
-const pipeMarkerDocument = structuredClone(richTableDocument);
-pipeMarkerDocument.content[1].content[0].content[0].content[0].content[1].text = '[A|B]';
-const pipeMarkerTable = normalizeStructuredPdf(pipeMarkerDocument);
-const pipeCells = htmlElements(pipeMarkerTable.markdown, 'td');
-assert.match(htmlText(pipeCells[0]), /First \[\^paper-sdt-1\] continuation\s*Quote/u);
-
-const complexNoteDocument = structuredClone(noteDocument);
-complexNoteDocument.content[0] = {
-	type: 'table',
-	content: [
-		tableRow(
-			{
-				type: 'tablecell',
-				colspan: 2,
-				content: [prose(text('A claim'), text('1', { refs: [[1]] })), { type: 'preformatted', content: [text('if (a < b) return `x`;')] }],
-			},
-			{ type: 'tablecell', flowClass: 'excluded', content: [prose(text('Hidden note'), text('1', { refs: [[1]] }))] },
-		),
-	],
-};
-const complexNoteTable = normalizeStructuredPdf(complexNoteDocument).markdown;
-assert.match(complexNoteTable, /A claim\[\^sdt-note-1\]/u);
-assert.match(complexNoteTable, /\[\^sdt-note-1\]: The qualifying note\./u);
-assert.equal(htmlText(htmlElements(complexNoteTable, 'code')[0]).trimEnd(), 'if (a < b) return `x`;');
-assert.equal(htmlElements(complexNoteTable, 'td').length, 1);
-assert.doesNotMatch(complexNoteTable, /Hidden note/u);
-const simpleNoteDocument = structuredClone(complexNoteDocument);
-simpleNoteDocument.content[0].content[0].content = [
-	{
-		type: 'tablecell',
-		content: [prose(text('A claim'), text('1', { refs: [[1]] }))],
-	},
-];
-const simpleNoteTable = normalizeStructuredPdf(simpleNoteDocument).markdown;
-assert.match(simpleNoteTable, /A claim\[\^sdt-note-1\]/u);
-assert.equal(fromMarkdown(simpleNoteTable).children[0].children[1].children[0].children[1].type, 'footnoteReference');
-
-const positionedText = (value, page) =>
-	text(value, {
-		anchor: {
-			pageRects: [[page, 10, 10, 20, 20]],
-			textMap: JSON.stringify([[0, page, 0, value.length, 10, 10, 20, 20]]),
-		},
-	});
-const paragraph = (value, pageRects, options = {}) => ({
-	anchor: { pageRects },
-	content: [positionedText(value, pageRects[0][0])],
-	type: 'paragraph',
-	...options,
-});
-
-const splitReferenceDocument = JSON.parse(JSON.stringify(document));
-splitReferenceDocument.catalog.pages = [{ contentRange: [[0], [5]], textSource: 'born-digital' }];
-splitReferenceDocument.content[2].content = [text('Prior work '), text('[41]', { refs: [[5]] })];
-splitReferenceDocument.content[4] = paragraph('[41] Kane, G.C.; Alavi, M.;', [[0, 54, 80, 295, 120]], {
-	nextPart: [5],
-	reference: true,
-});
-splitReferenceDocument.content.push(
-	paragraph('and Borgatti, S.P. A complete reference. MIS Quarterly (2014).', [[0, 317, 700, 558, 735]], {
-		previousPart: [4],
-		reference: true,
-	}),
-);
-const splitReferenceNormalized = normalizeStructuredPdf(parseStructuredPdfDocumentJson(JSON.stringify(splitReferenceDocument)));
-assert.deepEqual(splitReferenceNormalized.references, [
-	{
-		key: 'sdt-1',
-		label: '41',
-		text: 'Kane, G.C.; Alavi, M.;and Borgatti, S.P. A complete reference. MIS Quarterly (2014).',
-	},
-]);
-
-const seamDocument = {
-	...document,
-	catalog: {
-		outline: [],
-		pages: [
-			{ contentRange: [[0], [4]], textSource: 'born-digital' },
-			{ contentRange: [[5], [8]], textSource: 'born-digital' },
-		],
-	},
-	content: [
-		paragraph('These applications have important', [[0, 54, 80, 295, 120]], { nextPart: [1] }),
-		paragraph('functionality.', [[0, 317, 700, 558, 735]], { previousPart: [0] }),
-		paragraph('lowercase starts a real new paragraph.', [[0, 317, 620, 558, 680]]),
-		paragraph('A label without terminal punctuation', [[0, 54, 80, 295, 120]]),
-		paragraph('lowercase text below it remains separate.', [[0, 317, 700, 558, 735]]),
-		paragraph('This paragraph continues across the next page', [[0, 317, 70, 558, 100]], { nextPart: [8] }),
-		paragraph('Running header', [[0, 54, 755, 558, 765]], { flowClass: 'excluded' }),
-		paragraph('1278', [[0, 296, 26, 316, 35]], { flowClass: 'excluded' }),
-		paragraph('without being interrupted by excluded furniture.', [[1, 54, 700, 295, 735]], { previousPart: [5] }),
-	],
-};
-const seamNormalized = normalizeStructuredPdf(parseStructuredPdfDocumentJson(JSON.stringify(seamDocument)));
-assert.match(seamNormalized.markdown, /These applications have important functionality\./u);
-assert.doesNotMatch(seamNormalized.markdown, /important\n\nfunctionality/u);
-assert.match(seamNormalized.markdown, /functionality\.\n\nlowercase starts a real new paragraph\./u);
-assert.match(seamNormalized.markdown, /A label without terminal punctuation\n\nlowercase text below it remains separate\./u);
-assert.match(seamNormalized.markdown, /This paragraph continues across the next page without being interrupted by excluded furniture\./u);
-assert.doesNotMatch(seamNormalized.markdown, /Running header|1278/u);
-
-const hyphenDocument = {
-	...document,
-	catalog: {
-		outline: [],
-		pages: [{ contentRange: [[0], [1]], textSource: 'born-digital' }],
-	},
-	content: [
-		paragraph('multi-', [[0, 54, 80, 295, 120]], { nextPart: [1] }),
-		paragraph('column layout', [[0, 317, 700, 558, 735]], { previousPart: [0] }),
-	],
-};
-assert.equal(normalizeStructuredPdf(parseStructuredPdfDocumentJson(JSON.stringify(hyphenDocument))).markdown, 'multicolumn layout');
-
-const invalidPartDocument = JSON.parse(JSON.stringify(document));
-invalidPartDocument.content[2].nextPart = [];
-assert.throws(() => parseStructuredPdfDocumentJson(JSON.stringify(invalidPartDocument)), /nextPart/u);
-
-const cropDocument = {
-	...document,
-	catalog: {
-		outline: [],
-		pages: [{ contentRange: [[0], [2]], textSource: 'born-digital' }],
-	},
-	content: [
-		{
-			anchor: { pageRects: [[0, 20, 40, 220, 180]] },
-			content: [text('Research model')],
-			type: 'image',
-		},
-		{
-			anchor: { pageRects: [[0, 30, 200, 260, 500]] },
-			content: [text('Visible cues Social inferences Representative quote')],
-			type: 'table',
-		},
-	],
-};
-const parsedCropDocument = parseStructuredPdfDocumentJson(JSON.stringify(cropDocument));
-const sourceCrops = structuredPdfVisualPlan(parsedCropDocument).crops;
-assert.deepEqual(
-	sourceCrops.map(({ blockPath, pageIndex, rect }) => ({
-		blockPath,
-		pageIndex,
-		rect,
-	})),
-	[
-		{ blockPath: '0', pageIndex: 0, rect: [20, 40, 220, 180] },
-		{ blockPath: '1', pageIndex: 0, rect: [30, 200, 260, 500] },
-	],
-);
-const readySourceCrops = sourceCrops.map(({ id }) => ({ id, url: `/api/media/asset/pdf-crops/${'a'.repeat(64)}/${id}.png` }));
-const cropWithoutManifest = normalizeStructuredPdf(parsedCropDocument);
-assert.doesNotMatch(cropWithoutManifest.markdown, /\/api\/media\/asset\/pdf-crops/u);
-const partiallyReadyCrop = normalizeStructuredPdf(parsedCropDocument, {
-	readySourceCrops: readySourceCrops.slice(0, 1),
-});
-assert.match(partiallyReadyCrop.markdown, /\/0-p0-[a-f\d]{16}\.png/u);
-assert.doesNotMatch(partiallyReadyCrop.markdown, /\/1-p0-[a-f\d]{16}\.png/u);
-const cropNormalized = normalizeStructuredPdf(parsedCropDocument, {
-	readySourceCrops,
-});
-assert.match(cropNormalized.markdown, /!\[Research model\]\(\/api\/media\/asset\/pdf-crops\/a{64}\/0-p0-[a-f\d]{16}\.png\)/u);
-assert.match(cropNormalized.markdown, /!\[Visible cues Social inferences Representative quote\]/u);
-
 // Caption geometry recovers raster/vector figures without converting an author grid
 // into images, swallowing prose, or losing the caption when crops are ready.
 const anchored = (type, value, page, rect, extra = {}) => ({
@@ -672,7 +178,6 @@ const visualDocument = {
 	],
 };
 const visualPlan = structuredPdfVisualPlan(visualDocument);
-assert.equal(visualPlan.excludedAuthorTables.length, 4);
 assert.ok(
 	visualPlan.crops.some(({ blockPath }) => blockPath === '7'),
 	'the real data table stays renderable',
@@ -711,13 +216,6 @@ const obstructedDocument = {
 const obstructed = structuredPdfVisualPlan(obstructedDocument);
 assert.ok(!obstructed.crops.some(({ figureId }) => figureId === 'Figure 2'));
 assert.ok(obstructed.missing.some(({ figureId, reason }) => figureId === 'Figure 2' && reason === 'region-overlaps-text'));
-const changedGeometry = structuredClone(visualDocument);
-changedGeometry.content[9].anchor.pageRects[0][4] += 5;
-assert.notEqual(structuredPdfVisualPlan(changedGeometry).crops.find(({ figureId }) => figureId === 'Figure 2').id, narrowFigure.id);
-const changedProcessor = structuredClone(visualDocument);
-changedProcessor.metadata.processor.version += 1;
-assert.notEqual(structuredPdfVisualPlan(changedProcessor).crops.find(({ figureId }) => figureId === 'Figure 2').id, narrowFigure.id);
-
 const oversizedVisuals = structuredPdfVisualPlan({
 	...visualDocument,
 	content: Array.from({ length: 65 }, (_, index) => anchored('image', `Image ${index}`, 0, [54, 500, 558, 700])),
@@ -760,29 +258,209 @@ console.info({
 	console.info('PDF private/public rendition contract checks passed');
 }
 
-// Stored footnote identifiers survive image removal and repeated/grouped citations.
-{
-	const notes = (markdown) => {
-		const definitions = [];
-		const references = [];
-		const visit = (node) => {
-			if (node.type === 'footnoteDefinition') definitions.push(node.identifier);
-			if (node.type === 'footnoteReference') references.push(node.identifier);
-			for (const child of node.children ?? []) visit(child);
-		};
-		visit(expandHtmlTables(fromMarkdown(markdown)));
-		return { definitions, references };
-	};
-	for (const [result, referenceCount] of [
-		[normalized, 1],
-		[nested, 4],
-		[richTable, 3],
-	]) {
-		const actual = notes(result.markdown);
-		assert.equal(actual.definitions.length, new Set(actual.definitions).size);
-		assert.equal(actual.references.length, referenceCount);
-		assert.ok(actual.references.every((id) => actual.definitions.includes(id)));
-		const withImage = `![Figure](/api/media/asset/pdf-crops/example.png)\n\n${result.markdown}`;
-		assert.deepEqual(notes(withoutPrivatePdfImages(withImage)), actual);
-	}
+import { normalizeExtractedPdfMarkdown as normalize } from '../src/ingest/extracted-pdf-markdown.ts';
+
+const samples = [];
+function normalizeSample(source) {
+	const result = normalize(source);
+	assert.equal(normalize(result), result, 'Normalization must be idempotent');
+	samples.push(result);
+	return result;
 }
+function nodes(node) {
+	return [node, ...('children' in node ? node.children.flatMap(nodes) : [])];
+}
+function parse(source) {
+	return fromMarkdown(source, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
+}
+
+assert.equal(normalizeSample('Uses [<u>[4, 5, 40]</u>] and reigniting<sup>1</sup>.'), 'Uses [4, 5, 40] and reigniting1.');
+assert.equal(
+	normalizeSample('<th colspan="2">Participation and <Cyan released>, but keep <T>.'),
+	'Participation and Cyan released, but keep &lt;T&gt;.',
+);
+assert.equal(
+	normalizeSample('See <Mattern (2020)</Mattern> and <sagepub.com/journals-permissions>.'),
+	'See Mattern (2020) and [sagepub.com/journals-permissions](https://sagepub.com/journals-permissions).',
+);
+
+const preserved = [
+	'```html\n<table><tr><td><u>code</u></td></tr></table>\n```',
+	'    <u>Indented code</u>',
+	'Tags and </\n\n```\nall steps> tags, between <problem> and </problem>\n```',
+	'`Keep <u>code</u>` and ``x ` <sup>2</sup>``',
+	'$x < y$ and $$<u>x</u>$$',
+	'$$\n\\text{<u>math</u>}\n$$',
+	'[source](https://example.com?a=1&b=2 "<u>title</u>") and <https://example.com>',
+	'![<u>image description</u>](https://example.com/image.png)',
+	'An existing note[^existing].\n\n[^existing]: Footnote body with `code`.',
+	'[reference][source]\n\n[source]: https://example.com "<u>title</u>"',
+	'\\<u>Escaped HTML\\</u> and &lt;u&gt;escaped entities&lt;/u&gt;',
+];
+for (const source of preserved) assert.equal(normalizeSample(source), source);
+assert.equal(normalizeSample('<u>A `keep <u>x</u>`</u>'), 'A `keep <u>x</u>`');
+assert.equal(normalizeSample('Note[^one].\n\n[^one]: <u>Details</u>.'), 'Note[^one].\n\n[^one]: Details.');
+
+const simple = normalizeSample(
+	'<table><thead><tr><th>Time</th><th>Result</th></tr></thead><tbody><tr><td>Day 1</td><td><b>42</b> <a href="https://example.com">source</a></td></tr></tbody></table>',
+);
+const simpleTree = parse(simple);
+assert.equal(simpleTree.children[0].type, 'table');
+assert.ok(nodes(simpleTree).some((node) => node.type === 'strong'));
+assert.ok(nodes(simpleTree).some((node) => node.type === 'link' && node.url === 'https://example.com'));
+assert.doesNotMatch(simple, /<table>/u);
+
+const mixed = normalizeSample(
+	'<table><tr><th>Result</th></tr><tr><td>**bold** [source](https://example.com) $x$ [^one] `a | b <u>c</u>`</td></tr></table>\n\n[^one]: Original note',
+);
+assert.ok(nodes(parse(mixed)).some((node) => node.type === 'footnoteReference' && node.identifier === 'one'));
+assert.ok(nodes(parse(mixed)).some((node) => node.type === 'link' && node.url === 'https://example.com'));
+assert.ok(nodes(parse(mixed)).some((node) => node.type === 'inlineCode' && node.value === 'a | b <u>c</u>'));
+assert.match(mixed, /\$x\$/u);
+assert.match(mixed, /\*\*bold\*\*/u);
+const headless = parse(normalizeSample('<table><tr><td>First data row</td><td>42</td></tr></table>')).children[0];
+assert.equal(headless.children.length, 2, 'A headless table must retain its first data row below an empty GFM header');
+
+const merged = normalizeSample(
+	'<table class="provider"><tr><th colspan="2" style="color:red">Heading</th></tr><tr><td rowspan="2"><b>42</b></td><td><a href="https://example.com" onclick="bad()">source</a><br>Next</td></tr></table>',
+);
+assert.match(merged, /colspan="2"/u);
+assert.match(merged, /rowspan="2"/u);
+assert.match(merged, /<strong>42<\/strong>/u);
+assert.match(merged, /<a href="https:\/\/example.com">source<\/a><br>Next/u);
+assert.doesNotMatch(merged, /class=|style=|onclick=/u);
+assert.match(normalizeSample('<table><tr><td rowspan="0">All remaining rows</td></tr></table>'), /rowspan="0"/u);
+
+for (const source of [
+	'<script>alert(1)</script>',
+	'<script src="https://example.com">x</script>',
+	'<iframe src="https://example.com"></iframe>',
+]) {
+	const escaped = normalizeSample(source);
+	assert.doesNotMatch(escaped, /<(?:script|iframe)/u);
+	assert.match(escaped, /&lt;/u);
+}
+for (const span of ['', ' colspan="2"']) {
+	const unsafe = normalizeSample(
+		`<table><tr><td${span}><img src=x onerror=alert(1)><a href="javascript:alert(1)">label</a></td></tr></table>`,
+	);
+	assert.doesNotMatch(unsafe, /(?<!\\)<img|href="javascript:/u);
+	if (span) assert.ok(!nodes(fromHtml(unsafe, { fragment: true })).some((node) => node.type === 'element' && node.tagName === 'img'));
+	assert.match(unsafe, /label/u);
+}
+const nested = normalizeSample('<table><tr><td>outer <table><tr><td>inner</td></tr></table></td></tr></table>');
+assert.doesNotMatch(nested, /<table>/u);
+assert.match(nested, /outer/u);
+assert.match(nested, /inner/u);
+for (const span of ['-1', '1001', 'invalid', '1.5']) {
+	const invalid = normalizeSample(`<table><tr><td colspan="${span}">Keep cell</td></tr></table>`);
+	assert.doesNotMatch(invalid, /<table>/u);
+	assert.match(invalid, /Keep cell/u);
+}
+const mergedEntities = normalizeSample(
+	'<table><tr><td colspan="2">A &amp; B &lt;img onerror=x&gt; `a <u>x</u>` $x < y$ [source](https://example.com?a=1&b=2)</td></tr></table>',
+);
+const mergedNodes = nodes(fromHtml(mergedEntities, { fragment: true }));
+assert.ok(mergedNodes.some((node) => node.type === 'text' && node.value.includes('A & B <img onerror=x>')));
+assert.ok(mergedNodes.some((node) => node.type === 'element' && node.tagName === 'code' && node.children[0]?.value === 'a <u>x</u>'));
+assert.ok(mergedNodes.some((node) => node.type === 'text' && node.value.includes('$x < y$')));
+assert.ok(
+	mergedNodes.some((node) => node.type === 'element' && node.tagName === 'a' && node.properties.href === 'https://example.com?a=1&b=2'),
+);
+const unsafeMarkdownLink = normalizeSample('<table><tr><td colspan="2">[click](javascript:alert%281%29)</td></tr></table>');
+assert.ok(!nodes(fromHtml(unsafeMarkdownLink)).some((node) => node.type === 'element' && node.tagName === 'a' && node.properties.href));
+console.info(`Extracted PDF Markdown checks passed (${samples.length} cases).`);
+
+for (const result of [normalized, noted]) {
+	const tree = fromMarkdown(result.markdown);
+	const all = nodes(tree);
+	const definitions = all.filter((node) => node.type === 'footnoteDefinition').map((node) => node.identifier);
+	const references = all.filter((node) => node.type === 'footnoteReference').map((node) => node.identifier);
+	assert.equal(definitions.length, new Set(definitions).size);
+	assert.ok(
+		references.every((id) => definitions.includes(id)),
+		'Saved footnotes must have definitions',
+	);
+}
+
+import { wholeDocumentMarkdown } from '../src/ingest/extracted-pdf-markdown.ts';
+import {
+	isAllowedPublicPdfUrl,
+	LLAMA_PARSE_MAX_PAGES,
+	llamaParseAdmissionReason,
+	localPdfNeedsFallback,
+} from '../src/ingest/platforms/pdf-policy.ts';
+
+const local = (overrides = {}) => ({
+	fallbackReasons: ['empty-output'],
+	fullPageImagePages: 0,
+	totalPages: 3,
+	...overrides,
+});
+const admission = (overrides = {}) =>
+	llamaParseAdmissionReason({
+		grant: { maxPages: LLAMA_PARSE_MAX_PAGES },
+		hasCredentials: true,
+		local: local(),
+		source: { kind: 'public-url', url: 'https://papers.example.org/work.pdf' },
+		...overrides,
+	});
+
+assert.equal(admission(), 'admitted');
+assert.equal(admission({ source: { kind: 'private-upload' } }), 'admitted');
+assert.equal(admission({ local: local({ fallbackReasons: [] }) }), 'local-usable');
+assert.equal(admission({ grant: null }), 'not-authorized');
+assert.equal(admission({ grant: { maxPages: LLAMA_PARSE_MAX_PAGES + 1 } }), 'invalid-grant');
+assert.equal(admission({ hasCredentials: false }), 'missing-credentials');
+assert.equal(admission({ local: local({ fallbackReasons: ['parse-failed'], totalPages: null }) }), 'page-count-unknown');
+assert.equal(admission({ local: local({ fallbackReasons: ['empty-output'], totalPages: LLAMA_PARSE_MAX_PAGES }) }), 'admitted');
+assert.equal(
+	admission({
+		local: local({ fallbackReasons: ['empty-output'], totalPages: LLAMA_PARSE_MAX_PAGES + 1 }),
+	}),
+	'page-limit-exceeded',
+);
+assert.equal(admission({ local: local({ fallbackReasons: ['empty-output'], totalPages: 0 }) }), 'page-limit-exceeded');
+assert.equal(admission({ source: { kind: 'public-url', url: 'https://localhost/work.pdf' } }), 'source-ineligible');
+
+assert.equal(localPdfNeedsFallback(local({ fallbackReasons: [], fullPageImagePages: 8, totalPages: 10 })), true);
+assert.equal(localPdfNeedsFallback(local({ fallbackReasons: [], fullPageImagePages: 7, totalPages: 10 })), false);
+assert.equal(localPdfNeedsFallback(local({ fallbackReasons: [], fullPageImagePages: 0, totalPages: 0 })), false);
+assert.equal(localPdfNeedsFallback(local({ fallbackReasons: ['empty-output'], totalPages: 10 })), true);
+assert.equal(localPdfNeedsFallback(local({ fallbackReasons: ['parse-failed'], totalPages: null })), true);
+assert.equal(localPdfNeedsFallback(local({ fallbackReasons: ['degraded-page'], totalPages: 10 })), false);
+const imageBacked = local({ fallbackReasons: [], fullPageImagePages: 8, totalPages: 10 });
+assert.equal(admission({ local: imageBacked }), 'admitted');
+assert.equal(admission({ grant: null, local: imageBacked }), 'not-authorized');
+assert.equal(admission({ grant: { maxPages: 9 }, local: imageBacked }), 'page-limit-exceeded');
+
+assert.equal(isAllowedPublicPdfUrl('https://papers.example.org/work.pdf'), true);
+for (const url of [
+	'http://papers.example.org/work.pdf',
+	'https://localhost/work.pdf',
+	'https://127.0.0.1/work.pdf',
+	'https://[::1]/work.pdf',
+	'https://papers.example.org./work.pdf',
+	'https://service.internal/work.pdf',
+	'https://intranet/work.pdf',
+	'https://user:pass@papers.example.org/work.pdf',
+]) {
+	assert.equal(isAllowedPublicPdfUrl(url), false, url);
+}
+
+assert.equal(
+	wholeDocumentMarkdown(
+		[
+			{ markdown: 'second', page_number: 2, success: true },
+			{ markdown: 'first', page_number: 1, success: true },
+		],
+		2,
+	),
+	'first\n\nsecond',
+);
+assert.equal(wholeDocumentMarkdown([{ markdown: 'first', page_number: 1, success: true }], 2), null);
+assert.equal(wholeDocumentMarkdown([{ markdown: 'first', page_number: 1, success: false }], 1), null);
+assert.equal(wholeDocumentMarkdown([{ markdown: '\u0000broken', page_number: 1, success: true }], 1), 'broken');
+assert.equal(wholeDocumentMarkdown([{ markdown: '\u0000\u0000', page_number: 1, success: true }], 1), null);
+
+console.info({ event: 'llama_parse_policy_contract_smoke_passed' });

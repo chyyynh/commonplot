@@ -13,25 +13,10 @@ const TWITTER_SOURCE_CONCURRENCY = 5;
 
 type TwitterSource = {
 	id: string;
-	name: string;
 	handle: string;
 	scrapedAt: Date | null;
 	createdAt: Date;
 };
-
-async function loadTwitterSources(db: NodePgDatabase): Promise<TwitterSource[]> {
-	const result = await db.execute<TwitterSource>(sql`
-		SELECT
-			id::text AS id,
-			name,
-			handle,
-			scraped_at AS "scrapedAt",
-			created_at AS "createdAt"
-		FROM sources
-		WHERE enabled = true AND monitor_kind = 'twitter'
-	`);
-	return result.rows;
-}
 
 /** Fetch one fixed monitoring window using twitterapi.io's native cursor. */
 async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime: number, untilTime: number) {
@@ -193,7 +178,11 @@ export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date
 	if (!Number.isFinite(windowEnd.getTime())) throw new Error('Twitter monitor window end is invalid');
 	const db = await connectCoreDb(env);
 	console.info({ tag: 'TWITTER', msg: 'start', window_end: windowEnd.toISOString() });
-	const sources = await loadTwitterSources(db);
+	const { rows: sources } = await db.execute<TwitterSource>(sql`
+		SELECT id::text AS id, handle, scraped_at AS "scrapedAt", created_at AS "createdAt"
+		FROM sources
+		WHERE enabled = true AND monitor_kind = 'twitter'
+	`);
 	if (!sources.length) {
 		console.info({ tag: 'TWITTER', msg: 'No twitter sources configured' });
 		return;

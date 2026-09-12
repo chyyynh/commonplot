@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
-import type { PaidPdfFallbackGrant } from './platforms/pdf-fallback-policy';
+import type { PaidPdfFallbackGrant } from './platforms/pdf-policy';
 import { resolvePlatformResourceUrl } from './platforms/resource-url';
 import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';

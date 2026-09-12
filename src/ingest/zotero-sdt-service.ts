@@ -1,7 +1,7 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { limitByteStream, readBoundedResponseText } from '../shared/response.ts';
-import { MAX_PDF_BYTES } from './platforms/pdf-constants.ts';
+import { MAX_PDF_BYTES } from './platforms/pdf-policy.ts';
 import {
 	normalizeStructuredPdf,
 	parseStructuredPdfDocumentJson,

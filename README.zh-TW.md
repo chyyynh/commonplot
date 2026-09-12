@@ -29,14 +29,16 @@
 ![X](https://img.shields.io/badge/X%2FTwitter-000000?logo=x&logoColor=white)
 ![Hacker News](https://img.shields.io/badge/Hacker%20News-F0652F?logo=ycombinator&logoColor=white)
 
-| 平台            | 類型   | 排程       | 說明                                             |
-| --------------- | ------ | ---------- | ------------------------------------------------ |
-| **RSS 訂閱**    | 監控   | 每 5 分鐘  | 抓取 feed、依 URL 去重、偵測 HN 連結             |
-| **Twitter/X**   | 監控   | 每 6 小時  | 透過 Kaito API 追蹤用戶 — 推文、長文、媒體       |
-| **YouTube**     | 監控   | 每 30 分鐘 | Atom feed → 影片資訊、字幕、章節、AI 精華段落    |
-| **Hacker News** | 處理器 | 經由 RSS   | Firebase 排序留言 → 本機 HTML 轉 Markdown → 討論摘要 |
-| **網頁**        | 爬蟲   | saved URL  | 文章擷取、redirect/platform 與 PDF 偵測、OG metadata |
-| **App 輸入**    | 入口   | 即時       | Service-binding RPC — saved URL/blob acquisition + enrichment；membership 由 app 擁有 |
+| 輸入 | 取得內容的流程 |
+| --- | --- |
+| **網頁 URL** | 抓取／偵測轉址 → HTML 正文與來源資料 → Markdown；PDF 回應交給 PDF parser |
+| **上傳 PDF** | 讀取擁有權所屬的 R2 blob → 並行 Zotero 正文／圖片與 GROBID 書目辨識 → 必要時 Crossref 確認；無法辨識的文件維持私人檔案 |
+| **論文** | 精確 URL 或 PDF identity → 網頁查 OpenAlex／PDF 查 Crossref → canonical 識別碼與書目；選擇性取得 OpenAlex 全文 PDF |
+| **Twitter/X** | twitterapi.io → 推文或長文 Markdown、媒體與連結主題；監控每 6 小時以 cursor 分頁 |
+| **YouTube** | 影片資料 → 並行頻道頭像與字幕 → 章節或 AI 精華 → 字幕與 Resource 在同一交易寫入 |
+| **Hacker News** | Firebase 主文與排序留言 → Markdown 討論；外部文章保留為獨立 subject |
+| **LessWrong** | GraphQL 文章 → 原生 Markdown 與來源資料 |
+| **RSS / Atom / JSON Feed** | 抓取 → feed parser → 正規化 URL drafts → 一般 acquisition；每 5 分鐘執行，YouTube feed 間隔 30 分鐘 |
 
 單一 URL detector 先選出負責的 platform adapter。每個 platform/kind adapter
 自行負責來源解析、identity 與 Resource 輸出；共用部分只有輸出契約與來源提示小工具，
@@ -56,13 +58,13 @@ Web 與 PDF adapter 直接產出可讀的 Resource；paper resolution 在這份 
   │
   ├─ 1. 取得內容 ──────────── 抓取 URL draft，或讀取／抽取 app-owned blob
   ├─ 2. 決定 identity ─────── 完成 kind/platform、paper metadata 與 subject intent
-  ├─ 3. AI 分析 ───────────── 單次呼叫 → 標籤、關鍵字、原文語言；補齊缺少的摘要
-  ├─ 4. 託管圖片 ──────────── 將 canonical 遠端圖片串流到 Cloudflare Images
-  ├─ 5. 最終寫入 DB ───────── 建立或更新 canonical URL resource；enrich 既有 stored blob
-  └─ 6. 後續工作 ──────────── 套用 user save；enqueue 翻譯、subject 與 corpus search jobs
+  ├─ 3. 準備儲存 ──────────── 本機判斷語言；只補缺少的摘要，與圖片託管並行
+  ├─ 4. 寫入 DB ───────────── 寫入 canonical／私人內容；發布符合條件的公開 PDF 圖片
+  ├─ 5. 原文可讀 ──────────── 套用 user save，回報資源已可閱讀
+  └─ 6. 後續工作 ──────────── 標籤／關鍵字分類後派送索引；翻譯、引用與 subject 獨立執行
 ```
 
-URL、source 與 derived-subject 都以 immutable Workflow draft 傳遞，只有第 5
+URL、source 與 derived-subject 都以 immutable Workflow draft 傳遞，只有第 4
 步成功時才建立 Resource。App-owned upload 因 ownership、quota 與 blob locator
 已存在，是唯一 record-first 例外。Source monitor 會先用 PostgreSQL 的 canonical
 Resource 過濾已完成項目；只有 in-flight 與 failed attempts 使用短期原生 Workflow
@@ -70,17 +72,20 @@ retention。每個 durable step 各自重試。
 
 PDF 圖片辨識、來源權限、快取版本與重新處理流程，見 [PDF processing](README.md#pdf-processing-and-recovery)。
 
+驗證執行 `pnpm lint`、`pnpm run typecheck`、`pnpm test`。保留六項檢查：資源處理、平台抓取、翻譯、PDF 正規化、workerd/R2 儲存，以及 container HTTP／佇列；`pnpm check:pdf` 只執行三項 PDF 檢查。Runtime 使用隔離的本機 bindings，臨時修復與探索腳本不放進 repository。
+
 ## AI 管線
 
 | 階段         | 模型              | 說明                                                        |
 | ------------ | ----------------- | ----------------------------------------------------------- |
-| **分析**     | AI Gateway structured output | Resource → 標籤、關鍵字與 canonical 原文語言                  |
+| **摘要**     | AI Gateway structured output | 來源缺少摘要才生成；語言由本機 package 判斷                    |
+| **分類**     | AI Gateway structured output | 原文可讀後才產生標籤與關鍵字                                  |
 | **翻譯**     | AI Gateway text models      | 符合條件的已持久化 Resource → 繁中標題、摘要與正文             |
 | **搜尋索引** | Cloudflare AI Search  | 對完成 enrichment 的 corpus 文件提供 hybrid retrieval       |
 
-Resource analysis 是一次 structured call；翻譯在獨立 Workflow 裡稍後執行，因此 localization 失敗不會讓已寫入的 canonical Resource 失效。
+摘要生成與背景分類是分開的 structured call；翻譯在獨立 Workflow 執行，因此 localization 失敗不會讓已寫入的 canonical Resource 失效。
 
-Core 優先保留非空白的來源摘要或論文 abstract；缺少時由既有的分析呼叫一併生成原文語言摘要，正文截片不視為來源摘要。Metadata localization 完整翻譯已保存的摘要，不從正文自行補寫；舊資料沒有摘要時只翻譯標題，重新處理後才會補上原文摘要。以 `pnpm check:resource-identity` 和 `pnpm check:platform-acquisition` 驗證原文摘要的選用規則。
+Core 優先保留非空白的來源摘要或論文 abstract；缺少時由既有的分析呼叫一併生成原文語言摘要，正文截片不視為來源摘要。Metadata localization 完整翻譯已保存的摘要，不從正文自行補寫；舊資料沒有摘要時只翻譯標題，重新處理後才會補上原文摘要。以 `pnpm check:resource-identity` 和 `pnpm check:platform-acquisition` 驗證來源資料優先順序與平台摘要。
 
 ## 技術棧
 
@@ -101,7 +106,7 @@ Core 優先保留非空白的來源摘要或論文 abstract；缺少時由既有
 
 需要一個 PostgreSQL。正式環境目前透過 Cloudflare Hyperdrive 連到 PlanetScale Postgres。
 
-App-owned canonical schema 位於 `web-tanstack/prisma/schema.prisma`，DB-only constraints 與 indexes 則位於 `web-tanstack/prisma/manual-indexes.sql`。Core 透過 Hyperdrive 使用 Drizzle 的參數化 SQL，不再維護第二份 table schema。schema 或 resource/source domain 變更後請執行 `pnpm check:db-contract`。
+App-owned canonical schema 位於 `web-tanstack/prisma/schema.prisma`，DB-only constraints 與 indexes 則位於 `web-tanstack/prisma/manual-indexes.sql`。Core 透過 Hyperdrive 使用 Drizzle 的參數化 SQL，不再維護第二份 table schema。Core identity domain 變更後請執行 `pnpm check:resource-identity`；schema 變更另需在可丟棄的資料庫執行 Web migration replay 與 `pnpm db:drift-check`。
 
 ### 2. Hyperdrive binding
 

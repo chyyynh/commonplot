@@ -29,14 +29,16 @@ Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content
 ![X](https://img.shields.io/badge/X%2FTwitter-000000?logo=x&logoColor=white)
 ![Hacker News](https://img.shields.io/badge/Hacker%20News-F0652F?logo=ycombinator&logoColor=white)
 
-| Platform             | Type      | Schedule      | What it does                                                                |
-| -------------------- | --------- | ------------- | --------------------------------------------------------------------------- |
-| **RSS Feeds**        | Monitor   | Every 5 min   | Fetches feeds, deduplicates by URL, detects HN links                        |
-| **Twitter/X**        | Monitor   | Every 6 hours | Tracks users via Kaito API — posts, longform posts, and media               |
-| **YouTube**          | Monitor   | Every 30 min  | Atom feed → video metadata, transcripts, chapters, AI highlights            |
-| **Hacker News**      | Processor | Via RSS       | Firebase ranked comments → local HTML-to-Markdown → discussion digest     |
-| **Web**              | Scraper   | Saved URL     | Article extraction, redirect/platform detection, PDF detection, OG metadata |
-| **App Inputs**       | Ingestion | Real-time     | Service-binding RPC — saved URL/blob acquisition + enrichment; membership stays app-owned |
+| Input | Acquisition flow |
+| --- | --- |
+| **Web URL** | Fetch/redirect detection → HTML article and source metadata → Markdown; PDF responses enter the PDF parser |
+| **Uploaded PDF** | Read owned R2 blob → Zotero text/figures and GROBID header in parallel → optional Crossref confirmation; unresolved documents remain private files |
+| **Paper** | Exact URL or PDF identity → OpenAlex for web sources / Crossref for PDFs → canonical identifiers and bibliography; optional OpenAlex content PDF |
+| **Twitter/X** | twitterapi.io → post or article Markdown, media and linked subject; monitoring uses cursor pagination every 6 hours |
+| **YouTube** | Video metadata → channel avatar and transcript in parallel → chapters or AI highlights → canonical transaction also saves transcript data |
+| **Hacker News** | Firebase story and ranked comments → Markdown discussion; an external article remains a separate subject |
+| **LessWrong** | GraphQL post → native Markdown and source metadata |
+| **RSS / Atom / JSON Feed** | Fetch → feed parser → normalized URL drafts → normal acquisition; every 5 minutes, with a 30-minute interval for YouTube feeds |
 
 One URL detector selects the owning platform adapter. Each platform/kind adapter owns its source parsing, identity, and Resource output.
 Only the output contract and small source-hint rules are shared; there is no generic materializer.
@@ -56,14 +58,14 @@ Content arrives (source monitor / saved URL / uploaded blob / resync)
   │
   ├─ 1. Acquire ─────────────── Fetch a URL draft, or load/extract an app-owned blob
   ├─ 2. Resolve ─────────────── Finalize kind/platform identity, paper metadata, and subject intent
-  ├─ 3. AI Analysis ─────────── One call → tags, keywords, original language; fill a missing summary
-  ├─ 4. Host Images ─────────── Stream canonical remote images to Cloudflare Images
-  ├─ 5. Finalize DB ─────────── Create or update a canonical URL resource; enrich an existing stored blob
-  └─ 6. Follow-ups ──────────── Apply user save; enqueue translation, subject, and corpus-search jobs
+  ├─ 3. Prepare ─────────────── Detect language locally; generate only a missing summary, alongside image hosting
+  ├─ 4. Finalize DB ─────────── Write canonical/private representations; publish eligible public PDF crops
+  ├─ 5. Ready ──────────────── Apply user save and report the readable resource
+  └─ 6. Follow-ups ──────────── Classify tags/keywords → search indexing; translation, references and subjects run independently
 ```
 
 URL, source, and derived-subject attempts carry immutable Workflow drafts and create no
-Resource row until step 5 succeeds. App-owned uploads are the record-first exception because
+Resource row until step 4 succeeds. App-owned uploads are the record-first exception because
 their ownership, quota, and blob locator already exist. Source monitors filter completed
 canonical Resources in PostgreSQL before enqueueing; only in-flight and failed attempts use
 short native Workflow retention. Each durable step retries independently.
@@ -96,7 +98,7 @@ Existing corpus bodies with private image references are cleaned when explicitly
 
 #### Operator verification
 
-Run `pnpm lint`, `pnpm run typecheck`, and `pnpm check:pdf` from this workspace. The PDF suite covers geometry and metadata classification, partial storage failures and replay, versioned cache reuse, source isolation, media rendition behavior, bounded batching, and queue expiry. Container HTTP tests bind localhost. Web checks and its media/Knowledge/upload lifecycle tests cover authorization and deletion.
+Run `pnpm lint`, `pnpm run typecheck`, and `pnpm test` from this workspace. Six checks cover resource processing, platform acquisition, translation, PDF normalization, real workerd/R2 storage, and container HTTP/queue behavior. Use `pnpm check:pdf` for the three PDF checks. Runtime checks use isolated local bindings; container HTTP checks bind localhost. Web checks cover user authorization, delivery, and deletion. Temporary repair or investigation scripts belong outside the repository.
 
 Deploy the Web media/reading changes and the Core Worker **with its updated Zotero container image** before admitting new processing. A Worker-only deployment with `--containers-rollout=none` cannot activate the new batch endpoint.
 
@@ -108,13 +110,14 @@ The Cocoa regression was checked against the user-supplied 23-page PDF: the new 
 
 | Stage                   | Model             | What it does                                                                                      |
 | ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------- |
-| **Analysis**          | AI Gateway structured output | Resource → tags, keywords, and canonical original language                                       |
+| **Summary**           | AI Gateway structured output | Generate only when the source has no summary; language is detected locally                        |
+| **Classification**    | AI Gateway structured output | Tags and keywords after the resource is readable                                                  |
 | **Translation**       | AI Gateway text models      | Admitted persisted Resources → zh-Hant title, summary, and content                                |
 | **Retrieval Index**   | Cloudflare AI Search  | Hybrid keyword and semantic retrieval over enriched corpus documents                              |
 
-Resource analysis is one structured call. Translation runs later in its own Workflow, so localization failure cannot invalidate an already persisted canonical Resource.
+Summary generation and background classification are separate structured calls. Translation runs in its own Workflow, so localization failure cannot invalidate an already persisted canonical Resource.
 
-Core preserves a nonblank source summary or abstract. When it is missing, the existing analysis call also generates a summary in the original language; a body excerpt is not a source summary. Metadata localization translates the persisted summary in full and never creates one from the body. Existing records without a summary receive title-only metadata translation until reprocessed. Run `pnpm check:resource-identity` and `pnpm check:platform-acquisition` to check original-summary selection.
+Core preserves a nonblank source summary or abstract. When it is missing, the existing analysis call also generates a summary in the original language; a body excerpt is not a source summary. Metadata localization translates the persisted summary in full and never creates one from the body. Existing records without a summary receive title-only metadata translation until reprocessed. Run `pnpm check:resource-identity` and `pnpm check:platform-acquisition` to check source metadata precedence and platform summaries.
 
 ## Stack
 
@@ -135,7 +138,7 @@ The one-click Deploy button above handles Worker + Workflows, but **Queues, Hype
 
 You need a PostgreSQL instance. Production currently runs on PlanetScale Postgres through Cloudflare Hyperdrive.
 
-The canonical app-owned schema lives in `web-tanstack/prisma/schema.prisma`, with DB-only constraints and indexes in `web-tanstack/prisma/manual-indexes.sql`. Core uses Drizzle's parameterized SQL over Hyperdrive without maintaining a second table schema. Run `pnpm check:db-contract` after schema or resource/source domain changes.
+The canonical app-owned schema lives in `web-tanstack/prisma/schema.prisma`, with DB-only constraints and indexes in `web-tanstack/prisma/manual-indexes.sql`. Core uses Drizzle's parameterized SQL over Hyperdrive without maintaining a second table schema. Run `pnpm check:resource-identity` after Core identity-domain changes. Schema changes also require Web migration replay and `pnpm db:drift-check` against disposable databases.
 
 ### 2. Hyperdrive binding
 

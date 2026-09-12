@@ -20,19 +20,6 @@ const TwitterMediaEntitySchema = z.object({
 			large: z.object({ w: z.number(), h: z.number() }).optional(),
 		})
 		.optional(),
-	video_info: z
-		.object({
-			variants: z
-				.array(
-					z.object({
-						bitrate: z.number().optional(),
-						content_type: z.string().optional(),
-						url: z.string(),
-					}),
-				)
-				.optional(),
-		})
-		.optional(),
 });
 
 const RetweetedByDataSchema = z.object({

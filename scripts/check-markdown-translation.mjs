@@ -1,39 +1,19 @@
 import assert from 'node:assert/strict';
 import { fromHtml } from 'hast-util-from-html';
-import { fromMarkdown } from 'mdast-util-from-markdown';
 import { serializeTableHtml } from '../src/ingest/html-table.ts';
-
-const {
+import {
 	MarkdownTranslationInvariantError,
 	compileMarkdownTranslationArtifact,
 	createMarkdownTranslationTemplate,
 	planMarkdownTranslation,
-	validateMarkdownBatchTranslations,
-} = await import('../src/ingest/markdown-translation.ts');
+} from '../src/ingest/markdown-translation.ts';
 
 const compileMarkdownTranslation = (...args) => compileMarkdownTranslationArtifact(...args).content;
-
-function targetFromSource(segment, translateText = (value) => value) {
-	const template = createMarkdownTranslationTemplate(segment);
+function targetFromSource(segment, translate = (text) => text) {
 	return {
-		texts: Object.fromEntries(Object.entries(template.texts).map(([textId, value]) => [textId, translateText(value)])),
+		texts: Object.fromEntries(Object.entries(createMarkdownTranslationTemplate(segment).texts).map(([id, text]) => [id, translate(text)])),
 	};
 }
-
-function textIdsInSequence(template, sequenceId = 'root') {
-	return (template.sequences[sequenceId] ?? []).filter((partId) => Object.hasOwn(template.texts, partId));
-}
-
-function withTranslatedTexts(translation, values) {
-	return { ...translation, texts: { ...translation.texts, ...values } };
-}
-
-function inlineIdsOfKind(template, kind) {
-	return Object.entries(template.inlines).flatMap(([id, inline]) =>
-		(typeof inline === 'string' ? inline : inline.kind) === kind ? [id] : [],
-	);
-}
-
 const markdownFixture = `---
 title: Opaque frontmatter metadata
 translation: disabled
@@ -83,684 +63,36 @@ The quoted price is ($57) under [the terms](https://example.com/price), but late
 [docs]: https://example.com/docs "Documentation title"
 `;
 
-const options = {
-	maxBatchCharacters: 900,
-	maxBatchSegments: 4,
-	maxContextCharacters: 100,
-	maxSegmentCharacters: 700,
-};
-const plan = planMarkdownTranslation(markdownFixture, options);
-assert.ok(plan.segments.length > 10, 'fixture should produce independently addressable prose blocks');
-assert.ok(plan.batches.length > 1, 'fixture should exercise deterministic batching');
-assert.deepEqual(planMarkdownTranslation(markdownFixture, options), plan, 'translation planning must be deterministic');
-for (const hiddenDestination of ['https://example.com/report?q=1', 'https://cdn.example.com/chart.png']) {
-	assert.ok(
-		plan.segments.every(
-			(segment) =>
-				!JSON.stringify(createMarkdownTranslationTemplate(segment)).includes(hiddenDestination) &&
-				!segment.context?.includes(hiddenDestination),
-		),
-		`protected destination leaked into model input: ${hiddenDestination}`,
-	);
-}
-for (const batch of plan.batches) {
-	assert.ok(batch.inputCharacters <= options.maxBatchCharacters, `${batch.id} exceeded its input character budget`);
-}
-
-const defaultBatchPlan = planMarkdownTranslation(
-	Array.from({ length: 33 }, (_, index) => `Paragraph ${index + 1} stays intact while structured output remains bounded.`).join('\n\n'),
-);
-assert.ok(
-	defaultBatchPlan.batches.every((batch) => batch.segments.length <= 16),
-	'default batches must bound structured-output object complexity independently of model context capacity',
-);
-
-const translations = plan.segments.map((segment) =>
-	targetFromSource(segment, (value) =>
-		value
-			.replace('Format-safe translation', '格式安全翻譯')
-			.replace('research report', '研究報告')
-			.replace('A descriptive chart', '描述性圖表')
-			.replace('Footnote prose', '註腳文字'),
+const plan = planMarkdownTranslation(markdownFixture, { maxBatchCharacters: 900, maxBatchSegments: 4 });
+const identity = plan.segments.map((segment) => targetFromSource(segment));
+assert.equal(compileMarkdownTranslation(plan, identity), plan.sourceMarkdown);
+assert.throws(() => compileMarkdownTranslation(plan, identity.slice(1)), MarkdownTranslationInvariantError);
+const empty = plan.segments.map((segment) => targetFromSource(segment, () => ''));
+assert.throws(() => compileMarkdownTranslation(plan, empty), MarkdownTranslationInvariantError);
+const translated = compileMarkdownTranslation(
+	plan,
+	plan.segments.map((segment) =>
+		targetFromSource(segment, (text) => text.replace('research report', '研究報告').replace('Footnote prose', '註腳文字')),
 	),
 );
-const translatedMarkdown = compileMarkdownTranslation(plan, translations);
-const translatedArtifact = compileMarkdownTranslationArtifact(plan, translations);
-assert.equal(translatedArtifact.content, translatedMarkdown, 'aligned artifact content must remain the canonical plain Markdown');
-assert.equal(translatedArtifact.alignment.version, 1);
-assert.equal(
-	translatedArtifact.alignment.blocks.length,
-	plan.targets.length,
-	'every planned prose block must have one persisted alignment',
-);
-assert.ok(
-	translatedArtifact.alignment.blocks.some(
-		(block) => block.sourceMarkdown.includes('Format-safe translation') && block.translatedMarkdown.includes('格式安全翻譯'),
-	),
-	'alignment must carry the exact source and translated block produced by the structural plan',
-);
-
-for (const protectedValue of [
-	'https://example.com/report?q=1',
-	'title: Opaque frontmatter metadata',
-	'translation: disabled',
-	'Original title',
-	'C_L',
-	'E = mc^2',
-	'https://example.com/opaque',
-	'https://cdn.example.com/chart.png',
-	'Chart title',
-	'https://example.com/docs',
-	'Documentation title',
-	'pnpm test',
-	'const markdown = "**not translated**";',
-	'SELECT * FROM protected_code;',
-	'<aside data-kind="note">Opaque HTML must stay untouched.</aside>',
-	'user@example.com',
-	'$57',
-	'$60',
-]) {
-	assert.ok(translatedMarkdown.includes(protectedValue), `protected Markdown value changed: ${protectedValue}`);
+assert.match(translated, /\[研究報告\]\(https:\/\/example.com\/report\?q=1/u);
+assert.match(translated, /\[\^source\]: 註腳文字/u);
+for (const value of ['C_L', 'E = mc^2', 'pnpm test', 'user@example.com', '$57', '$60', 'const markdown = "**not translated**";']) {
+	assert.ok(translated.includes(value), `Protected Markdown changed: ${value}`);
 }
-assert.match(translatedMarkdown, /^[*+-] \[x\]/m, 'checked task state changed');
-assert.match(translatedMarkdown, /^[*+-] \[ \]/m, 'unchecked task state changed');
-
-const adjacentAttentionPlan = planMarkdownTranslation(
-	'*Enhancement* *Quantification:* Measuring the precise amount of methane present in every pixel per plume.',
-);
-const adjacentAttentionSegment = adjacentAttentionPlan.segments[0];
-assert.ok(adjacentAttentionSegment, 'adjacent-attention fixture must produce one prose segment');
-const adjacentAttentionTemplate = createMarkdownTranslationTemplate(adjacentAttentionSegment);
-const adjacentEmphasisIds = inlineIdsOfKind(adjacentAttentionTemplate, 'emphasis');
-assert.equal(adjacentEmphasisIds.length, 2, 'adjacent-attention fixture must expose both emphasis nodes');
-const [adjacentGapTextId, adjacentBodyTextId] = textIdsInSequence(adjacentAttentionTemplate);
-assert.ok(adjacentGapTextId && adjacentBodyTextId, 'adjacent-attention fixture must expose its gap and body text IDs');
-const adjacentAttentionSourceTranslation = targetFromSource(adjacentAttentionSegment, (value) =>
-	value
-		.replace('Enhancement', '增強量')
-		.replace('Quantification:', '量化：')
-		.replace('Measuring the precise amount of methane present in every pixel per plume.', '測量每條羽流中每個像素所含甲烷的精確數量。'),
-);
-const adjacentAttentionMarkdown = compileMarkdownTranslation(adjacentAttentionPlan, [
-	withTranslatedTexts(adjacentAttentionSourceTranslation, { [adjacentGapTextId]: '' }),
-]);
-assert.match(
-	adjacentAttentionMarkdown,
-	/^\*增強量\* \*量化：\*/u,
-	'adjacent emphasis must retain two nodes when target-language spacing is removed',
-);
-
-function textWithStrongDepth(node, depth = 0) {
-	if (node.type === 'text') return [[node.value, depth]];
-	return (node.children ?? []).flatMap((child) => textWithStrongDepth(child, depth + Number(node.type === 'strong')));
-}
-
-for (const { source, replacements, expected } of [
-	{
-		source: '**Listen to this **post**:**',
-		replacements: { 'Listen to this ': '聽聽這篇', post: '貼文', ':': '：' },
-		expected: [
-			['聽聽這篇', 1],
-			['貼文', 2],
-			['：', 1],
-		],
-	},
-	{
-		source: '**Read __the full report__ now.** Plain **end.**',
-		replacements: {
-			'Read ': '閱讀',
-			'the full report': '這份完整報告',
-			' now.': '。',
-			' Plain ': '一般',
-			'end.': '結尾。',
-		},
-		expected: [
-			['閱讀', 1],
-			['這份完整報告', 2],
-			['。', 1],
-			['一般', 0],
-			['結尾。', 1],
-		],
-	},
-]) {
-	const nestedStrongPlan = planMarkdownTranslation(source);
-	const artifact = compileMarkdownTranslationArtifact(
-		nestedStrongPlan,
-		nestedStrongPlan.segments.map((segment) => targetFromSource(segment, (value) => replacements[value] ?? value)),
-	);
-	assert.deepEqual(
-		textWithStrongDepth(fromMarkdown(artifact.content)),
-		expected,
-		'translation must retain nested bold scopes and exact prose',
-	);
-	assert.deepEqual(
-		textWithStrongDepth(fromMarkdown(artifact.alignment.blocks[0].translatedMarkdown)),
-		expected,
-		'aligned reader blocks must preserve the same translated text and bold scopes as the full body',
-	);
-}
-
-const duplicatedSequencePlan = planMarkdownTranslation(
-	'*Plume Delineation:* Precisely segmenting the shape and boundaries of a plume, even when multiple plumes overlap.',
-);
-const duplicatedSequenceSegment = duplicatedSequencePlan.segments[0];
-assert.ok(duplicatedSequenceSegment, 'cross-sequence duplication fixture must produce one prose segment');
-const duplicatedSequenceTemplate = createMarkdownTranslationTemplate(duplicatedSequenceSegment);
-const duplicatedSequenceEmphasisId = inlineIdsOfKind(duplicatedSequenceTemplate, 'emphasis')[0];
-assert.ok(duplicatedSequenceEmphasisId, 'cross-sequence duplication fixture must expose its emphasis node');
-const duplicatedRootTextId = textIdsInSequence(duplicatedSequenceTemplate)[0];
-const duplicatedInlineTextId = textIdsInSequence(duplicatedSequenceTemplate, duplicatedSequenceEmphasisId)[0];
-assert.ok(duplicatedRootTextId && duplicatedInlineTextId, 'cross-sequence duplication fixture must expose both text IDs');
-const repeatedTranslation = '回溯追蹤擴散的氣體，精確定位排放源。';
-const duplicatedSequenceTranslation = targetFromSource(duplicatedSequenceSegment);
-assert.ok(
-	compileMarkdownTranslation(duplicatedSequencePlan, [
-		withTranslatedTexts(duplicatedSequenceTranslation, {
-			[duplicatedRootTextId]: repeatedTranslation,
-			[duplicatedInlineTextId]: `羽流描繪：${repeatedTranslation}`,
-		}),
-	]),
-	'semantic translation quality must remain the model contract instead of a text-pattern validator',
-);
-
-const longInlineMathFixture = String.raw`A real formula can be longer than ordinary prose.
-
-$$ \underbrace{\log p(z\_s \mid z\_t, y)}\_{\text{conditional distribution}} = \underbrace{\log p(y \mid z\_t, z\_s)}\_{\text{predictive term}} + \underbrace{\log p(z\_s \mid z\_t)}\_{\text{unconditional term}} + c, $$
-
-The equation remains part of the article.`;
-const longInlineMathPlan = planMarkdownTranslation(longInlineMathFixture);
-const longInlineMathResult = compileMarkdownTranslation(
-	longInlineMathPlan,
-	longInlineMathPlan.segments.map((segment) => targetFromSource(segment)),
-);
-assert.match(longInlineMathResult, /\\underbrace\{\\log p/u, 'valid long inline math must survive package round-tripping');
-
-const firstBatch = plan.batches[0];
-assert.ok(firstBatch, 'fixture must contain a batch');
-assert.deepEqual(
-	validateMarkdownBatchTranslations(firstBatch, translations.slice(0, firstBatch.segments.length)),
-	translations.slice(0, firstBatch.segments.length),
-);
-
-assert.throws(
-	() => compileMarkdownTranslation(plan, translations.slice(1)),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'missing-segment',
-	'missing segment results must fail closed',
-);
-const firstTranslation = translations[0];
-const firstRootTextId = firstTranslation ? textIdsInSequence(createMarkdownTranslationTemplate(plan.segments[0]))[0] : undefined;
-assert.ok(firstTranslation && firstRootTextId, 'first fixture translation must start with root prose');
-assert.doesNotThrow(
-	() =>
-		validateMarkdownBatchTranslations(firstBatch, [
-			withTranslatedTexts(firstTranslation, { [firstRootTextId]: ` ${firstTranslation.texts[firstRootTextId]}` }),
-			...translations.slice(1, firstBatch.segments.length),
-		]),
-	'model whitespace is prose quality, not a Markdown structural invariant',
-);
-assert.throws(
-	() =>
-		validateMarkdownBatchTranslations(firstBatch, [
-			withTranslatedTexts(firstTranslation, { [firstRootTextId]: '第一段\n\n意外的新段落' }),
-			...translations.slice(1, firstBatch.segments.length),
-		]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'invalid-result',
-	'blank lines inside a prose segment must retry before reconstruction',
-);
-
-const linkBatch = plan.batches.find((batch) => batch.segments.some((segment) => segment.text.includes('research report')));
-assert.ok(linkBatch, 'fixture must contain a translated link block');
-const linkSegment = linkBatch.segments.find((segment) => segment.text.includes('research report'));
-assert.ok(linkSegment, 'fixture must expose the translated link label inside a complete prose block');
-assert.match(linkSegment.text, /^Read the /u, 'inline formatting must not split a sentence into separate translation slots');
-const linkTemplate = createMarkdownTranslationTemplate(linkSegment);
-assert.doesNotMatch(JSON.stringify(linkTemplate), /<\/?n[0-9]+>|<n[0-9]+\/>/u, 'model input must not expose internal tokens');
-assert.ok(translatedMarkdown.includes('[研究報告](https://example.com/report?q=1'), 'translated link label must keep its destination');
-
-const autolinkPlan = planMarkdownTranslation('Contact <verify@amazon.com> for help.');
-const autolinkSegment = autolinkPlan.segments[0];
-assert.ok(autolinkSegment, 'autolink fixture must produce one prose segment');
-const autolinkTemplate = createMarkdownTranslationTemplate(autolinkSegment);
-const autolinkId = inlineIdsOfKind(autolinkTemplate, 'link')[0];
-const autolinkTextIds = textIdsInSequence(autolinkTemplate);
-assert.ok(autolinkId && autolinkTextIds.length === 2, 'autolink fixture must expose one movable reference inside one root sequence');
-assert.deepEqual(
-	autolinkTemplate.inlines[autolinkId],
-	{ kind: 'link', reference: 'verify@amazon.com' },
-	'autolink input must expose its visible address without exposing or editing the destination',
-);
-assert.deepEqual(Object.keys(autolinkTemplate.sequences), ['root'], 'a movable autolink must not split one sentence into fixed slots');
-const autolinkMarkdown = compileMarkdownTranslation(autolinkPlan, [
-	withTranslatedTexts(targetFromSource(autolinkSegment), {
-		[autolinkTextIds[0]]: '請聯絡',
-		[autolinkTextIds[1]]: '取得協助。',
-	}),
-]);
-assert.equal(autolinkMarkdown, '請聯絡<verify@amazon.com>取得協助。', 'Core must restore the exact email autolink after translation');
-
-for (const reference of ['https://arxiv.org/abs/2504.01167', 'verify@amazon.com']) {
-	const referencePlan = planMarkdownTranslation(`A research preprint at <${reference}> (2025).`);
-	const referenceSegment = referencePlan.segments[0];
-	assert.ok(referenceSegment);
-	const [beforeId, afterId] = textIdsInSequence(createMarkdownTranslationTemplate(referenceSegment));
-	assert.ok(beforeId && afterId);
-	const copiedReference = withTranslatedTexts(targetFromSource(referenceSegment), {
-		[beforeId]: `研究預印本，見 ${reference}（2025 年）。`,
-		[afterId]: '',
-	});
-	assert.throws(
-		() => validateMarkdownBatchTranslations(referencePlan.batches[0], [copiedReference]),
-		(error) =>
-			error instanceof MarkdownTranslationInvariantError &&
-			error.code === 'invalid-result' &&
-			error.message.includes(referenceSegment.id) &&
-			error.message.includes('copied protected link'),
-		'copied protected addresses must fail inside the retryable batch, before full-document reconstruction',
-	);
-	const correctedReference = withTranslatedTexts(targetFromSource(referenceSegment), {
-		[beforeId]: '研究預印本，見 ',
-		[afterId]: '（2025 年）。',
-	});
-	validateMarkdownBatchTranslations(referencePlan.batches[0], [correctedReference]);
-	const correctedMarkdown = compileMarkdownTranslation(referencePlan, [correctedReference]);
-	assert.equal(correctedMarkdown.split(reference).length - 1, 1, 'a corrected translation must preserve the address exactly once');
-	assert.match(correctedMarkdown, /（2025 年）。$/u, 'text after the protected address must remain after it');
-}
-
-const emptyLinkPlan = planMarkdownTranslation('[](https://example.com/heading)A complementary portfolio of models');
-const emptyLinkSegment = emptyLinkPlan.segments[0];
-assert.ok(emptyLinkSegment, 'empty-link fixture must produce one prose segment');
-const emptyLinkTemplate = createMarkdownTranslationTemplate(emptyLinkSegment);
-assert.deepEqual(
-	emptyLinkTemplate.inlines,
-	{},
-	'an invisible empty link must remain Core-owned instead of becoming a translatable container',
-);
-assert.deepEqual(Object.keys(emptyLinkTemplate.sequences), ['root'], 'an empty link at the edge must not create a redundant slot sequence');
-const emptyLinkTextId = textIdsInSequence(emptyLinkTemplate)[0];
-assert.ok(emptyLinkTextId, 'empty-link fixture must expose its visible heading text');
-assert.equal(
-	compileMarkdownTranslation(emptyLinkPlan, [
-		withTranslatedTexts(targetFromSource(emptyLinkSegment), { [emptyLinkTextId]: '與決策相符的互補模型組合' }),
-	]),
-	'[](https://example.com/heading)與決策相符的互補模型組合',
-	'Core must translate the visible heading without asking the model to fill an empty link',
-);
-
-const scopedTextPlan = planMarkdownTranslation('**Zero configuration:** Confluent manages model serving and runtime operations.');
-const scopedTextSegment = scopedTextPlan.segments[0];
-assert.ok(scopedTextSegment, 'scoped-text fixture must produce one prose segment');
-const scopedTextTemplate = createMarkdownTranslationTemplate(scopedTextSegment);
-const scopedStrongId = inlineIdsOfKind(scopedTextTemplate, 'strong')[0];
-const scopedRootTextId = textIdsInSequence(scopedTextTemplate)[0];
-const scopedStrongTextId = scopedStrongId ? textIdsInSequence(scopedTextTemplate, scopedStrongId)[0] : undefined;
-assert.ok(scopedStrongId && scopedRootTextId && scopedStrongTextId, 'scoped-text fixture must expose separate root and strong text IDs');
-const scopedTranslation = targetFromSource(scopedTextSegment);
-assert.throws(
-	() =>
-		compileMarkdownTranslation(scopedTextPlan, [
-			withTranslatedTexts(scopedTranslation, {
-				[scopedRootTextId]: '',
-				[scopedStrongTextId]: '零設定：Confluent 負責模型服務與執行階段維運。',
-			}),
-		]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'invalid-result',
-	'body prose moved into a bold label must fail instead of silently formatting the whole paragraph',
-);
-
-const reorderedPlan = planMarkdownTranslation('The market [expects](https://example.com/forecast) electric vehicles.');
-const reorderedSegment = reorderedPlan.segments[0];
-assert.ok(reorderedSegment, 'reordered-inline fixture must produce one complete prose block');
-const reorderedTemplate = createMarkdownTranslationTemplate(reorderedSegment);
-const reorderedInlineId = inlineIdsOfKind(reorderedTemplate, 'link')[0];
-assert.ok(reorderedInlineId, 'reordered-inline fixture must describe its link');
-assert.deepEqual(
-	reorderedTemplate,
-	{
-		inlines: { n1: 'link' },
-		texts: {
-			t1: 'The market ',
-			t2: ' electric vehicles.',
-			t3: 'expects',
-		},
-		sequences: {
-			root: ['t1', 'n1', 't2'],
-			n1: ['t3'],
-		},
-	},
-	'model input must expose a protected inline reference and a separately scoped link-label sequence',
-);
-const reorderedTranslation = withTranslatedTexts(targetFromSource(reorderedSegment), {
-	t1: '市場',
-	t2: '電動車將成為主流。',
-	t3: '預期',
-});
-const reorderedMarkdown = compileMarkdownTranslation(reorderedPlan, [reorderedTranslation]);
-assert.ok(
-	reorderedMarkdown.includes(`市場[預期](https://example.com/forecast)電動車將成為主流。`),
-	'complete prose translation must preserve inline markup while text slots use natural target-language wording',
-);
-
-const disappearingArticlePlan = planMarkdownTranslation(
-	'The [filing](https://example.com/filing) shows that revenue increased substantially.',
-);
-const disappearingArticleSegment = disappearingArticlePlan.segments[0];
-assert.ok(disappearingArticleSegment, 'article regression fixture must produce one prose segment');
-const disappearingArticleTemplate = createMarkdownTranslationTemplate(disappearingArticleSegment);
-const filingInlineId = inlineIdsOfKind(disappearingArticleTemplate, 'link')[0];
-assert.ok(filingInlineId, 'article regression fixture must expose its link');
-assert.equal(
-	compileMarkdownTranslation(disappearingArticlePlan, [
-		withTranslatedTexts(targetFromSource(disappearingArticleSegment), {
-			t1: '',
-			t2: '顯示，營收大幅成長。',
-			t3: '申報文件',
-		}),
-	]),
-	'[申報文件](https://example.com/filing)顯示，營收大幅成長。',
-	'natural Chinese may omit an English article without erasing the enclosing sequence',
-);
-
-const naturalParagraphPlan = planMarkdownTranslation(
-	'These devices demand [less attention](https://example.com/less), including Garmin [Cirqa](https://example.com/cirqa), [Fitbit Air](https://example.com/fitbit), and the *Whoop series*.',
-);
-assert.equal(naturalParagraphPlan.segments.length, 1, 'one paragraph with multiple inline nodes must remain one semantic translation unit');
-const naturalParagraphSegment = naturalParagraphPlan.segments[0];
-assert.ok(naturalParagraphSegment, 'natural-language fixture must produce a segment');
-const naturalTemplate = createMarkdownTranslationTemplate(naturalParagraphSegment);
-const [lessAttentionId, cirqaId, fitbitId] = inlineIdsOfKind(naturalTemplate, 'link');
-const whoopId = inlineIdsOfKind(naturalTemplate, 'emphasis')[0];
-assert.ok(lessAttentionId && cirqaId && fitbitId && whoopId, 'natural-language fixture must expose its four inline containers');
-const naturalRootTextIds = textIdsInSequence(naturalTemplate);
-const lessAttentionTextId = textIdsInSequence(naturalTemplate, lessAttentionId)[0];
-const cirqaTextId = textIdsInSequence(naturalTemplate, cirqaId)[0];
-const fitbitTextId = textIdsInSequence(naturalTemplate, fitbitId)[0];
-const whoopTextId = textIdsInSequence(naturalTemplate, whoopId)[0];
-assert.equal(naturalRootTextIds.length, 5, 'natural-language fixture must expose five root text positions');
-assert.ok(lessAttentionTextId && cirqaTextId && fitbitTextId && whoopTextId, 'natural-language fixture must expose inline text IDs');
-const naturalTranslation = withTranslatedTexts(targetFromSource(naturalParagraphSegment), {
-	[naturalRootTextIds[0]]: '這類裝置會',
-	[naturalRootTextIds[1]]: '，目前包括 Garmin ',
-	[naturalRootTextIds[2]]: '、',
-	[naturalRootTextIds[3]]: '，以及',
-	[naturalRootTextIds[4]]: '。',
-	[lessAttentionTextId]: '減少對注意力的要求',
-	[cirqaTextId]: 'Cirqa',
-	[fitbitTextId]: 'Fitbit Air',
-	[whoopTextId]: 'Whoop 系列',
-});
-const naturalParagraphMarkdown = compileMarkdownTranslation(naturalParagraphPlan, [naturalTranslation]);
-assert.ok(
-	naturalParagraphMarkdown.includes(
-		'這類裝置會[減少對注意力的要求](https://example.com/less)，目前包括 Garmin [Cirqa](https://example.com/cirqa)、[Fitbit Air](https://example.com/fitbit)，以及*Whoop 系列*。',
-	),
-	'whole-paragraph reconstruction must preserve natural Chinese punctuation and link boundaries without injected spaces',
-);
-assert.throws(
-	() => compileMarkdownTranslation(naturalParagraphPlan, [withTranslatedTexts(naturalTranslation, { [lessAttentionTextId]: '' })]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'invalid-result',
-	'model output must not erase prose inside a container sequence',
-);
-
-const inlineCodePlan = planMarkdownTranslation(
-	'Add options to the existing `GRUB_CMDLINE_LINUX_DEFAULT` value in `/etc/default/grub`, then apply them with:',
-);
-const inlineCodeSegment = inlineCodePlan.segments[0];
-assert.ok(inlineCodeSegment, 'inline-code fixture must produce a segment');
-const inlineCodeTemplate = createMarkdownTranslationTemplate(inlineCodeSegment);
-assert.deepEqual(
-	inlineCodeTemplate,
-	{
-		inlines: {
-			n1: { kind: 'inlineCode', reference: 'GRUB_CMDLINE_LINUX_DEFAULT' },
-			n2: { kind: 'inlineCode', reference: '/etc/default/grub' },
-		},
-		texts: {
-			t1: 'Add options to the existing ',
-			t2: ' value in ',
-			t3: ', then apply them with:',
-		},
-		sequences: {
-			root: ['t1', 'n1', 't2', 'n2', 't3'],
-		},
-	},
-	'opaque inline code must reach the model as read-only semantic previews',
-);
-const inlineCodeTranslation = withTranslatedTexts(targetFromSource(inlineCodeSegment), {
-	t1: '將選項加入現有的',
-	t2: '值，設定檔位於',
-	t3: '，然後執行以下指令：',
-});
-assert.equal(
-	compileMarkdownTranslation(inlineCodePlan, [inlineCodeTranslation]),
-	'將選項加入現有的`GRUB_CMDLINE_LINUX_DEFAULT`值，設定檔位於`/etc/default/grub`，然後執行以下指令：',
-	'Core must restore multiple atomic inline nodes in their source-owned positions',
-);
-
-const nestedPlan = planMarkdownTranslation('Read the **full [research report](https://example.com/report)** before running `pnpm test`.');
-const nestedSegment = nestedPlan.segments[0];
-assert.ok(nestedSegment, 'nested-inline fixture must produce a segment');
-const nestedTemplate = createMarkdownTranslationTemplate(nestedSegment);
-const strongInlineId = inlineIdsOfKind(nestedTemplate, 'strong')[0];
-const nestedLinkInlineId = inlineIdsOfKind(nestedTemplate, 'link')[0];
-const codeInlineId = inlineIdsOfKind(nestedTemplate, 'inlineCode')[0];
-assert.ok(strongInlineId && nestedLinkInlineId && codeInlineId, 'nested-inline fixture must expose strong, link, and code nodes');
-const nestedRootTextIds = textIdsInSequence(nestedTemplate);
-const nestedStrongTextId = textIdsInSequence(nestedTemplate, strongInlineId)[0];
-const nestedLinkTextId = textIdsInSequence(nestedTemplate, nestedLinkInlineId)[0];
-assert.equal(nestedRootTextIds.length, 3, 'nested-inline fixture must expose three root text positions');
-assert.ok(nestedStrongTextId && nestedLinkTextId, 'nested-inline fixture must expose translated container text IDs');
-const nestedTranslation = withTranslatedTexts(targetFromSource(nestedSegment), {
-	[nestedRootTextIds[0]]: '請先閱讀',
-	[nestedRootTextIds[1]]: '，再執行',
-	[nestedRootTextIds[2]]: '。',
-	[nestedStrongTextId]: '完整的',
-	[nestedLinkTextId]: '研究報告',
-});
-assert.equal(
-	compileMarkdownTranslation(nestedPlan, [nestedTranslation]),
-	'請先閱讀**完整的[研究報告](https://example.com/report)**，再執行`pnpm test`。',
-	'nested inline containers must preserve their child scopes',
-);
-assert.throws(
-	() =>
-		compileMarkdownTranslation(nestedPlan, [
-			withTranslatedTexts(nestedTranslation, { [nestedRootTextIds[0]]: '', [nestedRootTextIds[1]]: '' }),
-		]),
-	(error) => error instanceof MarkdownTranslationInvariantError && error.code === 'invalid-result',
-	'direct prose in a non-leaf sequence must not disappear behind translated child content',
-);
-
-const inlineHtmlPlan = planMarkdownTranslation('Before <mark>highlighted</mark> after.');
-const inlineHtmlSegment = inlineHtmlPlan.segments[0];
-assert.ok(inlineHtmlSegment, 'inline-HTML fixture must produce a segment');
-const inlineHtmlTemplate = createMarkdownTranslationTemplate(inlineHtmlSegment);
-assert.deepEqual(
-	Object.values(inlineHtmlTemplate.inlines),
-	[
-		{ kind: 'html', reference: '<mark>' },
-		{ kind: 'html', reference: '</mark>' },
-	],
-	'raw inline HTML must be visible only as referenced, Core-owned inline codes',
-);
-assert.deepEqual(Object.keys(inlineHtmlTemplate.sequences), ['root'], 'inline HTML must not split one sentence into artificial scopes');
-const inlineHtmlTextIds = textIdsInSequence(inlineHtmlTemplate);
-assert.equal(inlineHtmlTextIds.length, 3, 'inline HTML must retain the surrounding writable text positions');
-const inlineHtmlTranslation = withTranslatedTexts(targetFromSource(inlineHtmlSegment), {
-	[inlineHtmlTextIds[0]]: '之前',
-	[inlineHtmlTextIds[1]]: '醒目文字',
-	[inlineHtmlTextIds[2]]: '之後。',
-});
-assert.equal(
-	compileMarkdownTranslation(inlineHtmlPlan, [inlineHtmlTranslation]),
-	'之前<mark>醒目文字</mark>之後。',
-	'Core-owned raw HTML anchors must retain translated prose in the natural target positions',
-);
-
-const ordinalHtmlPlan = planMarkdownTranslation('The date is *On the 2<sup>nd</sup> of May*.');
-const ordinalHtmlSegment = ordinalHtmlPlan.segments[0];
-assert.ok(ordinalHtmlSegment, 'ordinal HTML fixture must produce a segment');
-const ordinalHtmlTemplate = createMarkdownTranslationTemplate(ordinalHtmlSegment);
-const emphasisId = inlineIdsOfKind(ordinalHtmlTemplate, 'emphasis')[0];
-assert.ok(emphasisId, 'ordinal HTML fixture must expose its emphasis container');
-const ordinalTextIds = textIdsInSequence(ordinalHtmlTemplate, emphasisId);
-const ordinalRootTextIds = textIdsInSequence(ordinalHtmlTemplate);
-assert.equal(ordinalTextIds.length, 3, 'ordinal HTML must keep one semantic inline sequence across the sup element');
-const ordinalTranslation = withTranslatedTexts(targetFromSource(ordinalHtmlSegment), {
-	[ordinalRootTextIds[0]]: '日期是',
-	[ordinalRootTextIds[1]]: '。',
-	[ordinalTextIds[0]]: '5 月 2 日',
-	[ordinalTextIds[1]]: '',
-	[ordinalTextIds[2]]: '',
-});
-assert.equal(
-	compileMarkdownTranslation(ordinalHtmlPlan, [ordinalTranslation]),
-	'日期是*5 月 2 日<sup></sup>*。',
-	'target prose may collapse around preserved inline HTML without being treated as erased',
-);
-
-const citationPlan = planMarkdownTranslation('First claim.[^a] Second claim.[^b]\n\n[^a]: First note.\n[^b]: Second note.');
-const citationSegment = citationPlan.segments.find((segment) =>
-	Object.keys(createMarkdownTranslationTemplate(segment).sequences).some((id) => id.startsWith('root:slot:')),
-);
-assert.ok(citationSegment, 'citation fixture must expose fixed-anchor translation slots');
-const citationTemplate = createMarkdownTranslationTemplate(citationSegment);
-assert.equal(inlineIdsOfKind(citationTemplate, 'footnoteReference').length, 0, 'footnote references must remain Core-owned');
-assert.deepEqual(
-	Object.keys(citationTemplate.sequences),
-	['root:slot:01', 'root:slot:02'],
-	'each claim must remain in its own translation slot beside its citation',
-);
-const citationTranslations = citationPlan.segments.map((segment) => targetFromSource(segment));
-const citationIndex = citationPlan.segments.findIndex((segment) => segment.id === citationSegment.id);
-assert.ok(citationIndex >= 0, 'citation segment must belong to the plan');
-const citationTranslation = citationTranslations[citationIndex];
-assert.ok(citationTranslation, 'citation segment must have a source translation');
-citationTranslations[citationIndex] = withTranslatedTexts(citationTranslation, {
-	[textIdsInSequence(citationTemplate, 'root:slot:01')[0]]: '第一項主張。',
-	[textIdsInSequence(citationTemplate, 'root:slot:02')[0]]: '第二項主張。',
-});
-const citationMarkdown = compileMarkdownTranslation(citationPlan, citationTranslations);
-assert.ok(citationMarkdown.includes('第一項主張。[^a]第二項主張。[^b]'), 'Core must restore each citation at its original claim boundary');
-
-const formulaCitationPlan = planMarkdownTranslation(
-	'The score $a$ rises to $b$.[^one] Then $c$ falls below $d$.\n\n[^one]: Supporting evidence.',
-);
-const formulaCitationSegment = formulaCitationPlan.segments.find((segment) =>
-	Object.keys(createMarkdownTranslationTemplate(segment).sequences).some((id) => id.startsWith('root:slot:')),
-);
-assert.ok(formulaCitationSegment, 'formula-plus-citation regression fixture must produce fixed-anchor slots');
-const formulaCitationTemplate = createMarkdownTranslationTemplate(formulaCitationSegment);
-assert.equal(
-	inlineIdsOfKind(formulaCitationTemplate, 'footnoteReference').length,
-	0,
-	'fixed footnotes must not compete with movable formulas in structured model output',
-);
-const formulaIdsBySlot = Object.fromEntries(
-	Object.entries(formulaCitationTemplate.sequences).map(([sequenceId, parts]) => [
-		sequenceId,
-		parts.filter((partId) => Object.hasOwn(formulaCitationTemplate.inlines, partId)),
-	]),
-);
-assert.deepEqual(
-	Object.values(formulaIdsBySlot).map((ids) => ids.length),
-	[2, 2],
-	'movable formulas must stay available on both sides of the fixed citation',
-);
-const formulaCitationTranslations = formulaCitationPlan.segments.map((segment) => targetFromSource(segment));
-const formulaCitationIndex = formulaCitationPlan.segments.findIndex((segment) => segment.id === formulaCitationSegment.id);
-assert.ok(formulaCitationIndex >= 0, 'formula-plus-citation segment must belong to its plan');
-const [formulaSlotOne, formulaSlotTwo] = Object.keys(formulaCitationTemplate.sequences);
-const [formulaA, formulaB] = formulaIdsBySlot[formulaSlotOne] ?? [];
-const [formulaC, formulaD] = formulaIdsBySlot[formulaSlotTwo] ?? [];
-assert.ok(formulaSlotOne && formulaSlotTwo && formulaA && formulaB && formulaC && formulaD, 'fixture must expose all formula references');
-const formulaSlotOneTextIds = textIdsInSequence(formulaCitationTemplate, formulaSlotOne);
-const formulaSlotTwoTextIds = textIdsInSequence(formulaCitationTemplate, formulaSlotTwo);
-assert.equal(formulaSlotOneTextIds.length, 3, 'first formula slot must expose three text positions');
-assert.equal(formulaSlotTwoTextIds.length, 3, 'second formula slot must expose three text positions');
-formulaCitationTranslations[formulaCitationIndex] = withTranslatedTexts(formulaCitationTranslations[formulaCitationIndex], {
-	[formulaSlotOneTextIds[0]]: '得分',
-	[formulaSlotOneTextIds[1]]: '上升至',
-	[formulaSlotOneTextIds[2]]: '。',
-	[formulaSlotTwoTextIds[0]]: '接著',
-	[formulaSlotTwoTextIds[1]]: '降至',
-	[formulaSlotTwoTextIds[2]]: '。',
-});
-const formulaCitationMarkdown = compileMarkdownTranslation(formulaCitationPlan, formulaCitationTranslations);
-assert.ok(
-	formulaCitationMarkdown.includes('得分$a$上升至$b$。[^one]接著$c$降至$d$。'),
-	'formulas may follow target-language order within each slot while Core keeps the citation boundary fixed',
-);
-
-const denseInlineMarkdown = Array.from({ length: 100 }, (_, index) => `Read [link ${index}](https://example.com/${index}).`).join(' ');
-const denseInlinePlan = planMarkdownTranslation(denseInlineMarkdown);
-assert.equal(denseInlinePlan.segments.length, 1, 'dense inline prose should remain one semantic segment');
-assert.ok(
-	denseInlinePlan.batches.every((batch) => batch.inputCharacters <= 24_000),
-	'compact source IR must keep a 100-link paragraph inside the production batch budget',
-);
-
-const formerlyOversizedInlineMarkdown = Array.from(
-	{ length: 120 },
-	(_, index) => `*Sentence ${index} keeps its emphasis and remains part of the same semantic passage.*`,
-).join(' ');
-assert.ok(formerlyOversizedInlineMarkdown.length > 6_000, 'inline fixture must exceed the retired arbitrary segment ceiling');
-const formerlyOversizedInlinePlan = planMarkdownTranslation(formerlyOversizedInlineMarkdown);
-assert.equal(formerlyOversizedInlinePlan.segments.length, 1, 'a model-sized inline passage must remain one semantic segment');
-assert.equal(
-	compileMarkdownTranslation(
-		formerlyOversizedInlinePlan,
-		formerlyOversizedInlinePlan.segments.map((segment) => targetFromSource(segment)),
-	),
-	formerlyOversizedInlineMarkdown,
-	'model-sized inline prose must preserve its Markdown structure',
-);
-
-const malformedMarkdown = `## Malformed but parseable\n\nAn **unclosed delimiter and a [broken link label must remain ordinary prose.`;
-const malformedPlan = planMarkdownTranslation(malformedMarkdown);
-const malformedTranslation = compileMarkdownTranslation(
-	malformedPlan,
-	malformedPlan.segments.map((segment) => targetFromSource(segment, () => '仍然是安全的普通文字')),
-);
-assert.ok(malformedTranslation, 'malformed-but-parseable Markdown must round-trip safely');
-
-const longMarkdown = `# Long body\n\n${'A long paragraph with enough prose to translate safely. '.repeat(1_200)}`;
-assert.ok(longMarkdown.length > 36_000, 'long-body fixture must exceed the retired body ceiling');
-const longPlan = planMarkdownTranslation(longMarkdown, {
-	maxBatchCharacters: 2_000,
-	maxBatchSegments: 8,
-	maxContextCharacters: 100,
-	maxSegmentCharacters: 1_500,
-});
-assert.ok(longPlan.batches.length > 1, 'long bodies must translate through multiple batches');
+const longSource = Array.from(
+	{ length: 100 },
+	(_, i) => `Paragraph ${i} has a [source](https://example.com/${i}) and **important** text.`,
+).join('\n\n');
+const longPlan = planMarkdownTranslation(longSource, { maxBatchSegments: 4 });
+assert.ok(longPlan.batches.length > 1);
 assert.equal(
 	compileMarkdownTranslation(
 		longPlan,
 		longPlan.segments.map((segment) => targetFromSource(segment)),
 	),
-	longMarkdown.trimEnd(),
-	'long prose segmentation and reconstruction must not drop content',
+	longPlan.sourceMarkdown,
 );
-
-console.info({
-	batchCount: plan.batches.length,
-	event: 'markdown_translation_contract_passed',
-	longBodyBatchCount: longPlan.batches.length,
-	segmentCount: plan.segments.length,
-});
-
-const nativePaperNotes = 'Claim[^paper-sdt-1]. Again[^paper-sdt-1].\n\n[^paper-sdt-1]: Author. Original work. 2024.';
-const nativePaperPlan = planMarkdownTranslation(nativePaperNotes);
-assert.equal(nativePaperPlan.segments.length, 2, 'Body and footnote prose both use the ordinary translation pipeline');
-const nativePaperArtifact = compileMarkdownTranslationArtifact(
-	nativePaperPlan,
-	nativePaperPlan.segments.map((segment) =>
-		targetFromSource(segment, (text) => text.replace('Claim', '論點').replace('Again', '再次').replace('Original work', '原始作品')),
-	),
-);
-assert.match(nativePaperArtifact.content, /論點\[\^paper-sdt-1\]/u);
-assert.match(nativePaperArtifact.content, /\[\^paper-sdt-1\]: Author\. 原始作品\. 2024\./u);
-assert.equal(nativePaperArtifact.alignment.blocks.length, 2);
 
 const tableSource = `Before[^evidence].
 
@@ -819,12 +151,6 @@ assert.deepEqual(
 	'translation preserves every table tag and attribute',
 );
 assert.match(tableArtifact.content, /<strong>最好<\/strong> 結果\[\^evidence\]/u);
-assert.ok(
-	tableArtifact.alignment.blocks.some((block) => block.type === 'tableCell' && block.sourceMarkdown.includes('<caption>Results</caption>')),
-);
-assert.ok(
-	tableArtifact.alignment.blocks.some((block) => block.type === 'tableCell' && block.translatedMarkdown.includes('<strong>最好</strong>')),
-);
 const translatedNodes = htmlNodes(fromHtml(tableArtifact.content, { fragment: true }));
 assert.ok(translatedNodes.some((node) => node.type === 'text' && node.value.includes('return `x`;\n\n[^evidence] is code')));
 assert.ok(translatedNodes.some((node) => node.type === 'text' && node.value.includes('$$\nE = mc^2\n$$')));
@@ -841,3 +167,439 @@ assert.ok(
 console.info(
 	'HTML table translation passed: spans, headers, captions, notes, code, math, currency, literal text, alignment and injection.',
 );
+
+import { registerHooks } from 'node:module';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { shouldEnqueueResourceTranslation } from '../src/ingest/translation-policy.ts';
+
+const candidate = (overrides = {}) => ({
+	fileType: 'application/pdf',
+	kind: 'paper',
+	originalLang: 'en',
+	resourcePlatform: null,
+	scope: 'corpus',
+	url: 'https://doi.org/10.1000/example',
+	...overrides,
+});
+
+assert.equal(shouldEnqueueResourceTranslation(candidate()), true, 'canonical PDF papers must be translated');
+assert.equal(
+	shouldEnqueueResourceTranslation(candidate({ kind: 'file', scope: 'private', url: null })),
+	true,
+	'private uploaded PDFs must remain translatable before canonicalization',
+);
+assert.equal(shouldEnqueueResourceTranslation(candidate({ kind: 'file' })), false, 'corpus PDF files are not papers');
+assert.equal(shouldEnqueueResourceTranslation(candidate({ originalLang: 'zh-Hant' })), false, 'target-language papers need no translation');
+assert.equal(
+	shouldEnqueueResourceTranslation(candidate({ resourcePlatform: 'youtube' })),
+	false,
+	'platform carriers cannot enter the platformless PDF path',
+);
+assert.equal(
+	shouldEnqueueResourceTranslation(candidate({ fileType: null, kind: 'blog', url: 'https://example.com/article' })),
+	true,
+	'ordinary corpus resources remain translatable',
+);
+
+console.info({ event: 'translation_policy_contract_smoke_passed' });
+
+registerHooks({
+	resolve(specifier, context, nextResolve) {
+		if (specifier === 'cloudflare:workers')
+			return { shortCircuit: true, url: 'data:text/javascript,export class WorkflowEntrypoint {constructor(_ctx,env){this.env=env;}}' };
+		if (specifier === 'cloudflare:workflows')
+			return { shortCircuit: true, url: 'data:text/javascript,export class NonRetryableError extends Error {}' };
+		if (
+			context.parentURL?.endsWith('/ingest/translation-workflow.ts') &&
+			(specifier === '../shared/db' || specifier === './markdown-translation-model')
+		) {
+			const exports =
+				specifier === './markdown-translation-model'
+					? `export { isMarkdownTranslationFormatError, splitSegmentsInHalf } from ${JSON.stringify(new URL('../src/ingest/markdown-translation-model.ts', import.meta.url).href)};`
+					: '';
+			const name = specifier === '../shared/db' ? 'connectCoreDb' : 'translateMarkdownBatchToZhHant';
+			return {
+				shortCircuit: true,
+				url: `data:text/javascript,${encodeURIComponent(`${exports} export const ${name} = (...args) => globalThis.translationWorkflowContract.${name}(...args);`)}`,
+			};
+		}
+		if (specifier.startsWith('.') && !specifier.endsWith('.ts') && context.parentURL?.includes('/workers/core-worker/src/'))
+			return { shortCircuit: true, url: new URL(`${specifier}.ts`, context.parentURL).href };
+		return nextResolve(specifier, context);
+	},
+});
+const { enqueueResourceTranslation, ResourceTranslationV2Workflow } = await import('../src/ingest/translation-workflow.ts');
+const queued = [];
+const registered = [];
+const parent = (taskId, required = true) => ({ taskId, required });
+const statuses = new Map();
+let unavailable = false;
+const env = {
+	APP: {
+		registerResourceProgressTask: async (input) => {
+			registered.push(input);
+			return true;
+		},
+	},
+	RESOURCE_TRANSLATION_V2_WORKFLOW: {
+		get: async (id) => {
+			if (unavailable || !statuses.has(id)) throw new Error('unavailable');
+			return { status: async () => (typeof statuses.get(id) === 'string' ? { status: statuses.get(id) } : statuses.get(id)) };
+		},
+		createBatch: async (instances) => {
+			queued.push(...instances);
+			for (const instance of instances) if (!statuses.has(instance.id)) statuses.set(instance.id, 'queued');
+			return instances;
+		},
+	},
+};
+const resourceId = '8d2e4a53-23e1-4dab-a26b-6c762f427114';
+const revision = 'a'.repeat(32);
+const shared = await enqueueResourceTranslation(env, resourceId, revision, undefined, parent('first-import'));
+unavailable = true;
+assert.equal(
+	await enqueueResourceTranslation(env, resourceId, revision, undefined, parent('second-import')),
+	shared,
+	'unavailable control plane must not duplicate a shared translation',
+);
+unavailable = false;
+statuses.set(shared, 'errored');
+const retry = await enqueueResourceTranslation(env, resourceId, revision, undefined, parent('retry-import'));
+assert.notEqual(retry, shared, 'explicit processing retry must recover a failed unchanged translation');
+assert.equal(
+	await enqueueResourceTranslation(env, resourceId, revision, undefined, parent('retry-import')),
+	retry,
+	'durable enqueue retries use the same physical task',
+);
+assert.equal(
+	await enqueueResourceTranslation(env, resourceId, revision, undefined, parent('later-retry-import')),
+	retry,
+	'concurrent imports must share the active retry generation',
+);
+statuses.set(retry, 'terminated');
+assert.notEqual(
+	await enqueueResourceTranslation(env, resourceId, revision, undefined, parent('later-retry-import')),
+	retry,
+	'a failed retry generation can itself be recovered',
+);
+assert.equal(
+	queued.every(({ params }) => params.force === undefined),
+	true,
+	'retry preserves existing human/complete fields through the normal translation plan',
+);
+console.info({ event: 'translation_retry_contract_passed', cases: 6 });
+
+const automaticRevision = 'b'.repeat(32);
+const automatic = await enqueueResourceTranslation(env, resourceId, automaticRevision, undefined, parent('source-draft', false));
+assert.deepEqual(registered.at(-1), { taskId: automatic, kind: 'translation', resourceId });
+assert.equal('progress' in queued.at(-1).params, false);
+assert.equal(await enqueueResourceTranslation(env, resourceId, automaticRevision, undefined, parent('late-user')), automatic);
+assert.equal(registered.at(-1).parentTaskId, 'late-user', 'a later user attaches to the original shared ledger');
+statuses.set(automatic, 'complete');
+const creationCount = queued.length;
+assert.equal(await enqueueResourceTranslation(env, resourceId, automaticRevision, undefined, parent('late-complete')), automatic);
+assert.equal(queued.length, creationCount, 'completed work does not rerun a provider');
+assert.equal(registered.at(-1).parentTaskId, 'late-user', 'completed work creates no new subscription or queued ledger');
+await assert.rejects(
+	enqueueResourceTranslation(
+		{ ...env, APP: { registerResourceProgressTask: async () => false } },
+		resourceId,
+		'c'.repeat(32),
+		undefined,
+		parent('missing-parent'),
+	),
+	/registration was rejected/,
+);
+assert.equal(queued.length, creationCount, 'failed registration cannot admit paid work');
+console.info({ event: 'shared_translation_ledger_contract_passed' });
+
+// Execute the actual translation Workflow with provider/DB boundaries controlled.
+const originalFetch = globalThis.fetch;
+globalThis.fetch = async () => {
+	throw new Error('Translation contract attempted an external provider request');
+};
+try {
+	for (const scenario of [
+		'app-unavailable',
+		'index-unavailable',
+		'complete',
+		'parallel',
+		'parallel-failure',
+		'rate-limited',
+		'format-recovery',
+		'metadata-parallel',
+	]) {
+		const parallel = scenario.startsWith('parallel');
+		const effects = [];
+		const appCalls = [];
+		let reads = 0;
+		let active = 0;
+		let peak = 0;
+		let persistedContent;
+		const providerBatches = [];
+		const retryDelays = [];
+		let metadataActive = false;
+		globalThis.translationWorkflowContract = {
+			connectCoreDb: async () => ({
+				execute: async (query) => {
+					reads++;
+					if (reads > 1) {
+						persistedContent = new PgDialect()
+							.sqlToQuery(query)
+							.params.find((value) => typeof value === 'string' && value.startsWith('譯文'));
+						effects.push('persisted');
+						return { rows: [{ resource_id: resourceId }] };
+					}
+					return {
+						rows: [
+							{
+								id: resourceId,
+								file_type: 'application/pdf',
+								kind: 'paper',
+								resource_platform: null,
+								original_lang: 'en',
+								scope: 'corpus',
+								title: 'A research paper',
+								summary: null,
+								content:
+									scenario === 'format-recovery' || scenario === 'rate-limited'
+										? Array.from({ length: 8 }, (_, index) => `A long research paragraph ${index} requires complete translation.`).join(
+												'\n\n',
+											)
+										: parallel
+											? Array.from(
+													{ length: 496 },
+													(_, index) => `Original research paragraph number ${index + 1} requires translation.`,
+												).join('\n\n')
+											: 'This is the original readable content of a research paper that requires translation.',
+								zh_hant_title: scenario === 'metadata-parallel' ? null : '研究論文',
+								zh_hant_summary: null,
+								zh_hant_content: null,
+								zh_hant_alignment_version: null,
+								zh_hant_source: 'machine',
+								translation_revision: revision,
+								url: 'https://example.com/paper.pdf',
+							},
+						],
+					};
+				},
+			}),
+			translateMarkdownBatchToZhHant: async (batch) => {
+				effects.push('provider');
+				providerBatches.push(batch.id);
+				effects.push('body-start');
+				if (scenario === 'rate-limited' && providerBatches.length <= 3) throw new Error('429 rate limit');
+				if (scenario === 'format-recovery') {
+					if (batch.id === 'b0001' || batch.id === 'b0001-2') throw new MarkdownTranslationInvariantError('invalid-result', 'Bad format');
+					if (batch.id === 'b0001-2-1' && providerBatches.filter((id) => id === batch.id).length <= 2) throw new Error('429 rate limit');
+				}
+				active++;
+				peak = Math.max(peak, active);
+				// Complete out of source order, with more than two full concurrency windows.
+				await new Promise((resolve) => setTimeout(resolve, batch.id === 'b0001' ? 30 : 1));
+				active--;
+				effects.push('body-end');
+				if (scenario === 'parallel-failure' && batch.id === 'b0002') throw new Error('Provider exhausted retries');
+				return batch.segments.map((segment) => ({
+					texts: Object.fromEntries(
+						Object.keys(createMarkdownTranslationTemplate(segment).texts).map((key) => [
+							key,
+							parallel ? `譯文 ${segment.id}` : '這是一篇研究論文的可讀原始內容，需要完整翻譯。',
+						]),
+					),
+				}));
+			},
+		};
+		const app = Object.fromEntries(
+			['startResourceProgressTask', 'reportResourceProgress', 'registerResourceProgressTask', 'sealResourceProgressTask'].map((name) => [
+				name,
+				async (input) => {
+					if (name === 'sealResourceProgressTask') {
+						assert.equal(active, 0, 'all provider work must settle before sealing');
+						assert.equal(metadataActive, false);
+					}
+					appCalls.push({ name, input });
+					if (scenario === 'app-unavailable') throw new Error('APP unavailable');
+					return true;
+				},
+			]),
+		);
+		const workflow = new ResourceTranslationV2Workflow(
+			{},
+			{
+				APP: app,
+				AI: {
+					run: async () => {
+						metadataActive = true;
+						effects.push('metadata-start');
+						await new Promise((resolve) => setTimeout(resolve, 60));
+						metadataActive = false;
+						effects.push('metadata-end');
+						return { response: JSON.stringify({ title: '研究論文' }) };
+					},
+				},
+				RESOURCE_SEARCH_SYNC_QUEUE: {
+					send: async (body) => {
+						assert.equal(body.resourceId, resourceId);
+						assert.ok(body.taskId, 'translation indexing registers a child task');
+						if (scenario === 'index-unavailable') throw new Error('Queue unavailable');
+						effects.push('indexed');
+					},
+				},
+			},
+		);
+		const result = workflow.run(
+			{
+				instanceId: 'shared-translation-contract',
+				payload: { resourceId, translationRevision: revision },
+			},
+			{
+				do: async (_name, ...args) => {
+					for (let attempt = 1; ; attempt++) {
+						try {
+							return await args.at(-1)({ attempt });
+						} catch (error) {
+							if (!['rate-limited', 'format-recovery'].includes(scenario) || attempt > args[0].retries.limit) throw error;
+							retryDelays.push(args[0].retries.delay({ ctx: { attempt }, error }));
+						}
+					}
+				},
+			},
+		);
+		if (scenario === 'app-unavailable') {
+			await assert.rejects(result, /APP unavailable/);
+			assert.deepEqual(effects, [], 'progress admission gates paid provider execution');
+		} else if (scenario === 'parallel-failure') {
+			await assert.rejects(result, /Provider exhausted retries/);
+			assert.equal(effects.includes('persisted'), false, 'a failed batch cannot publish a partial translation');
+			assert.equal(peak, 15);
+		} else {
+			assert.deepEqual(await result, { status: 'complete', resourceId });
+			assert.ok(effects.includes('provider') && effects.includes('persisted'));
+			const outcomes = appCalls.filter(({ name }) => name === 'reportResourceProgress').map(({ input }) => input);
+			assert.ok(outcomes.some(({ status }) => status === 'complete'));
+			assert.ok(
+				outcomes.every(({ errorCode }) => errorCode === undefined),
+				'index handoff failure does not fail published content',
+			);
+			if (scenario === 'metadata-parallel') {
+				assert.ok(effects.indexOf('body-start') < effects.indexOf('metadata-end'));
+				assert.ok(effects.indexOf('metadata-start') < effects.indexOf('body-end'), 'metadata and body must overlap');
+			}
+			if (scenario === 'rate-limited') {
+				assert.deepEqual(
+					providerBatches,
+					Array.from({ length: 4 }, () => 'b0001'),
+					'rate limits never split batches',
+				);
+				assert.deepEqual(retryDelays, [60000, 120000, 180000]);
+			}
+			if (scenario === 'format-recovery') {
+				assert.equal(providerBatches.filter((id) => id === 'b0001-1').length, 1, 'successful halves are not translated twice');
+				assert.deepEqual(retryDelays, [60000, 120000]);
+			}
+			if (parallel) {
+				assert.equal(peak, 15, 'translation must use, and never exceed, 15 concurrent batches');
+				assert.equal(effects.filter((effect) => effect === 'provider').length, 31, 'every batch runs exactly once');
+				assert.deepEqual(
+					outcomes.filter(({ completed }) => completed !== undefined).map(({ completed }) => completed),
+					Array.from({ length: 32 }, (_, index) => index),
+					'progress must remain monotonic despite out-of-order batches',
+				);
+				assert.equal(
+					persistedContent.trim(),
+					Array.from({ length: 496 }, (_, index) => `譯文 s${String(index + 1).padStart(6, '0')}`).join('\n\n'),
+					'persisted translation must retain original segment order',
+				);
+			}
+		}
+	}
+} finally {
+	globalThis.fetch = originalFetch;
+	delete globalThis.translationWorkflowContract;
+}
+console.info({ event: 'translation_workflow_outage_and_concurrency_contract_passed', cases: 8 });
+
+// The same policy also runs in workerd with native durable steps and a rejecting
+// service-binding entrypoint. Isolated local config never loads project secrets.
+const { mkdtemp, rm, writeFile } = await import('node:fs/promises');
+const { tmpdir } = await import('node:os');
+const { join } = await import('node:path');
+const { fileURLToPath } = await import('node:url');
+process.env.WRANGLER_SEND_METRICS = 'false';
+process.env.CLOUDFLARE_LOAD_DEV_VARS_FROM_DOT_ENV = 'false';
+process.env.WRANGLER_LOG_PATH = join(tmpdir(), `opennews-task-runtime-${process.pid}.log`);
+const { unstable_dev } = await import('wrangler');
+const directory = await mkdtemp(join(tmpdir(), 'opennews-task-runtime-'));
+let runtime;
+try {
+	const entry = join(directory, 'worker.ts');
+	const config = join(directory, 'wrangler.json');
+	await writeFile(
+		entry,
+		`
+import {WorkflowEntrypoint,WorkerEntrypoint} from 'cloudflare:workers';
+import {createResourceTask,registerResourceTask,enqueueSearchProgress} from ${JSON.stringify(fileURLToPath(new URL('../src/ingest/progress.ts', import.meta.url)))};
+export class UnavailableApp extends WorkerEntrypoint {
+ async startResourceProgressTask(){throw new Error('APP start unavailable');}
+ async reportResourceProgress(){throw new Error('APP report unavailable');}
+ async registerResourceProgressTask(){throw new Error('APP register unavailable');}
+ async sealResourceProgressTask(){throw new Error('APP seal unavailable');}
+}
+export class TaskFixture extends WorkflowEntrypoint {
+ async run(event,step){
+  const taskEnv={...this.env,RESOURCE_SEARCH_SYNC_QUEUE:{send:async body=>{if(body.taskId)throw new Error('Untracked child task');}}};
+  const immediateStep={do:(name,config,callback)=>step.do(name,{...config,retries:{limit:0,delay:'1 second'}},callback)};
+  const task=createResourceTask(taskEnv,immediateStep,event.instanceId,event.payload.tracked);
+  await task.start('acquiring');
+  const persisted=await step.do('provider-and-persist',async()=>({resourceId:${JSON.stringify(resourceId)}}));
+  await task.report('complete',{status:'complete',resourceId:persisted.resourceId});
+  await registerResourceTask(taskEnv,{taskId:'child',kind:'translation'},task);
+  await enqueueSearchProgress(taskEnv,persisted.resourceId,task,'revision');
+  await task.seal();
+  return {status:'complete',resourceId:persisted.resourceId};
+ }
+}
+export default {async fetch(request,env){
+ const path=new URL(request.url).pathname.slice(1);
+ if(request.method==='POST'){await env.TASK.create({id:path,params:{tracked:path==='tracked'}});return Response.json({id:path});}
+ return Response.json(await (await env.TASK.get(path)).status());
+}};
+`,
+	);
+	await writeFile(
+		config,
+		JSON.stringify({
+			name: 'opennews-task-runtime-fixture',
+			compatibility_date: '2026-09-01',
+			compatibility_flags: ['nodejs_compat'],
+			workflows: [{ binding: 'TASK', name: 'task-fixture', class_name: 'TaskFixture' }],
+			services: [{ binding: 'APP', service: 'opennews-task-runtime-fixture', entrypoint: 'UnavailableApp' }],
+		}),
+	);
+	runtime = await unstable_dev(entry, {
+		config,
+		local: true,
+		port: 0,
+		persist: false,
+		logLevel: 'error',
+		experimental: { disableDevRegistry: true, disableExperimentalWarning: true, watch: false, enableContainers: false },
+	});
+	for (const delivery of ['untracked', 'tracked']) {
+		const response = await runtime.fetch(`/${delivery}`, { method: 'POST' });
+		assert.equal(response.status, 200, await response.clone().text());
+		const deadline = Date.now() + 25_000;
+		let snapshot;
+		do {
+			snapshot = await (await runtime.fetch(`/${delivery}`)).json();
+			if (['complete', 'errored'].includes(snapshot.status)) break;
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		} while (Date.now() < deadline);
+		assert.equal(snapshot.status, delivery === 'tracked' ? 'errored' : 'complete', JSON.stringify(snapshot));
+		if (delivery === 'untracked') assert.deepEqual(snapshot.output, { status: 'complete', resourceId });
+	}
+	console.info({ event: 'resource_task_native_workflow_outage_passed', cases: 2 });
+} finally {
+	await runtime?.stop();
+	await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+}

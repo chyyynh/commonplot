@@ -9,13 +9,8 @@ import { resolveCrossrefPaperCandidate } from '../crossref';
 import type { GrobidPdfHeader } from '../grobid-tei';
 import { canonicalizeResourceLang } from '../resource-language';
 import { parsePublicPdfResponse, parseStoredPdfRepresentation, PermanentPdfArtifactError } from '../zotero-sdt-service.ts';
-import { fetchOpenAlexPdf } from './openalex';
-import { PDF_MIME } from './pdf-constants';
-import type { LocalPdfSummary, PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
-
-export { PDF_MIME } from './pdf-constants';
-export type { PaidPdfFallbackGrant } from './pdf-fallback-policy.ts';
+import { PDF_MIME, type LocalPdfSummary, type PaidPdfFallbackGrant } from './pdf-policy';
 
 const MAX_PAPER_IDENTIFIER_TEXT_CHARS = 20_000;
 const GROBID_HEADER_STEP = { retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '600 seconds' } as const;
@@ -65,38 +60,6 @@ export async function completeFetchedPdfAcquisition(
 		content: cloudMarkdown,
 		paperIdentifierText: cloudMarkdown.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS),
 	};
-}
-
-/** OpenAlex content URLs need our API key, so this optional representation is always local-only. */
-export async function stageOpenAlexPdfContent(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
-	try {
-		const contentStream = await step.do(
-			'acquire-openalex-content-pdf-v12',
-			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
-			async () => {
-				const response = await fetchOpenAlexPdf({ apiKey: env.OPENALEX_API_KEY, contentPdfUrl: input.contentPdfUrl });
-				const { markdown, citations } = await localPdfAttempt(parsePublicPdfResponse(env, response, input.contentPdfUrl));
-				return Response.json({ markdown, citations }).body!;
-			},
-		);
-		const content = await new Response(contentStream).json<{ markdown: string; citations: AcquiredResource['citations'] }>();
-		if (!content.markdown) throw new NonRetryableError('OpenAlex content PDF has no usable text; OCR is required');
-		console.info({
-			tag: 'OPENALEX_CONTENT',
-			event: 'pdf_acquired',
-			processing_id: input.processingId,
-			chars: content.markdown.length,
-		});
-		return content;
-	} catch (error) {
-		console.error({
-			tag: 'OPENALEX_CONTENT',
-			event: 'pdf_acquisition_failed',
-			processing_id: input.processingId,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return null;
-	}
 }
 
 type StoredPdfRow = {

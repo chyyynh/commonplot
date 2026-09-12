@@ -8,7 +8,8 @@ import { toMarkdown } from 'mdast-util-to-markdown';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
 import { limitByteStream } from '../../shared/response';
 import type { AcquiredResource } from '../acquired-resource';
-import { acquireFetchedPdfResponse, completeFetchedPdfAcquisition, type PaidPdfFallbackGrant, PDF_MIME } from './pdf';
+import { acquireFetchedPdfResponse, completeFetchedPdfAcquisition } from './pdf';
+import { PDF_MIME, type PaidPdfFallbackGrant } from './pdf-policy';
 import type { PlatformResourceUrl } from './resource-url';
 import { canonicalizeWebResourceUrl, resolvePlatformResourceUrl } from './resource-url';
 
