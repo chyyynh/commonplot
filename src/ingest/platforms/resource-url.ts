@@ -1,6 +1,9 @@
 // Pure platform URL identity rules; acquisition and provider I/O stay in their adapters.
 import { paperIdentifiersFromIdentity, resolveExactPaperInput } from '../../shared/paper-identity';
-import { RESOURCE_PLATFORMS, type PlatformResourceUrl, type ResourceSubjectIdentity } from '../../shared/resource';
+import { RESOURCE_PLATFORMS, type ResourceIdentifier, type ResourcePlatform } from '../../shared/resource';
+
+export type PlatformResourceUrl = { resourcePlatform: ResourcePlatform; platformId: string; canonicalUrl: string };
+export type ResourceSubjectIdentity = { identifiers: ResourceIdentifier[]; normalizedUrl: string };
 
 const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
 

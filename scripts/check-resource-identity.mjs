@@ -4,7 +4,9 @@ import { registerHooks } from 'node:module';
 
 const workflowMocks = {
 	'../shared/db': ['connectCoreDb'],
-	'./acquisition': ['stageStoredResourceAcquisition', 'stageUrlAcquisition'],
+	'./acquisition': ['stageUrlAcquisition'],
+	'./platforms/pdf': ['stageStoredPdfAcquisition'],
+	'./platforms/paper': ['stagePaperResolution'],
 	'./analysis': ['analyzeResource', 'classifyResource'],
 	'./image-rehosting': ['stageResourceImages'],
 	'./resource-persistence': ['persistResolvedResource', 'persistResourceClassification', 'loadPublicPdfContent', 'prepareResolvedResource'],
@@ -291,6 +293,39 @@ const workflowCases = [
 		appUnavailable: true,
 	},
 	{ name: 'user-subject', subject: true },
+	...[
+		{
+			name: 'source-metadata-fallback',
+			metadata: { originalLang: 'und', summary: ' ', publishedDate: 'invalid' },
+			expectedMetadata: { originalLang: 'zh-TW', summary: 'Feed summary', publishedDate: '2026-09-11T00:00:00.000Z' },
+		},
+		{
+			name: 'provider-metadata-precedence',
+			metadata: { originalLang: 'ja_JP', summary: ' Provider summary ', publishedDate: '2026-08-29T16:00:00+08:00' },
+			expectedMetadata: { originalLang: 'ja-JP', summary: 'Provider summary', publishedDate: '2026-08-29T08:00:00.000Z' },
+		},
+		{
+			name: 'platform-metadata-fallback',
+			metadata: { kind: 'blog', resourcePlatform: 'lesswrong', fileType: null, originalLang: 'und', summary: null, publishedDate: null },
+			expectedMetadata: { originalLang: 'zh-TW', summary: 'Feed summary', publishedDate: '2026-09-11T00:00:00.000Z' },
+		},
+	].map((testCase) => ({
+		...testCase,
+		instanceId: testCase.name,
+		appUnavailable: true,
+		payload: {
+			...sourcePayload,
+			sourceHints: { originalLang: 'zh_TW', summary: ' Feed summary ', publishedDate: '2026-09-11T00:00:00.000Z' },
+		},
+	})),
+	{
+		name: 'manual-metadata-missing',
+		instanceId: 'manual-metadata-contract',
+		appUnavailable: true,
+		payload: { kind: 'draft', url: 'https://example.com/paper.pdf', progress: false },
+		metadata: { originalLang: 'invalid language', summary: ' ', publishedDate: 'invalid' },
+		expectedMetadata: { originalLang: 'und', summary: null, publishedDate: null },
+	},
 ];
 const subjectIds = new Map();
 const translationRuns = new Map();
@@ -305,6 +340,8 @@ try {
 		instanceId = workflowInstanceId,
 		appUnavailable = false,
 		subject = false,
+		metadata = {},
+		expectedMetadata,
 		rejectStart = false,
 	} of workflowCases) {
 		const effects = [];
@@ -326,11 +363,14 @@ try {
 			resourcePlatform: null,
 			fileType: subject ? 'text/html' : 'application/pdf',
 			originalLang: 'en',
+			summary: null,
+			publishedDate: subject ? subjectTarget.sourceHints.publishedDate : null,
 			content: 'An original research paper with readable content.',
 			citations: subject ? null : { references: [{ key: 'r1', label: '1', text: 'A cited paper.' }] },
 			resourceImages: [],
 			resourceIdentifiers: [],
-			subject: subject ? { normalizedUrl: subjectTarget.url, publishedDate: subjectTarget.sourceHints.publishedDate } : null,
+			subject: subject ? { normalizedUrl: subjectTarget.url } : null,
+			...metadata,
 		};
 		const acquire = () => {
 			effects.push('acquired');
@@ -342,11 +382,14 @@ try {
 					rows: [{ original_lang: 'en', published_date: null, resource_identifiers: [], summary: null, url: acquired.url }],
 				}),
 			}),
-			stageStoredResourceAcquisition: acquire,
+			stageStoredPdfAcquisition: acquire,
+			stagePaperResolution: (_env, _step, { resource }) => {
+				assert.equal(resource.resourcePlatform, null, 'platform adapters do not enter paper enrichment');
+				return resource;
+			},
 			stageUrlAcquisition: (_env, _step, input) => {
 				if (scenario === 'automatic-reacquire') {
-					assert.deepEqual(input.hints, { originalLang: null, publishedDate: null, summary: null });
-					assert.equal(input.paperIdentifiers, undefined);
+					assert.equal(input.url, acquired.url);
 				}
 				return acquire();
 			},
@@ -374,7 +417,13 @@ try {
 				assert.equal(refreshKey, scenario === 'automatic-reacquire' ? instanceId : undefined);
 				return [];
 			},
-			prepareResolvedResource: (value) => value,
+			prepareResolvedResource: (value) => {
+				if (expectedMetadata) {
+					const { originalLang, summary, publishedDate } = value;
+					assert.deepEqual({ originalLang, summary, publishedDate }, expectedMetadata, scenario);
+				}
+				return value;
+			},
 			persistResolvedResource: async (_db, _resource, target) => {
 				const privateRendition = target.kind === 'existing' && target.ownedBlobId === workflowRawId;
 				effects.push(privateRendition ? 'private-persisted' : 'corpus-persisted');

@@ -1,4 +1,5 @@
 import { createResourceTask, enqueueSearchProgress, type ResourceTask, type ResourceTaskContext } from './progress';
+import { canonicalizeResourceLang } from './resource-language';
 // Durable translation execution; resource processing only enqueues this Workflow.
 import { generateText, Output } from 'ai';
 import { type WorkflowDynamicDelayContext, WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
@@ -8,7 +9,6 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
-import { canonicalizeResourceLang } from '../shared/resource';
 import { coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
 	compileMarkdownTranslationArtifact,

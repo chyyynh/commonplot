@@ -6,13 +6,15 @@ import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
 import { resourceImageSourceUrls } from '../shared/image-mapping';
-import { canonicalizeOptionalResourceLang } from '../shared/resource';
-import { stageStoredResourceAcquisition, stageUrlAcquisition } from './acquisition';
+import { stageUrlAcquisition } from './acquisition';
 import { analyzeResource, classifyResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { withoutPrivatePdfImages } from './pdf-markdown.ts';
+import { stagePaperResolution } from './platforms/paper';
+import { stageStoredPdfAcquisition } from './platforms/pdf';
 import { LLAMA_PARSE_MAX_PAGES } from './platforms/pdf-fallback-policy';
 import { createResourceTask, enqueueSearchProgress, registerResourceTask, type ResourceTask } from './progress';
+import { canonicalizeOptionalResourceLang } from './resource-language';
 import {
 	persistResolvedResource,
 	persistResourceClassification,
@@ -135,33 +137,38 @@ async function loadResourceReacquisitionUrl(db: NodePgDatabase, resourceId: stri
 }
 
 async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, target: ResourceProcessingTarget, task: ResourceTask) {
-	if (target.kind === 'draft') {
-		return stageUrlAcquisition(env, step, {
-			hints: {
-				originalLang: target.sourceHints?.originalLang ?? null,
-				publishedDate: target.sourceHints?.publishedDate ?? null,
-				summary: target.sourceHints?.summary ?? null,
-			},
-			paidPdfFallback: target.paidPdfFallback ?? null,
-			processingId: task.taskId,
-			url: target.url,
-		});
-	}
-
-	if (target.kind === 'storedBlob') {
-		return stageStoredResourceAcquisition(env, step, target, task);
-	}
-
-	const url = await step.do(
-		'load-resource-reacquisition-url-v2',
-		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-		async () => loadResourceReacquisitionUrl(await connectCoreDb(env), target.resourceId),
-	);
-	return stageUrlAcquisition(env, step, {
-		hints: { originalLang: null, publishedDate: null, summary: null },
-		paidPdfFallback: target.paidPdfFallback ?? null,
-		processingId: target.resourceId,
-		url,
+	const processingId = target.kind === 'draft' ? task.taskId : target.resourceId;
+	const url =
+		target.kind === 'reacquire'
+			? await step.do(
+					'load-resource-reacquisition-url-v2',
+					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+					async () => loadResourceReacquisitionUrl(await connectCoreDb(env), target.resourceId),
+				)
+			: target.kind === 'draft'
+				? target.url
+				: null;
+	const acquired =
+		target.kind === 'storedBlob'
+			? await stageStoredPdfAcquisition(env, step, target)
+			: await stageUrlAcquisition(env, step, { paidPdfFallback: target.paidPdfFallback ?? null, processingId, url: url! });
+	const source = target.kind === 'draft' ? target.sourceHints : undefined;
+	const parsedDate = Date.parse(acquired.publishedDate ?? '');
+	const publishedDate = Number.isNaN(parsedDate) ? (source?.publishedDate ?? null) : new Date(parsedDate).toISOString();
+	const resource = {
+		...acquired,
+		originalLang:
+			canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeOptionalResourceLang(source?.originalLang) ?? 'und',
+		publishedDate,
+		summary: acquired.summary?.trim() || source?.summary?.trim() || null,
+	};
+	if (resource.resourcePlatform !== null) return resource;
+	if (target.kind === 'storedBlob') await task.report('metadata', { stage: 'metadata', status: 'running' });
+	return stagePaperResolution(env, step, {
+		resource,
+		processingId,
+		seedIdentifiers: [],
+		sourceUrl: url,
 	});
 }
 
@@ -355,7 +362,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 									kind: 'draft',
 									relation: { kind: 'subject', parentResourceId: persistedResourceId, parentAcquisitionRevision: acquisitionRevision },
 									// Carrier-resolved hints only; the subject page still wins when it states its own date.
-									...(subject.publishedDate ? { sourceHints: { publishedDate: subject.publishedDate } } : {}),
+									...(resource.publishedDate ? { sourceHints: { publishedDate: resource.publishedDate } } : {}),
 									url: subject.normalizedUrl,
 								});
 								// User subjects keep their existing IDs. Automatic subjects own

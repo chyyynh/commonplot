@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
-import { type AcquiredResource, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
+import type { AcquiredResource } from '../acquired-resource';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
 
@@ -36,7 +36,7 @@ type LessWrongGraphqlResponse = {
 	errors?: Array<{ message?: string }>;
 };
 
-async function scrapeLessWrong(postId: string, hints: ResourceAcquisitionHints) {
+async function scrapeLessWrong(postId: string) {
 	const response = await fetch(LESSWRONG_GRAPHQL_URL, {
 		method: 'POST',
 		headers: {
@@ -72,18 +72,20 @@ async function scrapeLessWrong(postId: string, hints: ResourceAcquisitionHints) 
 			LESSWRONG_GRAPHQL_URL,
 		),
 		source: 'LessWrong',
-		...resolveResourceHints({ originalLang: null, publishedDate: post.postedAt?.trim() || null, summary: null }, hints),
+		originalLang: 'und',
+		publishedDate: post.postedAt?.trim() || null,
+		summary: null,
 		creators: author ? [{ role: 'author', literal: author }] : [],
 		kindMetadata: { siteName: 'LessWrong' },
 		subject: null,
 	} satisfies AcquiredResource;
 }
 
-export async function stageLessWrongAcquisition(step: WorkflowStep, postId: string, hints: ResourceAcquisitionHints) {
+export async function stageLessWrongAcquisition(step: WorkflowStep, postId: string) {
 	const contentStream = await step.do(
 		'acquire-lesswrong-v2',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await scrapeLessWrong(postId, hints)).body!,
+		async () => Response.json(await scrapeLessWrong(postId)).body!,
 	);
 	return new Response(contentStream).json<Awaited<ReturnType<typeof scrapeLessWrong>>>();
 }

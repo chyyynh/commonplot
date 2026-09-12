@@ -5,34 +5,7 @@ import {
 	normalizeDoi,
 	normalizeOpenAlexId,
 	PAPER_IDENTIFIER_SCHEMES,
-	type PaperIdentifier,
 } from './paper-identity.ts';
-
-const RESOURCE_LANG_MAX_LENGTH = 35;
-
-export function canonicalizeResourceLang(value: unknown): string {
-	if (typeof value !== 'string') throw new Error(`Invalid resource language: ${String(value)}`);
-	const lang = value.trim();
-	if (!lang || lang.length > RESOURCE_LANG_MAX_LENGTH) throw new Error(`Invalid resource language: ${value}`);
-	try {
-		const canonical = Intl.getCanonicalLocales(lang)[0];
-		if (!canonical || canonical.length > RESOURCE_LANG_MAX_LENGTH) throw new Error('Invalid locale');
-		return canonical;
-	} catch {
-		throw new Error(`Invalid resource language: ${value}`);
-	}
-}
-
-export function canonicalizeOptionalResourceLang(value: unknown): string | null {
-	if (typeof value !== 'string') return null;
-	const lang = value.trim().replaceAll('_', '-');
-	if (!lang || lang.toLowerCase() === 'und') return null;
-	try {
-		return canonicalizeResourceLang(lang);
-	} catch {
-		return null;
-	}
-}
 
 const RESOURCE_CREATOR_ROLES = ['author', 'editor', 'submitter', 'channel'] as const;
 const optionalHttpUrl = z.url({ protocol: /^https?$/ }).refine((value) => {
@@ -97,43 +70,6 @@ export const RESOURCE_PLATFORMS = {
 	youtube: { kind: 'video', identifier: z.string().regex(/^[A-Za-z0-9_-]{11}$/) },
 } as const satisfies Record<string, { kind: ResourceKind; identifier: z.ZodString }>;
 export type ResourcePlatform = keyof typeof RESOURCE_PLATFORMS;
-export type PlatformResourceUrl = { resourcePlatform: ResourcePlatform; platformId: string; canonicalUrl: string };
-
-export type ResourceCitations = {
-	references: readonly { key: string; label: string | null; text: string }[];
-};
-
-// Adapters share an output contract; each adapter owns its mapping and identity.
-export type AcquiredResource = {
-	citations?: ResourceCitations | null;
-	kind: Exclude<ResourceKind, 'image'>;
-	resourcePlatform: ResourcePlatform | null;
-	resourceIdentifiers: ResourceIdentifier[];
-	url: string | null;
-	title: string;
-	summary: string | null;
-	content: string;
-	source: string;
-	originalLang: string;
-	publishedDate: string | null;
-	creators: ResourceCreator[];
-	kindMetadata: ResourceKindMetadata;
-	fileType: string | null;
-	previewImageUrl: string | null;
-	subject: (ResourceSubjectIdentity & { publishedDate: string | null }) | null;
-};
-export type ResourceSubjectIdentity = { identifiers: ResourceIdentifier[]; normalizedUrl: string };
-export type ResourceAcquisitionHints = { originalLang: string | null; publishedDate: string | null; summary: string | null };
-
-export function resolveResourceHints(acquired: ResourceAcquisitionHints, hints: ResourceAcquisitionHints) {
-	const parsedDate = Date.parse(acquired.publishedDate ?? '');
-	return {
-		originalLang: canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeOptionalResourceLang(hints.originalLang) ?? 'und',
-		publishedDate: Number.isNaN(parsedDate) ? hints.publishedDate : new Date(parsedDate).toISOString(),
-		summary: acquired.summary?.trim() || hints.summary?.trim() || null,
-	};
-}
-
 export const ResourceCreatorsSchema = z.array(ResourceCreatorSchema);
 
 const ResourceIdentifierSchemeSchema = z.enum([...PAPER_IDENTIFIER_SCHEMES, ...(Object.keys(RESOURCE_PLATFORMS) as ResourcePlatform[])]);
@@ -172,7 +108,3 @@ export const ResourceIdentifiersSchema = z.array(ResourceIdentifierSchema).refin
 }, 'Identifiers must be unique with exactly one preferred value per scheme');
 
 export type ResourceIdentifier = Readonly<z.infer<typeof ResourceIdentifierSchema>>;
-
-export function isPaperIdentifier(identifier: ResourceIdentifier): identifier is PaperIdentifier {
-	return isPaperIdentifierScheme(identifier.scheme);
-}

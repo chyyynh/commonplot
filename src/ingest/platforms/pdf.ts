@@ -3,15 +3,11 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
-import {
-	type AcquiredResource,
-	canonicalizeResourceLang,
-	type ResourceAcquisitionHints,
-	ResourceCreatorsSchema,
-	resolveResourceHints,
-} from '../../shared/resource';
+import { ResourceCreatorsSchema } from '../../shared/resource';
+import type { AcquiredResource } from '../acquired-resource';
 import { resolveCrossrefPaperCandidate } from '../crossref';
 import type { GrobidPdfHeader } from '../grobid-tei';
+import { canonicalizeResourceLang } from '../resource-language';
 import { parsePublicPdfResponse, parseStoredPdfRepresentation, PermanentPdfArtifactError } from '../zotero-sdt-service.ts';
 import { fetchOpenAlexPdf } from './openalex';
 import { PDF_MIME } from './pdf-constants';
@@ -183,7 +179,9 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 			citations: parsed.citations,
 			paperIdentifierText: parsed.paperIdentifierText,
 			source: resource.source,
-			...resolveResourceHints(resource, resource),
+			originalLang: resource.originalLang,
+			publishedDate: resource.publishedDate,
+			summary: resource.summary,
 			creators: resource.creators,
 			kindMetadata: null,
 		},
@@ -191,12 +189,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 	};
 }
 
-export async function acquireFetchedPdfResponse(
-	env: CoreEnv,
-	response: Response,
-	finalUrl: string,
-	hints: ResourceAcquisitionHints,
-): Promise<PdfAcquisition> {
+export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response, finalUrl: string): Promise<PdfAcquisition> {
 	const parsed = await localPdfAttempt(parsePublicPdfResponse(env, response, finalUrl));
 	const url = new URL(finalUrl);
 	let fileName = url.pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';
@@ -222,7 +215,9 @@ export async function acquireFetchedPdfResponse(
 			citations: parsed.citations,
 			paperIdentifierText: parsed.paperIdentifierText,
 			source,
-			...resolveResourceHints(hints, hints),
+			originalLang: 'und',
+			publishedDate: null,
+			summary: null,
 			creators: [],
 			kindMetadata: null,
 		},

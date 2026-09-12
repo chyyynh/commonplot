@@ -1,6 +1,31 @@
 import { franc } from 'franc-min';
 import { Converter } from 'opencc-js';
-import { canonicalizeResourceLang } from '../shared/resource';
+
+const RESOURCE_LANG_MAX_LENGTH = 35;
+
+export function canonicalizeResourceLang(value: unknown): string {
+	if (typeof value !== 'string') throw new Error(`Invalid resource language: ${String(value)}`);
+	const lang = value.trim();
+	if (!lang || lang.length > RESOURCE_LANG_MAX_LENGTH) throw new Error(`Invalid resource language: ${value}`);
+	try {
+		const canonical = Intl.getCanonicalLocales(lang)[0];
+		if (!canonical || canonical.length > RESOURCE_LANG_MAX_LENGTH) throw new Error('Invalid locale');
+		return canonical;
+	} catch {
+		throw new Error(`Invalid resource language: ${value}`);
+	}
+}
+
+export function canonicalizeOptionalResourceLang(value: unknown): string | null {
+	if (typeof value !== 'string') return null;
+	const lang = value.trim().replaceAll('_', '-');
+	if (!lang || lang.toLowerCase() === 'und') return null;
+	try {
+		return canonicalizeResourceLang(lang);
+	} catch {
+		return null;
+	}
+}
 
 let chineseConverters: { toTraditional: (text: string) => string; toSimplified: (text: string) => string } | undefined;
 

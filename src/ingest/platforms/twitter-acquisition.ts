@@ -1,12 +1,10 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { type AcquiredResource, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
+import type { AcquiredResource } from '../acquired-resource';
 import { isTwitterHostname, parseTwitterResourceUrl, resolveResourceSubject } from './resource-url';
-
 import { parseTwitterArticleResponse, parseTwitterTweetsResponse, renderTwitterArticleMarkdown, type Tweet } from './twitter-data';
 
 type TwitterAcquisitionInput = {
-	hints: ResourceAcquisitionHints;
 	processingId: string;
 	tweetId: string;
 };
@@ -211,7 +209,7 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 	};
 }
 
-async function scrapeTweet({ tweetId, hints }: TwitterAcquisitionInput, apiKey: string) {
+async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string) {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
 	const response = await fetch(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, {
 		headers: { 'x-api-key': apiKey },
@@ -232,10 +230,7 @@ async function scrapeTweet({ tweetId, hints }: TwitterAcquisitionInput, apiKey: 
 	const tweet = tweets[0];
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
 	const { subjectUrl, ...content } = await resolveTweetContent(tweet, apiKey);
-	const resolvedHints = resolveResourceHints(
-		{ originalLang: tweet.lang ?? null, publishedDate: content.publishedDate, summary: null },
-		hints,
-	);
+
 	const subject = resolveResourceSubject(subjectUrl);
 	return {
 		...content,
@@ -245,10 +240,11 @@ async function scrapeTweet({ tweetId, hints }: TwitterAcquisitionInput, apiKey: 
 		url: `https://x.com/i/status/${tweetId}`,
 		title: content.title.trim(),
 		source: 'Twitter',
-		...resolvedHints,
+		originalLang: tweet.lang ?? 'und',
+		summary: null,
 		fileType: null,
 		previewImageUrl: null,
-		subject: subject && { ...subject, publishedDate: resolvedHints.publishedDate },
+		subject,
 	} satisfies AcquiredResource;
 }
 

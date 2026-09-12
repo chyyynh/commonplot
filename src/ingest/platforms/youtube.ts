@@ -4,7 +4,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { createWorkersAI } from 'workers-ai-provider';
 import type { TranscriptResponse } from 'youtube-transcript';
 import { z } from 'zod';
-import { type AcquiredResource, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
+import type { AcquiredResource } from '../acquired-resource';
 import { coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
@@ -211,7 +211,7 @@ async function fetchTranscript(videoId: string): Promise<Pick<YouTubeTranscript,
 	return { segments, language };
 }
 
-async function scrapeYouTube(videoId: string, youtubeApiKey: string, hints: ResourceAcquisitionHints) {
+async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching video', videoId });
 
 	const videoData = await fetchYouTubeVideoData(videoId, youtubeApiKey);
@@ -246,14 +246,9 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string, hints: Reso
 				.filter(Boolean)
 				.join('\n') || snippet.description.trim(),
 		source: channelTitle || 'YouTube',
-		...resolveResourceHints(
-			{
-				originalLang: transcript.language ?? snippet.defaultAudioLanguage ?? null,
-				publishedDate: snippet.publishedAt,
-				summary: snippet.description,
-			},
-			hints,
-		),
+		originalLang: transcript.language ?? snippet.defaultAudioLanguage ?? 'und',
+		publishedDate: snippet.publishedAt,
+		summary: snippet.description,
 		creators: channelTitle
 			? [
 					{
@@ -283,7 +278,6 @@ export async function stageYouTubeAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		hints: ResourceAcquisitionHints;
 		processingId: string;
 		videoId: string;
 	},
@@ -291,7 +285,7 @@ export async function stageYouTubeAcquisition(
 	const contentStream = await step.do(
 		'acquire-youtube-v2',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY, input.hints)).body!,
+		async () => Response.json(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY)).body!,
 	);
 	const acquired = await new Response(contentStream).json<YouTubeAcquisition>();
 	const { transcript } = acquired.youtube;

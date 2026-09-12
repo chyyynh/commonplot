@@ -7,7 +7,7 @@ import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { type AcquiredResource, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
+import type { AcquiredResource } from '../acquired-resource';
 import { coreGatewayOptions, CORE_TEXT_MODEL } from '../ai-model';
 import { resolveResourceSubject } from './resource-url';
 
@@ -40,7 +40,6 @@ type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
 
 type HackerNewsAcquisition = Awaited<ReturnType<typeof scrapeHackerNews>>;
 type HackerNewsAcquisitionInput = {
-	hints: ResourceAcquisitionHints;
 	itemId: string;
 	processingId: string;
 };
@@ -87,7 +86,7 @@ function discussionExcerpt(markdown: string, maxChars: number): string {
 				.trimEnd()}…`;
 }
 
-async function scrapeHackerNews({ hints, itemId }: HackerNewsAcquisitionInput) {
+async function scrapeHackerNews({ itemId }: HackerNewsAcquisitionInput) {
 	console.info({ tag: 'HN', msg: 'Fetching item and ranked discussion', itemId });
 	const item = await fetchHnItem(itemId);
 	if (!item) throw new NonRetryableError(`Hacker News item ${itemId} was not found`);
@@ -145,10 +144,7 @@ async function scrapeHackerNews({ hints, itemId }: HackerNewsAcquisitionInput) {
 		subjectUrl: item.url ?? null,
 		totalComments: totalCommentCount,
 	});
-	const resolvedHints = resolveResourceHints(
-		{ originalLang: null, publishedDate: item.time ? new Date(item.time * 1000).toISOString() : null, summary: null },
-		hints,
-	);
+	const publishedDate = item.time ? new Date(item.time * 1000).toISOString() : null;
 	const subject = resolveResourceSubject(item.url);
 	const submitter = item.by?.trim();
 	return {
@@ -160,12 +156,14 @@ async function scrapeHackerNews({ hints, itemId }: HackerNewsAcquisitionInput) {
 			title: title.trim(),
 			content: markdown,
 			source: 'Hacker News',
-			...resolvedHints,
+			originalLang: 'und',
+			publishedDate,
+			summary: null,
 			creators: submitter ? [{ role: 'submitter', literal: submitter }] : [],
 			kindMetadata: { points: item.score ?? undefined, commentCount: totalCommentCount },
 			fileType: null,
 			previewImageUrl: null,
-			subject: subject && { ...subject, publishedDate: resolvedHints.publishedDate },
+			subject,
 		} satisfies AcquiredResource,
 		discussion: {
 			commentCount: sampledCommentCount,

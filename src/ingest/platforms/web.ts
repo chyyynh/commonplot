@@ -6,10 +6,10 @@ import { toMdast } from 'hast-util-to-mdast';
 import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
-import type { PlatformResourceUrl } from '../../shared/resource';
-import { type AcquiredResource, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
 import { limitByteStream } from '../../shared/response';
+import type { AcquiredResource } from '../acquired-resource';
 import { acquireFetchedPdfResponse, completeFetchedPdfAcquisition, type PaidPdfFallbackGrant, PDF_MIME } from './pdf';
+import type { PlatformResourceUrl } from './resource-url';
 import { canonicalizeWebResourceUrl, resolvePlatformResourceUrl } from './resource-url';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
@@ -73,7 +73,7 @@ addTransformations({
 	},
 });
 
-async function acquireHtmlArticle(html: string, url: string, hints: ResourceAcquisitionHints) {
+async function acquireHtmlArticle(html: string, url: string) {
 	const article = await extractFromHtml(html, url, {
 		contentLengthThreshold: MIN_ARTICLE_CONTENT_CHARS,
 	});
@@ -107,10 +107,9 @@ async function acquireHtmlArticle(html: string, url: string, hints: ResourceAcqu
 		title,
 		content,
 		source: siteName,
-		...resolveResourceHints(
-			{ originalLang: null, publishedDate: article.published?.trim() || null, summary: sourceHtmlSummary(html) },
-			hints,
-		),
+		originalLang: 'und',
+		publishedDate: article.published?.trim() || null,
+		summary: sourceHtmlSummary(html),
 		creators: author ? [{ role: 'author', literal: author }] : [],
 		kindMetadata: { siteName },
 		previewImageUrl: normalizedResourceImageUrl(article.image, url),
@@ -162,7 +161,7 @@ function sourceHtmlSummary(html: string): string | null {
 
 type WebAcquisition = Awaited<ReturnType<typeof acquireWebResource>>;
 
-async function acquireWebResource(env: CoreEnv, url: string, hints: ResourceAcquisitionHints) {
+async function acquireWebResource(env: CoreEnv, url: string) {
 	const response = await fetch(url, {
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
@@ -197,7 +196,7 @@ async function acquireWebResource(env: CoreEnv, url: string, hints: ResourceAcqu
 
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
 	if (contentType.includes(PDF_MIME) || parsedFinalUrl.pathname.toLowerCase().endsWith('.pdf')) {
-		return acquireFetchedPdfResponse(env, response, finalUrl, hints);
+		return acquireFetchedPdfResponse(env, response, finalUrl);
 	}
 	if (
 		contentType &&
@@ -218,19 +217,19 @@ async function acquireWebResource(env: CoreEnv, url: string, hints: ResourceAcqu
 			() => new NonRetryableError(`HTML response exceeded ${GENERIC_HTML_MAX_BYTES} bytes`),
 		);
 	const html = await new Response(body).text();
-	return acquireHtmlArticle(html, finalUrl, hints);
+	return acquireHtmlArticle(html, finalUrl);
 }
 
 export async function stageWebAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { hints: ResourceAcquisitionHints; paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string },
+	input: { paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string },
 ) {
 	const result = await step.do(
 		'acquire-web-v9',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 		async () => {
-			const acquired = await acquireWebResource(env, input.url, input.hints);
+			const acquired = await acquireWebResource(env, input.url);
 			return 'platform' in acquired ? acquired : Response.json(acquired).body!;
 		},
 	);

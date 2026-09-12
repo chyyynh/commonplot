@@ -1,3 +1,4 @@
+import type { AcquiredResource } from '../acquired-resource';
 // Provider-independent bibliographic resolution followed by OpenAlex enrichment.
 
 import type { WorkflowStep } from 'cloudflare:workers';
@@ -10,7 +11,6 @@ import {
 	paperIdentityFromText,
 	resolveExactPaperInput,
 } from '../../shared/paper-identity';
-import type { AcquiredResource } from '../../shared/resource';
 import { resolveCrossrefPaper } from '../crossref';
 import { resolveOpenAlexPaper } from './openalex';
 import { PDF_MIME, stageOpenAlexPdfContent } from './pdf';

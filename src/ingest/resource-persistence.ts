@@ -2,20 +2,20 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { type HostedResourceImage, hostedResourceImageFields } from '../shared/image-mapping';
+import { isPaperIdentifierScheme } from '../shared/paper-identity';
 import {
-	type AcquiredResource,
-	canonicalizeResourceLang,
-	isPaperIdentifier,
 	RESOURCE_KIND_METADATA,
 	RESOURCE_PLATFORMS,
 	ResourceCreatorsSchema,
 	type ResourceIdentifier,
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
+import type { AcquiredResource } from './acquired-resource';
 import type { ResourceAnalysis, ResourceClassification } from './analysis';
 import { hasPrivatePdfImages, withoutPrivatePdfImages, withoutDuplicatePdfTitle } from './pdf-markdown.ts';
 import type { YouTubeResourceData } from './platforms/youtube';
 import { persistYouTubeData } from './platforms/youtube-persistence';
+import { canonicalizeResourceLang } from './resource-language';
 
 export type ResourceDraftRelation =
 	| Readonly<{ kind: 'source'; sourceId: string }>
@@ -93,7 +93,7 @@ export function prepareResolvedResource(
 				!identifiers.length ||
 				identifiers.some(({ scheme }) => scheme !== resource.resourcePlatform)
 			: resource.kind === 'paper'
-				? !identifiers.length || identifiers.some((identifier) => !isPaperIdentifier(identifier))
+				? !identifiers.length || identifiers.some((identifier) => !isPaperIdentifierScheme(identifier.scheme))
 				: identifiers.length > 0
 	) {
 		throw new TypeError('Resource identifiers do not match its identity');

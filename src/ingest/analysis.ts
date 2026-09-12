@@ -2,9 +2,9 @@ import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { openai } from 'workers-ai-provider/openai';
 import { z } from 'zod';
-import { type AcquiredResource, canonicalizeResourceLang } from '../shared/resource';
+import type { AcquiredResource } from './acquired-resource';
 import { coreGatewayOptions } from './ai-model';
-import { detectResourceLanguage } from './resource-language';
+import { canonicalizeResourceLang, detectResourceLanguage } from './resource-language';
 
 const ANALYSIS_CONTENT_MAX_LENGTH = 10_000;
 const ANALYSIS_MODEL = 'google/gemini-3.5-flash-lite';

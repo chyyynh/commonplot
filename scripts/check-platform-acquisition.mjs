@@ -59,13 +59,8 @@ async function acquire(input = {}) {
 		creators: [],
 		kindMetadata: input.kindMetadata ?? null,
 	};
-	const hints = {
-		originalLang: input.originalLang === undefined ? 'en' : input.originalLang,
-		publishedDate: null,
-		summary: input.summaryHint ?? null,
-	};
 	const step = { do: async (name, _options, run) => (name.startsWith('acquire-') ? run({ attempt: 1 }) : null) };
-	const context = { hints, processingId: 'contract' };
+	const context = { processingId: 'contract' };
 	if (input.resourcePlatform) {
 		const providerResponses = {
 			[`/v0/item/${input.platformId}.json`]: {
@@ -139,11 +134,10 @@ async function acquire(input = {}) {
 				case 'hackernews':
 					return await stageHackerNewsAcquisition(env, step, { ...context, itemId: input.platformId });
 				case 'lesswrong':
-					return await stageLessWrongAcquisition(step, input.platformId, hints);
+					return await stageLessWrongAcquisition(step, input.platformId);
 				case 'twitter':
 					return await stageUrlAcquisition(env, step, {
 						url: input.url ?? `https://x.com/i/status/${input.platformId}`,
-						hints,
 						processingId: context.processingId,
 						paidPdfFallback: null,
 					});
@@ -362,7 +356,7 @@ const cases = [
 		},
 		expected: {
 			content: 'Comment',
-			subject: { identifiers: [], normalizedUrl, publishedDate: '2026-09-01T00:00:00.000Z' },
+			subject: { identifiers: [], normalizedUrl },
 		},
 	})),
 	...[
@@ -399,7 +393,6 @@ const cases = [
 			resourcePlatform: 'youtube',
 			platformId: 'abcdefghijk',
 			summary: 'Video description',
-			summaryHint: 'Feed description',
 			transcript: [{ offset: 0, duration: 1200, text: 'Transcript content', lang: 'ja' }],
 		},
 		expected: { content: 'Transcript content', summary: 'Video description', originalLang: 'ja' },
@@ -585,7 +578,7 @@ assert.deepEqual(
 			subject: paperSubject,
 		})
 	).subject,
-	{ ...paperSubject, publishedDate: null },
+	paperSubject,
 	'acquisition resolves the paper subject from its URL',
 );
 
@@ -602,7 +595,7 @@ assert.deepEqual(
 			subject: paperSubject,
 		})
 	).subject,
-	{ ...paperSubject, publishedDate: '2026-08-29T14:02:10.000Z' },
+	paperSubject,
 	'subject inherits the carrier publication date',
 );
 
@@ -650,10 +643,8 @@ assert.deepEqual(
 assert.throws(() => hostedResourceImageFields(imageInput, hosted.slice(0, 1)), /do not cover every source/);
 
 const summaryCases = [
-	{ summary: 'Source description', summaryHint: 'Feed description', expected: 'Source description' },
-	{ summary: null, summaryHint: 'Feed description', expected: 'Feed description' },
-	{ summary: '   ', summaryHint: 'Feed description', expected: 'Feed description' },
-	{ summary: '   ', summaryHint: '   ', expected: null },
+	{ summary: 'Source description', expected: 'Source description' },
+	{ summary: '   ', expected: null },
 	{
 		htmlMetadata: '<script type="application/ld+json">{"@type":"BlogPosting","description":"Publisher abstract"}</script>',
 		expected: 'Publisher abstract',
@@ -665,10 +656,9 @@ const summaryCases = [
 	},
 	{
 		htmlMetadata: '<script type="application/ld+json">{"@type":"Organization","description":"Site marketing"}</script>',
-		summaryHint: 'Feed description',
-		expected: 'Feed description',
+		expected: null,
 	},
-	{ htmlMetadata: '<script type="application/ld+json">invalid</script>', summaryHint: 'Feed description', expected: 'Feed description' },
+	{ htmlMetadata: '<script type="application/ld+json">invalid</script>', expected: null },
 ];
 for (const { expected, ...input } of summaryCases) assert.equal((await acquire(input)).summary, expected);
 
