@@ -9,7 +9,7 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import type { AcquiredResource } from '../acquired-resource';
 import { coreGatewayOptions, CORE_TEXT_MODEL } from '../ai-model';
-import { resolveResourceSubject } from './resource-url';
+import { resolveResourceUrl } from './resource-url';
 
 const HN_ITEM_API = 'https://hacker-news.firebaseio.com/v0/item';
 const HN_TOP_LEVEL_THREAD_LIMIT = 10;
@@ -145,7 +145,7 @@ async function scrapeHackerNews({ itemId }: HackerNewsAcquisitionInput) {
 		totalComments: totalCommentCount,
 	});
 	const publishedDate = item.time ? new Date(item.time * 1000).toISOString() : null;
-	const subject = resolveResourceSubject(item.url);
+	const subject = resolveResourceUrl(item.url);
 	const submitter = item.by?.trim();
 	return {
 		resource: {

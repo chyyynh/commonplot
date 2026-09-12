@@ -3,6 +3,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
 import {
 	canonicalPaperUrl,
+	isPaperIdentifierScheme,
 	normalizeArxivId,
 	normalizeDoi,
 	normalizeOpenAlexId,
@@ -12,7 +13,6 @@ import {
 	paperIdentifiersFromIdentity,
 	paperIdentityFromIdentifiers,
 	paperIdentityFromText,
-	resolveExactPaperInput,
 } from '../../shared/paper-identity';
 import type { AcquiredResource } from '../acquired-resource';
 import { resolveCrossrefPaper } from '../crossref';
@@ -248,18 +248,13 @@ export async function stagePaperResolution(
 	input: {
 		resource: AcquiredResource & { resourcePlatform: null; paperIdentifierText?: string | null };
 		processingId: string;
-		sourceUrl: string | null;
 	},
 ) {
 	const { paperIdentifierText, ...resource } = input.resource;
 	const canonicalUrl = resource.url;
-	const exactIdentifiers = [input.sourceUrl, canonicalUrl === input.sourceUrl ? null : canonicalUrl].flatMap((value) => {
-		const resolved = resolveExactPaperInput(value);
-		return resolved ? paperIdentifiersFromIdentity(resolved.identity) : [];
-	});
 	const textIdentity = resource.fileType === PDF_MIME && paperIdentifierText?.trim() ? paperIdentityFromText(paperIdentifierText) : null;
 	const identifiers = choosePreferredIdentifiers([
-		...exactIdentifiers,
+		...resource.resourceIdentifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
 		...(textIdentity ? paperIdentifiersFromIdentity(textIdentity) : []),
 	]);
 	const doi = paperIdentityFromIdentifiers(identifiers)?.doi;

@@ -1,5 +1,4 @@
 import type { ResourceCreator, ResourceIdentifier, ResourceKind, ResourceKindMetadata, ResourcePlatform } from '../shared/resource';
-import type { ResourceSubjectIdentity } from './platforms/resource-url';
 
 // Adapters share an output contract; each adapter owns its mapping and identity.
 export type AcquiredResource = {
@@ -18,5 +17,5 @@ export type AcquiredResource = {
 	kindMetadata: ResourceKindMetadata;
 	fileType: string | null;
 	previewImageUrl: string | null;
-	subject: ResourceSubjectIdentity | null;
+	subject: { identifiers: ResourceIdentifier[]; normalizedUrl: string } | null;
 };

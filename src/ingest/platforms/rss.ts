@@ -4,7 +4,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { limitByteStream } from '../../shared/response';
 import { markSourceScraped, recordSourceFailure } from '../source-monitor-state';
 import { enqueueSourceDrafts, type SourceResourceDraft } from '../workflow';
-import { canonicalizeWebResourceUrl, resolvePlatformResourceUrl } from './resource-url';
+import { resolveResourceUrl } from './resource-url';
 
 const MAX_FEED_BYTES = 3 * 1024 * 1024;
 const MAX_FEED_ITEMS = 30;
@@ -18,37 +18,24 @@ type MonitoredFeedSource = {
 	handle: string;
 };
 
-function feedEntryUrl(item: ExtractedFeedEntry): string | null {
-	const itemUrl = item.link ? URL.parse(item.link) : null;
-	const itemPlatform =
-		itemUrl && (itemUrl.protocol === 'http:' || itemUrl.protocol === 'https:') && !itemUrl.username && !itemUrl.password
-			? resolvePlatformResourceUrl(itemUrl)
-			: null;
+function feedEntryUrl(item: ExtractedFeedEntry) {
+	const link = resolveResourceUrl(item.link);
 	// Keep this admission policy on the raw monitored-feed link. YouTube
 	// canonicalization turns /shorts/:id into /watch?v=:id and erases the signal.
-	if (itemPlatform?.resourcePlatform === 'youtube' && itemUrl?.pathname.startsWith('/shorts/')) return null;
-
-	const idUrl = URL.parse(item.id);
-	if (idUrl && (idUrl.protocol === 'http:' || idUrl.protocol === 'https:') && !idUrl.username && !idUrl.password) {
-		const platform = resolvePlatformResourceUrl(idUrl);
-		if (platform) return platform.canonicalUrl;
-	}
-
-	if (!itemUrl || (itemUrl.protocol !== 'http:' && itemUrl.protocol !== 'https:') || itemUrl.username || itemUrl.password) return null;
-	if (itemPlatform) return itemPlatform.canonicalUrl;
-
-	return canonicalizeWebResourceUrl(itemUrl);
+	if (link?.resourcePlatform === 'youtube' && new URL(link.url).pathname.startsWith('/shorts/')) return null;
+	const id = resolveResourceUrl(item.id);
+	return id?.resourcePlatform ? id : link;
 }
 
 function createFeedDrafts(items: ExtractedFeedEntry[], sourceId: string, feedLanguage?: string) {
 	const entries = new Map<string, SourceResourceDraft>();
 	for (const item of items) {
 		const url = feedEntryUrl(item);
-		if (!url || entries.has(url)) continue;
+		if (!url || entries.has(url.normalizedUrl)) continue;
 		const date = item.published ? new Date(item.published) : null;
-		entries.set(url, {
+		entries.set(url.normalizedUrl, {
 			sourceId,
-			url,
+			url: url.url,
 			summary: item.description?.slice(0, FEED_SUMMARY_MAX_CHARS) || null,
 			publishedDate: date && !Number.isNaN(date.getTime()) ? date : null,
 			originalLang: feedLanguage,
@@ -58,13 +45,8 @@ function createFeedDrafts(items: ExtractedFeedEntry[], sourceId: string, feedLan
 }
 
 async function loadFeed(feed: MonitoredFeedSource) {
-	const requestedUrl = URL.parse(feed.handle);
-	if (
-		!requestedUrl ||
-		(requestedUrl.protocol !== 'http:' && requestedUrl.protocol !== 'https:') ||
-		requestedUrl.username ||
-		requestedUrl.password
-	) {
+	const requestedUrl = resolveResourceUrl(feed.handle)?.url;
+	if (!requestedUrl) {
 		throw new Error('Enter a valid feed URL (http/https).');
 	}
 	const response = await fetch(requestedUrl, {
@@ -79,13 +61,8 @@ async function loadFeed(feed: MonitoredFeedSource) {
 		await response.body?.cancel();
 		throw new Error(`Feed fetch failed with HTTP ${status}.`);
 	}
-	const effectiveUrl = URL.parse(response.url);
-	if (
-		!effectiveUrl ||
-		(effectiveUrl.protocol !== 'http:' && effectiveUrl.protocol !== 'https:') ||
-		effectiveUrl.username ||
-		effectiveUrl.password
-	) {
+	const effectiveUrl = resolveResourceUrl(response.url)?.url;
+	if (!effectiveUrl) {
 		await response.body?.cancel();
 		throw new Error('Feed redirected to an invalid URL.');
 	}
@@ -93,7 +70,7 @@ async function loadFeed(feed: MonitoredFeedSource) {
 	const body = response.body && limitByteStream(response.body, MAX_FEED_BYTES, () => new Error(`Feed exceeded ${MAX_FEED_BYTES} bytes`));
 	const content = await new Response(body).text();
 	const parserOptions = {
-		baseUrl: effectiveUrl.toString(),
+		baseUrl: effectiveUrl,
 		descriptionMaxLen: FEED_SUMMARY_MAX_CHARS,
 	};
 	const parsed =

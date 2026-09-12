@@ -13,6 +13,7 @@ import {
 import type { AcquiredResource } from './acquired-resource';
 import type { ResourceAnalysis, ResourceClassification } from './analysis';
 import { hasPrivatePdfImages, withoutPrivatePdfImages, withoutDuplicatePdfTitle } from './pdf-markdown.ts';
+import { resolveResourceUrl, type ResolvedResourceUrl } from './platforms/resource-url';
 import type { YouTubeResourceData } from './platforms/youtube';
 import { canonicalizeResourceLang } from './resource-language';
 
@@ -63,13 +64,25 @@ export async function persistResourceClassification(
 	return updated.rowCount === 1;
 }
 
-function httpUrl(value: string | null, field: string): string | null {
-	if (value === null) return null;
-	const url = URL.parse(value);
-	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) {
-		throw new TypeError(`${field} must be an http(s) URL without credentials`);
-	}
-	return url.toString();
+/** A URL or exact identifier may point at an existing corpus resource; ambiguous identities must be reacquired. */
+export async function findResourcesByUrls(db: NodePgDatabase, urls: readonly ResolvedResourceUrl[]) {
+	if (!urls.length) return [];
+	const { rows } = await db.execute<{ url: string; resourceId: string | null }>(sql`
+		SELECT input.url,
+		  CASE WHEN COUNT(DISTINCT resource.id) = 1 THEN MIN(resource.id::text) END AS "resourceId"
+		FROM jsonb_to_recordset(${JSON.stringify(urls)}::jsonb) AS input(url text, "normalizedUrl" text, identifiers jsonb)
+		LEFT JOIN LATERAL (
+			SELECT id FROM resources WHERE normalized_url = input."normalizedUrl"
+			UNION SELECT id FROM resources WHERE url = input.url
+			UNION SELECT stored.resource_id AS id
+			FROM jsonb_to_recordset(input.identifiers) AS incoming(scheme text, value text)
+			JOIN resource_identifiers stored USING (scheme, value)
+		) candidate ON true
+		LEFT JOIN resources resource ON resource.id = candidate.id AND resource.scope = 'corpus'
+		GROUP BY input.url
+	`);
+	const owners = new Map(rows.map(({ url, resourceId }) => [url, resourceId]));
+	return urls.map(({ url, normalizedUrl }) => ({ url, normalizedUrl, resourceId: owners.get(url) ?? null }));
 }
 
 export function prepareResolvedResource(
@@ -100,13 +113,16 @@ export function prepareResolvedResource(
 	if (resource.resourcePlatform === 'youtube' ? !resource.youtube : resource.youtube !== undefined) {
 		throw new TypeError('YouTube data requires a YouTube video Resource');
 	}
-	const url = httpUrl(resource.url, 'Resource URL');
+	const resolvedUrl = resolveResourceUrl(resource.url);
+	if (resource.url !== null && !resolvedUrl) throw new TypeError('Resource URL must be HTTP(S) without credentials');
 	const publishedDate = resource.publishedDate ? new Date(resource.publishedDate) : null;
 	if (publishedDate && Number.isNaN(publishedDate.getTime())) throw new TypeError('Resource publication date is invalid');
+	const subjectUrl = resource.subject ? resolveResourceUrl(resource.subject.normalizedUrl) : null;
+	if (resource.subject && !subjectUrl) throw new TypeError('Subject URL must be HTTP(S) without credentials');
 	const subject = resource.subject
 		? {
 				identifiers: ResourceIdentifiersSchema.parse(resource.subject.identifiers),
-				normalizedUrl: httpUrl(resource.subject.normalizedUrl, 'Normalized subject URL')!,
+				normalizedUrl: subjectUrl!.normalizedUrl,
 			}
 		: null;
 	return {
@@ -119,7 +135,7 @@ export function prepareResolvedResource(
 		identifiers,
 		keywords: [...analysis.keywords],
 		kindMetadata: media.kindMetadata,
-		normalizedUrl: url,
+		normalizedUrl: resolvedUrl?.normalizedUrl ?? null,
 		ogImageHeight: media.ogImageHeight,
 		ogImageUrl: media.ogImageUrl,
 		ogImageWidth: media.ogImageWidth,
@@ -130,7 +146,7 @@ export function prepareResolvedResource(
 		summary: analysis.summary,
 		tags: [...analysis.tags],
 		title,
-		url,
+		url: resolvedUrl?.url ?? null,
 		youtube: resource.youtube ?? null,
 	};
 }

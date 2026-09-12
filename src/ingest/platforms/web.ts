@@ -10,8 +10,7 @@ import { limitByteStream } from '../../shared/response';
 import type { AcquiredResource } from '../acquired-resource';
 import { acquireFetchedPdfResponse, completeFetchedPdfAcquisition } from './pdf';
 import { PDF_MIME, type PaidPdfFallbackGrant } from './pdf-policy';
-import type { PlatformResourceUrl } from './resource-url';
-import { canonicalizeWebResourceUrl, resolvePlatformResourceUrl } from './resource-url';
+import { resolveResourceUrl, type ResolvedResourceUrl } from './resource-url';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
@@ -74,7 +73,7 @@ addTransformations({
 	},
 });
 
-async function acquireHtmlArticle(html: string, url: string) {
+async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredResource & { kind: 'blog'; resourcePlatform: null }> {
 	const article = await extractFromHtml(html, url, {
 		contentLengthThreshold: MIN_ARTICLE_CONTENT_CHARS,
 	});
@@ -160,9 +159,12 @@ function sourceHtmlSummary(html: string): string | null {
 	return schemaSummary ?? metaSummary;
 }
 
-type WebAcquisition = Awaited<ReturnType<typeof acquireWebResource>>;
+type WebAcquisition =
+	| { platform: ResolvedResourceUrl }
+	| Awaited<ReturnType<typeof acquireHtmlArticle>>
+	| Awaited<ReturnType<typeof acquireFetchedPdfResponse>>;
 
-async function acquireWebResource(env: CoreEnv, url: string) {
+async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisition> {
 	const response = await fetch(url, {
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
@@ -178,26 +180,22 @@ async function acquireWebResource(env: CoreEnv, url: string) {
 		}
 		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 	}
-	const parsedFinalUrl = URL.parse(response.url);
-	if (
-		!parsedFinalUrl ||
-		(parsedFinalUrl.protocol !== 'http:' && parsedFinalUrl.protocol !== 'https:') ||
-		parsedFinalUrl.username ||
-		parsedFinalUrl.password
-	) {
+	const resolved = resolveResourceUrl(response.url);
+	if (!resolved) {
 		await response.body?.cancel();
 		throw new Error('Fetch response has no valid final URL');
 	}
-	const platform = resolvePlatformResourceUrl(parsedFinalUrl);
-	if (platform) {
+	if (resolved.resourcePlatform) {
 		await response.body?.cancel();
-		return { platform };
+		return { platform: resolved };
 	}
-	const finalUrl = canonicalizeWebResourceUrl(parsedFinalUrl);
+	const finalUrl = resolved.url;
 
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
-	if (contentType.includes(PDF_MIME) || parsedFinalUrl.pathname.toLowerCase().endsWith('.pdf')) {
-		return acquireFetchedPdfResponse(env, response, finalUrl);
+	if (contentType.includes(PDF_MIME) || new URL(finalUrl).pathname.toLowerCase().endsWith('.pdf')) {
+		const acquired = await acquireFetchedPdfResponse(env, response, finalUrl);
+		acquired.resource.resourceIdentifiers = resolved.identifiers;
+		return acquired;
 	}
 	if (
 		contentType &&
@@ -218,7 +216,7 @@ async function acquireWebResource(env: CoreEnv, url: string) {
 			() => new NonRetryableError(`HTML response exceeded ${GENERIC_HTML_MAX_BYTES} bytes`),
 		);
 	const html = await new Response(body).text();
-	return acquireHtmlArticle(html, finalUrl);
+	return { ...(await acquireHtmlArticle(html, finalUrl)), resourceIdentifiers: resolved.identifiers };
 }
 
 export async function stageWebAcquisition(
@@ -235,7 +233,7 @@ export async function stageWebAcquisition(
 		},
 	);
 	if ('platform' in result) return result;
-	const acquired = await new Response(result).json<Exclude<WebAcquisition, { platform: PlatformResourceUrl }>>();
+	const acquired = await new Response(result).json<Exclude<WebAcquisition, { platform: ResolvedResourceUrl }>>();
 	return 'parse' in acquired
 		? completeFetchedPdfAcquisition(env, step, {
 				acquisition: acquired,

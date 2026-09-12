@@ -14,7 +14,7 @@ registerHooks({
 });
 const { stageUrlAcquisition } = await import('../src/ingest/acquisition.ts');
 const { stagePaperResolution } = await import('../src/ingest/platforms/paper.ts');
-const { resolvePlatformResourceUrl } = await import('../src/ingest/platforms/resource-url.ts');
+const { resolveResourceUrl } = await import('../src/ingest/platforms/resource-url.ts');
 const { prepareResolvedResource } = await import('../src/ingest/resource-persistence.ts');
 const { selectCrossrefPaperCandidate, selectCrossrefReference } = await import('../src/ingest/crossref.ts');
 const { parseGrobidPdfHeaderTei } = await import('../src/ingest/grobid-tei.ts');
@@ -89,7 +89,25 @@ try {
 		assert.equal(resource.resourcePlatform, platform);
 		assert.deepEqual(resource.resourceIdentifiers, [{ scheme: platform, value, preferred: true }]);
 		assert.ok(resource.content.trim());
-		assert.equal(resolvePlatformResourceUrl(new URL(url)).platformId, value);
+		assert.equal(resolveResourceUrl(url).identifiers[0].value, value);
+	}
+	for (const [url, normalizedUrl, scheme] of [
+		['https://www.example.com/article?b=2&utm_source=feed&a=1', 'https://example.com/article?a=1&b=2', null],
+		['https://youtu.be/abcdefghijk?si=share', 'https://youtube.com/watch?v=abcdefghijk', 'youtube'],
+		['https://doi.org/10.1000/example?utm_source=feed#part', 'https://doi.org/10.1000/example', 'doi'],
+		['https://arxiv.org/pdf/2507.12652v2?download=1', 'https://arxiv.org/abs/2507.12652', 'arxiv'],
+		['https://doi.org/10.48550/arXiv.2507.12652', 'https://arxiv.org/abs/2507.12652', 'arxiv'],
+	]) {
+		const resolved = resolveResourceUrl(url);
+		assert.equal(resolved.url, url, 'Identity normalization must not rewrite the fetch URL');
+		assert.equal(resolved.normalizedUrl, normalizedUrl);
+		assert.equal(resolved.identifiers[0]?.scheme ?? null, scheme);
+		const repeated = resolveResourceUrl(normalizedUrl);
+		assert.equal(repeated.normalizedUrl, normalizedUrl);
+		assert.deepEqual(repeated.identifiers, resolved.identifiers, 'Identity is idempotent');
+	}
+	for (const url of ['not a url', 'ftp://example.com/file', 'https://user:password@example.com']) {
+		assert.equal(resolveResourceUrl(url), null);
 	}
 	const hn = acquired.get('hackernews');
 	assert.equal(hn.title, 'Ask HN: A & B');
@@ -123,8 +141,15 @@ try {
 	const article = await stageUrlAcquisition(env, step, { ...input, url: 'https://x.com/i/article/125' });
 	assert.equal(article.title, 'Longform');
 	assert.equal(article.content, '# Heading\n\n**Bold** text\n\n- One\n- Two');
-	for (const url of ['https://example.com/status/125', 'https://youtu.be/short', 'https://x.com/example/status/abc']) {
-		assert.equal(resolvePlatformResourceUrl(new URL(url)), null, 'Unrelated or malformed URLs cannot claim platform identity');
+	for (const url of [
+		'https://example.com/status/125',
+		'https://youtu.be/short',
+		'https://x.com/example/status/abc',
+		'https://ycombinator.com/companies?id=124',
+		'https://news.ycombinator.com/news?id=124',
+		'https://youtube.com/channel/example?v=abcdefghijk',
+	]) {
+		assert.equal(resolveResourceUrl(url).resourcePlatform, null, 'Unrelated or malformed URLs cannot claim platform identity');
 	}
 	assert.throws(() => parseTwitterTweetsResponse({ tweets: [], status: 'error', message: 'Provider failed' }), /Provider failed/);
 	const page = parseTwitterAdvancedSearchPage({ tweets: [tweet, { ...tweet, createdAt: 123 }], has_next_page: true, next_cursor: 'next' });
@@ -161,6 +186,14 @@ try {
 		assert.match(blog.content, /A useful research article/u);
 		assert.equal(prepareResolvedResource(blog, analysis, []).kind, 'blog');
 	}
+	responses.set('/10.1000/example', () => responses.get('/article')(new URL('https://publisher.example/article')));
+	const redirected = await stageUrlAcquisition(env, step, { ...input, url: 'https://doi.org/10.1000/example?utm_source=feed' });
+	assert.equal(redirected.url, 'https://publisher.example/article');
+	assert.deepEqual(redirected.resourceIdentifiers, [{ scheme: 'doi', value: '10.1000/example', preferred: true }]);
+	const tracked = await stageUrlAcquisition(env, step, { ...input, url: 'https://www.example.com/article?utm_source=feed' });
+	const persisted = prepareResolvedResource(tracked, analysis, []);
+	assert.equal(persisted.url, tracked.url);
+	assert.equal(persisted.normalizedUrl, 'https://example.com/article');
 	for (const [url, fileType, paperIdentifierText, kind, provider] of [
 		[blog.url, null, null, 'blog', null],
 		['https://doi.org/10.1000/example', null, null, 'paper', 'api.openalex.org'],
@@ -177,10 +210,10 @@ try {
 		try {
 			const result = await stagePaperResolution(env, step, {
 				processingId: 'contract',
-				sourceUrl: url,
 				resource: {
 					...blog,
 					url,
+					resourceIdentifiers: resolveResourceUrl(url).identifiers,
 					fileType,
 					paperIdentifierText,
 					kind: fileType ? 'file' : 'blog',
@@ -202,8 +235,7 @@ try {
 	requests.length = 0;
 	const paper = await stagePaperResolution(env, step, {
 		processingId: 'contract',
-		sourceUrl: 'https://openalex.org/W2',
-		resource: { ...blog, url: 'https://openalex.org/W2' },
+		resource: { ...blog, url: 'https://openalex.org/W2', resourceIdentifiers: resolveResourceUrl('https://openalex.org/W2').identifiers },
 	});
 	assert.equal(paper.title, 'Resolved paper');
 	assert.equal(paper.kindMetadata.citedByCount, 17);
@@ -220,8 +252,7 @@ try {
 		requests.length = 0;
 		const result = await stagePaperResolution(env, step, {
 			processingId: 'contract',
-			sourceUrl: 'https://openalex.org/W2',
-			resource: { ...blog, url: 'https://openalex.org/W2' },
+			resource: { ...blog, url: 'https://openalex.org/W2', resourceIdentifiers: resolveResourceUrl('https://openalex.org/W2').identifiers },
 		});
 		assert.equal(result.content, blog.content);
 		assert.deepEqual(
@@ -236,8 +267,11 @@ try {
 	});
 	const arxiv = await stagePaperResolution(env, step, {
 		processingId: 'contract',
-		sourceUrl: 'https://arxiv.org/abs/2507.12652v2',
-		resource: { ...blog, url: 'https://arxiv.org/abs/2507.12652v2' },
+		resource: {
+			...blog,
+			url: 'https://arxiv.org/abs/2507.12652v2',
+			resourceIdentifiers: resolveResourceUrl('https://arxiv.org/abs/2507.12652v2').identifiers,
+		},
 	});
 	assert.ok(arxiv.resourceIdentifiers.some(({ scheme, value }) => scheme === 'arxiv' && value === '2507.12652'));
 	assert.ok(

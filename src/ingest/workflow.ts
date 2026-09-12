@@ -13,6 +13,7 @@ import { withoutPrivatePdfImages } from './pdf-markdown.ts';
 import { stagePaperResolution } from './platforms/paper';
 import { stageStoredPdfAcquisition } from './platforms/pdf';
 import { LLAMA_PARSE_MAX_PAGES } from './platforms/pdf-policy';
+import { resolveResourceUrl } from './platforms/resource-url';
 import { createResourceTask, enqueueSearchProgress, registerResourceTask, type ResourceTask } from './progress';
 import { canonicalizeOptionalResourceLang } from './resource-language';
 import {
@@ -44,10 +45,7 @@ export const ResourceDraftTargetSchema = z.strictObject({
 	url: z
 		.url({ normalize: true, protocol: /^https?$/ })
 		.max(2_048)
-		.refine((value) => {
-			const url = URL.parse(value);
-			return url !== null && !url.username && !url.password;
-		}, 'URL credentials are not allowed'),
+		.refine((value) => resolveResourceUrl(value) !== null, 'URL credentials are not allowed'),
 	sourceHints: z
 		.strictObject({
 			summary: z.string().max(20_000).optional(),
@@ -88,7 +86,8 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, draf
 		} satisfies ResourceDraftTarget;
 	});
 	if (!targets.length) return 0;
-	const urls = targets.map(({ url }) => url);
+	const resolvedUrls = targets.map(({ url }) => resolveResourceUrl(url)!);
+	const urls = resolvedUrls.flatMap(({ url, normalizedUrl }) => [url, normalizedUrl]);
 	const known = await db.execute<{ normalized_url: string | null; url: string | null }>(sql`
 		SELECT resource.url, resource.normalized_url
 		FROM resources resource
@@ -99,9 +98,9 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, draf
 	const knownUrls = new Set(known.rows.flatMap(({ normalized_url, url }) => [url, normalized_url]).filter((url) => url !== null));
 	const instances = await Promise.all(
 		targets
-			.filter(({ url }) => !knownUrls.has(url))
+			.filter(({ url }, index) => !knownUrls.has(url) && !knownUrls.has(resolvedUrls[index]!.normalizedUrl))
 			.map(async (target) => ({
-				id: `source-draft-v7-${await sha256Hex(`${target.relation.sourceId}:${target.url}`)}`,
+				id: `source-draft-v7-${await sha256Hex(`${target.relation.sourceId}:${resolveResourceUrl(target.url)!.normalizedUrl}`)}`,
 				params: target,
 				retention: { successRetention: '5 minutes', errorRetention: '1 hour' } as const,
 			})),
@@ -129,11 +128,11 @@ async function loadResourceReacquisitionUrl(db: NodePgDatabase, resourceId: stri
 	`);
 	const row = result.rows[0];
 	if (!row) throw new NonRetryableError(`Failed to fetch resource ${resourceId}: not found`);
-	const url = row.url ? URL.parse(row.url) : null;
-	if (!url || (url.protocol !== 'http:' && url.protocol !== 'https:') || url.username || url.password) {
+	const url = resolveResourceUrl(row.url)?.url;
+	if (!url) {
 		throw new NonRetryableError(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
 	}
-	return url.toString();
+	return url;
 }
 
 async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, target: ResourceProcessingTarget, task: ResourceTask) {
@@ -167,7 +166,6 @@ async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, targe
 	return stagePaperResolution(env, step, {
 		resource,
 		processingId,
-		sourceUrl: url,
 	});
 }
 

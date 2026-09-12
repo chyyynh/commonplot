@@ -40,7 +40,7 @@ Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content
 | **LessWrong** | GraphQL post → native Markdown and source metadata |
 | **RSS / Atom / JSON Feed** | Fetch → feed parser → normalized URL drafts → normal acquisition; every 5 minutes, with a 30-minute interval for YouTube feeds |
 
-One URL detector selects the owning platform adapter. Each platform/kind adapter owns its source parsing, identity, and Resource output.
+`platforms/resource-url.ts` resolves platform and paper identities for app lookup, feeds, linked subjects, acquisition, and persistence. It preserves the fetch URL separately from the normalized identity key; redirects and response MIME still select the final adapter. Each adapter owns its source parsing and Resource output.
 Only the output contract and small source-hint rules are shared; there is no generic materializer.
 The Workflow passes those outputs to analysis, image hosting, and persistence.
 
@@ -203,7 +203,7 @@ Or run locally with `pnpm dev` (uses `wrangler dev --test-scheduled`, so you can
 
 ## API surface
 
-Core exposes no product HTTP API; its default fetch handler only returns 404. App URL imports call a Cloudflare service-binding RPC with a Workflow instance ID, URL, and user-owned `saveTarget`; monitors and derived subjects enqueue the same draft target internally without one. Uploaded blobs and explicit resyncs use persisted resource IDs. URL acquisition is an internal stage of the canonical resource Workflow.
+Core exposes no product HTTP API; its default fetch handler only returns 404. App imports first call `resolveResourceUrls` once per batch to match normalized URLs and exact identifiers against existing corpus resources. Web rechecks and saves existing IDs; aliases of a missing URL share one draft. Draft dispatch uses a Cloudflare service-binding RPC with a Workflow instance ID, original fetch URL, and user-owned `saveTarget`; monitors and derived subjects enqueue the same draft target internally without one. Uploaded blobs and explicit resyncs use persisted resource IDs. URL acquisition is an internal stage of the canonical resource Workflow.
 
 URL/platform acquisition and app-owned R2 PDF reads each produce one canonical processing aggregate. Core selects any academic replacement content first, commits canonical Resource state through Drizzle/Hyperdrive, and then runs a separate durable Web step only when user save/container/file ownership must be updated.
 

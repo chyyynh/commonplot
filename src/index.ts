@@ -2,8 +2,10 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod';
 import type {} from './env';
 import { GrobidContainer } from './ingest/grobid-container';
+import { resolveResourceUrl } from './ingest/platforms/resource-url';
 import { handleRSSCron } from './ingest/platforms/rss';
 import { handleTwitterCron } from './ingest/platforms/twitter';
+import { findResourcesByUrls } from './ingest/resource-persistence';
 import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 import {
 	type ResourceDraftTarget,
@@ -109,6 +111,16 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 
 	// Service-binding RPC for engine capabilities. Product-domain writes live on
 	// the app Worker's DomainRpc binding.
+
+	/** Batch identity lookup only: acquisition stays durable and user saves remain app-owned. */
+	async resolveResourceUrls(urls: string[]) {
+		const parsed = z.array(ResourceDraftTargetSchema.shape.url).max(20).parse(urls);
+		if (!parsed.length) return [];
+		return findResourcesByUrls(
+			await connectCoreDb(this.env),
+			parsed.map((url) => resolveResourceUrl(url)!),
+		);
+	}
 
 	/** Enqueue an app-owned blob after its R2 object and private ownership row exist. */
 	async enqueueResourceProcessing(input: z.infer<typeof StoredPdfProcessingInputSchema>) {

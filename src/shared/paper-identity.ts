@@ -162,33 +162,6 @@ export function canonicalPaperUrl(identity: PaperIdentity): string {
 	throw new Error('Paper identity has no canonical identifier');
 }
 
-/**
- * Resolve only exact, user-supplied paper identities. Ordinary web URLs return
- * null so their URL semantics remain owned by the general ingest normalizer.
- */
-export function resolveExactPaperInput(value: unknown) {
-	if (typeof value !== 'string') return null;
-	const raw = value.trim();
-	if (!raw) return null;
-	const openAlexId = normalizeOpenAlexId(raw);
-	if (openAlexId) {
-		const identity = { openAlexId };
-		return { canonicalUrl: canonicalPaperUrl(identity), identity };
-	}
-
-	const arxivId = normalizeArxivId(raw);
-	if (arxivId) {
-		const doi = normalizeDoi(raw);
-		const identity = { arxivId, ...(doi ? { doi } : {}) };
-		return { canonicalUrl: canonicalPaperUrl(identity), identity };
-	}
-
-	const doi = normalizeDoi(raw);
-	if (!doi) return null;
-	const identity = identityFromDoi(doi);
-	return { canonicalUrl: canonicalPaperUrl(identity), identity };
-}
-
 /** Extract exact identifiers from bounded PDF/front-matter text. */
 export function paperIdentityFromText(value: unknown): PaperIdentity | null {
 	if (typeof value !== 'string' || !value.trim()) return null;

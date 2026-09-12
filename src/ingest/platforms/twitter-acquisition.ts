@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { AcquiredResource } from '../acquired-resource';
-import { isTwitterHostname, parseTwitterResourceUrl, resolveResourceSubject } from './resource-url';
+import { resolveResourceUrl } from './resource-url';
 import { parseTwitterArticleResponse, parseTwitterTweetsResponse, renderTwitterArticleMarkdown, type Tweet } from './twitter-data';
 
 type TwitterAcquisitionInput = {
@@ -59,24 +59,18 @@ function expandTweetUrls(text: string, tweet: Tweet): string {
 		const expanded = entity.expanded_url?.trim();
 		if (!token || !expanded) continue;
 		const parsed = URL.parse(expanded);
-		const mediaLink = parsed && isTwitterHostname(parsed.hostname) && /\/status\/\d+\/(?:photo|video)\/\d+/.test(parsed.pathname);
+		const mediaLink =
+			parsed && resolveResourceUrl(expanded)?.resourcePlatform === 'twitter' && /\/status\/\d+\/(?:photo|video)\/\d+/.test(parsed.pathname);
 		replacements.set(token, mediaLink ? '' : expanded);
 	}
 	const quoted = tweet.quoted_tweet;
-	const quotedTweetUrl = quoted ? URL.parse(quoted.url) : null;
 	const quotedTweetId = quoted
-		? quoted.id?.trim() ||
-			(quotedTweetUrl && isTwitterHostname(quotedTweetUrl.hostname) ? parseTwitterResourceUrl(quotedTweetUrl)?.platformId : null)
+		? quoted.id?.trim() || resolveResourceUrl(quoted.url)?.identifiers.find(({ scheme }) => scheme === 'twitter')?.value
 		: null;
 	const trailing = text.match(/(https?:\/\/\S+)\s*$/)?.[1];
 	if (quotedTweetId && trailing) {
 		const expandedTrailing = replacements.get(trailing) ?? trailing;
-		const expandedTrailingUrl = URL.parse(expandedTrailing);
-		if (
-			expandedTrailingUrl &&
-			isTwitterHostname(expandedTrailingUrl.hostname) &&
-			parseTwitterResourceUrl(expandedTrailingUrl)?.platformId === quotedTweetId
-		) {
+		if (resolveResourceUrl(expandedTrailing)?.identifiers.find(({ scheme }) => scheme === 'twitter')?.value === quotedTweetId) {
 			replacements.set(trailing, '');
 		}
 	}
@@ -167,7 +161,7 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 	});
 	const longformUrl = [tweet.url, ...expandedUrls].find((url) => {
 		const parsed = URL.parse(url);
-		return parsed && isTwitterHostname(parsed.hostname) && parsed.pathname.startsWith('/i/article/');
+		return parsed && resolveResourceUrl(url)?.resourcePlatform === 'twitter' && parsed.pathname.startsWith('/i/article/');
 	});
 	const linkedContentUrl = expandedUrls.find((url) => !isNonResourceLinkUrl(url));
 
@@ -221,7 +215,7 @@ async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string)
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
 	const { subjectUrl, ...content } = await resolveTweetContent(tweet, apiKey);
 
-	const subject = resolveResourceSubject(subjectUrl);
+	const subject = resolveResourceUrl(subjectUrl);
 	return {
 		...content,
 		kind: 'post',
