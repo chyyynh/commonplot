@@ -21,7 +21,7 @@ import {
 	type ResourceDraftRelation,
 	type ResourcePersistenceTarget,
 } from './resource-persistence';
-import { enqueueResourceReferenceEnrichment } from './resource-references';
+import { stageResourceReferences } from './resource-references';
 import { shouldEnqueueResourceTranslation } from './translation-policy';
 import { enqueueResourceTranslation } from './translation-workflow';
 import { publishPublicPdfCrops } from './zotero-sdt-service.ts';
@@ -295,16 +295,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				resourceId: persistedResourceId,
 			});
 			const subject = resource.subject;
-			// Let every independent handoff finish its retries before reporting failures.
+			// Let independent background work and handoffs finish before reporting failures.
 			const [references, index, ...followups] = await Promise.allSettled([
 				scope === 'corpus' &&
 				preparedResource.kind === 'paper' &&
 				(preparedResource.citations?.references.length || !persistence.originalWritten)
-					? step.do(
-							'enqueue-resource-reference-enrichment-v5',
-							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							() => enqueueResourceReferenceEnrichment(this.env, persistedResourceId, translationRevision, task),
-						)
+					? stageResourceReferences(this.env, step, persistedResourceId, translationRevision, task)
 					: undefined,
 				(async () => {
 					try {
@@ -388,7 +384,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			]);
 			for (const outcome of [references, index]) {
 				if (outcome.status === 'rejected')
-					console.error({ tag: 'WORKFLOW', msg: 'Background handoff failed', resource_id: persistedResourceId, error: outcome.reason });
+					console.error({ tag: 'WORKFLOW', msg: 'Background work failed', resource_id: persistedResourceId, error: outcome.reason });
 			}
 			const failures = followups.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
 			await task.seal(failures.length ? 'followup_dispatch_failed' : undefined);

@@ -112,12 +112,6 @@
 			"default_retention": { "success_retention": "7 days", "error_retention": "7 days" },
 		},
 		{
-			"binding": "RESOURCE_REFERENCE_ENRICHMENT_WORKFLOW",
-			"name": "newsence-resource-reference-enrichment",
-			"class_name": "ResourceReferenceEnrichmentWorkflow",
-			"default_retention": { "success_retention": "1 day", "error_retention": "7 days" },
-		},
-		{
 			"binding": "SEARCH_INDEX_REBUILD_WORKFLOW",
 			"name": "newsence-search-index-rebuild",
 			"class_name": "SearchIndexRebuildWorkflow",

@@ -9,7 +9,7 @@ const workflowMocks = {
 	'./image-rehosting': ['stageResourceImages'],
 	'./resource-persistence': ['persistResolvedResource', 'persistResourceClassification', 'loadPublicPdfContent', 'prepareResolvedResource'],
 	'./zotero-sdt-service.ts': ['publishPublicPdfCrops'],
-	'./resource-references': ['enqueueResourceReferenceEnrichment'],
+	'./resource-references': ['stageResourceReferences'],
 	'./translation-workflow': ['enqueueResourceTranslation'],
 };
 
@@ -254,6 +254,8 @@ const sourcePayload = {
 const workflowCases = [
 	{ name: 'classification-delayed' },
 	{ name: 'classification-failed' },
+	{ name: 'references-delayed' },
+	{ name: 'references-failed' },
 	...[
 		'published-pdf',
 		'private-pdf-resolved',
@@ -266,6 +268,7 @@ const workflowCases = [
 		'superseded-raw',
 		'expired-admission',
 	].map((name) => ({ name })),
+	{ name: 'automatic-paper', payload: sourcePayload, instanceId: 'source-paper-contract', appUnavailable: true },
 	{ name: 'automatic-source', payload: sourcePayload, instanceId: 'source-contract-first', appUnavailable: true, subject: true },
 	{ name: 'automatic-source-repeat', payload: sourcePayload, instanceId: 'source-contract-repeat', appUnavailable: true, subject: true },
 	{
@@ -313,10 +316,9 @@ try {
 		const translations = [];
 		const references = [];
 		const children = [];
-		let releaseClassification;
-		const classificationGate = new Promise((resolve) => {
-			releaseClassification = resolve;
-		});
+		const backgroundGate = Promise.withResolvers();
+		const backgroundStarted = Promise.withResolvers();
+		const searchQueued = Promise.withResolvers();
 		let rejectReady = scenario === 'ready-delivery-failed';
 		const acquired = {
 			kind: subject ? 'blog' : 'paper',
@@ -354,7 +356,10 @@ try {
 			},
 			classifyResource: async () => {
 				if (!appUnavailable) assert.ok(effects.includes('ready'), 'classification starts after publication');
-				if (scenario === 'classification-delayed') await classificationGate;
+				if (scenario === 'classification-delayed') {
+					backgroundStarted.resolve();
+					await backgroundGate.promise;
+				}
 				if (scenario === 'classification-failed') throw new Error('Classification unavailable');
 				effects.push('classified');
 				return { tags: ['Research'], keywords: ['evaluation'] };
@@ -387,9 +392,15 @@ try {
 				if (scenario === 'crops-failed') throw new Error('Crop publication unavailable');
 				effects.push('public-crops');
 			},
-			enqueueResourceReferenceEnrichment: async (...args) => {
+			stageResourceReferences: async (...args) => {
 				references.push(args.at(-1));
-				effects.push('references-enqueued');
+				effects.push('references-started');
+				if (scenario === 'references-delayed') {
+					backgroundStarted.resolve();
+					await backgroundGate.promise;
+				}
+				if (scenario === 'references-failed') throw new Error('Reference lookup unavailable');
+				effects.push('references-completed');
 			},
 			enqueueResourceTranslation: async (...args) => {
 				if (scenario === 'translation-handoff-failed') throw new Error('Translation dispatch unavailable');
@@ -446,6 +457,7 @@ try {
 						if (scenario === 'background-handoff-failed') throw new Error('Search queue unavailable');
 						searchMessages.push(message);
 						effects.push('search-enqueued');
+						searchQueued.resolve();
 					},
 				},
 			},
@@ -464,16 +476,17 @@ try {
 			},
 		};
 		const result = workflow.run({ instanceId, payload }, step);
-		if (scenario === 'classification-delayed') {
-			await new Promise((resolve) => setImmediate(resolve));
+		if (scenario === 'classification-delayed' || scenario === 'references-delayed') {
+			await backgroundStarted.promise;
+			if (scenario === 'references-delayed') await searchQueued.promise;
 			assert.ok(
 				effects.includes('ready') && effects.includes('translation-enqueued'),
-				'slow classification must not block reading or translation',
+				'slow background enrichment must not block reading or translation',
 			);
-			assert.ok(!effects.includes('search-enqueued'), 'search waits for classification');
-			releaseClassification();
+			assert.equal(effects.includes('search-enqueued'), scenario === 'references-delayed', 'search only waits for classification');
+			backgroundGate.resolve();
 		}
-		if (scenario.endsWith('-failed') && !['background-handoff-failed', 'classification-failed'].includes(scenario))
+		if (scenario.endsWith('-failed') && !['background-handoff-failed', 'classification-failed', 'references-failed'].includes(scenario))
 			await assert.rejects(result, undefined, scenario);
 		else await result;
 		if (scenario === 'superseded-raw' || scenario === 'expired-admission' || rejectStart) {
@@ -550,15 +563,15 @@ try {
 		if (scenario === 'private-pdf-resolved') {
 			assert.ok(effects.includes('private-persisted'));
 			assert.ok(effects.indexOf('private-persisted') < effects.indexOf('corpus-persisted'));
-			assert.ok(effects.indexOf('profile-attached') < effects.indexOf('references-enqueued'));
+			assert.ok(effects.indexOf('profile-attached') < effects.indexOf('references-started'));
 			assert.equal(references[0].taskId, instanceId);
 			assert.equal(references[0].required, true);
 			assert.equal(translations.length, 2, 'Both private and canonical translations are admitted');
 			assert.ok(translations.every((parent) => parent.taskId === instanceId && parent.required === true));
 		}
-		if (scenario === 'background-handoff-failed')
+		if (scenario === 'background-handoff-failed' || scenario === 'references-failed')
 			assert.ok(effects.includes('translation-enqueued'), 'Independent handoffs still run after a failure');
-		if (scenario === 'background-handoff-failed')
+		if (scenario === 'background-handoff-failed' || scenario === 'references-failed')
 			assert.ok(
 				warnings.every((warning) => warning === undefined),
 				'Background dispatch cannot mark readable content as pending',
