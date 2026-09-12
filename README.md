@@ -231,7 +231,6 @@ src/
 │   ├── analysis.ts       # AI classification and resource-local entity normalization
 │   ├── acquisition.ts    # URL/upload/resync acquisition and content contract
 │   ├── resource-persistence.ts # canonical Resource transaction
-│   ├── source-monitor-state.ts # monitor watermarks and failure state
 │   ├── translation-workflow.ts # durable translation and canonical writeback
 │   └── platforms/        # one file per source/stage
 │       ├── rss.ts        # feed polling

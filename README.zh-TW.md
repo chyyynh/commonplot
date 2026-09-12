@@ -191,7 +191,6 @@ src/
 │   ├── analysis.ts       # AI 分析與 resource-local entity normalization
 │   ├── acquisition.ts    # 單次 platform detection 與 adapter dispatch
 │   ├── resource-persistence.ts # canonical Resource transaction
-│   ├── source-monitor-state.ts # monitor watermark 與 failure state
 │   ├── translation-workflow.ts # durable translation 與 canonical writeback
 │   └── platforms/        # 每個來源或 stage 一個檔案
 │       ├── rss.ts        # feed polling

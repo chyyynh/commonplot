@@ -2,7 +2,6 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
 import { enqueueSourceDrafts, type SourceResourceDraft } from '../admission';
-import { markSourceScraped, recordSourceFailure } from '../source-monitor-state';
 import { parseTwitterAdvancedSearchPage, type Tweet } from './twitter-data';
 
 // Twitter Monitor
@@ -139,7 +138,13 @@ async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: Tw
 	try {
 		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, sinceTime, untilTime);
 		const admission = await enqueueTweets(env, db, fetched.tweets, source);
-		const advanced = await markSourceScraped(db, source.id, windowEnd);
+		const updated = await db.execute(sql`
+			UPDATE sources
+			SET scraped_at = ${windowEnd}, updated_at = NOW()
+			WHERE id = ${source.id}::uuid
+			  AND (scraped_at IS NULL OR scraped_at <= ${windowEnd})
+			RETURNING id
+		`);
 		console.info({
 			tag: 'TWITTER',
 			event: 'twitter_source_processed',
@@ -153,10 +158,9 @@ async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: Tw
 			skipped_items: fetched.skippedItems + admission.skippedItems,
 			created: admission.created,
 			deduplicated: admission.deduplicated,
-			watermark_advanced: advanced,
+			watermark_advanced: updated.rows.length > 0,
 		});
 	} catch (error) {
-		await recordSourceFailure(db, source.id, error);
 		console.error({
 			tag: 'TWITTER',
 			event: 'twitter_source_failed',

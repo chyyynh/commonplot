@@ -3,7 +3,6 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { limitByteStream } from '../../shared/response';
 import { enqueueSourceDrafts, type SourceResourceDraft } from '../admission';
-import { markSourceScraped, recordSourceFailure } from '../source-monitor-state';
 import { resolveResourceUrl } from './resource-url';
 
 const MAX_FEED_BYTES = 3 * 1024 * 1024;
@@ -99,7 +98,13 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeed
 		deduplicated: drafts.length - created,
 		totalCount: itemCount,
 	});
-	await markSourceScraped(db, feed.id);
+	const scrapedAt = new Date();
+	await db.execute(sql`
+		UPDATE sources
+		SET scraped_at = ${scrapedAt}, updated_at = NOW()
+		WHERE id = ${feed.id}::uuid
+		  AND (scraped_at IS NULL OR scraped_at <= ${scrapedAt})
+	`);
 }
 
 export async function handleRSSCron(env: CoreEnv, db: NodePgDatabase): Promise<void> {
@@ -130,7 +135,6 @@ export async function handleRSSCron(env: CoreEnv, db: NodePgDatabase): Promise<v
 				feed: failedFeed.name,
 				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
 			});
-			await recordSourceFailure(db, failedFeed.id, result.reason);
 		}
 	}
 
