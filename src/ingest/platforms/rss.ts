@@ -2,8 +2,8 @@ import { type FeedEntry as ExtractedFeedEntry, extractFromJson, extractFromXml }
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { limitByteStream } from '../../shared/response';
+import { enqueueSourceDrafts, type SourceResourceDraft } from '../admission';
 import { markSourceScraped, recordSourceFailure } from '../source-monitor-state';
-import { enqueueSourceDrafts, type SourceResourceDraft } from '../workflow';
 import { resolveResourceUrl } from './resource-url';
 
 const MAX_FEED_BYTES = 3 * 1024 * 1024;
@@ -27,18 +27,19 @@ function feedEntryUrl(item: ExtractedFeedEntry) {
 	return id?.resourcePlatform ? id : link;
 }
 
-function createFeedDrafts(items: ExtractedFeedEntry[], sourceId: string, feedLanguage?: string) {
+function createFeedDrafts(items: ExtractedFeedEntry[], feedLanguage?: string) {
 	const entries = new Map<string, SourceResourceDraft>();
 	for (const item of items) {
 		const url = feedEntryUrl(item);
 		if (!url || entries.has(url.normalizedUrl)) continue;
 		const date = item.published ? new Date(item.published) : null;
 		entries.set(url.normalizedUrl, {
-			sourceId,
 			url: url.url,
-			summary: item.description?.slice(0, FEED_SUMMARY_MAX_CHARS) || null,
-			publishedDate: date && !Number.isNaN(date.getTime()) ? date : null,
-			originalLang: feedLanguage,
+			sourceHints: {
+				summary: item.description?.slice(0, FEED_SUMMARY_MAX_CHARS) || undefined,
+				publishedDate: date && !Number.isNaN(date.getTime()) ? date.toISOString() : undefined,
+				originalLang: feedLanguage,
+			},
 		});
 	}
 	return [...entries.values()];
@@ -80,7 +81,7 @@ async function loadFeed(feed: MonitoredFeedSource) {
 	const items = (parsed.entries ?? []).slice(0, MAX_FEED_ITEMS);
 	return {
 		itemCount: items.length,
-		drafts: createFeedDrafts(items, feed.id, parsed.language?.trim() || undefined),
+		drafts: createFeedDrafts(items, parsed.language?.trim() || undefined),
 	};
 }
 
@@ -89,7 +90,7 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeed
 	const skipped = itemCount - drafts.length;
 	if (skipped) console.warn({ tag: 'RSS', msg: 'Skipped invalid or duplicate feed items', feed: feed.name, count: skipped });
 
-	const created = await enqueueSourceDrafts(env, db, drafts);
+	const created = await enqueueSourceDrafts(env, db, feed.id, drafts);
 	console.info({
 		tag: 'RSS',
 		msg: 'Feed processed',

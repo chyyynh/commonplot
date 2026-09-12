@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import {
 	canonicalPaperUrl,
 	normalizeArxivId,
@@ -68,3 +69,8 @@ export function resolveResourceUrl(value: string | null | undefined): ResolvedRe
 	parsed.searchParams.sort();
 	return { url, normalizedUrl: parsed.toString(), resourcePlatform: null, identifiers: [] };
 }
+
+export const ResourceUrlSchema = z
+	.url({ normalize: true, protocol: /^https?$/ })
+	.max(2_048)
+	.refine((value) => resolveResourceUrl(value) !== null, 'URL credentials are not allowed');

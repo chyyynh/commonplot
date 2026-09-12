@@ -4,7 +4,7 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
 import { ResourceCreatorsSchema } from '../../shared/resource';
-import type { AcquiredResource } from '../acquired-resource';
+import type { AcquiredResource } from '../acquisition';
 import { resolveCrossrefPaperCandidate } from '../crossref';
 import type { GrobidPdfHeader } from '../grobid-tei';
 import { canonicalizeResourceLang } from '../resource-language';

@@ -14,7 +14,7 @@ import {
 	paperIdentityFromIdentifiers,
 	paperIdentityFromText,
 } from '../../shared/paper-identity';
-import type { AcquiredResource } from '../acquired-resource';
+import type { AcquiredResource } from '../acquisition';
 import { resolveCrossrefPaper } from '../crossref';
 import { parsePublicPdfResponse, PermanentPdfArtifactError } from '../zotero-sdt-service.ts';
 import { PDF_MIME } from './pdf-policy';

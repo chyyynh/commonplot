@@ -1,27 +1,18 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { NonRetryableError } from 'cloudflare:workflows';
-import { inArray, sql } from 'drizzle-orm';
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
 import { resourceImageSourceUrls } from '../shared/image-mapping';
-import { stageUrlAcquisition } from './acquisition';
+import { stageResourceAcquisition } from './acquisition';
+import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from './admission';
 import { analyzeResource, classifyResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { withoutPrivatePdfImages } from './pdf-markdown.ts';
-import { stagePaperResolution } from './platforms/paper';
-import { stageStoredPdfAcquisition } from './platforms/pdf';
-import { LLAMA_PARSE_MAX_PAGES } from './platforms/pdf-policy';
-import { resolveResourceUrl } from './platforms/resource-url';
-import { createResourceTask, enqueueSearchProgress, registerResourceTask, type ResourceTask } from './progress';
-import { canonicalizeOptionalResourceLang } from './resource-language';
+import { createResourceTask, enqueueSearchProgress, registerResourceTask } from './progress';
 import {
 	persistResolvedResource,
 	persistResourceClassification,
 	loadPublicPdfContent,
 	prepareResolvedResource,
-	type ResourceDraftRelation,
 	type ResourcePersistenceTarget,
 } from './resource-persistence';
 import { stageResourceReferences } from './resource-references';
@@ -29,145 +20,8 @@ import { shouldEnqueueResourceTranslation } from './translation-policy';
 import { enqueueResourceTranslation } from './translation-workflow';
 import { publishPublicPdfCrops } from './zotero-sdt-service.ts';
 
-const ResourceDraftRelationSchema: z.ZodType<ResourceDraftRelation> = z.discriminatedUnion('kind', [
-	z.strictObject({ kind: z.literal('source'), sourceId: z.uuid() }),
-	z.strictObject({ kind: z.literal('subject'), parentResourceId: z.uuid(), parentAcquisitionRevision: z.hash('md5') }),
-]);
-
-const PaidPdfFallbackGrantSchema = z.strictObject({ maxPages: z.int().min(1).max(LLAMA_PARSE_MAX_PAGES) });
-
-export const ResourceDraftTargetSchema = z.strictObject({
-	kind: z.literal('draft'),
-	progress: z.boolean().optional(),
-	paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
-	relation: ResourceDraftRelationSchema.optional(),
-	saveTarget: z.record(z.string(), z.json()).optional(),
-	url: z
-		.url({ normalize: true, protocol: /^https?$/ })
-		.max(2_048)
-		.refine((value) => resolveResourceUrl(value) !== null, 'URL credentials are not allowed'),
-	sourceHints: z
-		.strictObject({
-			summary: z.string().max(20_000).optional(),
-			originalLang: z.string().trim().min(1).max(35).optional(),
-			publishedDate: z.iso.datetime().optional(),
-			keywords: z.array(z.string().max(500)).max(100).optional(),
-		})
-		.optional(),
-});
-
-export type ResourceDraftTarget = z.infer<typeof ResourceDraftTargetSchema>;
-
-export type SourceResourceDraft = {
-	sourceId: string;
-	url: string;
-	publishedDate: Date | null;
-	summary: string | null;
-	originalLang?: string;
-	keywords?: string[];
-};
-
-/** Crosses the discovery -> Resource Workflow boundary for every monitor. */
-export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, drafts: SourceResourceDraft[]): Promise<number> {
-	const targets = drafts.map((draft) => {
-		const originalLang = canonicalizeOptionalResourceLang(draft.originalLang);
-		if (draft.publishedDate && !Number.isFinite(draft.publishedDate.getTime())) throw new Error('Source published date is invalid');
-		const summary = draft.summary?.trim() || null;
-		return {
-			kind: 'draft',
-			relation: { kind: 'source', sourceId: z.uuid().parse(draft.sourceId.trim()) },
-			url: ResourceDraftTargetSchema.shape.url.parse(draft.url),
-			sourceHints: {
-				...(summary ? { summary } : {}),
-				...(originalLang ? { originalLang } : {}),
-				...(draft.publishedDate ? { publishedDate: draft.publishedDate.toISOString() } : {}),
-				...(draft.keywords?.length ? { keywords: draft.keywords } : {}),
-			},
-		} satisfies ResourceDraftTarget;
-	});
-	if (!targets.length) return 0;
-	const resolvedUrls = targets.map(({ url }) => resolveResourceUrl(url)!);
-	const urls = resolvedUrls.flatMap(({ url, normalizedUrl }) => [url, normalizedUrl]);
-	const known = await db.execute<{ normalized_url: string | null; url: string | null }>(sql`
-		SELECT resource.url, resource.normalized_url
-		FROM resources resource
-		WHERE resource.scope = 'corpus'
-		  AND resource.source_id IS NOT NULL
-		  AND (${inArray(sql`resource.url`, urls)} OR ${inArray(sql`resource.normalized_url`, urls)})
-	`);
-	const knownUrls = new Set(known.rows.flatMap(({ normalized_url, url }) => [url, normalized_url]).filter((url) => url !== null));
-	const instances = await Promise.all(
-		targets
-			.filter(({ url }, index) => !knownUrls.has(url) && !knownUrls.has(resolvedUrls[index]!.normalizedUrl))
-			.map(async (target) => ({
-				id: `source-draft-v7-${await sha256Hex(`${target.relation.sourceId}:${resolveResourceUrl(target.url)!.normalizedUrl}`)}`,
-				params: target,
-				retention: { successRetention: '5 minutes', errorRetention: '1 hour' } as const,
-			})),
-	);
-	let created = 0;
-	for (let offset = 0; offset < instances.length; offset += 100) {
-		created += (await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(instances.slice(offset, offset + 100))).length;
-	}
-	return created;
-}
-
-export const StoredResourceTargetSchema = z.strictObject({
-	kind: z.enum(['storedBlob', 'reacquire']),
-	paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
-	resourceId: z.uuid(),
-});
-
-const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [StoredResourceTargetSchema, ResourceDraftTargetSchema]);
-
-type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSchema>;
-
-async function loadResourceReacquisitionUrl(db: NodePgDatabase, resourceId: string) {
-	const result = await db.execute<{ url: string | null }>(sql`
-		SELECT url FROM resources WHERE id = ${resourceId}::uuid LIMIT 1
-	`);
-	const row = result.rows[0];
-	if (!row) throw new NonRetryableError(`Failed to fetch resource ${resourceId}: not found`);
-	const url = resolveResourceUrl(row.url)?.url;
-	if (!url) {
-		throw new NonRetryableError(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
-	}
-	return url;
-}
-
-async function resolveProcessingResource(env: CoreEnv, step: WorkflowStep, target: ResourceProcessingTarget, task: ResourceTask) {
-	const processingId = target.kind === 'draft' ? task.taskId : target.resourceId;
-	const url =
-		target.kind === 'reacquire'
-			? await step.do(
-					'load-resource-reacquisition-url-v2',
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					async () => loadResourceReacquisitionUrl(await connectCoreDb(env), target.resourceId),
-				)
-			: target.kind === 'draft'
-				? target.url
-				: null;
-	const acquired =
-		target.kind === 'storedBlob'
-			? await stageStoredPdfAcquisition(env, step, target)
-			: await stageUrlAcquisition(env, step, { paidPdfFallback: target.paidPdfFallback ?? null, processingId, url: url! });
-	const source = target.kind === 'draft' ? target.sourceHints : undefined;
-	const parsedDate = Date.parse(acquired.publishedDate ?? '');
-	const publishedDate = Number.isNaN(parsedDate) ? (source?.publishedDate ?? null) : new Date(parsedDate).toISOString();
-	const resource = {
-		...acquired,
-		originalLang:
-			canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeOptionalResourceLang(source?.originalLang) ?? 'und',
-		publishedDate,
-		summary: acquired.summary?.trim() || source?.summary?.trim() || null,
-	};
-	if (resource.resourcePlatform !== null) return resource;
-	if (target.kind === 'storedBlob') await task.report('metadata', { stage: 'metadata', status: 'running' });
-	return stagePaperResolution(env, step, {
-		resource,
-		processingId,
-	});
-}
+const STORAGE_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
+const AI_STEP = { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' } as const;
 
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep) {
@@ -189,7 +43,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			if (!(await task.start(target.kind === 'storedBlob' ? 'parsing' : 'acquiring')))
 				return target.kind === 'draft' ? {} : { resourceId: target.resourceId };
 			const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
-			const resource = await resolveProcessingResource(this.env, step, target, task);
+			const resource = await stageResourceAcquisition(this.env, step, target, task);
 			const uploadedPaper = target.kind === 'storedBlob' && resource.kind === 'paper';
 			const ownedBlobId = target.kind === 'storedBlob' ? target.resourceId : undefined;
 			const persistenceTarget: ResourcePersistenceTarget =
@@ -216,10 +70,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			await task.report('analysis', { stage: 'analyzing', status: 'running' });
 			const imageSources = resourceImageSourceUrls({ ...resource, ogImageUrl: resource.previewImageUrl });
 			const [analysis, hostedImages] = await Promise.all([
-				step.do(
-					'summarize-resource-v1',
-					{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
-					() => analyzeResource(resource, target.kind === 'draft' ? (target.sourceHints?.keywords ?? []) : [], this.env, processingId),
+				step.do('summarize-resource-v1', AI_STEP, () =>
+					analyzeResource(resource, target.kind === 'draft' ? (target.sourceHints?.keywords ?? []) : [], this.env, processingId),
 				),
 				stageResourceImages(this.env, step, processingId, imageSources, target.kind === 'reacquire' ? event.instanceId : undefined),
 			]);
@@ -234,15 +86,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					analysis,
 					hostedImages,
 				);
-				const privatePersistence = await step.do(
-					'persist-private-pdf-rendition-v1',
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					async () =>
-						persistResolvedResource(await connectCoreDb(this.env), privateRendition, {
-							kind: 'existing',
-							resourceId: target.resourceId,
-							ownedBlobId,
-						}),
+				const privatePersistence = await step.do('persist-private-pdf-rendition-v1', STORAGE_STEP, async () =>
+					persistResolvedResource(await connectCoreDb(this.env), privateRendition, {
+						kind: 'existing',
+						resourceId: target.resourceId,
+						ownedBlobId,
+					}),
 				);
 				if (shouldEnqueueResourceTranslation({ ...privateRendition, scope: 'private' }))
 					translationTargets.push({
@@ -257,25 +106,21 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				analysis,
 				hostedImages,
 			);
-			const persistence = await step.do(
-				'persist-resolved-resource-scope-v5',
-				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-				async () => {
-					const startedAt = Date.now();
-					const db = await connectCoreDb(this.env);
-					const connectedAt = Date.now();
-					const result = await persistResolvedResource(db, preparedResource, persistenceTarget);
-					const completedAt = Date.now();
-					console.info('resource-persistence-timing', {
-						instanceId: event.instanceId,
-						resourceId: result.resourceId,
-						connectMs: connectedAt - startedAt,
-						transactionMs: completedAt - connectedAt,
-						totalMs: completedAt - startedAt,
-					});
-					return result;
-				},
-			);
+			const persistence = await step.do('persist-resolved-resource-scope-v5', STORAGE_STEP, async () => {
+				const startedAt = Date.now();
+				const db = await connectCoreDb(this.env);
+				const connectedAt = Date.now();
+				const result = await persistResolvedResource(db, preparedResource, persistenceTarget);
+				const completedAt = Date.now();
+				console.info('resource-persistence-timing', {
+					instanceId: event.instanceId,
+					resourceId: result.resourceId,
+					connectMs: connectedAt - startedAt,
+					transactionMs: completedAt - connectedAt,
+					totalMs: completedAt - startedAt,
+				});
+				return result;
+			});
 			const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision, acquisitionRevision } = persistence;
 			if (persistence.originalWritten) classificationTargets.push(persistence);
 			if (shouldEnqueueResourceTranslation({ ...preparedResource, scope }))
@@ -286,24 +131,17 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					stepName: 'enqueue-resource-translation-v4',
 				});
 			if (scope === 'corpus' && preparedResource.fileType === 'application/pdf') {
-				await step.do(
-					'publish-public-pdf-crops-v1',
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					async () =>
-						publishPublicPdfCrops(
-							this.env,
-							persistedResourceId,
-							await loadPublicPdfContent(await connectCoreDb(this.env), persistedResourceId),
-						),
+				await step.do('publish-public-pdf-crops-v1', STORAGE_STEP, async () =>
+					publishPublicPdfCrops(
+						this.env,
+						persistedResourceId,
+						await loadPublicPdfContent(await connectCoreDb(this.env), persistedResourceId),
+					),
 				);
 			}
 
 			if (saveTarget)
-				await step.do(
-					'complete-resource-save-v2',
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() => this.env.APP.completeResourceSave(persistedResourceId, saveTarget),
-				);
+				await step.do('complete-resource-save-v2', STORAGE_STEP, () => this.env.APP.completeResourceSave(persistedResourceId, saveTarget));
 			publishedResourceId = persistedResourceId;
 			await task.report('ready', {
 				stage: 'persisting',
@@ -320,59 +158,41 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					: undefined,
 				(async () => {
 					try {
-						const classification = await step.do(
-							'classify-published-resource-v1',
-							{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
-							() =>
-								classifyResource({ ...resource, originalLang: analysis.originalLang, summary: analysis.summary }, this.env, processingId),
+						const classification = await step.do('classify-published-resource-v1', AI_STEP, () =>
+							classifyResource({ ...resource, originalLang: analysis.originalLang, summary: analysis.summary }, this.env, processingId),
 						);
 						if (analysis.keywords.length) classification.keywords = analysis.keywords;
-						await step.do(
-							'persist-resource-classification-v1',
-							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							async () => {
-								const db = await connectCoreDb(this.env);
-								for (const target of classificationTargets) await persistResourceClassification(db, target, classification);
-							},
-						);
+						await step.do('persist-resource-classification-v1', STORAGE_STEP, async () => {
+							const db = await connectCoreDb(this.env);
+							for (const target of classificationTargets) await persistResourceClassification(db, target, classification);
+						});
 					} finally {
 						// Even failed classification leaves the published title/body searchable.
 						if (scope === 'corpus')
-							await step.do(
-								'enqueue-resolved-ai-search-sync-v2',
-								{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-								() => enqueueSearchProgress(this.env, persistedResourceId, task, translationRevision),
+							await step.do('enqueue-resolved-ai-search-sync-v2', STORAGE_STEP, () =>
+								enqueueSearchProgress(this.env, persistedResourceId, task, translationRevision),
 							);
 					}
 				})(),
 				...translationTargets.map(({ stepName, resourceId, translationRevision, forceRunKey }) =>
-					step.do(stepName, { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' }, () =>
-						enqueueResourceTranslation(this.env, resourceId, translationRevision, forceRunKey, task),
-					),
+					step.do(stepName, STORAGE_STEP, () => enqueueResourceTranslation(this.env, resourceId, translationRevision, forceRunKey, task)),
 				),
 				subject && !subjectAttached
-					? step.do(
-							'enqueue-resolved-subject-child-v2',
-							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							async () => {
-								const subjectTarget = ResourceDraftTargetSchema.parse({
-									kind: 'draft',
-									relation: { kind: 'subject', parentResourceId: persistedResourceId, parentAcquisitionRevision: acquisitionRevision },
-									// Carrier-resolved hints only; the subject page still wins when it states its own date.
-									...(resource.publishedDate ? { sourceHints: { publishedDate: resource.publishedDate } } : {}),
-									url: subject.normalizedUrl,
-								});
-								// User subjects keep their existing IDs. Automatic subjects own
-								// a separate execution: a simultaneous first import may acquire
-								// twice, but cannot inherit an untracked task. Canonical identity
-								// and the downstream shared translation ID remain unchanged.
-								const prefix = task.required ? 'subject-draft-v4' : 'subject-draft-auto-v1';
-								const id = `${prefix}-${await sha256Hex(JSON.stringify(subjectTarget))}`;
-								await registerResourceTask(this.env, { taskId: id, kind: 'processing' }, task);
-								await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { ...subjectTarget, progress: task.required } }]);
-								return id;
-							},
-						)
+					? step.do('enqueue-resolved-subject-child-v2', STORAGE_STEP, async () => {
+							const subjectTarget = ResourceDraftTargetSchema.parse({
+								kind: 'draft',
+								relation: { kind: 'subject', parentResourceId: persistedResourceId, parentAcquisitionRevision: acquisitionRevision },
+								// Carrier-resolved hints only; the subject page still wins when it states its own date.
+								...(resource.publishedDate ? { sourceHints: { publishedDate: resource.publishedDate } } : {}),
+								url: subject.normalizedUrl,
+							});
+							// Separate tracked and automatic executions so neither inherits the other's progress ledger.
+							const prefix = task.required ? 'subject-draft-v4' : 'subject-draft-auto-v1';
+							const id = `${prefix}-${await sha256Hex(JSON.stringify(subjectTarget))}`;
+							await registerResourceTask(this.env, { taskId: id, kind: 'processing' }, task);
+							await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { ...subjectTarget, progress: task.required } }]);
+							return id;
+						})
 					: undefined,
 			]);
 			for (const outcome of [references, index]) {

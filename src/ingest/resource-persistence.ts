@@ -10,16 +10,13 @@ import {
 	type ResourceIdentifier,
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
-import type { AcquiredResource } from './acquired-resource';
+import type { AcquiredResource } from './acquisition';
+import type { ResourceDraftRelation } from './admission';
 import type { ResourceAnalysis, ResourceClassification } from './analysis';
 import { hasPrivatePdfImages, withoutPrivatePdfImages, withoutDuplicatePdfTitle } from './pdf-markdown.ts';
 import { resolveResourceUrl, type ResolvedResourceUrl } from './platforms/resource-url';
 import type { YouTubeResourceData } from './platforms/youtube';
 import { canonicalizeResourceLang } from './resource-language';
-
-export type ResourceDraftRelation =
-	| Readonly<{ kind: 'source'; sourceId: string }>
-	| Readonly<{ kind: 'subject'; parentResourceId: string; parentAcquisitionRevision: string }>;
 
 export type ResourcePersistenceTarget = { ownedBlobId?: string } & (
 	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation; preservePublishedPdf?: boolean }>

@@ -7,7 +7,7 @@ import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
 import { limitByteStream } from '../../shared/response';
-import type { AcquiredResource } from '../acquired-resource';
+import type { AcquiredResource } from '../acquisition';
 import { acquireFetchedPdfResponse, completeFetchedPdfAcquisition } from './pdf';
 import { PDF_MIME, type PaidPdfFallbackGrant } from './pdf-policy';
 import { resolveResourceUrl, type ResolvedResourceUrl } from './resource-url';

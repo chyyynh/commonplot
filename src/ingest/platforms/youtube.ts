@@ -4,7 +4,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { createWorkersAI } from 'workers-ai-provider';
 import type { TranscriptResponse } from 'youtube-transcript';
 import { z } from 'zod';
-import type { AcquiredResource } from '../acquired-resource';
+import type { AcquiredResource } from '../acquisition';
 import { coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;

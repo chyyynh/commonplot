@@ -2,7 +2,7 @@ import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { openai } from 'workers-ai-provider/openai';
 import { z } from 'zod';
-import type { AcquiredResource } from './acquired-resource';
+import type { AcquiredResource } from './acquisition';
 import { coreGatewayOptions } from './ai-model';
 import { canonicalizeResourceLang, detectResourceLanguage } from './resource-language';
 

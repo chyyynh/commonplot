@@ -43,6 +43,7 @@ Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content
 `platforms/resource-url.ts` resolves platform and paper identities for app lookup, feeds, linked subjects, acquisition, and persistence. It preserves the fetch URL separately from the normalized identity key; redirects and response MIME still select the final adapter. Each adapter owns its source parsing and Resource output.
 Only the output contract and small source-hint rules are shared; there is no generic materializer.
 The Workflow passes those outputs to analysis, image hosting, and persistence.
+`admission.ts` owns processing inputs and monitor dispatch; adapters produce its source hints directly. `acquisition.ts` owns URL/upload/resync routing and the acquired-content contract. `workflow.ts` composes durable stages, while `index.ts` directly re-exports its class for Cloudflare.
 
 Web and PDF adapters produce readable Resources directly; paper resolution adds bibliographic identity to that Resource.
 For platform changes, start in its adapter and keep the dispatcher limited to routing. A new platform also needs its
@@ -226,8 +227,9 @@ src/
 │   └── db.ts             # Drizzle over Hyperdrive
 ├── ingest/               # ── resource ingestion pipeline (the open-source core) ──
 │   ├── workflow.ts       # durable resource processing and follow-up orchestration
+│   ├── admission.ts      # processing input schemas and deduplicated source dispatch
 │   ├── analysis.ts       # AI classification and resource-local entity normalization
-│   ├── acquisition.ts    # one platform detection pass and adapter dispatch
+│   ├── acquisition.ts    # URL/upload/resync acquisition and content contract
 │   ├── resource-persistence.ts # canonical Resource transaction
 │   ├── source-monitor-state.ts # monitor watermarks and failure state
 │   ├── translation-workflow.ts # durable translation and canonical writeback

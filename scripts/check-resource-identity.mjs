@@ -3,7 +3,7 @@ import { registerHooks } from 'node:module';
 
 const workflowMocks = {
 	'../shared/db': ['connectCoreDb'],
-	'./acquisition': ['stageUrlAcquisition'],
+	'./platforms/web': ['stageWebAcquisition'],
 	'./platforms/pdf': ['stageStoredPdfAcquisition'],
 	'./platforms/paper': ['stagePaperResolution'],
 	'./analysis': ['analyzeResource', 'classifyResource'],
@@ -22,7 +22,7 @@ registerHooks({
 				url: 'data:text/javascript,export class WorkflowEntrypoint { constructor(_ctx,env) { this.env = env; } }',
 			};
 		}
-		if (context.parentURL?.endsWith('/ingest/workflow.ts') && workflowMocks[specifier]) {
+		if (['/ingest/workflow.ts', '/ingest/acquisition.ts'].some((path) => context.parentURL?.endsWith(path)) && workflowMocks[specifier]) {
 			const source = workflowMocks[specifier]
 				.map((name) => `export const ${name} = (...args) => globalThis.resourceWorkflowContract[${JSON.stringify(name)}](...args);`)
 				.join('\n');
@@ -119,7 +119,7 @@ try {
 		};
 		globalThis.resourceWorkflowContract = {
 			connectCoreDb: async () => ({}),
-			stageUrlAcquisition: acquire,
+			stageWebAcquisition: acquire,
 			stageStoredPdfAcquisition: acquire,
 			stagePaperResolution: (_env, _step, { resource: acquired }) => acquired,
 			analyzeResource: async () => ({ originalLang: 'en', summary: 'Summary', tags: [], keywords: [] }),

@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 export const MAX_PDF_BYTES = 25 * 1024 * 1024;
 export const PDF_MIME = 'application/pdf';
 
@@ -5,7 +7,8 @@ export const LLAMA_PARSE_MAX_PAGES = 100;
 const FULL_PAGE_IMAGE_FALLBACK_RATIO = 0.8;
 const DOCUMENT_FALLBACK_REASONS = new Set(['empty-output', 'parse-failed']);
 
-export type PaidPdfFallbackGrant = Readonly<{ maxPages: number }>;
+export const PaidPdfFallbackGrantSchema = z.strictObject({ maxPages: z.int().min(1).max(LLAMA_PARSE_MAX_PAGES) });
+export type PaidPdfFallbackGrant = Readonly<z.infer<typeof PaidPdfFallbackGrantSchema>>;
 export type LlamaParseSource = Readonly<{ kind: 'private-upload' }> | Readonly<{ kind: 'public-url'; url: string }>;
 
 export type LocalPdfSummary = Readonly<{

@@ -7,7 +7,7 @@ import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import type { AcquiredResource } from '../acquired-resource';
+import type { AcquiredResource } from '../acquisition';
 import { coreGatewayOptions, CORE_TEXT_MODEL } from '../ai-model';
 import { resolveResourceUrl } from './resource-url';
 

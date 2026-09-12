@@ -1,20 +1,12 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod';
 import type {} from './env';
-import { GrobidContainer } from './ingest/grobid-container';
-import { resolveResourceUrl } from './ingest/platforms/resource-url';
+import { ResourceImportDispatchSchema, StoredPdfProcessingInputSchema } from './ingest/admission';
+import { PaidPdfFallbackGrantSchema, type PaidPdfFallbackGrant } from './ingest/platforms/pdf-policy';
+import { resolveResourceUrl, ResourceUrlSchema } from './ingest/platforms/resource-url';
 import { handleRSSCron } from './ingest/platforms/rss';
 import { handleTwitterCron } from './ingest/platforms/twitter';
 import { findResourcesByUrls } from './ingest/resource-persistence';
-import { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
-import {
-	type ResourceDraftTarget,
-	ResourceDraftTargetSchema,
-	ResourceProcessingV2Workflow,
-	StoredResourceTargetSchema,
-} from './ingest/workflow';
-import { ZoteroSdtContainer } from './ingest/zotero-sdt-container';
-import { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
 import {
 	loadCorpusDocuments,
 	type PublicResourceSearchInput,
@@ -25,16 +17,11 @@ import {
 } from './search-index';
 import { connectCoreDb } from './shared/db';
 
-export { GrobidContainer, ResourceProcessingV2Workflow, ResourceTranslationV2Workflow, SearchIndexRebuildWorkflow, ZoteroSdtContainer };
-
-const StoredPdfProcessingInputSchema = StoredResourceTargetSchema.omit({ kind: true }).extend({
-	retry: z.boolean().optional(),
-});
-
-const ResourceImportDispatchSchema = z.strictObject({
-	workflowId: z.string().pipe(z.templateLiteral(['app-ingest-v1-', z.uuidv4()])),
-	payload: z.discriminatedUnion('kind', [ResourceDraftTargetSchema, StoredResourceTargetSchema.extend({ kind: z.literal('storedBlob') })]),
-});
+export { GrobidContainer } from './ingest/grobid-container';
+export { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
+export { ZoteroSdtContainer } from './ingest/zotero-sdt-container';
+export { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
+export { ResourceProcessingV2Workflow } from './ingest/workflow';
 
 const ResourceSearchSyncMessageSchema = z.strictObject({
 	resourceId: z.uuid().toLowerCase(),
@@ -114,7 +101,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 
 	/** Batch identity lookup only: acquisition stays durable and user saves remain app-owned. */
 	async resolveResourceUrls(urls: string[]) {
-		const parsed = z.array(ResourceDraftTargetSchema.shape.url).max(20).parse(urls);
+		const parsed = z.array(ResourceUrlSchema).max(20).parse(urls);
 		if (!parsed.length) return [];
 		return findResourcesByUrls(
 			await connectCoreDb(this.env),
@@ -140,9 +127,9 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	/** Reacquire a URL-backed resource through the enrichment workflow. */
-	async resyncResource(resourceId: string, paidPdfFallback?: ResourceDraftTarget['paidPdfFallback']) {
+	async resyncResource(resourceId: string, paidPdfFallback?: PaidPdfFallbackGrant) {
 		const id = z.uuid().parse(resourceId);
-		const grant = ResourceDraftTargetSchema.shape.paidPdfFallback.parse(paidPdfFallback);
+		const grant = PaidPdfFallbackGrantSchema.optional().parse(paidPdfFallback);
 		const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
 			id: `resource-resync-v3-${id}-${crypto.randomUUID()}`,
 			params: { kind: 'reacquire', ...(grant ? { paidPdfFallback: grant } : {}), resourceId: id },

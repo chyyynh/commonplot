@@ -1,8 +1,8 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
+import { enqueueSourceDrafts, type SourceResourceDraft } from '../admission';
 import { markSourceScraped, recordSourceFailure } from '../source-monitor-state';
-import { enqueueSourceDrafts, type SourceResourceDraft } from '../workflow';
 import { parseTwitterAdvancedSearchPage, type Tweet } from './twitter-data';
 
 // Twitter Monitor
@@ -112,12 +112,8 @@ async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Iterable<
 			const publishedDate = new Date(tweet.createdAt);
 			if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id ?? url} has invalid publishedDate`);
 			drafts.set(url, {
-				sourceId: source.id,
 				url,
-				publishedDate,
-				summary: null,
-				originalLang: tweet.lang,
-				keywords: tweet.hashTags,
+				sourceHints: { publishedDate: publishedDate.toISOString(), originalLang: tweet.lang, keywords: tweet.hashTags },
 			});
 		} catch (error) {
 			skippedItems++;
@@ -133,7 +129,7 @@ async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Iterable<
 		}
 	}
 	const pending = [...drafts.values()];
-	const created = pending.length ? await enqueueSourceDrafts(env, db, pending) : 0;
+	const created = await enqueueSourceDrafts(env, db, source.id, pending);
 	return { admittedDrafts: pending.length, created, deduplicated: pending.length - created, normalizedTweets, skippedItems };
 }
 
