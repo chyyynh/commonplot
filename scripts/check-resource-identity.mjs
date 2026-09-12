@@ -11,7 +11,7 @@ const workflowMocks = {
 	'./resource-persistence': ['persistResolvedResource', 'persistResourceClassification', 'loadPublicPdfContent', 'prepareResolvedResource'],
 	'./zotero-sdt-service.ts': ['publishPublicPdfCrops'],
 	'./resource-references': ['stageResourceReferences'],
-	'./translation-workflow': ['enqueueResourceTranslation'],
+	'./translation-workflow': ['enqueueResourceTranslation', 'shouldEnqueueResourceTranslation'],
 };
 
 registerHooks({
@@ -24,7 +24,11 @@ registerHooks({
 		}
 		if (['/ingest/workflow.ts', '/ingest/acquisition.ts'].some((path) => context.parentURL?.endsWith(path)) && workflowMocks[specifier]) {
 			const source = workflowMocks[specifier]
-				.map((name) => `export const ${name} = (...args) => globalThis.resourceWorkflowContract[${JSON.stringify(name)}](...args);`)
+				.map((name) =>
+					name === 'shouldEnqueueResourceTranslation'
+						? `export { shouldEnqueueResourceTranslation } from ${JSON.stringify(new URL('../src/ingest/translation-workflow.ts', import.meta.url).href)};`
+						: `export const ${name} = (...args) => globalThis.resourceWorkflowContract[${JSON.stringify(name)}](...args);`,
+				)
 				.join('\n');
 			return { shortCircuit: true, url: `data:text/javascript,${encodeURIComponent(source)}` };
 		}

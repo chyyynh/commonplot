@@ -4,14 +4,13 @@ import { serializeTableHtml } from '../src/ingest/html-table.ts';
 import {
 	MarkdownTranslationInvariantError,
 	compileMarkdownTranslationArtifact,
-	createMarkdownTranslationTemplate,
 	planMarkdownTranslation,
 } from '../src/ingest/markdown-translation.ts';
 
 const compileMarkdownTranslation = (...args) => compileMarkdownTranslationArtifact(...args).content;
 function targetFromSource(segment, translate = (text) => text) {
 	return {
-		texts: Object.fromEntries(Object.entries(createMarkdownTranslationTemplate(segment).texts).map(([id, text]) => [id, translate(text)])),
+		texts: Object.fromEntries(Object.entries(segment.template.texts).map(([id, text]) => [id, translate(text)])),
 	};
 }
 const markdownFixture = `---
@@ -69,6 +68,22 @@ assert.equal(compileMarkdownTranslation(plan, identity), plan.sourceMarkdown);
 assert.throws(() => compileMarkdownTranslation(plan, identity.slice(1)), MarkdownTranslationInvariantError);
 const empty = plan.segments.map((segment) => targetFromSource(segment, () => ''));
 assert.throws(() => compileMarkdownTranslation(plan, empty), MarkdownTranslationInvariantError);
+const literalPlan = planMarkdownTranslation('Read \\<n1> with **bold** text.');
+assert.equal(
+	compileMarkdownTranslation(
+		literalPlan,
+		literalPlan.segments.map((segment) => targetFromSource(segment)),
+	),
+	literalPlan.sourceMarkdown,
+);
+assert.equal(
+	compileMarkdownTranslation(
+		literalPlan,
+		literalPlan.segments.map((segment) => targetFromSource(segment, (text) => text.replace('Read', 'Keep <n2>'))),
+	),
+	planMarkdownTranslation('Keep \\<n2> \\<n1> with **bold** text.').sourceMarkdown,
+	'literal source and translated text cannot become internal formatting markers',
+);
 const translated = compileMarkdownTranslation(
 	plan,
 	plan.segments.map((segment) =>
@@ -115,7 +130,7 @@ After[^evidence].
 
 [^evidence]: Original evidence.`;
 const htmlPlan = planMarkdownTranslation(tableSource);
-const modelTexts = htmlPlan.segments.map((segment) => createMarkdownTranslationTemplate(segment).texts);
+const modelTexts = htmlPlan.segments.map((segment) => segment.template.texts);
 const tableModelText = JSON.stringify(modelTexts);
 assert.match(tableModelText, /Price \$5 to \$10/u, 'prices remain translatable prose, not protected formulas');
 assert.doesNotMatch(tableModelText, /E = mc|x < y|return|rowspan|colspan|https:\/\/example.com|\[\^evidence\]/u);
@@ -170,8 +185,26 @@ console.info(
 
 import { registerHooks } from 'node:module';
 import { PgDialect } from 'drizzle-orm/pg-core';
-import { shouldEnqueueResourceTranslation } from '../src/ingest/translation-policy.ts';
 
+registerHooks({
+	resolve(specifier, context, nextResolve) {
+		if (specifier === 'cloudflare:workers')
+			return { shortCircuit: true, url: 'data:text/javascript,export class WorkflowEntrypoint {constructor(_ctx,env){this.env=env;}}' };
+		if (specifier === 'cloudflare:workflows')
+			return { shortCircuit: true, url: 'data:text/javascript,export class NonRetryableError extends Error {}' };
+		if (context.parentURL?.endsWith('/ingest/translation-workflow.ts') && specifier === '../shared/db') {
+			return {
+				shortCircuit: true,
+				url: 'data:text/javascript,export const connectCoreDb = (...args) => globalThis.translationWorkflowContract.connectCoreDb(...args);',
+			};
+		}
+		if (specifier.startsWith('.') && !specifier.endsWith('.ts') && context.parentURL?.includes('/workers/core-worker/src/'))
+			return { shortCircuit: true, url: new URL(`${specifier}.ts`, context.parentURL).href };
+		return nextResolve(specifier, context);
+	},
+});
+const { enqueueResourceTranslation, ResourceTranslationV2Workflow, shouldEnqueueResourceTranslation } =
+	await import('../src/ingest/translation-workflow.ts');
 const candidate = (overrides = {}) => ({
 	fileType: 'application/pdf',
 	kind: 'paper',
@@ -203,32 +236,6 @@ assert.equal(
 
 console.info({ event: 'translation_policy_contract_smoke_passed' });
 
-registerHooks({
-	resolve(specifier, context, nextResolve) {
-		if (specifier === 'cloudflare:workers')
-			return { shortCircuit: true, url: 'data:text/javascript,export class WorkflowEntrypoint {constructor(_ctx,env){this.env=env;}}' };
-		if (specifier === 'cloudflare:workflows')
-			return { shortCircuit: true, url: 'data:text/javascript,export class NonRetryableError extends Error {}' };
-		if (
-			context.parentURL?.endsWith('/ingest/translation-workflow.ts') &&
-			(specifier === '../shared/db' || specifier === './markdown-translation-model')
-		) {
-			const exports =
-				specifier === './markdown-translation-model'
-					? `export { isMarkdownTranslationFormatError, splitSegmentsInHalf } from ${JSON.stringify(new URL('../src/ingest/markdown-translation-model.ts', import.meta.url).href)};`
-					: '';
-			const name = specifier === '../shared/db' ? 'connectCoreDb' : 'translateMarkdownBatchToZhHant';
-			return {
-				shortCircuit: true,
-				url: `data:text/javascript,${encodeURIComponent(`${exports} export const ${name} = (...args) => globalThis.translationWorkflowContract.${name}(...args);`)}`,
-			};
-		}
-		if (specifier.startsWith('.') && !specifier.endsWith('.ts') && context.parentURL?.includes('/workers/core-worker/src/'))
-			return { shortCircuit: true, url: new URL(`${specifier}.ts`, context.parentURL).href };
-		return nextResolve(specifier, context);
-	},
-});
-const { enqueueResourceTranslation, ResourceTranslationV2Workflow } = await import('../src/ingest/translation-workflow.ts');
 const queued = [];
 const registered = [];
 const parent = (taskId, required = true) => ({ taskId, required });
@@ -384,31 +391,6 @@ try {
 					};
 				},
 			}),
-			translateMarkdownBatchToZhHant: async (batch) => {
-				effects.push('provider');
-				providerBatches.push(batch.id);
-				effects.push('body-start');
-				if (scenario === 'rate-limited' && providerBatches.length <= 3) throw new Error('429 rate limit');
-				if (scenario === 'format-recovery') {
-					if (batch.id === 'b0001' || batch.id === 'b0001-2') throw new MarkdownTranslationInvariantError('invalid-result', 'Bad format');
-					if (batch.id === 'b0001-2-1' && providerBatches.filter((id) => id === batch.id).length <= 2) throw new Error('429 rate limit');
-				}
-				active++;
-				peak = Math.max(peak, active);
-				// Complete out of source order, with more than two full concurrency windows.
-				await new Promise((resolve) => setTimeout(resolve, batch.id === 'b0001' ? 30 : 1));
-				active--;
-				effects.push('body-end');
-				if (scenario === 'parallel-failure' && batch.id === 'b0002') throw new Error('Provider exhausted retries');
-				return batch.segments.map((segment) => ({
-					texts: Object.fromEntries(
-						Object.keys(createMarkdownTranslationTemplate(segment).texts).map((key) => [
-							key,
-							parallel ? `譯文 ${segment.id}` : '這是一篇研究論文的可讀原始內容，需要完整翻譯。',
-						]),
-					),
-				}));
-			},
 		};
 		const app = Object.fromEntries(
 			['startResourceProgressTask', 'reportResourceProgress', 'registerResourceProgressTask', 'sealResourceProgressTask'].map((name) => [
@@ -429,13 +411,52 @@ try {
 			{
 				APP: app,
 				AI: {
-					run: async () => {
-						metadataActive = true;
-						effects.push('metadata-start');
-						await new Promise((resolve) => setTimeout(resolve, 60));
-						metadataActive = false;
-						effects.push('metadata-end');
-						return { response: JSON.stringify({ title: '研究論文' }) };
+					run: async (_model, inputs, options) => {
+						if (options.gateway.metadata.feature === 'resource-metadata-localization') {
+							metadataActive = true;
+							effects.push('metadata-start');
+							await new Promise((resolve) => setTimeout(resolve, 60));
+							metadataActive = false;
+							effects.push('metadata-end');
+							return { response: JSON.stringify({ title: '研究論文' }) };
+						}
+						const batch = {
+							id: options.gateway.metadata.batch_id,
+							...JSON.parse(inputs.messages.find((message) => message.role === 'user').content),
+						};
+						effects.push('provider');
+						providerBatches.push(batch.id);
+						effects.push('body-start');
+						if (scenario === 'rate-limited' && providerBatches.length <= 3) throw new Error('429 rate limit');
+						if (scenario === 'format-recovery') {
+							if (batch.id === 'b0001' || batch.id === 'b0001-2') return { response: 'Malformed model output' };
+							if (batch.id === 'b0001-2-1' && providerBatches.filter((id) => id === batch.id).length <= 2)
+								throw new Error('429 rate limit');
+						}
+						active++;
+						peak = Math.max(peak, active);
+						// Complete out of source order, with more than two full concurrency windows.
+						await new Promise((resolve) => setTimeout(resolve, batch.id === 'b0001' ? 30 : 1));
+						active--;
+						effects.push('body-end');
+						if (scenario === 'parallel-failure' && batch.id === 'b0002') throw new Error('Provider exhausted retries');
+						return {
+							response: JSON.stringify({
+								translations: Object.fromEntries(
+									batch.segments.map((segment) => [
+										segment.id,
+										{
+											texts: Object.fromEntries(
+												Object.values(segment.sequences)
+													.flat()
+													.filter((part) => 'text' in part)
+													.map((part) => [part.id, parallel ? `譯文 ${segment.id}` : '這是一篇研究論文的可讀原始內容，需要完整翻譯。']),
+											),
+										},
+									]),
+								),
+							}),
+						};
 					},
 				},
 				RESOURCE_SEARCH_SYNC_QUEUE: {

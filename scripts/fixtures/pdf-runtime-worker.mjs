@@ -1,10 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
-import {
-	planMarkdownTranslation,
-	createMarkdownTranslationTemplate,
-	compileMarkdownTranslationArtifact,
-} from '../../src/ingest/markdown-translation.ts';
+import { planMarkdownTranslation, compileMarkdownTranslationArtifact } from '../../src/ingest/markdown-translation.ts';
 import {
 	parsePublicPdfResponse,
 	parseStoredPdfRepresentation,
@@ -185,7 +181,7 @@ export default {
 				plan,
 				plan.segments.map((segment) => ({
 					texts: Object.fromEntries(
-						Object.entries(createMarkdownTranslationTemplate(segment).texts).map(([id, text]) => [
+						Object.entries(segment.template.texts).map(([id, text]) => [
 							id,
 							text.replace('Runtime result', '執行結果').replace('Evidence', '證據'),
 						]),

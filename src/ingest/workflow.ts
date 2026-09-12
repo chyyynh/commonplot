@@ -16,8 +16,7 @@ import {
 	type ResourcePersistenceTarget,
 } from './resource-persistence';
 import { stageResourceReferences } from './resource-references';
-import { shouldEnqueueResourceTranslation } from './translation-policy';
-import { enqueueResourceTranslation } from './translation-workflow';
+import { enqueueResourceTranslation, shouldEnqueueResourceTranslation } from './translation-workflow';
 import { publishPublicPdfCrops } from './zotero-sdt-service.ts';
 
 const STORAGE_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
