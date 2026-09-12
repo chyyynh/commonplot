@@ -63,13 +63,20 @@ assert.deepEqual(
 );
 assert.equal(ResourceIdentifiersSchema.safeParse([{ scheme: 'doi', value: '10.1000/example', preferred: true }]).success, true);
 assert.equal(ResourceIdentifiersSchema.safeParse([{ scheme: 'doi', value: ' 10.1000/EXAMPLE ', preferred: true }]).success, false);
-for (const [text, lang] of [
+for (const [text, lang, knownLanguage] of [
 	['A preliminary evaluation found improved accuracy on two datasets.', 'en'],
 	['這是一篇介紹人工智慧與機器學習的研究文章，探討模型如何理解語言並改善回答品質。', 'zh-Hant'],
 	['这是一篇介绍人工智能与机器学习的研究文章，探讨模型如何理解语言并改善回答质量。', 'zh-Hans'],
 	['Hello', 'und'],
+	['', 'zh-Hant', 'zh_TW'],
+	['', 'zh-Hant', 'zh-HK'],
+	['', 'zh-Hant', 'zh-Hant-CN'],
+	['', 'zh-Hans', 'zh-CN'],
+	['', 'zh-Hans', 'zh-Hans-TW'],
+	['', 'zh', 'cmn'],
+	['', 'en', 'eng'],
 ])
-	assert.equal(detectResourceLanguage(text), lang);
+	assert.equal(detectResourceLanguage(text, knownLanguage), lang);
 
 const resourceId = '30000000-0000-4000-8000-000000000001';
 const rawId = '30000000-0000-4000-8000-000000000002';

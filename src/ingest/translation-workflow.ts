@@ -1,5 +1,5 @@
 import { createResourceTask, enqueueSearchProgress, type ResourceTask, type ResourceTaskContext } from './progress';
-import { canonicalizeResourceLang } from './resource-language';
+import { ResourceLanguageSchema } from './resource-language';
 // Durable translation execution; resource processing only enqueues this Workflow.
 import { generateText, NoObjectGeneratedError, Output } from 'ai';
 import { type WorkflowDynamicDelayContext, WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
@@ -509,7 +509,7 @@ async function loadResourceTranslationInput(
 			resourcePlatform: row.resource_platform,
 			fileType: row.file_type,
 			id: row.id,
-			originalLang: canonicalizeResourceLang(row.original_lang),
+			originalLang: ResourceLanguageSchema.parse(row.original_lang),
 			scope: row.scope,
 			title: row.title ?? '',
 			summary: row.summary,

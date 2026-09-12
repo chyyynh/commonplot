@@ -1,37 +1,31 @@
 import { franc } from 'franc-min';
 import { Converter } from 'opencc-js';
+import { z } from 'zod';
 
-const RESOURCE_LANG_MAX_LENGTH = 35;
-
-export function canonicalizeResourceLang(value: unknown): string {
-	if (typeof value !== 'string') throw new Error(`Invalid resource language: ${String(value)}`);
-	const lang = value.trim();
-	if (!lang || lang.length > RESOURCE_LANG_MAX_LENGTH) throw new Error(`Invalid resource language: ${value}`);
-	try {
-		const canonical = Intl.getCanonicalLocales(lang)[0];
-		if (!canonical || canonical.length > RESOURCE_LANG_MAX_LENGTH) throw new Error('Invalid locale');
-		return canonical;
-	} catch {
-		throw new Error(`Invalid resource language: ${value}`);
-	}
-}
-
-export function canonicalizeOptionalResourceLang(value: unknown): string | null {
-	if (typeof value !== 'string') return null;
-	const lang = value.trim().replaceAll('_', '-');
-	if (!lang || lang.toLowerCase() === 'und') return null;
-	try {
-		return canonicalizeResourceLang(lang);
-	} catch {
-		return null;
-	}
-}
+export const ResourceLanguageSchema = z
+	.string()
+	.trim()
+	.min(1)
+	.max(35)
+	.transform((value, ctx) => {
+		try {
+			const locale = new Intl.Locale(value.replaceAll('_', '-'));
+			if (locale.language !== 'zh') return locale.toString();
+			// Store Chinese by script; bare zh stays unknown until the text is inspected.
+			const script = locale.script ?? (locale.region ? locale.maximize().script : undefined);
+			return script ? `zh-${script}` : 'zh';
+		} catch {
+			ctx.issues.push({ code: 'custom', message: 'Invalid resource language', input: value });
+			return z.NEVER;
+		}
+	})
+	.pipe(z.string().max(35));
 
 let chineseConverters: { toTraditional: (text: string) => string; toSimplified: (text: string) => string } | undefined;
 
 /** Local detection only; uncertain text stays und instead of incurring an AI request. */
 export function detectResourceLanguage(content: string, knownLanguage = 'und'): string {
-	const known = canonicalizeResourceLang(knownLanguage);
+	const known = ResourceLanguageSchema.parse(knownLanguage);
 	if (known !== 'und' && known !== 'zh') return known;
 	const text = content
 		.replace(/```[^]*?```|~~~[^]*?~~~/g, ' ')
@@ -39,7 +33,7 @@ export function detectResourceLanguage(content: string, knownLanguage = 'und'): 
 		.trim()
 		.slice(0, 20_000);
 	if ((text.match(/\p{L}/gu)?.length ?? 0) < 20) return known;
-	const detected = canonicalizeResourceLang(franc(text, { minLength: 20 }));
+	const detected = ResourceLanguageSchema.parse(franc(text, { minLength: 20 }));
 	if (detected === 'und') return known;
 	if (detected !== 'zh') return detected;
 	chineseConverters ??= {

@@ -14,7 +14,7 @@ import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
 import { stageYouTubeAcquisition } from './platforms/youtube';
 import type { ResourceTask } from './progress';
-import { canonicalizeOptionalResourceLang } from './resource-language';
+import { ResourceLanguageSchema } from './resource-language';
 
 // Adapters share an output contract; each adapter owns its mapping and identity.
 export type AcquiredResource = {
@@ -104,12 +104,12 @@ export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep,
 			? await stageStoredPdfAcquisition(env, step, target)
 			: await stageUrlAcquisition(env, step, { paidPdfFallback: target.paidPdfFallback ?? null, processingId, url: url! });
 	const source = target.kind === 'draft' ? target.sourceHints : undefined;
+	const language = ResourceLanguageSchema.safeParse(acquired.originalLang).data;
 	const parsedDate = Date.parse(acquired.publishedDate ?? '');
 	const publishedDate = Number.isNaN(parsedDate) ? (source?.publishedDate ?? null) : new Date(parsedDate).toISOString();
 	const resource = {
 		...acquired,
-		originalLang:
-			canonicalizeOptionalResourceLang(acquired.originalLang) ?? canonicalizeOptionalResourceLang(source?.originalLang) ?? 'und',
+		originalLang: language && language !== 'und' ? language : (source?.originalLang ?? 'und'),
 		publishedDate,
 		summary: acquired.summary?.trim() || source?.summary?.trim() || null,
 	};

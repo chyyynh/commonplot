@@ -4,7 +4,7 @@ import { openai } from 'workers-ai-provider/openai';
 import { z } from 'zod';
 import type { AcquiredResource } from './acquisition';
 import { coreGatewayOptions } from './ai-model';
-import { canonicalizeResourceLang, detectResourceLanguage } from './resource-language';
+import { detectResourceLanguage } from './resource-language';
 
 const ANALYSIS_CONTENT_MAX_LENGTH = 10_000;
 const ANALYSIS_MODEL = 'google/gemini-3.5-flash-lite';
@@ -48,7 +48,7 @@ ${resource.content.trim().substring(0, ANALYSIS_CONTENT_MAX_LENGTH)}`;
 
 /** Only presentation metadata blocks publication; classification is completed afterward. */
 export async function summarizeResource(resource: AcquiredResource, env: CoreEnv, processingId: string) {
-	const originalLang = detectResourceLanguage(resource.content, canonicalizeResourceLang(resource.originalLang));
+	const originalLang = detectResourceLanguage(resource.content, resource.originalLang);
 	const sourceSummary = resource.summary?.trim();
 	if (sourceSummary) return { originalLang, summary: sourceSummary };
 	const startedAt = performance.now();

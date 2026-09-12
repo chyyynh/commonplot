@@ -7,7 +7,7 @@ import { ResourceCreatorsSchema } from '../../shared/resource';
 import type { AcquiredResource } from '../acquisition';
 import { resolveCrossrefPaperCandidate } from '../crossref';
 import type { GrobidPdfHeader } from '../grobid-tei';
-import { canonicalizeResourceLang } from '../resource-language';
+import { ResourceLanguageSchema } from '../resource-language';
 import { parsePublicPdfResponse, parseStoredPdfRepresentation, PermanentPdfArtifactError } from '../zotero-sdt-service.ts';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
 import { PDF_MIME, type LocalPdfSummary, type PaidPdfFallbackGrant } from './pdf-policy';
@@ -109,7 +109,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 	return {
 		contentHash: row.content_hash,
 		creators: creators.data,
-		originalLang: canonicalizeResourceLang(row.original_lang),
+		originalLang: ResourceLanguageSchema.parse(row.original_lang),
 		publishedDate: publishedDate?.toISOString() ?? null,
 		source: row.source,
 		storageKey: row.storage_key,

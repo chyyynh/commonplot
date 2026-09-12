@@ -16,7 +16,7 @@ import type { ResourceClassification } from './analysis';
 import { hasPrivatePdfImages, withoutPrivatePdfImages, withoutDuplicatePdfTitle } from './pdf-markdown.ts';
 import { resolveResourceUrl, type ResolvedResourceUrl } from './platforms/resource-url';
 import type { YouTubeResourceData } from './platforms/youtube';
-import { canonicalizeResourceLang } from './resource-language';
+import { ResourceLanguageSchema } from './resource-language';
 
 export type ResourcePersistenceTarget = { ownedBlobId?: string } & (
 	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation; preservePublishedPdf?: boolean }>
@@ -136,7 +136,7 @@ export function prepareResolvedResource(
 		ogImageHeight: media.ogImageHeight,
 		ogImageUrl: media.ogImageUrl,
 		ogImageWidth: media.ogImageWidth,
-		originalLang: canonicalizeResourceLang(resource.originalLang),
+		originalLang: ResourceLanguageSchema.parse(resource.originalLang),
 		publishedDate,
 		sourceName,
 		subject,

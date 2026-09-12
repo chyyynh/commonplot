@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { sha256Hex } from '../shared/hash';
 import { PaidPdfFallbackGrantSchema } from './platforms/pdf-policy';
 import { resolveResourceUrl, ResourceUrlSchema } from './platforms/resource-url';
-import { canonicalizeOptionalResourceLang } from './resource-language';
+import { ResourceLanguageSchema } from './resource-language';
 
 const ResourceDraftRelationSchema = z.discriminatedUnion('kind', [
 	z.strictObject({ kind: z.literal('source'), sourceId: z.uuid() }),
@@ -23,7 +23,7 @@ export const ResourceDraftTargetSchema = z.strictObject({
 	sourceHints: z
 		.strictObject({
 			summary: z.string().max(20_000).optional(),
-			originalLang: z.string().trim().min(1).max(35).optional(),
+			originalLang: ResourceLanguageSchema.optional().catch(undefined),
 			publishedDate: z.iso.datetime().optional(),
 			keywords: z.array(z.string().max(500)).max(100).optional(),
 		})
@@ -63,7 +63,6 @@ export async function enqueueSourceDrafts(
 			...draft,
 			kind: 'draft',
 			relation: { kind: 'source', sourceId },
-			sourceHints: { ...draft.sourceHints, originalLang: canonicalizeOptionalResourceLang(draft.sourceHints?.originalLang) ?? undefined },
 		}),
 	);
 	if (!targets.length) return 0;
