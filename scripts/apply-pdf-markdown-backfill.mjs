@@ -76,13 +76,9 @@ try {
 		);
 		assert.equal(result.rowCount, 1, `Rendition changed since preview: ${row.id}/${row.lang}`);
 	}
-	const legacyIds = [...new Set(changed.filter((row) => row.legacy).map((row) => row.id))];
-	await db.query('UPDATE resource_citation_mentions SET content_start=NULL,content_end=NULL WHERE resource_id=ANY($1::uuid[])', [
-		legacyIds,
-	]);
 	await db.query('UPDATE resources SET updated_at=now() WHERE id=ANY($1::uuid[])', [ids]);
 	await db.query('COMMIT');
-	console.info({ applied: changed.length, resourceIds: ids, clearedLegacyCitationResources: legacyIds.length });
+	console.info({ applied: changed.length, resourceIds: ids });
 } catch (error) {
 	await db.query('ROLLBACK');
 	throw error;

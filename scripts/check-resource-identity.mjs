@@ -40,7 +40,7 @@ registerHooks({
 const [resource, paper, { resolvePlatformResourceUrl }, { analyzeResource, classifyResource }] = await Promise.all([
 	import('../src/shared/resource.ts'),
 	import('../src/shared/paper-identity.ts'),
-	import('../src/ingest/acquisition.ts'),
+	import('../src/ingest/platforms/resource-url.ts'),
 	import('../src/ingest/analysis.ts'),
 ]);
 
@@ -327,7 +327,7 @@ try {
 			fileType: subject ? 'text/html' : 'application/pdf',
 			originalLang: 'en',
 			content: 'An original research paper with readable content.',
-			citations: subject ? null : { references: [{ key: 'r1', label: '1', text: 'A cited paper.' }], mentions: [] },
+			citations: subject ? null : { references: [{ key: 'r1', label: '1', text: 'A cited paper.' }] },
 			resourceImages: [],
 			resourceIdentifiers: [],
 			subject: subject ? { normalizedUrl: subjectTarget.url, publishedDate: subjectTarget.sourceHints.publishedDate } : null,

@@ -2,10 +2,9 @@ import { type FeedEntry as ExtractedFeedEntry, extractFromJson, extractFromXml }
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { limitByteStream } from '../../shared/response';
-import { resolvePlatformResourceUrl } from '../acquisition';
 import { markSourceScraped, recordSourceFailure } from '../source-monitor-state';
 import { enqueueSourceDrafts, type SourceResourceDraft } from '../workflow';
-import { canonicalizeWebResourceUrl } from './web';
+import { canonicalizeWebResourceUrl, resolvePlatformResourceUrl } from './resource-url';
 
 const MAX_FEED_BYTES = 3 * 1024 * 1024;
 const MAX_FEED_ITEMS = 30;

@@ -135,11 +135,7 @@ assert.deepEqual(normalized.references[0], {
 	label: '1',
 	text: 'Example, A. A useful paper. Journal 1 (2024). https://doi.org/10.1000/example',
 });
-assert.equal(normalized.mentions.length, 1);
-assert.deepEqual(normalized.mentions[0].targetKeys, ['sdt-1']);
 assert.match(normalized.markdown, /\[\^paper-sdt-1\]/u);
-assert.match(normalized.mentions[0].context, /Prior work reported t \(46\), F \(1, 44\) and \[1\] established the result2\./u);
-assert.equal(normalized.mentions[0].section, 'Introduction');
 assert.doesNotMatch(normalized.markdown, /Running header|<sup>|<sub>/u);
 assert.doesNotMatch(normalized.markdown, /`46`/u);
 assert.match(normalized.markdown, /^## Introduction/u);
@@ -306,9 +302,6 @@ assert.deepEqual(
 	list.children[0].children.map(({ type }) => type),
 	['heading', 'paragraph', 'paragraph', 'list'],
 );
-assert.equal(nested.mentions.length, 4);
-assert.equal(nested.mentions[0].section, null);
-for (const mention of nested.mentions.slice(1)) assert.equal(mention.section, 'Nested heading');
 assert.match(nested.markdown, /\[\^paper-sdt-1\]:/u);
 
 const nestedParts = structuredClone(nestedDocument);
@@ -318,7 +311,6 @@ itemParts[1].nextPart = [0, 1, 0, 2];
 itemParts[2].previousPart = [0, 1, 0, 1];
 const joinedNested = normalizeStructuredPdf(nestedParts);
 assert.match(joinedNested.markdown, /First paragraph \[\^paper-sdt-1\] Second paragraph \[\^paper-sdt-1\]/u);
-assert.equal(joinedNested.mentions.length, 4);
 assert.match(joinedNested.markdown, /\[\^paper-sdt-1\]:/u);
 
 // Part links must not duplicate text or move it between independent containers.
@@ -351,7 +343,6 @@ for (const reference of [
 	const target = reference.type === 'blockquote' ? [1, 0] : [1];
 	const result = normalizeStructuredPdf({ ...document, content: [prose(text('See '), text('[1]', { refs: [target] })), reference] });
 	assert.deepEqual(result.references, []);
-	assert.deepEqual(result.mentions, []);
 	assert.equal(fromMarkdown(result.markdown).children[0].children[0].value, 'See [1]');
 }
 
@@ -411,7 +402,6 @@ for (const type of ['paragraph', 'caption']) {
 				],
 			});
 			assert.equal(visibleText(fromMarkdown(styled.markdown).children[0]), 'one two* [1]');
-			assert.equal(styled.mentions.length, 1);
 			assert.match(styled.markdown, /\[\^paper-sdt-1\]:/u);
 		}
 	}
@@ -466,10 +456,7 @@ assert.equal(htmlElements(richTable.markdown, 'blockquote').length, 1);
 assert.equal(htmlElements(richTable.markdown, 'ul').length, 1);
 assert.ok(htmlElements(richTable.markdown, 'a').some(({ properties }) => properties.href === 'https://example.com/table'));
 assert.doesNotMatch(richTable.markdown, /Excluded|Hidden/u);
-assert.deepEqual(
-	richTable.mentions.map(({ section }) => section),
-	['Results', 'Cell heading', 'Results'],
-);
+
 assert.match(richTable.markdown, /\[\^paper-sdt-1\]:/u);
 assert.doesNotMatch(richTable.markdown, /#sdt-citation-/u);
 
@@ -478,7 +465,6 @@ pipeMarkerDocument.content[1].content[0].content[0].content[0].content[1].text =
 const pipeMarkerTable = normalizeStructuredPdf(pipeMarkerDocument);
 const pipeCells = htmlElements(pipeMarkerTable.markdown, 'td');
 assert.match(htmlText(pipeCells[0]), /First \[\^paper-sdt-1\] continuation\s*Quote/u);
-assert.equal(pipeMarkerTable.mentions.length, 3);
 
 const complexNoteDocument = structuredClone(noteDocument);
 complexNoteDocument.content[0] = {
@@ -546,8 +532,6 @@ assert.deepEqual(splitReferenceNormalized.references, [
 		text: 'Kane, G.C.; Alavi, M.;and Borgatti, S.P. A complete reference. MIS Quarterly (2014).',
 	},
 ]);
-assert.deepEqual(splitReferenceNormalized.mentions[0].targetKeys, ['sdt-1']);
-assert.equal(splitReferenceNormalized.mentions[0].markerText, '[41]');
 
 const seamDocument = {
 	...document,
@@ -757,7 +741,6 @@ assert.equal(
 console.info({
 	event: 'zotero_sdt_contract_passed',
 	markdownCharacters: normalized.markdown.length,
-	mentions: normalized.mentions.length,
 	references: normalized.references.length,
 });
 
@@ -790,13 +773,14 @@ console.info({
 		visit(expandHtmlTables(fromMarkdown(markdown)));
 		return { definitions, references };
 	};
-	for (const result of [normalized, nested, richTable]) {
+	for (const [result, referenceCount] of [
+		[normalized, 1],
+		[nested, 4],
+		[richTable, 3],
+	]) {
 		const actual = notes(result.markdown);
 		assert.equal(actual.definitions.length, new Set(actual.definitions).size);
-		assert.equal(
-			actual.references.length,
-			result.mentions.reduce((total, mention) => total + mention.targetKeys.length, 0),
-		);
+		assert.equal(actual.references.length, referenceCount);
 		assert.ok(actual.references.every((id) => actual.definitions.includes(id)));
 		const withImage = `![Figure](/api/media/asset/pdf-crops/example.png)\n\n${result.markdown}`;
 		assert.deepEqual(notes(withoutPrivatePdfImages(withImage)), actual);

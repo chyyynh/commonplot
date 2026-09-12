@@ -26,10 +26,8 @@ const MAX_DOCUMENT_NODES = 100_000;
 const MAX_DOCUMENT_TEXT_CHARS = 2_000_000;
 const MAX_REFERENCE_TEXT_CHARS = 600;
 const MAX_REFERENCES = 1_000;
-const MAX_CITATION_CONTEXT_CHARS = 1_200;
 const MAX_CITATION_MARKER_CHARS = 128;
-const MAX_CITATION_MENTIONS = 3_000;
-const MAX_SECTION_CHARS = 300;
+const MAX_CITATION_MARKERS = 3_000;
 const MAX_SOURCE_CROP_ALT_CHARS = 500;
 const MAX_SOURCE_CROPS = 64;
 const MAX_REF_PATH_DEPTH = 16;
@@ -64,13 +62,6 @@ export type StructuredPdfDocument = Readonly<{
 		source: Readonly<Pick<StructuredDocumentText['metadata']['source'], 'properties'>>;
 	}>;
 	schemaVersion: string;
-}>;
-
-type StructuredPdfCitationMention = Readonly<{
-	context: string;
-	markerText: string;
-	section: string | null;
-	targetKeys: string[];
 }>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -613,13 +604,11 @@ export function normalizeStructuredPdf(
 			linkedNotes.set(key, markers);
 		}
 	}
-	let section: string | null = null;
 	const renderedPartPaths = new Set<string>();
-	const mentions: StructuredPdfCitationMention[] = [];
+	let citationMarkers = 0;
 	const citedKeys = new Set<string>();
 	function inline(nodes: readonly SdtNode[], inheritedItalic = false): PhrasingContent[] {
 		const children: PhrasingContent[] = [];
-		const context = boundedText(cleanText(nodes.map(nodeText).join('')), MAX_CITATION_CONTEXT_CHARS);
 		const ignoredReferences = statisticalReferenceNodes(nodes, referenceKeyByPath);
 		let plain: SdtTextNode[] = [];
 		function flush() {
@@ -648,20 +637,14 @@ export function normalizeStructuredPdf(
 				for (const key of noteKeys) children.push({ type: 'footnoteReference', identifier: `sdt-note-${key.replaceAll(',', '-')}` });
 				if (value.endsWith(' ')) children.push({ type: 'text', value: ' ' });
 			} else if (
-				context &&
 				targetKeys.length &&
 				markerText &&
 				markerText.length <= MAX_CITATION_MARKER_CHARS &&
-				mentions.length < MAX_CITATION_MENTIONS
+				citationMarkers < MAX_CITATION_MARKERS
 			) {
 				flush();
 				if (value.startsWith(' ')) children.push({ type: 'text', value: ' ' });
-				mentions.push({
-					context,
-					markerText,
-					section: section ? boundedText(cleanText(section), MAX_SECTION_CHARS) : null,
-					targetKeys: [...new Set(targetKeys)],
-				});
+				citationMarkers++;
 				for (const key of new Set(targetKeys)) {
 					citedKeys.add(key);
 					children.push({ type: 'footnoteReference', identifier: `paper-${key}` });
@@ -739,7 +722,6 @@ export function normalizeStructuredPdf(
 					node.content.some((child) => 'text' in child && safeHttpUrl(child.target?.url)?.startsWith('https://orcid.org/')))
 			)
 				return [{ type: 'paragraph', children: inline(node.content) }];
-			section = cleanText(nodeText(node)) || section;
 			return [{ type: 'heading', depth: (headingLevelByPath.get(refKey(path)) ?? 2) as Heading['depth'], children: inline(node.content) }];
 		}
 		if (node.type === 'preformatted') return [{ type: 'code', lang: 'text', value: nodeText(node).replaceAll('\0', '').trimEnd() }];
@@ -770,9 +752,7 @@ export function normalizeStructuredPdf(
 				const cells: (typeof rows)[number] = [];
 				for (const [cellIndex, cell] of row.content.entries()) {
 					if ('text' in cell || cell.type !== 'tablecell' || cell.flowClass === 'excluded') continue;
-					const parentSection = section;
 					const content = toBlock(cell, [...path, rowIndex, cellIndex]);
-					section = parentSection;
 					cells.push({ source: cell, content });
 				}
 				if (cells.length) rows.push(cells);
@@ -893,7 +873,6 @@ export function normalizeStructuredPdf(
 	const fullPageImagePages = document.catalog.pages.filter((_, index) => !getFulltextFromStructuredText(fulltextDocument, [index])).length;
 	return {
 		markdown,
-		mentions,
 		paperIdentifierText: firstPageIdentifierText(document),
 		parse: {
 			fallbackReasons: [...fallbackReasons].sort(),

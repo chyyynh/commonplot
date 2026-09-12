@@ -1,36 +1,13 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import {
-	type AcquiredResource,
-	RESOURCE_PLATFORMS,
-	type ResourceAcquisitionHints,
-	type ResourceSubjectIdentity,
-	resolveResourceHints,
-} from '../../shared/resource';
+import { type AcquiredResource, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
+import { isTwitterHostname, parseTwitterResourceUrl, resolveResourceSubject } from './resource-url';
 
 import { parseTwitterArticleResponse, parseTwitterTweetsResponse, renderTwitterArticleMarkdown, type Tweet } from './twitter-data';
-
-function isTwitterHostname(hostname: string): boolean {
-	const lower = hostname.toLowerCase();
-	return lower === 'twitter.com' || lower.endsWith('.twitter.com') || lower === 'x.com' || lower.endsWith('.x.com');
-}
-
-export function parseTwitterResourceUrl(url: URL) {
-	const candidate = url.pathname.match(/^\/[^/]+\/status\/(\d+)(?:\/|$)/)?.[1] ?? url.pathname.match(/^\/i\/article\/(\d+)(?:\/|$)/)?.[1];
-	const tweetId = RESOURCE_PLATFORMS.twitter.identifier.safeParse(candidate);
-	return tweetId.success
-		? {
-				resourcePlatform: 'twitter' as const,
-				platformId: tweetId.data,
-				canonicalUrl: `https://x.com/i/status/${tweetId.data}`,
-			}
-		: null;
-}
 
 type TwitterAcquisitionInput = {
 	hints: ResourceAcquisitionHints;
 	processingId: string;
-	resolveSubject: (url: string | null | undefined) => ResourceSubjectIdentity | null;
 	tweetId: string;
 };
 
@@ -234,7 +211,7 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 	};
 }
 
-async function scrapeTweet({ tweetId, hints, resolveSubject }: TwitterAcquisitionInput, apiKey: string) {
+async function scrapeTweet({ tweetId, hints }: TwitterAcquisitionInput, apiKey: string) {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
 	const response = await fetch(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, {
 		headers: { 'x-api-key': apiKey },
@@ -259,7 +236,7 @@ async function scrapeTweet({ tweetId, hints, resolveSubject }: TwitterAcquisitio
 		{ originalLang: tweet.lang ?? null, publishedDate: content.publishedDate, summary: null },
 		hints,
 	);
-	const subject = resolveSubject(subjectUrl);
+	const subject = resolveResourceSubject(subjectUrl);
 	return {
 		...content,
 		kind: 'post',

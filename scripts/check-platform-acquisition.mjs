@@ -65,7 +65,7 @@ async function acquire(input = {}) {
 		summary: input.summaryHint ?? null,
 	};
 	const step = { do: async (name, _options, run) => (name.startsWith('acquire-') ? run({ attempt: 1 }) : null) };
-	const context = { hints, processingId: 'contract', resolveSubject: () => input.subject ?? null };
+	const context = { hints, processingId: 'contract' };
 	if (input.resourcePlatform) {
 		const providerResponses = {
 			[`/v0/item/${input.platformId}.json`]: {
@@ -203,7 +203,7 @@ async function acquire(input = {}) {
 		},
 	};
 	try {
-		const resource = await stageWebAcquisition(env, step, { ...context, url: url ?? base.url, paidPdfFallback: null }, () => null);
+		const resource = await stageWebAcquisition(env, step, { ...context, url: url ?? base.url, paidPdfFallback: null });
 		return await stagePaperResolution({}, step, {
 			resource: { ...resource, url: url === null ? null : resource.url },
 			processingId: context.processingId,
@@ -509,6 +509,36 @@ for (const testCase of paperResolutionCases) {
 		globalThis.fetch = originalFetch;
 	}
 }
+const { resolveOpenAlexPaper } = await import('../src/ingest/platforms/openalex.ts');
+const originalOpenAlexFetch = globalThis.fetch;
+const openAlexRequests = [];
+globalThis.fetch = async (request) => {
+	const url = new URL(request);
+	openAlexRequests.push(url);
+	return Response.json({
+		id: 'https://openalex.org/W2',
+		title: 'Resolved paper',
+		cited_by_count: 17,
+		referenced_works_count: 4,
+		referenced_works: ['https://openalex.org/W1'],
+	});
+};
+try {
+	const resolved = await resolveOpenAlexPaper({ apiKey: 'fixture', identifiers: [{ preferred: true, scheme: 'openalex', value: 'W2' }] });
+	assert.equal(resolved.metadata.citedByCount, 17);
+	assert.equal(resolved.metadata.referenceCount, 4);
+	assert.deepEqual(
+		openAlexRequests.map(({ pathname }) => pathname),
+		['/works/W2'],
+		'paper metadata does not fetch unused relation lists',
+	);
+	assert.equal(openAlexRequests[0].searchParams.get('select').split(',').includes('referenced_works'), false);
+	assert.equal('references' in resolved.metadata, false);
+	assert.equal('citations' in resolved.metadata, false);
+} finally {
+	globalThis.fetch = originalOpenAlexFetch;
+}
+
 const video = await acquire({ resourcePlatform: 'youtube', platformId: 'abcdefghijk' });
 const invalidResources = [
 	{ ...blog, kind: 'paper', kindMetadata: {} },
@@ -556,7 +586,7 @@ assert.deepEqual(
 		})
 	).subject,
 	{ ...paperSubject, publishedDate: null },
-	'acquisition keeps the already-resolved paper subject',
+	'acquisition resolves the paper subject from its URL',
 );
 
 // A subject page routinely publishes no date of its own; the carrier's date

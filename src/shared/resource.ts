@@ -62,17 +62,6 @@ const ResourceMediaAttachmentSchema = z.object({
 });
 
 const PostQuoteSchema = z.object({ creator: ResourceCreatorSchema, text: z.string().trim().min(1) });
-const PaperRelationItemSchema = z.object({
-	openAlexId: z.string().regex(/^W\d+$/),
-	doi: z.string().trim().min(1).optional(),
-	title: z.string().trim().min(1),
-	authors: z.array(z.string().trim().min(1)),
-	venue: z.string().trim().min(1).optional(),
-	year: z.int().positive().optional(),
-	citedByCount: z.int().nonnegative().optional(),
-});
-const PaperRelationSnapshotSchema = z.object({ total: z.int().nonnegative(), items: z.array(PaperRelationItemSchema) });
-
 export const RESOURCE_KIND_METADATA = {
 	blog: z.object({ siteName: z.string().trim().min(1).optional() }).nullable(),
 	forum: z.object({
@@ -92,8 +81,6 @@ export const RESOURCE_KIND_METADATA = {
 		citedByCount: z.int().nonnegative().optional(),
 		referenceCount: z.int().nonnegative().optional(),
 		pdfUrl: optionalHttpUrl.optional(),
-		references: PaperRelationSnapshotSchema.optional(),
-		citations: PaperRelationSnapshotSchema.optional(),
 	}),
 	image: z.null(),
 	file: z.null(),
@@ -114,7 +101,6 @@ export type PlatformResourceUrl = { resourcePlatform: ResourcePlatform; platform
 
 export type ResourceCitations = {
 	references: readonly { key: string; label: string | null; text: string }[];
-	mentions: readonly { context: string; markerText: string; section: string | null; targetKeys: readonly string[] }[];
 };
 
 // Adapters share an output contract; each adapter owns its mapping and identity.

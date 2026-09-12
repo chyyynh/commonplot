@@ -1,7 +1,7 @@
 import { generateText, NoObjectGeneratedError, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
+import { coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
 	createMarkdownTranslationTemplate,
 	type MarkdownSegmentTranslation,
@@ -117,18 +117,12 @@ async function translateBatch(
 	const { finishReason, output } = await generateText({
 		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
 			...CORE_STRUCTURED_MODEL_SETTINGS,
-			gateway: {
-				id: 'core-ingest',
-				collectLog: true,
-				retries: { maxAttempts: 1 },
-				metadata: {
-					batch_id: batch.id,
-					feature: 'resource-content-translation',
-					recovery_strategy: batch.id.includes('-') ? 'split' : 'batch',
-					resource_id: resourceId,
-				},
-			},
-			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
+			...coreGatewayOptions(env, {
+				batch_id: batch.id,
+				feature: 'resource-content-translation',
+				recovery_strategy: batch.id.includes('-') ? 'split' : 'batch',
+				resource_id: resourceId,
+			}),
 		}),
 		prompt: `${JSON.stringify({
 			targetLocale: 'zh-Hant',

@@ -1,20 +1,9 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
-import { type AcquiredResource, RESOURCE_PLATFORMS, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
+import { type AcquiredResource, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
-
-export function parseLessWrongResourceUrl(url: URL) {
-	const postId = RESOURCE_PLATFORMS.lesswrong.identifier.safeParse(url.pathname.match(/^\/posts\/([^/]+)(?:\/|$)/)?.[1]);
-	return postId.success
-		? {
-				resourcePlatform: 'lesswrong' as const,
-				platformId: postId.data,
-				canonicalUrl: `https://lesswrong.com/posts/${postId.data}`,
-			}
-		: null;
-}
 
 const POST_QUERY = `query PostForIngest($id: String!) {
   post(selector: { documentId: $id }) {

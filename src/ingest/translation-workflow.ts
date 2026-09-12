@@ -9,7 +9,7 @@ import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
 import { sha256Hex } from '../shared/hash';
 import { canonicalizeResourceLang } from '../shared/resource';
-import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
+import { coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
 	compileMarkdownTranslationArtifact,
 	type MarkdownSegmentTranslation,
@@ -134,17 +134,7 @@ async function translateResourceMetadata(resource: ResourceTranslationInput, env
 	const { finishReason, output } = await generateText({
 		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
 			...CORE_STRUCTURED_MODEL_SETTINGS,
-			gateway: {
-				id: 'core-ingest',
-				collectLog: true,
-				retries: { maxAttempts: 1 },
-				metadata: {
-					feature: 'resource-metadata-localization',
-					environment: env.AI_GATEWAY_ENVIRONMENT,
-					resource_id: resource.id,
-				},
-			},
-			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
+			...coreGatewayOptions(env, { feature: 'resource-metadata-localization', resource_id: resource.id }),
 		}),
 		system: `Translate the supplied resource metadata into natural Taiwan Traditional Chinese (zh-Hant).
 Translate the title faithfully.

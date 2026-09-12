@@ -231,8 +231,6 @@ async function writeCanonicalResource(
 			RETURNING id, MD5(EXTRACT(EPOCH FROM scraped_date)::text) AS acquisition_revision
 		), cleared_identifiers AS (
 			DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid AND ${existing}
-		), cleared_mentions AS (
-			DELETE FROM resource_citation_mentions WHERE resource_id = ${resourceId}::uuid AND ${existing}
 		), cleared_references AS (
 			DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid AND ${existing}
 		), cleared_translations AS (
@@ -261,36 +259,13 @@ async function writeCanonicalResource(
 		`);
 	}
 	if (resource.citations?.references.length) {
-		const { references, mentions } = resource.citations;
-		const ordinalByKey = new Map(references.map(({ key }, index) => [key, index + 1]));
-		const linkedMentions = mentions.flatMap(({ targetKeys, ...mention }) => {
-			const referenceOrdinals = [...new Set(targetKeys.flatMap((key) => ordinalByKey.get(key) ?? []))];
-			return referenceOrdinals.length ? [{ ...mention, referenceOrdinals }] : [];
-		});
+		const { references } = resource.citations;
 		// These references describe exactly the original written in this transaction.
 		await db.execute(sql`
 			INSERT INTO resource_references (resource_id, ordinal, label, text)
 			SELECT ${resourceId}::uuid, incoming.ordinal::integer, incoming.value->>'label', incoming.value->>'text'
 			FROM jsonb_array_elements(${JSON.stringify(references)}::jsonb)
 			WITH ORDINALITY AS incoming(value, ordinal)
-		`);
-		if (linkedMentions.length)
-			await db.execute(sql`
-			WITH incoming AS MATERIALIZED (
-				SELECT ordinal::integer, value->>'markerText' AS marker_text,
-				       value->>'context' AS context, value->>'section' AS section,
-				       value->'referenceOrdinals' AS reference_ordinals
-				FROM jsonb_array_elements(${JSON.stringify(linkedMentions)}::jsonb)
-				WITH ORDINALITY AS mention(value, ordinal)
-			), inserted_mentions AS (
-				INSERT INTO resource_citation_mentions (resource_id, ordinal, marker_text, context, section)
-				SELECT ${resourceId}::uuid, ordinal, marker_text, context, section FROM incoming
-				RETURNING ordinal
-			)
-			INSERT INTO resource_citation_targets (resource_id, mention_ordinal, reference_ordinal)
-			SELECT ${resourceId}::uuid, incoming.ordinal, target.value::integer
-			FROM incoming JOIN inserted_mentions USING (ordinal)
-			CROSS JOIN LATERAL jsonb_array_elements_text(incoming.reference_ordinals) AS target(value)
 		`);
 	}
 	if (resource.youtube) {
@@ -338,11 +313,6 @@ async function removeStoredPrivatePdfImages(db: NodePgDatabase, resourceId: stri
 		await db.execute(sql`
 			UPDATE resource_translations SET content = ${content}, alignment = NULL, updated_at = NOW()
 			WHERE resource_id = ${resourceId}::uuid AND lang = ${translation.lang}
-		`);
-		// Removing image blocks changes byte offsets and aligned translation blocks.
-		await db.execute(sql`
-			UPDATE resource_citation_mentions SET content_start = NULL, content_end = NULL
-			WHERE resource_id = ${resourceId}::uuid AND content_start IS NOT NULL
 		`);
 	}
 }

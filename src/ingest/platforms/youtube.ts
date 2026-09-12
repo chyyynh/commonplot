@@ -4,8 +4,8 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { createWorkersAI } from 'workers-ai-provider';
 import type { TranscriptResponse } from 'youtube-transcript';
 import { z } from 'zod';
-import { type AcquiredResource, RESOURCE_PLATFORMS, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
-import { CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
+import { type AcquiredResource, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
+import { coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
@@ -27,29 +27,6 @@ export type YouTubeResourceData = Readonly<{
 	transcript: YouTubeTranscript;
 	highlights: YouTubeHighlights | null;
 }>;
-
-export function parseYouTubeResourceUrl(url: URL) {
-	const hostname = url.hostname.toLowerCase().replace(/^www\./, '');
-	if (hostname !== 'youtube.com' && !hostname.endsWith('.youtube.com') && hostname !== 'youtu.be' && !hostname.endsWith('.youtu.be')) {
-		return null;
-	}
-	const [kind, maybeId] = url.pathname.split('/').filter(Boolean);
-	const candidate =
-		url.searchParams.get('v') ??
-		(hostname === 'youtu.be' || hostname.endsWith('.youtu.be')
-			? kind
-			: ['embed', 'shorts', 'live', 'v'].includes(kind ?? '')
-				? maybeId
-				: null);
-	const videoId = RESOURCE_PLATFORMS.youtube.identifier.safeParse(candidate);
-	return videoId.success
-		? {
-				resourcePlatform: 'youtube' as const,
-				platformId: videoId.data,
-				canonicalUrl: `https://youtube.com/watch?v=${videoId.data}`,
-			}
-		: null;
-}
 
 const YouTubeThumbnailSchema = z.object({ url: z.string().min(1) });
 const YouTubeThumbnailsSchema = z.object({
@@ -373,17 +350,7 @@ async function prepareYouTubeHighlightsFromTranscript(
 	const { finishReason, output: highlights } = await generateText({
 		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
 			...CORE_STRUCTURED_MODEL_SETTINGS,
-			gateway: {
-				id: 'core-ingest',
-				collectLog: true,
-				retries: { maxAttempts: 1 },
-				metadata: {
-					feature: 'youtube-highlights',
-					environment: env.AI_GATEWAY_ENVIRONMENT,
-					processing_id: processingId,
-				},
-			},
-			extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
+			...coreGatewayOptions(env, { feature: 'youtube-highlights', processing_id: processingId }),
 		}),
 		prompt: `影片總長度：${duration} 秒\n\n逐字稿：\n${transcriptText}`,
 		system: HIGHLIGHTS_SYSTEM_PROMPT,

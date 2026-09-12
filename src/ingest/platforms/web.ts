@@ -10,20 +10,12 @@ import type { PlatformResourceUrl } from '../../shared/resource';
 import { type AcquiredResource, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
 import { limitByteStream } from '../../shared/response';
 import { acquireFetchedPdfResponse, completeFetchedPdfAcquisition, type PaidPdfFallbackGrant, PDF_MIME } from './pdf';
+import { canonicalizeWebResourceUrl, resolvePlatformResourceUrl } from './resource-url';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
-const TRACKING_PARAMS = ['utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'fbclid', 'gclid', 'mc_eid', 'mc_cid'];
-
-export function canonicalizeWebResourceUrl(url: URL): string {
-	url.hostname = url.hostname.toLowerCase().replace(/^www\./, '');
-	for (const parameter of TRACKING_PARAMS) url.searchParams.delete(parameter);
-	url.searchParams.sort();
-	return url.toString();
-}
-
 // Normalize narrow source-DOM quirks before Readability so the extracted HTML
 // still contains the semantics carried into the Markdown syntax tree.
 addTransformations({
@@ -170,12 +162,7 @@ function sourceHtmlSummary(html: string): string | null {
 
 type WebAcquisition = Awaited<ReturnType<typeof acquireWebResource>>;
 
-async function acquireWebResource(
-	env: CoreEnv,
-	url: string,
-	hints: ResourceAcquisitionHints,
-	platformUrl: (url: URL) => PlatformResourceUrl | null,
-) {
+async function acquireWebResource(env: CoreEnv, url: string, hints: ResourceAcquisitionHints) {
 	const response = await fetch(url, {
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
@@ -201,7 +188,7 @@ async function acquireWebResource(
 		await response.body?.cancel();
 		throw new Error('Fetch response has no valid final URL');
 	}
-	const platform = platformUrl(parsedFinalUrl);
+	const platform = resolvePlatformResourceUrl(parsedFinalUrl);
 	if (platform) {
 		await response.body?.cancel();
 		return { platform };
@@ -238,13 +225,12 @@ export async function stageWebAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: { hints: ResourceAcquisitionHints; paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string },
-	platformUrl: (url: URL) => PlatformResourceUrl | null,
 ) {
 	const result = await step.do(
 		'acquire-web-v9',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 		async () => {
-			const acquired = await acquireWebResource(env, input.url, input.hints, platformUrl);
+			const acquired = await acquireWebResource(env, input.url, input.hints);
 			return 'platform' in acquired ? acquired : Response.json(acquired).body!;
 		},
 	);

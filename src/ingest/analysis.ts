@@ -3,6 +3,7 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { openai } from 'workers-ai-provider/openai';
 import { z } from 'zod';
 import { type AcquiredResource, canonicalizeResourceLang } from '../shared/resource';
+import { coreGatewayOptions } from './ai-model';
 import { detectResourceLanguage } from './resource-language';
 
 const ANALYSIS_CONTENT_MAX_LENGTH = 10_000;
@@ -30,16 +31,8 @@ const RESOURCE_ANALYSIS_SYSTEM_PROMPT = `你是專業的新聞分類分析師。
 - 新聞性質: Review, Opinion, Analysis, Feature, Interview, Tutorial, Announcement`;
 
 function analysisModel(env: CoreEnv, processingId: string, feature: string) {
-	return createWorkersAI({
-		binding: env.AI,
-		providers: [openai],
-		gateway: {
-			id: 'core-ingest',
-			collectLog: true,
-			retries: { maxAttempts: 1 },
-			metadata: { feature, environment: env.AI_GATEWAY_ENVIRONMENT, processing_id: processingId },
-		},
-	})(ANALYSIS_MODEL, { extraHeaders: { 'cf-aig-collect-log-payload': 'false' } });
+	const { gateway, extraHeaders } = coreGatewayOptions(env, { feature, processing_id: processingId });
+	return createWorkersAI({ binding: env.AI, providers: [openai], gateway })(ANALYSIS_MODEL, { extraHeaders });
 }
 
 function analysisPrompt(resource: AcquiredResource, originalLang: string) {

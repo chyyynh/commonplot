@@ -318,7 +318,7 @@ export async function parseStoredPdfRepresentation(
 	});
 	console.info({ tag: 'PDF_PARSE', event: 'zotero_sdt_completed', source: input.sourceLabel, ...normalized.parse });
 	return {
-		citations: { references: normalized.references, mentions: normalized.mentions },
+		citations: { references: normalized.references },
 		markdown: normalized.markdown,
 		paperIdentifierText: normalized.paperIdentifierText,
 		parse: normalized.parse,

@@ -92,7 +92,7 @@ Uploaded PDF content and translations stay on its private raw Resource. If paper
 
 Public URL acquisition writes a separate `public-pdf/<sourceSha256>/<inputSha256>/` family. Matching bytes in a private upload never establish public provenance. Only after canonical persistence does Core validate the source and complete crop manifest and write `publication.json`. Public crop delivery requires that publication, an enriched corpus Resource, and the exact crop URL in its current original content. Raw public acquisition artifacts have no public download route. Public crop storage is independent of user upload deletion.
 
-Existing corpus bodies with private image references are cleaned when explicitly reprocessed, including references in preserved human translations. Human text remains intact; obsolete alignment and citation offsets are cleared. This is an ingestion repair, not a mutation performed by reads.
+Existing corpus bodies with private image references are cleaned when explicitly reprocessed, including references in preserved human translations. Human text remains intact; obsolete alignment is cleared. This is an ingestion repair, not a mutation performed by reads.
 
 #### Operator verification
 

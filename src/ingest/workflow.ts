@@ -220,7 +220,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				stageResourceImages(this.env, step, processingId, imageSources, target.kind === 'reacquire' ? event.instanceId : undefined),
 			]);
 			await task.report('persisting', { stage: 'persisting', status: 'running' });
-			let privateTranslation: { resourceId: string; translationRevision: string } | undefined;
+			const translationTargets: { resourceId: string; translationRevision: string; forceRunKey?: string; stepName: string }[] = [];
+			// Overwritten originals need a fresh translation; replays of this run share one ID.
+			const forceProcessingRunKey = (await sha256Hex(event.instanceId)).slice(0, 16);
 			const classificationTargets: Parameters<typeof persistResourceClassification>[1][] = [];
 			if (uploadedPaper) {
 				const privateRendition = prepareResolvedResource(
@@ -238,7 +240,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							ownedBlobId,
 						}),
 				);
-				if (shouldEnqueueResourceTranslation({ ...privateRendition, scope: 'private' })) privateTranslation = privatePersistence;
+				if (shouldEnqueueResourceTranslation({ ...privateRendition, scope: 'private' }))
+					translationTargets.push({
+						...privatePersistence,
+						forceRunKey: forceProcessingRunKey,
+						stepName: 'enqueue-private-pdf-translation-v2',
+					});
 				classificationTargets.push(privatePersistence);
 			}
 			const preparedResource = prepareResolvedResource(
@@ -267,8 +274,13 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			);
 			const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision, acquisitionRevision } = persistence;
 			if (persistence.originalWritten) classificationTargets.push(persistence);
-			// Overwritten originals have no retained translations, even when their text is unchanged.
-			const forceProcessingRunKey = (await sha256Hex(event.instanceId)).slice(0, 16);
+			if (shouldEnqueueResourceTranslation({ ...preparedResource, scope }))
+				translationTargets.push({
+					resourceId: persistedResourceId,
+					translationRevision,
+					forceRunKey: persistence.originalWritten ? forceProcessingRunKey : undefined,
+					stepName: 'enqueue-resource-translation-v4',
+				});
 			if (scope === 'corpus' && preparedResource.fileType === 'application/pdf') {
 				await step.do(
 					'publish-public-pdf-crops-v1',
@@ -329,34 +341,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							);
 					}
 				})(),
-				privateTranslation
-					? step.do(
-							'enqueue-private-pdf-translation-v2',
-							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							() =>
-								enqueueResourceTranslation(
-									this.env,
-									privateTranslation!.resourceId,
-									privateTranslation!.translationRevision,
-									forceProcessingRunKey,
-									task,
-								),
-						)
-					: undefined,
-				shouldEnqueueResourceTranslation({ ...preparedResource, scope })
-					? step.do(
-							'enqueue-resource-translation-v4',
-							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							() =>
-								enqueueResourceTranslation(
-									this.env,
-									persistedResourceId,
-									translationRevision,
-									persistence.originalWritten ? forceProcessingRunKey : undefined,
-									task,
-								),
-						)
-					: undefined,
+				...translationTargets.map(({ stepName, resourceId, translationRevision, forceRunKey }) =>
+					step.do(stepName, { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' }, () =>
+						enqueueResourceTranslation(this.env, resourceId, translationRevision, forceRunKey, task),
+					),
+				),
 				subject && !subjectAttached
 					? step.do(
 							'enqueue-resolved-subject-child-v2',

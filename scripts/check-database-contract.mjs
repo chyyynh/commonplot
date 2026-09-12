@@ -16,16 +16,11 @@ const dropResourceReferenceMarkerMigrationPath = resolve(
 	root,
 	'../../web-tanstack/prisma/migrations/20260903080000_drop_resource_reference_marker/migration.sql',
 );
-const resourceCitationMentionsMigrationPath = resolve(
-	root,
-	'../../web-tanstack/prisma/migrations/20260903090000_add_resource_citation_mentions/migration.sql',
-);
 
 const prismaSource = readFileSync(prismaPath, 'utf8');
 const manualIndexesSource = readFileSync(manualIndexesPath, 'utf8');
 const resourceReferencesMigrationSource = readFileSync(resourceReferencesMigrationPath, 'utf8');
 const dropResourceReferenceMarkerMigrationSource = readFileSync(dropResourceReferenceMarkerMigrationPath, 'utf8');
-const resourceCitationMentionsMigrationSource = readFileSync(resourceCitationMentionsMigrationPath, 'utf8');
 const errors = [];
 
 function parseDomainConstraint(source, constraintName, columnName) {
@@ -111,30 +106,6 @@ if (
 if (!/DROP COLUMN "marker"/.test(dropResourceReferenceMarkerMigrationSource)) {
 	errors.push('resource reference marker cutover must drop the retired marker column');
 }
-const resourceCitationMentionModelBody = prismaSource.match(/model ResourceCitationMention \{([\s\S]*?)\n\}/)?.[1] ?? '';
-const resourceCitationTargetModelBody = prismaSource.match(/model ResourceCitationTarget \{([\s\S]*?)\n\}/)?.[1] ?? '';
-if (
-	!/@@id\(\[resourceId, ordinal\]\)/.test(resourceCitationMentionModelBody) ||
-	!/@@id\(\[resourceId, mentionOrdinal, referenceOrdinal\]\)/.test(resourceCitationTargetModelBody) ||
-	!/@@index\(\[resourceId, referenceOrdinal, mentionOrdinal\], map: "resource_citation_targets_reference_idx"\)/.test(
-		resourceCitationTargetModelBody,
-	)
-) {
-	errors.push('Prisma citation mention models must preserve grouped-target and reverse-reference contracts');
-}
-const normalizedResourceCitationMentionsMigration = resourceCitationMentionsMigrationSource.replace(/\s+/g, ' ');
-for (const requiredCitationContract of [
-	'CREATE TABLE resource_citation_mentions',
-	'CREATE TABLE resource_citation_targets',
-	'PRIMARY KEY (resource_id, mention_ordinal, reference_ordinal)',
-	'FOREIGN KEY (resource_id, reference_ordinal) REFERENCES resource_references(resource_id, ordinal)',
-	"CHECK (content_revision ~ '^[0-9a-f]{32}$')",
-	'CREATE INDEX resource_citation_targets_reference_idx',
-]) {
-	if (!normalizedResourceCitationMentionsMigration.includes(requiredCitationContract)) {
-		errors.push(`citation mention migration is missing: ${requiredCitationContract}`);
-	}
-}
 const normalizedManualIndexes = manualIndexesSource.replace(/\s+/g, ' ');
 if (
 	!normalizedManualIndexes.includes(
@@ -158,24 +129,14 @@ for (const [constraint, check] of [
 		errors.push(`manual-indexes.sql must mirror ${constraint} exactly`);
 	}
 }
-for (const citationConstraint of [
-	'resource_references_label_check',
-	'resource_references_title_check',
-	'resource_references_authors_check',
-	'resource_references_year_check',
-	'resource_references_venue_check',
-	'resource_citation_mentions_ordinal_check',
-	'resource_citation_mentions_marker_text_check',
-	'resource_citation_mentions_context_check',
-	'resource_citation_mentions_section_check',
-	'resource_citation_mentions_offsets_check',
-]) {
-	if (!normalizedManualIndexes.includes(`ADD CONSTRAINT ${citationConstraint}`)) {
-		errors.push(`manual-indexes.sql must mirror ${citationConstraint}`);
-	}
+if (!normalizedManualIndexes.includes('ADD CONSTRAINT resource_references_label_check')) {
+	errors.push('manual-indexes.sql must mirror resource_references_label_check');
 }
-if (!normalizedManualIndexes.includes('CREATE INDEX IF NOT EXISTS resource_citation_targets_reference_idx')) {
-	errors.push('manual-indexes.sql must repair the citation target reverse-reference index');
+if (
+	/ResourceCitationMention|ResourceCitationTarget/.test(prismaSource) ||
+	/resource_citation_(mentions|targets)/.test(manualIndexesSource)
+) {
+	errors.push('The target schema must not retain citation positions already stored in Markdown');
 }
 
 const constrainedIdentity = parseResourceIdentityConstraint(manualIndexesSource);

@@ -7,14 +7,9 @@ import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import {
-	type AcquiredResource,
-	RESOURCE_PLATFORMS,
-	type ResourceAcquisitionHints,
-	type ResourceSubjectIdentity,
-	resolveResourceHints,
-} from '../../shared/resource';
-import { CORE_TEXT_MODEL } from '../ai-model';
+import { type AcquiredResource, type ResourceAcquisitionHints, resolveResourceHints } from '../../shared/resource';
+import { coreGatewayOptions, CORE_TEXT_MODEL } from '../ai-model';
+import { resolveResourceSubject } from './resource-url';
 
 const HN_ITEM_API = 'https://hacker-news.firebaseio.com/v0/item';
 const HN_TOP_LEVEL_THREAD_LIMIT = 10;
@@ -22,17 +17,6 @@ const HN_REPLIES_PER_THREAD_LIMIT = 3;
 const HN_FETCH_CONCURRENCY = 6;
 const HN_TOP_LEVEL_TEXT_MAX_CHARS = 1_000;
 const HN_REPLY_TEXT_MAX_CHARS = 350;
-
-export function parseHackerNewsResourceUrl(url: URL) {
-	const itemId = RESOURCE_PLATFORMS.hackernews.identifier.safeParse(url.searchParams.get('id'));
-	return itemId.success
-		? {
-				resourcePlatform: 'hackernews' as const,
-				platformId: itemId.data,
-				canonicalUrl: `https://news.ycombinator.com/item?id=${itemId.data}`,
-			}
-		: null;
-}
 
 const optionalStringSchema = z.string().nullish();
 const optionalNonnegativeIntegerSchema = z.int().nonnegative().nullish();
@@ -59,7 +43,6 @@ type HackerNewsAcquisitionInput = {
 	hints: ResourceAcquisitionHints;
 	itemId: string;
 	processingId: string;
-	resolveSubject: (url: string | null | undefined) => ResourceSubjectIdentity | null;
 };
 
 async function fetchHnItem(itemId: number | string): Promise<HackerNewsItem | null> {
@@ -104,7 +87,7 @@ function discussionExcerpt(markdown: string, maxChars: number): string {
 				.trimEnd()}…`;
 }
 
-async function scrapeHackerNews({ hints, itemId, resolveSubject }: HackerNewsAcquisitionInput) {
+async function scrapeHackerNews({ hints, itemId }: HackerNewsAcquisitionInput) {
 	console.info({ tag: 'HN', msg: 'Fetching item and ranked discussion', itemId });
 	const item = await fetchHnItem(itemId);
 	if (!item) throw new NonRetryableError(`Hacker News item ${itemId} was not found`);
@@ -166,7 +149,7 @@ async function scrapeHackerNews({ hints, itemId, resolveSubject }: HackerNewsAcq
 		{ originalLang: null, publishedDate: item.time ? new Date(item.time * 1000).toISOString() : null, summary: null },
 		hints,
 	);
-	const subject = resolveSubject(item.url);
+	const subject = resolveResourceSubject(item.url);
 	const submitter = item.by?.trim();
 	return {
 		resource: {
@@ -215,17 +198,7 @@ export async function stageHackerNewsAcquisition(env: CoreEnv, step: WorkflowSte
 						: 'Synthesize the arguments, context, reactions, and disagreements in the discussion.';
 			const { finishReason, text } = await generateText({
 				model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
-					gateway: {
-						id: 'core-ingest',
-						collectLog: true,
-						retries: { maxAttempts: 1 },
-						metadata: {
-							feature: 'hn-discussion-digest-en',
-							environment: env.AI_GATEWAY_ENVIRONMENT,
-							resource_id: input.processingId,
-						},
-					},
-					extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
+					...coreGatewayOptions(env, { feature: 'hn-discussion-digest-en', resource_id: input.processingId }),
 				}),
 				prompt: `Title: ${resource.title}
 ${hnPostSection}Ranked HN discussion sample (${discussion.commentCount} comments from ${discussion.threadCount} top-level threads):

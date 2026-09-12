@@ -13,8 +13,6 @@ const OPENALEX_BASE = 'https://api.openalex.org';
 const OPENALEX_CONTENT_HOST = 'content.openalex.org';
 const REQUEST_TIMEOUT_MS = 8_000;
 const CONTENT_REQUEST_TIMEOUT_MS = 90_000;
-const MAX_RELATION_ITEMS = 100;
-const RELATION_WORK_FIELDS = ['id', 'doi', 'title', 'publication_year', 'cited_by_count', 'authorships', 'primary_location'].join(',');
 
 const OpenAlexLocationSchema = z.object({
 	is_oa: z.boolean().nullish(),
@@ -32,7 +30,6 @@ const OpenAlexWorkSchema = z.object({
 	publication_date: z.string().nullish(),
 	cited_by_count: z.int().nonnegative().nullish(),
 	referenced_works_count: z.int().nonnegative().nullish(),
-	referenced_works: z.array(z.string()).nullish(),
 	authorships: z.array(z.object({ author: z.object({ display_name: z.string().nullish() }) })).nullish(),
 	abstract_inverted_index: z.record(z.string(), z.array(z.int().nonnegative())).nullish(),
 	primary_location: OpenAlexLocationSchema.nullish(),
@@ -42,11 +39,6 @@ const OpenAlexWorkSchema = z.object({
 	content_urls: z.object({ pdf: z.string().nullish() }).nullish(),
 });
 const WORK_FIELDS = Object.keys(OpenAlexWorkSchema.shape).join(',');
-
-const OpenAlexListSchema = z.object({
-	meta: z.looseObject({ count: z.int().nonnegative() }),
-	results: z.array(OpenAlexWorkSchema),
-});
 
 type OpenAlexWork = z.infer<typeof OpenAlexWorkSchema>;
 
@@ -116,34 +108,7 @@ function resolvedWorkIdentifiers(work: OpenAlexWork, inputIdentifiers: readonly 
 	]);
 }
 
-function normalizeRelationItem(work: OpenAlexWork) {
-	const openAlexId = normalizeOpenAlexId(work.id);
-	const title = work.title?.trim();
-	if (!openAlexId || !title) return null;
-	const doi = normalizeDoi(work.doi);
-	return {
-		openAlexId,
-		...(doi ? { doi } : {}),
-		title,
-		authors: work.authorships?.map(({ author }) => author.display_name?.trim()).filter((name): name is string => !!name) ?? [],
-		venue: work.primary_location?.source?.display_name?.trim() || undefined,
-		year: work.publication_year ?? undefined,
-		citedByCount: work.cited_by_count ?? undefined,
-	};
-}
-
-function relationSnapshot(list: z.infer<typeof OpenAlexListSchema>, total = list.meta.count) {
-	return {
-		items: list.results.map(normalizeRelationItem).filter((item) => item !== null),
-		total,
-	};
-}
-
-function normalizeOpenAlexWork(
-	work: OpenAlexWork,
-	inputIdentifiers: readonly PaperIdentifier[],
-	relations?: Awaited<ReturnType<typeof fetchOpenAlexRelations>>,
-) {
+function normalizeOpenAlexWork(work: OpenAlexWork, inputIdentifiers: readonly PaperIdentifier[]) {
 	const pdfUrl = licensedPdfUrl(work);
 	const identifiers = resolvedWorkIdentifiers(work, inputIdentifiers);
 	const identity = paperIdentityFromIdentifiers(identifiers);
@@ -172,7 +137,6 @@ function normalizeOpenAlexWork(
 			citedByCount: work.cited_by_count ?? undefined,
 			referenceCount: work.referenced_works_count ?? undefined,
 			...(pdfUrl ? { pdfUrl } : {}),
-			...relations,
 		},
 	};
 }
@@ -190,42 +154,6 @@ async function fetchOpenAlexJson(path: string, apiKey: string): Promise<unknown 
 	throw new Error(`OpenAlex request failed with HTTP ${response.status}${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
 }
 
-async function fetchOpenAlexRelations(input: { apiKey: string; work: OpenAlexWork }) {
-	const openAlexId = normalizeOpenAlexId(input.work.id);
-	if (!openAlexId) throw new Error('OpenAlex work response has no valid id');
-	const referencedIds = (input.work.referenced_works ?? [])
-		.map(normalizeOpenAlexId)
-		.filter((value): value is string => !!value)
-		.slice(0, MAX_RELATION_ITEMS);
-	const referenceRequest = referencedIds.length
-		? fetchOpenAlexJson(
-				`/works?${new URLSearchParams({
-					filter: `openalex_id:${referencedIds.join('|')}`,
-					'per-page': String(referencedIds.length),
-					select: RELATION_WORK_FIELDS,
-					sort: 'cited_by_count:desc',
-				})}`,
-				input.apiKey,
-			)
-		: Promise.resolve({ meta: { count: 0 }, results: [] });
-	const citationRequest = fetchOpenAlexJson(
-		`/works?${new URLSearchParams({
-			filter: `cites:${openAlexId}`,
-			'per-page': String(MAX_RELATION_ITEMS),
-			select: RELATION_WORK_FIELDS,
-			sort: 'cited_by_count:desc',
-		})}`,
-		input.apiKey,
-	);
-	const [referenceJson, citationJson] = await Promise.all([referenceRequest, citationRequest]);
-	const references = OpenAlexListSchema.parse(referenceJson);
-	const citations = OpenAlexListSchema.parse(citationJson);
-	return {
-		citations: relationSnapshot(citations),
-		references: relationSnapshot(references, input.work.referenced_works_count ?? undefined),
-	};
-}
-
 export async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: readonly PaperIdentifier[] }) {
 	const apiKey = input.apiKey?.trim();
 	if (!apiKey) return null;
@@ -237,16 +165,7 @@ export async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers
 	const json = await fetchOpenAlexJson(`/works/${workId}?select=${WORK_FIELDS}`, apiKey);
 	if (!json) return null;
 	const work = OpenAlexWorkSchema.parse(json);
-	const relations = await fetchOpenAlexRelations({ apiKey, work }).catch((error) => {
-		console.warn({
-			tag: 'OPENALEX',
-			event: 'relations_unavailable',
-			openalex_id: normalizeOpenAlexId(work.id),
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return undefined;
-	});
-	return normalizeOpenAlexWork(work, identifiers, relations);
+	return normalizeOpenAlexWork(work, identifiers);
 }
 
 export async function fetchOpenAlexPdf(input: { apiKey?: string; contentPdfUrl: string }): Promise<Response> {

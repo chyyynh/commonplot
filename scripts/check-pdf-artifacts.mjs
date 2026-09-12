@@ -116,7 +116,7 @@ assert.equal(env.parseCalls(), 1);
 assert.deepEqual(env.batches, [crops.map(({ id }) => id), [crops[1].id]]);
 assert.equal(recovered.parse.visual.ready, 2);
 assert.equal(recovered.citations.references[0].key, 'sdt-1');
-assert.deepEqual(recovered.citations.mentions[0].targetKeys, ['sdt-1']);
+assert.match(recovered.markdown, /\[\^paper-sdt-1\]/u);
 assert.equal(env.R2.json(manifestKey).state, 'complete');
 assert.deepEqual(env.R2.json(manifestKey).quality, recovered.parse);
 assert.match(recovered.markdown, /\/api\/media\/asset\/pdf-crops\//);
