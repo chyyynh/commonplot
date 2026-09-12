@@ -877,9 +877,7 @@ function segmentInputCharacters(segment: MarkdownTranslationSegment): number {
 function createBatch(segments: readonly MarkdownTranslationSegment[], index: number) {
 	return {
 		id: `b${String(index + 1).padStart(4, '0')}`,
-		inputCharacters: segments.reduce((total, segment) => total + segmentInputCharacters(segment), 0),
 		segments,
-		sourceCharacters: segments.reduce((total, segment) => total + segment.text.length, 0),
 	};
 }
 

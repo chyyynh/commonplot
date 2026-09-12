@@ -11,13 +11,14 @@ import {
 	validateMarkdownBatchTranslations,
 } from './markdown-translation';
 
-function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslationSegment[]) {
+type ModelSegment = ReturnType<typeof createMarkdownTranslationTemplate> & Pick<MarkdownTranslationSegment, 'id' | 'context'>;
+
+function zhHantMarkdownTranslationsSchema(segments: readonly ModelSegment[]) {
 	return z.strictObject({
 		translations: z
 			.strictObject(
 				Object.fromEntries(
-					segments.map((segment) => {
-						const template = createMarkdownTranslationTemplate(segment);
+					segments.map((template) => {
 						const requiredTextIds = new Set(
 							Object.values(template.sequences).flatMap((partIds) => {
 								const textIds = partIds.filter((id) => Object.hasOwn(template.texts, id));
@@ -25,7 +26,7 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 							}),
 						);
 						return [
-							segment.id,
+							template.id,
 							z.strictObject({
 								texts: z.strictObject(
 									Object.fromEntries(
@@ -44,11 +45,10 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 	});
 }
 
-function markdownTranslationModelInput(segment: MarkdownTranslationSegment) {
-	const template = createMarkdownTranslationTemplate(segment);
+function markdownTranslationModelInput(template: ModelSegment) {
 	return {
-		context: segment.context,
-		id: segment.id,
+		context: template.context,
+		id: template.id,
 		sequences: Object.fromEntries(
 			Object.entries(template.sequences).map(([sequenceId, partIds]) => [
 				sequenceId,
@@ -108,58 +108,6 @@ export function splitSegmentsInHalf(segments: readonly MarkdownTranslationSegmen
 	return [segments.slice(0, splitIndex), segments.slice(splitIndex)];
 }
 
-async function translateBatch(
-	batch: MarkdownTranslationBatch,
-	env: CoreEnv,
-	resourceId: string,
-): Promise<readonly MarkdownSegmentTranslation[]> {
-	const promptSegments = batch.segments.map(markdownTranslationModelInput);
-	const { finishReason, output } = await generateText({
-		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
-			...CORE_STRUCTURED_MODEL_SETTINGS,
-			...coreGatewayOptions(env, {
-				batch_id: batch.id,
-				feature: 'resource-content-translation',
-				recovery_strategy: batch.id.includes('-') ? 'split' : 'batch',
-				resource_id: resourceId,
-			}),
-		}),
-		prompt: `${JSON.stringify({
-			targetLocale: 'zh-Hant',
-			editorialVariant: 'zh-TW',
-			segments: promptSegments,
-		})}`,
-		system: ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT,
-		output: Output.object({
-			name: 'translation_batch',
-			description: 'Complete, faithful, naturally edited Taiwan Traditional Chinese prose blocks keyed by exact input segment IDs.',
-			schema: zhHantMarkdownTranslationsSchema(batch.segments),
-		}),
-		maxOutputTokens: 12000,
-		temperature: 0.2,
-		reasoning: 'none',
-		maxRetries: 0,
-	});
-	if (finishReason === 'length')
-		throw new MarkdownTranslationInvariantError('invalid-result', 'Markdown segment translation hit its output token cap');
-	return validateMarkdownBatchTranslations(
-		{ segments: batch.segments },
-		batch.segments.map((segment) => ({
-			texts: output.translations[segment.id]!.texts,
-		})),
-	);
-}
-
-function structuredOutputFailure(error: unknown): Record<string, unknown> {
-	if (!NoObjectGeneratedError.isInstance(error)) return {};
-	return {
-		cause: error.cause instanceof Error ? error.cause.message : undefined,
-		finish_reason: error.finishReason,
-		generated_text_characters: error.text?.length,
-		response_id: error.response?.id,
-	};
-}
-
 /** Only malformed model output should split; transport/capacity failures retry the same durable group. */
 export function isMarkdownTranslationFormatError(error: unknown): boolean {
 	return NoObjectGeneratedError.isInstance(error) || (error instanceof MarkdownTranslationInvariantError && error.code !== 'invalid-plan');
@@ -171,7 +119,46 @@ export async function translateMarkdownBatchToZhHant(
 	resourceId: string,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	try {
-		return await translateBatch(batch, env, resourceId);
+		const segments = batch.segments.map((segment) => ({
+			id: segment.id,
+			context: segment.context,
+			...createMarkdownTranslationTemplate(segment),
+		}));
+		const promptSegments = segments.map(markdownTranslationModelInput);
+		const { finishReason, output } = await generateText({
+			model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
+				...CORE_STRUCTURED_MODEL_SETTINGS,
+				...coreGatewayOptions(env, {
+					batch_id: batch.id,
+					feature: 'resource-content-translation',
+					recovery_strategy: batch.id.includes('-') ? 'split' : 'batch',
+					resource_id: resourceId,
+				}),
+			}),
+			prompt: `${JSON.stringify({
+				targetLocale: 'zh-Hant',
+				editorialVariant: 'zh-TW',
+				segments: promptSegments,
+			})}`,
+			system: ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT,
+			output: Output.object({
+				name: 'translation_batch',
+				description: 'Complete, faithful, naturally edited Taiwan Traditional Chinese prose blocks keyed by exact input segment IDs.',
+				schema: zhHantMarkdownTranslationsSchema(segments),
+			}),
+			maxOutputTokens: 12000,
+			temperature: 0.2,
+			reasoning: 'none',
+			maxRetries: 0,
+		});
+		if (finishReason === 'length')
+			throw new MarkdownTranslationInvariantError('invalid-result', 'Markdown segment translation hit its output token cap');
+		return validateMarkdownBatchTranslations(
+			{ segments: batch.segments },
+			batch.segments.map((segment) => ({
+				texts: output.translations[segment.id]!.texts,
+			})),
+		);
 	} catch (error) {
 		console.error({
 			tag: 'RESOURCE_TRANSLATION',
@@ -180,7 +167,14 @@ export async function translateMarkdownBatchToZhHant(
 			message: error instanceof Error ? error.message : String(error),
 			reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
 			resource_id: resourceId,
-			...structuredOutputFailure(error),
+			...(NoObjectGeneratedError.isInstance(error)
+				? {
+						cause: error.cause instanceof Error ? error.cause.message : undefined,
+						finish_reason: error.finishReason,
+						generated_text_characters: error.text?.length,
+						response_id: error.response?.id,
+					}
+				: {}),
 		});
 		throw error;
 	}

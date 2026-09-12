@@ -15,7 +15,6 @@ const ResourceClassificationSchema = z.object({
 });
 
 export type ResourceClassification = z.infer<typeof ResourceClassificationSchema>;
-export type ResourceAnalysis = ResourceClassification & { originalLang: string; summary: string };
 
 const RESOURCE_ANALYSIS_SYSTEM_PROMPT = `你是專業的新聞分類分析師。請只輸出符合 schema 的資料。
 
@@ -48,16 +47,10 @@ ${resource.content.trim().substring(0, ANALYSIS_CONTENT_MAX_LENGTH)}`;
 }
 
 /** Only presentation metadata blocks publication; classification is completed afterward. */
-export async function analyzeResource(
-	resource: AcquiredResource,
-	keywordHints: readonly string[],
-	env: CoreEnv,
-	processingId: string,
-): Promise<ResourceAnalysis> {
+export async function summarizeResource(resource: AcquiredResource, env: CoreEnv, processingId: string) {
 	const originalLang = detectResourceLanguage(resource.content, canonicalizeResourceLang(resource.originalLang));
-	const initial = { tags: [], keywords: [...keywordHints], originalLang };
 	const sourceSummary = resource.summary?.trim();
-	if (sourceSummary) return { ...initial, summary: sourceSummary };
+	if (sourceSummary) return { originalLang, summary: sourceSummary };
 	const startedAt = performance.now();
 	const { finishReason, output, usage } = await generateText({
 		model: analysisModel(env, processingId, 'resource-summary'),
@@ -79,7 +72,7 @@ export async function analyzeResource(
 		latency_ms: Math.round(performance.now() - startedAt),
 		output_tokens: usage.outputTokens,
 	});
-	return { ...initial, summary: output.summary };
+	return { originalLang, summary: output.summary };
 }
 
 export async function classifyResource(resource: AcquiredResource, env: CoreEnv, processingId: string): Promise<ResourceClassification> {

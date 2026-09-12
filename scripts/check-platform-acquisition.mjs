@@ -73,7 +73,7 @@ responses.set('/youtube/v3/videos', {
 });
 responses.set('/youtube/v3/channels', { items: [{ snippet: { thumbnails: { high: { url: 'https://example.com/avatar.jpg' } } } }] });
 YoutubeTranscript.fetchTranscript = async () => [{ offset: 0, duration: 1200, text: 'Transcript content', lang: 'ja' }];
-const analysis = { tags: [], keywords: [], originalLang: 'en', summary: 'Summary' };
+const summaryFields = { originalLang: 'en', summary: 'Summary' };
 try {
 	const cases = [
 		['https://news.ycombinator.com/item?id=124', 'hackernews', 'forum', '124'],
@@ -184,14 +184,14 @@ try {
 		assert.equal(blog.kind, 'blog');
 		assert.equal(blog.summary, summary);
 		assert.match(blog.content, /A useful research article/u);
-		assert.equal(prepareResolvedResource(blog, analysis, []).kind, 'blog');
+		assert.equal(prepareResolvedResource({ ...blog, ...summaryFields }, []).kind, 'blog');
 	}
 	responses.set('/10.1000/example', () => responses.get('/article')(new URL('https://publisher.example/article')));
 	const redirected = await stageUrlAcquisition(env, step, { ...input, url: 'https://doi.org/10.1000/example?utm_source=feed' });
 	assert.equal(redirected.url, 'https://publisher.example/article');
 	assert.deepEqual(redirected.resourceIdentifiers, [{ scheme: 'doi', value: '10.1000/example', preferred: true }]);
 	const tracked = await stageUrlAcquisition(env, step, { ...input, url: 'https://www.example.com/article?utm_source=feed' });
-	const persisted = prepareResolvedResource(tracked, analysis, []);
+	const persisted = prepareResolvedResource({ ...tracked, ...summaryFields }, []);
 	assert.equal(persisted.url, tracked.url);
 	assert.equal(persisted.normalizedUrl, 'https://example.com/article');
 	for (const [url, fileType, paperIdentifierText, kind, provider] of [
@@ -226,7 +226,7 @@ try {
 				requests.map((url) => url.hostname),
 				provider ? [provider] : [],
 			);
-			assert.equal(prepareResolvedResource(result, analysis, []).kind, kind);
+			assert.equal(prepareResolvedResource({ ...result, ...summaryFields }, []).kind, kind);
 		} finally {
 			globalThis.fetch = savedFetch;
 		}
@@ -245,7 +245,10 @@ try {
 		['/works/W2'],
 		'Paper resolution needs no sampled citation-list requests',
 	);
-	assert.throws(() => prepareResolvedResource({ ...blog, resourcePlatform: 'twitter' }, analysis, []), /Resource identifiers do not match/);
+	assert.throws(
+		() => prepareResolvedResource({ ...blog, ...summaryFields, resourcePlatform: 'twitter' }, []),
+		/Resource identifiers do not match/,
+	);
 
 	for (const pdfUrl of ['https://example.com/works/W2.pdf', 'https://content.openalex.org/works/W2.pdf?api_key=fixture']) {
 		responses.set('/works/W2', { id: 'https://openalex.org/W2', has_content: { pdf: true }, content_urls: { pdf: pdfUrl } });

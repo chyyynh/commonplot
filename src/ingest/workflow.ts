@@ -4,7 +4,7 @@ import { sha256Hex } from '../shared/hash';
 import { resourceImageSourceUrls } from '../shared/image-mapping';
 import { stageResourceAcquisition } from './acquisition';
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from './admission';
-import { analyzeResource, classifyResource } from './analysis';
+import { summarizeResource, classifyResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { withoutPrivatePdfImages } from './pdf-markdown.ts';
 import { createResourceTask, enqueueSearchProgress, registerResourceTask } from './progress';
@@ -69,12 +69,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			});
 			await task.report('analysis', { stage: 'analyzing', status: 'running' });
 			const imageSources = resourceImageSourceUrls({ ...resource, ogImageUrl: resource.previewImageUrl });
-			const [analysis, hostedImages] = await Promise.all([
-				step.do('summarize-resource-v1', AI_STEP, () =>
-					analyzeResource(resource, target.kind === 'draft' ? (target.sourceHints?.keywords ?? []) : [], this.env, processingId),
-				),
+			const [{ originalLang, summary }, hostedImages] = await Promise.all([
+				step.do('summarize-resource-v1', AI_STEP, () => summarizeResource(resource, this.env, processingId)),
 				stageResourceImages(this.env, step, processingId, imageSources, target.kind === 'reacquire' ? event.instanceId : undefined),
 			]);
+			const summarized = { ...resource, originalLang, summary };
+			const sourceKeywords = target.kind === 'draft' ? (target.sourceHints?.keywords ?? []) : [];
 			await task.report('persisting', { stage: 'persisting', status: 'running' });
 			const translationTargets: { resourceId: string; translationRevision: string; forceRunKey?: string; stepName: string }[] = [];
 			// Overwritten originals need a fresh translation; replays of this run share one ID.
@@ -82,8 +82,15 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const classificationTargets: Parameters<typeof persistResourceClassification>[1][] = [];
 			if (uploadedPaper) {
 				const privateRendition = prepareResolvedResource(
-					{ ...resource, kind: 'file', kindMetadata: null, resourcePlatform: null, resourceIdentifiers: [], url: null, subject: null },
-					analysis,
+					{
+						...summarized,
+						kind: 'file',
+						kindMetadata: null,
+						resourcePlatform: null,
+						resourceIdentifiers: [],
+						url: null,
+						subject: null,
+					},
 					hostedImages,
 				);
 				const privatePersistence = await step.do('persist-private-pdf-rendition-v1', STORAGE_STEP, async () =>
@@ -102,9 +109,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				classificationTargets.push(privatePersistence);
 			}
 			const preparedResource = prepareResolvedResource(
-				uploadedPaper ? { ...resource, content: withoutPrivatePdfImages(resource.content) } : resource,
-				analysis,
+				uploadedPaper ? { ...summarized, content: withoutPrivatePdfImages(resource.content) } : summarized,
 				hostedImages,
+				sourceKeywords,
 			);
 			const persistence = await step.do('persist-resolved-resource-scope-v5', STORAGE_STEP, async () => {
 				const startedAt = Date.now();
@@ -159,9 +166,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				(async () => {
 					try {
 						const classification = await step.do('classify-published-resource-v1', AI_STEP, () =>
-							classifyResource({ ...resource, originalLang: analysis.originalLang, summary: analysis.summary }, this.env, processingId),
+							classifyResource(summarized, this.env, processingId),
 						);
-						if (analysis.keywords.length) classification.keywords = analysis.keywords;
+						if (sourceKeywords.length) classification.keywords = sourceKeywords;
 						await step.do('persist-resource-classification-v1', STORAGE_STEP, async () => {
 							const db = await connectCoreDb(this.env);
 							for (const target of classificationTargets) await persistResourceClassification(db, target, classification);

@@ -6,7 +6,7 @@ const workflowMocks = {
 	'./platforms/web': ['stageWebAcquisition'],
 	'./platforms/pdf': ['stageStoredPdfAcquisition'],
 	'./platforms/paper': ['stagePaperResolution'],
-	'./analysis': ['analyzeResource', 'classifyResource'],
+	'./analysis': ['summarizeResource', 'classifyResource'],
 	'./image-rehosting': ['stageResourceImages'],
 	'./resource-persistence': ['persistResolvedResource', 'persistResourceClassification', 'loadPublicPdfContent', 'prepareResolvedResource'],
 	'./zotero-sdt-service.ts': ['publishPublicPdfCrops'],
@@ -122,7 +122,7 @@ try {
 			stageWebAcquisition: acquire,
 			stageStoredPdfAcquisition: acquire,
 			stagePaperResolution: (_env, _step, { resource: acquired }) => acquired,
-			analyzeResource: async () => ({ originalLang: 'en', summary: 'Summary', tags: [], keywords: [] }),
+			summarizeResource: async (value) => ({ originalLang: 'en', summary: value.summary || 'Summary' }),
 			stageResourceImages: async () => [],
 			prepareResolvedResource: (value) => {
 				if (automatic)

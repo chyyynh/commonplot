@@ -12,7 +12,7 @@ import {
 } from '../shared/resource';
 import type { AcquiredResource } from './acquisition';
 import type { ResourceDraftRelation } from './admission';
-import type { ResourceAnalysis, ResourceClassification } from './analysis';
+import type { ResourceClassification } from './analysis';
 import { hasPrivatePdfImages, withoutPrivatePdfImages, withoutDuplicatePdfTitle } from './pdf-markdown.ts';
 import { resolveResourceUrl, type ResolvedResourceUrl } from './platforms/resource-url';
 import type { YouTubeResourceData } from './platforms/youtube';
@@ -84,8 +84,8 @@ export async function findResourcesByUrls(db: NodePgDatabase, urls: readonly Res
 
 export function prepareResolvedResource(
 	resource: AcquiredResource & { youtube?: YouTubeResourceData },
-	analysis: ResourceAnalysis,
 	hostedImages: readonly HostedResourceImage[],
+	keywords: readonly string[] = [],
 ) {
 	const title = resource.title.trim();
 	const content = (resource.fileType === 'application/pdf' ? withoutDuplicatePdfTitle(resource.content, title) : resource.content).trim();
@@ -130,18 +130,18 @@ export function prepareResolvedResource(
 		creators: media.creators,
 		fileType: resource.fileType ?? null,
 		identifiers,
-		keywords: [...analysis.keywords],
+		keywords: [...keywords],
 		kindMetadata: media.kindMetadata,
 		normalizedUrl: resolvedUrl?.normalizedUrl ?? null,
 		ogImageHeight: media.ogImageHeight,
 		ogImageUrl: media.ogImageUrl,
 		ogImageWidth: media.ogImageWidth,
-		originalLang: canonicalizeResourceLang(analysis.originalLang),
+		originalLang: canonicalizeResourceLang(resource.originalLang),
 		publishedDate,
 		sourceName,
 		subject,
-		summary: analysis.summary,
-		tags: [...analysis.tags],
+		summary: resource.summary ?? '',
+		tags: [],
 		title,
 		url: resolvedUrl?.url ?? null,
 		youtube: resource.youtube ?? null,
