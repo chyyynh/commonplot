@@ -186,6 +186,15 @@ try {
 		assert.match(blog.content, /A useful research article/u);
 		assert.equal(prepareResolvedResource({ ...blog, ...summaryFields }, []).kind, 'blog');
 	}
+	const today = new Date().toISOString().slice(0, 10);
+	for (const [publishedDate, expected] of [
+		['2099-06-24T00:00:00.000Z', `${today}T00:00:00.000Z`],
+		[`${today}T23:59:59.000Z`, `${today}T23:59:59.000Z`],
+		['2024-06-30T00:00:00.000Z', '2024-06-30T00:00:00.000Z'],
+		[null, null],
+	]) {
+		assert.equal(prepareResolvedResource({ ...blog, ...summaryFields, publishedDate }, []).publishedDate?.toISOString() ?? null, expected);
+	}
 	responses.set('/10.1000/example', () => responses.get('/article')(new URL('https://publisher.example/article')));
 	const redirected = await stageUrlAcquisition(env, step, { ...input, url: 'https://doi.org/10.1000/example?utm_source=feed' });
 	assert.equal(redirected.url, 'https://publisher.example/article');

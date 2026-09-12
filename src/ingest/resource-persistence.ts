@@ -112,8 +112,10 @@ export function prepareResolvedResource(
 	}
 	const resolvedUrl = resolveResourceUrl(resource.url);
 	if (resource.url !== null && !resolvedUrl) throw new TypeError('Resource URL must be HTTP(S) without credentials');
-	const publishedDate = resource.publishedDate ? new Date(resource.publishedDate) : null;
+	let publishedDate = resource.publishedDate ? new Date(resource.publishedDate) : null;
 	if (publishedDate && Number.isNaN(publishedDate.getTime())) throw new TypeError('Resource publication date is invalid');
+	const today = new Date().toISOString().slice(0, 10);
+	if (publishedDate && publishedDate.toISOString().slice(0, 10) > today) publishedDate = new Date(today);
 	const subjectUrl = resource.subject ? resolveResourceUrl(resource.subject.normalizedUrl) : null;
 	if (resource.subject && !subjectUrl) throw new TypeError('Subject URL must be HTTP(S) without credentials');
 	const subject = resource.subject
