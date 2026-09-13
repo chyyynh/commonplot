@@ -30,9 +30,9 @@
 	"dependencies": {
 		"@ai-sdk/openai": "^4.0.65",
 		"@cloudflare/containers": "^0.3.7",
-		"@extractus/article-extractor": "^9.0.1",
 		"@extractus/feed-extractor": "8.0.3",
 		"@llamaindex/llama-cloud": "2.15.0",
+		"@mozilla/readability": "0.6.0",
 		"ai": "7.0.84",
 		"drizzle-orm": "^0.45.2",
 		"fast-xml-parser": "5.10.1",
@@ -41,6 +41,7 @@
 		"hast-util-sanitize": "5.0.2",
 		"hast-util-to-html": "9.0.5",
 		"hast-util-to-mdast": "^10.1.2",
+		"linkedom": "0.18.13",
 		"mdast-util-from-markdown": "^2.0.3",
 		"mdast-util-frontmatter": "^2.0.1",
 		"mdast-util-gfm": "^3.1.0",

@@ -69,9 +69,9 @@ const referenceArtifact = compileMarkdownTranslationArtifact(
 	referencePlan,
 	referencePlan.segments.map((segment) => targetFromSource(segment, (text) => `譯文 ${text}`)),
 );
-assert.equal(referenceArtifact.alignment.blocks[0].type, 'heading', 'The first body heading belongs in bilingual alignment');
-assert.match(referenceArtifact.alignment.blocks[1].sourceMarkdown, /\[docs\]: https:\/\/example.com\/report/u);
-assert.match(referenceArtifact.alignment.blocks[1].sourceMarkdown, /\[image\]: https:\/\/example.com\/chart.png/u);
+assert.deepEqual(referenceArtifact.alignment.paths[0], [0], 'The first heading has a native Markdown path');
+assert.match(referenceArtifact.content, /\[docs\]: https:\/\/example.com\/report/u);
+assert.match(referenceArtifact.content, /\[image\]: https:\/\/example.com\/chart.png/u);
 
 const plan = planMarkdownTranslation(markdownFixture, { maxBatchCharacters: 900, maxBatchSegments: 4 });
 const identity = plan.segments.map((segment) => targetFromSource(segment));
@@ -175,10 +175,8 @@ assert.match(tableArtifact.content, /\*\*最好\*\* 結果\[\^evidence\]/u);
 assert.ok(tableArtifact.content.includes('return `x`;\n\n[^evidence] is code'));
 assert.ok(tableArtifact.content.includes('$$\nE = mc^2\n$$'));
 assert.ok(tableArtifact.content.includes('First line\nSecond line'));
-assert.ok(
-	tableArtifact.alignment.blocks.every((block) => block.type !== 'tableCell'),
-	'HTML cell content uses native paragraph alignment',
-);
+assert.equal(tableArtifact.alignment.version, 2);
+assert.ok(tableArtifact.alignment.paths.length > 0, 'HTML cell content has native Markdown paths');
 const injectedTable = compileMarkdownTranslation(
 	htmlPlan,
 	htmlPlan.segments.map((segment) => targetFromSource(segment, (value) => value.replace('Metric', '<img src=x onerror=alert(1)>'))),

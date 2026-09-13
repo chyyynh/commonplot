@@ -106,6 +106,24 @@ try {
 		assert.ok(resource.content.trim());
 		assert.equal(resolveResourceUrl(url).identifiers[0].value, value);
 	}
+	// Exercise the real HTML acquisition boundary: language, whitespace, relative
+	// URLs and publication metadata must survive into persisted Markdown.
+	responses.set('/code-article', () => {
+		const response = new Response(
+			`<html><head><title>Code article</title><meta property="og:site_name" content="Example"><meta name="author" content="Ada"><meta property="article:published_time" content="2026-09-11T00:00:00Z"><meta property="og:image" content="/cover.png"></head><body><article><h1>Code article</h1><p>${'An article about preserving executable examples and their exact indentation. '.repeat(8)}</p><a href="/docs">Documentation</a><pre class="brush: python;">if ready:\n    print("ok")\n\n    print("again")</pre><pre><code class="language-js">const ready = true;</code></pre></article></body></html>`,
+			{ headers: { 'Content-Type': 'text/html' } },
+		);
+		Object.defineProperty(response, 'url', { value: 'https://example.com/code-article' });
+		return response;
+	});
+	const codeArticle = await stageUrlAcquisition(env, step, { ...input, url: 'https://example.com/code-article' });
+	assert.match(codeArticle.content, /```python\nif ready:\n    print\("ok"\)\n\n    print\("again"\)/u);
+	assert.match(codeArticle.content, /```js\nconst ready = true;/u);
+	assert.match(codeArticle.content, /\[Documentation\]\(https:\/\/example.com\/docs\)/u);
+	assert.equal(codeArticle.previewImageUrl, 'https://example.com/cover.png');
+	assert.equal(codeArticle.publishedDate, '2026-09-11T00:00:00Z');
+	assert.equal(codeArticle.creators[0].literal, 'Ada');
+
 	for (const [url, normalizedUrl, scheme] of [
 		['https://www.example.com/article?b=2&utm_source=feed&a=1', 'https://example.com/article?a=1&b=2', null],
 		['https://youtu.be/abcdefghijk?si=share', 'https://youtube.com/watch?v=abcdefghijk', 'youtube'],

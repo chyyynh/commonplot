@@ -446,13 +446,13 @@ async function translatePlannedContent(content: string, env: CoreEnv, resourceId
 		tag: 'RESOURCE_TRANSLATION',
 		event: 'markdown_translation_compiled',
 		resource_id: resourceId,
-		aligned_blocks: translated.alignment.blocks.length,
+		aligned_blocks: translated.alignment.paths.length,
 		translated_characters: translated.content.length,
 	});
 	return translated;
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v30';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v31';
 const ResourceTranslationRevisionSchema = z.hash('md5').lowercase();
 const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 
@@ -515,7 +515,7 @@ async function loadResourceTranslationInput(
 			url: row.url,
 			zhHantTranslation: zhHantSource
 				? {
-						aligned: row.zh_hant_alignment_version === '1',
+						aligned: row.zh_hant_alignment_version === '2',
 						title: row.zh_hant_title?.trim() || null,
 						summary: row.zh_hant_summary?.trim() || null,
 						content: row.zh_hant_content?.trim() || null,
@@ -683,7 +683,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 							() => translateResourceMetadata(resource, this.env),
 						)
 					: undefined,
-				translationPlan.content ? translatePlannedContent(resource.content.trim(), this.env, resourceId, step, task) : undefined,
+				translationPlan.content ? translatePlannedContent(resource.content, this.env, resourceId, step, task) : undefined,
 			]);
 			if (content.status === 'rejected') {
 				const error = content.reason;

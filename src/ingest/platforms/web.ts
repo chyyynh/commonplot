@@ -1,8 +1,9 @@
-import { addTransformations, extractFromHtml } from '@extractus/article-extractor';
+import { Readability } from '@mozilla/readability';
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fromHtml } from 'hast-util-from-html';
 import { toMdast } from 'hast-util-to-mdast';
+import { DOMParser } from 'linkedom';
 import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
@@ -16,74 +17,79 @@ const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
-// Normalize narrow source-DOM quirks before Readability so the extracted HTML
-// still contains the semantics carried into the Markdown syntax tree.
-addTransformations({
-	patterns: [/^https?:\/\//i],
-	pre(document) {
-		// Readability removes aria-hidden images. Preserve the narrow case where
-		// the parent figure carries the image's accessible description instead.
-		for (const figure of document.querySelectorAll('figure[role="img"][aria-label]')) {
-			const label = figure.getAttribute('aria-label')?.trim();
-			if (!label) continue;
-			for (const image of figure.querySelectorAll('img[aria-hidden="true"]')) {
-				if (!image.getAttribute('alt')?.trim()) image.setAttribute('alt', label);
-				image.removeAttribute('aria-hidden');
-			}
+function acquireHtmlArticle(html: string, url: string): AcquiredResource & { kind: 'blog'; resourcePlatform: null } {
+	const document = new DOMParser().parseFromString(html, 'text/html');
+	// Linkedom resolves baseURI from <base>; Readability uses it for relative links and images.
+	const base = document.createElement('base', {});
+	base.setAttribute('href', url);
+	document.head.prepend(base);
+	const image = document.querySelector('meta[property="og:image"], meta[name="twitter:image"]')?.getAttribute('content');
+	// Normalize explicit code-language metadata before Readability/conversion.
+	// SyntaxHighlighter's brush syntax is also used outside WordPress.
+	for (const pre of document.querySelectorAll('pre')) {
+		const code = pre.querySelector('code');
+		const classes = `${code?.getAttribute('class') ?? ''} ${pre.getAttribute('class') ?? ''}`;
+		const language =
+			classes.match(/(?:language-|lang-|brush:\s*)([\w+-]+)/i)?.[1] ??
+			code?.getAttribute('data-language') ??
+			pre.getAttribute('data-language');
+		if (!language || !/^[\w+-]+$/.test(language)) continue;
+		const target = code ?? document.createElement('code', {});
+		target.classList.add(`language-${language.toLowerCase()}`);
+		if (!code) {
+			while (pre.firstChild) target.appendChild(pre.firstChild);
+			pre.appendChild(target);
 		}
+	}
 
-		// Substack/Pencraft uses this article-body hierarchy on custom domains too,
-		// so detect its source DOM instead of hard-coding substack.com hostnames.
-		const substackArticle = document.querySelector('.dt-post-body .available-content .body.markup');
-		if (substackArticle) {
-			// @mozilla/readability's `unlikelyCandidates` rule contains "header", so
-			// Substack's class would make it discard the otherwise semantic h2/h3.
-			for (const heading of substackArticle.querySelectorAll('.header-anchor-post')) {
-				// This child is Substack's copy-link UI, not article content.
-				for (const anchorChrome of heading.querySelectorAll('.header-anchor-parent')) anchorChrome.remove();
-				heading.classList.remove('header-anchor-post');
-				if (!heading.getAttribute('class')?.trim()) heading.removeAttribute('class');
-			}
-			// Substack marks callouts with this data attribute. CommonMark has no
-			// callout node, so normalize it to a blockquote instead of leaking platform data to Web.
-			for (const callout of substackArticle.querySelectorAll('[data-callout="true"]')) {
-				const blockquote = document.createElement('blockquote');
-				while (callout.firstChild) blockquote.appendChild(callout.firstChild);
-				callout.parentNode?.replaceChild(blockquote, callout);
-			}
+	// Readability removes aria-hidden images. Preserve the narrow case where
+	// the parent figure carries the image's accessible description instead.
+	for (const figure of document.querySelectorAll('figure[role="img"][aria-label]')) {
+		const label = figure.getAttribute('aria-label')?.trim();
+		if (!label) continue;
+		for (const image of figure.querySelectorAll('img[aria-hidden="true"]')) {
+			if (!image.getAttribute('alt')?.trim()) image.setAttribute('alt', label);
+			image.removeAttribute('aria-hidden');
 		}
-		return document;
-	},
-});
+	}
 
-// Static extractor configuration: TechCrunch places author cards and affiliate
-// chrome beside the real post body inside the same Readability candidate. Its
-// figcaptions are omitted because CommonMark would flatten them into body text;
-// publisher-provided image alt text remains intact, but is not invented.
-addTransformations({
-	patterns: [/^https?:\/\/(?:www\.)?techcrunch\.com\//i],
-	pre(document) {
+	// Substack/Pencraft uses this article-body hierarchy on custom domains too,
+	// so detect its source DOM instead of hard-coding substack.com hostnames.
+	const substackArticle = document.querySelector('.dt-post-body .available-content .body.markup');
+	if (substackArticle) {
+		// @mozilla/readability's `unlikelyCandidates` rule contains "header", so
+		// Substack's class would make it discard the otherwise semantic h2/h3.
+		for (const heading of substackArticle.querySelectorAll('.header-anchor-post')) {
+			// This child is Substack's copy-link UI, not article content.
+			for (const anchorChrome of heading.querySelectorAll('.header-anchor-parent')) anchorChrome.remove();
+			heading.classList.remove('header-anchor-post');
+			if (!heading.getAttribute('class')?.trim()) heading.removeAttribute('class');
+		}
+		// Substack marks callouts with this data attribute. CommonMark has no
+		// callout node, so normalize it to a blockquote instead of leaking platform data to Web.
+		for (const callout of substackArticle.querySelectorAll('[data-callout="true"]')) {
+			const blockquote = document.createElement('blockquote', {});
+			while (callout.firstChild) blockquote.appendChild(callout.firstChild);
+			callout.parentNode?.replaceChild(blockquote, callout);
+		}
+	}
+	// Keep the existing TechCrunch article boundary; author/affiliate cards share its parent.
+	if (/^(?:www\.)?techcrunch\.com$/i.test(new URL(url).hostname)) {
 		const article = document.querySelector('.entry-content.wp-block-post-content');
 		if (article) document.body.replaceChildren(article.cloneNode(true));
-		return document;
-	},
-	post(document) {
 		for (const caption of document.querySelectorAll('figcaption')) caption.remove();
-		return document;
-	},
-});
-
-async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredResource & { kind: 'blog'; resourcePlatform: null }> {
-	const article = await extractFromHtml(html, url, {
-		contentLengthThreshold: MIN_ARTICLE_CONTENT_CHARS,
-	});
+	}
+	const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0], {
+		nbTopCandidates: 4,
+		charThreshold: 400,
+		keepClasses: true,
+	}).parse();
 	if (!article?.content?.trim()) throw new NonRetryableError('No readable article content found');
 	const articleHtml = article.content.trim();
 	const title = article.title?.trim();
 	if (!title) throw new NonRetryableError('Extracted article has no title');
-	const siteName = article.source?.trim();
-	if (!siteName) throw new NonRetryableError('Extracted article has no source');
-	const author = article.author?.trim();
+	const siteName = article.siteName?.trim() || new URL(url).hostname;
+	const author = article.byline?.trim();
 
 	const content = toMarkdown(
 		toMdast(fromHtml(articleHtml, { fragment: true }), {
@@ -108,11 +114,11 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 		content,
 		source: siteName,
 		originalLang: 'und',
-		publishedDate: article.published?.trim() || null,
+		publishedDate: article.publishedTime?.trim() || null,
 		summary: sourceHtmlSummary(html),
 		creators: author ? [{ role: 'author', literal: author }] : [],
 		kindMetadata: { siteName },
-		previewImageUrl: normalizedResourceImageUrl(article.image, url),
+		previewImageUrl: normalizedResourceImageUrl(image, url),
 		subjectUrl: null,
 	} satisfies AcquiredResource;
 }
@@ -216,7 +222,7 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 			() => new NonRetryableError(`HTML response exceeded ${GENERIC_HTML_MAX_BYTES} bytes`),
 		);
 	const html = await new Response(body).text();
-	return { ...(await acquireHtmlArticle(html, finalUrl)), resourceIdentifiers: resolved.identifiers };
+	return { ...acquireHtmlArticle(html, finalUrl), resourceIdentifiers: resolved.identifiers };
 }
 
 export async function stageWebAcquisition(

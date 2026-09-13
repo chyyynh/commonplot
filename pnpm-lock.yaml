@@ -14,15 +14,15 @@ importers:
       '@cloudflare/containers':
         specifier: ^0.3.7
         version: 0.3.7
-      '@extractus/article-extractor':
-        specifier: ^9.0.1
-        version: 9.0.1
       '@extractus/feed-extractor':
         specifier: 8.0.3
         version: 8.0.3
       '@llamaindex/llama-cloud':
         specifier: 2.15.0
         version: 2.15.0
+      '@mozilla/readability':
+        specifier: 0.6.0
+        version: 0.6.0
       ai:
         specifier: 7.0.84
         version: 7.0.84(zod@4.5.4)
@@ -47,6 +47,9 @@ importers:
       hast-util-to-mdast:
         specifier: ^10.1.2
         version: 10.1.2
+      linkedom:
+        specifier: 0.18.13
+        version: 0.18.13
       mdast-util-from-markdown:
         specifier: ^2.0.3
         version: 2.0.3
@@ -372,9 +375,6 @@ packages:
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
-
-  '@extractus/article-extractor@9.0.1':
-    resolution: {integrity: sha512-tI6tVthdtv3diHKg7SwiHrhwmP4AERKSa/0Cv/MT8cP7vFFMk74M1IgegZLf6pWtq4tdCxPdiDQ/77DVa0yTpQ==}
 
   '@extractus/feed-extractor@8.0.3':
     resolution: {integrity: sha512-T6kdUtm3JbHTtFSKM4MXPAOw83imGq2i77fzeUwVraZy8rY/1ka6ngHeSno8Jh8QkEbFVeM3WG3RUXCxscs1fA==}
@@ -1067,8 +1067,8 @@ packages:
     resolution: {integrity: sha512-TWrgLOFUQTH994YUyl1yT4uyavY5nNB5muff+RtWaqNVCAK408b5ZnnbNAUEWLTCpum9w6arT70i1XdQ4UeOPA==}
     engines: {node: '>=0.12'}
 
-  entities@8.0.0:
-    resolution: {integrity: sha512-zwfzJecQ/Uej6tusMqwAqU/6KL2XaB2VZ2Jg54Je6ahNBGNH6Ek6g3jjNCF0fG9EWQKGZNddNjU5F1ZQn/sBnA==}
+  entities@8.1.0:
+    resolution: {integrity: sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA==}
     engines: {node: '>=20.19.0'}
 
   error-stack-parser-es@1.0.5:
@@ -1808,13 +1808,6 @@ snapshots:
   '@esbuild/win32-x64@0.28.1':
     optional: true
 
-  '@extractus/article-extractor@9.0.1':
-    dependencies:
-      '@mozilla/readability': 0.6.0
-      linkedom: 0.18.13
-    transitivePeerDependencies:
-      - canvas
-
   '@extractus/feed-extractor@8.0.3':
     dependencies:
       fast-xml-parser: 5.10.1
@@ -2173,7 +2166,7 @@ snapshots:
     dependencies:
       domelementtype: 3.0.0
       domhandler: 6.0.1
-      entities: 8.0.0
+      entities: 8.1.0
 
   domelementtype@2.3.0: {}
 
@@ -2210,7 +2203,7 @@ snapshots:
 
   entities@7.0.1: {}
 
-  entities@8.0.0: {}
+  entities@8.1.0: {}
 
   error-stack-parser-es@1.0.5: {}
 

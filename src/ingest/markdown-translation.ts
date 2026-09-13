@@ -1,4 +1,5 @@
-import type { Definition, Heading, Link, Nodes, Paragraph, Parents, PhrasingContent, Root, Strong, TableCell } from 'mdast';
+import { createHash } from 'node:crypto';
+import type { Heading, Link, Nodes, Paragraph, Parents, PhrasingContent, Root, Strong, TableCell } from 'mdast';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { frontmatterFromMarkdown, frontmatterToMarkdown } from 'mdast-util-frontmatter';
 import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm';
@@ -781,23 +782,44 @@ export function planMarkdownTranslation(sourceMarkdown: string, options: Markdow
 		batches: batchSegments(accumulator.segments, resolvedOptions),
 		segments: accumulator.segments,
 		sourceMarkdown: canonicalSourceMarkdown,
+		originalMarkdown: sourceMarkdown,
 		sourceSkeleton,
 		targets: accumulator.targets,
 	};
 }
 
-function serializeProseBlock(block: ProseBlock, definitions: ReadonlyMap<string, Definition>): string {
-	const child: Heading | Paragraph = block.type === 'tableCell' ? { children: block.children, type: 'paragraph' } : block;
-	const used = new Map<string, Definition>();
-	const visit = (node: Nodes): void => {
-		if (node.type === 'linkReference' || node.type === 'imageReference') {
-			const definition = definitions.get(node.identifier);
-			if (definition) used.set(node.identifier, definition);
+// Store correspondence, not a second copy of every source/translated paragraph.
+// Walk the persisted Markdown (before canonical serialization) so paths match
+// the reader's native parser. Digests bind those paths to both exact bodies.
+export function createMarkdownTranslationAlignment(sourceMarkdown: string, translatedMarkdown: string) {
+	const paths: number[][] = [];
+	const walk = (source: Nodes, translated: Nodes, path: number[]): void => {
+		if (source.type !== translated.type)
+			throw new MarkdownTranslationInvariantError('markdown-structure-changed', 'Aligned block types differ');
+		if (isProseBlock(source)) {
+			if (containsTranslatableProse(source)) paths.push(path);
+			return;
 		}
-		if ('children' in node) node.children.forEach(visit);
+		if (isParent(source)) {
+			// GFM serializes short rows with empty cells up to the header width.
+			const paddedRow =
+				source.type === 'tableRow' &&
+				translated.type === 'tableRow' &&
+				translated.children.length >= source.children.length &&
+				translated.children.slice(source.children.length).every((cell) => cell.children.length === 0);
+			if (!isParent(translated) || (source.children.length !== translated.children.length && !paddedRow)) {
+				throw new MarkdownTranslationInvariantError('markdown-structure-changed', 'Aligned block counts differ');
+			}
+			source.children.forEach((child, index) => walk(child, translated.children[index]!, [...path, index]));
+		}
 	};
-	visit(child);
-	return serializeMarkdown({ children: [child, ...used.values()], type: 'root' }).trim();
+	walk(parseMarkdownOnce(sourceMarkdown), parseMarkdownOnce(translatedMarkdown), []);
+	return {
+		version: 2 as const,
+		sourceHash: createHash('sha256').update(sourceMarkdown).digest('hex'),
+		translatedHash: createHash('sha256').update(translatedMarkdown).digest('hex'),
+		paths,
+	};
 }
 
 export function compileMarkdownTranslationArtifact(
@@ -807,12 +829,6 @@ export function compileMarkdownTranslationArtifact(
 	const values = orderedTranslationMap(plan.segments, translations);
 	const sourceTree = parseMarkdown(plan.sourceMarkdown);
 	const tree = structuredClone(sourceTree);
-	const definitions = new Map<string, Definition>();
-	const collectDefinitions = (node: Nodes): void => {
-		if (node.type === 'definition' && !definitions.has(node.identifier)) definitions.set(node.identifier, node);
-		if ('children' in node) node.children.forEach(collectDefinitions);
-	};
-	collectDefinitions(sourceTree);
 	for (const target of plan.targets) {
 		const translatedParts = target.segmentIds.map((id) => {
 			const translated = values.get(id);
@@ -864,23 +880,7 @@ export function compileMarkdownTranslationArtifact(
 		);
 	}
 	return {
-		alignment: {
-			blocks: plan.targets.flatMap((target) => {
-				const source = nodeAtPath(sourceTree, target.path);
-				const translated = nodeAtPath(tree, target.path);
-				if (!isProseBlock(source) || !isProseBlock(translated) || source.type !== translated.type) {
-					throw new MarkdownTranslationInvariantError('invalid-plan', 'Aligned translation target changed block type');
-				}
-				return [
-					{
-						sourceMarkdown: serializeProseBlock(source, definitions),
-						translatedMarkdown: serializeProseBlock(translated, definitions),
-						type: source.type,
-					},
-				];
-			}),
-			version: 1 as const,
-		},
+		alignment: createMarkdownTranslationAlignment(plan.originalMarkdown, translatedMarkdown),
 		content: translatedMarkdown,
 	};
 }
