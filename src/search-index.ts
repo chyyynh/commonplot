@@ -62,7 +62,6 @@ type CorpusTranslationRow = {
 	title: string | null;
 	summary: string | null;
 	content: string | null;
-	keywords: string[] | null;
 };
 
 type CorpusDocument = {
@@ -73,6 +72,7 @@ type CorpusDocument = {
 	original_lang: string;
 	published_at: Date | string | null;
 	tags: string[] | null;
+	keywords: string[] | null;
 	source: string | null;
 	translations: CorpusTranslationRow[];
 };
@@ -92,7 +92,6 @@ function serializeTranslation(translation: CorpusTranslationRow, originalLang: s
 	return [
 		`## ${translation.lang}`,
 		translation.title?.trim() ? `Title: ${translation.title.trim()}` : '',
-		translation.keywords?.length ? `Keywords: ${translation.keywords.join(', ')}` : '',
 		markdownSection('Summary', translation.summary),
 		markdownSection('Content', translation.content?.slice(0, contentLimit)),
 	]
@@ -107,6 +106,7 @@ function serializeDocument(row: CorpusDocument): string {
 		`# ${requiredDocumentText(original.title, 'title', row.id)}`,
 		requiredDocumentText(row.source, 'source', row.id),
 		row.tags?.length ? `Tags: ${row.tags.join(', ')}` : '',
+		row.keywords?.length ? `Keywords: ${row.keywords.join(', ')}` : '',
 		...row.translations.map((translation) => serializeTranslation(translation, row.original_lang)),
 	]
 		.filter(Boolean)
@@ -120,9 +120,9 @@ function serializeRelatedDocument(row: CorpusDocument): string {
 		`# ${requiredDocumentText(original.title, 'title', row.id)}`,
 		`Source: ${requiredDocumentText(row.source, 'source', row.id)}`,
 		row.tags?.length ? `Tags: ${row.tags.join(', ')}` : '',
+		row.keywords?.length ? `Keywords: ${row.keywords.join(', ')}` : '',
 		...row.translations.flatMap((translation) => [
 			translation.lang === row.original_lang || !translation.title?.trim() ? '' : `${translation.lang} title: ${translation.title.trim()}`,
-			translation.keywords?.length ? `${translation.lang} keywords: ${translation.keywords.join(', ')}` : '',
 			translation.summary?.trim() ? `${translation.lang} summary: ${translation.summary.trim().slice(0, RELATED_SUMMARY_MAX_CHARS)}` : '',
 		]),
 	]
@@ -137,10 +137,8 @@ function serializeRelatedQuery(row: CorpusDocument): string {
 	return [
 		requiredDocumentText(original.title, 'title', row.id),
 		row.tags?.join(', '),
-		...row.translations.flatMap((translation) => [
-			translation.lang === row.original_lang ? '' : translation.title?.trim(),
-			translation.keywords?.join(', '),
-		]),
+		row.keywords?.join(', '),
+		...row.translations.map((translation) => (translation.lang === row.original_lang ? '' : translation.title?.trim())),
 	]
 		.filter(Boolean)
 		.join('\n')
@@ -157,6 +155,7 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 		       r.original_lang,
 		       r.published_date AS published_at,
 		       r.tags,
+		       r.keywords,
 		       COALESCE(r.source_name, 'File') AS source,
 		       COALESCE((
 		         SELECT jsonb_agg(
@@ -165,8 +164,7 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 		             'title', translation.title,
 		             'summary', translation.summary,
 		             'content', LEFT(translation.content, CASE WHEN translation.lang = r.original_lang
-		               THEN ${ORIGINAL_CONTENT_MAX_CHARS}::integer ELSE ${TRANSLATED_CONTENT_MAX_CHARS}::integer END),
-		             'keywords', translation.keywords
+		               THEN ${ORIGINAL_CONTENT_MAX_CHARS}::integer ELSE ${TRANSLATED_CONTENT_MAX_CHARS}::integer END)
 		           )
 		           ORDER BY (translation.lang = r.original_lang) DESC, translation.lang
 		         )

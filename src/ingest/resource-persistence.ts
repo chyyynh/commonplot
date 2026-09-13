@@ -47,21 +47,17 @@ export async function persistResourceClassification(
 ): Promise<void> {
 	await db.execute(sql`
 		WITH target AS (
-			SELECT resource.id, resource.original_lang
+			SELECT resource.id
 			FROM resources resource
 			JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 			WHERE resource.id = ${target.resourceId}::uuid AND original.source = 'original'
 			  AND MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) = ${target.acquisitionRevision}
 			  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${target.translationRevision}
 			FOR UPDATE OF resource, original
-		), updated_resource AS (
-			UPDATE resources SET tags = ${sql.param(classification.tags)}::text[], updated_at = NOW()
-			FROM target WHERE resources.id = target.id
-			RETURNING resources.id, resources.original_lang
 		)
-		UPDATE resource_translations SET keywords = ${sql.param(classification.keywords)}::text[], updated_at = NOW()
-		FROM updated_resource
-		WHERE resource_translations.resource_id = updated_resource.id AND resource_translations.lang = updated_resource.original_lang
+		UPDATE resources
+		SET tags = ${sql.param(classification.tags)}::text[], keywords = ${sql.param(classification.keywords)}::text[], updated_at = NOW()
+		FROM target WHERE resources.id = target.id
 	`);
 }
 
@@ -202,12 +198,12 @@ async function writeCanonicalResource(
 ) {
 	const columns = sql`
 		kind, resource_platform, source_name, url, normalized_url, file_type, original_lang, published_date,
-		tags, og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id,
+		tags, keywords, og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id,
 		scraped_date, updated_at
 	`;
 	const values = sql`
 		${resource.kind}, ${resource.resourcePlatform}, ${resource.sourceName}, ${resource.url}, ${resource.normalizedUrl},
-		${resource.fileType}, ${resource.originalLang}, ${resource.publishedDate}, ARRAY[]::text[],
+		${resource.fileType}, ${resource.originalLang}, ${resource.publishedDate}, ARRAY[]::text[], ARRAY[]::text[],
 		${resource.ogImageUrl}, ${resource.ogImageWidth}, ${resource.ogImageHeight}, ${JSON.stringify(resource.creators)}::jsonb,
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
 		NOW(), NOW()
@@ -230,14 +226,14 @@ async function writeCanonicalResource(
 			WHERE resource_id = ${resourceId}::uuid AND ${existing}
 			  AND lang <> ${resource.originalLang}
 		), written_original AS (
-			INSERT INTO resource_translations (resource_id, lang, title, summary, content, keywords, source, updated_at)
+			INSERT INTO resource_translations (resource_id, lang, title, summary, content, source, updated_at)
 			SELECT id, ${resource.originalLang}, ${resource.title}, ${resource.summary}, ${resource.content},
-			       ARRAY[]::text[], 'original', NOW()
+			       'original', NOW()
 			FROM written_resource
 			WHERE true
 			ON CONFLICT (resource_id, lang) DO UPDATE SET
-				(title, summary, content, keywords, source, alignment, updated_at) =
-				(EXCLUDED.title, EXCLUDED.summary, EXCLUDED.content, EXCLUDED.keywords, EXCLUDED.source, NULL, EXCLUDED.updated_at)
+				(title, summary, content, source, alignment, updated_at) =
+				(EXCLUDED.title, EXCLUDED.summary, EXCLUDED.content, EXCLUDED.source, NULL, EXCLUDED.updated_at)
 			RETURNING MD5(jsonb_build_array(lang, title, summary, content)::text) AS revision
 		)
 		SELECT revision, acquisition_revision FROM written_resource CROSS JOIN written_original

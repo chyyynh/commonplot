@@ -553,19 +553,18 @@ async function persistMachineZhHantTranslation(
 			FOR UPDATE OF resource
 		)
 		INSERT INTO resource_translations AS current_translation (
-			resource_id, lang, title, summary, content, alignment, keywords, source, updated_at
+			resource_id, lang, title, summary, content, alignment, source, updated_at
 		)
 		SELECT
 			target_resource.id, 'zh-Hant', ${patch.title ?? null}, ${patch.summary ?? null}, ${patch.content ?? null},
 			${patch.alignment === undefined ? null : JSON.stringify(patch.alignment)}::jsonb,
-			ARRAY[]::text[], 'machine', NOW()
+			'machine', NOW()
 		FROM target_resource
 		ON CONFLICT (resource_id, lang) DO UPDATE SET
 			title = COALESCE(EXCLUDED.title, current_translation.title),
 			summary = COALESCE(EXCLUDED.summary, current_translation.summary),
 			content = COALESCE(EXCLUDED.content, current_translation.content),
 			alignment = COALESCE(EXCLUDED.alignment, current_translation.alignment),
-			keywords = EXCLUDED.keywords,
 			updated_at = NOW()
 		WHERE current_translation.source = 'machine'
 		RETURNING resource_id::text
