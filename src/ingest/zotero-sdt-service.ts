@@ -268,20 +268,6 @@ export async function readStructuredPdfArtifact(
 	}
 }
 
-export async function writeStructuredPdfArtifact(
-	env: CoreEnv,
-	pdfStorageKey: string,
-	inputContentHash: string,
-	document: StructuredPdfDocument,
-): Promise<void> {
-	await putPdfDerivative(env, pdfStorageKey, structuredPdfStorageKey(pdfStorageKey), JSON.stringify(document), {
-		customMetadata: {
-			artifactVersion: ZOTERO_SDT_ARTIFACT_VERSION,
-			inputSha256: inputContentHash,
-		},
-	});
-}
-
 /** One acquisition path for owned uploads and independently fetched public PDFs. */
 export async function parseStoredPdfRepresentation(
 	env: CoreEnv,
@@ -298,7 +284,9 @@ export async function parseStoredPdfRepresentation(
 		const attempt = await parsePdfArtifactStream(env, object.body, object.size, input.sourceLabel);
 		if (!('schemaVersion' in attempt)) return attempt;
 		document = attempt;
-		await writeStructuredPdfArtifact(env, input.pdfStorageKey, input.inputContentHash, document);
+		await putPdfDerivative(env, input.pdfStorageKey, structuredPdfStorageKey(input.pdfStorageKey), JSON.stringify(document), {
+			customMetadata: { artifactVersion: ZOTERO_SDT_ARTIFACT_VERSION, inputSha256: input.inputContentHash },
+		});
 	}
 	const visualPlan = structuredPdfVisualPlan(document);
 	const crops = visualPlan.crops;

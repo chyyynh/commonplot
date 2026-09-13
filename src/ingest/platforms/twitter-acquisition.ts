@@ -279,8 +279,7 @@ function tweetQuote(tweet: Tweet) {
 	const author = quote?.author;
 	if (!quote || !author?.name.trim() || !author.userName.trim()) return undefined;
 	const text = expandTweetUrls(quote.text, quote);
-	const creator = twitterCreator({ name: author.name.trim(), userName: author.userName.trim(), profilePicture: author.profilePicture });
-	return text ? { creator, text } : undefined;
+	return text ? { creator: twitterCreator(author), text } : undefined;
 }
 
 async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
@@ -425,7 +424,7 @@ export async function stageTwitterAcquisition(env: CoreEnv, step: WorkflowStep, 
 }
 
 function twitterCreator(author: NonNullable<Tweet['author']>) {
-	const handle = author.userName.replace(/^@/, '').trim();
+	const handle = author.userName.replace(/^\s*@/, '').trim();
 	const profileUrl = handle ? `https://x.com/${encodeURIComponent(handle)}` : undefined;
 	return {
 		role: 'author' as const,

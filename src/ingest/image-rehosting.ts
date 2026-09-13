@@ -30,14 +30,6 @@ async function redirectTarget(response: Response, currentUrl: string, redirects:
 	return nextUrl;
 }
 
-async function assertImageResponse(response: Response): Promise<void> {
-	if (!response.ok) {
-		await response.body?.cancel().catch(() => undefined);
-		throw failure('upstream_status', `HTTP ${response.status}`);
-	}
-	if (!response.body) throw failure('missing_body');
-}
-
 async function fetchImageSource(sourceUrl: string): Promise<Response> {
 	let currentUrl = sourceUrl;
 	const signal = AbortSignal.timeout(REHOST_TIMEOUT_MS);
@@ -59,7 +51,11 @@ async function fetchImageSource(sourceUrl: string): Promise<Response> {
 			currentUrl = nextUrl;
 			continue;
 		}
-		await assertImageResponse(response);
+		if (!response.ok) {
+			await response.body?.cancel().catch(() => undefined);
+			throw failure('upstream_status', `HTTP ${response.status}`);
+		}
+		if (!response.body) throw failure('missing_body');
 		return response;
 	}
 }

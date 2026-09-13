@@ -293,10 +293,8 @@ async function translateMarkdownBatchToZhHant(
 		if (finishReason === 'length')
 			throw new MarkdownTranslationInvariantError('invalid-result', 'Markdown segment translation hit its output token cap');
 		return validateMarkdownBatchTranslations(
-			{ segments: batch.segments },
-			batch.segments.map((segment) => ({
-				texts: output.translations[segment.id]!.texts,
-			})),
+			batch,
+			batch.segments.map(({ id }) => output.translations[id]!),
 		);
 	} catch (error) {
 		console.error({

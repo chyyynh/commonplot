@@ -136,6 +136,14 @@ try {
 	assert.equal(acquired.get('lesswrong').content, '**Original** body.');
 	assert.equal(acquired.get('twitter').content, 'Comment https://doi.org/10.1000/example');
 	assert.equal(acquired.get('twitter').subjectUrl, 'https://doi.org/10.1000/example');
+	for (const verified of [true, false, undefined]) {
+		const quoted = { ...tweet, author: { userName: ' @quoted ', name: ' Quoted ', isBlueVerified: verified } };
+		responses.set('/twitter/tweets', { tweets: [{ ...tweet, quoted_tweet: quoted }] });
+		const resource = await stageUrlAcquisition(env, step, { ...input, url: tweet.url });
+		assert.equal(resource.kindMetadata.quote.creator.verified, verified, 'Quoted author verification must survive normalization');
+		assert.equal(resource.kindMetadata.quote.creator.handle, 'quoted');
+		assert.equal(resource.kindMetadata.quote.creator.literal, 'Quoted');
+	}
 	const subjectUrl = `https://arxiv.org/pdf/2507.12652v2?download=1&signature=${'x'.repeat(2_048)}`;
 	responses.set('/twitter/tweets', {
 		tweets: [{ ...tweet, text: 'https://t.co/link', urls: [{ url: 'https://t.co/link', expanded_url: subjectUrl }] }],

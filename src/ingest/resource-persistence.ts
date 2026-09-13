@@ -44,8 +44,8 @@ export async function persistResourceClassification(
 	db: NodePgDatabase,
 	target: { resourceId: string; acquisitionRevision: string; translationRevision: string },
 	classification: ResourceClassification,
-) {
-	const updated = await db.execute(sql`
+): Promise<void> {
+	await db.execute(sql`
 		WITH target AS (
 			SELECT resource.id, resource.original_lang
 			FROM resources resource
@@ -62,9 +62,7 @@ export async function persistResourceClassification(
 		UPDATE resource_translations SET keywords = ${sql.param(classification.keywords)}::text[], updated_at = NOW()
 		FROM updated_resource
 		WHERE resource_translations.resource_id = updated_resource.id AND resource_translations.lang = updated_resource.original_lang
-		RETURNING resource_translations.resource_id
 	`);
-	return updated.rowCount === 1;
 }
 
 /** Lock the acquisition revision so an old AI result cannot overwrite a newer transcript. */
@@ -72,8 +70,8 @@ export async function persistYouTubeHighlights(
 	db: NodePgDatabase,
 	target: { resourceId: string; acquisitionRevision: string },
 	highlights: YouTubeHighlights,
-) {
-	const updated = await db.execute(sql`
+): Promise<void> {
+	await db.execute(sql`
 		WITH current_resource AS (
 			SELECT id FROM resources
 			WHERE id = ${target.resourceId}::uuid AND resource_platform = 'youtube'
@@ -82,9 +80,7 @@ export async function persistYouTubeHighlights(
 		)
 		UPDATE youtube_transcripts SET ai_highlights = ${JSON.stringify(highlights)}::jsonb
 		FROM current_resource WHERE youtube_transcripts.resource_id = current_resource.id
-		RETURNING resource_id
 	`);
-	return updated.rowCount === 1;
 }
 
 /** Use the same candidates for admission, canonical persistence, and subject attachment. */

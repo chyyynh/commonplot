@@ -150,11 +150,6 @@ function arxivIdFromDoi(doi: string): string | null {
 	return doi.startsWith(ARXIV_DOI_PREFIX) ? normalizeArxivId(doi.slice(ARXIV_DOI_PREFIX.length)) : null;
 }
 
-function identityFromDoi(doi: string): PaperIdentity {
-	const arxivId = arxivIdFromDoi(doi);
-	return { doi, ...(arxivId ? { arxivId } : {}) };
-}
-
 export function canonicalPaperUrl(identity: PaperIdentity): string {
 	if (identity.arxivId) return `https://arxiv.org/abs/${identity.arxivId}`;
 	if (identity.doi) return `https://doi.org/${identity.doi}`;
@@ -166,12 +161,11 @@ export function canonicalPaperUrl(identity: PaperIdentity): string {
 export function paperIdentityFromText(value: unknown): PaperIdentity | null {
 	if (typeof value !== 'string' || !value.trim()) return null;
 	const doi = normalizeDoi(value.match(DOI_IN_TEXT_RE)?.[1]);
-	const arxivId = normalizeArxivId(value.match(ARXIV_IN_TEXT_RE)?.[1]);
+	const arxivId = normalizeArxivId(value.match(ARXIV_IN_TEXT_RE)?.[1]) ?? (doi ? arxivIdFromDoi(doi) : null);
 	if (!doi && !arxivId) return null;
-	const doiIdentity = doi ? identityFromDoi(doi) : null;
 	return {
 		...(doi ? { doi } : {}),
-		...((arxivId ?? doiIdentity?.arxivId) ? { arxivId: arxivId ?? doiIdentity?.arxivId } : {}),
+		...(arxivId ? { arxivId } : {}),
 	};
 }
 
