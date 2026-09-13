@@ -1,11 +1,14 @@
 import { generateText } from 'ai';
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
+import { fromHtml } from 'hast-util-from-html';
+import { toMdast } from 'hast-util-to-mdast';
+import { gfmToMarkdown } from 'mdast-util-gfm';
+import { toMarkdown } from 'mdast-util-to-markdown';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import type { AcquiredResource } from '../acquisition';
 import { coreGatewayOptions, CORE_TEXT_MODEL } from '../ai-model';
-import { htmlFragmentToMarkdown } from '../html-markdown';
 import { ResourceUrlSchema } from './resource-url';
 
 const HN_ITEM_API = 'https://hacker-news.firebaseio.com/v0/item';
@@ -68,7 +71,10 @@ function isReadableComment(item: HackerNewsItem | undefined): item is HackerNews
 }
 
 function hnMarkdown(html: string): string {
-	return htmlFragmentToMarkdown(`<base href="https://news.ycombinator.com/">${html}`);
+	return toMarkdown(
+		toMdast(fromHtml(`<base href="https://news.ycombinator.com/">${html}`, { fragment: true }), { nodeHandlers: { comment() {} } }),
+		{ extensions: [gfmToMarkdown()] },
+	).trim();
 }
 
 function discussionExcerpt(markdown: string, maxChars: number): string {

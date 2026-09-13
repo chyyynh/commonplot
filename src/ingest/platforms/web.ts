@@ -2,11 +2,14 @@ import { Readability } from '@mozilla/readability';
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fromHtml } from 'hast-util-from-html';
+import { defaultHandlers, toMdast } from 'hast-util-to-mdast';
 import { DOMParser } from 'linkedom';
+import { gfmToMarkdown } from 'mdast-util-gfm';
+import { toMarkdown } from 'mdast-util-to-markdown';
+import stripIndent from 'strip-indent';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
 import { limitByteStream } from '../../shared/response';
 import type { AcquiredResource } from '../acquisition';
-import { htmlFragmentToMarkdown } from '../html-markdown';
 import { acquireFetchedPdfResponse, completeFetchedPdfAcquisition } from './pdf';
 import { PDF_MIME, type PaidPdfFallbackGrant } from './pdf-policy';
 import { resolveResourceUrl, type ResolvedResourceUrl } from './resource-url';
@@ -89,7 +92,25 @@ function acquireHtmlArticle(html: string, url: string): AcquiredResource & { kin
 	const siteName = article.siteName?.trim() || new URL(url).hostname;
 	const author = article.byline?.trim();
 
-	const content = htmlFragmentToMarkdown(articleHtml);
+	const content = toMarkdown(
+		toMdast(fromHtml(articleHtml, { fragment: true }), {
+			handlers: {
+				// linkedom keeps the newline after <pre> that HTML parsing drops, and
+				// publisher templates indent whole blocks; neither is the author's code.
+				pre(state, node) {
+					const code = defaultHandlers.pre(state, node);
+					code.value = stripIndent(code.value.replace(/^\n+/, ''));
+					return code;
+				},
+			},
+			// HTML comments are invisible implementation metadata. The converter
+			// preserves them as raw Markdown by default, so opt out at its AST boundary.
+			nodeHandlers: { comment() {} },
+		}),
+		{
+			extensions: [gfmToMarkdown()],
+		},
+	).trim();
 	if (content.length < MIN_ARTICLE_CONTENT_CHARS) {
 		throw new NonRetryableError(`Extracted HTML content is too short (${content.length} chars)`);
 	}
