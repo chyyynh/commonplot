@@ -3,7 +3,7 @@ import { fromHtml } from 'hast-util-from-html';
 import { fromMarkdown as parseMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
-import { hasPrivatePdfImages, withoutPrivatePdfImages, withoutDuplicatePdfTitle } from '../src/ingest/pdf-markdown.ts';
+import { withoutPrivatePdfImages, withoutDuplicatePdfTitle } from '../src/ingest/pdf-markdown.ts';
 import { normalizeStructuredPdf, parseStructuredPdfDocumentJson, structuredPdfVisualPlan } from '../src/ingest/zotero-sdt.ts';
 
 const fromMarkdown = (source, options = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }) => parseMarkdown(source, options);
@@ -249,8 +249,6 @@ console.info({
 	const source = `# Paper\n\nBefore ![private figure](${privateUrl}) after.\n\n![public figure](${publicUrl})\n\nFigure 1. Caption.\n\n\`![example](${privateUrl})\``;
 	const projected = withoutPrivatePdfImages(source);
 	assert.equal(projected, source.replace(`![private figure](${privateUrl})`, ''));
-	assert.equal(hasPrivatePdfImages(source), true);
-	assert.equal(hasPrivatePdfImages(projected), false);
 	assert.equal(withoutPrivatePdfImages(projected), projected, 'Public projection must be idempotent');
 	assert.equal(withoutPrivatePdfImages(`![Figure][crop]\n\n[crop]: ${privateUrl}`), '');
 	assert.equal(withoutPrivatePdfImages(`![Figure](https://newsence.app${privateUrl})\n\nCaption`), 'Caption');

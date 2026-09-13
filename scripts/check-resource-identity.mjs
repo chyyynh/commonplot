@@ -6,6 +6,7 @@ const workflowMocks = {
 	'./platforms/web': ['stageWebAcquisition'],
 	'./platforms/pdf': ['stageStoredPdfAcquisition'],
 	'./platforms/paper': ['stagePaperResolution'],
+	'./platforms/youtube': ['stageYouTubeAcquisition', 'stageYouTubeHighlights'],
 	'./analysis': ['summarizeResource', 'classifyResource'],
 	'./image-rehosting': ['stageResourceImages'],
 	'./resource-persistence': ['persistResolvedResource', 'persistResourceClassification', 'loadPublicPdfContent', 'prepareResolvedResource'],
@@ -97,17 +98,21 @@ const scenarios = [
 	'translation-failed',
 	'classification-failed',
 	'automatic-source',
+	'youtube-published',
+	'youtube-highlights-failed',
 ];
 try {
 	for (const scenario of scenarios) {
 		const owned = ['private-paper', 'existing-public', 'superseded-upload'].includes(scenario);
 		const automatic = scenario === 'automatic-source';
+		const youtube = scenario.startsWith('youtube-');
 		const effects = [];
 		const persisted = [];
 		const translations = [];
 		const reports = [];
 		const classificationGate = Promise.withResolvers();
 		const classificationStarted = Promise.withResolvers();
+		const indexEnqueued = Promise.withResolvers();
 		const resource = {
 			kind: 'paper',
 			resourcePlatform: null,
@@ -119,10 +124,21 @@ try {
 			originalLang: automatic ? 'und' : 'en',
 			summary: null,
 			publishedDate: null,
-			content: `An original research paper.\n\n![Figure](${privateImage})`,
+			content: `# Research paper\n\nAn original research paper.\n\n![Figure](${privateImage})`,
 			citations: { references: [{ key: 'r1', text: 'Cited paper.' }] },
 			creators: [],
 			subject: null,
+			...(youtube
+				? {
+						kind: 'video',
+						resourcePlatform: 'youtube',
+						fileType: null,
+						url: 'https://youtu.be/abcdefghijk',
+						content: 'Original transcript.',
+						citations: null,
+						youtube: { segments: [{ startTime: 0, endTime: 10, text: 'Original transcript.' }], language: 'en', chapters: [] },
+					}
+				: {}),
 		};
 		const acquire = async () => {
 			effects.push('acquired');
@@ -132,10 +148,24 @@ try {
 			connectCoreDb: async () => ({}),
 			stageWebAcquisition: acquire,
 			stageStoredPdfAcquisition: acquire,
-			stagePaperResolution: (_env, _step, { resource: acquired }) => acquired,
+			stageYouTubeAcquisition: acquire,
+			stageYouTubeHighlights: async (_env, _step, target, transcript) => {
+				assert.ok(effects.includes('ready'), 'Highlights follow publication');
+				assert.equal(target.acquisitionRevision, revision);
+				assert.deepEqual(transcript, resource.youtube);
+				if (scenario === 'youtube-highlights-failed') throw new Error('Highlights unavailable');
+				classificationStarted.resolve();
+				await classificationGate.promise;
+				effects.push('highlights');
+			},
+			stagePaperResolution: (_env, _step, { resource: acquired }) => {
+				assert.equal(owned, false, 'Stored PDFs already resolve their paper identity');
+				return acquired;
+			},
 			summarizeResource: async (value) => ({ originalLang: 'en', summary: value.summary || 'Summary' }),
 			stageResourceImages: async () => [],
 			prepareResolvedResource: (value) => {
+				assert.ok(!value.content.startsWith('# Research paper'), 'Acquisition removes the resolved duplicate title');
 				if (automatic)
 					assert.deepEqual([value.originalLang, value.summary, value.publishedDate], ['en', 'Feed summary', '2026-09-11T00:00:00.000Z']);
 				return value;
@@ -192,7 +222,12 @@ try {
 			{},
 			{
 				APP: automatic ? new Proxy({}, { get: () => () => assert.fail('Automatic acquisition cannot depend on user progress') }) : app,
-				RESOURCE_SEARCH_SYNC_QUEUE: { send: async () => effects.push('indexed') },
+				RESOURCE_SEARCH_SYNC_QUEUE: {
+					send: async () => {
+						effects.push('indexed');
+						indexEnqueued.resolve();
+					},
+				},
 			},
 		);
 		const payload = owned
@@ -205,9 +240,13 @@ try {
 						: { saveTarget: { kind: 'profileSave', userId: 'fixture' } }),
 				};
 		const run = workflow.run({ instanceId, payload }, { do: async (_name, ...args) => args.at(-1)({ attempt: 1 }) });
-		if (scenario === 'published') {
+		if (['published', 'youtube-published'].includes(scenario)) {
 			await classificationStarted.promise;
-			assert.ok(effects.includes('ready') && translations.length === 1, 'Slow classification cannot delay reading or translation');
+			if (youtube) await indexEnqueued.promise;
+			assert.ok(
+				effects.includes('ready') && translations.length === (youtube ? 0 : 1),
+				'Slow AI cannot delay publication or applicable translation',
+			);
 			classificationGate.resolve();
 		}
 		if (['save-failed', 'translation-failed'].includes(scenario)) await assert.rejects(run);
@@ -221,14 +260,15 @@ try {
 			assert.ok(!effects.includes('ready') && !translations.length);
 			continue;
 		}
-		assert.ok(effects.includes('corpus-persisted') && effects.includes('media-published'));
+		assert.ok(effects.includes('corpus-persisted'));
+		assert.equal(effects.includes('media-published'), !youtube);
 		if (!automatic) {
-			assert.ok(effects.indexOf('media-published') < effects.indexOf('saved'));
+			assert.ok(effects.indexOf(youtube ? 'corpus-persisted' : 'media-published') < effects.indexOf('saved'));
 			assert.ok(effects.indexOf('saved') < effects.indexOf('ready'));
 			assert.equal(reports.at(-1).status, 'complete', 'Follow-up failure cannot undo publication');
 		}
 		assert.ok(effects.includes('indexed'), 'Published content remains searchable even if classification fails');
-		assert.deepEqual(translations.map(({ id }) => id).sort(), (owned ? [rawId, resourceId] : [resourceId]).sort());
+		assert.deepEqual(translations.map(({ id }) => id).sort(), (youtube ? [] : owned ? [rawId, resourceId] : [resourceId]).sort());
 		if (owned) {
 			assert.equal(persisted[0].target.ownedBlobId, rawId);
 			assert.equal(persisted[0].value.kind, 'file');

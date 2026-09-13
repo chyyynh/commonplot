@@ -123,7 +123,11 @@ try {
 	assert.equal(video.originalLang, 'ja');
 	assert.equal(video.summary, '00:00 Introduction\n01:00 Results');
 	assert.equal(video.creators[0].avatarUrl, 'https://example.com/avatar.jpg');
-	assert.deepEqual(video.youtube.transcript.segments, [{ startTime: 0, endTime: 1.2, text: 'Transcript content' }]);
+	assert.deepEqual(video.youtube.segments, [{ startTime: 0, endTime: 1.2, text: 'Transcript content' }]);
+	responses.get('/youtube/v3/videos').items[0].snippet.description = 'Video without chapters';
+	const unchaptered = await stageUrlAcquisition(env, step, { ...input, url: 'https://youtu.be/abcdefghijk' });
+	assert.equal(unchaptered.youtube.chapters.length, 0);
+	assert.equal(unchaptered.content, video.content, 'Acquisition must return the transcript without calling AI');
 
 	responses.set('/twitter/tweets', { tweets: [{ ...tweet, url: 'https://x.com/i/article/125' }] });
 	responses.set('/twitter/article', {
@@ -203,12 +207,18 @@ try {
 	const persisted = prepareResolvedResource({ ...tracked, ...summaryFields }, []);
 	assert.equal(persisted.url, tracked.url);
 	assert.equal(persisted.normalizedUrl, 'https://example.com/article');
-	for (const [url, fileType, paperIdentifierText, kind, provider] of [
-		[blog.url, null, null, 'blog', null],
-		['https://doi.org/10.1000/example', null, null, 'paper', 'api.openalex.org'],
-		['https://arxiv.org/abs/2507.12652', null, null, 'paper', 'api.openalex.org'],
-		['https://example.com/file.pdf', 'application/pdf', null, 'file', null],
-		['https://example.com/paper.pdf', 'application/pdf', 'DOI: 10.1000/example', 'paper', 'api.crossref.org'],
+	for (const [url, fileType, identifiers, kind, provider] of [
+		[blog.url, null, [], 'blog', null],
+		['https://doi.org/10.1000/example', null, [], 'paper', 'api.openalex.org'],
+		['https://arxiv.org/abs/2507.12652', null, [], 'paper', 'api.openalex.org'],
+		['https://example.com/file.pdf', 'application/pdf', [], 'file', null],
+		[
+			'https://example.com/paper.pdf',
+			'application/pdf',
+			[{ scheme: 'doi', value: '10.1000/example', preferred: true }],
+			'paper',
+			'api.crossref.org',
+		],
 	]) {
 		requests.length = 0;
 		const savedFetch = globalThis.fetch;
@@ -222,9 +232,8 @@ try {
 				resource: {
 					...blog,
 					url,
-					resourceIdentifiers: resolveResourceUrl(url).identifiers,
+					resourceIdentifiers: [...resolveResourceUrl(url).identifiers, ...identifiers],
 					fileType,
-					paperIdentifierText,
 					kind: fileType ? 'file' : 'blog',
 					kindMetadata: fileType ? null : blog.kindMetadata,
 				},
@@ -317,5 +326,5 @@ assert.equal(selectCrossrefReference(`Laura Dabbish. 2023. ${title}.`, crossref)
 const header = parseGrobidPdfHeaderTei(
 	'<TEI><teiHeader><fileDesc><titleStmt><title type="main">Report</title></titleStmt></fileDesc></teiHeader></TEI>',
 );
-assert.equal(header.paperIdentifierText, null, 'A title alone cannot turn a private PDF into a public paper');
+assert.deepEqual(header.resourceIdentifiers, [], 'A title alone cannot turn a private PDF into a public paper');
 console.info('Platform contracts passed: native adapters, URL identity, paper resolution, summaries and bibliography matching.');

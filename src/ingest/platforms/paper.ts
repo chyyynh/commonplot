@@ -12,10 +12,9 @@ import {
 	type PaperIdentity,
 	paperIdentifiersFromIdentity,
 	paperIdentityFromIdentifiers,
-	paperIdentityFromText,
 } from '../../shared/paper-identity';
 import type { AcquiredResource } from '../acquisition';
-import { resolveCrossrefPaper } from '../crossref';
+import { resolveCrossrefPaper, resolveCrossrefPaperCandidate } from '../crossref';
 import { parsePublicPdfResponse, PermanentPdfArtifactError } from '../zotero-sdt-service.ts';
 import { PDF_MIME } from './pdf-policy';
 
@@ -246,26 +245,30 @@ export async function stagePaperResolution(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		resource: AcquiredResource & { resourcePlatform: null; paperIdentifierText?: string | null };
+		resource: AcquiredResource & { resourcePlatform: null };
+		/** Only a GROBID header may propose an uploaded PDF without an identifier. */
+		candidate?: { title: string; authors: readonly string[] };
 		processingId: string;
 	},
 ) {
-	const { paperIdentifierText, ...resource } = input.resource;
+	const resource = input.resource;
 	const canonicalUrl = resource.url;
-	const textIdentity = resource.fileType === PDF_MIME && paperIdentifierText?.trim() ? paperIdentityFromText(paperIdentifierText) : null;
-	const identifiers = choosePreferredIdentifiers([
-		...resource.resourceIdentifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
-		...(textIdentity ? paperIdentifiersFromIdentity(textIdentity) : []),
-	]);
+	const identifiers = choosePreferredIdentifiers(
+		resource.resourceIdentifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
+	);
 	const doi = paperIdentityFromIdentifiers(identifiers)?.doi;
 	const provider = resource.fileType === PDF_MIME ? 'crossref' : 'openalex';
 	let openAlex: Awaited<ReturnType<typeof resolveOpenAlexPaper>> = null;
 	let crossref: Awaited<ReturnType<typeof resolveCrossrefPaper>> = null;
-	if (provider === 'crossref' ? doi : identifiers.length) {
+	if (provider === 'crossref' ? doi || input.candidate : identifiers.length) {
 		const startedAt = Date.now();
 		try {
 			if (provider === 'crossref') {
-				crossref = await step.do('resolve-pdf-paper-crossref-by-doi-v1', PAPER_METADATA_STEP, () => resolveCrossrefPaper(doi!));
+				crossref = doi
+					? await step.do('resolve-pdf-paper-crossref-by-doi-v2', PAPER_METADATA_STEP, () => resolveCrossrefPaper(doi))
+					: await step.do('confirm-stored-pdf-with-crossref-v2', PAPER_METADATA_STEP, () =>
+							resolveCrossrefPaperCandidate(input.candidate!.title, input.candidate!.authors),
+						);
 			} else {
 				openAlex = await step.do('resolve-paper-openalex-with-citations-v4', PAPER_METADATA_STEP, () =>
 					resolveOpenAlexPaper({ apiKey: env.OPENALEX_API_KEY, identifiers }),
@@ -291,13 +294,17 @@ export async function stagePaperResolution(
 			});
 		}
 	}
-	const { abstract, authors, publicationDate, title, ...kindMetadata } = { ...openAlex?.metadata, ...crossref };
+	const { doi: _doi, abstract, authors, publicationDate, title, ...kindMetadata } = { ...openAlex?.metadata, ...crossref };
 	const pdf = openAlex?.contentPdfUrl
 		? await stageOpenAlexPdfContent(env, step, { contentPdfUrl: openAlex.contentPdfUrl, processingId: input.processingId })
 		: null;
 	const content = pdf?.markdown ?? resource.content;
 	if (!content.trim()) throw new Error(`Processing ${input.processingId} has no extractable content`);
-	const resourceIdentifiers = choosePreferredIdentifiers([...identifiers, ...(openAlex?.identifiers ?? [])]);
+	const resourceIdentifiers = choosePreferredIdentifiers([
+		...identifiers,
+		...(crossref ? paperIdentifiersFromIdentity({ doi: crossref.doi }) : []),
+		...(openAlex?.identifiers ?? []),
+	]);
 	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
 	if (!identity) return resource;
 	let publishedDate = resource.publishedDate;

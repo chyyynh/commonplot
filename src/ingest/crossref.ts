@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { canonicalPaperUrl, normalizeDoi } from '../shared/paper-identity.ts';
+import { normalizeDoi } from '../shared/paper-identity.ts';
 import { readBoundedResponseText } from '../shared/response.ts';
 
 const CROSSREF_WORKS_URL = 'https://api.crossref.org/works';
@@ -121,15 +121,21 @@ function workMatchesPaperCandidate(title: string, authors: readonly string[], wo
 
 function crossrefResolution(work: CrossrefWork) {
 	const doi = normalizeDoi(work.DOI);
+	if (!doi) return null;
+	const [, month, day] = work.published?.['date-parts'][0] ?? [];
+	const year = publishedYear(work);
+	const date = CrossrefPublicationDateSchema.safeParse(`${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`).data;
 	const title = boundedMetadata(work.title?.[0], MAX_TITLE_CHARS);
-	if (!doi || !title) return null;
+	const venue = boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS);
 	return {
-		authors: workAuthors(work),
 		doi,
-		title,
-		url: canonicalPaperUrl({ doi }),
-		venue: boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS),
-		year: publishedYear(work),
+		authors: workAuthors(work),
+		...(work['is-referenced-by-count'] == null ? {} : { citedByCount: work['is-referenced-by-count'] }),
+		...(date ? { publicationDate: date } : {}),
+		...(work['references-count'] == null ? {} : { referenceCount: work['references-count'] }),
+		...(title ? { title } : {}),
+		...(venue ? { venue } : {}),
+		...(year === null ? {} : { year }),
 	};
 }
 
@@ -191,7 +197,7 @@ export async function resolveCrossrefPaperCandidate(title: string, authors: read
 			'query.author': queryAuthor,
 			'query.title': queryTitle,
 			rows: String(CROSSREF_ROWS),
-			select: 'DOI,title,author,published,container-title,type',
+			select: 'DOI,title,author,published,container-title,type,is-referenced-by-count,references-count',
 		}),
 	);
 }
@@ -199,27 +205,12 @@ export async function resolveCrossrefPaperCandidate(title: string, authors: read
 export async function resolveCrossrefPaper(doi: string) {
 	const normalizedDoi = normalizeDoi(doi);
 	if (!normalizedDoi) throw new TypeError('Crossref paper DOI is invalid');
-	const response = CrossrefResponseSchema.parse(
+	return selectCrossrefResolution(
 		await fetchCrossrefWorks({
 			filter: `doi:${normalizedDoi}`,
 			rows: '1',
 			select: 'DOI,title,author,published,container-title,is-referenced-by-count,references-count',
 		}),
+		(work) => normalizeDoi(work.DOI) === normalizedDoi,
 	);
-	const work = response.message.items.find((item) => normalizeDoi(item.DOI) === normalizedDoi);
-	if (!work) return null;
-	const [, month, day] = work.published?.['date-parts'][0] ?? [];
-	const year = publishedYear(work);
-	const date = CrossrefPublicationDateSchema.safeParse(`${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`).data;
-	const title = boundedMetadata(work.title?.[0], MAX_TITLE_CHARS);
-	const venue = boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS);
-	return {
-		authors: workAuthors(work),
-		...(work['is-referenced-by-count'] == null ? {} : { citedByCount: work['is-referenced-by-count'] }),
-		...(date ? { publicationDate: date } : {}),
-		...(work['references-count'] == null ? {} : { referenceCount: work['references-count'] }),
-		...(title ? { title } : {}),
-		...(venue ? { venue } : {}),
-		...(year === null ? {} : { year }),
-	};
 }

@@ -1,5 +1,5 @@
 import { XMLParser } from 'fast-xml-parser';
-import { normalizeArxivId, normalizeDoi, paperIdentityFromText } from '../shared/paper-identity.ts';
+import { normalizeArxivId, normalizeDoi, paperIdentifiersFromIdentity, paperIdentityFromText } from '../shared/paper-identity.ts';
 
 const MAX_IDENTIFIER_CHARS = 300;
 const MAX_REFERENCE_URL_CHARS = 500;
@@ -41,7 +41,7 @@ function xmlText(value: XmlObject | undefined): string {
 	return typeof text === 'string' ? text.replace(/\s+/gu, ' ').trim() : '';
 }
 
-function identifierTextFromHeader(biblStruct: XmlObject | null, analytic: XmlObject | null): string | null {
+function identifiersFromHeader(biblStruct: XmlObject | null, analytic: XmlObject | null) {
 	let doi: string | null = null;
 	let arxivId: string | null = null;
 	for (const idno of [...xmlElements(analytic?.idno), ...xmlElements(biblStruct?.idno)]) {
@@ -63,7 +63,7 @@ function identifierTextFromHeader(biblStruct: XmlObject | null, analytic: XmlObj
 		arxivId ??= normalizeArxivId(target);
 		if (doi && arxivId) break;
 	}
-	return [doi ? `DOI: ${doi}` : null, arxivId ? `arXiv: ${arxivId}` : null].filter(Boolean).join('\n') || null;
+	return paperIdentifiersFromIdentity({ ...(doi ? { doi } : {}), ...(arxivId ? { arxivId } : {}) });
 }
 
 /** The uploaded-PDF paper gate uses only metadata extracted by GROBID itself. */
@@ -89,7 +89,7 @@ export function parseGrobidPdfHeaderTei(tei: string) {
 		if (name && !authors.has(key)) authors.set(key, name);
 	}
 
-	return { authors: [...authors.values()], paperIdentifierText: identifierTextFromHeader(biblStruct, analytic), title };
+	return { authors: [...authors.values()], resourceIdentifiers: identifiersFromHeader(biblStruct, analytic), title };
 }
 
 export type GrobidPdfHeader = ReturnType<typeof parseGrobidPdfHeaderTei>;

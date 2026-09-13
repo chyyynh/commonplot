@@ -4,29 +4,27 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { createWorkersAI } from 'workers-ai-provider';
 import type { TranscriptResponse } from 'youtube-transcript';
 import { z } from 'zod';
+import { connectCoreDb } from '../../shared/db';
 import type { AcquiredResource } from '../acquisition';
 import { coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
+import { persistYouTubeHighlights } from '../resource-persistence';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
 
 type YouTubeTranscriptSegment = Readonly<{ startTime: number; endTime: number; text: string }>;
 type YouTubeChapter = { title: string; startTime: number; endTime?: number };
-type YouTubeTranscript = Readonly<{
+export type YouTubeTranscript = Readonly<{
 	segments: YouTubeTranscriptSegment[];
 	language: string | null;
 	chapters: YouTubeChapter[];
 }>;
-type YouTubeHighlights = z.infer<typeof YouTubeHighlightsSchema> &
+export type YouTubeHighlights = z.infer<typeof YouTubeHighlightsSchema> &
 	Readonly<{
 		version: '1.0';
 		model: string;
 		generatedAt: string;
 	}>;
-export type YouTubeResourceData = Readonly<{
-	transcript: YouTubeTranscript;
-	highlights: YouTubeHighlights | null;
-}>;
 
 const YouTubeThumbnailSchema = z.object({ url: z.string().min(1) });
 const YouTubeThumbnailsSchema = z.object({
@@ -267,47 +265,36 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 		},
 		previewImageUrl: thumbnailUrl?.trim() || null,
 		subject: null,
-		youtube: {
-			transcript: { ...transcript, language: transcript.language ?? snippet.defaultAudioLanguage ?? null, chapters },
-			highlights: null,
-		},
-	} satisfies AcquiredResource & { youtube: YouTubeResourceData };
+		youtube: { ...transcript, language: transcript.language ?? snippet.defaultAudioLanguage ?? null, chapters },
+	} satisfies AcquiredResource & { youtube: YouTubeTranscript };
 }
 
-export async function stageYouTubeAcquisition(
+export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, videoId: string) {
+	const contentStream = await step.do(
+		'acquire-youtube-v3',
+		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+		async () => Response.json(await scrapeYouTube(videoId, env.YOUTUBE_API_KEY)).body!,
+	);
+	return new Response(contentStream).json<YouTubeAcquisition>();
+}
+
+export async function stageYouTubeHighlights(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: {
-		processingId: string;
-		videoId: string;
-	},
+	target: { resourceId: string; acquisitionRevision: string },
+	transcript: YouTubeTranscript,
 ) {
-	const contentStream = await step.do(
-		'acquire-youtube-v2',
-		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await scrapeYouTube(input.videoId, env.YOUTUBE_API_KEY)).body!,
+	if (!transcript.segments.length || transcript.chapters.length) return;
+	const highlights = await step.do(
+		'prepare-youtube-highlights-v3',
+		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
+		() => prepareYouTubeHighlightsFromTranscript(env, target.resourceId, transcript.segments),
 	);
-	const acquired = await new Response(contentStream).json<YouTubeAcquisition>();
-	const { transcript } = acquired.youtube;
-	const highlights =
-		transcript.segments.length && transcript.chapters.length === 0
-			? await step
-					.do(
-						'prepare-youtube-highlights-v2',
-						{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
-						() => prepareYouTubeHighlightsFromTranscript(env, input.processingId, input.videoId, transcript.segments),
-					)
-					.catch((error) => {
-						console.error({
-							tag: 'YOUTUBE',
-							msg: 'Optional YouTube highlights failed after retries',
-							processing_id: input.processingId,
-							error: error instanceof Error ? error.message : String(error),
-						});
-						return null;
-					})
-			: null;
-	return { ...acquired, youtube: { transcript, highlights } };
+	await step.do(
+		'persist-youtube-highlights-v1',
+		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+		async () => persistYouTubeHighlights(await connectCoreDb(env), target, highlights),
+	);
 }
 
 const YouTubeHighlightSchema = z
@@ -333,10 +320,9 @@ const HIGHLIGHTS_SYSTEM_PROMPT = `你是專業的影片內容分析師。分析 
 async function prepareYouTubeHighlightsFromTranscript(
 	env: CoreEnv,
 	processingId: string,
-	videoId: string,
 	transcript: YouTubeTranscriptSegment[],
 ): Promise<YouTubeHighlights> {
-	console.info({ tag: 'AI', msg: 'Generating YouTube highlights', videoId });
+	console.info({ tag: 'AI', msg: 'Generating YouTube highlights', resource_id: processingId });
 
 	const transcriptText = transcript.map((segment) => `[${Math.floor(segment.startTime)}s] ${segment.text}`).join('\n');
 	const last = transcript[transcript.length - 1];
@@ -354,10 +340,10 @@ async function prepareYouTubeHighlightsFromTranscript(
 		reasoning: 'none',
 		maxRetries: 0,
 	});
-	if (finishReason === 'length') throw new Error(`YouTube highlights hit the output token cap for ${videoId}`);
-	if (!highlights?.highlights.length) throw new Error(`YouTube highlights did not return valid output for ${videoId}`);
+	if (finishReason === 'length') throw new Error(`YouTube highlights hit the output token cap for ${processingId}`);
+	if (!highlights?.highlights.length) throw new Error(`YouTube highlights did not return valid output for ${processingId}`);
 
-	console.info({ tag: 'AI', msg: 'YouTube highlights generated', videoId, count: highlights.highlights.length });
+	console.info({ tag: 'AI', msg: 'YouTube highlights generated', resource_id: processingId, count: highlights.highlights.length });
 	return {
 		version: '1.0',
 		model: CORE_TEXT_MODEL,

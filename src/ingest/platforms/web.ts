@@ -194,7 +194,7 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
 	if (contentType.includes(PDF_MIME) || new URL(finalUrl).pathname.toLowerCase().endsWith('.pdf')) {
 		const acquired = await acquireFetchedPdfResponse(env, response, finalUrl);
-		acquired.resource.resourceIdentifiers = resolved.identifiers;
+		acquired.resource.resourceIdentifiers = [...resolved.identifiers, ...acquired.resource.resourceIdentifiers];
 		return acquired;
 	}
 	if (

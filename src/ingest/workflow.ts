@@ -7,6 +7,7 @@ import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type Resourc
 import { summarizeResource, classifyResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { withoutPrivatePdfImages } from './pdf-markdown.ts';
+import { stageYouTubeHighlights } from './platforms/youtube';
 import { createResourceTask, enqueueSearchProgress, registerResourceTask } from './progress';
 import {
 	persistResolvedResource,
@@ -42,7 +43,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			if (!(await task.start(target.kind === 'storedBlob' ? 'parsing' : 'acquiring')))
 				return target.kind === 'draft' ? {} : { resourceId: target.resourceId };
 			const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
-			const resource = await stageResourceAcquisition(this.env, step, target, task);
+			const resource = await stageResourceAcquisition(this.env, step, target, processingId);
 			const uploadedPaper = target.kind === 'storedBlob' && resource.kind === 'paper';
 			const ownedBlobId = target.kind === 'storedBlob' ? target.resourceId : undefined;
 			const persistenceTarget: ResourcePersistenceTarget =
@@ -156,7 +157,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			});
 			const subject = resource.subject;
 			// Let independent background work and handoffs finish before reporting failures.
-			const [references, index, ...followups] = await Promise.allSettled([
+			const [references, index, highlights, ...followups] = await Promise.allSettled([
 				scope === 'corpus' &&
 				preparedResource.kind === 'paper' &&
 				(preparedResource.citations?.references.length || !persistence.originalWritten)
@@ -180,6 +181,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							);
 					}
 				})(),
+				preparedResource.youtube && persistence.originalWritten
+					? stageYouTubeHighlights(this.env, step, persistence, preparedResource.youtube)
+					: undefined,
 				...translationTargets.map(({ stepName, resourceId, translationRevision, forceRunKey }) =>
 					step.do(stepName, STORAGE_STEP, () => enqueueResourceTranslation(this.env, resourceId, translationRevision, forceRunKey, task)),
 				),
@@ -201,7 +205,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						})
 					: undefined,
 			]);
-			for (const outcome of [references, index]) {
+			for (const outcome of [references, index, highlights]) {
 				if (outcome.status === 'rejected')
 					console.error({ tag: 'WORKFLOW', msg: 'Background work failed', resource_id: persistedResourceId, error: outcome.reason });
 			}

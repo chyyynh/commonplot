@@ -40,10 +40,6 @@ export const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [Stor
 
 export type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSchema>;
 
-export const StoredPdfProcessingInputSchema = StoredResourceTargetSchema.omit({ kind: true }).extend({
-	retry: z.boolean().optional(),
-});
-
 export const ResourceImportDispatchSchema = z.strictObject({
 	workflowId: z.string().pipe(z.templateLiteral(['app-ingest-v1-', z.uuidv4()])),
 	payload: z.discriminatedUnion('kind', [ResourceDraftTargetSchema, StoredResourceTargetSchema.extend({ kind: z.literal('storedBlob') })]),

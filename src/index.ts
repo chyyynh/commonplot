@@ -1,7 +1,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod';
 import type {} from './env';
-import { ResourceImportDispatchSchema, StoredPdfProcessingInputSchema } from './ingest/admission';
+import { ResourceImportDispatchSchema } from './ingest/admission';
 import { PaidPdfFallbackGrantSchema, type PaidPdfFallbackGrant } from './ingest/platforms/pdf-policy';
 import { resolveResourceUrl, ResourceUrlSchema } from './ingest/platforms/resource-url';
 import { handleRSSCron } from './ingest/platforms/rss';
@@ -107,12 +107,6 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 			await connectCoreDb(this.env),
 			parsed.map((url) => resolveResourceUrl(url)!),
 		);
-	}
-
-	/** Enqueue an app-owned blob after its R2 object and private ownership row exist. */
-	async enqueueResourceProcessing(input: z.infer<typeof StoredPdfProcessingInputSchema>) {
-		const parsed = StoredPdfProcessingInputSchema.parse(input);
-		return this.env.APP.admitStoredBlobProcessing(parsed);
 	}
 
 	/** Durable admission outbox: the caller persists this immutable ID and payload first. */

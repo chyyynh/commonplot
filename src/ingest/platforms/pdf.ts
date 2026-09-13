@@ -3,24 +3,21 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
+import { paperIdentifiersFromIdentity, paperIdentityFromText } from '../../shared/paper-identity';
 import { ResourceCreatorsSchema } from '../../shared/resource';
 import type { AcquiredResource } from '../acquisition';
-import { resolveCrossrefPaperCandidate } from '../crossref';
 import type { GrobidPdfHeader } from '../grobid-tei';
 import { ResourceLanguageSchema } from '../resource-language';
 import { parsePublicPdfResponse, parseStoredPdfRepresentation, PermanentPdfArtifactError } from '../zotero-sdt-service.ts';
+import { stagePaperResolution } from './paper';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
 import { PDF_MIME, type LocalPdfSummary, type PaidPdfFallbackGrant } from './pdf-policy';
+import { resolveResourceUrl } from './resource-url';
 
 const MAX_PAPER_IDENTIFIER_TEXT_CHARS = 20_000;
 const GROBID_HEADER_STEP = { retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '600 seconds' } as const;
-const CROSSREF_PAPER_CANDIDATE_STEP = {
-	retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' },
-	timeout: '30 seconds',
-} as const;
-
 type PdfAcquisition = Readonly<{
-	resource: AcquiredResource & { kind: 'file'; resourcePlatform: null; paperIdentifierText: string | null };
+	resource: AcquiredResource & { kind: 'file'; resourcePlatform: null };
 	parse: LocalPdfSummary;
 }>;
 
@@ -54,11 +51,15 @@ export async function completeFetchedPdfAcquisition(
 		if (!input.acquisition.resource.content) throw new NonRetryableError('Fetched PDF has no usable text; OCR is required');
 		return input.acquisition.resource;
 	}
+	const identity = paperIdentityFromText(cloudMarkdown.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS));
 	return {
 		...input.acquisition.resource,
 		citations: null,
 		content: cloudMarkdown,
-		paperIdentifierText: cloudMarkdown.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS),
+		resourceIdentifiers: [
+			...(resolveResourceUrl(input.sourceUrl)?.identifiers ?? []),
+			...(identity ? paperIdentifiersFromIdentity(identity) : []),
+		],
 	};
 }
 
@@ -140,7 +141,6 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 			title: resource.title,
 			content: parsed.markdown,
 			citations: parsed.citations,
-			paperIdentifierText: parsed.paperIdentifierText,
 			source: resource.source,
 			originalLang: resource.originalLang,
 			publishedDate: resource.publishedDate,
@@ -154,6 +154,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 
 export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response, finalUrl: string): Promise<PdfAcquisition> {
 	const parsed = await localPdfAttempt(parsePublicPdfResponse(env, response, finalUrl));
+	const identity = paperIdentityFromText(parsed.paperIdentifierText);
 	const url = new URL(finalUrl);
 	let fileName = url.pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';
 	try {
@@ -167,7 +168,7 @@ export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response
 	return {
 		resource: {
 			kind: 'file',
-			resourceIdentifiers: [],
+			resourceIdentifiers: identity ? paperIdentifiersFromIdentity(identity) : [],
 			subject: null,
 			previewImageUrl: null,
 			resourcePlatform: null,
@@ -176,7 +177,6 @@ export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response
 			title,
 			content: parsed.markdown,
 			citations: parsed.citations,
-			paperIdentifierText: parsed.paperIdentifierText,
 			source,
 			originalLang: 'und',
 			publishedDate: null,
@@ -195,7 +195,7 @@ export async function stageStoredPdfAcquisition(
 		paidPdfFallback?: PaidPdfFallbackGrant;
 		resourceId: string;
 	}>,
-): Promise<PdfAcquisition['resource']> {
+): Promise<AcquiredResource & { resourcePlatform: null }> {
 	const resource = await step.do(
 		'load-stored-pdf-input-v1',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
@@ -208,7 +208,7 @@ export async function stageStoredPdfAcquisition(
 			async () => Response.json(await acquireStoredPdf(env, resource, target.resourceId)).body!,
 		),
 		step
-			.do<GrobidPdfHeader>('classify-stored-pdf-with-grobid-v1', GROBID_HEADER_STEP, async () => {
+			.do<GrobidPdfHeader>('classify-stored-pdf-with-grobid-v2', GROBID_HEADER_STEP, async () => {
 				const object = await env.R2.get(resource.storageKey);
 				if (!object) throw new NonRetryableError('Uploaded PDF object is missing');
 				return env.GROBID.getByName('citation-parser-v1').processPdfHeader(object.body, object.size);
@@ -224,37 +224,11 @@ export async function stageStoredPdfAcquisition(
 			}),
 	]);
 	const acquisition = await new Response(contentStream).json<PdfAcquisition>();
-	let paperIdentifierText = grobidHeader?.paperIdentifierText ?? null;
-	const grobidTitle = grobidHeader?.title;
-	if (!paperIdentifierText && grobidTitle && grobidHeader.authors.length) {
-		try {
-			const crossref = await step.do('confirm-stored-pdf-with-crossref-v1', CROSSREF_PAPER_CANDIDATE_STEP, () =>
-				resolveCrossrefPaperCandidate(grobidTitle, grobidHeader.authors),
-			);
-			paperIdentifierText = crossref ? `DOI: ${crossref.doi}` : null;
-			console.info({
-				tag: 'PAPER_PROVIDER',
-				event: 'stored_pdf_candidate_confirmation',
-				provider: 'crossref',
-				resource_id: target.resourceId,
-				outcome: crossref ? 'resolved' : 'not_found',
-				...(crossref ? { doi: crossref.doi, venue: crossref.venue, year: crossref.year } : {}),
-			});
-		} catch (error) {
-			console.warn({
-				tag: 'PAPER_PROVIDER',
-				event: 'stored_pdf_candidate_confirmation',
-				provider: 'crossref',
-				resource_id: target.resourceId,
-				outcome: 'failed',
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-	}
-	const paperHeader = paperIdentifierText ? grobidHeader : null;
+	const paperIdentifiers = grobidHeader?.resourceIdentifiers ?? [];
+	const paperHeader = paperIdentifiers.length ? grobidHeader : null;
 	const acquired = {
 		...acquisition.resource,
-		paperIdentifierText,
+		resourceIdentifiers: paperIdentifiers,
 		...(paperHeader?.title ? { title: paperHeader.title.trim() } : {}),
 		...(paperHeader?.authors.length ? { creators: paperHeader.authors.map((literal) => ({ literal, role: 'author' as const })) } : {}),
 	};
@@ -269,5 +243,11 @@ export async function stageStoredPdfAcquisition(
 	});
 	if (!cloudMarkdown && !acquired.content)
 		throw new NonRetryableError(`Stored PDF ${target.resourceId} has no usable text; OCR is required`);
-	return cloudMarkdown ? { ...acquired, citations: null, content: cloudMarkdown } : acquired;
+	return stagePaperResolution(env, step, {
+		resource: cloudMarkdown ? { ...acquired, citations: null, content: cloudMarkdown } : acquired,
+		processingId: target.resourceId,
+		...(!paperIdentifiers.length && grobidHeader?.title && grobidHeader.authors.length
+			? { candidate: { title: grobidHeader.title, authors: grobidHeader.authors } }
+			: {}),
+	});
 }

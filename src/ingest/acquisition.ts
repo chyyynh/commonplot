@@ -4,6 +4,7 @@ import { sql } from 'drizzle-orm';
 import { connectCoreDb } from '../shared/db';
 import type { ResourceCreator, ResourceIdentifier, ResourceKind, ResourceKindMetadata, ResourcePlatform } from '../shared/resource';
 import type { ResourceProcessingTarget } from './admission';
+import { withoutDuplicatePdfTitle } from './pdf-markdown.ts';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
 import { stagePaperResolution } from './platforms/paper';
@@ -13,7 +14,6 @@ import { resolveResourceUrl } from './platforms/resource-url';
 import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
 import { stageYouTubeAcquisition } from './platforms/youtube';
-import type { ResourceTask } from './progress';
 import { ResourceLanguageSchema } from './resource-language';
 
 // Adapters share an output contract; each adapter owns its mapping and identity.
@@ -71,17 +71,13 @@ export async function stageUrlAcquisition(
 				tweetId: platformId,
 			});
 		case 'youtube':
-			return stageYouTubeAcquisition(env, step, {
-				processingId: input.processingId,
-				videoId: platformId,
-			});
+			return stageYouTubeAcquisition(env, step, platformId);
 		default:
 			throw new NonRetryableError('Redirected resource has no supported platform');
 	}
 }
 
-export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep, target: ResourceProcessingTarget, task: ResourceTask) {
-	const processingId = target.kind === 'draft' ? task.taskId : target.resourceId;
+export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep, target: ResourceProcessingTarget, processingId: string) {
 	const url =
 		target.kind === 'reacquire'
 			? await step.do(
@@ -113,10 +109,11 @@ export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep,
 		publishedDate,
 		summary: acquired.summary?.trim() || source?.summary?.trim() || null,
 	};
-	if (resource.resourcePlatform !== null) return resource;
-	if (target.kind === 'storedBlob') await task.report('metadata', { stage: 'metadata', status: 'running' });
-	return stagePaperResolution(env, step, {
-		resource,
-		processingId,
-	});
+	const resolved =
+		resource.resourcePlatform === null && target.kind !== 'storedBlob'
+			? await stagePaperResolution(env, step, { resource, processingId })
+			: resource;
+	return resolved.fileType === 'application/pdf'
+		? { ...resolved, content: withoutDuplicatePdfTitle(resolved.content, resolved.title) }
+		: resolved;
 }

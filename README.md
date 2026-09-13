@@ -35,7 +35,7 @@ Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content
 | **Uploaded PDF** | Read owned R2 blob → Zotero text/figures and GROBID header in parallel → optional Crossref confirmation; unresolved documents remain private files |
 | **Paper** | Exact URL or PDF identity → OpenAlex for web sources / Crossref for PDFs → canonical identifiers and bibliography; optional OpenAlex content PDF |
 | **Twitter/X** | twitterapi.io → post or article Markdown, media and linked subject; monitoring uses cursor pagination every 6 hours |
-| **YouTube** | Video metadata → channel avatar and transcript in parallel → chapters or AI highlights → canonical transaction also saves transcript data |
+| **YouTube** | Video metadata → channel avatar and transcript in parallel → canonical transaction saves transcript and native chapters → optional AI highlights after publication, guarded by the acquisition revision |
 | **Hacker News** | Firebase story and ranked comments → Markdown discussion; an external article remains a separate subject |
 | **LessWrong** | GraphQL post → native Markdown and source metadata |
 | **RSS / Atom / JSON Feed** | Fetch → feed parser → normalized URL drafts → normal acquisition; every 5 minutes, with a 30-minute interval for YouTube feeds |
@@ -95,7 +95,7 @@ Uploaded PDF content and translations stay on its private raw Resource. If paper
 
 Public URL acquisition writes a separate `public-pdf/<sourceSha256>/<inputSha256>/` family. Matching bytes in a private upload never establish public provenance. Only after canonical persistence does Core validate the source and complete crop manifest and write `publication.json`. Public crop delivery requires that publication, an enriched corpus Resource, and the exact crop URL in its current original content. Raw public acquisition artifacts have no public download route. Public crop storage is independent of user upload deletion.
 
-Existing corpus bodies with private image references are cleaned when explicitly reprocessed, including references in preserved human translations. Human text remains intact; obsolete alignment is cleared. This is an ingestion repair, not a mutation performed by reads.
+Historical corpus bodies containing private crop images must be cleaned once before upgrading an older dataset: back up affected translations, remove only private image nodes, clear their alignment, and enqueue search sync for affected resources. Acquisition strips these images before publishing new shared renditions; persistence and reads do not repair existing bodies. Production cleanup completed on 2026-09-13 (5 resources, 10 translations).
 
 #### Operator verification
 
@@ -103,7 +103,7 @@ Run `pnpm lint`, `pnpm run typecheck`, and `pnpm test` from this workspace. Six 
 
 Deploy the Web media/reading changes and the Core Worker **with its updated Zotero container image** before admitting new processing. A Worker-only deployment with `--containers-rollout=none` cannot activate the new batch endpoint.
 
-After deployment, reprocess an uploaded PDF using the existing service RPC `enqueueResourceProcessing({ resourceId: <raw-file-resource-id>, retry: true })`; do not pass its canonical paper ID. Use `resyncResource` for a resource with an external URL. Inspect Workflow status, the crop manifest and its quality summary, canonical/private translations, and owner/non-owner reads. A completed canonical row alone does not prove all follow-ups succeeded. No production backfill is implicit in a code deployment.
+After deployment, reprocess an uploaded PDF through Web's `DomainRpc.admitStoredBlobProcessing({ resourceId: <raw-file-resource-id>, retry: true })`; Web validates ownership and admits the Core job. Do not pass its canonical paper ID. Use Core's `resyncResource` for a resource with an external URL. Inspect Workflow status, the crop manifest and its quality summary, canonical/private translations, and owner/non-owner reads. A completed canonical row alone does not prove all follow-ups succeeded. No production backfill is implicit in a code deployment.
 
 The Cocoa regression was checked against the user-supplied 23-page PDF: the new plan has 10 figures and 4 genuine tables; 19 affiliation crops are excluded. All 14 regions rendered with the pinned Zotero runtime, and all five recovered figures were visually inspected. The full copyrighted PDF is not committed as a fixture.
 

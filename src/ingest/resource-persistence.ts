@@ -13,9 +13,8 @@ import {
 import type { AcquiredResource } from './acquisition';
 import type { ResourceDraftRelation } from './admission';
 import type { ResourceClassification } from './analysis';
-import { hasPrivatePdfImages, withoutPrivatePdfImages, withoutDuplicatePdfTitle } from './pdf-markdown.ts';
 import { resolveResourceUrl, type ResolvedResourceUrl } from './platforms/resource-url';
-import type { YouTubeResourceData } from './platforms/youtube';
+import type { YouTubeHighlights, YouTubeTranscript } from './platforms/youtube';
 import { ResourceLanguageSchema } from './resource-language';
 
 export type ResourcePersistenceTarget = { ownedBlobId?: string } & (
@@ -61,6 +60,26 @@ export async function persistResourceClassification(
 	return updated.rowCount === 1;
 }
 
+/** Lock the acquisition revision so an old AI result cannot overwrite a newer transcript. */
+export async function persistYouTubeHighlights(
+	db: NodePgDatabase,
+	target: { resourceId: string; acquisitionRevision: string },
+	highlights: YouTubeHighlights,
+) {
+	const updated = await db.execute(sql`
+		WITH current_resource AS (
+			SELECT id FROM resources
+			WHERE id = ${target.resourceId}::uuid AND resource_platform = 'youtube'
+			  AND MD5(EXTRACT(EPOCH FROM scraped_date)::text) = ${target.acquisitionRevision}
+			FOR UPDATE
+		)
+		UPDATE youtube_transcripts SET ai_highlights = ${JSON.stringify(highlights)}::jsonb
+		FROM current_resource WHERE youtube_transcripts.resource_id = current_resource.id
+		RETURNING resource_id
+	`);
+	return updated.rowCount === 1;
+}
+
 /** A URL or exact identifier may point at an existing corpus resource; ambiguous identities must be reacquired. */
 export async function findResourcesByUrls(db: NodePgDatabase, urls: readonly ResolvedResourceUrl[]) {
 	if (!urls.length) return [];
@@ -83,12 +102,12 @@ export async function findResourcesByUrls(db: NodePgDatabase, urls: readonly Res
 }
 
 export function prepareResolvedResource(
-	resource: AcquiredResource & { youtube?: YouTubeResourceData },
+	resource: AcquiredResource & { youtube?: YouTubeTranscript },
 	hostedImages: readonly HostedResourceImage[],
 	keywords: readonly string[] = [],
 ) {
 	const title = resource.title.trim();
-	const content = (resource.fileType === 'application/pdf' ? withoutDuplicatePdfTitle(resource.content, title) : resource.content).trim();
+	const content = resource.content.trim();
 	const sourceName = resource.source.trim();
 	if (!title || !content) throw new TypeError('Resolved Resource requires title and content');
 	if (!sourceName) throw new TypeError('Resolved Resource requires a source name');
@@ -283,21 +302,18 @@ async function writeCanonicalResource(
 		`);
 	}
 	if (resource.youtube) {
-		const { transcript, highlights } = resource.youtube;
+		const transcript = resource.youtube;
 		await db.execute(sql`
 			INSERT INTO youtube_transcripts (resource_id, transcript, language, chapters, ai_highlights)
 			VALUES (
 				${resourceId}::uuid, ${JSON.stringify(transcript.segments)}::jsonb, ${transcript.language},
-				${JSON.stringify(transcript.chapters)}::jsonb, ${highlights ? JSON.stringify(highlights) : null}::jsonb
+				${JSON.stringify(transcript.chapters)}::jsonb, NULL
 			)
 			ON CONFLICT (resource_id) DO UPDATE SET
 				transcript = EXCLUDED.transcript,
 				language = EXCLUDED.language,
 				chapters = EXCLUDED.chapters,
-				ai_highlights = CASE
-					WHEN jsonb_array_length(EXCLUDED.chapters) > 0 THEN NULL
-					ELSE COALESCE(EXCLUDED.ai_highlights, youtube_transcripts.ai_highlights)
-				END
+				ai_highlights = EXCLUDED.ai_highlights
 		`);
 	}
 	const original = written.rows[0];
@@ -330,22 +346,6 @@ async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relati
 	if (attached.rowCount !== 1) throw new NonRetryableError('Subject parent was reacquired or is no longer eligible for attachment');
 }
 
-/** Reprocessing owns this repair; reads never rewrite existing user or corpus content. */
-async function removeStoredPrivatePdfImages(db: NodePgDatabase, resourceId: string) {
-	const translations = await db.execute<{ content: string; lang: string }>(sql`
-		SELECT content, lang FROM resource_translations
-		WHERE resource_id = ${resourceId}::uuid AND content LIKE '%/api/media/asset/pdf-crops/%'
-	`);
-	for (const translation of translations.rows) {
-		const content = withoutPrivatePdfImages(translation.content);
-		if (content === translation.content.trim()) continue;
-		await db.execute(sql`
-			UPDATE resource_translations SET content = ${content}, alignment = NULL, updated_at = NOW()
-			WHERE resource_id = ${resourceId}::uuid AND lang = ${translation.lang}
-		`);
-	}
-}
-
 export async function persistResolvedResource(db: NodePgDatabase, resource: PreparedResource, target: ResourcePersistenceTarget) {
 	const lockKeys = [
 		...(resource.normalizedUrl ? [`url:${resource.normalizedUrl}`] : []),
@@ -367,28 +367,23 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 		// A private rendition may enrich a new paper, but must not replace an
 		// independently acquired public rendition (and its public images).
 		if (target.kind === 'draft' && target.preservePublishedPdf && root?.has_original) {
-			const original = await tx.execute<{ content: string | null; translation_revision: string; acquisition_revision: string }>(sql`
-				SELECT original.content,
-				       MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS translation_revision,
+			const original = await tx.execute<{ translation_revision: string; acquisition_revision: string }>(sql`
+				SELECT MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS translation_revision,
 				       MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) AS acquisition_revision
 				FROM resources resource
 				JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 				WHERE resource.id = ${resourceId}::uuid
 			`);
 			const published = original.rows[0];
-			// Human text and translations remain authoritative, but old private asset
-			// links cannot stay on a shared rendition after this explicit reprocess.
-			await removeStoredPrivatePdfImages(tx, resourceId);
-			if (published?.content?.trim() && !hasPrivatePdfImages(published.content)) {
-				return {
-					resourceId,
-					scope: root.scope,
-					subjectAttached: root.subject_resource_id !== null,
-					translationRevision: published.translation_revision,
-					acquisitionRevision: published.acquisition_revision,
-					originalWritten: false,
-				};
-			}
+			if (!published) throw new Error(`Published PDF ${resourceId} lost its original`);
+			return {
+				resourceId,
+				scope: root.scope,
+				subjectAttached: root.subject_resource_id !== null,
+				translationRevision: published.translation_revision,
+				acquisitionRevision: published.acquisition_revision,
+				originalWritten: false,
+			};
 		}
 		const resolvedSubjectId = resource.subject ? await existingSubject(tx, resourceId, resource.subject) : null;
 		const subjectResourceId = resolvedSubjectId ?? root?.subject_resource_id ?? null;

@@ -51,7 +51,3 @@ export function withoutPrivatePdfImages(markdown: string): string {
 	}
 	return content.trim();
 }
-
-export function hasPrivatePdfImages(markdown: string): boolean {
-	return markdown.includes(PRIVATE_PDF_CROP_PATH) && withoutPrivatePdfImages(markdown) !== markdown.trim();
-}
