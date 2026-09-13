@@ -47,7 +47,6 @@ const CANONICAL_SEARCH_CONFIGS = {
 
 type SearchIndexRebuildPayload = Record<string, never>;
 type SearchDeltaCursor = { id: string; updatedAt: string };
-type SearchDeltaRow = { id: string; updated_at: string };
 type SearchIndexStats = {
 	completed: number;
 	error: number;
@@ -108,8 +107,8 @@ async function uploadCorpusIds(env: CoreEnv, db: NodePgDatabase, ids: readonly s
 	return documents.length;
 }
 
-async function listCorpusDeltaAfter(db: NodePgDatabase, startedAt: string, cursor: SearchDeltaCursor | null): Promise<SearchDeltaRow[]> {
-	const result = await db.execute<SearchDeltaRow>(sql`
+async function listCorpusDeltaAfter(db: NodePgDatabase, startedAt: string, cursor: SearchDeltaCursor | null): Promise<SearchDeltaCursor[]> {
+	const result = await db.execute<SearchDeltaCursor>(sql`
 		WITH changed_resources AS (
 		  SELECT r.id,
 		         GREATEST(r.updated_at, COALESCE(MAX(translation.updated_at), r.updated_at)) AS updated_at
@@ -119,7 +118,7 @@ async function listCorpusDeltaAfter(db: NodePgDatabase, startedAt: string, curso
 		    AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		  GROUP BY r.id, r.updated_at
 		)
-		SELECT id::text, to_char(updated_at AT TIME ZONE 'UTC', ${UTC_TIMESTAMP_FORMAT}) AS updated_at
+		SELECT id::text, to_char(updated_at AT TIME ZONE 'UTC', ${UTC_TIMESTAMP_FORMAT}) AS "updatedAt"
 		FROM changed_resources
 		WHERE updated_at >= ${startedAt}::timestamptz
 		  AND (
@@ -127,7 +126,7 @@ async function listCorpusDeltaAfter(db: NodePgDatabase, startedAt: string, curso
 		    OR updated_at > ${cursor?.updatedAt ?? null}::timestamptz
 		    OR (updated_at = ${cursor?.updatedAt ?? null}::timestamptz AND id > ${cursor?.id ?? null}::uuid)
 		  )
-		ORDER BY updated_at, id
+		ORDER BY "updatedAt", id
 		LIMIT ${REINDEX_PAGE_SIZE}
 	`);
 	return result.rows;
@@ -346,9 +345,8 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 				const db = await connectCoreDb(this.env);
 				const rows = await listCorpusDeltaAfter(db, startedAt, deltaCursor);
 				if (!rows.length) return { cursor: deltaCursor, done: true, uploaded: 0 };
-				const last = rows.at(-1)!;
 				return {
-					cursor: { id: last.id, updatedAt: last.updated_at },
+					cursor: rows.at(-1)!,
 					done: false,
 					uploaded: await uploadCorpusIds(
 						this.env,

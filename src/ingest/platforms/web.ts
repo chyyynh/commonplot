@@ -239,7 +239,6 @@ export async function stageWebAcquisition(
 				acquisition: acquired,
 				grant: input.paidPdfFallback,
 				processingId: input.processingId,
-				sourceUrl: acquired.resource.url ?? input.url,
 			})
 		: acquired;
 }

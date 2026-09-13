@@ -17,7 +17,7 @@ import { resolveResourceUrl } from './resource-url';
 const MAX_PAPER_IDENTIFIER_TEXT_CHARS = 20_000;
 const GROBID_HEADER_STEP = { retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '600 seconds' } as const;
 type PdfAcquisition = Readonly<{
-	resource: AcquiredResource & { kind: 'file'; resourcePlatform: null };
+	resource: AcquiredResource & { kind: 'file'; resourcePlatform: null; url: string };
 	parse: LocalPdfSummary;
 }>;
 
@@ -29,14 +29,13 @@ export async function completeFetchedPdfAcquisition(
 		acquisition: PdfAcquisition;
 		grant: PaidPdfFallbackGrant | null;
 		processingId: string;
-		sourceUrl: string;
 	},
 ): Promise<PdfAcquisition['resource']> {
 	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
 		grant: input.grant,
 		local: input.acquisition.parse,
 		processingId: input.processingId,
-		source: { kind: 'public-url', url: input.sourceUrl },
+		source: { kind: 'public-url', url: input.acquisition.resource.url },
 	});
 	if (!cloudMarkdown) {
 		if (!input.acquisition.resource.content) throw new NonRetryableError('Fetched PDF has no usable text; OCR is required');
@@ -48,7 +47,7 @@ export async function completeFetchedPdfAcquisition(
 		citations: null,
 		content: cloudMarkdown,
 		resourceIdentifiers: [
-			...(resolveResourceUrl(input.sourceUrl)?.identifiers ?? []),
+			...(resolveResourceUrl(input.acquisition.resource.url)?.identifiers ?? []),
 			...(identity ? paperIdentifiersFromIdentity(identity) : []),
 		],
 	};
@@ -110,37 +109,6 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 	};
 }
 
-type StoredPdfInput = Awaited<ReturnType<typeof loadStoredPdfInput>>;
-
-async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resourceId: string): Promise<PdfAcquisition> {
-	const parsed = await parseStoredPdfRepresentation(env, {
-		pdfStorageKey: resource.storageKey,
-		inputContentHash: resource.contentHash,
-		sourceLabel: `Stored PDF ${resourceId}`,
-	});
-	return {
-		resource: {
-			kind: 'file',
-			resourceIdentifiers: [],
-			subjectUrl: null,
-			previewImageUrl: null,
-			resourcePlatform: null,
-			fileType: PDF_MIME,
-			url: null,
-			title: resource.title,
-			content: parsed.markdown,
-			citations: parsed.citations,
-			source: resource.source,
-			originalLang: resource.originalLang,
-			publishedDate: resource.publishedDate,
-			summary: resource.summary,
-			creators: resource.creators,
-			kindMetadata: null,
-		},
-		parse: parsed.parse,
-	};
-}
-
 export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response, finalUrl: string): Promise<PdfAcquisition> {
 	const parsed = await parsePublicPdfResponse(env, response, finalUrl);
 	const identity = paperIdentityFromText(parsed.paperIdentifierText);
@@ -192,9 +160,16 @@ export async function stageStoredPdfAcquisition(
 	);
 	const [contentStream, grobidHeader] = await Promise.all([
 		step.do(
-			'acquire-stored-pdf-v11',
+			'acquire-stored-pdf-v12',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
-			async () => Response.json(await acquireStoredPdf(env, resource, target.resourceId)).body!,
+			async () => {
+				const { markdown, citations, parse } = await parseStoredPdfRepresentation(env, {
+					pdfStorageKey: resource.storageKey,
+					inputContentHash: resource.contentHash,
+					sourceLabel: `Stored PDF ${target.resourceId}`,
+				});
+				return Response.json({ markdown, citations, parse }).body!;
+			},
 		),
 		step
 			.do<GrobidPdfHeader>('classify-stored-pdf-with-grobid-v2', GROBID_HEADER_STEP, async () => {
@@ -212,28 +187,43 @@ export async function stageStoredPdfAcquisition(
 				return null;
 			}),
 	]);
-	const acquisition = await new Response(contentStream).json<PdfAcquisition>();
+	const parsed = await new Response(contentStream).json<
+		Pick<Awaited<ReturnType<typeof parseStoredPdfRepresentation>>, 'markdown' | 'citations' | 'parse'>
+	>();
 	const paperIdentifiers = grobidHeader?.resourceIdentifiers ?? [];
 	const paperHeader = paperIdentifiers.length ? grobidHeader : null;
-	const acquired = {
-		...acquisition.resource,
-		resourceIdentifiers: paperIdentifiers,
-		...(paperHeader?.title ? { title: paperHeader.title.trim() } : {}),
-		...(paperHeader?.authors.length ? { creators: paperHeader.authors.map((literal) => ({ literal, role: 'author' as const })) } : {}),
-	};
 	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
 		grant: target.paidPdfFallback ?? null,
-		local: acquisition.parse,
+		local: parsed.parse,
 		processingId: target.resourceId,
 		source: {
 			kind: 'private-upload',
 			storageKey: resource.storageKey,
 		},
 	});
-	if (!cloudMarkdown && !acquired.content)
+	if (!cloudMarkdown && !parsed.markdown)
 		throw new NonRetryableError(`Stored PDF ${target.resourceId} has no usable text; OCR is required`);
 	return stagePaperResolution(env, step, {
-		resource: cloudMarkdown ? { ...acquired, citations: null, content: cloudMarkdown } : acquired,
+		resource: {
+			kind: 'file',
+			resourceIdentifiers: paperIdentifiers,
+			subjectUrl: null,
+			previewImageUrl: null,
+			resourcePlatform: null,
+			fileType: PDF_MIME,
+			url: null,
+			title: paperHeader?.title ? paperHeader.title.trim() : resource.title,
+			content: cloudMarkdown || parsed.markdown,
+			citations: cloudMarkdown ? null : parsed.citations,
+			source: resource.source,
+			originalLang: resource.originalLang,
+			publishedDate: resource.publishedDate,
+			summary: resource.summary,
+			creators: paperHeader?.authors.length
+				? paperHeader.authors.map((literal) => ({ literal, role: 'author' as const }))
+				: resource.creators,
+			kindMetadata: null,
+		},
 		processingId: target.resourceId,
 		...(!paperIdentifiers.length && grobidHeader?.title && grobidHeader.authors.length
 			? { candidate: { title: grobidHeader.title, authors: grobidHeader.authors } }
