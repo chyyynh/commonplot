@@ -5,7 +5,11 @@ import { fromMarkdown } from 'mdast-util-from-markdown';
 import { frontmatterFromMarkdown, frontmatterToMarkdown } from 'mdast-util-frontmatter';
 import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm';
 import { mathFromMarkdown, mathToMarkdown } from 'mdast-util-math';
-import { defaultHandlers, type Info, type State, toMarkdown } from 'mdast-util-to-markdown';
+import { type Info, type State, toMarkdown } from 'mdast-util-to-markdown';
+import { cjkFriendlyToMarkdown } from 'mdast-util-to-markdown-cjk-friendly';
+import { cjkFriendlyGfmStrikethroughToMarkdown } from 'mdast-util-to-markdown-cjk-friendly-gfm-strikethrough';
+import { cjkFriendlyExtension } from 'micromark-extension-cjk-friendly';
+import { gfmStrikethroughCjkFriendly } from 'micromark-extension-cjk-friendly-gfm-strikethrough';
 import { frontmatter } from 'micromark-extension-frontmatter';
 import { gfm } from 'micromark-extension-gfm';
 import { math } from 'micromark-extension-math';
@@ -23,6 +27,7 @@ const TRANSLATED_PROSE_SENTINEL = '<translated-prose>';
 const MAX_INLINE_REFERENCE_CHARACTERS = 256;
 const ROOT_TRANSLATION_SEQUENCE = 'root';
 const TEXT_TRANSLATION_ID_PREFIX = 't';
+const CJK_MARKDOWN = cjkFriendlyToMarkdown();
 const FRONTMATTER_PRESETS: Array<'toml' | 'yaml'> = ['yaml', 'toml'];
 
 /** Workflow-local representation: fixed table markup surrounds ordinary prose cells. */
@@ -107,7 +112,7 @@ export class MarkdownTranslationInvariantError extends Error {
 
 function parseMarkdownOnce(markdown: string): Root {
 	return fromMarkdown(markdown, {
-		extensions: [frontmatter(FRONTMATTER_PRESETS), math(), gfm()],
+		extensions: [frontmatter(FRONTMATTER_PRESETS), math(), gfm(), cjkFriendlyExtension(), gfmStrikethroughCjkFriendly()],
 		mdastExtensions: [frontmatterFromMarkdown(FRONTMATTER_PRESETS), mathFromMarkdown(), ...gfmFromMarkdown()],
 	});
 }
@@ -267,7 +272,7 @@ function serializeStrong(node: Strong, parent: Parents | undefined, state: State
 	const previousMarker = state.options.strong;
 	state.options.strong = strongMarker(state);
 	try {
-		return defaultHandlers.strong(node, parent, state, info);
+		return CJK_MARKDOWN.handlers!.strong!(node, parent, state, info);
 	} finally {
 		state.options.strong = previousMarker;
 	}
@@ -276,7 +281,13 @@ serializeStrong.peek = (_node: Strong, _parent: Parents | undefined, state: Stat
 
 function serializeMarkdown(tree: Root): string {
 	return toMarkdown(tree, {
-		extensions: [frontmatterToMarkdown(FRONTMATTER_PRESETS), mathToMarkdown(), gfmToMarkdown()],
+		extensions: [
+			frontmatterToMarkdown(FRONTMATTER_PRESETS),
+			mathToMarkdown(),
+			gfmToMarkdown(),
+			CJK_MARKDOWN,
+			cjkFriendlyGfmStrikethroughToMarkdown(),
+		],
 		handlers: { strong: serializeStrong, htmlTable: serializeHtmlTable },
 	}).trimEnd();
 }
