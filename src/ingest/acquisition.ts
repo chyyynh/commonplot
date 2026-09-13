@@ -36,7 +36,7 @@ export type AcquiredResource = {
 	kindMetadata: ResourceKindMetadata;
 	fileType: string | null;
 	previewImageUrl: string | null;
-	subject: { url: string; identifiers: ResourceIdentifier[]; normalizedUrl: string } | null;
+	subjectUrl: string | null;
 };
 
 function nodeText(node: Nodes): string {

@@ -133,43 +133,29 @@ async function rehostResourceImage(images: ImagesBinding, sourceUrl: string, ref
 	}
 
 	const startedAt = performance.now();
-	let dimensions: ImageDimensions = NULL_IMAGE_DIMENSIONS;
-	let image: ImageMetadata | null = null;
-	let uploadError: unknown = failure('images_write_error');
+	let dimensions: ImageDimensions;
+	let image: ImageMetadata;
 	try {
 		const response = await fetchImageSource(sourceUrl);
 		if (!response.body) throw failure('images_write_error', 'missing_body');
 		const [infoBody, uploadBody] = response.body.tee();
 		const filename = new URL(sourceUrl).pathname.split('/').filter(Boolean).at(-1)?.slice(0, 180) || 'resource-image';
-		const [probedDimensions, upload] = await Promise.all([
+		const [info, upload] = await Promise.allSettled([
 			probeImageDimensions(images, infoBody, imageId, sourceUrl),
-			images.hosted
-				.upload(uploadBody, {
-					id: imageId,
-					filename,
-					metadata: { sourceUrl },
-					requireSignedURLs: false,
-				})
-				.then(
-					(uploaded) => ({ error: null, image: uploaded }),
-					(error: unknown) => ({
-						error: failure('images_write_error', error instanceof Error ? error.message : String(error)),
-						image: null,
-					}),
-				),
+			images.hosted.upload(uploadBody, { id: imageId, filename, metadata: { sourceUrl }, requireSignedURLs: false }),
 		]);
-		dimensions = probedDimensions;
-		image = upload.image;
-		uploadError = upload.error;
+		if (info.status === 'rejected') throw info.reason;
+		if (upload.status === 'rejected') {
+			throw failure('images_write_error', upload.reason instanceof Error ? upload.reason.message : String(upload.reason));
+		}
+		dimensions = info.value;
+		image = upload.value;
 	} catch (error) {
-		uploadError = error;
-	}
-	if (!image) {
 		const raced = await images.hosted
 			.image(imageId)
 			.details()
 			.catch(() => null);
-		if (!raced) throw uploadError;
+		if (!raced) throw error;
 		image = raced;
 		dimensions = await probeImageDimensions(images, images.hosted.image(image.id).bytes(), image.id, sourceUrl);
 	}

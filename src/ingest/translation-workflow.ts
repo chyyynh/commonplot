@@ -678,42 +678,30 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				return { status: 'skipped', resourceId };
 			}
 
-			const patch: MachineZhHantTranslationPatch = {};
-			const outcomes = await Promise.allSettled([
-				(async () => {
-					if (translationPlan.metadata) {
-						const translatedMetadata = await step.do(
+			const [metadata, content] = await Promise.allSettled([
+				translationPlan.metadata
+					? step.do(
 							'translate-zh-hant-title-summary-v3',
-							{
-								retries: { limit: 5, delay: translationRetryDelay },
-								timeout: '180 seconds',
-							},
+							{ retries: { limit: 5, delay: translationRetryDelay }, timeout: '180 seconds' },
 							() => translateResourceMetadata(resource, this.env),
-						);
-						Object.assign(patch, translatedMetadata);
-					}
-				})(),
-				(async () => {
-					if (translationPlan.content) {
-						try {
-							const translated = await translatePlannedContent(resource.content.trim(), this.env, resourceId, step, task);
-							if (translated) Object.assign(patch, translated);
-						} catch (error) {
-							console.error({
-								tag: 'RESOURCE_TRANSLATION',
-								event: 'content_translation_outcome',
-								outcome: 'failed',
-								reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
-								error: error instanceof Error ? error.message : String(error),
-								resource_id: resourceId,
-							});
-							throw error;
-						}
-					}
-				})(),
+						)
+					: undefined,
+				translationPlan.content ? translatePlannedContent(resource.content.trim(), this.env, resourceId, step, task) : undefined,
 			]);
-			const failure = outcomes.find((outcome) => outcome.status === 'rejected');
-			if (failure) throw failure.reason;
+			if (content.status === 'rejected') {
+				const error = content.reason;
+				console.error({
+					tag: 'RESOURCE_TRANSLATION',
+					event: 'content_translation_outcome',
+					outcome: 'failed',
+					reason: error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown',
+					error: error instanceof Error ? error.message : String(error),
+					resource_id: resourceId,
+				});
+			}
+			if (metadata.status === 'rejected') throw metadata.reason;
+			if (content.status === 'rejected') throw content.reason;
+			const patch: MachineZhHantTranslationPatch = { ...metadata.value, ...content.value };
 
 			if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) {
 				await task.report('empty', { stage: 'translating', status: 'skipped', resourceId });

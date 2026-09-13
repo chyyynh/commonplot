@@ -153,15 +153,8 @@ export function prepareResolvedResource(
 	if (publishedDate && Number.isNaN(publishedDate.getTime())) throw new TypeError('Resource publication date is invalid');
 	const today = new Date().toISOString().slice(0, 10);
 	if (publishedDate && publishedDate.toISOString().slice(0, 10) > today) publishedDate = new Date(today);
-	const subjectUrl = resource.subject ? resolveResourceUrl(resource.subject.url) : null;
-	if (resource.subject && !subjectUrl) throw new TypeError('Subject URL must be HTTP(S) without credentials');
-	const subject = resource.subject
-		? {
-				url: subjectUrl!.url,
-				identifiers: ResourceIdentifiersSchema.parse(resource.subject.identifiers),
-				normalizedUrl: subjectUrl!.normalizedUrl,
-			}
-		: null;
+	const subject = resolveResourceUrl(resource.subjectUrl);
+	if (resource.subjectUrl !== null && !subject) throw new TypeError('Subject URL must be HTTP(S) without credentials');
 	return {
 		kind: resource.kind,
 		resourcePlatform: resource.resourcePlatform,
@@ -170,7 +163,6 @@ export function prepareResolvedResource(
 		creators: media.creators,
 		fileType: resource.fileType ?? null,
 		identifiers,
-		keywords: [],
 		kindMetadata: media.kindMetadata,
 		normalizedUrl: resolvedUrl?.normalizedUrl ?? null,
 		ogImageHeight: media.ogImageHeight,
@@ -181,7 +173,6 @@ export function prepareResolvedResource(
 		sourceName,
 		subject,
 		summary: resource.summary ?? '',
-		tags: [],
 		title,
 		url: resolvedUrl?.url ?? null,
 		youtube: resource.youtube ?? null,
@@ -220,7 +211,7 @@ async function writeCanonicalResource(
 	`;
 	const values = sql`
 		${resource.kind}, ${resource.resourcePlatform}, ${resource.sourceName}, ${resource.url}, ${resource.normalizedUrl},
-		${resource.fileType}, ${resource.originalLang}, ${resource.publishedDate}, ${sql.param(resource.tags)}::text[],
+		${resource.fileType}, ${resource.originalLang}, ${resource.publishedDate}, ARRAY[]::text[],
 		${resource.ogImageUrl}, ${resource.ogImageWidth}, ${resource.ogImageHeight}, ${JSON.stringify(resource.creators)}::jsonb,
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
 		NOW(), NOW()
@@ -245,7 +236,7 @@ async function writeCanonicalResource(
 		), written_original AS (
 			INSERT INTO resource_translations (resource_id, lang, title, summary, content, keywords, source, updated_at)
 			SELECT id, ${resource.originalLang}, ${resource.title}, ${resource.summary}, ${resource.content},
-			       ${sql.param(resource.keywords)}::text[], 'original', NOW()
+			       ARRAY[]::text[], 'original', NOW()
 			FROM written_resource
 			WHERE true
 			ON CONFLICT (resource_id, lang) DO UPDATE SET

@@ -47,11 +47,6 @@ export type RelatedResourceSearchInput = {
 	limit: number;
 };
 
-type NormalizedSearchFilters = Omit<NonNullable<PublicResourceSearchInput['filters']>, 'publishedAfter'> & {
-	publishedAfter: Date | null;
-	excludeAll: boolean;
-};
-
 function aiSearchItemKey(resourceId: string): string {
 	return `${AI_SEARCH_ITEM_PREFIX}${resourceId}${AI_SEARCH_ITEM_SUFFIX}`;
 }
@@ -224,8 +219,9 @@ export async function syncCorpusItem(env: CoreEnv, resourceId: string, document:
 	}
 }
 
-function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSearchFilters {
-	const filters = input.filters ?? {};
+/** Null means an explicitly empty selection; undefined means unrestricted search. */
+function aiSearchFilters(input: PublicResourceSearchInput['filters']): VectorizeVectorMetadataFilter | null | undefined {
+	const filters = input ?? {};
 	const publishedAfter = filters.publishedAfter ?? null;
 	if (publishedAfter && (!(publishedAfter instanceof Date) || Number.isNaN(publishedAfter.getTime()))) {
 		throw new Error('Invalid publishedAfter');
@@ -238,25 +234,12 @@ function normalizeSearchFilters(input: PublicResourceSearchInput): NormalizedSea
 	if (resourcePlatforms?.some((value) => value !== null && (typeof value !== 'string' || !Object.hasOwn(RESOURCE_PLATFORMS, value)))) {
 		throw new Error('Invalid resource platforms');
 	}
-	return {
-		publishedAfter,
-		excludeAll: kinds?.length === 0 || resourcePlatforms?.length === 0,
-		kinds,
-		resourcePlatforms,
-	};
-}
-
-function aiSearchFilters(filters: NormalizedSearchFilters): VectorizeVectorMetadataFilter | undefined {
+	if (kinds?.length === 0 || resourcePlatforms?.length === 0) return null;
 	const metadata: VectorizeVectorMetadataFilter = {};
-	if (filters.kinds?.length && filters.kinds.length < SEARCHABLE_RESOURCE_KIND_COUNT) {
-		metadata.kind = { $in: filters.kinds };
-	}
-	if (filters.resourcePlatforms?.length) {
-		metadata.resource_platform = {
-			$in: filters.resourcePlatforms.map((platform) => platform ?? NULL_RESOURCE_PLATFORM_METADATA),
-		};
-	}
-	if (filters.publishedAfter) metadata.published_at = { $gte: filters.publishedAfter.toISOString() };
+	if (kinds?.length && kinds.length < SEARCHABLE_RESOURCE_KIND_COUNT) metadata.kind = { $in: kinds };
+	if (resourcePlatforms?.length)
+		metadata.resource_platform = { $in: resourcePlatforms.map((platform) => platform ?? NULL_RESOURCE_PLATFORM_METADATA) };
+	if (publishedAfter) metadata.published_at = { $gte: publishedAfter.toISOString() };
 	return Object.keys(metadata).length ? metadata : undefined;
 }
 
@@ -279,10 +262,9 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 	}
 	const query = input.query.trim();
 	if (!query) return [];
-	const filters = normalizeSearchFilters(input);
-	if (filters.excludeAll) return [];
+	const metadataFilters = aiSearchFilters(input.filters);
+	if (metadataFilters === null) return [];
 	const retrievalType = input.mode ?? 'hybrid';
-	const metadataFilters = aiSearchFilters(filters);
 	const response = await env.AI_SEARCH.search({
 		query,
 		ai_search_options: {

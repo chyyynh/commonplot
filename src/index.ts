@@ -100,7 +100,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 
 	/** Batch identity lookup only: acquisition stays durable and user saves remain app-owned. */
 	async resolveResourceUrls(urls: string[]) {
-		const parsed = z.array(ResourceUrlSchema).max(20).parse(urls);
+		const parsed = z.array(ResourceUrlSchema.max(2_048)).max(20).parse(urls);
 		if (!parsed.length) return [];
 		return findResourcesByUrls(
 			await connectCoreDb(this.env),

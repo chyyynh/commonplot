@@ -132,10 +132,7 @@ try {
 			content: `# Research paper\n\nAn original research paper.\n\n![Figure](${privateImage})`,
 			citations: { references: [{ key: 'r1', text: 'Cited paper.' }] },
 			creators: [],
-			subject:
-				scenario === 'subject-child'
-					? { url: 'https://arxiv.org/pdf/2507.12652v2?download=1', normalizedUrl: 'https://arxiv.org/abs/2507.12652', identifiers: [] }
-					: null,
+			subjectUrl: scenario === 'subject-child' ? 'https://arxiv.org/pdf/2507.12652v2?download=1' : null,
 			...(youtube
 				? {
 						kind: 'video',
@@ -240,7 +237,7 @@ try {
 			{},
 			{
 				APP: automatic ? new Proxy({}, { get: () => () => assert.fail('Automatic acquisition cannot depend on user progress') }) : app,
-				RESOURCE_PROCESSING_V2_WORKFLOW: { createBatch: async ([child]) => assert.equal(child.params.url, resource.subject.url) },
+				RESOURCE_PROCESSING_V2_WORKFLOW: { createBatch: async ([child]) => assert.equal(child.params.url, resource.subjectUrl) },
 				RESOURCE_SEARCH_SYNC_QUEUE: {
 					send: async () => {
 						if (scenario === 'index-failed') throw new Error('Index dispatch unavailable');

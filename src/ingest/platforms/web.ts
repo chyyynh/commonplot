@@ -113,7 +113,7 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 		creators: author ? [{ role: 'author', literal: author }] : [],
 		kindMetadata: { siteName },
 		previewImageUrl: normalizedResourceImageUrl(article.image, url),
-		subject: null,
+		subjectUrl: null,
 	} satisfies AcquiredResource;
 }
 
@@ -225,7 +225,7 @@ export async function stageWebAcquisition(
 	input: { paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string },
 ) {
 	const result = await step.do(
-		'acquire-web-v9',
+		'acquire-web-v10',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 		async () => {
 			const acquired = await acquireWebResource(env, input.url);

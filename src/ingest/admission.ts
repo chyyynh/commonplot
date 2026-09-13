@@ -19,7 +19,7 @@ export const ResourceDraftTargetSchema = z.strictObject({
 	paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
 	relation: ResourceDraftRelationSchema.optional(),
 	saveTarget: z.record(z.string(), z.json()).optional(),
-	url: ResourceUrlSchema,
+	url: ResourceUrlSchema.max(2_048),
 	sourceHints: z
 		.strictObject({
 			summary: z.string().max(20_000).optional(),

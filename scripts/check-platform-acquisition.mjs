@@ -13,7 +13,7 @@ registerHooks({
 });
 const { stageUrlAcquisition, withoutDuplicateResourceTitle } = await import('../src/ingest/acquisition.ts');
 const { stagePaperResolution } = await import('../src/ingest/platforms/paper.ts');
-const { resolveResourceUrl } = await import('../src/ingest/platforms/resource-url.ts');
+const { resolveResourceUrl, ResourceUrlSchema } = await import('../src/ingest/platforms/resource-url.ts');
 const { prepareResolvedResource } = await import('../src/ingest/resource-persistence.ts');
 const { selectCrossrefPaperCandidate, selectCrossrefReference } = await import('../src/ingest/crossref.ts');
 const { parseGrobidPdfHeaderTei } = await import('../src/ingest/grobid-tei.ts');
@@ -115,6 +115,7 @@ try {
 	]) {
 		const resolved = resolveResourceUrl(url);
 		assert.equal(resolved.url, url, 'Identity normalization must not rewrite the fetch URL');
+		assert.equal(ResourceUrlSchema.parse(url), url, 'URL validation must preserve the fetch URL');
 		assert.equal(resolved.normalizedUrl, normalizedUrl);
 		assert.equal(resolved.identifiers[0]?.scheme ?? null, scheme);
 		const repeated = resolveResourceUrl(normalizedUrl);
@@ -123,17 +124,19 @@ try {
 	}
 	for (const url of ['not a url', 'ftp://example.com/file', 'https://user:password@example.com']) {
 		assert.equal(resolveResourceUrl(url), null);
+		assert.equal(ResourceUrlSchema.safeParse(url).success, false);
+		assert.throws(() => prepareResolvedResource({ ...acquired.get('twitter'), ...summaryFields, subjectUrl: url }, []), /Subject URL/);
 	}
 	const hn = acquired.get('hackernews');
 	assert.equal(hn.title, 'Ask HN: A & B');
 	assert.match(hn.content, /First \*point\*/u);
 	assert.match(hn.content, /\[Discussion\]\(https:\/\/news.ycombinator.com\/item\?id=123\)/u);
 	assert.match(hn.content, /```\nconst n = 1;/u);
-	assert.equal(hn.subject.normalizedUrl, 'https://doi.org/10.1000/example');
+	assert.equal(hn.subjectUrl, 'https://doi.org/10.1000/example');
 	assert.equal(acquired.get('lesswrong').content, '**Original** body.');
 	assert.equal(acquired.get('twitter').content, 'Comment https://doi.org/10.1000/example');
-	assert.equal(acquired.get('twitter').subject.normalizedUrl, 'https://doi.org/10.1000/example');
-	const subjectUrl = 'https://arxiv.org/pdf/2507.12652v2?download=1';
+	assert.equal(acquired.get('twitter').subjectUrl, 'https://doi.org/10.1000/example');
+	const subjectUrl = `https://arxiv.org/pdf/2507.12652v2?download=1&signature=${'x'.repeat(2_048)}`;
 	responses.set('/twitter/tweets', {
 		tweets: [{ ...tweet, text: 'https://t.co/link', urls: [{ url: 'https://t.co/link', expanded_url: subjectUrl }] }],
 	});
@@ -142,6 +145,7 @@ try {
 	const linked = prepareResolvedResource({ ...linkOnly, ...summaryFields }, []);
 	assert.equal(linked.subject.url, subjectUrl);
 	assert.equal(linked.subject.normalizedUrl, 'https://arxiv.org/abs/2507.12652');
+	assert.deepEqual(linked.subject.identifiers, [{ scheme: 'arxiv', value: '2507.12652', preferred: true }]);
 	responses.set('/twitter/tweets', { tweets: [tweet] });
 	const video = acquired.get('youtube');
 	assert.equal(video.content, 'Transcript content');

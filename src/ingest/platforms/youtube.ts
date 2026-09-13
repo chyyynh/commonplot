@@ -270,14 +270,14 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 			...stats,
 		},
 		previewImageUrl: thumbnailUrl?.trim() || null,
-		subject: null,
+		subjectUrl: null,
 		youtube: { ...transcript, language: transcript.language ?? snippet.defaultAudioLanguage ?? null, chapters },
 	} satisfies AcquiredResource & { youtube: YouTubeTranscript };
 }
 
 export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, videoId: string) {
 	const contentStream = await step.do(
-		'acquire-youtube-v3',
+		'acquire-youtube-v4',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await scrapeYouTube(videoId, env.YOUTUBE_API_KEY)).body!,
 	);

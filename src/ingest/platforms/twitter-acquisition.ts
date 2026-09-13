@@ -2,7 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
 import type { AcquiredResource } from '../acquisition';
-import { resolveResourceUrl } from './resource-url';
+import { resolveResourceUrl, ResourceUrlSchema } from './resource-url';
 
 const TwitterAuthorSchema = z.object({
 	userName: z.string(),
@@ -391,7 +391,6 @@ async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string)
 	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
 	const { subjectUrl, ...content } = await resolveTweetContent(tweet, apiKey);
 
-	const subject = resolveResourceUrl(subjectUrl);
 	return {
 		...content,
 		kind: 'post',
@@ -404,13 +403,13 @@ async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string)
 		summary: null,
 		fileType: null,
 		previewImageUrl: null,
-		subject,
+		subjectUrl: ResourceUrlSchema.safeParse(subjectUrl).data ?? null,
 	} satisfies AcquiredResource;
 }
 
 export async function stageTwitterAcquisition(env: CoreEnv, step: WorkflowStep, input: TwitterAcquisitionInput) {
 	const contentStream = await step.do(
-		'acquire-twitter-v2',
+		'acquire-twitter-v3',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async (ctx) => {
 			console.info({

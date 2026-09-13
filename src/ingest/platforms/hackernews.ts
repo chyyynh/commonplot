@@ -9,7 +9,7 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import type { AcquiredResource } from '../acquisition';
 import { coreGatewayOptions, CORE_TEXT_MODEL } from '../ai-model';
-import { resolveResourceUrl } from './resource-url';
+import { ResourceUrlSchema } from './resource-url';
 
 const HN_ITEM_API = 'https://hacker-news.firebaseio.com/v0/item';
 const HN_TOP_LEVEL_THREAD_LIMIT = 10;
@@ -145,7 +145,6 @@ async function scrapeHackerNews({ itemId }: HackerNewsAcquisitionInput) {
 		totalComments: totalCommentCount,
 	});
 	const publishedDate = item.time ? new Date(item.time * 1000).toISOString() : null;
-	const subject = resolveResourceUrl(item.url);
 	const submitter = item.by?.trim();
 	return {
 		resource: {
@@ -163,7 +162,7 @@ async function scrapeHackerNews({ itemId }: HackerNewsAcquisitionInput) {
 			kindMetadata: { points: item.score ?? undefined, commentCount: totalCommentCount },
 			fileType: null,
 			previewImageUrl: null,
-			subject,
+			subjectUrl: ResourceUrlSchema.safeParse(item.url).data ?? null,
 		} satisfies AcquiredResource,
 		discussion: {
 			commentCount: sampledCommentCount,
@@ -177,7 +176,7 @@ async function scrapeHackerNews({ itemId }: HackerNewsAcquisitionInput) {
 
 export async function stageHackerNewsAcquisition(env: CoreEnv, step: WorkflowStep, input: HackerNewsAcquisitionInput) {
 	const contentStream = await step.do(
-		'acquire-hackernews-ranked-v4',
+		'acquire-hackernews-ranked-v5',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await scrapeHackerNews(input)).body!,
 	);

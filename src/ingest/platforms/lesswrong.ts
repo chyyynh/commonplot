@@ -77,13 +77,13 @@ async function scrapeLessWrong(postId: string) {
 		summary: null,
 		creators: author ? [{ role: 'author', literal: author }] : [],
 		kindMetadata: { siteName: 'LessWrong' },
-		subject: null,
+		subjectUrl: null,
 	} satisfies AcquiredResource;
 }
 
 export async function stageLessWrongAcquisition(step: WorkflowStep, postId: string) {
 	const contentStream = await step.do(
-		'acquire-lesswrong-v2',
+		'acquire-lesswrong-v3',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async () => Response.json(await scrapeLessWrong(postId)).body!,
 	);

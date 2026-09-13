@@ -122,7 +122,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 		resource: {
 			kind: 'file',
 			resourceIdentifiers: [],
-			subject: null,
+			subjectUrl: null,
 			previewImageUrl: null,
 			resourcePlatform: null,
 			fileType: PDF_MIME,
@@ -158,7 +158,7 @@ export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response
 		resource: {
 			kind: 'file',
 			resourceIdentifiers: identity ? paperIdentifiersFromIdentity(identity) : [],
-			subject: null,
+			subjectUrl: null,
 			previewImageUrl: null,
 			resourcePlatform: null,
 			fileType: PDF_MIME,
@@ -192,7 +192,7 @@ export async function stageStoredPdfAcquisition(
 	);
 	const [contentStream, grobidHeader] = await Promise.all([
 		step.do(
-			'acquire-stored-pdf-v10',
+			'acquire-stored-pdf-v11',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 			async () => Response.json(await acquireStoredPdf(env, resource, target.resourceId)).body!,
 		),

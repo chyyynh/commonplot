@@ -70,7 +70,7 @@ export function resolveResourceUrl(value: string | null | undefined): ResolvedRe
 	return { url, normalizedUrl: parsed.toString(), resourcePlatform: null, identifiers: [] };
 }
 
-export const ResourceUrlSchema = z
-	.url({ normalize: true, protocol: /^https?$/ })
-	.max(2_048)
-	.refine((value) => resolveResourceUrl(value) !== null, 'URL credentials are not allowed');
+export const ResourceUrlSchema = z.url({ normalize: true, protocol: /^https?$/ }).refine((value) => {
+	const url = URL.parse(value);
+	return !!url && !url.username && !url.password;
+}, 'URL credentials are not allowed');

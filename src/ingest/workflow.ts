@@ -88,7 +88,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						resourcePlatform: null,
 						resourceIdentifiers: [],
 						url: null,
-						subject: null,
+						subjectUrl: null,
 					},
 					hostedImages,
 				);
@@ -149,7 +149,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				await step.do('complete-resource-save-v2', STORAGE_STEP, () => this.env.APP.completeResourceSave(persistedResourceId, saveTarget));
 			publishedResourceId = persistedResourceId;
 
-			const subject = resource.subject;
+			const subjectUrl = resource.subjectUrl;
 			// Let independent background work and handoffs finish before reporting failures.
 			const [ready, references, highlights, ...followups] = await Promise.allSettled([
 				task.report('ready', {
@@ -188,14 +188,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				...translationTargets.map(({ stepName, resourceId, translationRevision, forceRunKey }) =>
 					step.do(stepName, STORAGE_STEP, () => enqueueResourceTranslation(this.env, resourceId, translationRevision, forceRunKey, task)),
 				),
-				subject && persistence.originalWritten && !subjectAttached
+				subjectUrl && persistence.originalWritten && !subjectAttached
 					? step.do('enqueue-resolved-subject-child-v2', STORAGE_STEP, async () => {
 							const subjectTarget = ResourceDraftTargetSchema.parse({
 								kind: 'draft',
 								relation: { kind: 'subject', parentResourceId: persistedResourceId, parentAcquisitionRevision: acquisitionRevision },
 								// Carrier-resolved hints only; the subject page still wins when it states its own date.
 								...(resource.publishedDate ? { sourceHints: { publishedDate: resource.publishedDate } } : {}),
-								url: subject.url,
+								url: subjectUrl,
 							});
 							// Separate tracked and automatic executions so neither inherits the other's progress ledger.
 							const prefix = task.required ? 'subject-draft-v4' : 'subject-draft-auto-v1';
