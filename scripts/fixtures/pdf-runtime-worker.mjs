@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import { NonRetryableError } from 'cloudflare:workflows';
 import { planMarkdownTranslation, compileMarkdownTranslationArtifact } from '../../src/ingest/markdown-translation.ts';
 import {
 	parsePublicPdfResponse,
@@ -91,11 +92,13 @@ export default {
 
 		if (phase === 'guards') {
 			const errors = {};
+			const retryable = {};
 			const rejected = async (name, run) => {
 				try {
 					await run();
 				} catch (error) {
 					errors[name] = error.message;
+					retryable[name] = !(error instanceof NonRetryableError);
 				}
 			};
 			const publicSource = await env.R2.head(publicKey);
@@ -117,7 +120,7 @@ export default {
 			const artifact = await env.R2.head(structuredPdfStorageKey(privateKey));
 			await env.R2.put(structuredPdfStorageKey(privateKey), '{broken', { customMetadata: artifact.customMetadata });
 			const corruptCache = await readStructuredPdfArtifact(env, privateKey, inputContentHash);
-			for (const variant of ['malformed', 'deleted']) {
+			for (const variant of ['malformed', 'deleted', 'permanent']) {
 				const key = `users/${variant}/source.pdf`;
 				await env.R2.put(key, pdf);
 				const guarded = {
@@ -130,7 +133,11 @@ export default {
 								return new Response(
 									(variant === 'malformed'
 										? [{ id: '../../unrelated', pngBase64: png.toString('base64') }]
-										: requested.map(({ id }) => ({ id, pngBase64: png.toString('base64') }))
+										: requested.map(({ id }) =>
+												variant === 'permanent'
+													? { id, error: 'Invalid PDF page', retryable: false }
+													: { id, pngBase64: png.toString('base64') },
+											)
 									)
 										.map((row) => JSON.stringify(row))
 										.join('\n'),
@@ -151,6 +158,7 @@ export default {
 			}
 			return Response.json({
 				errors,
+				retryable,
 				unpublished,
 				publication,
 				mismatchedCache,

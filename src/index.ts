@@ -17,9 +17,8 @@ import {
 } from './search-index';
 import { connectCoreDb } from './shared/db';
 
-export { GrobidContainer } from './ingest/grobid-container';
+export { GrobidContainer, ZoteroSdtContainer } from './ingest/pdf-containers';
 export { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
-export { ZoteroSdtContainer } from './ingest/zotero-sdt-container';
 export { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
 export { ResourceProcessingV2Workflow } from './ingest/workflow';
 

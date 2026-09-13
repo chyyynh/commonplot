@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
+import { NonRetryableError } from 'cloudflare:workflows';
 import { limitByteStream, readBoundedResponseText } from '../shared/response.ts';
 import { MAX_PDF_BYTES } from './platforms/pdf-policy.ts';
 import {
@@ -18,8 +19,6 @@ const ZOTERO_SDT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 const CROP_BATCH_SIZE = 8;
 const MAX_CROP_PNG_BYTES = 8 * 1024 * 1024;
 const MAX_CROP_ROW_BYTES = Math.ceil(MAX_CROP_PNG_BYTES / 3) * 4 + 4_096;
-
-export class PermanentPdfArtifactError extends Error {}
 
 export function parseStructuredPdfFailure(status: number, body: string): { message: string; totalPages: number | null } {
 	let message = `Zotero SDT parse failed with ${status}`;
@@ -41,7 +40,7 @@ export function structuredPdfStorageKey(pdfStorageKey: string): string {
 function cropFailure(error: unknown) {
 	return {
 		reason: (error instanceof Error ? error.message : String(error)).slice(0, MAX_ERROR_BODY_BYTES),
-		retryable: !(error instanceof PermanentPdfArtifactError),
+		retryable: !(error instanceof NonRetryableError),
 	};
 }
 
@@ -58,7 +57,7 @@ async function putPdfDerivative(
 	// if deletion starts after this check, its family scan sees our existing object.
 	if (!(await env.R2.head(pdfStorageKey))) {
 		await env.R2.delete(key);
-		throw new PermanentPdfArtifactError('PDF source was removed during processing');
+		throw new NonRetryableError('PDF source was removed during processing');
 	}
 }
 
@@ -155,11 +154,11 @@ export async function ensureStructuredPdfSourceCrops(
 		const batch = missing.slice(offset, offset + CROP_BATCH_SIZE);
 		try {
 			const pdf = await env.R2.get(input.pdfStorageKey);
-			if (!pdf) throw new PermanentPdfArtifactError('PDF source object is missing');
+			if (!pdf) throw new NonRetryableError('PDF source object is missing');
 			const response = await env.ZOTERO_SDT.getByName(ZOTERO_SDT_CONTAINER_NAME).renderPdfAreas(pdf.body, pdf.size, batch);
 			if (!response.ok) {
 				const body = await readBoundedResponseText(response, MAX_ERROR_BODY_BYTES, 'Zotero source crop error');
-				const ErrorType = [400, 413, 415, 422].includes(response.status) ? PermanentPdfArtifactError : Error;
+				const ErrorType = [400, 413, 415, 422].includes(response.status) ? NonRetryableError : Error;
 				throw new ErrorType(`Zotero source crop failed with ${response.status}: ${body}`);
 			}
 			const expected = new Set(batch.map(({ id }) => id));
@@ -171,7 +170,7 @@ export async function ensureStructuredPdfSourceCrops(
 				const id = value.id;
 				try {
 					if (typeof row.error === 'string') {
-						const ErrorType = row.retryable === false ? PermanentPdfArtifactError : Error;
+						const ErrorType = row.retryable === false ? NonRetryableError : Error;
 						throw new ErrorType(row.error.slice(0, MAX_ERROR_BODY_BYTES));
 					}
 					await putPdfDerivative(env, input.pdfStorageKey, `${prefix}${id}.png`, cropPng(row), {
@@ -200,7 +199,7 @@ export async function ensureStructuredPdfSourceCrops(
 		// Workflow retries reuse the parsed document and all successful immutable
 		// crops. A partial batch must never become a successful acquisition checkpoint.
 		const retryable = [...plannedIds].some((id) => !readyCropIds.has(id) && failed.get(id)?.retryable !== false);
-		const ErrorType = retryable ? Error : PermanentPdfArtifactError;
+		const ErrorType = retryable ? Error : NonRetryableError;
 		throw new ErrorType(`Structured PDF crops incomplete: ${readyCropIds.size}/${plannedIds.size}; inspect missing crops in the manifest`);
 	}
 }
@@ -291,10 +290,10 @@ export async function parseStoredPdfRepresentation(
 	let document = await readStructuredPdfArtifact(env, input.pdfStorageKey, input.inputContentHash);
 	if (!document) {
 		const object = await env.R2.get(input.pdfStorageKey);
-		if (!object) throw new PermanentPdfArtifactError('PDF source object is missing');
+		if (!object) throw new NonRetryableError('PDF source object is missing');
 		if (object.size < 1 || object.size > MAX_PDF_BYTES) {
 			await object.body.cancel('PDF source size is invalid');
-			throw new PermanentPdfArtifactError(`PDF source object must contain 1-${MAX_PDF_BYTES} bytes`);
+			throw new NonRetryableError(`PDF source object must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
 		const attempt = await parsePdfArtifactStream(env, object.body, object.size, input.sourceLabel);
 		if (!('schemaVersion' in attempt)) return attempt;
@@ -330,7 +329,7 @@ export async function parsePublicPdfResponse(env: CoreEnv, response: Response, s
 	const source = URL.parse(sourceUrl);
 	if (!source || !['https:', 'http:'].includes(source.protocol) || source.username || source.password) {
 		await response.body?.cancel('Invalid public PDF source');
-		throw new PermanentPdfArtifactError('Invalid public PDF source URL');
+		throw new NonRetryableError('Invalid public PDF source URL');
 	}
 	if (!response.ok || !response.body) {
 		await response.body?.cancel('Public PDF response is not usable');
@@ -339,15 +338,15 @@ export async function parsePublicPdfResponse(env: CoreEnv, response: Response, s
 	const declaredLength = Number(response.headers.get('content-length'));
 	if (Number.isFinite(declaredLength) && declaredLength > MAX_PDF_BYTES) {
 		await response.body.cancel('Public PDF is too large');
-		throw new PermanentPdfArtifactError(`PDF exceeded ${MAX_PDF_BYTES} bytes`);
+		throw new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`);
 	}
 	// Bounded at 25 MiB; release this buffer before parsing the larger SDT response.
 	const sourceHash = createHash('sha256').update(source.toString()).digest('hex');
 	const stored = await (async () => {
 		const bytes = await new Response(
-			limitByteStream(response.body!, MAX_PDF_BYTES, () => new PermanentPdfArtifactError(`PDF exceeded ${MAX_PDF_BYTES} bytes`)),
+			limitByteStream(response.body!, MAX_PDF_BYTES, () => new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`)),
 		).arrayBuffer();
-		if (!bytes.byteLength) throw new PermanentPdfArtifactError('Fetched PDF response body is empty');
+		if (!bytes.byteLength) throw new NonRetryableError('Fetched PDF response body is empty');
 		const inputContentHash = createHash('sha256').update(new Uint8Array(bytes)).digest('hex');
 		const pdfStorageKey = `public-pdf/${sourceHash}/${inputContentHash}/source.pdf`;
 		await env.R2.put(pdfStorageKey, bytes, {

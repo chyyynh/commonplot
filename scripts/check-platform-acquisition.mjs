@@ -17,7 +17,8 @@ const { resolveResourceUrl } = await import('../src/ingest/platforms/resource-ur
 const { prepareResolvedResource } = await import('../src/ingest/resource-persistence.ts');
 const { selectCrossrefPaperCandidate, selectCrossrefReference } = await import('../src/ingest/crossref.ts');
 const { parseGrobidPdfHeaderTei } = await import('../src/ingest/grobid-tei.ts');
-const { parseTwitterAdvancedSearchPage, parseTwitterTweetsResponse } = await import('../src/ingest/platforms/twitter-data.ts');
+const { parseTwitterAdvancedSearchPage } = await import('../src/ingest/platforms/twitter.ts');
+const { parseTwitterTweetsResponse } = await import('../src/ingest/platforms/twitter-acquisition.ts');
 
 assert.equal(withoutDuplicateResourceTitle('# Only title', 'Only title'), '# Only title');
 assert.equal(withoutDuplicateResourceTitle('## **Actual** title\n\nBody.', 'Actual title'), 'Body.');

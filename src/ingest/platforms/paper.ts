@@ -15,7 +15,7 @@ import {
 } from '../../shared/paper-identity';
 import type { AcquiredResource } from '../acquisition';
 import { resolveCrossrefPaper, resolveCrossrefPaperCandidate } from '../crossref';
-import { parsePublicPdfResponse, PermanentPdfArtifactError } from '../zotero-sdt-service.ts';
+import { parsePublicPdfResponse } from '../zotero-sdt-service.ts';
 import { PDF_MIME } from './pdf-policy';
 
 const PAPER_METADATA_STEP = { retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
@@ -204,10 +204,7 @@ async function stageOpenAlexPdfContent(env: CoreEnv, step: WorkflowStep, input: 
 					await response.body?.cancel();
 					throw new Error(`OpenAlex content PDF request failed with HTTP ${response.status}`);
 				}
-				const { markdown, citations } = await parsePublicPdfResponse(env, response, input.contentPdfUrl).catch((error) => {
-					if (error instanceof PermanentPdfArtifactError) throw new NonRetryableError(error.message);
-					throw error;
-				});
+				const { markdown, citations } = await parsePublicPdfResponse(env, response, input.contentPdfUrl);
 				return Response.json({ markdown, citations }).body!;
 			},
 		);

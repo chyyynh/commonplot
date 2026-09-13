@@ -1,10 +1,57 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { z } from 'zod';
 import { connectCoreDb } from '../../shared/db';
 import { enqueueSourceDrafts, type SourceResourceDraft } from '../admission';
-import { parseTwitterAdvancedSearchPage, type DiscoveredTweet } from './twitter-data';
 
-// Twitter Monitor
+const DiscoveredTweetIdentitySchema = z.object({
+	id: z.string().trim().regex(/^\d+$/),
+	createdAt: z.string().min(1),
+	lang: z.string().max(35).optional().catch(undefined),
+});
+const DiscoveredTweetSchema = DiscoveredTweetIdentitySchema.extend({
+	author: z.object({ userName: z.string() }).optional(),
+	retweetedBy: z.object({ authorUserName: z.string() }).optional(),
+	retweeted_tweet: DiscoveredTweetIdentitySchema.nullish().catch(null),
+});
+type DiscoveredTweet = z.infer<typeof DiscoveredTweetSchema>;
+
+const TwitterAdvancedSearchEnvelopeSchema = z.object({
+	tweets: z.array(z.unknown()),
+	has_next_page: z.boolean(),
+	next_cursor: z.string().nullish(),
+	status: z.string().optional(),
+	message: z.string().optional(),
+	msg: z.string().optional(),
+});
+
+export function parseTwitterAdvancedSearchPage(value: unknown) {
+	const response = TwitterAdvancedSearchEnvelopeSchema.parse(value);
+	if (response.status?.toLowerCase() === 'error') {
+		throw new Error(`Twitter Advanced Search failed: ${(response.message ?? response.msg)?.trim() || 'unknown provider error'}`);
+	}
+	const tweets: DiscoveredTweet[] = [];
+	const invalidItems: Array<{ index: number; message: string }> = [];
+	for (const [index, item] of response.tweets.entries()) {
+		const parsed = DiscoveredTweetSchema.safeParse(item);
+		if (parsed.success) {
+			tweets.push(parsed.data);
+			continue;
+		}
+		const issue = parsed.error.issues[0];
+		invalidItems.push({
+			index,
+			message: issue ? `${issue.path.join('.') || 'tweet'}: ${issue.message}` : 'Tweet is invalid',
+		});
+	}
+	return {
+		tweets,
+		rawTweetCount: response.tweets.length,
+		invalidItems,
+		hasNextPage: response.has_next_page,
+		nextCursor: response.next_cursor?.trim() || null,
+	};
+}
 
 const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
 

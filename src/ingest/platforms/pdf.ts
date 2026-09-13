@@ -8,7 +8,7 @@ import { ResourceCreatorsSchema } from '../../shared/resource';
 import type { AcquiredResource } from '../acquisition';
 import type { GrobidPdfHeader } from '../grobid-tei';
 import { ResourceLanguageSchema } from '../resource-language';
-import { parsePublicPdfResponse, parseStoredPdfRepresentation, PermanentPdfArtifactError } from '../zotero-sdt-service.ts';
+import { parsePublicPdfResponse, parseStoredPdfRepresentation } from '../zotero-sdt-service.ts';
 import { stagePaperResolution } from './paper';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
 import { PDF_MIME, type LocalPdfSummary, type PaidPdfFallbackGrant } from './pdf-policy';
@@ -20,15 +20,6 @@ type PdfAcquisition = Readonly<{
 	resource: AcquiredResource & { kind: 'file'; resourcePlatform: null };
 	parse: LocalPdfSummary;
 }>;
-
-async function localPdfAttempt<T>(attempt: Promise<T>): Promise<T> {
-	try {
-		return await attempt;
-	} catch (error) {
-		if (error instanceof PermanentPdfArtifactError) throw new NonRetryableError(error.message);
-		throw error;
-	}
-}
 
 /** Finish a direct public PDF after the retrying fetch/local-parse step has ended. */
 export async function completeFetchedPdfAcquisition(
@@ -122,13 +113,11 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 type StoredPdfInput = Awaited<ReturnType<typeof loadStoredPdfInput>>;
 
 async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resourceId: string): Promise<PdfAcquisition> {
-	const parsed = await localPdfAttempt(
-		parseStoredPdfRepresentation(env, {
-			pdfStorageKey: resource.storageKey,
-			inputContentHash: resource.contentHash,
-			sourceLabel: `Stored PDF ${resourceId}`,
-		}),
-	);
+	const parsed = await parseStoredPdfRepresentation(env, {
+		pdfStorageKey: resource.storageKey,
+		inputContentHash: resource.contentHash,
+		sourceLabel: `Stored PDF ${resourceId}`,
+	});
 	return {
 		resource: {
 			kind: 'file',
@@ -153,7 +142,7 @@ async function acquireStoredPdf(env: CoreEnv, resource: StoredPdfInput, resource
 }
 
 export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response, finalUrl: string): Promise<PdfAcquisition> {
-	const parsed = await localPdfAttempt(parsePublicPdfResponse(env, response, finalUrl));
+	const parsed = await parsePublicPdfResponse(env, response, finalUrl);
 	const identity = paperIdentityFromText(parsed.paperIdentifierText);
 	const url = new URL(finalUrl);
 	let fileName = url.pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';

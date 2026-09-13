@@ -82,6 +82,10 @@ try {
 	assert.equal(guards.corruptCache, null);
 	assert.match(guards.errors.malformed, /crops incomplete/);
 	assert.ok(guards.errors.deleted);
+	assert.match(guards.errors.permanent, /crops incomplete/);
+	assert.equal(guards.retryable.malformed, true);
+	assert.equal(guards.retryable.deleted, false);
+	assert.equal(guards.retryable.permanent, false);
 	assert.equal(guards.deletedObjects, 0, 'Late renderer output cannot recreate a deleted owned source');
 	assert.equal(guards.unrelated, false);
 	console.info(
