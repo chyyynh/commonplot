@@ -489,6 +489,7 @@ try {
 							return await args.at(-1)({ attempt });
 						} catch (error) {
 							if (!['rate-limited', 'format-recovery'].includes(scenario) || attempt > args[0].retries.limit) throw error;
+							assert.equal(args[0].retries.backoff, 'constant', 'Workflow backoff must not multiply the dynamic retry delay');
 							retryDelays.push(args[0].retries.delay({ ctx: { attempt }, error }));
 						}
 					}

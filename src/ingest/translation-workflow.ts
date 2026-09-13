@@ -92,6 +92,7 @@ const MARKDOWN_TRANSLATION_CONCURRENCY = 15;
 const AI_RATE_LIMIT_ERROR = /\b(?:3021|3040|429)\b|rate limit|too many requests|capacity temporarily exceeded/iu;
 
 function translationRetryDelay({ ctx, error }: WorkflowDynamicDelayContext): number {
+	// Delay already scales with attempt; use constant Workflow backoff to avoid multiplying it again.
 	// The provider's RPM window is one minute. Short exponential retries all land inside the same exhausted window,
 	// especially when a source cron starts several translations together. Waiting durably costs no active Worker time.
 	if (AI_RATE_LIMIT_ERROR.test(error.message)) return ctx.attempt * 60_000;
@@ -357,7 +358,7 @@ async function translateDurableBatch(
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	const result = await step.do(
 		`translate-zh-hant-markdown-${batch.id}-v15`,
-		{ retries: { limit: 3, delay: translationRetryDelay }, timeout: '300 seconds' },
+		{ retries: { limit: 3, delay: translationRetryDelay, backoff: 'constant' }, timeout: '300 seconds' },
 		async () => {
 			try {
 				return { ok: true as const, translations: await translateMarkdownBatchToZhHant(batch, env, resourceId) };
@@ -679,7 +680,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				translationPlan.metadata
 					? step.do(
 							'translate-zh-hant-title-summary-v3',
-							{ retries: { limit: 5, delay: translationRetryDelay }, timeout: '180 seconds' },
+							{ retries: { limit: 5, delay: translationRetryDelay, backoff: 'constant' }, timeout: '180 seconds' },
 							() => translateResourceMetadata(resource, this.env),
 						)
 					: undefined,
