@@ -3,7 +3,7 @@ import { fromHtml } from 'hast-util-from-html';
 import { fromMarkdown as parseMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
-import { withoutPrivatePdfImages, withoutDuplicatePdfTitle } from '../src/ingest/pdf-markdown.ts';
+import { withoutPrivatePdfImages } from '../src/ingest/pdf-markdown.ts';
 import { normalizeStructuredPdf, parseStructuredPdfDocumentJson, structuredPdfVisualPlan } from '../src/ingest/zotero-sdt.ts';
 
 const fromMarkdown = (source, options = { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] }) => parseMarkdown(source, options);
@@ -73,7 +73,8 @@ const document = {
 };
 
 const parsed = parseStructuredPdfDocumentJson(JSON.stringify(document));
-const normalized = normalizeStructuredPdf(parsed);
+const cropUrlPrefix = `/api/media/asset/public-pdf-crops/example-source/${'b'.repeat(64)}`;
+const normalized = normalizeStructuredPdf(parsed, { cropUrlPrefix });
 
 const noteDocument = {
 	...document,
@@ -93,7 +94,7 @@ const noteDocument = {
 		{ type: 'note', content: [text('An unlinked table note.')] },
 	],
 };
-const noted = normalizeStructuredPdf(noteDocument);
+const noted = normalizeStructuredPdf(noteDocument, { cropUrlPrefix });
 assert.match(noted.markdown, /A claim\[\^sdt-note-1\] and again\[\^sdt-note-1\]/u);
 assert.match(noted.markdown, /\[\^sdt-note-1\]: The qualifying note\./u);
 assert.match(noted.markdown, /An unlinked table note\./u);
@@ -109,13 +110,9 @@ const frontMatterDocument = {
 		{ type: 'paragraph', content: [text('The body.')] },
 	],
 };
-const frontMatterMarkdown = normalizeStructuredPdf(frontMatterDocument).markdown;
+const frontMatterMarkdown = normalizeStructuredPdf(frontMatterDocument, { cropUrlPrefix }).markdown;
 assert.doesNotMatch(frontMatterMarkdown, /^## \[Alex Example\]/mu);
 assert.match(frontMatterMarkdown, /^## Introduction/mu);
-assert.doesNotMatch(withoutDuplicatePdfTitle(frontMatterMarkdown, 'A useful paper'), /^## A useful paper/mu);
-assert.equal(withoutDuplicatePdfTitle(frontMatterMarkdown, 'Different title'), frontMatterMarkdown);
-assert.equal(withoutDuplicatePdfTitle('# Only title', 'Only title'), '# Only title');
-assert.equal(withoutDuplicatePdfTitle('## **Actual** title\n\nBody.', 'Actual title'), 'Body.');
 
 assert.equal(normalized.references.length, 1);
 assert.deepEqual(normalized.references[0], {
@@ -189,11 +186,7 @@ const narrowFigure = visualPlan.crops.find(({ figureId }) => figureId === 'Figur
 assert.ok(narrowFigure.rect[2] < 318, 'single-column crop cannot include adjacent prose');
 assert.ok(narrowFigure.rect[3] < 723, 'excluded header remains outside the image');
 assert.ok(visualPlan.crops.find(({ figureId }) => figureId === 'Figure 1').rect[3] < 560, 'author metadata remains outside the image');
-const visualReadyCrops = visualPlan.crops.map((crop) => ({
-	...crop,
-	url: `/api/media/asset/public-pdf-crops/example-source/${'b'.repeat(64)}/${crop.id}.png`,
-}));
-const visualReady = normalizeStructuredPdf(visualDocument, { visualPlan, readySourceCrops: visualReadyCrops });
+const visualReady = normalizeStructuredPdf(visualDocument, { visualPlan, cropUrlPrefix });
 assert.match(visualReady.markdown, /alice\\?@example\.edu/u);
 assert.match(visualReady.markdown, /bob\\?@example\.edu/u);
 assert.match(visualReady.markdown, /Unrelated right-column prose/u);
@@ -202,13 +195,6 @@ assert.doesNotMatch(visualReady.markdown, /12345 Cocoa Baseline Steerability/u);
 assert.match(visualReady.markdown, /\/public-pdf-crops\/example-source\/b{64}\//u);
 assert.equal(visualReady.parse.visual.inferred, 3);
 assert.ok(visualReady.parse.fallbackReasons.includes('caption-region-inferred'));
-const chartUnavailable = normalizeStructuredPdf(visualDocument, {
-	visualPlan,
-	readySourceCrops: visualReadyCrops.filter(({ figureId }) => figureId !== 'Figure 9'),
-});
-assert.match(chartUnavailable.markdown, /12345 Cocoa Baseline Steerability/u);
-assert.ok(chartUnavailable.parse.visual.missing.some(({ figureId, reason }) => figureId === 'Figure 9' && reason === 'crop-not-ready'));
-assert.ok(chartUnavailable.parse.fallbackReasons.includes('incomplete-visuals'));
 const obstructedDocument = {
 	...visualDocument,
 	content: [...visualDocument.content, anchored('paragraph', 'Prose crossing the candidate region.', 1, [54, 425, 294, 490])],

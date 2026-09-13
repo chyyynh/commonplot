@@ -22,10 +22,6 @@ const TwitterMediaEntitySchema = z.object({
 		.optional(),
 });
 
-const RetweetedByDataSchema = z.object({
-	authorUserName: z.string(),
-});
-
 const TweetSchema = z.object({
 	id: z.string().optional(),
 	url: z.string().min(1),
@@ -33,20 +29,27 @@ const TweetSchema = z.object({
 	author: TwitterAuthorSchema.optional(),
 	text: z.string(),
 	extendedEntities: z.object({ media: z.array(TwitterMediaEntitySchema).optional() }).optional(),
-	hashTags: z.array(z.string().max(500)).max(100).optional(),
 	urls: z.array(TwitterUrlEntitySchema).optional(),
 	entities: z.object({ urls: z.array(TwitterUrlEntitySchema).optional() }).optional(),
 	lang: z.string().max(35).optional(),
 	get quoted_tweet(): z.ZodCatch<z.ZodOptional<z.ZodNullable<typeof TweetSchema>>> {
 		return TweetSchema.nullish().catch(null);
 	},
-	get retweeted_tweet(): z.ZodCatch<z.ZodOptional<z.ZodNullable<typeof TweetSchema>>> {
-		return TweetSchema.nullish().catch(null);
-	},
-	retweetedBy: RetweetedByDataSchema.optional(),
 });
 
 export type Tweet = z.infer<typeof TweetSchema>;
+
+const DiscoveredTweetIdentitySchema = z.object({
+	id: z.string().trim().regex(/^\d+$/),
+	createdAt: z.string().min(1),
+	lang: z.string().max(35).optional().catch(undefined),
+});
+const DiscoveredTweetSchema = DiscoveredTweetIdentitySchema.extend({
+	author: z.object({ userName: z.string() }).optional(),
+	retweetedBy: z.object({ authorUserName: z.string() }).optional(),
+	retweeted_tweet: DiscoveredTweetIdentitySchema.nullish().catch(null),
+});
+export type DiscoveredTweet = z.infer<typeof DiscoveredTweetSchema>;
 
 const TwitterTweetsResponseSchema = z.object({
 	tweets: z.array(TweetSchema),
@@ -207,10 +210,10 @@ export function parseTwitterAdvancedSearchPage(value: unknown) {
 	const response = TwitterAdvancedSearchEnvelopeSchema.parse(value);
 	const error = semanticTwitterError(response.status, response.message ?? response.msg);
 	if (error) throw new Error(`Twitter Advanced Search failed: ${error}`);
-	const tweets: Tweet[] = [];
+	const tweets: DiscoveredTweet[] = [];
 	const invalidItems: Array<{ index: number; message: string }> = [];
 	for (const [index, item] of response.tweets.entries()) {
-		const parsed = TweetSchema.safeParse(item);
+		const parsed = DiscoveredTweetSchema.safeParse(item);
 		if (parsed.success) {
 			tweets.push(parsed.data);
 			continue;

@@ -306,7 +306,7 @@ export async function parseStoredPdfRepresentation(
 	const cropUrlPrefix = input.cropUrlPrefix ?? '/api/media/asset/pdf-crops';
 	const normalized = normalizeStructuredPdf(document, {
 		visualPlan,
-		readySourceCrops: crops.map(({ id }) => ({ id, url: `${cropUrlPrefix}/${input.inputContentHash}/${id}.png` })),
+		cropUrlPrefix: `${cropUrlPrefix}/${input.inputContentHash}`,
 	});
 	// Stage the complete body once. It becomes readable only after every planned
 	// crop is stored and its quality is committed in the same completion manifest.

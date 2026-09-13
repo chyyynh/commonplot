@@ -62,6 +62,17 @@ The quoted price is ($57) under [the terms](https://example.com/price), but late
 [docs]: https://example.com/docs "Documentation title"
 `;
 
+const referencePlan = planMarkdownTranslation(
+	'## Introduction\n\nRead [the report][docs], [shortcut] and ![chart][image].\n\n> [docs]: https://example.com/report "Report"\n\n[image]: https://example.com/chart.png\n\n[shortcut]: https://example.com/shortcut',
+);
+const referenceArtifact = compileMarkdownTranslationArtifact(
+	referencePlan,
+	referencePlan.segments.map((segment) => targetFromSource(segment, (text) => `譯文 ${text}`)),
+);
+assert.equal(referenceArtifact.alignment.blocks[0].type, 'heading', 'The first body heading belongs in bilingual alignment');
+assert.match(referenceArtifact.alignment.blocks[1].sourceMarkdown, /\[docs\]: https:\/\/example.com\/report/u);
+assert.match(referenceArtifact.alignment.blocks[1].sourceMarkdown, /\[image\]: https:\/\/example.com\/chart.png/u);
+
 const plan = planMarkdownTranslation(markdownFixture, { maxBatchCharacters: 900, maxBatchSegments: 4 });
 const identity = plan.segments.map((segment) => targetFromSource(segment));
 assert.equal(compileMarkdownTranslation(plan, identity), plan.sourceMarkdown);
@@ -329,6 +340,7 @@ try {
 	for (const scenario of [
 		'app-unavailable',
 		'index-unavailable',
+		'progress-unavailable',
 		'complete',
 		'parallel',
 		'parallel-failure',
@@ -401,7 +413,11 @@ try {
 						assert.equal(metadataActive, false);
 					}
 					appCalls.push({ name, input });
-					if (scenario === 'app-unavailable') throw new Error('APP unavailable');
+					if (
+						scenario === 'app-unavailable' ||
+						(scenario === 'progress-unavailable' && name === 'reportResourceProgress' && input.status === 'complete')
+					)
+						throw new Error('APP unavailable');
 					return true;
 				},
 			]),
@@ -495,7 +511,9 @@ try {
 			assert.equal(effects.includes('persisted'), false, 'a failed batch cannot publish a partial translation');
 			assert.equal(peak, 15);
 		} else {
-			assert.deepEqual(await result, { status: 'complete', resourceId });
+			if (['index-unavailable', 'progress-unavailable'].includes(scenario)) await assert.rejects(result);
+			else assert.deepEqual(await result, { status: 'complete', resourceId });
+			assert.equal(effects.includes('indexed'), scenario !== 'index-unavailable');
 			assert.ok(effects.includes('provider') && effects.includes('persisted'));
 			const outcomes = appCalls.filter(({ name }) => name === 'reportResourceProgress').map(({ input }) => input);
 			assert.ok(outcomes.some(({ status }) => status === 'complete'));

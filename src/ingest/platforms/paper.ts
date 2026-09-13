@@ -195,16 +195,6 @@ async function stageOpenAlexPdfContent(env: CoreEnv, step: WorkflowStep, input: 
 				const apiKey = env.OPENALEX_API_KEY?.trim();
 				if (!apiKey) throw new Error('OpenAlex content download requires an API key');
 				const contentUrl = new URL(input.contentPdfUrl);
-				if (
-					contentUrl.protocol !== 'https:' ||
-					contentUrl.hostname !== OPENALEX_CONTENT_HOST ||
-					contentUrl.username ||
-					contentUrl.password ||
-					contentUrl.search ||
-					contentUrl.hash
-				) {
-					throw new Error('OpenAlex content PDF URL is invalid');
-				}
 				contentUrl.searchParams.set('api_key', apiKey);
 				const response = await fetch(contentUrl, {
 					headers: { Accept: 'application/pdf' },

@@ -5,21 +5,23 @@ registerHooks({
 	resolve(specifier, context, nextResolve) {
 		if (specifier === 'cloudflare:workflows')
 			return { shortCircuit: true, url: 'data:text/javascript,export class NonRetryableError extends Error {}' };
-		if (specifier === 'youtube-transcript') return { shortCircuit: true, url: 'data:text/javascript,export const YoutubeTranscript = {};' };
 		if (specifier.startsWith('.') && !specifier.endsWith('.ts') && context.parentURL?.includes('/core-worker/src/')) {
 			return { shortCircuit: true, url: new URL(`${specifier}.ts`, context.parentURL).href };
 		}
 		return nextResolve(specifier, context);
 	},
 });
-const { stageUrlAcquisition } = await import('../src/ingest/acquisition.ts');
+const { stageUrlAcquisition, withoutDuplicateResourceTitle } = await import('../src/ingest/acquisition.ts');
 const { stagePaperResolution } = await import('../src/ingest/platforms/paper.ts');
 const { resolveResourceUrl } = await import('../src/ingest/platforms/resource-url.ts');
 const { prepareResolvedResource } = await import('../src/ingest/resource-persistence.ts');
 const { selectCrossrefPaperCandidate, selectCrossrefReference } = await import('../src/ingest/crossref.ts');
 const { parseGrobidPdfHeaderTei } = await import('../src/ingest/grobid-tei.ts');
 const { parseTwitterAdvancedSearchPage, parseTwitterTweetsResponse } = await import('../src/ingest/platforms/twitter-data.ts');
-const { YoutubeTranscript } = await import('youtube-transcript');
+
+assert.equal(withoutDuplicateResourceTitle('# Only title', 'Only title'), '# Only title');
+assert.equal(withoutDuplicateResourceTitle('## **Actual** title\n\nBody.', 'Actual title'), 'Body.');
+assert.equal(withoutDuplicateResourceTitle('# Introduction\n\nBody.', 'Article title'), '# Introduction\n\nBody.');
 
 const requests = [];
 const responses = new Map();
@@ -72,7 +74,19 @@ responses.set('/youtube/v3/videos', {
 	],
 });
 responses.set('/youtube/v3/channels', { items: [{ snippet: { thumbnails: { high: { url: 'https://example.com/avatar.jpg' } } } }] });
-YoutubeTranscript.fetchTranscript = async () => [{ offset: 0, duration: 1200, text: 'Transcript content', lang: 'ja' }];
+responses.set('/youtubei/v1/player', {
+	captions: {
+		playerCaptionsTracklistRenderer: {
+			captionTracks: [{ baseUrl: 'https://www.youtube.com/api/timedtext?lang=ja&fmt=srv3&signature=fixture', languageCode: 'ja' }],
+		},
+	},
+});
+responses.set('/api/timedtext', (url) => {
+	assert.equal(url.searchParams.get('fmt'), 'srv1', 'Request one explicit format instead of guessing timestamp units');
+	assert.equal(url.searchParams.get('signature'), 'fixture');
+	assert.equal(url.searchParams.get('lang'), 'ja');
+	return new Response('<transcript><text start="60" dur="1.5">Transcript content</text></transcript>');
+});
 const summaryFields = { originalLang: 'en', summary: 'Summary' };
 try {
 	const cases = [
@@ -116,17 +130,34 @@ try {
 	assert.match(hn.content, /```\nconst n = 1;/u);
 	assert.equal(hn.subject.normalizedUrl, 'https://doi.org/10.1000/example');
 	assert.equal(acquired.get('lesswrong').content, '**Original** body.');
-	assert.equal(acquired.get('twitter').content, 'Comment');
+	assert.equal(acquired.get('twitter').content, 'Comment https://doi.org/10.1000/example');
 	assert.equal(acquired.get('twitter').subject.normalizedUrl, 'https://doi.org/10.1000/example');
+	const subjectUrl = 'https://arxiv.org/pdf/2507.12652v2?download=1';
+	responses.set('/twitter/tweets', {
+		tweets: [{ ...tweet, text: 'https://t.co/link', urls: [{ url: 'https://t.co/link', expanded_url: subjectUrl }] }],
+	});
+	const linkOnly = await stageUrlAcquisition(env, step, { ...input, url: tweet.url });
+	assert.equal(linkOnly.content, subjectUrl);
+	const linked = prepareResolvedResource({ ...linkOnly, ...summaryFields }, []);
+	assert.equal(linked.subject.url, subjectUrl);
+	assert.equal(linked.subject.normalizedUrl, 'https://arxiv.org/abs/2507.12652');
+	responses.set('/twitter/tweets', { tweets: [tweet] });
 	const video = acquired.get('youtube');
 	assert.equal(video.content, 'Transcript content');
 	assert.equal(video.originalLang, 'ja');
 	assert.equal(video.summary, '00:00 Introduction\n01:00 Results');
 	assert.equal(video.creators[0].avatarUrl, 'https://example.com/avatar.jpg');
-	assert.deepEqual(video.youtube.segments, [{ startTime: 0, endTime: 1.2, text: 'Transcript content' }]);
+	assert.deepEqual(video.youtube.segments, [{ startTime: 60, endTime: 61.5, text: 'Transcript content' }]);
+	responses.get('/youtubei/v1/player').captions.playerCaptionsTracklistRenderer.captionTracks[0].baseUrl =
+		'https://www.youtube.com/api/timedtext?lang=ja&signature=fixture';
 	responses.get('/youtube/v3/videos').items[0].snippet.description = 'Video without chapters';
 	const unchaptered = await stageUrlAcquisition(env, step, { ...input, url: 'https://youtu.be/abcdefghijk' });
 	assert.equal(unchaptered.youtube.chapters.length, 0);
+	assert.deepEqual(
+		unchaptered.youtube.segments,
+		video.youtube.segments,
+		'Default and srv3 caption URLs both request classic XML in seconds',
+	);
 	assert.equal(unchaptered.content, video.content, 'Acquisition must return the transcript without calling AI');
 
 	responses.set('/twitter/tweets', { tweets: [{ ...tweet, url: 'https://x.com/i/article/125' }] });
@@ -160,11 +191,19 @@ try {
 	assert.equal(page.rawTweetCount, 2);
 	assert.equal(page.tweets.length, 1);
 	assert.equal(page.nextCursor, 'next');
-	assert.equal(
-		parseTwitterAdvancedSearchPage({ tweets: [{ ...tweet, quoted_tweet: { ...tweet, createdAt: 123 } }], has_next_page: false }).tweets[0]
-			.quoted_tweet,
-		null,
-	);
+	assert.equal(parseTwitterTweetsResponse({ tweets: [{ ...tweet, quoted_tweet: { ...tweet, createdAt: 123 } }] })[0].quoted_tweet, null);
+	const discovery = parseTwitterAdvancedSearchPage({
+		tweets: [
+			{ ...tweet, author: { userName: 'example', name: '' }, extendedEntities: 'unused malformed media', text: null },
+			{ ...tweet, retweeted_tweet: { id: '126', createdAt: tweet.createdAt } },
+			{ ...tweet, id: 'invalid' },
+		],
+		has_next_page: false,
+	});
+	assert.equal(discovery.tweets.length, 2, 'Discovery depends on identity and attribution, not display or content metadata');
+	assert.equal(discovery.invalidItems.length, 1);
+	assert.equal(discovery.tweets[1].retweeted_tweet.id, '126');
+	assert.ok(!('text' in discovery.tweets[0]));
 
 	let blog;
 	for (const [metadata, summary] of [

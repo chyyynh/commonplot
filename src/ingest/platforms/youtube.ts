@@ -100,6 +100,12 @@ function parseChaptersFromDescription(description: string): YouTubeChapter[] {
 }
 
 const transcriptFetch: typeof fetch = (input, init) => {
+	const url = new URL(input instanceof Request ? input.url : input);
+	if (url.pathname === '/api/timedtext') {
+		// Request classic XML explicitly: this package returns its timestamps in seconds.
+		url.searchParams.set('fmt', 'srv1');
+		input = input instanceof Request ? new Request(url, input) : url;
+	}
 	const timeout = AbortSignal.timeout(TRANSCRIPT_FETCH_TIMEOUT_MS);
 	return fetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
 };
@@ -196,10 +202,10 @@ async function fetchTranscript(videoId: string): Promise<Pick<YouTubeTranscript,
 	}
 
 	const segments: YouTubeTranscriptSegment[] = items.map((item) => {
-		const startTime = toSeconds(item.offset, 'offset', videoId) / 1000;
+		const startTime = toSeconds(item.offset, 'offset', videoId);
 		return {
 			startTime,
-			endTime: startTime + toSeconds(item.duration, 'duration', videoId) / 1000,
+			endTime: startTime + toSeconds(item.duration, 'duration', videoId),
 			text: item.text,
 		};
 	});

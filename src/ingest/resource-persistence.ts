@@ -7,7 +7,8 @@ import {
 	RESOURCE_KIND_METADATA,
 	RESOURCE_PLATFORMS,
 	ResourceCreatorsSchema,
-	type ResourceIdentifier,
+	type ResourceKind,
+	type ResourcePlatform,
 	ResourceIdentifiersSchema,
 } from '../shared/resource';
 import type { AcquiredResource } from './acquisition';
@@ -18,16 +19,22 @@ import type { YouTubeHighlights, YouTubeTranscript } from './platforms/youtube';
 import { ResourceLanguageSchema } from './resource-language';
 
 export type ResourcePersistenceTarget = { ownedBlobId?: string } & (
-	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation; preservePublishedPdf?: boolean }>
+	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation }>
 	| Readonly<{ kind: 'existing'; resourceId: string }>
 );
 
 type LockedResource = Readonly<{
-	has_original: boolean;
 	id: string;
-	original_lang: string;
+	hasOriginal: boolean;
+	subjectResourceId: string | null;
+	translationRevision: string;
+	acquisitionRevision: string;
+	kind: ResourceKind;
+	fileType: string | null;
+	resourcePlatform: ResourcePlatform | null;
+	originalLang: string;
 	scope: 'corpus' | 'private';
-	subject_resource_id: string | null;
+	url: string | null;
 }>;
 
 type PreparedResource = ReturnType<typeof prepareResolvedResource>;
@@ -80,31 +87,42 @@ export async function persistYouTubeHighlights(
 	return updated.rowCount === 1;
 }
 
-/** A URL or exact identifier may point at an existing corpus resource; ambiguous identities must be reacquired. */
-export async function findResourcesByUrls(db: NodePgDatabase, urls: readonly ResolvedResourceUrl[]) {
-	if (!urls.length) return [];
-	const { rows } = await db.execute<{ url: string; resourceId: string | null }>(sql`
-		SELECT input.url,
-		  CASE WHEN COUNT(DISTINCT resource.id) = 1 THEN MIN(resource.id::text) END AS "resourceId"
-		FROM jsonb_to_recordset(${JSON.stringify(urls)}::jsonb) AS input(url text, "normalizedUrl" text, identifiers jsonb)
+/** Use the same candidates for admission, canonical persistence, and subject attachment. */
+async function findResourceCandidates(
+	db: NodePgDatabase,
+	identities: readonly { url: string | null; normalizedUrl: string | null; identifiers: ResolvedResourceUrl['identifiers'] }[],
+) {
+	if (!identities.length) return [];
+	const { rows } = await db.execute<{ owners: { id: string; sourceId: string | null; scope: 'corpus' | 'private' }[] }>(sql`
+		SELECT COALESCE(jsonb_agg(jsonb_build_object('id', resource.id, 'sourceId', resource.source_id, 'scope', resource.scope))
+		  FILTER (WHERE resource.id IS NOT NULL), '[]'::jsonb) AS owners
+		FROM jsonb_array_elements(${JSON.stringify(identities.map(({ url, normalizedUrl, identifiers }) => ({ url, normalizedUrl, identifiers })))}::jsonb) WITH ORDINALITY AS input(value, ordinal)
 		LEFT JOIN LATERAL (
-			SELECT id FROM resources WHERE normalized_url = input."normalizedUrl"
-			UNION SELECT id FROM resources WHERE url = input.url
+			SELECT id FROM resources WHERE scope = 'corpus' AND normalized_url = input.value->>'normalizedUrl'
+			UNION SELECT id FROM resources WHERE scope = 'corpus' AND url = input.value->>'url'
 			UNION SELECT stored.resource_id AS id
-			FROM jsonb_to_recordset(input.identifiers) AS incoming(scheme text, value text)
+			FROM jsonb_to_recordset(input.value->'identifiers') AS incoming(scheme text, value text)
 			JOIN resource_identifiers stored USING (scheme, value)
 		) candidate ON true
-		LEFT JOIN resources resource ON resource.id = candidate.id AND resource.scope = 'corpus'
-		GROUP BY input.url
+		LEFT JOIN resources resource ON resource.id = candidate.id
+		GROUP BY input.ordinal ORDER BY input.ordinal
 	`);
-	const owners = new Map(rows.map(({ url, resourceId }) => [url, resourceId]));
-	return urls.map(({ url, normalizedUrl }) => ({ url, normalizedUrl, resourceId: owners.get(url) ?? null }));
+	return rows.map(({ owners }) => owners);
+}
+
+/** Admission only reuses an unambiguous public identity. */
+export async function findResourcesByUrls(db: NodePgDatabase, urls: readonly ResolvedResourceUrl[]) {
+	const candidates = await findResourceCandidates(db, urls);
+	return urls.map(({ url, normalizedUrl }, index) => {
+		const owners = candidates[index]!.filter(({ scope }) => scope === 'corpus');
+		const owner = owners.length === 1 ? owners[0] : null;
+		return { url, normalizedUrl, resourceId: owner?.id ?? null, sourceId: owner?.sourceId ?? null };
+	});
 }
 
 export function prepareResolvedResource(
 	resource: AcquiredResource & { youtube?: YouTubeTranscript },
 	hostedImages: readonly HostedResourceImage[],
-	keywords: readonly string[] = [],
 ) {
 	const title = resource.title.trim();
 	const content = resource.content.trim();
@@ -135,10 +153,11 @@ export function prepareResolvedResource(
 	if (publishedDate && Number.isNaN(publishedDate.getTime())) throw new TypeError('Resource publication date is invalid');
 	const today = new Date().toISOString().slice(0, 10);
 	if (publishedDate && publishedDate.toISOString().slice(0, 10) > today) publishedDate = new Date(today);
-	const subjectUrl = resource.subject ? resolveResourceUrl(resource.subject.normalizedUrl) : null;
+	const subjectUrl = resource.subject ? resolveResourceUrl(resource.subject.url) : null;
 	if (resource.subject && !subjectUrl) throw new TypeError('Subject URL must be HTTP(S) without credentials');
 	const subject = resource.subject
 		? {
+				url: subjectUrl!.url,
 				identifiers: ResourceIdentifiersSchema.parse(resource.subject.identifiers),
 				normalizedUrl: subjectUrl!.normalizedUrl,
 			}
@@ -151,7 +170,7 @@ export function prepareResolvedResource(
 		creators: media.creators,
 		fileType: resource.fileType ?? null,
 		identifiers,
-		keywords: [...keywords],
+		keywords: [],
 		kindMetadata: media.kindMetadata,
 		normalizedUrl: resolvedUrl?.normalizedUrl ?? null,
 		ogImageHeight: media.ogImageHeight,
@@ -171,67 +190,20 @@ export function prepareResolvedResource(
 
 async function lockResource(db: NodePgDatabase, resourceId: string): Promise<LockedResource> {
 	const result = await db.execute<LockedResource>(sql`
-		SELECT resource.id::text, resource.original_lang, resource.scope, resource.subject_resource_id::text,
-		       EXISTS (
-		         SELECT 1 FROM resource_translations original
-		         WHERE original.resource_id = resource.id AND original.lang = resource.original_lang
-		           AND BTRIM(COALESCE(original.title, '')) <> ''
-		           AND BTRIM(COALESCE(original.content, '')) <> ''
-		       ) AS has_original
+		SELECT resource.id::text, resource.scope, resource.kind, resource.url,
+		       resource.original_lang AS "originalLang", resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform",
+		       resource.subject_resource_id::text AS "subjectResourceId",
+		       COALESCE(BTRIM(original.title) <> '' AND BTRIM(original.content) <> '', false) AS "hasOriginal",
+		       MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS "translationRevision",
+		       MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) AS "acquisitionRevision"
 		FROM resources resource
+		LEFT JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 		WHERE resource.id = ${resourceId}::uuid
-		FOR UPDATE
+		FOR UPDATE OF resource
 	`);
 	const resource = result.rows[0];
 	if (!resource) throw new Error(`Resource ${resourceId} was not found`);
 	return resource;
-}
-
-async function identifierOwners(db: NodePgDatabase, identifiers: readonly ResourceIdentifier[]): Promise<string[]> {
-	if (!identifiers.length) return [];
-	const result = await db.execute<{ resource_id: string }>(sql`
-		SELECT DISTINCT stored.resource_id::text
-		FROM jsonb_to_recordset(${JSON.stringify(identifiers)}::jsonb) AS incoming(scheme text, value text)
-		JOIN resource_identifiers stored USING (scheme, value)
-	`);
-	return result.rows.map(({ resource_id }) => resource_id);
-}
-
-async function corpusUrlOwner(db: NodePgDatabase, normalizedUrl: string | null): Promise<string | null> {
-	if (!normalizedUrl) return null;
-	const result = await db.execute<{ id: string }>(sql`
-		SELECT id::text
-		FROM resources
-		WHERE normalized_url = ${normalizedUrl} AND scope = 'corpus'
-	`);
-	return result.rows[0]?.id ?? null;
-}
-
-async function draftRoot(db: NodePgDatabase, resource: PreparedResource): Promise<LockedResource | null> {
-	const owners = await identifierOwners(db, resource.identifiers);
-	if (owners.length > 1) throw new Error('Resolved identifiers belong to different Resources');
-	const identifierOwner = owners[0] ?? null;
-	const urlOwner = await corpusUrlOwner(db, resource.normalizedUrl);
-	if (identifierOwner && urlOwner && identifierOwner !== urlOwner) {
-		throw new Error('Resolved identifiers and URL belong to different Resources');
-	}
-	const existingId = identifierOwner ?? urlOwner;
-	if (!existingId) return null;
-	const existing = await lockResource(db, existingId);
-	if (existing.scope !== 'corpus') throw new Error('A URL draft cannot resolve to a private Resource');
-	return existing;
-}
-
-async function existingSubject(db: NodePgDatabase, parentId: string, subject: NonNullable<PreparedResource['subject']>) {
-	const owners = await identifierOwners(db, subject.identifiers);
-	if (owners.length > 1) return null;
-	const identifierOwner = owners[0] ?? null;
-	const urlOwner = await corpusUrlOwner(db, subject.normalizedUrl);
-	if (identifierOwner && urlOwner && identifierOwner !== urlOwner) return null;
-	const existingId = identifierOwner ?? urlOwner;
-	if (!existingId || existingId === parentId) return null;
-	const existing = await lockResource(db, existingId);
-	return existing.scope === 'corpus' && existing.has_original ? existing.id : null;
 }
 
 async function writeCanonicalResource(
@@ -362,41 +334,41 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 			const owned = await tx.execute(sql`SELECT resource_id FROM user_files WHERE resource_id = ${target.ownedBlobId}::uuid FOR UPDATE`);
 			if (!owned.rows.length) throw new NonRetryableError('Uploaded PDF ownership was deleted');
 		}
-		const root = target.kind === 'draft' ? await draftRoot(tx, resource) : await lockResource(tx, target.resourceId);
+		const candidates = await findResourceCandidates(tx, [
+			...(target.kind === 'draft' ? [resource] : []),
+			...(resource.subject ? [resource.subject] : []),
+		]);
+		const rootCandidates = target.kind === 'draft' ? candidates.shift()! : [];
+		const subjectCandidates = candidates[0] ?? [];
+		if (target.kind === 'draft' && (rootCandidates.length > 1 || rootCandidates[0]?.scope === 'private'))
+			throw new Error('Resolved identity is ambiguous or belongs to a private Resource');
+		const existingId = target.kind === 'existing' ? target.resourceId : rootCandidates[0]?.id;
+		const root = existingId ? await lockResource(tx, existingId) : null;
 		const resourceId = root?.id ?? crypto.randomUUID();
-		// A private rendition may enrich a new paper, but must not replace an
-		// independently acquired public rendition (and its public images).
-		if (target.kind === 'draft' && target.preservePublishedPdf && root?.has_original) {
-			const original = await tx.execute<{ translation_revision: string; acquisition_revision: string }>(sql`
-				SELECT MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS translation_revision,
-				       MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) AS acquisition_revision
-				FROM resources resource
-				JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
-				WHERE resource.id = ${resourceId}::uuid
-			`);
-			const published = original.rows[0];
-			if (!published) throw new Error(`Published PDF ${resourceId} lost its original`);
-			return {
-				resourceId,
-				scope: root.scope,
-				subjectAttached: root.subject_resource_id !== null,
-				translationRevision: published.translation_revision,
-				acquisitionRevision: published.acquisition_revision,
-				originalWritten: false,
-			};
+		const originalWritten = target.kind === 'existing' || !root?.hasOriginal;
+		let subjectResourceId = root?.subjectResourceId ?? null;
+		let accepted = root;
+		if (originalWritten) {
+			const subject = subjectCandidates.length === 1 && subjectCandidates[0]?.scope === 'corpus' ? subjectCandidates[0] : null;
+			subjectResourceId = subject && subject.id !== resourceId && (await lockResource(tx, subject.id)).hasOriginal ? subject.id : null;
+			const written = await writeCanonicalResource(tx, resourceId, resource, root !== null, subjectResourceId);
+			accepted = { ...resource, ...written, id: resourceId, scope: root?.scope ?? 'corpus', hasOriginal: true, subjectResourceId };
 		}
-		const resolvedSubjectId = resource.subject ? await existingSubject(tx, resourceId, resource.subject) : null;
-		const subjectResourceId = resolvedSubjectId ?? root?.subject_resource_id ?? null;
-		const revisions = await writeCanonicalResource(tx, resourceId, resource, root !== null, subjectResourceId);
-		if (target.kind === 'draft' && target.relation) {
-			await applyDraftRelation(tx, resourceId, target.relation);
-		}
+		if (target.kind === 'draft' && target.relation) await applyDraftRelation(tx, resourceId, target.relation);
+		// Follow-ups use the accepted original, which can differ from this draft.
+		const { scope, kind, fileType, resourcePlatform, originalLang, url, translationRevision, acquisitionRevision } = accepted!;
 		return {
 			resourceId,
-			scope: root?.scope ?? 'corpus',
-			subjectAttached: resolvedSubjectId !== null,
-			originalWritten: true,
-			...revisions,
+			scope,
+			kind,
+			fileType,
+			resourcePlatform,
+			originalLang,
+			url,
+			translationRevision,
+			acquisitionRevision,
+			originalWritten,
+			subjectAttached: subjectResourceId !== null,
 		};
 	});
 }

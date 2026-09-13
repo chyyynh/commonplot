@@ -126,13 +126,6 @@ try {
 	assert.equal(busy.headers.get('retry-after'), '10');
 	await busy.text();
 	assert.equal(seen.filter(({ action }) => action === 'pdf.getFulltext').length, 0);
-	const legacy = await fetch(`${origin}/render-area?pageIndex=0&rect=0,0,100,100`, {
-		method: 'POST',
-		headers: { 'content-type': 'application/pdf' },
-		body: pdf,
-	});
-	assert.equal(legacy.status, 200);
-	assert.deepEqual(Buffer.from(await legacy.arrayBuffer()), png);
 } finally {
 	await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
 }

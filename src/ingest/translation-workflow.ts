@@ -641,6 +641,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		const { force = false, resourceId, translationRevision } = event.payload;
 		const task = createResourceTask(this.env, step, event.instanceId);
 		let translationPublished = false;
+		let followupFailed = false;
 		try {
 			if (!(await task.start('translating'))) return { status: 'superseded', resourceId };
 			const inputStream = await step.do<ReadableStream<Uint8Array> | null>(
@@ -753,17 +754,22 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				});
 			}
 			translationPublished = true;
-			await task.report('complete', { stage: 'translating', status: 'complete', resourceId });
-			if (resource.scope === 'corpus') {
-				await step.do(
-					'enqueue-translated-ai-search-sync-v1',
-					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-					() => enqueueSearchProgress(this.env, resourceId, task, `${translationRevision}-zh-hant`),
-				);
-			}
+			const followups = await Promise.allSettled([
+				task.report('complete', { stage: 'translating', status: 'complete', resourceId }),
+				resource.scope === 'corpus'
+					? step.do(
+							'enqueue-translated-ai-search-sync-v1',
+							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
+							() => enqueueSearchProgress(this.env, resourceId, task, `${translationRevision}-zh-hant`),
+						)
+					: undefined,
+			]);
+			const failures = followups.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+			if (failures.length) throw new AggregateError(failures, 'Translation persisted, but follow-ups failed');
 			console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Completed', resource_id: resourceId, scope: resource.scope });
 			return { status: 'complete', resourceId };
 		} catch (error) {
+			followupFailed = translationPublished;
 			await task.report('outcome-after-error', {
 				status: translationPublished ? 'complete' : 'failed',
 				resourceId,
@@ -771,11 +777,10 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			});
 			if (translationPublished) {
 				console.error({ tag: 'RESOURCE_TRANSLATION', event: 'followup_dispatch_failed', resource_id: resourceId, error });
-				return { status: 'complete', resourceId };
 			}
 			throw error;
 		} finally {
-			await task.seal();
+			await task.seal(followupFailed ? 'followup_dispatch_failed' : undefined);
 		}
 	}
 }

@@ -538,9 +538,9 @@ function firstPageIdentifierText(document: StructuredPdfDocument): string | null
 export function normalizeStructuredPdf(
 	document: StructuredPdfDocument,
 	options: Readonly<{
-		readySourceCrops?: readonly Readonly<{ id: string; url: string }>[];
+		cropUrlPrefix: string;
 		visualPlan?: ReturnType<typeof structuredPdfVisualPlan>;
-	}> = {},
+	}>,
 ) {
 	const entries = walkNodes(document.content);
 	const referenceEntries = entries.filter(
@@ -582,11 +582,8 @@ export function normalizeStructuredPdf(
 	const visualPlan = options.visualPlan ?? structuredPdfVisualPlan(document);
 	const suppressedBlockPaths = new Set<string>();
 	const sourceCropsByBlock = new Map<string, Array<{ altText: string; placement: 'before' | 'replace'; url: string }>>();
-	const readyCrops = new Map(options.readySourceCrops?.map(({ id, url }) => [id, url]));
 	for (const crop of visualPlan.crops) {
-		const url = readyCrops.get(crop.id);
-		if (url === undefined) continue;
-		const entry = { altText: crop.altText, placement: crop.placement, url };
+		const entry = { altText: crop.altText, placement: crop.placement, url: `${options.cropUrlPrefix}/${crop.id}.png` };
 		for (const path of crop.suppressedBlockPaths) suppressedBlockPaths.add(path);
 		const existing = sourceCropsByBlock.get(crop.blockPath);
 		if (existing) existing.push(entry);
@@ -856,11 +853,10 @@ export function normalizeStructuredPdf(
 		// Keep persisted table formatting stable while the surrounding prose uses underscores.
 		handlers: { table: (table) => toMarkdown(table, { extensions }).trimEnd() },
 	}).trimEnd();
-	const missingCrops = visualPlan.crops.filter(({ id }) => !readyCrops.has(id));
 	const visual = {
 		planned: visualPlan.crops.length,
-		ready: visualPlan.crops.length - missingCrops.length,
-		missing: [...visualPlan.missing, ...missingCrops.map(({ figureId, id }) => ({ figureId: figureId ?? id, reason: 'crop-not-ready' }))],
+		ready: visualPlan.crops.length,
+		missing: visualPlan.missing,
 		inferred: visualPlan.crops.filter(({ source }) => source === 'caption-region').length,
 		excludedAuthorTables: visualPlan.excludedAuthorTables.length,
 	};

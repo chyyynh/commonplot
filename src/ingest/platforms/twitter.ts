@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { connectCoreDb } from '../../shared/db';
 import { enqueueSourceDrafts, type SourceResourceDraft } from '../admission';
-import { parseTwitterAdvancedSearchPage, type Tweet } from './twitter-data';
+import { parseTwitterAdvancedSearchPage, type DiscoveredTweet } from './twitter-data';
 
 // Twitter Monitor
 
@@ -25,7 +25,7 @@ async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime:
 		throw new Error('Twitter monitor has an invalid time window');
 	}
 	const query = `from:${normalizedUserName} include:nativeretweets -filter:replies since_time:${sinceTime} until_time:${untilTime}`;
-	const terminalTweets = new Map<string, Tweet>();
+	const terminalTweets = new Map<string, DiscoveredTweet>();
 	const seenCursors = new Set<string>();
 	let providerTweets = 0;
 	let pages = 0;
@@ -58,7 +58,7 @@ async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime:
 				error: item.message,
 			});
 		}
-		for (const tweet of apiRes.tweets) terminalTweets.set(tweet.id?.trim() || tweet.url, tweet);
+		for (const tweet of apiRes.tweets) terminalTweets.set(tweet.id, tweet);
 		if (!apiRes.hasNextPage) break;
 		if (!apiRes.nextCursor) throw new Error(`Twitter Advanced Search omitted the next cursor for @${userName}`);
 		if (seenCursors.has(apiRes.nextCursor)) throw new Error(`Twitter Advanced Search repeated its cursor for @${userName}`);
@@ -77,59 +77,40 @@ async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime:
 	return { tweets: terminalTweets.values(), providerTweets, pages, skippedItems };
 }
 
-async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Iterable<Tweet>, source: TwitterSource) {
+async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Iterable<DiscoveredTweet>, source: TwitterSource) {
 	const drafts = new Map<string, SourceResourceDraft>();
 	let skippedItems = 0;
-	let normalizedTweets = 0;
 	for (const carrier of tweets) {
 		const tweet = carrier.retweeted_tweet ?? carrier;
-		let stage = 'normalization';
 		try {
-			if (carrier.retweeted_tweet) {
-				if (!carrier.author?.userName.trim()) throw new Error(`Retweet ${carrier.id ?? carrier.url} has no complete author`);
-				if (!tweet.author?.name.trim() || !tweet.author.userName.trim()) {
-					throw new Error(`Retweeted tweet ${tweet.id ?? tweet.url} has no complete author`);
-				}
-			} else if (tweet.text.startsWith('RT @')) {
-				// A missing nested retweet keeps its carrier URL for acquisition to resolve.
-				console.warn({ tag: 'TWITTER', event: 'twitter_retweet_carrier_preserved', tweetId: tweet.id, url: tweet.url });
-			} else if (!tweet.author?.name.trim() || !tweet.author.userName.trim()) {
-				throw new Error(`Tweet ${tweet.id ?? tweet.url} has no complete author`);
-			}
 			const attributedAuthor = carrier.retweeted_tweet
 				? carrier.author?.userName
 				: carrier.retweetedBy?.authorUserName || carrier.author?.userName;
 			const userName = attributedAuthor?.trim().toLowerCase() || null;
 			if (userName !== source.handle) {
-				throw new Error(`Tweet ${tweet.id ?? tweet.url} was attributed to @${userName ?? 'unknown'}, expected @${source.handle}`);
+				throw new Error(`Tweet ${tweet.id} was attributed to @${userName ?? 'unknown'}, expected @${source.handle}`);
 			}
-			normalizedTweets++;
-			stage = 'draft';
-			const tweetId = tweet.id?.trim();
-			if (!tweetId || !/^\d+$/.test(tweetId)) throw new Error(`Tweet ${tweet.url} has no valid provider id`);
-			const url = `https://x.com/i/status/${tweetId}`;
+			const url = `https://x.com/i/status/${tweet.id}`;
 			const publishedDate = new Date(tweet.createdAt);
-			if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id ?? url} has invalid publishedDate`);
+			if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id} has invalid publishedDate`);
 			drafts.set(url, {
 				url,
-				sourceHints: { publishedDate: publishedDate.toISOString(), originalLang: tweet.lang, keywords: tweet.hashTags },
+				sourceHints: { publishedDate: publishedDate.toISOString(), originalLang: tweet.lang },
 			});
 		} catch (error) {
 			skippedItems++;
 			console.error({
 				tag: 'TWITTER',
 				event: 'twitter_item_skipped',
-				stage,
 				userName: source.handle,
 				tweetId: tweet.id,
-				url: tweet.url,
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}
 	}
 	const pending = [...drafts.values()];
 	const created = await enqueueSourceDrafts(env, db, source.id, pending);
-	return { admittedDrafts: pending.length, created, deduplicated: pending.length - created, normalizedTweets, skippedItems };
+	return { admittedDrafts: pending.length, created, deduplicated: pending.length - created, skippedItems };
 }
 
 async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: TwitterSource, windowEnd: Date) {
@@ -153,7 +134,6 @@ async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: Tw
 			until_time: untilTime,
 			pages: fetched.pages,
 			provider_tweets: fetched.providerTweets,
-			normalized_tweets: admission.normalizedTweets,
 			admitted_drafts: admission.admittedDrafts,
 			skipped_items: fetched.skippedItems + admission.skippedItems,
 			created: admission.created,

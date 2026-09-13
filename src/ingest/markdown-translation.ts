@@ -1,6 +1,6 @@
 import type { Element, Nodes as HtmlNodes } from 'hast';
 import { toHtml } from 'hast-util-to-html';
-import type { Heading, Link, Nodes, Paragraph, Parent, Parents, PhrasingContent, Root, Strong, TableCell } from 'mdast';
+import type { Definition, Heading, Link, Nodes, Paragraph, Parent, Parents, PhrasingContent, Root, Strong, TableCell } from 'mdast';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { frontmatterFromMarkdown, frontmatterToMarkdown } from 'mdast-util-frontmatter';
 import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm';
@@ -405,7 +405,8 @@ function structuralNode(
 	if (translated && node.type === 'text' && !isProtectedLinkText(node.value, ancestors)) return null;
 	const structure: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(node)) {
-		if (key === 'data' || key === 'position') continue;
+		// Shorthand references can expand after translation; their identifier must still match.
+		if (key === 'data' || key === 'position' || key === 'referenceType') continue;
 		if (key === 'children' && isParent(node)) {
 			const children = node.children
 				.map((child, index) => structuralNode(child, [...path, index], translatedBlocks, [...ancestors, node], translated))
@@ -920,10 +921,18 @@ export function planMarkdownTranslation(sourceMarkdown: string, options: Markdow
 	};
 }
 
-function serializeProseBlock(block: ProseBlock): string {
-	const child: Heading | Paragraph =
-		block.type === 'tableCell' ? { children: structuredClone(block.children), type: 'paragraph' } : structuredClone(block);
-	return serializeMarkdown({ children: [child], type: 'root' }).trim();
+function serializeProseBlock(block: ProseBlock, definitions: ReadonlyMap<string, Definition>): string {
+	const child: Heading | Paragraph = block.type === 'tableCell' ? { children: block.children, type: 'paragraph' } : block;
+	const used = new Map<string, Definition>();
+	const visit = (node: Nodes): void => {
+		if (node.type === 'linkReference' || node.type === 'imageReference') {
+			const definition = definitions.get(node.identifier);
+			if (definition) used.set(node.identifier, definition);
+		}
+		if ('children' in node) node.children.forEach(visit);
+	};
+	visit(child);
+	return serializeMarkdown({ children: [child, ...used.values()], type: 'root' }).trim();
 }
 
 export function compileMarkdownTranslationArtifact(
@@ -933,6 +942,12 @@ export function compileMarkdownTranslationArtifact(
 	const values = orderedTranslationMap(plan.segments, translations);
 	const sourceTree = parseMarkdown(plan.sourceMarkdown);
 	const tree = structuredClone(sourceTree);
+	const definitions = new Map<string, Definition>();
+	const collectDefinitions = (node: Nodes): void => {
+		if (node.type === 'definition' && !definitions.has(node.identifier)) definitions.set(node.identifier, node);
+		if ('children' in node) node.children.forEach(collectDefinitions);
+	};
+	collectDefinitions(sourceTree);
 	for (const target of plan.targets) {
 		const translatedParts = target.segmentIds.map((id) => {
 			const translated = values.get(id);
@@ -991,18 +1006,18 @@ export function compileMarkdownTranslationArtifact(
 				if (!isProseBlock(source) || !isProseBlock(translated) || source.type !== translated.type) {
 					throw new MarkdownTranslationInvariantError('invalid-plan', 'Aligned translation target changed block type');
 				}
-				// Resource readers render the canonical title separately and remove a
-				// leading H1 from the body. Keep the alignment payload on that same body boundary.
-				if (source.type === 'heading' && target.path.length === 1 && target.path[0] === 0) return [];
 				const parentPath = target.path.slice(0, -1);
 				const sourceParent = nodeAtPath(sourceTree, parentPath);
 				const translatedParent = nodeAtPath(tree, parentPath);
 				const cell = target.path.at(-1)!;
 				return [
 					{
-						sourceMarkdown: sourceParent.type === 'htmlTable' ? htmlCellMarkdown(sourceParent, cell) : serializeProseBlock(source),
+						sourceMarkdown:
+							sourceParent.type === 'htmlTable' ? htmlCellMarkdown(sourceParent, cell) : serializeProseBlock(source, definitions),
 						translatedMarkdown:
-							translatedParent.type === 'htmlTable' ? htmlCellMarkdown(translatedParent, cell) : serializeProseBlock(translated),
+							translatedParent.type === 'htmlTable'
+								? htmlCellMarkdown(translatedParent, cell)
+								: serializeProseBlock(translated, definitions),
 						type: source.type,
 					},
 				];

@@ -1,10 +1,10 @@
-import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { sha256Hex } from '../shared/hash';
 import { PaidPdfFallbackGrantSchema } from './platforms/pdf-policy';
 import { resolveResourceUrl, ResourceUrlSchema } from './platforms/resource-url';
 import { ResourceLanguageSchema } from './resource-language';
+import { findResourcesByUrls } from './resource-persistence';
 
 const ResourceDraftRelationSchema = z.discriminatedUnion('kind', [
 	z.strictObject({ kind: z.literal('source'), sourceId: z.uuid() }),
@@ -25,7 +25,6 @@ export const ResourceDraftTargetSchema = z.strictObject({
 			summary: z.string().max(20_000).optional(),
 			originalLang: ResourceLanguageSchema.optional().catch(undefined),
 			publishedDate: z.iso.datetime().optional(),
-			keywords: z.array(z.string().max(500)).max(100).optional(),
 		})
 		.optional(),
 });
@@ -63,20 +62,14 @@ export async function enqueueSourceDrafts(
 	);
 	if (!targets.length) return 0;
 	const resolvedUrls = targets.map(({ url }) => resolveResourceUrl(url)!);
-	const urls = resolvedUrls.flatMap(({ url, normalizedUrl }) => [url, normalizedUrl]);
-	const known = await db.execute<{ normalized_url: string | null; url: string | null }>(sql`
-		SELECT resource.url, resource.normalized_url
-		FROM resources resource
-		WHERE resource.scope = 'corpus'
-		  AND resource.source_id IS NOT NULL
-		  AND (${inArray(sql`resource.url`, urls)} OR ${inArray(sql`resource.normalized_url`, urls)})
-	`);
-	const knownUrls = new Set(known.rows.flatMap(({ normalized_url, url }) => [url, normalized_url]).filter((url) => url !== null));
+	const known = await findResourcesByUrls(db, resolvedUrls);
 	const instances = await Promise.all(
-		targets
-			.filter(({ url }, index) => !knownUrls.has(url) && !knownUrls.has(resolvedUrls[index]!.normalizedUrl))
-			.map(async (target) => ({
-				id: `source-draft-v7-${await sha256Hex(`${sourceId}:${resolveResourceUrl(target.url)!.normalizedUrl}`)}`,
+		known
+			.flatMap(({ resourceId, sourceId: existingSourceId, normalizedUrl }, index) =>
+				resourceId && existingSourceId ? [] : [{ target: targets[index]!, normalizedUrl }],
+			)
+			.map(async ({ target, normalizedUrl }) => ({
+				id: `source-draft-v7-${await sha256Hex(`${sourceId}:${normalizedUrl}`)}`,
 				params: target,
 				retention: { successRetention: '5 minutes', errorRetention: '1 hour' } as const,
 			})),

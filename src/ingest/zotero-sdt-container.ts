@@ -28,21 +28,6 @@ export class ZoteroSdtContainer extends Container<CoreEnv> {
 		});
 	}
 
-	async renderPdfArea(
-		input: ReadableStream<Uint8Array>,
-		byteLength: number,
-		pageIndex: number,
-		rect: readonly [number, number, number, number],
-	): Promise<Response> {
-		await this.ensureReady(input);
-		const query = new URLSearchParams({ pageIndex: String(pageIndex), rect: rect.join(',') });
-		return this.containerFetch(`http://zotero-sdt/render-area?${query}`, {
-			body: input.pipeThrough(new FixedLengthStream(byteLength)),
-			headers: { 'content-type': 'application/pdf' },
-			method: 'POST',
-		});
-	}
-
 	async renderPdfAreas(
 		input: ReadableStream<Uint8Array>,
 		byteLength: number,

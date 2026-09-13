@@ -174,7 +174,7 @@ function createDocumentServer(client, openStructuredDocumentTextPack) {
 		activeRequests++;
 		try {
 			const url = new URL(request.url ?? '/', 'http://container');
-			if (request.method !== 'POST' || !['/parse', '/render-area', '/render-areas'].includes(url.pathname)) {
+			if (request.method !== 'POST' || !['/parse', '/render-areas'].includes(url.pathname)) {
 				return sendJson(response, 404, { error: 'Not found.' });
 			}
 			if (!request.headers['content-type']?.toLowerCase().startsWith('application/pdf')) {
@@ -209,22 +209,6 @@ function createDocumentServer(client, openStructuredDocumentTextPack) {
 					await writeRow(response, row);
 				}
 				return response.end();
-			}
-			if (url.pathname === '/render-area') {
-				const pageIndex = Number(url.searchParams.get('pageIndex'));
-				const rect = (url.searchParams.get('rect') ?? '').split(',').map(Number);
-				if (
-					!Number.isInteger(pageIndex) ||
-					pageIndex < 0 ||
-					rect.length !== 4 ||
-					rect.some((part) => !Number.isFinite(part)) ||
-					!(rect[2] > rect[0]) ||
-					!(rect[3] > rect[1])
-				) {
-					return sendJson(response, 400, { error: 'Invalid PDF render area.' });
-				}
-				const png = await renderCrop(client, pdfBuffer, { pageIndex, rect });
-				return response.writeHead(200, { 'content-length': String(png.length), 'content-type': 'image/png' }).end(png);
 			}
 			try {
 				const result = await client.request('getStructuredDocumentText', pdfBuffer, {

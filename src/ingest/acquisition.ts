@@ -1,10 +1,13 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { sql } from 'drizzle-orm';
+import type { Nodes } from 'mdast';
+import { fromMarkdown } from 'mdast-util-from-markdown';
+import { gfmFromMarkdown } from 'mdast-util-gfm';
+import { gfm } from 'micromark-extension-gfm';
 import { connectCoreDb } from '../shared/db';
 import type { ResourceCreator, ResourceIdentifier, ResourceKind, ResourceKindMetadata, ResourcePlatform } from '../shared/resource';
 import type { ResourceProcessingTarget } from './admission';
-import { withoutDuplicatePdfTitle } from './pdf-markdown.ts';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
 import { stagePaperResolution } from './platforms/paper';
@@ -14,7 +17,7 @@ import { resolveResourceUrl } from './platforms/resource-url';
 import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
 import { stageYouTubeAcquisition } from './platforms/youtube';
-import { ResourceLanguageSchema } from './resource-language';
+import { ResourceLanguageSchema, detectResourceLanguage } from './resource-language';
 
 // Adapters share an output contract; each adapter owns its mapping and identity.
 export type AcquiredResource = {
@@ -33,8 +36,23 @@ export type AcquiredResource = {
 	kindMetadata: ResourceKindMetadata;
 	fileType: string | null;
 	previewImageUrl: string | null;
-	subject: { identifiers: ResourceIdentifier[]; normalizedUrl: string } | null;
+	subject: { url: string; identifiers: ResourceIdentifier[]; normalizedUrl: string } | null;
 };
+
+function nodeText(node: Nodes): string {
+	return 'value' in node ? node.value : 'children' in node ? node.children.map(nodeText).join('') : '';
+}
+
+/** Remove a duplicate heading only after Core has resolved the resource title. */
+export function withoutDuplicateResourceTitle(markdown: string, title: string): string {
+	const first = fromMarkdown(markdown, { extensions: [gfm()], mdastExtensions: gfmFromMarkdown() }).children[0];
+	const comparable = (value: string) => value.normalize('NFC').replace(/\s+/gu, ' ').trim();
+	if (first?.type !== 'heading' || comparable(nodeText(first)) !== comparable(title)) return markdown;
+	const end = first.position?.end.offset;
+	if (end === undefined) return markdown;
+	const body = markdown.slice(end).trimStart();
+	return body || markdown;
+}
 
 export async function stageUrlAcquisition(
 	env: CoreEnv,
@@ -113,7 +131,6 @@ export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep,
 		resource.resourcePlatform === null && target.kind !== 'storedBlob'
 			? await stagePaperResolution(env, step, { resource, processingId })
 			: resource;
-	return resolved.fileType === 'application/pdf'
-		? { ...resolved, content: withoutDuplicatePdfTitle(resolved.content, resolved.title) }
-		: resolved;
+	const content = withoutDuplicateResourceTitle(resolved.content, resolved.title);
+	return { ...resolved, content, originalLang: detectResourceLanguage(content, resolved.originalLang) };
 }

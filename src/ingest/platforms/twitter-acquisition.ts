@@ -92,12 +92,6 @@ function expandKnownTweetUrls(text: string, tweet: Tweet): string {
 	return text.replace(TCO_TOKEN_RE, (token) => replacements.get(token) ?? token);
 }
 
-function stripTrailingExternalUrl(text: string, externalUrl: string): string {
-	const match = text.match(/(https?:\/\/\S+)\s*$/);
-	if (!match || match.index === undefined) return text;
-	return match[1].replace(/\/+$/, '') === externalUrl.replace(/\/+$/, '') ? text.slice(0, match.index).trimEnd() : text;
-}
-
 function tweetQuote(tweet: Tweet) {
 	const quote = tweet.quoted_tweet;
 	const author = quote?.author;
@@ -185,7 +179,7 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 
 	return {
 		title,
-		content: linkedContentUrl ? stripTrailingExternalUrl(content, linkedContentUrl) : content,
+		content,
 		publishedDate: tweet.createdAt,
 		creators: [twitterCreator(author)],
 		kindMetadata: { attachments: tweetAttachments(tweet), ...(quote ? { quote } : {}) },

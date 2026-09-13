@@ -96,6 +96,10 @@ const scenarios = [
 	'superseded-upload',
 	'save-failed',
 	'translation-failed',
+	'progress-ready-failed',
+	'index-failed',
+	'existing-draft',
+	'subject-child',
 	'classification-failed',
 	'automatic-source',
 	'youtube-published',
@@ -110,6 +114,7 @@ try {
 		const persisted = [];
 		const translations = [];
 		const reports = [];
+		const steps = [];
 		const classificationGate = Promise.withResolvers();
 		const classificationStarted = Promise.withResolvers();
 		const indexEnqueued = Promise.withResolvers();
@@ -127,7 +132,10 @@ try {
 			content: `# Research paper\n\nAn original research paper.\n\n![Figure](${privateImage})`,
 			citations: { references: [{ key: 'r1', text: 'Cited paper.' }] },
 			creators: [],
-			subject: null,
+			subject:
+				scenario === 'subject-child'
+					? { url: 'https://arxiv.org/pdf/2507.12652v2?download=1', normalizedUrl: 'https://arxiv.org/abs/2507.12652', identifiers: [] }
+					: null,
 			...(youtube
 				? {
 						kind: 'video',
@@ -162,7 +170,11 @@ try {
 				assert.equal(owned, false, 'Stored PDFs already resolve their paper identity');
 				return acquired;
 			},
-			summarizeResource: async (value) => ({ originalLang: 'en', summary: value.summary || 'Summary' }),
+			summarizeResource: async (value) => {
+				assert.equal(value.summary, null, 'Source summaries bypass AI');
+				assert.equal(value.originalLang, 'en', 'Acquisition resolves language before AI');
+				return 'Summary';
+			},
 			stageResourceImages: async () => [],
 			prepareResolvedResource: (value) => {
 				assert.ok(!value.content.startsWith('# Research paper'), 'Acquisition removes the resolved duplicate title');
@@ -177,7 +189,12 @@ try {
 				return {
 					resourceId: privateRendition ? rawId : resourceId,
 					scope: privateRendition ? 'private' : 'corpus',
-					originalWritten: privateRendition || scenario !== 'existing-public',
+					originalWritten: privateRendition || !['existing-public', 'existing-draft'].includes(scenario),
+					kind: value.kind,
+					fileType: value.fileType,
+					resourcePlatform: value.resourcePlatform,
+					originalLang: value.originalLang,
+					url: value.url,
 					translationRevision: revision,
 					acquisitionRevision: revision,
 				};
@@ -210,6 +227,7 @@ try {
 			reportResourceProgress: async (report) => {
 				reports.push(report);
 				if (report.status === 'complete') effects.push('ready');
+				if (scenario === 'progress-ready-failed' && report.status === 'complete') throw new Error('Progress unavailable');
 			},
 			completeResourceSave: async () => {
 				if (scenario === 'save-failed') throw new Error('Save failed');
@@ -222,8 +240,10 @@ try {
 			{},
 			{
 				APP: automatic ? new Proxy({}, { get: () => () => assert.fail('Automatic acquisition cannot depend on user progress') }) : app,
+				RESOURCE_PROCESSING_V2_WORKFLOW: { createBatch: async ([child]) => assert.equal(child.params.url, resource.subject.url) },
 				RESOURCE_SEARCH_SYNC_QUEUE: {
 					send: async () => {
+						if (scenario === 'index-failed') throw new Error('Index dispatch unavailable');
 						effects.push('indexed');
 						indexEnqueued.resolve();
 					},
@@ -239,7 +259,15 @@ try {
 						? { progress: false, sourceHints: { originalLang: 'en', summary: ' Feed summary ', publishedDate: '2026-09-11T00:00:00.000Z' } }
 						: { saveTarget: { kind: 'profileSave', userId: 'fixture' } }),
 				};
-		const run = workflow.run({ instanceId, payload }, { do: async (_name, ...args) => args.at(-1)({ attempt: 1 }) });
+		const run = workflow.run(
+			{ instanceId, payload },
+			{
+				do: async (name, ...args) => {
+					steps.push(name);
+					return args.at(-1)({ attempt: 1 });
+				},
+			},
+		);
 		if (['published', 'youtube-published'].includes(scenario)) {
 			await classificationStarted.promise;
 			if (youtube) await indexEnqueued.promise;
@@ -249,7 +277,7 @@ try {
 			);
 			classificationGate.resolve();
 		}
-		if (['save-failed', 'translation-failed'].includes(scenario)) await assert.rejects(run);
+		if (['save-failed', 'translation-failed', 'progress-ready-failed', 'index-failed'].includes(scenario)) await assert.rejects(run);
 		else await run;
 		if (['admission-rejected', 'superseded-upload'].includes(scenario)) {
 			assert.deepEqual(effects, [], 'Rejected attempts cannot acquire or persist');
@@ -261,22 +289,28 @@ try {
 			continue;
 		}
 		assert.ok(effects.includes('corpus-persisted'));
+		assert.equal(steps.includes('summarize-resource-v2'), !automatic, 'Source summaries need no durable AI step');
 		assert.equal(effects.includes('media-published'), !youtube);
 		if (!automatic) {
 			assert.ok(effects.indexOf(youtube ? 'corpus-persisted' : 'media-published') < effects.indexOf('saved'));
 			assert.ok(effects.indexOf('saved') < effects.indexOf('ready'));
 			assert.equal(reports.at(-1).status, 'complete', 'Follow-up failure cannot undo publication');
 		}
-		assert.ok(effects.includes('indexed'), 'Published content remains searchable even if classification fails');
+		assert.equal(
+			effects.includes('indexed'),
+			scenario !== 'index-failed',
+			'Progress or classification failures must not prevent index dispatch',
+		);
+		if (scenario === 'existing-draft') assert.ok(!effects.includes('classified'), 'Reused originals need no classification');
 		assert.deepEqual(translations.map(({ id }) => id).sort(), (youtube ? [] : owned ? [rawId, resourceId] : [resourceId]).sort());
 		if (owned) {
 			assert.equal(persisted[0].target.ownedBlobId, rawId);
 			assert.equal(persisted[0].value.kind, 'file');
 			assert.match(persisted[0].value.content, /\/pdf-crops\//u);
-			assert.equal(persisted[1].target.preservePublishedPdf, true);
+			assert.equal(persisted[1].target.kind, 'draft');
 			assert.doesNotMatch(persisted[1].value.content, /\/pdf-crops\//u);
 		}
-		if (scenario === 'existing-public')
+		if (!youtube && (!owned || scenario === 'existing-public'))
 			assert.equal(
 				translations.find(({ id }) => id === resourceId).forceRunKey,
 				undefined,

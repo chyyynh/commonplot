@@ -102,10 +102,7 @@ export default {
 			const publicManifestKey = structuredPdfCropManifestKey(publicKey, inputContentHash);
 			const publicManifest = await (await env.R2.get(publicManifestKey)).json();
 			const publicMarkdown = normalizeStructuredPdf(document, {
-				readySourceCrops: crops.map(({ id }) => ({
-					id,
-					url: `/api/media/asset/public-pdf-crops/${sourceHash}/${inputContentHash}/${id}.png`,
-				})),
+				cropUrlPrefix: `/api/media/asset/public-pdf-crops/${sourceHash}/${inputContentHash}`,
 			}).markdown;
 			await env.R2.put(publicKey, pdf, { customMetadata: { ...publicSource.customMetadata, scope: 'private' } });
 			await rejected('privatePublication', () => publishPublicPdfCrops(env, 'paper', publicMarkdown));

@@ -4,7 +4,6 @@ import { openai } from 'workers-ai-provider/openai';
 import { z } from 'zod';
 import type { AcquiredResource } from './acquisition';
 import { coreGatewayOptions } from './ai-model';
-import { detectResourceLanguage } from './resource-language';
 
 const ANALYSIS_CONTENT_MAX_LENGTH = 10_000;
 const ANALYSIS_MODEL = 'google/gemini-3.5-flash-lite';
@@ -34,27 +33,24 @@ function analysisModel(env: CoreEnv, processingId: string, feature: string) {
 	return createWorkersAI({ binding: env.AI, providers: [openai], gateway })(ANALYSIS_MODEL, { extraHeaders });
 }
 
-function analysisPrompt(resource: AcquiredResource, originalLang: string) {
+function analysisPrompt(resource: AcquiredResource) {
 	return `文章資訊:
 標題: ${resource.title}
 來源: ${resource.source.trim()}
 資源種類: ${resource.kind}
 資源平台: ${resource.resourcePlatform ?? 'none'}
-原文語言: ${originalLang}
+原文語言: ${resource.originalLang}
 來源摘要: ${resource.summary ?? '未提供'}
 內容:
 ${resource.content.trim().substring(0, ANALYSIS_CONTENT_MAX_LENGTH)}`;
 }
 
-/** Only presentation metadata blocks publication; classification is completed afterward. */
+/** Called only when acquisition supplied no summary. */
 export async function summarizeResource(resource: AcquiredResource, env: CoreEnv, processingId: string) {
-	const originalLang = detectResourceLanguage(resource.content, resource.originalLang);
-	const sourceSummary = resource.summary?.trim();
-	if (sourceSummary) return { originalLang, summary: sourceSummary };
 	const startedAt = performance.now();
 	const { finishReason, output, usage } = await generateText({
 		model: analysisModel(env, processingId, 'resource-summary'),
-		prompt: analysisPrompt(resource, originalLang),
+		prompt: analysisPrompt(resource),
 		system: `以指定原文語言撰寫 1–2 句摘要；原文語言為 und 時使用內容的主要語言。
 只產生一種語言，保留歸屬、語氣、限制與不確定性，不加入正文沒有的資訊。
 討論串摘要描述討論內容；短貼文摘要長度應與原文相稱。`,
@@ -72,14 +68,14 @@ export async function summarizeResource(resource: AcquiredResource, env: CoreEnv
 		latency_ms: Math.round(performance.now() - startedAt),
 		output_tokens: usage.outputTokens,
 	});
-	return { originalLang, summary: output.summary };
+	return output.summary;
 }
 
 export async function classifyResource(resource: AcquiredResource, env: CoreEnv, processingId: string): Promise<ResourceClassification> {
 	const startedAt = performance.now();
 	const { finishReason, output, usage } = await generateText({
 		model: analysisModel(env, processingId, 'resource-classification'),
-		prompt: analysisPrompt(resource, resource.originalLang),
+		prompt: analysisPrompt(resource),
 		system: RESOURCE_ANALYSIS_SYSTEM_PROMPT,
 		output: Output.object({ name: 'resource_classification', schema: ResourceClassificationSchema }),
 		maxOutputTokens: 300,

@@ -50,7 +50,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				target.kind === 'draft'
 					? { kind: 'draft', ...(target.relation ? { relation: target.relation } : {}) }
 					: uploadedPaper
-						? { kind: 'draft', preservePublishedPdf: true, ownedBlobId }
+						? { kind: 'draft', ownedBlobId }
 						: { kind: 'existing', resourceId: target.resourceId, ...(ownedBlobId ? { ownedBlobId } : {}) };
 			const saveTarget =
 				target.kind === 'draft'
@@ -69,16 +69,15 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			});
 			await task.report('analysis', { stage: 'analyzing', status: 'running' });
 			const imageSources = resourceImageSourceUrls({ ...resource, ogImageUrl: resource.previewImageUrl });
-			const [{ originalLang, summary }, hostedImages] = await Promise.all([
-				step.do('summarize-resource-v1', AI_STEP, () => summarizeResource(resource, this.env, processingId)),
+			const [summary, hostedImages] = await Promise.all([
+				resource.summary ?? step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, processingId)),
 				stageResourceImages(this.env, step, processingId, imageSources, target.kind === 'reacquire' ? event.instanceId : undefined),
 			]);
-			const summarized = { ...resource, originalLang, summary };
-			const sourceKeywords = target.kind === 'draft' ? (target.sourceHints?.keywords ?? []) : [];
+			const summarized = { ...resource, summary };
 			await task.report('persisting', { stage: 'persisting', status: 'running' });
 			const translationTargets: { resourceId: string; translationRevision: string; forceRunKey?: string; stepName: string }[] = [];
-			// Overwritten originals need a fresh translation; replays of this run share one ID.
-			const forceProcessingRunKey = (await sha256Hex(event.instanceId)).slice(0, 16);
+			// Ordinary imports share a translation; explicit reacquisition forces a fresh run.
+			const forceProcessingRunKey = target.kind === 'draft' ? undefined : (await sha256Hex(event.instanceId)).slice(0, 16);
 			const classificationTargets: Parameters<typeof persistResourceClassification>[1][] = [];
 			if (uploadedPaper) {
 				const privateRendition = prepareResolvedResource(
@@ -93,14 +92,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					},
 					hostedImages,
 				);
-				const privatePersistence = await step.do('persist-private-pdf-rendition-v1', STORAGE_STEP, async () =>
+				const privatePersistence = await step.do('persist-private-pdf-rendition-v2', STORAGE_STEP, async () =>
 					persistResolvedResource(await connectCoreDb(this.env), privateRendition, {
 						kind: 'existing',
 						resourceId: target.resourceId,
 						ownedBlobId,
 					}),
 				);
-				if (shouldEnqueueResourceTranslation({ ...privateRendition, scope: 'private' }))
+				if (shouldEnqueueResourceTranslation(privatePersistence))
 					translationTargets.push({
 						...privatePersistence,
 						forceRunKey: forceProcessingRunKey,
@@ -111,9 +110,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const preparedResource = prepareResolvedResource(
 				uploadedPaper ? { ...summarized, content: withoutPrivatePdfImages(resource.content) } : summarized,
 				hostedImages,
-				sourceKeywords,
 			);
-			const persistence = await step.do('persist-resolved-resource-scope-v5', STORAGE_STEP, async () => {
+			const persistence = await step.do('persist-resolved-resource-scope-v6', STORAGE_STEP, async () => {
 				const startedAt = Date.now();
 				const db = await connectCoreDb(this.env);
 				const connectedAt = Date.now();
@@ -130,14 +128,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			});
 			const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision, acquisitionRevision } = persistence;
 			if (persistence.originalWritten) classificationTargets.push(persistence);
-			if (shouldEnqueueResourceTranslation({ ...preparedResource, scope }))
+			if (shouldEnqueueResourceTranslation(persistence))
 				translationTargets.push({
 					resourceId: persistedResourceId,
 					translationRevision,
 					forceRunKey: persistence.originalWritten ? forceProcessingRunKey : undefined,
 					stepName: 'enqueue-resource-translation-v4',
 				});
-			if (scope === 'corpus' && preparedResource.fileType === 'application/pdf') {
+			if (scope === 'corpus' && persistence.fileType === 'application/pdf') {
 				await step.do('publish-public-pdf-crops-v1', STORAGE_STEP, async () =>
 					publishPublicPdfCrops(
 						this.env,
@@ -150,51 +148,54 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			if (saveTarget)
 				await step.do('complete-resource-save-v2', STORAGE_STEP, () => this.env.APP.completeResourceSave(persistedResourceId, saveTarget));
 			publishedResourceId = persistedResourceId;
-			await task.report('ready', {
-				stage: 'persisting',
-				status: 'complete',
-				resourceId: persistedResourceId,
-			});
+
 			const subject = resource.subject;
 			// Let independent background work and handoffs finish before reporting failures.
-			const [references, index, highlights, ...followups] = await Promise.allSettled([
+			const [ready, references, highlights, ...followups] = await Promise.allSettled([
+				task.report('ready', {
+					stage: 'persisting',
+					status: 'complete',
+					resourceId: persistedResourceId,
+				}),
 				scope === 'corpus' &&
-				preparedResource.kind === 'paper' &&
+				persistence.kind === 'paper' &&
 				(preparedResource.citations?.references.length || !persistence.originalWritten)
 					? stageResourceReferences(this.env, step, persistedResourceId, translationRevision, task)
 					: undefined,
-				(async () => {
-					try {
-						const classification = await step.do('classify-published-resource-v1', AI_STEP, () =>
-							classifyResource(summarized, this.env, processingId),
-						);
-						if (sourceKeywords.length) classification.keywords = sourceKeywords;
-						await step.do('persist-resource-classification-v1', STORAGE_STEP, async () => {
-							const db = await connectCoreDb(this.env);
-							for (const target of classificationTargets) await persistResourceClassification(db, target, classification);
-						});
-					} finally {
-						// Even failed classification leaves the published title/body searchable.
-						if (scope === 'corpus')
-							await step.do('enqueue-resolved-ai-search-sync-v2', STORAGE_STEP, () =>
-								enqueueSearchProgress(this.env, persistedResourceId, task, translationRevision),
-							);
-					}
-				})(),
 				preparedResource.youtube && persistence.originalWritten
 					? stageYouTubeHighlights(this.env, step, persistence, preparedResource.youtube)
 					: undefined,
+				(async () => {
+					if (classificationTargets.length) {
+						try {
+							const classification = await step.do('classify-published-resource-v1', AI_STEP, () =>
+								classifyResource(summarized, this.env, processingId),
+							);
+							await step.do('persist-resource-classification-v1', STORAGE_STEP, async () => {
+								const db = await connectCoreDb(this.env);
+								for (const target of classificationTargets) await persistResourceClassification(db, target, classification);
+							});
+						} catch (error) {
+							console.error({ tag: 'WORKFLOW', msg: 'Classification failed', resource_id: persistedResourceId, error });
+						}
+					}
+					// Classification is optional; handing the published body to search is required.
+					if (scope === 'corpus')
+						await step.do('enqueue-resolved-ai-search-sync-v2', STORAGE_STEP, () =>
+							enqueueSearchProgress(this.env, persistedResourceId, task, translationRevision),
+						);
+				})(),
 				...translationTargets.map(({ stepName, resourceId, translationRevision, forceRunKey }) =>
 					step.do(stepName, STORAGE_STEP, () => enqueueResourceTranslation(this.env, resourceId, translationRevision, forceRunKey, task)),
 				),
-				subject && !subjectAttached
+				subject && persistence.originalWritten && !subjectAttached
 					? step.do('enqueue-resolved-subject-child-v2', STORAGE_STEP, async () => {
 							const subjectTarget = ResourceDraftTargetSchema.parse({
 								kind: 'draft',
 								relation: { kind: 'subject', parentResourceId: persistedResourceId, parentAcquisitionRevision: acquisitionRevision },
 								// Carrier-resolved hints only; the subject page still wins when it states its own date.
 								...(resource.publishedDate ? { sourceHints: { publishedDate: resource.publishedDate } } : {}),
-								url: subject.normalizedUrl,
+								url: subject.url,
 							});
 							// Separate tracked and automatic executions so neither inherits the other's progress ledger.
 							const prefix = task.required ? 'subject-draft-v4' : 'subject-draft-auto-v1';
@@ -205,22 +206,24 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						})
 					: undefined,
 			]);
-			for (const outcome of [references, index, highlights]) {
+			for (const outcome of [references, highlights]) {
 				if (outcome.status === 'rejected')
 					console.error({ tag: 'WORKFLOW', msg: 'Background work failed', resource_id: persistedResourceId, error: outcome.reason });
 			}
-			const failures = followups.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+			const failures = [ready, ...followups].flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
 			await task.seal(failures.length ? 'followup_dispatch_failed' : undefined);
 			if (failures.length) throw new AggregateError(failures, 'Resource persisted, but one or more follow-ups failed');
 
 			console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
 			return { resourceId: persistedResourceId };
 		} catch (error) {
-			await task.report('outcome-after-error', {
-				status: publishedResourceId ? 'complete' : 'failed',
-				...(publishedResourceId ? { resourceId: publishedResourceId } : { errorCode: 'processing_failed' }),
-			});
-			if (publishedResourceId) await task.seal('followup_dispatch_failed');
+			await Promise.allSettled([
+				task.report('outcome-after-error', {
+					status: publishedResourceId ? 'complete' : 'failed',
+					...(publishedResourceId ? { resourceId: publishedResourceId } : { errorCode: 'processing_failed' }),
+				}),
+				publishedResourceId ? task.seal('followup_dispatch_failed') : undefined,
+			]);
 			throw error;
 		}
 	}
