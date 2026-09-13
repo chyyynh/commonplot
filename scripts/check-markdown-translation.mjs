@@ -62,6 +62,13 @@ The quoted price is ($57) under [the terms](https://example.com/price), but late
 [docs]: https://example.com/docs "Documentation title"
 `;
 
+const nestedCaptionPlan = planMarkdownTranslation('_**Figure.** Caption _Notes_: details._');
+const nestedCaption = compileMarkdownTranslationArtifact(
+	nestedCaptionPlan,
+	nestedCaptionPlan.segments.map((segment) => targetFromSource(segment, () => '譯文')),
+);
+assert.match(nestedCaption.content, /_譯文_/, 'nested emphasis uses a distinct delimiter after translation');
+
 const referencePlan = planMarkdownTranslation(
 	'## Introduction\n\nRead [the report][docs], [shortcut] and ![chart][image].\n\n> [docs]: https://example.com/report "Report"\n\n[image]: https://example.com/chart.png\n\n[shortcut]: https://example.com/shortcut',
 );

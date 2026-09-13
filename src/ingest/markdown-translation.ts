@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Heading, Link, Nodes, Paragraph, Parents, PhrasingContent, Root, Strong, TableCell } from 'mdast';
+import type { Emphasis, Heading, Link, Nodes, Paragraph, Parents, PhrasingContent, Root, Strong, TableCell } from 'mdast';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { frontmatterFromMarkdown, frontmatterToMarkdown } from 'mdast-util-frontmatter';
 import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm';
@@ -118,22 +118,24 @@ function isCurrencyMath(source: string, start: number, end: number): boolean {
 	return source.slice(start, start + 2) !== '$$' && /\p{Nd}/u.test(source[start + 1] ?? '') && /\p{Nd}/u.test(source[end] ?? '');
 }
 
-function strongMarker(state: State): '*' | '_' {
-	return state.stack.filter((construct) => construct === 'strong').length % 2 === 0 ? '*' : '_';
+function attentionMarker(state: State, kind: 'strong' | 'emphasis'): '*' | '_' {
+	return state.stack.filter((construct) => construct === kind).length % 2 === 0 ? '*' : '_';
 }
 
-// Reusing ** for nested strong nodes can change delimiter pairing when translated text loses English word boundaries.
-// Alternate markers by nesting depth; the native handler also escapes intraword underscores without adding visible spaces.
-function serializeStrong(node: Strong, parent: Parents | undefined, state: State, info: Info): string {
-	const previousMarker = state.options.strong;
-	state.options.strong = strongMarker(state);
+// Alternate nested attention markers so translated text cannot change delimiter pairing.
+function serializeAttention(node: Strong | Emphasis, parent: Parents | undefined, state: State, info: Info): string {
+	const previousMarker = state.options[node.type];
+	state.options[node.type] = attentionMarker(state, node.type);
 	try {
-		return CJK_MARKDOWN.handlers!.strong!(node, parent, state, info);
+		return node.type === 'strong'
+			? CJK_MARKDOWN.handlers!.strong!(node, parent, state, info)
+			: CJK_MARKDOWN.handlers!.emphasis!(node, parent, state, info);
 	} finally {
-		state.options.strong = previousMarker;
+		state.options[node.type] = previousMarker;
 	}
 }
-serializeStrong.peek = (_node: Strong, _parent: Parents | undefined, state: State): string => strongMarker(state);
+serializeAttention.peek = (node: Strong | Emphasis, _parent: Parents | undefined, state: State): string =>
+	attentionMarker(state, node.type);
 
 function serializeMarkdown(tree: Root): string {
 	return toMarkdown(tree, {
@@ -144,7 +146,7 @@ function serializeMarkdown(tree: Root): string {
 			CJK_MARKDOWN,
 			cjkFriendlyGfmStrikethroughToMarkdown(),
 		],
-		handlers: { strong: serializeStrong },
+		handlers: { strong: serializeAttention, emphasis: serializeAttention },
 	}).trimEnd();
 }
 
