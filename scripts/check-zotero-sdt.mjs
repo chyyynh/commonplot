@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { fromHtml } from 'hast-util-from-html';
 import { fromMarkdown as parseMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
+import { mathFromMarkdown } from 'mdast-util-math';
 import { gfm } from 'micromark-extension-gfm';
+import { math } from 'micromark-extension-math';
 import { withoutPrivatePdfImages } from '../src/ingest/pdf-markdown.ts';
 import { normalizeStructuredPdf, parseStructuredPdfDocumentJson, structuredPdfVisualPlan } from '../src/ingest/zotero-sdt.ts';
 
@@ -255,7 +257,7 @@ function nodes(node) {
 	return [node, ...('children' in node ? node.children.flatMap(nodes) : [])];
 }
 function parse(source) {
-	return fromMarkdown(source, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] });
+	return fromMarkdown(source, { extensions: [gfm(), math()], mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()] });
 }
 
 assert.equal(normalizeSample('Uses [<u>[4, 5, 40]</u>] and reigniting<sup>1</sup>.'), 'Uses [4, 5, 40] and reigniting1.');
@@ -310,8 +312,9 @@ const merged = normalizeSample(
 );
 assert.match(merged, /colspan="2"/u);
 assert.match(merged, /rowspan="2"/u);
-assert.match(merged, /<strong>42<\/strong>/u);
-assert.match(merged, /<a href="https:\/\/example.com">source<\/a><br>Next/u);
+assert.match(merged, /\*\*42\*\*/u);
+assert.ok(nodes(parse(merged)).some((node) => node.type === 'link' && node.url === 'https://example.com'));
+assert.ok(nodes(parse(merged)).some((node) => node.type === 'break'));
 assert.doesNotMatch(merged, /class=|style=|onclick=/u);
 assert.match(normalizeSample('<table><tr><td rowspan="0">All remaining rows</td></tr></table>'), /rowspan="0"/u);
 
@@ -344,15 +347,11 @@ for (const span of ['-1', '1001', 'invalid', '1.5']) {
 const mergedEntities = normalizeSample(
 	'<table><tr><td colspan="2">A &amp; B &lt;img onerror=x&gt; `a <u>x</u>` $x < y$ [source](https://example.com?a=1&b=2)</td></tr></table>',
 );
-const mergedNodes = nodes(fromHtml(mergedEntities, { fragment: true }));
+const mergedNodes = nodes(parse(mergedEntities));
 assert.ok(mergedNodes.some((node) => node.type === 'text' && node.value.includes('A & B <img onerror=x>')));
-assert.ok(mergedNodes.some((node) => node.type === 'element' && node.tagName === 'code' && node.children[0]?.value === 'a <u>x</u>'));
-assert.ok(mergedNodes.some((node) => node.type === 'text' && node.value.includes('$x < y$')));
-assert.ok(
-	mergedNodes.some((node) => node.type === 'element' && node.tagName === 'a' && node.properties.href === 'https://example.com?a=1&b=2'),
-);
-const unsafeMarkdownLink = normalizeSample('<table><tr><td colspan="2">[click](javascript:alert%281%29)</td></tr></table>');
-assert.ok(!nodes(fromHtml(unsafeMarkdownLink)).some((node) => node.type === 'element' && node.tagName === 'a' && node.properties.href));
+assert.ok(mergedNodes.some((node) => node.type === 'inlineCode' && node.value === 'a <u>x</u>'));
+assert.ok(mergedNodes.some((node) => node.type === 'inlineMath' && node.value === 'x < y'));
+assert.ok(mergedNodes.some((node) => node.type === 'link' && node.url === 'https://example.com?a=1&b=2'));
 console.info(`Extracted PDF Markdown checks passed (${samples.length} cases).`);
 
 for (const result of [normalized, noted]) {

@@ -1,18 +1,39 @@
+import type { Element } from 'hast';
 import { fromHtml } from 'hast-util-from-html';
+import { sanitize, type Schema } from 'hast-util-sanitize';
 import { toHtml } from 'hast-util-to-html';
 import { toMdast } from 'hast-util-to-mdast';
 import type { Nodes } from 'mdast';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm';
 import { mathFromMarkdown, mathToMarkdown } from 'mdast-util-math';
+import type {} from 'mdast-util-to-hast';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import { gfm } from 'micromark-extension-gfm';
 import { math } from 'micromark-extension-math';
 
 type Range = { start: number; end: number };
 type Replacement = Range & { value: string };
-import type { Element } from 'hast';
-import { readHtmlTable, sanitizeTable, serializeTableHtml, tableContentHtml, TABLE_TAGS, TABLE_INLINE_TAGS } from './html-table.ts';
+const TABLE_TAGS = ['table', 'thead', 'tbody', 'tfoot', 'tr', 'th', 'td', 'caption'];
+const TABLE_INLINE_TAGS = ['strong', 'b', 'em', 'i', 'code', 'sub', 'sup', 'br', 'a', 'del'];
+const TABLE_SCHEMA: Schema = {
+	tagNames: [...TABLE_TAGS, ...TABLE_INLINE_TAGS, 'p', 'ul', 'ol', 'li', 'blockquote', 'pre'],
+	attributes: {
+		a: ['href', 'title'],
+		td: ['colSpan', 'rowSpan'],
+		th: ['colSpan', 'rowSpan', ['scope', 'row', 'col', 'rowgroup', 'colgroup']],
+		ol: ['start'],
+	},
+	protocols: { href: ['http', 'https', 'mailto'] },
+	strip: ['script', 'style', 'iframe', 'object', 'embed'],
+};
+
+function readHtmlTable(source: string): Element | null {
+	if (!/^\s*<table(?:\s[^>]*)?>[\s\S]*<\/table>\s*$/iu.test(source)) return null;
+	const roots = fromHtml(source, { fragment: true }).children.filter((node) => node.type !== 'text' || node.value.trim());
+	return roots.length === 1 && roots[0]?.type === 'element' && roots[0].tagName === 'table' ? roots[0] : null;
+}
+
 const PROSE_HTML_TAGS = new Set([
 	...TABLE_TAGS,
 	...TABLE_INLINE_TAGS,
@@ -46,10 +67,10 @@ const PROSE_HTML_TAGS = new Set([
 	'pre',
 ]);
 
-function parseMarkdown(value: string) {
+function parseMarkdown(value: string, html = false) {
 	return fromMarkdown(value, {
 		// Recognize code and math even when extraction tags surround them at a line start.
-		extensions: [gfm(), math(), { disable: { null: ['htmlFlow', 'htmlText'] } }],
+		extensions: [gfm(), math(), ...(html ? [] : [{ disable: { null: ['htmlFlow', 'htmlText'] } }])],
 		mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()],
 	});
 }
@@ -89,6 +110,9 @@ function protectedRanges(markdown: string): { all: Range[]; literal: Range[]; in
 			start !== undefined &&
 			end !== undefined &&
 			[
+				'code',
+				'math',
+				'break',
 				'inlineCode',
 				'inlineMath',
 				'link',
@@ -113,7 +137,25 @@ function protectedRanges(markdown: string): { all: Range[]; literal: Range[]; in
 		}
 		if ('children' in node) node.children.forEach(visit);
 	}
-	visit(parseMarkdown(markdown));
+	// Expose HTML block boundaries to the Markdown tokenizer without changing offsets.
+	// Otherwise a closing `$$</p>` can consume the following footnote definitions.
+	const prose = markdown.replace(
+		/<\/?(?:table|thead|tbody|tfoot|tr|th|td|caption|p|pre|ul|ol|li|blockquote)\b[^<>]*>/giu,
+		(tag) => `\n${' '.repeat(tag.length - 2)}\n`,
+	);
+	visit(parseMarkdown(prose));
+	// Content already expressed as native Markdown between HTML blocks must pass
+	// through unchanged, including paragraph breaks and list indentation.
+	for (const block of parseMarkdown(markdown, true).children) {
+		if (
+			block.type !== 'html' &&
+			block.position &&
+			!/<\/?(?:table|thead|tbody|tfoot|tr|th|td|caption|p|pre|ul|ol|li|blockquote)\b/iu.test(
+				markdown.slice(block.position.start.offset, block.position.end.offset),
+			)
+		)
+			inline.push({ start: block.position.start.offset!, end: block.position.end.offset! });
+	}
 	const tags = [...markdown.matchAll(/<\/?[A-Za-z][A-Za-z\d-]*(?:\s[^<>]*?)?\/?>/gu)].map((match) => ({
 		start: match.index,
 		end: match.index + match[0].length,
@@ -190,31 +232,51 @@ function normalizeTable(source: string, inline: Range[]): string | null {
 	}
 	inspect(table);
 	if (invalid || !cells) return null;
-	const safe = sanitizeTable(table);
-	const markdownTree = merged ? null : toMdast({ type: 'root', children: [safe] });
-	let result = markdownTree
-		? toMarkdown(markdownTree, { extensions: [gfmToMarkdown({ tablePipeAlign: false }), mathToMarkdown()] }).trimEnd()
-		: toHtml(safe);
+	const safe = sanitize(table, TABLE_SCHEMA);
+	if (safe.type !== 'element') return null;
+	const markdownOptions = { extensions: [gfmToMarkdown({ tablePipeAlign: false }), mathToMarkdown()] };
+	function markdownCells(node: Element): void {
+		if (['td', 'th', 'caption'].includes(node.tagName)) {
+			const content = toMdast(
+				{ type: 'root', children: node.children },
+				{
+					document: true,
+					newlines: true,
+					// Markdown has no native sub/sup nodes; preserve only these inline tags.
+					handlers: {
+						sub: (_state, element) => ({ type: 'html', value: toHtml(element), data: { hName: element.tagName } }),
+						sup: (_state, element) => ({ type: 'html', value: toHtml(element), data: { hName: element.tagName } }),
+					},
+				},
+			);
+			node.children = [{ type: 'raw', value: `\n\n${toMarkdown(content, markdownOptions).trimEnd()}\n\n` }];
+		} else for (const child of node.children) if (child.type === 'element') markdownCells(child);
+	}
+	if (merged) markdownCells(safe);
+	let result = merged
+		? toHtml(safe, { allowDangerousHtml: true })
+		: toMarkdown(toMdast({ type: 'root', children: [safe] }), markdownOptions).trimEnd();
 	for (const { token, value } of tokens) {
-		const tree = parseMarkdown(value);
+		let restored = value;
+		const replacements: Replacement[] = [];
 		function decodeMath(node: Nodes): void {
-			if (node.type === 'inlineMath' || node.type === 'math') {
+			if ((node.type === 'inlineMath' || node.type === 'math') && node.position) {
 				node.value = fromHtml(node.value.replaceAll('<', '&lt;').replaceAll('>', '&gt;'), { fragment: true })
 					.children.map((child) => (child.type === 'text' ? child.value : ''))
 					.join('');
+				replacements.push({
+					start: node.position.start.offset!,
+					end: node.position.end.offset!,
+					value: toMarkdown(node, markdownOptions).trimEnd(),
+				});
 			} else if ('children' in node) node.children.forEach(decodeMath);
 		}
-		decodeMath(tree);
-		const first = tree.children[0];
-		const html = tableContentHtml(
-			tree.children.length === 1 && first?.type === 'paragraph' ? { type: 'tableCell', children: first.children } : tree,
-		);
-		result = result.replaceAll(token, merged ? html : value.replaceAll('|', '\\|'));
+		decodeMath(parseMarkdown(value));
+		for (const replacement of replacements.reverse())
+			restored = restored.slice(0, replacement.start) + replacement.value + restored.slice(replacement.end);
+		result = result.replaceAll(token, () => (merged ? restored : restored.replaceAll('|', '\\|')));
 	}
-	if (!merged) return result;
-	// Markdown placeholders can introduce links; sanitize after their final expansion.
-	const restored = readHtmlTable(result);
-	return restored ? serializeTableHtml(sanitizeTable(restored)) : null;
+	return result;
 }
 
 /** Normalize LlamaParse PDF output before persistence, leaving native Markdown syntax intact. */

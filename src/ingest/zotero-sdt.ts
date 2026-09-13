@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import type { Element } from 'hast';
+import { toHtml } from 'hast-util-to-html';
 import type { BlockContent, Heading, PhrasingContent, Root, Table } from 'mdast';
 import { gfmToMarkdown } from 'mdast-util-gfm';
+import type {} from 'mdast-util-to-hast';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import type {
 	ContentBlockNode,
@@ -20,7 +22,6 @@ import {
 } from 'structured-document-text/src/parts.js';
 import { isContentBoundary, isLeafBlock, refKey, sameRef } from 'structured-document-text/src/range.js';
 import { mergeTextNodes } from 'structured-document-text/src/text.js';
-import { sanitizeTable, serializeTableHtml, tableContentHast } from './html-table.ts';
 
 const MAX_DOCUMENT_NODES = 100_000;
 const MAX_DOCUMENT_TEXT_CHARS = 2_000_000;
@@ -802,16 +803,21 @@ export function normalizeStructuredPdf(
 							...(cell.colspan !== undefined ? { colSpan: cell.colspan } : {}),
 							...(cell.rowspan !== undefined ? { rowSpan: cell.rowspan } : {}),
 						},
-						children: tableContentHast(
-							content.length === 1 && content[0]?.type === 'paragraph'
-								? { type: 'tableCell', children: content[0].children }
-								: { type: 'root', children: content },
-						),
+						children: [
+							{
+								type: 'raw',
+								value: `\n\n${toMarkdown({ type: 'root', children: content }, { extensions: [gfmToMarkdown()] }).trimEnd()}\n\n`,
+							},
+						],
 					})),
 				})),
 			};
-			const safe = sanitizeTable({ type: 'element', tagName: 'table', properties: {}, children: [body] });
-			return [{ type: 'html', value: serializeTableHtml(safe), data: { hName: 'table', hChildren: safe.children } }];
+			return [
+				{
+					type: 'html',
+					value: toHtml({ type: 'element', tagName: 'table', properties: {}, children: [body] }, { allowDangerousHtml: true }),
+				},
+			];
 		}
 		if (!isLeafBlock(node)) return blocks(node.content, path);
 		const children = inline(node.content, node.type === 'caption');

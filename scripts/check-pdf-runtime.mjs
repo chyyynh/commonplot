@@ -55,7 +55,7 @@ try {
 	assert.ok(recovered.storedCrops.every(({ validBytes, contentType }) => validBytes && contentType === 'image/png'));
 	assert.match(recovered.result.markdown, /\/api\/media\/asset\/pdf-crops\//);
 	assert.match(recovered.result.markdown, /colspan="2"/u);
-	assert.match(recovered.translated, /colspan="2"[^>]*>執行結果/u);
+	assert.match(recovered.translated, /colspan="2"[^>]*>\s+執行結果/u);
 	assert.match(recovered.translated, /證據\[\^sdt-note-4\]/u);
 	assert.match(recovered.translated, /\[\^sdt-note-4\]: 1 Original evidence\./u);
 	assert.equal((await phase('warm')).batches.length, 0);

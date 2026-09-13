@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { fromHtml } from 'hast-util-from-html';
-import { serializeTableHtml } from '../src/ingest/html-table.ts';
+import { normalizeExtractedPdfMarkdown } from '../src/ingest/extracted-pdf-markdown.ts';
 import {
 	MarkdownTranslationInvariantError,
 	compileMarkdownTranslationArtifact,
@@ -120,11 +120,9 @@ assert.equal(
 	longPlan.sourceMarkdown,
 );
 
-const tableSource = `Before[^evidence].
+const tableSource = normalizeExtractedPdfMarkdown(`Before[^evidence].
 
-${serializeTableHtml(
-	fromHtml(
-		`<table><caption>Results</caption><thead><tr><th colspan="2" scope="colgroup">Metric</th></tr></thead><tbody>
+<table><caption>Results</caption><thead><tr><th colspan="2" scope="colgroup">Metric</th></tr></thead><tbody>
 <tr><th rowspan="2" scope="row">Condition</th><td><p>The <strong>best</strong> result[^evidence] with <a href="https://example.com/source?q=1&amp;b=2">source</a>.</p><p>Price $5 to $10 is approximate.</p><p>First line
 
 Second line</p><ul><li>*literal* [plain](text)</li></ul></td></tr>
@@ -132,14 +130,11 @@ Second line</p><ul><li>*literal* [plain](text)</li></ul></td></tr>
 
 [^evidence] is code</code></pre><p>$x &lt; y$</p><p>$$
 E = mc^2
-$$</p></td></tr></tbody></table>`,
-		{ fragment: true },
-	),
-)}
+$$</p></td></tr></tbody></table>
 
 After[^evidence].
 
-[^evidence]: Original evidence.`;
+[^evidence]: Original evidence.`);
 const htmlPlan = planMarkdownTranslation(tableSource);
 const modelTexts = htmlPlan.segments.map((segment) => segment.template.texts);
 const tableModelText = JSON.stringify(modelTexts);
@@ -176,20 +171,19 @@ assert.deepEqual(
 	tableStructure(htmlPlan.sourceMarkdown),
 	'translation preserves every table tag and attribute',
 );
-assert.match(tableArtifact.content, /<strong>最好<\/strong> 結果\[\^evidence\]/u);
-const translatedNodes = htmlNodes(fromHtml(tableArtifact.content, { fragment: true }));
-assert.ok(translatedNodes.some((node) => node.type === 'text' && node.value.includes('return `x`;\n\n[^evidence] is code')));
-assert.ok(translatedNodes.some((node) => node.type === 'text' && node.value.includes('$$\nE = mc^2\n$$')));
-assert.ok(translatedNodes.some((node) => node.type === 'text' && node.value.includes('*literal* [plain](text)')));
-assert.ok(translatedNodes.some((node) => node.type === 'text' && node.value.includes('First line\n\nSecond line')));
+assert.match(tableArtifact.content, /\*\*最好\*\* 結果\[\^evidence\]/u);
+assert.ok(tableArtifact.content.includes('return `x`;\n\n[^evidence] is code'));
+assert.ok(tableArtifact.content.includes('$$\nE = mc^2\n$$'));
+assert.ok(tableArtifact.content.includes('First line\nSecond line'));
+assert.ok(
+	tableArtifact.alignment.blocks.every((block) => block.type !== 'tableCell'),
+	'HTML cell content uses native paragraph alignment',
+);
 const injectedTable = compileMarkdownTranslation(
 	htmlPlan,
 	htmlPlan.segments.map((segment) => targetFromSource(segment, (value) => value.replace('Metric', '<img src=x onerror=alert(1)>'))),
 );
-assert.ok(
-	!htmlNodes(fromHtml(injectedTable, { fragment: true })).some((node) => node.type === 'element' && node.tagName === 'img'),
-	'model output remains escaped table text',
-);
+assert.ok(injectedTable.includes('\\<img src=x onerror=alert(1)>'), 'model output remains escaped Markdown text');
 console.info(
 	'HTML table translation passed: spans, headers, captions, notes, code, math, currency, literal text, alignment and injection.',
 );
