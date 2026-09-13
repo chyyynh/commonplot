@@ -110,7 +110,7 @@ try {
 	// URLs and publication metadata must survive into persisted Markdown.
 	responses.set('/code-article', () => {
 		const response = new Response(
-			`<html><head><title>Code article</title><meta property="og:site_name" content="Example"><meta name="author" content="Ada"><meta property="article:published_time" content="2026-09-11T00:00:00Z"><meta property="og:image" content="/cover.png"></head><body><article><h1>Code article</h1><p>${'An article about preserving executable examples and their exact indentation. '.repeat(8)}</p><a href="/docs">Documentation</a><pre class="brush: python;">if ready:\n    print("ok")\n\n    print("again")</pre><pre><code class="language-js">const ready = true;</code></pre></article></body></html>`,
+			`<html><head><title>Code article</title><meta property="og:site_name" content="Example"><meta name="author" content="Ada"><meta property="article:published_time" content="2026-09-11T00:00:00Z"><meta property="og:image" content="/cover.png"></head><body><article><h1>Code article</h1><p>${'An article about preserving executable examples and their exact indentation. '.repeat(8)}</p><a href="/docs">Documentation</a><pre class="brush: python;">if ready:\n    print("ok")\n\n    print("again")</pre><pre><code class="language-js">const ready = true;</code></pre><pre class="brush: bash;">\n for x in a b; do\n \techo "$x"\n done\n</pre></article></body></html>`,
 			{ headers: { 'Content-Type': 'text/html' } },
 		);
 		Object.defineProperty(response, 'url', { value: 'https://example.com/code-article' });
@@ -119,6 +119,7 @@ try {
 	const codeArticle = await stageUrlAcquisition(env, step, { ...input, url: 'https://example.com/code-article' });
 	assert.match(codeArticle.content, /```python\nif ready:\n    print\("ok"\)\n\n    print\("again"\)/u);
 	assert.match(codeArticle.content, /```js\nconst ready = true;/u);
+	assert.match(codeArticle.content, /```bash\nfor x in a b; do\n\techo "\$x"\ndone\n```/u);
 	assert.match(codeArticle.content, /\[Documentation\]\(https:\/\/example.com\/docs\)/u);
 	assert.equal(codeArticle.previewImageUrl, 'https://example.com/cover.png');
 	assert.equal(codeArticle.publishedDate, '2026-09-11T00:00:00Z');
