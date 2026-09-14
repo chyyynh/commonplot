@@ -63,7 +63,7 @@ responses.set('/youtube/v3/videos', {
 			id: 'abcdefghijk',
 			snippet: {
 				title: 'Video',
-				description: '00:00 Introduction\n01:00 Results',
+				description: '00:00 — Introduction\n01:00 • Results\n01:20 - A\n01:40 ***',
 				channelId: 'example',
 				channelTitle: 'Example Channel',
 				publishedAt: '2026-09-01T00:00:00Z',
@@ -177,7 +177,13 @@ try {
 	const video = acquired.get('youtube');
 	assert.equal(video.content, 'Transcript content');
 	assert.equal(video.originalLang, 'ja');
-	assert.equal(video.summary, '00:00 Introduction\n01:00 Results');
+	assert.equal(video.summary, '00:00 — Introduction\n01:00 • Results\n01:20 - A\n01:40 ***');
+	assert.deepEqual(video.youtube.chapters, [
+		{ title: 'Introduction', startTime: 0, endTime: 60 },
+		{ title: 'Results', startTime: 60, endTime: 80 },
+		{ title: 'A', startTime: 80, endTime: 100 },
+		{ title: '***', startTime: 100 },
+	]);
 	assert.equal(video.creators[0].avatarUrl, 'https://example.com/avatar.jpg');
 	assert.deepEqual(video.youtube.segments, [{ startTime: 60, endTime: 61.5, text: 'Transcript content' }]);
 	responses.get('/youtubei/v1/player').captions.playerCaptionsTracklistRenderer.captionTracks[0].baseUrl =

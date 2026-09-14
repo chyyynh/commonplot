@@ -89,7 +89,7 @@ function parseChaptersFromDescription(description: string): YouTubeChapter[] {
 		if (title.length < 2 || /^\d+:\d+/.test(title)) continue;
 
 		const startTime = Number.parseInt(hours ?? '0', 10) * 3600 + Number(minutes) * 60 + Number(seconds);
-		chapters.push({ title, startTime });
+		chapters.push({ title: title.replace(/^[\s\u2022\u00b7*\u2013\u2014-]+/, '').trim() || title, startTime });
 	}
 
 	for (let i = 0; i < chapters.length - 1; i++) {
