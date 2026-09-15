@@ -1,7 +1,7 @@
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import { RESOURCE_KIND_METADATA, RESOURCE_PLATFORMS, type ResourceKind, type ResourcePlatform } from './shared/resource';
+import { RESOURCE_KIND_METADATA, type ResourceKind, type ResourcePlatform } from './shared/resource';
 
 // Postgres is canonical; AI Search is its derived public-corpus index.
 export const AI_SEARCH_ITEM_PREFIX = 'resources/';
@@ -34,11 +34,9 @@ type SearchableResourceKind = Exclude<ResourceKind, 'image'>;
 export type PublicResourceSearchInput = {
 	query: string;
 	limit: number;
-	mode?: 'hybrid' | 'vector';
 	filters?: {
 		publishedAfter?: Date;
 		kinds?: SearchableResourceKind[];
-		resourcePlatforms?: (ResourcePlatform | null)[];
 	};
 };
 
@@ -228,15 +226,9 @@ function aiSearchFilters(input: PublicResourceSearchInput['filters']): Vectorize
 	if (kinds?.some((value) => !Object.hasOwn(RESOURCE_KIND_METADATA, value) || String(value) === 'image')) {
 		throw new Error('Invalid resource kinds');
 	}
-	const resourcePlatforms = filters.resourcePlatforms === undefined ? undefined : [...new Set(filters.resourcePlatforms)];
-	if (resourcePlatforms?.some((value) => value !== null && (typeof value !== 'string' || !Object.hasOwn(RESOURCE_PLATFORMS, value)))) {
-		throw new Error('Invalid resource platforms');
-	}
-	if (kinds?.length === 0 || resourcePlatforms?.length === 0) return null;
+	if (kinds?.length === 0) return null;
 	const metadata: VectorizeVectorMetadataFilter = {};
 	if (kinds?.length && kinds.length < SEARCHABLE_RESOURCE_KIND_COUNT) metadata.kind = { $in: kinds };
-	if (resourcePlatforms?.length)
-		metadata.resource_platform = { $in: resourcePlatforms.map((platform) => platform ?? NULL_RESOURCE_PLATFORM_METADATA) };
 	if (publishedAfter) metadata.published_at = { $gte: publishedAfter.toISOString() };
 	return Object.keys(metadata).length ? metadata : undefined;
 }
@@ -262,7 +254,6 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 	if (!query) return [];
 	const metadataFilters = aiSearchFilters(input.filters);
 	if (metadataFilters === null) return [];
-	const retrievalType = input.mode ?? 'hybrid';
 	const response = await env.AI_SEARCH.search({
 		query,
 		ai_search_options: {
@@ -270,8 +261,8 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 			query_rewrite: { enabled: false },
 			reranking: { enabled: false },
 			retrieval: {
-				retrieval_type: retrievalType,
-				...(retrievalType === 'hybrid' ? { fusion_method: 'rrf' as const } : {}),
+				retrieval_type: 'hybrid',
+				fusion_method: 'rrf',
 				keyword_match_mode: 'or',
 				match_threshold: 0,
 				max_num_results: input.limit,
