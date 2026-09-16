@@ -69,6 +69,34 @@ const nestedCaption = compileMarkdownTranslationArtifact(
 );
 assert.match(nestedCaption.content, /_譯文_/, 'nested emphasis uses a distinct delimiter after translation');
 
+for (const marker of ['**', '*', '~~']) {
+	const whitespaceSource = `| Metric | Existing LLMs |\n| --- | --- |\n| Speed | **Response time:**[**3 seconds**](https://example.com/benchmark)${marker}&#x20;${marker}&#x66;or frontier models. |`;
+	const whitespacePlan = planMarkdownTranslation(whitespaceSource);
+	const translate = (text) =>
+		text
+			.replace('Metric', '指標')
+			.replace('Existing LLMs', '現有模型')
+			.replace('Speed', '速度')
+			.replace('Response time:', '回應時間：')
+			.replace('3 seconds', '3 秒')
+			.replace('for frontier models.', '（以前沿模型而言）。');
+	const whitespaceArtifact = compileMarkdownTranslationArtifact(
+		whitespacePlan,
+		whitespacePlan.segments.map((segment) => targetFromSource(segment, (text) => (text.trim() ? translate(text) : ''))),
+	);
+	assert.equal(
+		whitespaceArtifact.content,
+		planMarkdownTranslation(translate(whitespaceSource.replace('&#x66;', 'f'))).sourceMarkdown,
+		'whitespace-only formatting survives translation even when the model removes unnecessary spaces',
+	);
+	assert.deepEqual(whitespaceArtifact.alignment.paths, [
+		[0, 0, 0],
+		[0, 0, 1],
+		[0, 1, 0],
+		[0, 1, 1],
+	]);
+}
+
 const referencePlan = planMarkdownTranslation(
 	'## Introduction\n\nRead [the report][docs], [shortcut] and ![chart][image].\n\n> [docs]: https://example.com/report "Report"\n\n[image]: https://example.com/chart.png\n\n[shortcut]: https://example.com/shortcut',
 );

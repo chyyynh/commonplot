@@ -372,6 +372,12 @@ function planPhrasing(children: readonly PhrasingContent[], firstInlineIndex: nu
 	const reconstruction: Record<string, readonly MarkdownTranslationReconstructionPart[]> = {};
 
 	for (const [sourceSequenceId, sourceParts] of Object.entries(sourceSequences)) {
+		// Whitespace-only containers still carry formatting. An empty model result
+		// would turn them into invalid Markdown delimiters (for example, ****).
+		if (sourceParts.every((part) => typeof part === 'string' && !part.trim())) {
+			reconstruction[sourceSequenceId] = [{ type: 'literal', value: sourceParts.join('') }];
+			continue;
+		}
 		const hasFixedInline = sourceParts.some((part) => {
 			if (typeof part === 'string') return false;
 			const inline = inlines[part.id];

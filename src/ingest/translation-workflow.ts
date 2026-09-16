@@ -357,7 +357,7 @@ async function translateDurableBatch(
 	depth = 0,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	const result = await step.do(
-		`translate-zh-hant-markdown-${batch.id}-v15`,
+		`translate-zh-hant-markdown-${batch.id}-v16`,
 		{ retries: { limit: 3, delay: translationRetryDelay, backoff: 'constant' }, timeout: '300 seconds' },
 		async () => {
 			try {
@@ -453,7 +453,7 @@ async function translatePlannedContent(content: string, env: CoreEnv, resourceId
 	return translated;
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v31';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v32';
 const ResourceTranslationRevisionSchema = z.hash('md5').lowercase();
 const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 
