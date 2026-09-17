@@ -1,63 +1,67 @@
 # AI Search v6 operations
 
-This runbook covers the active canonical AI Search instance and rebuild
-Workflow. Completed #245/#251 rollout and one-shot repair procedures live in Git
-history and the closed issues, not in the current operator surface.
+This runbook covers the active public Resource index. Historical rollout and
+one-shot repair procedures remain in Git history, not in the current operator
+surface.
 
 ## Active contract
 
-| Role | Instance or resource | Durable state | Generation |
-| --- | --- | --- | --- |
-| Serving binding | `AI_SEARCH → newsence-corpus-v6` | `public-corpus-v6` | `5 / canonical-5-blog-forum-kind` |
-| Rebuild binding | `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` | — | — |
-| Physical Workflow | `newsence-search-index-generation-5-rebuild` | — | — |
-| Entrypoint class | `SearchIndexGeneration5RebuildWorkflow` | — | — |
-| Stable runner | `search-index-rebuild-canonical-5-blog-forum-kind-canonical-v1` | — | — |
-| Durable step namespace | `generation-5` | — | — |
+| Role | Active resource |
+| --- | --- |
+| Serving binding | `AI_SEARCH → newsence-corpus-v6` |
+| Rebuild binding | `SEARCH_INDEX_REBUILD_WORKFLOW` |
+| Physical Workflow | `newsence-search-index-rebuild` |
+| Entrypoint | `SearchIndexRebuildWorkflow` |
+| Current runner | `search-index-rebuild-v6-native-v1` |
+| Observability | Native Workflow instance status/output and AI Search item status |
 
-The v6 instance owns exactly five custom metadata fields:
-`effective_at`, `source_id`, `category`, `kind`, and `resource_platform`.
-Canonical null platforms are stored as the reserved text sentinel `none`.
-
-Readiness compares PostgreSQL and AI Search for every searchable identity pair:
+The instance owns four custom metadata fields: `effective_at`, `source_id`,
+`kind`, and `resource_platform`. A null platform is stored as
+`none`. Searchable identities are:
 
 - `blog / none`
+- `blog / lesswrong`
 - `forum / hackernews`
 - `post / twitter`
 - `video / youtube`
 - `paper / none`
-- `paper / hackernews`
 
-Private image and file resources are not part of the public search corpus.
+Private `image` and `file` Resources never enter this index. PostgreSQL is the
+canonical corpus; AI Search is a keyed, eventually consistent secondary index.
+Web hydrates and authoritatively filters every returned Resource ID.
 
-## Workflow graph isolation
+## Runtime sync
 
-Cloudflare Workflow executions replay the graph attached to the physical
-Workflow resource that started them. A new runner ID on an existing physical
-resource does not select newly deployed code.
+Resource and translation Workflows enqueue a Resource ID after persistence.
+The `resource-search-sync` Queue consumer deduplicates IDs within each batch,
+loads their current corpus documents in one query, and calls `syncCorpusItem` per Resource.
+Each Resource's messages are acknowledged or retried together; eligible
+Resources upload to `resources/<resource-id>.md`, while ineligible or deleted
+Resources remove that exact key through the native AI Search `key` filter.
+Canonical resource readiness never depends on this derived index. There is no
+R2 corpus mirror, database readiness row, generation lease, or app-side serving
+cutover.
 
-For an incompatible rebuild graph revision, create all four together:
+## Rebuild graph
 
-1. a new binding;
-2. a new physical Workflow name;
-3. a new exported `WorkflowEntrypoint` class;
-4. a new source-controlled runner ID.
+One rebuild performs these durable operations:
 
-Never trigger historical generation-3/generation-4, shadow-rollout, or one-shot
-repair Workflow resources. Local source cleanup does not delete their remote
-execution history.
+1. configure the AI Search instance;
+2. upload every currently eligible Resource in UUID order;
+3. upload a start-time delta using the newest Resource or translation revision;
+4. prune keyed items that no longer map to an eligible PostgreSQL row;
+5. poll native AI Search status until queued/running are zero, terminal counts
+   are zero, and completed/keyed item counts match the live PostgreSQL count;
+6. return the counts and reconciliation summary as Workflow output.
 
-## Database prerequisite
+AI Search owns indexing and item status. Workflow owns durable steps, retries,
+status, errors, and output. A terminal `error`, `skipped`, or `outdated` item
+fails the rebuild visibly; Core does not maintain a second repair state machine.
 
-Generation 5 serves only the current canonical `blog`/`forum` identity matrix.
-The completed `document` cutover and its one-shot SQL live in git history. Do
-not run this rebuild against a database that fails the current schema and
-resource-identity gates.
+## Start a rebuild
 
-## Bootstrap or rebuild
-
-Confirm that the v6 instance exists. Create it only in a fresh environment;
-never recreate or replace the production instance.
+Confirm the dedicated instance exists. Create it only in a fresh environment;
+never replace the production instance.
 
 ```sh
 pnpm -C workers/core-worker exec wrangler ai-search get newsence-corpus-v6
@@ -69,72 +73,57 @@ pnpm -C workers/core-worker exec wrangler ai-search create \
   --hybrid-search
 ```
 
-Run the Core gates before starting a rebuild. A fresh environment needs the
-current schema and a schema-compatible Worker first:
+Run the static gates and deploy the current Workflow version:
 
 ```sh
-pnpm -C workers/core-worker typecheck
-pnpm -C workers/core-worker lint
+pnpm -C workers/core-worker run typecheck
+pnpm -C workers/core-worker run lint
 pnpm -C workers/core-worker run deploy
 ```
 
-Prefer the service-binding RPC `startSearchIndexRebuild()`. The equivalent
-operator trigger is:
+Do not run two rebuilds concurrently. Trigger the current source-controlled
+runner ID:
 
 ```sh
 pnpm -C workers/core-worker exec wrangler workflows trigger \
-  newsence-search-index-generation-5-rebuild \
+  newsence-search-index-rebuild \
   '{}' \
-  --id search-index-rebuild-canonical-5-blog-forum-kind-canonical-v1
+  --id search-index-rebuild-v6-native-v1
 ```
-
-Inspect that exact runner before an explicit trigger. Do not start a second
-execution concurrently. A transient failure may restart the same
-source-compatible runner; a graph change requires the isolation sequence above.
-
-The Workflow configures the instance, validates the identity matrix, uploads
-the full corpus plus a start-time delta, prunes stale owned items, repairs
-retryable terminal items, and marks generation 5 ready only after PostgreSQL and
-AI Search converge. Terminal-item repair is per item: a native
-`items.get(id).sync()` re-index when the stored document is current, or a
-re-upload when the DB row is newer than the stored document. The binding's
-`sync()` returns null at runtime despite its declared type — observed state
-comes from a follow-up `info()`.
 
 ## Verify
 
-Inspect the exact Workflow instance with Wrangler:
+Inspect the same Workflow instance:
 
 ```sh
 pnpm -C workers/core-worker exec wrangler workflows instances describe \
-  newsence-search-index-generation-5-rebuild \
-  search-index-rebuild-canonical-5-blog-forum-kind-canonical-v1
+  newsence-search-index-rebuild \
+  search-index-rebuild-v6-native-v1
 ```
 
-A completed Workflow has already verified:
+A completed instance has already returned a final observation with:
 
-- durable generation 5 status `ready`;
-- zero queued, running, outdated, error, and skipped owned items;
-- completed item count equal to the enriched searchable corpus;
-- canonical resource identity constraints;
-- matching PostgreSQL and AI Search counts for all six identity pairs.
+- canonical instance configuration;
+- zero queued, running, outdated, error, and skipped items;
+- `completed === indexedItems === expectedItems`;
+- full upload, delta, and stale-prune summaries.
 
-Before a reader or schema change, also call `probeSearchIndexCutover()` through
-the deployed Core service binding. This fresh probe is independent of the
-durable ready row.
+Each deployment creates a versioned Workflow graph, and an instance remains
+pinned to the version it started with. After an incompatible graph change,
+deploy first and use a new source-controlled runner ID. A separate binding,
+Workflow resource, or entrypoint is unnecessary.
 
 ## Failure handling
 
 If a rebuild fails:
 
-1. inspect only the active canonical runner and its failed step;
-2. leave the serving instance and current database schema intact;
-3. restart the same runner only for a transient, source-compatible failure;
-4. deploy a newly isolated physical Workflow for any graph change;
-5. require the native Workflow inspection and fresh cutover probe again.
+1. inspect the failed native Workflow step and AI Search item status;
+2. keep the serving instance and PostgreSQL schema intact;
+3. fix the source document or Worker code that produced a terminal item;
+4. restart the same runner only for a transient, source-compatible failure;
+5. after a graph change, deploy and trigger a new runner ID;
+6. require a completed Workflow output before considering the rebuild healthy.
 
-Do not revive the removed #251 single-item or terminal-repair tooling. The
-canonical rebuild owns current retry, stale-item pruning, convergence, and
-readiness behavior. Remote retirement of historical Workflow or Worker
-resources is a separate destructive operation and must follow an explicit
-nonterminal-instance audit.
+Historical generation-3/generation-4, shadow-rollout, and one-shot repair
+resources are not active bindings and must not be triggered. Retiring remote
+history is a separate destructive operation requiring an explicit audit.

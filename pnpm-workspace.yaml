@@ -1,6 +1,16 @@
 packages:
   - .
+confirmModulesPurge: false
+storeDir: ../../.pnpm-store
+optimisticRepeatInstall: false
+trustLockfile: true
+verifyDepsBeforeRun: error
+virtualStoreType: project
 allowBuilds:
   esbuild: true
   sharp: true
   workerd: true
+minimumReleaseAgeExclude:
+  - miniflare@5.20260820.0-alpha
+  - wrangler@4.125.0
+  - zod@4.5.4

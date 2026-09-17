@@ -1,582 +1,368 @@
+import { NonRetryableError } from 'cloudflare:workflows';
+import { sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { type HostedResourceImage, hostedResourceImageFields } from '../shared/image-mapping';
+import { isPaperIdentifierScheme } from '../shared/paper-identity';
 import {
-	hasSemanticScholarAcademicEnrichment,
-	isIncomingResourceSnapshotSuperseded,
-	parseResourceIdentity,
-	type ResourceSourceSnapshot,
-	resourceIdentityWithAcademic,
-	resourceSourceSnapshot,
-	toResourceIdentityColumns,
-} from '@core-shared/resource-types';
-import {
-	type PaperMetadata,
-	type PlatformMetadata,
-	type ResourceForProcessing,
-	withPdfExtractionMetadata,
-	type YoutubeTranscript,
-} from '@core-shared/types';
-import { type CoreDb, withCoreDb, withCoreTx } from '@db/client';
-import { resources } from '@db/schema';
-import { toStoredResourceEntities } from '@entities/normalize';
-import { updateResourceAfterProcessing } from '@ingest/domain/resource-store';
-import { eq, sql } from 'drizzle-orm';
-import { type PdfExtractionMetadata, pdfExtractionMetadata } from './acquisition';
-import type { ProcessorResult } from './domain/ai-utils';
-import type { PdfTextArtifact } from './platforms/pdf';
-import { persistYouTubeWorkflowData, type YouTubeHighlightsUpdate } from './platforms/youtube';
+	RESOURCE_KIND_METADATA,
+	RESOURCE_PLATFORMS,
+	ResourceCreatorsSchema,
+	type ResourceKind,
+	type ResourcePlatform,
+	ResourceIdentifiersSchema,
+} from '../shared/resource';
+import type { AcquiredResource } from './acquisition';
+import type { ResourceDraftRelation } from './admission';
+import type { ResourceClassification } from './analysis';
+import { resolveResourceUrl, type ResolvedResourceUrl } from './platforms/resource-url';
+import type { YouTubeHighlights, YouTubeTranscript } from './platforms/youtube';
+import { ResourceLanguageSchema } from './resource-language';
 
-type PersistProcessedResourceInput = {
-	resourceId: string;
-	resource: ResourceForProcessing;
-	processorResult: ProcessorResult;
-	pdfTextArtifact: PdfTextArtifact | null;
-	acquisitionExtraction?: PdfExtractionMetadata;
-	paperEnrichment: PaperMetadata | null;
-	previewImageUrl: string | null;
-	youtubeTranscript?: YoutubeTranscript;
-	youtubeHighlights: YouTubeHighlightsUpdate | null;
-};
+export type ResourcePersistenceTarget = { ownedBlobId?: string } & (
+	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation }>
+	| Readonly<{ kind: 'existing'; resourceId: string }>
+);
 
-type BuildResourceUpdateInput = {
-	processorResult: ProcessorResult;
-	extraction?: PdfExtractionMetadata;
-	paperEnrichment?: PaperMetadata | null;
-	previewImageUrl: string | null;
-};
+type LockedResource = Readonly<{
+	id: string;
+	hasOriginal: boolean;
+	subjectResourceId: string | null;
+	translationRevision: string;
+	acquisitionRevision: string;
+	kind: ResourceKind;
+	fileType: string | null;
+	resourcePlatform: ResourcePlatform | null;
+	originalLang: string;
+	scope: 'corpus' | 'private';
+	url: string | null;
+}>;
 
-type LockedResourceState = {
-	created_at: Date | string;
-	file_type: string | null;
-	kind: string;
-	monitored_source_name: string | null;
-	og_image_url: string | null;
-	platform_metadata: unknown;
-	published_date: Date | string | null;
-	resource_platform: string | null;
-	scraped_date: Date | string | null;
-};
+type PreparedResource = ReturnType<typeof prepareResolvedResource>;
 
-type ResourcePersistenceOutcome = {
-	/**
-	 * False only when compare-and-set protection rejected a superseded workflow
-	 * snapshot. A current no-op still counts as persisted.
-	 */
-	persisted: boolean;
-	/** Durable payload fields changed, excluding refresh-only timestamps. */
-	changed: boolean;
-	/** The stored AI Search document or its filter metadata may have changed. */
-	indexRelevantChanged: boolean;
-};
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return !!value && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isPlatformMetadata(value: unknown): value is PlatformMetadata {
-	return isRecord(value) && typeof value.fetchedAt === 'string' && Object.hasOwn(value, 'data');
-}
-
-function academicEnrichmentFrom(platformMetadata: unknown): PaperMetadata | null {
-	if (!hasSemanticScholarAcademicEnrichment(platformMetadata)) return null;
-	return (platformMetadata as { enrichments: { academic: PaperMetadata } }).enrichments.academic;
-}
-
-function academicTimestamp(metadata: PaperMetadata): number {
-	const timestamp = Date.parse(metadata.metricsUpdatedAt || metadata.resolvedAt);
-	return Number.isNaN(timestamp) ? 0 : timestamp;
-}
-
-function academicSchemaVersion(metadata: unknown): unknown {
-	return isRecord(metadata) ? metadata.schemaVersion : null;
-}
-
-function newestAcademicEnrichment(first: PaperMetadata | null, second: PaperMetadata | null): PaperMetadata | null {
-	if (!first) return second;
-	if (!second) return first;
-	// A schema backfill must not preserve an older payload solely because its
-	// provider timestamp is newer (for example, a concurrent legacy writer).
-	if (academicSchemaVersion(first) === 2 && academicSchemaVersion(second) !== 2) return first;
-	if (academicSchemaVersion(first) !== 2 && academicSchemaVersion(second) === 2) return second;
-	return academicTimestamp(second) > academicTimestamp(first) ? second : first;
-}
-
-function mergeLockedPlatformMetadata(resource: ResourceForProcessing, lockedPlatformMetadata: unknown): ResourceForProcessing {
-	if (!isPlatformMetadata(lockedPlatformMetadata)) return resource;
-	const current = resource.platform_metadata;
-	if (!current) return { ...resource, platform_metadata: lockedPlatformMetadata };
-	const lockedEnrichments = isRecord(lockedPlatformMetadata.enrichments) ? lockedPlatformMetadata.enrichments : {};
-	return {
-		...resource,
-		platform_metadata: {
-			...lockedPlatformMetadata,
-			...current,
-			enrichments: {
-				...lockedEnrichments,
-				...(current.enrichments ?? {}),
-			},
-		},
-	};
-}
-
-async function lockResourceState(db: CoreDb, resourceId: string): Promise<LockedResourceState> {
-	const result = await db.execute<LockedResourceState>(sql`
-		SELECT
-			r.created_at,
-			r.file_type,
-			r.kind,
-			monitored_source.name AS monitored_source_name,
-			r.og_image_url,
-			r.platform_metadata,
-			r.published_date,
-			r.resource_platform,
-			r.scraped_date
-		FROM resources r
-		LEFT JOIN sources monitored_source ON monitored_source.id = r.source_id
-		WHERE r.id = ${resourceId}::uuid
-		FOR UPDATE OF r
+/** Update only the original that this acquisition published, never a newer import or human edit. */
+export async function persistResourceClassification(
+	db: NodePgDatabase,
+	target: { resourceId: string; acquisitionRevision: string; translationRevision: string },
+	classification: ResourceClassification,
+): Promise<void> {
+	await db.execute(sql`
+		WITH target AS (
+			SELECT resource.id
+			FROM resources resource
+			JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+			WHERE resource.id = ${target.resourceId}::uuid AND original.source = 'original'
+			  AND MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) = ${target.acquisitionRevision}
+			  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${target.translationRevision}
+			FOR UPDATE OF resource, original
+		)
+		UPDATE resources
+		SET tags = ${sql.param(classification.tags)}::text[], keywords = ${sql.param(classification.keywords)}::text[], updated_at = NOW()
+		FROM target WHERE resources.id = target.id
 	`);
-	const lockedResource = result.rows[0];
-	if (!lockedResource) throw new Error(`Failed to lock resource ${resourceId}: not found`);
-	return lockedResource;
 }
 
-function jsonValuesEqual(left: unknown, right: unknown): boolean {
-	if (Object.is(left, right)) return true;
-	if (Array.isArray(left) || Array.isArray(right)) {
-		if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
-		return left.every((value, index) => jsonValuesEqual(value, right[index]));
-	}
-	if (!isRecord(left) || !isRecord(right)) return false;
-	const leftKeys = Object.keys(left).filter((key) => left[key] !== undefined);
-	const rightKeys = Object.keys(right).filter((key) => right[key] !== undefined);
-	if (leftKeys.length !== rightKeys.length) return false;
-	return leftKeys.every((key) => Object.hasOwn(right, key) && jsonValuesEqual(left[key], right[key]));
+/** Lock the acquisition revision so an old AI result cannot overwrite a newer transcript. */
+export async function persistYouTubeHighlights(
+	db: NodePgDatabase,
+	target: { resourceId: string; acquisitionRevision: string },
+	highlights: YouTubeHighlights,
+): Promise<void> {
+	await db.execute(sql`
+		WITH current_resource AS (
+			SELECT id FROM resources
+			WHERE id = ${target.resourceId}::uuid AND resource_platform = 'youtube'
+			  AND MD5(EXTRACT(EPOCH FROM scraped_date)::text) = ${target.acquisitionRevision}
+			FOR UPDATE
+		)
+		UPDATE youtube_transcripts SET ai_highlights = ${JSON.stringify(highlights)}::jsonb
+		FROM current_resource WHERE youtube_transcripts.resource_id = current_resource.id
+	`);
 }
 
-function dateTimestamp(value: Date | string | null): number | null {
-	if (value === null) return null;
-	const timestamp = new Date(value).getTime();
-	return Number.isNaN(timestamp) ? null : timestamp;
+/** Use the same candidates for admission, canonical persistence, and subject attachment. */
+async function findResourceCandidates(
+	db: NodePgDatabase,
+	identities: readonly { url: string | null; normalizedUrl: string | null; identifiers: ResolvedResourceUrl['identifiers'] }[],
+) {
+	if (!identities.length) return [];
+	const { rows } = await db.execute<{ owners: { id: string; sourceId: string | null; scope: 'corpus' | 'private' }[] }>(sql`
+		SELECT COALESCE(jsonb_agg(jsonb_build_object('id', resource.id, 'sourceId', resource.source_id, 'scope', resource.scope))
+		  FILTER (WHERE resource.id IS NOT NULL), '[]'::jsonb) AS owners
+		FROM jsonb_array_elements(${JSON.stringify(identities.map(({ url, normalizedUrl, identifiers }) => ({ url, normalizedUrl, identifiers })))}::jsonb) WITH ORDINALITY AS input(value, ordinal)
+		LEFT JOIN LATERAL (
+			SELECT id FROM resources WHERE scope = 'corpus' AND normalized_url = input.value->>'normalizedUrl'
+			UNION SELECT id FROM resources WHERE scope = 'corpus' AND url = input.value->>'url'
+			UNION SELECT stored.resource_id AS id
+			FROM jsonb_to_recordset(input.value->'identifiers') AS incoming(scheme text, value text)
+			JOIN resource_identifiers stored USING (scheme, value)
+		) candidate ON true
+		LEFT JOIN resources resource ON resource.id = candidate.id
+		GROUP BY input.ordinal ORDER BY input.ordinal
+	`);
+	return rows.map(({ owners }) => owners);
 }
 
-function datesEqual(left: Date | string | null, right: Date | string | null): boolean {
-	return dateTimestamp(left) === dateTimestamp(right);
+/** Admission only reuses an unambiguous public identity. */
+export async function findResourcesByUrls(db: NodePgDatabase, urls: readonly ResolvedResourceUrl[]) {
+	const candidates = await findResourceCandidates(db, urls);
+	return urls.map(({ url, normalizedUrl }, index) => {
+		const owners = candidates[index]!.filter(({ scope }) => scope === 'corpus');
+		const owner = owners.length === 1 ? owners[0] : null;
+		return { url, normalizedUrl, resourceId: owner?.id ?? null, sourceId: owner?.sourceId ?? null };
+	});
 }
 
-function effectiveTimestamp(input: {
-	createdAt: Date | string;
-	publishedDate: Date | string | null;
-	scrapedDate: Date | string | null;
-}): number | null {
-	return dateTimestamp(input.publishedDate) ?? dateTimestamp(input.scrapedDate) ?? dateTimestamp(input.createdAt);
-}
-
-function metadataSourceName(value: unknown): string | null {
-	if (!isRecord(value) || typeof value.sourceName !== 'string') return null;
-	return value.sourceName.trim() || null;
-}
-
-function mergeLockedResourceState(
-	resource: ResourceForProcessing,
-	lockedResource: LockedResourceState,
-	incomingPaperEnrichment: PaperMetadata | null,
-): { paperEnrichment: PaperMetadata | null; resource: ResourceForProcessing } {
-	const lockedIdentity = parseResourceIdentity(lockedResource.kind, lockedResource.resource_platform);
-	if (!lockedIdentity) {
-		throw new Error(
-			`Cannot persist resource ${resource.id} with invalid stored identity ${String(lockedResource.kind)} / ${String(lockedResource.resource_platform)}`,
-		);
-	}
-	const paperEnrichment = newestAcademicEnrichment(incomingPaperEnrichment, academicEnrichmentFrom(lockedResource.platform_metadata));
-	let merged = mergeLockedPlatformMetadata(resource, lockedResource.platform_metadata);
+export function prepareResolvedResource(
+	resource: AcquiredResource & { youtube?: YouTubeTranscript },
+	hostedImages: readonly HostedResourceImage[],
+) {
+	const title = resource.title.trim();
+	const content = resource.content.trim();
+	const sourceName = resource.source.trim();
+	if (!title || !content) throw new TypeError('Resolved Resource requires title and content');
+	if (!sourceName) throw new TypeError('Resolved Resource requires a source name');
+	const creators = ResourceCreatorsSchema.parse(resource.creators);
+	const kindMetadata = RESOURCE_KIND_METADATA[resource.kind].parse(resource.kindMetadata);
+	const media = hostedResourceImageFields({ creators, kindMetadata, ogImageUrl: resource.previewImageUrl }, hostedImages);
+	const identifiers = ResourceIdentifiersSchema.parse(resource.resourceIdentifiers);
 	if (
-		lockedIdentity.kind === 'paper' &&
-		(merged.kind === 'blog' || merged.kind === 'forum') &&
-		lockedIdentity.resourcePlatform === merged.resource_platform
+		resource.resourcePlatform !== null
+			? RESOURCE_PLATFORMS[resource.resourcePlatform].kind !== resource.kind ||
+				!identifiers.length ||
+				identifiers.some(({ scheme }) => scheme !== resource.resourcePlatform)
+			: resource.kind === 'paper'
+				? !identifiers.length || identifiers.some((identifier) => !isPaperIdentifierScheme(identifier.scheme))
+				: identifiers.length > 0
 	) {
-		merged = { ...merged, kind: 'paper' };
+		throw new TypeError('Resource identifiers do not match its identity');
 	}
-	if (!merged.published_date && lockedResource.published_date) {
-		const publishedDate = new Date(lockedResource.published_date);
-		if (!Number.isNaN(publishedDate.getTime())) merged = { ...merged, published_date: publishedDate.toISOString() };
+	if (resource.resourcePlatform === 'youtube' ? !resource.youtube : resource.youtube !== undefined) {
+		throw new TypeError('YouTube data requires a YouTube video Resource');
 	}
+	const resolvedUrl = resolveResourceUrl(resource.url);
+	if (resource.url !== null && !resolvedUrl) throw new TypeError('Resource URL must be HTTP(S) without credentials');
+	let publishedDate = resource.publishedDate ? new Date(resource.publishedDate) : null;
+	if (publishedDate && Number.isNaN(publishedDate.getTime())) throw new TypeError('Resource publication date is invalid');
+	const today = new Date().toISOString().slice(0, 10);
+	if (publishedDate && publishedDate.toISOString().slice(0, 10) > today) publishedDate = new Date(today);
+	const subject = resolveResourceUrl(resource.subjectUrl);
+	if (resource.subjectUrl !== null && !subject) throw new TypeError('Subject URL must be HTTP(S) without credentials');
 	return {
-		paperEnrichment,
-		resource: withAcademicPublishedDate(withAcademicIdentity(merged, paperEnrichment), paperEnrichment),
+		kind: resource.kind,
+		resourcePlatform: resource.resourcePlatform,
+		content,
+		citations: resource.kind === 'paper' ? resource.citations : null,
+		creators: media.creators,
+		fileType: resource.fileType ?? null,
+		identifiers,
+		kindMetadata: media.kindMetadata,
+		normalizedUrl: resolvedUrl?.normalizedUrl ?? null,
+		ogImageHeight: media.ogImageHeight,
+		ogImageUrl: media.ogImageUrl,
+		ogImageWidth: media.ogImageWidth,
+		originalLang: ResourceLanguageSchema.parse(resource.originalLang),
+		publishedDate,
+		sourceName,
+		subject,
+		summary: resource.summary ?? '',
+		title,
+		url: resolvedUrl?.url ?? null,
+		youtube: resource.youtube ?? null,
 	};
 }
 
-function resourceWriteIsSuperseded(resource: ResourceForProcessing, lockedResource: LockedResourceState, stage: string): boolean {
-	if (!isIncomingResourceSnapshotSuperseded(resource.platform_metadata, lockedResource.platform_metadata)) return false;
-	console.info({
-		tag: 'RESOURCE_PERSIST',
-		event: 'superseded_resource_write_skipped',
-		resource_id: resource.id,
-		stage,
-	});
-	return true;
+async function lockResource(db: NodePgDatabase, resourceId: string): Promise<LockedResource> {
+	const result = await db.execute<LockedResource>(sql`
+		SELECT resource.id::text, resource.scope, resource.kind, resource.url,
+		       resource.original_lang AS "originalLang", resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform",
+		       resource.subject_resource_id::text AS "subjectResourceId",
+		       COALESCE(BTRIM(original.title) <> '' AND BTRIM(original.content) <> '', false) AS "hasOriginal",
+		       MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS "translationRevision",
+		       MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) AS "acquisitionRevision"
+		FROM resources resource
+		LEFT JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+		WHERE resource.id = ${resourceId}::uuid
+		FOR UPDATE OF resource
+	`);
+	const resource = result.rows[0];
+	if (!resource) throw new Error(`Resource ${resourceId} was not found`);
+	return resource;
 }
 
-function mergePaperEnrichment(platformMetadata: PlatformMetadata, paperEnrichment?: PaperMetadata | null): PlatformMetadata {
-	if (!paperEnrichment) return platformMetadata;
-	return {
-		...platformMetadata,
-		enrichments: { ...(platformMetadata.enrichments || {}), academic: paperEnrichment },
-	};
-}
-
-function withAcademicPublishedDate(resource: ResourceForProcessing, paperEnrichment?: PaperMetadata | null): ResourceForProcessing {
-	if (resource.published_date || !paperEnrichment?.publicationDate) return resource;
-	const publishedDate = new Date(`${paperEnrichment.publicationDate}T00:00:00.000Z`);
-	if (Number.isNaN(publishedDate.getTime())) return resource;
-	return { ...resource, published_date: publishedDate.toISOString() };
-}
-
-function withAcademicIdentity(resource: ResourceForProcessing, paperEnrichment?: PaperMetadata | null): ResourceForProcessing {
-	const persistedIdentity = parseResourceIdentity(resource.kind, resource.resource_platform);
-	if (!persistedIdentity) {
-		throw new Error(`Resource ${resource.id} has invalid identity ${String(resource.kind)} / ${String(resource.resource_platform)}`);
-	}
-	const identity = resourceIdentityWithAcademic(persistedIdentity, !!paperEnrichment);
-	if (identity.kind === resource.kind && identity.resourcePlatform === resource.resource_platform) return resource;
-	return { ...resource, ...toResourceIdentityColumns(identity) };
-}
-
-function buildResourceUpdate(resource: ResourceForProcessing, input: BuildResourceUpdateInput) {
-	const { processorResult, extraction, paperEnrichment, previewImageUrl } = input;
-	if (!resource.platform_metadata) throw new Error(`Cannot build update for resource ${resource.id} without platform metadata`);
-	let platformMetadata = mergePaperEnrichment(resource.platform_metadata, paperEnrichment);
-	platformMetadata = {
-		...platformMetadata,
-		classification: {
-			...(platformMetadata.classification ?? {}),
-			category: processorResult.category,
-			classifiedAt: new Date().toISOString(),
-		},
-	};
-	const sourceName = resource.source?.trim();
-	if (!sourceName) throw new Error('Cannot build platform metadata without a source name');
-	platformMetadata = { ...platformMetadata, ...(extraction ? { extraction } : {}), sourceName };
-
-	return {
-		summary: resource.summary,
-		content: processorResult.content !== undefined ? processorResult.content : resource.content,
-		tags: [...(processorResult.tags ?? resource.tags)],
-		keywords: [...(processorResult.keywords ?? resource.keywords)],
-		entities: toStoredResourceEntities(processorResult.entities, resource.resource_platform, resource.source, platformMetadata),
-		og_image_url: previewImageUrl?.trim() || resource.og_image_url?.trim() || null,
-		platform_metadata: platformMetadata,
-	};
-}
-
-export async function markResourceEnrichmentFailed(
-	env: CoreEnv,
+async function writeCanonicalResource(
+	db: NodePgDatabase,
 	resourceId: string,
-	expectedSnapshot: ResourceSourceSnapshot,
-): Promise<boolean> {
-	return withCoreDb(env, async (db) => {
-		const updated = await db.execute(sql`
-			UPDATE resources
-			SET enrichment_status = 'failed',
-			    -- Counts consecutive failures so monitors back off and eventually stop
-			    -- re-enqueuing a URL that never resolves.
-			    enrichment_attempts = enrichment_attempts + 1,
-			    updated_at = NOW()
-			WHERE id = ${resourceId}::uuid
-			  AND enrichment_status <> 'enriched'
-			  AND NULLIF(BTRIM(platform_metadata->>'sourceSnapshotHash'), '') IS NOT DISTINCT FROM ${expectedSnapshot.hash}
-			  AND NULLIF(BTRIM(platform_metadata->>'fetchedAt'), '') IS NOT DISTINCT FROM ${expectedSnapshot.fetchedAt}
-			RETURNING id
+	resource: PreparedResource,
+	existing: boolean,
+	subjectResourceId: string | null,
+) {
+	const columns = sql`
+		kind, resource_platform, source_name, url, normalized_url, file_type, original_lang, published_date,
+		tags, keywords, og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id,
+		scraped_date, updated_at
+	`;
+	const values = sql`
+		${resource.kind}, ${resource.resourcePlatform}, ${resource.sourceName}, ${resource.url}, ${resource.normalizedUrl},
+		${resource.fileType}, ${resource.originalLang}, ${resource.publishedDate}, ARRAY[]::text[], ARRAY[]::text[],
+		${resource.ogImageUrl}, ${resource.ogImageWidth}, ${resource.ogImageHeight}, ${JSON.stringify(resource.creators)}::jsonb,
+		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
+		NOW(), NOW()
+	`;
+	// The cleanup excludes the incoming language: no CTE deletes a row another CTE writes.
+	const written = await db.execute<{ revision: string; acquisition_revision: string }>(sql`
+		WITH written_resource AS (
+			${
+				!existing
+					? sql`INSERT INTO resources (id, scope, ${columns}) VALUES (${resourceId}::uuid, 'corpus', ${values})`
+					: sql`UPDATE resources SET (${columns}) = (${values}) WHERE id = ${resourceId}::uuid`
+			}
+			RETURNING id, MD5(EXTRACT(EPOCH FROM scraped_date)::text) AS acquisition_revision
+		), cleared_identifiers AS (
+			DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid AND ${existing}
+		), cleared_references AS (
+			DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid AND ${existing}
+		), cleared_translations AS (
+			DELETE FROM resource_translations
+			WHERE resource_id = ${resourceId}::uuid AND ${existing}
+			  AND lang <> ${resource.originalLang}
+		), written_original AS (
+			INSERT INTO resource_translations (resource_id, lang, title, summary, content, source, updated_at)
+			SELECT id, ${resource.originalLang}, ${resource.title}, ${resource.summary}, ${resource.content},
+			       'original', NOW()
+			FROM written_resource
+			WHERE true
+			ON CONFLICT (resource_id, lang) DO UPDATE SET
+				(title, summary, content, source, alignment, updated_at) =
+				(EXCLUDED.title, EXCLUDED.summary, EXCLUDED.content, EXCLUDED.source, NULL, EXCLUDED.updated_at)
+			RETURNING MD5(jsonb_build_array(lang, title, summary, content)::text) AS revision
+		)
+		SELECT revision, acquisition_revision FROM written_resource CROSS JOIN written_original
+	`);
+	if (resource.identifiers.length) {
+		// Identifier replacement must follow its DELETE; both can target the same keys.
+		await db.execute(sql`
+			INSERT INTO resource_identifiers (resource_id, scheme, value, is_preferred)
+			SELECT ${resourceId}::uuid, scheme, value, preferred
+			FROM jsonb_to_recordset(${JSON.stringify(resource.identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
 		`);
-		if (updated.rows.length) return true;
-		const existing = await db
-			.select({ enrichmentStatus: resources.enrichmentStatus, id: resources.id, platformMetadata: resources.platformMetadata })
-			.from(resources)
-			.where(eq(resources.id, resourceId))
-			.limit(1);
-		if (!existing.length) throw new Error(`Failed to mark resource ${resourceId} as failed: not found`);
-		if (existing[0]?.enrichmentStatus !== 'enriched') {
-			console.info({
-				tag: 'RESOURCE_PERSIST',
-				event: 'superseded_resource_failure_skipped',
-				resource_id: resourceId,
-				expected_snapshot: expectedSnapshot,
-				current_snapshot: resourceSourceSnapshot(existing[0]?.platformMetadata),
-			});
-			return false;
-		}
-		console.info({
-			tag: 'RESOURCE_PERSIST',
-			event: 'enriched_resource_failure_preserved',
-			resource_id: resourceId,
-		});
-		return false;
-	});
+	}
+	if (resource.citations?.references.length) {
+		const { references } = resource.citations;
+		// These references describe exactly the original written in this transaction.
+		await db.execute(sql`
+			INSERT INTO resource_references (resource_id, ordinal, label, text)
+			SELECT ${resourceId}::uuid, incoming.ordinal::integer, incoming.value->>'label', incoming.value->>'text'
+			FROM jsonb_array_elements(${JSON.stringify(references)}::jsonb)
+			WITH ORDINALITY AS incoming(value, ordinal)
+		`);
+	}
+	if (resource.youtube) {
+		const transcript = resource.youtube;
+		await db.execute(sql`
+			INSERT INTO youtube_transcripts (resource_id, transcript, language, chapters, ai_highlights)
+			VALUES (
+				${resourceId}::uuid, ${JSON.stringify(transcript.segments)}::jsonb, ${transcript.language},
+				${JSON.stringify(transcript.chapters)}::jsonb, NULL
+			)
+			ON CONFLICT (resource_id) DO UPDATE SET
+				transcript = EXCLUDED.transcript,
+				language = EXCLUDED.language,
+				chapters = EXCLUDED.chapters,
+				ai_highlights = EXCLUDED.ai_highlights
+		`);
+	}
+	const original = written.rows[0];
+	if (!original) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
+	return { translationRevision: original.revision, acquisitionRevision: original.acquisition_revision };
 }
 
-export async function persistUnchangedResourceResync(
-	env: CoreEnv,
-	resourceId: string,
-	resource: ResourceForProcessing,
-	paperEnrichment?: PaperMetadata | null,
-): Promise<ResourcePersistenceOutcome> {
-	if (!resource.platform_metadata) throw new Error(`Cannot resync resource ${resourceId} without platform metadata`);
-	return withCoreTx(env, async (db) => {
-		const lockedResource = await lockResourceState(db, resourceId);
-		if (resourceWriteIsSuperseded(resource, lockedResource, 'unchanged_resync')) {
-			return { persisted: false, changed: false, indexRelevantChanged: false };
-		}
-		const merged = mergeLockedResourceState(resource, lockedResource, paperEnrichment ?? null);
-		const resourceWithDate = merged.resource;
-		const previewImageUrl = resourceWithDate.og_image_url?.trim() || null;
-		if (!resourceWithDate.platform_metadata) throw new Error(`Cannot resync resource ${resourceId} without platform metadata`);
-		const platformMetadata = mergePaperEnrichment(resourceWithDate.platform_metadata, merged.paperEnrichment);
-		const refreshedAt = new Date();
-		const publishedDate = resourceWithDate.published_date ? new Date(resourceWithDate.published_date) : null;
-		const academicChanged = !jsonValuesEqual(
-			academicEnrichmentFrom(lockedResource.platform_metadata),
-			academicEnrichmentFrom(platformMetadata),
-		);
-		const identityChanged =
-			lockedResource.kind !== resourceWithDate.kind || lockedResource.resource_platform !== resourceWithDate.resource_platform;
-		const effectiveAtChanged =
-			effectiveTimestamp({
-				createdAt: lockedResource.created_at,
-				publishedDate: lockedResource.published_date,
-				scrapedDate: lockedResource.scraped_date,
-			}) !==
-			effectiveTimestamp({
-				createdAt: lockedResource.created_at,
-				publishedDate,
-				scrapedDate: refreshedAt,
-			});
-		const platformMetadataChanged = !jsonValuesEqual(lockedResource.platform_metadata, platformMetadata);
-		const metadataSourceChanged =
-			!lockedResource.monitored_source_name?.trim() &&
-			metadataSourceName(lockedResource.platform_metadata) !== metadataSourceName(platformMetadata);
-		const changed =
-			identityChanged ||
-			lockedResource.file_type !== (resourceWithDate.file_type ?? null) ||
-			!datesEqual(lockedResource.published_date, publishedDate) ||
-			lockedResource.og_image_url !== previewImageUrl ||
-			platformMetadataChanged;
-		const indexRelevantChanged = identityChanged || effectiveAtChanged || academicChanged || metadataSourceChanged;
-		const updated = await db
-			.update(resources)
-			.set({
-				kind: resourceWithDate.kind,
-				resourcePlatform: resourceWithDate.resource_platform,
-				fileType: resourceWithDate.file_type ?? null,
-				scrapedDate: refreshedAt,
-				publishedDate,
-				ogImageUrl: previewImageUrl,
-				platformMetadata,
-				updatedAt: refreshedAt,
-			})
-			.where(eq(resources.id, resourceId))
-			.returning({ id: resources.id });
-		if (!updated.length) throw new Error(`Failed to record resource ${resourceId} resync: not found`);
-		return { persisted: true, changed, indexRelevantChanged };
-	});
+async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relation: ResourceDraftRelation) {
+	if (relation.kind === 'source') {
+		const source = await db.execute<{ id: string }>(sql`SELECT id::text FROM sources WHERE id = ${relation.sourceId}::uuid`);
+		if (!source.rows[0]) throw new Error('Resource source was not found');
+		await db.execute(sql`
+			UPDATE resources SET source_id = ${relation.sourceId}::uuid, updated_at = NOW()
+			WHERE id = ${resourceId}::uuid AND source_id IS NULL
+		`);
+		return;
+	}
+	const attached = await db.execute(sql`
+		UPDATE resources SET subject_resource_id = ${resourceId}::uuid, updated_at = NOW()
+		WHERE id = ${relation.parentResourceId}::uuid
+		  AND scope = 'corpus'
+		  AND EXISTS (
+		    SELECT 1 FROM resource_translations original
+		    WHERE original.resource_id = resources.id AND original.lang = resources.original_lang
+		      AND BTRIM(COALESCE(original.content, '')) <> ''
+		  )
+		  AND id <> ${resourceId}::uuid
+		  AND MD5(EXTRACT(EPOCH FROM scraped_date)::text) = ${relation.parentAcquisitionRevision}
+	`);
+	if (attached.rowCount !== 1) throw new NonRetryableError('Subject parent was reacquired or is no longer eligible for attachment');
 }
 
-export async function persistAcademicMetadataBackfill(
-	env: CoreEnv,
-	resourceId: string,
-	metadata: PaperMetadata,
-): Promise<ResourcePersistenceOutcome> {
-	return withCoreTx(env, async (_db, client) => {
-		const locked = await client.query<{
-			created_at: Date | string;
-			kind: string;
-			platform_metadata: unknown;
-			published_date: Date | string | null;
-			resource_platform: string | null;
-			scraped_date: Date | string | null;
-		}>(
-			`
-				SELECT
-					created_at,
-					kind,
-					platform_metadata,
-					published_date,
-					resource_platform,
-					scraped_date
-				FROM resources
-				WHERE id = $1::uuid
-				FOR UPDATE
-			`,
-			[resourceId],
-		);
-		const row = locked.rows[0];
-		if (!row) throw new Error(`Failed to persist academic metadata for resource ${resourceId}: not found`);
-		const currentIdentity = parseResourceIdentity(row.kind, row.resource_platform);
-		if (!currentIdentity) {
-			throw new Error(
-				`Cannot persist academic metadata for resource ${resourceId} with invalid identity ${String(row.kind)} / ${String(row.resource_platform)}`,
-			);
+export async function persistResolvedResource(db: NodePgDatabase, resource: PreparedResource, target: ResourcePersistenceTarget) {
+	const lockKeys = [
+		...(resource.normalizedUrl ? [`url:${resource.normalizedUrl}`] : []),
+		...resource.identifiers.map(({ scheme, value }) => `id:${scheme}:${value}`),
+		...(resource.subject
+			? [`url:${resource.subject.normalizedUrl}`, ...resource.subject.identifiers.map(({ scheme, value }) => `id:${scheme}:${value}`)]
+			: []),
+	];
+	return db.transaction(async (tx) => {
+		for (const key of [...new Set(lockKeys)].sort()) {
+			await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`newsence:resource:${key}`}, 0))`);
 		}
-		const storedAcademic = academicEnrichmentFrom(row.platform_metadata);
-		const academic = newestAcademicEnrichment(metadata, storedAcademic);
-		if (!academic) throw new Error(`Failed to select academic metadata for resource ${resourceId}`);
-		const identity = resourceIdentityWithAcademic(currentIdentity, true);
-		const academicPublishedDate = academic.publicationDate ? `${academic.publicationDate}T00:00:00.000Z` : null;
-		const publishedDate = row.published_date ?? academicPublishedDate;
-		const academicChanged = !jsonValuesEqual(storedAcademic, academic);
-		const identityChanged = row.kind !== identity.kind || row.resource_platform !== identity.resourcePlatform;
-		const publishedDateChanged = !datesEqual(row.published_date, publishedDate);
-		const changed = academicChanged || identityChanged || publishedDateChanged;
-		const indexRelevantChanged =
-			academicChanged ||
-			identityChanged ||
-			effectiveTimestamp({
-				createdAt: row.created_at,
-				publishedDate: row.published_date,
-				scrapedDate: row.scraped_date,
-			}) !==
-				effectiveTimestamp({
-					createdAt: row.created_at,
-					publishedDate,
-					scrapedDate: row.scraped_date,
-				});
-		if (!changed) {
-			console.info({
-				tag: 'S2',
-				event: 'academic_metadata_backfill_unchanged',
-				resource_id: resourceId,
-			});
-			return { persisted: true, changed: false, indexRelevantChanged: false };
+		if (target.ownedBlobId) {
+			const owned = await tx.execute(sql`SELECT resource_id FROM user_files WHERE resource_id = ${target.ownedBlobId}::uuid FOR UPDATE`);
+			if (!owned.rows.length) throw new NonRetryableError('Uploaded PDF ownership was deleted');
 		}
-		const result = await client.query<{ id: string }>(
-			`
-					UPDATE resources
-					SET
-						platform_metadata =
-							CASE
-								WHEN jsonb_typeof(platform_metadata) = 'object' THEN platform_metadata
-								ELSE '{}'::jsonb
-							END
-						|| jsonb_build_object(
-							'enrichments',
-							CASE
-								WHEN jsonb_typeof(platform_metadata->'enrichments') = 'object' THEN platform_metadata->'enrichments'
-								ELSE '{}'::jsonb
-							END
-							|| jsonb_build_object('academic', $2::jsonb)
-						),
-					published_date = $3::timestamp,
-					kind = $4,
-					resource_platform = $5,
-					updated_at = NOW()
-				WHERE id = $1::uuid
-				RETURNING id::text AS id
-			`,
-			[resourceId, JSON.stringify(academic), publishedDate, identity.kind, identity.resourcePlatform],
-		);
-		if (result.rowCount !== 1) throw new Error(`Failed to persist academic metadata for resource ${resourceId}: not found`);
-		console.info({
-			tag: 'S2',
-			event: 'academic_metadata_backfill_persisted',
-			resource_id: resourceId,
-			references_loaded: academic.references.length,
-			publication_date_available: !!publishedDate,
-			index_relevant_changed: indexRelevantChanged,
-		});
-		return { persisted: true, changed: true, indexRelevantChanged };
-	});
-}
-
-export async function persistResourceImageSnapshot(
-	env: CoreEnv,
-	resourceId: string,
-	resource: ResourceForProcessing,
-	paperEnrichment: PaperMetadata | null,
-): Promise<boolean> {
-	return withCoreTx(env, async (db) => {
-		const lockedResource = await lockResourceState(db, resourceId);
-		if (resourceWriteIsSuperseded(resource, lockedResource, 'acquisition_snapshot')) return false;
-		const merged = mergeLockedResourceState(resource, lockedResource, paperEnrichment);
-		if (!merged.resource.platform_metadata) {
-			throw new Error(`Cannot snapshot resource ${resourceId} without platform metadata`);
+		const candidates = await findResourceCandidates(tx, [
+			...(target.kind === 'draft' ? [resource] : []),
+			...(resource.subject ? [resource.subject] : []),
+		]);
+		const rootCandidates = target.kind === 'draft' ? candidates.shift()! : [];
+		const subjectCandidates = candidates[0] ?? [];
+		if (target.kind === 'draft' && (rootCandidates.length > 1 || rootCandidates[0]?.scope === 'private'))
+			throw new Error('Resolved identity is ambiguous or belongs to a private Resource');
+		const existingId = target.kind === 'existing' ? target.resourceId : rootCandidates[0]?.id;
+		const root = existingId ? await lockResource(tx, existingId) : null;
+		const resourceId = root?.id ?? crypto.randomUUID();
+		const originalWritten = target.kind === 'existing' || !root?.hasOriginal;
+		let subjectResourceId = root?.subjectResourceId ?? null;
+		let accepted = root;
+		if (originalWritten) {
+			const subject = subjectCandidates.length === 1 && subjectCandidates[0]?.scope === 'corpus' ? subjectCandidates[0] : null;
+			subjectResourceId = subject && subject.id !== resourceId && (await lockResource(tx, subject.id)).hasOriginal ? subject.id : null;
+			const written = await writeCanonicalResource(tx, resourceId, resource, root !== null, subjectResourceId);
+			accepted = { ...resource, ...written, id: resourceId, scope: root?.scope ?? 'corpus', hasOriginal: true, subjectResourceId };
 		}
-		const updated = await db
-			.update(resources)
-			.set({
-				kind: merged.resource.kind,
-				resourcePlatform: merged.resource.resource_platform,
-				fileType: merged.resource.file_type ?? null,
-				publishedDate: merged.resource.published_date ? new Date(merged.resource.published_date) : null,
-				ogImageUrl: merged.resource.og_image_url?.trim() || null,
-				platformMetadata: mergePaperEnrichment(merged.resource.platform_metadata, merged.paperEnrichment),
-			})
-			.where(eq(resources.id, resourceId))
-			.returning({ id: resources.id });
-		if (!updated.length) throw new Error(`Failed to persist resource ${resourceId} image snapshot: not found`);
-		return true;
-	});
-}
-
-export async function persistPdfExtractionSnapshot(
-	env: CoreEnv,
-	resourceId: string,
-	resource: ResourceForProcessing,
-	extraction: PdfExtractionMetadata,
-): Promise<boolean> {
-	return withCoreTx(env, async (db) => {
-		const lockedResource = await lockResourceState(db, resourceId);
-		if (resourceWriteIsSuperseded(resource, lockedResource, 'pdf_extraction_snapshot')) return false;
-		const platformMetadata = isPlatformMetadata(lockedResource.platform_metadata)
-			? lockedResource.platform_metadata
-			: resource.platform_metadata;
-		if (!platformMetadata) {
-			throw new Error(`Cannot snapshot PDF extraction for resource ${resourceId} without platform metadata`);
-		}
-		const updated = await db
-			.update(resources)
-			.set({
-				platformMetadata: withPdfExtractionMetadata(platformMetadata, extraction),
-			})
-			.where(eq(resources.id, resourceId))
-			.returning({ id: resources.id });
-		if (!updated.length) throw new Error(`Failed to persist PDF extraction snapshot for resource ${resourceId}: not found`);
-		return true;
-	});
-}
-
-export async function persistProcessedResource(
-	env: CoreEnv,
-	input: PersistProcessedResourceInput,
-): Promise<{ persisted: boolean; resourceId: string }> {
-	return withCoreTx(env, async (db) => {
-		const lockedResource = await lockResourceState(db, input.resourceId);
-		if (resourceWriteIsSuperseded(input.resource, lockedResource, 'processed_resource')) {
-			return { persisted: false, resourceId: input.resourceId };
-		}
-		const { paperEnrichment, resource } = mergeLockedResourceState(input.resource, lockedResource, input.paperEnrichment);
-		const extraction = input.pdfTextArtifact ? pdfExtractionMetadata(input.pdfTextArtifact) : input.acquisitionExtraction;
-		const updatePayload = buildResourceUpdate(resource, {
-			extraction,
-			paperEnrichment,
-			previewImageUrl: input.previewImageUrl,
-			processorResult: input.processorResult,
-		});
-		if (!updatePayload.content?.trim()) {
-			throw new Error(`Refusing to persist enriched resource ${input.resourceId} without content`);
-		}
-		const resourceId = await updateResourceAfterProcessing(db, input.resourceId, resource, updatePayload);
-		console.info({
-			tag: 'ENTITIES',
-			msg: 'Stored resource entities',
+		if (target.kind === 'draft' && target.relation) await applyDraftRelation(tx, resourceId, target.relation);
+		// Follow-ups use the accepted original, which can differ from this draft.
+		const { scope, kind, fileType, resourcePlatform, originalLang, url, translationRevision, acquisitionRevision } = accepted!;
+		return {
 			resourceId,
-			inputCount: input.processorResult.entities.length,
-			count: updatePayload.entities.length,
-			filteredCount: input.processorResult.entities.length - updatePayload.entities.length,
-		});
-		if (input.youtubeTranscript || input.youtubeHighlights) {
-			await persistYouTubeWorkflowData(db, {
-				transcript: input.youtubeTranscript,
-				highlights: input.youtubeHighlights,
-			});
-		}
-		return { persisted: true, resourceId };
+			scope,
+			kind,
+			fileType,
+			resourcePlatform,
+			originalLang,
+			url,
+			translationRevision,
+			acquisitionRevision,
+			originalWritten,
+			subjectAttached: subjectResourceId !== null,
+		};
 	});
+}
+
+/** Read the accepted corpus rendition, which may differ from the incoming private PDF. */
+export async function loadPublicPdfContent(db: NodePgDatabase, resourceId: string): Promise<string> {
+	const result = await db.execute<{ content: string }>(sql`
+		SELECT original.content
+		FROM resources resource
+		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+		WHERE resource.id = ${resourceId}::uuid AND resource.scope = 'corpus'
+	`);
+	return result.rows[0]?.content ?? '';
 }

@@ -1,163 +1,142 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import type { KnowledgeResolveResourcesInput, KnowledgeResourceReadInput } from '@app-domain/knowledge-contracts';
-import { AcademicMetadataBackfillV3Workflow, startAcademicMetadataBackfill } from '@ingest/academic-metadata-backfill-workflow';
-import { ResourceTranslationV2Workflow } from '@ingest/content-localization-workflow';
-import { handleRSSCron } from '@ingest/platforms/rss';
-import { handleTwitterCron } from '@ingest/platforms/twitter';
-import { type ResolveSourceCandidateInput, resolveSourceCandidate } from '@ingest/source-discovery';
+import { z } from 'zod';
+import type {} from './env';
+import { ResourceImportDispatchSchema } from './ingest/admission';
+import { PaidPdfFallbackGrantSchema, type PaidPdfFallbackGrant } from './ingest/platforms/pdf-policy';
+import { resolveResourceUrl, ResourceUrlSchema } from './ingest/platforms/resource-url';
+import { handleRSSCron } from './ingest/platforms/rss';
+import { handleTwitterCron } from './ingest/platforms/twitter';
+import { findResourcesByUrls } from './ingest/resource-persistence';
 import {
-	enqueueProcessing,
-	enqueueResourceResync,
-	ResourceProcessingV2Workflow,
-	reconcilePendingResourceProcessing,
-} from '@ingest/workflow';
-import { probeSearchIndexCutover, SearchIndexGeneration5RebuildWorkflow, startSearchIndexRebuild } from './ai-search';
-import type { RelatedResourceSearchInput, ResourceSearchInput } from './corpus';
-import { relatedCorpusResourceIds, searchCorpusResourceRanks, searchCorpusResources } from './corpus';
-import { readCorpusResource, resolveCorpusResources } from './corpus-retrieval';
-import { assertResourceProcessable, isResourceEnrichmentComplete } from './ingest/domain/resource-store';
+	loadCorpusDocuments,
+	type PublicResourceSearchInput,
+	type RelatedResourceSearchInput,
+	searchPublicResourceIds,
+	searchRelatedResourceIds,
+	syncCorpusItem,
+} from './search-index';
+import { connectCoreDb } from './shared/db';
 
-export {
-	AcademicMetadataBackfillV3Workflow,
-	ResourceProcessingV2Workflow,
-	ResourceTranslationV2Workflow,
-	SearchIndexGeneration5RebuildWorkflow,
-};
+export { GrobidContainer, ZoteroSdtContainer } from './ingest/pdf-containers';
+export { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
+export { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
+export { ResourceProcessingV2Workflow } from './ingest/workflow';
 
-type MonitorHandler = (env: CoreEnv) => Promise<void>;
-
-async function reconcileOfficialPublications(env: CoreEnv): Promise<void> {
-	try {
-		const result = await env.DOMAIN.reconcileOfficialPublications();
-		console.info({
-			tag: 'OFFICIAL_PUBLICATIONS',
-			msg: 'Reconciled curated corpus publications',
-			inserted: result.inserted,
-		});
-	} catch (error) {
-		// Publication is derived product state. Never turn a repair failure into
-		// an ingest failure; the next monitor cycle retries the same statement.
-		console.error({
-			tag: 'OFFICIAL_PUBLICATIONS',
-			msg: 'Reconciliation failed; retrying next monitor cycle',
-			error: error instanceof Error ? error.message : String(error),
-		});
-	}
-}
-
-async function runMonitorCycle(env: CoreEnv, handler: MonitorHandler): Promise<void> {
-	try {
-		await handler(env);
-	} finally {
-		await reconcileOfficialPublications(env);
-	}
-}
-
-async function runFiveMinuteCycle(env: CoreEnv): Promise<void> {
-	const results = await Promise.allSettled([handleRSSCron(env), reconcilePendingResourceProcessing(env)]);
-	const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
-	if (failures.length) {
-		throw new AggregateError(
-			failures.map(({ reason }) => reason),
-			'One or more five-minute core jobs failed',
-		);
-	}
-}
+const ResourceSearchSyncMessageSchema = z.strictObject({
+	resourceId: z.uuid().toLowerCase(),
+	taskId: z.string().min(1).max(150).optional(),
+});
 
 export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
-	override fetch(request: Request): Response {
-		const url = new URL(request.url);
-		if (request.method === 'GET' && url.pathname === '/health') return Response.json({ status: 'ok' });
+	override fetch(_request: Request): Response {
 		return new Response('Not found', { status: 404 });
 	}
 
 	override scheduled(event: ScheduledController): void {
 		console.info({ tag: 'CORE', msg: 'Scheduled', cron: event.cron });
 
-		// YouTube channels ride the RSS monitor: their handles are Atom feed URLs,
-		// so they are ordinary rss sources with a 30-minute poll interval.
+		// YouTube channels ride the feed monitor through their Atom URLs; Core
+		// derives their slower polling cadence from the canonical feed URL.
 		if (event.cron === '*/5 * * * *') {
-			this.ctx.waitUntil(runMonitorCycle(this.env, runFiveMinuteCycle));
+			this.ctx.waitUntil(connectCoreDb(this.env).then((db) => handleRSSCron(this.env, db)));
 		} else if (event.cron === '0 */6 * * *') {
-			this.ctx.waitUntil(runMonitorCycle(this.env, handleTwitterCron));
+			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
+		}
+	}
+
+	override async queue(batch: MessageBatch<unknown>): Promise<void> {
+		const pending = new Map<string, { messages: Message<unknown>[]; taskIds: Set<string> }>();
+		for (const message of batch.messages) {
+			const input = ResourceSearchSyncMessageSchema.safeParse(message.body);
+			if (!input.success) {
+				console.warn({ tag: 'AI_SEARCH', msg: 'Invalid resource sync message', message_id: message.id });
+				message.ack();
+				continue;
+			}
+			const group = pending.get(input.data.resourceId) ?? { messages: [], taskIds: new Set<string>() };
+			group.messages.push(message);
+			if (input.data.taskId) group.taskIds.add(input.data.taskId);
+			pending.set(input.data.resourceId, group);
+		}
+		if (!pending.size) return;
+		let documents: Awaited<ReturnType<typeof loadCorpusDocuments>>;
+		try {
+			documents = await loadCorpusDocuments(await connectCoreDb(this.env), [...pending.keys()]);
+		} catch (error) {
+			console.error({ tag: 'AI_SEARCH', msg: 'Resource sync batch could not be loaded', error });
+			for (const { messages } of pending.values()) {
+				for (const message of messages) message.retry();
+			}
+			return;
+		}
+		const documentsById = new Map(documents.map((document) => [document.id, document]));
+		for (const [resourceId, { messages, taskIds }] of pending) {
+			try {
+				await syncCorpusItem(this.env, resourceId, documentsById.get(resourceId));
+				for (const taskId of taskIds) {
+					await this.env.APP.reportResourceProgress({
+						taskId,
+						stage: 'indexing',
+						status: documentsById.has(resourceId) ? 'complete' : 'skipped',
+						resourceId,
+					});
+				}
+				for (const message of messages) message.ack();
+			} catch (error) {
+				console.error({
+					tag: 'AI_SEARCH',
+					msg: 'Resource sync failed',
+					resource_id: resourceId,
+					attempt: Math.max(...messages.map((message) => message.attempts)),
+					error,
+				});
+				for (const message of messages) message.retry();
+			}
 		}
 	}
 
 	// Service-binding RPC for engine capabilities. Product-domain writes live on
 	// the app Worker's DomainRpc binding.
 
-	/** Enqueue canonical resources for the enrichment workflow after app-side persistence. */
-	async enqueueResourceProcessing(resourceId: string) {
-		if (await isResourceEnrichmentComplete(this.env, resourceId)) return undefined;
-		return enqueueProcessing(this.env, resourceId);
+	/** Batch identity lookup only: acquisition stays durable and user saves remain app-owned. */
+	async resolveResourceUrls(urls: string[]) {
+		const parsed = z.array(ResourceUrlSchema.max(2_048)).max(20).parse(urls);
+		if (!parsed.length) return [];
+		return findResourcesByUrls(
+			await connectCoreDb(this.env),
+			parsed.map((url) => resolveResourceUrl(url)!),
+		);
+	}
+
+	/** Durable admission outbox: the caller persists this immutable ID and payload first. */
+	async dispatchResourceImport(input: z.input<typeof ResourceImportDispatchSchema>): Promise<void> {
+		const parsed = ResourceImportDispatchSchema.parse(input);
+		// The admission DO waits for committed ownership. The Workflow rechecks
+		// ownership and the latest attempt before provider execution, after any
+		// queueing delay; another callback here cannot replace that execution gate.
+		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
+			{ id: parsed.workflowId, params: parsed.payload, retention: { successRetention: '5 minutes', errorRetention: '7 days' } },
+		]);
 	}
 
 	/** Reacquire a URL-backed resource through the enrichment workflow. */
-	async resyncResource(resourceId: string) {
-		await assertResourceProcessable(this.env, resourceId);
-		return enqueueResourceResync(this.env, resourceId);
+	async resyncResource(resourceId: string, paidPdfFallback?: PaidPdfFallbackGrant) {
+		const id = z.uuid().parse(resourceId);
+		const grant = PaidPdfFallbackGrantSchema.optional().parse(paidPdfFallback);
+		const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
+			id: `resource-resync-v3-${id}-${crypto.randomUUID()}`,
+			params: { kind: 'reacquire', ...(grant ? { paidPdfFallback: grant } : {}), resourceId: id },
+		});
+		return instance.id;
 	}
 
-	/** Start or resume the revision-scoped public corpus AI Search rebuild. */
-	async startSearchIndexRebuild() {
-		return startSearchIndexRebuild(this.env);
+	/** Ranked AI Search candidates; the app Worker authoritatively filters and hydrates them. */
+	searchPublicResourceIds(input: PublicResourceSearchInput) {
+		return searchPublicResourceIds(this.env, input);
 	}
 
-	/** Read search-index rebuild status for operator polling. */
-	async getSearchIndexRebuildStatus(instanceId: string) {
-		const instance = await this.env.SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW.get(instanceId);
-		return instance.status();
-	}
-
-	/** Validate DB/index counts for all six canonical identity pairs immediately before cutover. */
-	probeSearchIndexCutover() {
-		return probeSearchIndexCutover(this.env);
-	}
-
-	/** Start or resume the versioned academic metadata backfill. */
-	async startAcademicMetadataBackfill() {
-		return startAcademicMetadataBackfill(this.env);
-	}
-
-	/** Read academic metadata backfill status for operator polling. */
-	async getAcademicMetadataBackfillStatus(instanceId: string) {
-		const instance = await this.env.ACADEMIC_METADATA_BACKFILL_V3_WORKFLOW.get(instanceId);
-		return instance.status();
-	}
-
-	/** Hybrid AI Search retrieval for the canonical corpus search tool. */
-	searchResources(input: ResourceSearchInput) {
-		return searchCorpusResources(this.env, input);
-	}
-
-	/** Hybrid rank search for app-side feed/context lookup. */
-	searchResourceRanks(input: ResourceSearchInput) {
-		return searchCorpusResourceRanks(this.env, input);
-	}
-
-	/** Related resource ids for app-side recommendations. */
-	relatedResourceIds(input: RelatedResourceSearchInput) {
-		return relatedCorpusResourceIds(this.env, input);
-	}
-
-	/** Read workflow status for app-side polling. */
-	async getWorkflowStatus(instanceId: string) {
-		const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.get(instanceId);
-		return instance.status();
-	}
-
-	/** Bounded, revision-pinned product resource chunk. */
-	readCorpusResource(input: KnowledgeResourceReadInput) {
-		return readCorpusResource(this.env, input);
-	}
-
-	/** Authoritative resource references and titles for product context. */
-	resolveCorpusResources(input: KnowledgeResolveResourcesInput) {
-		return resolveCorpusResources(this.env, input);
-	}
-
-	/** Resolve user input (site/feed/channel URL or handle) into a monitorable source candidate (#237). */
-	resolveSourceCandidate(input: ResolveSourceCandidateInput) {
-		return resolveSourceCandidate(this.env, input);
+	/** Resource-level semantic neighbors; the app Worker authoritatively filters and hydrates them. */
+	async searchRelatedResourceIds(input: RelatedResourceSearchInput) {
+		return searchRelatedResourceIds(this.env, await connectCoreDb(this.env), input);
 	}
 }

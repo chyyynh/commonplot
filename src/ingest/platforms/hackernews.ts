@@ -1,302 +1,233 @@
-import { generateText } from '@core-ai/generation';
-import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import { type HackerNewsMetadata, type NormalizedContent, platformMetadataFor, type ResourceForProcessing } from '@core-shared/types';
-import { extractHackerNewsId } from '@core-shared/url';
-import { decode } from 'html-entities';
+import { generateText } from 'ai';
+import type { WorkflowStep } from 'cloudflare:workers';
+import { NonRetryableError } from 'cloudflare:workflows';
+import { fromHtml } from 'hast-util-from-html';
+import { toMdast } from 'hast-util-to-mdast';
+import { gfmToMarkdown } from 'mdast-util-gfm';
+import { toMarkdown } from 'mdast-util-to-markdown';
+import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { type AcquiredWebContent, acquireWebResource } from '../web-acquisition';
+import type { AcquiredResource } from '../acquisition';
+import { coreGatewayOptions, CORE_TEXT_MODEL } from '../ai-model';
+import { ResourceUrlSchema } from './resource-url';
 
-const HN_ALGOLIA_API = 'https://hn.algolia.com/api/v1/items';
-const HN_ITEM_MAX_BYTES = 5 * 1024 * 1024;
+const HN_ITEM_API = 'https://hacker-news.firebaseio.com/v0/item';
+const HN_TOP_LEVEL_THREAD_LIMIT = 10;
+const HN_REPLIES_PER_THREAD_LIMIT = 3;
+const HN_FETCH_CONCURRENCY = 6;
+const HN_TOP_LEVEL_TEXT_MAX_CHARS = 1_000;
+const HN_REPLY_TEXT_MAX_CHARS = 350;
 
-interface HnComment {
-	author?: string;
-	text?: string;
-	children?: HnComment[];
-}
+const optionalStringSchema = z.string().nullish();
+const optionalNonnegativeIntegerSchema = z.int().nonnegative().nullish();
 
-// Shape of Algolia's /items/{id} response. It carries the whole comment tree in
-// `children` but has no `descendants` — that is a Firebase field, so discussion
-// size has to be counted from the tree.
-export interface HackerNewsItem {
-	id: number;
-	title?: string;
-	url?: string;
-	author?: string;
-	points?: number;
-	type?: 'story' | 'ask' | 'show' | 'job' | 'comment' | 'poll';
-	created_at_i?: number;
-	text?: string;
-	children?: HnComment[];
-}
-
-const optionalStringSchema = z
-	.string()
-	.nullish()
-	.transform((value) => value ?? undefined);
-const optionalNonnegativeIntegerSchema = z
-	.number()
-	.int()
-	.nonnegative()
-	.nullish()
-	.transform((value) => value ?? undefined);
-
-const HnCommentSchema: z.ZodType<HnComment> = z.lazy(() =>
-	z.object({
-		author: optionalStringSchema,
-		text: optionalStringSchema,
-		children: z
-			.array(HnCommentSchema)
-			.nullish()
-			.transform((value) => value ?? undefined),
-	}),
-);
-
-const HackerNewsItemSchema: z.ZodType<HackerNewsItem> = z.object({
-	id: z.number().int().positive(),
-	title: optionalStringSchema,
-	url: optionalStringSchema,
-	author: optionalStringSchema,
-	points: optionalNonnegativeIntegerSchema,
-	type: z
-		.enum(['story', 'ask', 'show', 'job', 'comment', 'poll'])
-		.nullish()
-		.transform((value) => value ?? undefined),
-	created_at_i: optionalNonnegativeIntegerSchema,
+const HackerNewsItemSchema = z.object({
+	by: optionalStringSchema,
+	dead: z.boolean().optional(),
+	deleted: z.boolean().optional(),
+	descendants: optionalNonnegativeIntegerSchema,
+	id: z.int().positive(),
+	kids: z.array(z.int().positive()).nullish(),
+	score: optionalNonnegativeIntegerSchema,
 	text: optionalStringSchema,
-	children: z
-		.array(HnCommentSchema)
-		.nullish()
-		.transform((value) => value ?? undefined),
+	time: optionalNonnegativeIntegerSchema,
+	title: optionalStringSchema,
+	type: z.enum(['story', 'comment', 'job', 'poll', 'pollopt']).optional(),
+	url: optionalStringSchema,
 });
 
-export function hackerNewsDiscussionUrl(value: string): string | null {
-	const itemId = extractHackerNewsId(value);
-	return itemId ? `https://news.ycombinator.com/item?id=${itemId}` : null;
-}
+type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
 
-function hnItemTypeForMetadata(type: HackerNewsItem['type'] | undefined): HackerNewsMetadata['itemType'] {
-	if (type === 'story' || type === 'ask' || type === 'show' || type === 'job') return type;
-	return undefined;
-}
+type HackerNewsAcquisition = Awaited<ReturnType<typeof scrapeHackerNews>>;
+type HackerNewsAcquisitionInput = {
+	itemId: string;
+	processingId: string;
+};
 
-/** Every node in the tree, deleted ones included — the closest analogue to the count HN itself shows. */
-function countHnComments(children: HnComment[] | undefined): number {
-	let total = 0;
-	for (const child of children ?? []) {
-		total += 1 + countHnComments(child.children);
-	}
-	return total;
-}
-
-function buildHnMetadata(item: HackerNewsItem): HackerNewsMetadata {
-	return {
-		itemId: item.id.toString(),
-		author: item.author,
-		points: item.points,
-		commentCount: countHnComments(item.children),
-		itemType: hnItemTypeForMetadata(item.type),
-		storyUrl: item.url,
-	};
-}
-
-async function fetchHnItem(itemId: string): Promise<HackerNewsItem> {
-	const response = await fetchWithTimeout(`${HN_ALGOLIA_API}/${itemId}`);
+async function fetchHnItem(itemId: number | string): Promise<HackerNewsItem | null> {
+	const response = await fetch(`${HN_ITEM_API}/${itemId}.json`, { signal: AbortSignal.timeout(15_000) });
 	if (!response.ok) {
 		await response.body?.cancel();
+		if (response.status === 404 || response.status === 410) return null;
 		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 	}
-	return HackerNewsItemSchema.parse(JSON.parse(await readTextWithLimit(response, HN_ITEM_MAX_BYTES)));
+	const payload: unknown = await response.json();
+	return payload === null ? null : HackerNewsItemSchema.parse(payload);
 }
 
-interface HnCollectedComment {
-	author?: string;
-	text: string;
-}
-
-function htmlToText(str: string): string {
-	return decode(str.replace(/<[^>]*>/g, ' '))
-		.replace(/\s+/g, ' ')
-		.trim();
-}
-
-function buildHnPostMarkdown(item: HackerNewsItem, title: string): string {
-	const parts: string[] = [`# ${title}\n`];
-	const metaParts: string[] = [];
-	const commentCount = countHnComments(item.children);
-	if (item.points !== undefined) metaParts.push(`${item.points} points`);
-	if (item.author) metaParts.push(`by ${item.author}`);
-	if (commentCount > 0) metaParts.push(`${commentCount} comments`);
-	if (metaParts.length) parts.push(`*${metaParts.join(' | ')}*\n`);
-	if (item.text) parts.push(`---\n\n${htmlToText(item.text)}\n`);
-	return parts.join('\n');
-}
-
-function hackerNewsItemTitle(item: HackerNewsItem, itemId: string): string {
-	const title = item.title?.trim();
-	if (title) return title;
-	if (item.type === 'comment') return `Hacker News comment #${itemId}`;
-	if (item.type === 'poll') return `Hacker News poll #${itemId}`;
-	return `Hacker News item #${itemId}`;
-}
-
-export async function scrapeHackerNews(
-	itemId: string,
-	env: CoreEnv,
-	resourceId?: string,
-): Promise<
-	NormalizedContent<'hackernews'> &
-		Pick<AcquiredWebContent, 'extraction' | 'previewImageUrl'> & {
-			hackerNewsItem: HackerNewsItem;
+async function fetchHnItems(itemIds: readonly number[]): Promise<Map<number, HackerNewsItem>> {
+	const items = new Map<number, HackerNewsItem>();
+	for (let offset = 0; offset < itemIds.length; offset += HN_FETCH_CONCURRENCY) {
+		const batch = await Promise.all(itemIds.slice(offset, offset + HN_FETCH_CONCURRENCY).map(fetchHnItem));
+		for (const item of batch) {
+			if (item) items.set(item.id, item);
 		}
-> {
-	console.info({ tag: 'HN', msg: 'Fetching item', itemId });
-	const item = await fetchHnItem(itemId);
-	const title = hackerNewsItemTitle(item, itemId);
-	const hnText = item.text ? htmlToText(item.text) : '';
-	if (item.type === 'comment' && !hnText) throw new Error(`Hacker News comment ${itemId} has no text`);
-	let target: AcquiredWebContent | null = null;
-	let markdown: string;
-	let description: string | null;
-	if (item.url) {
-		target = await acquireWebResource(item.url, env, resourceId);
-		markdown = target.markdown.trim();
-		description = target.metadata.description;
-	} else {
-		markdown = buildHnPostMarkdown(item, title);
-		description = hnText.slice(0, 280) || null;
 	}
-	if (!markdown) throw new Error(`Hacker News item ${itemId} has no content`);
+	return items;
+}
+
+function isReadableComment(item: HackerNewsItem | undefined): item is HackerNewsItem & { text: string } {
+	return Boolean(item?.text && !item.deleted && !item.dead && item.type === 'comment');
+}
+
+function hnMarkdown(html: string): string {
+	return toMarkdown(
+		toMdast(fromHtml(`<base href="https://news.ycombinator.com/">${html}`, { fragment: true }), { nodeHandlers: { comment() {} } }),
+		{ extensions: [gfmToMarkdown()] },
+	).trim();
+}
+
+function discussionExcerpt(markdown: string, maxChars: number): string {
+	return markdown.length <= maxChars
+		? markdown
+		: `${markdown
+				.slice(0, maxChars)
+				.replace(/\s+\S*$/, '')
+				.trimEnd()}…`;
+}
+
+async function scrapeHackerNews({ itemId }: HackerNewsAcquisitionInput) {
+	console.info({ tag: 'HN', msg: 'Fetching item and ranked discussion', itemId });
+	const item = await fetchHnItem(itemId);
+	if (!item) throw new NonRetryableError(`Hacker News item ${itemId} was not found`);
+	if ([item.deleted, item.dead].includes(true)) throw new NonRetryableError(`Hacker News item ${itemId} is unavailable`);
+
+	const rankedThreadIds = (item.kids ?? []).slice(0, HN_TOP_LEVEL_THREAD_LIMIT);
+	const fetchedThreads = await fetchHnItems(rankedThreadIds);
+	const rankedThreads = rankedThreadIds.map((id) => fetchedThreads.get(id)).filter(isReadableComment);
+	const replyIds = rankedThreads.flatMap((thread) => (thread.kids ?? []).slice(0, HN_REPLIES_PER_THREAD_LIMIT));
+	const fetchedReplies = await fetchHnItems(replyIds);
+	if (!item.title && !item.text && !rankedThreads.length) throw new NonRetryableError(`Hacker News item ${itemId} has no content`);
+
+	const convertedTitle = item.title ? hnMarkdown(item.title) : null;
+	if (item.title && !convertedTitle) throw new Error(`Hacker News item ${itemId} has no readable title`);
+	const title =
+		convertedTitle ||
+		(item.type === 'comment'
+			? `Hacker News comment #${itemId}`
+			: ['poll', 'pollopt'].includes(item.type ?? '')
+				? `Hacker News poll #${itemId}`
+				: `Hacker News item #${itemId}`);
+	const hnText = item.text ? hnMarkdown(item.text) : null;
+	if (item.text && !hnText) throw new Error(`Hacker News item ${itemId} has no readable body`);
+	if (item.type === 'comment' && !hnText) throw new Error(`Hacker News comment ${itemId} has no text`);
+
+	const threadBlocks = rankedThreads.flatMap((thread, index) => {
+		const fullTopLevel = hnMarkdown(thread.text);
+		if (!fullTopLevel) return [];
+		const topLevel = discussionExcerpt(fullTopLevel, HN_TOP_LEVEL_TEXT_MAX_CHARS);
+		const directReplies = (thread.kids ?? []).slice(0, HN_REPLIES_PER_THREAD_LIMIT).flatMap((replyId) => {
+			const reply = fetchedReplies.get(replyId);
+			if (!isReadableComment(reply)) return [];
+			const fullReply = hnMarkdown(reply.text);
+			if (!fullReply) return [];
+			return [`Direct reply: ${discussionExcerpt(fullReply, HN_REPLY_TEXT_MAX_CHARS)}`];
+		});
+		return [
+			{ commentCount: 1 + directReplies.length, text: [`Thread ${index + 1}`, `Top-level: ${topLevel}`, ...directReplies].join('\n') },
+		];
+	});
+	const sampledCommentCount = threadBlocks.reduce((total, block) => total + block.commentCount, 0);
+	const totalCommentCount = item.descendants ?? item.kids?.length ?? sampledCommentCount;
+	let itemType: 'story' | 'ask' | 'show' | 'job' | undefined;
+	if (item.type === 'job') itemType = 'job';
+	else if (/^Ask HN:/i.test(title)) itemType = 'ask';
+	else if (/^Show HN:/i.test(title)) itemType = 'show';
+	else if (item.type === 'story') itemType = 'story';
+	const markdown = [`# ${title}`, hnText].filter(Boolean).join('\n\n');
 	console.info({
 		tag: 'HN',
-		msg: 'Item fetched',
+		msg: 'Item and ranked discussion fetched',
 		title,
-		targetUrl: item.url ?? null,
-		targetStatus: target?.markdown.trim() ? 'fetched' : 'unavailable',
+		sampledComments: sampledCommentCount,
+		sampledThreads: threadBlocks.length,
+		subjectUrl: item.url ?? null,
+		totalComments: totalCommentCount,
 	});
+	const publishedDate = item.time ? new Date(item.time * 1000).toISOString() : null;
+	const submitter = item.by?.trim();
 	return {
-		kind: 'forum',
-		resourcePlatform: 'hackernews',
-		fileType: target?.fileType ?? null,
-		title,
-		markdown,
-		metadata: {
-			author: item.author ?? null,
-			language: target?.metadata.language ?? null,
-			publishedDate: item.created_at_i ? new Date(item.created_at_i * 1000).toISOString() : null,
-			siteName: 'Hacker News',
-			description,
+		resource: {
+			kind: 'forum',
+			resourcePlatform: 'hackernews',
+			resourceIdentifiers: [{ preferred: true, scheme: 'hackernews', value: itemId }],
+			url: `https://news.ycombinator.com/item?id=${itemId}`,
+			title: title.trim(),
+			content: markdown,
+			source: 'Hacker News',
+			originalLang: 'und',
+			publishedDate,
+			summary: null,
+			creators: submitter ? [{ role: 'submitter', literal: submitter }] : [],
+			kindMetadata: { points: item.score ?? undefined, commentCount: totalCommentCount },
+			fileType: null,
+			previewImageUrl: null,
+			subjectUrl: ResourceUrlSchema.safeParse(item.url).data ?? null,
+		} satisfies AcquiredResource,
+		discussion: {
+			commentCount: sampledCommentCount,
+			commentInput: threadBlocks.map((block) => block.text).join('\n\n'),
+			hnText: hnText?.slice(0, 1200) || null,
+			...(itemType ? { itemType } : {}),
+			threadCount: threadBlocks.length,
 		},
-		platformMetadata: {
-			fetchedAt: new Date().toISOString(),
-			data: buildHnMetadata(item),
-			...(target?.platformMetadata.representation ? { representation: target.platformMetadata.representation } : {}),
-		},
-		...(target?.extraction ? { extraction: target.extraction } : {}),
-		...(target?.previewImageUrl ? { previewImageUrl: target.previewImageUrl } : {}),
-		hackerNewsItem: item,
 	};
 }
 
-function collectAllComments(children: HnComment[]): HnCollectedComment[] {
-	const comments: HnCollectedComment[] = [];
-	for (const child of children) {
-		if (child.text) {
-			const cleanText = htmlToText(child.text);
-			if (cleanText) comments.push({ author: child.author, text: cleanText });
-		}
-		if (child.children?.length) comments.push(...collectAllComments(child.children));
-	}
-	return comments;
-}
+export async function stageHackerNewsAcquisition(env: CoreEnv, step: WorkflowStep, input: HackerNewsAcquisitionInput) {
+	const contentStream = await step.do(
+		'acquire-hackernews-ranked-v5',
+		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+		async () => Response.json(await scrapeHackerNews(input)).body!,
+	);
+	const { resource, discussion } = await new Response(contentStream).json<HackerNewsAcquisition>();
+	const digest = await step.do(
+		'build-hacker-news-annotation-ranked-v3',
+		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
+		async () => {
+			if (discussion.commentCount < 4 || discussion.threadCount < 2) return null;
+			const hnPostSection = discussion.hnText ? `HN post text:\n${discussion.hnText}\n\n` : '';
+			const digestFocus =
+				discussion.itemType === 'ask'
+					? 'Synthesize the answers, experiences, and advice offered in response to the question.'
+					: discussion.itemType === 'show'
+						? 'Synthesize the community feedback, questions, use cases, and technical observations about the project.'
+						: 'Synthesize the arguments, context, reactions, and disagreements in the discussion.';
+			const { finishReason, text } = await generateText({
+				model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
+					...coreGatewayOptions(env, { feature: 'hn-discussion-digest-en', resource_id: input.processingId }),
+				}),
+				prompt: `Title: ${resource.title}
+${hnPostSection}Ranked HN discussion sample (${discussion.commentCount} comments from ${discussion.threadCount} top-level threads):
+${discussion.commentInput}
 
-const HN_DISCUSSION_HEADING = '## Hacker News community perspectives';
-const HN_DISCUSSION_SYSTEM =
-	'You are a professional tech news editor. Synthesize Hacker News comments into concise community perspectives. Use only the provided material. Output Markdown directly.';
+The Thread blocks follow Hacker News' ranked top-level order. Each Direct reply belongs to the Top-level comment immediately above it.
 
-function buildDiscussionPrompt(
-	title: string,
-	articleContent: string,
-	hnText: string | null,
-	commentInput: string,
-	commentCount: number,
-): string {
-	const hnPostText = hnText ? htmlToText(hnText).slice(0, 1200) : '';
-	const hnPostSection = hnPostText ? `\nHN post text:\n${hnPostText}\n` : '';
-	return `Title: ${title}
-Linked article or document:
-${articleContent.slice(0, 8000)}
-${hnPostSection}
-
-HN comments (${commentCount} total):
-${commentInput}
-
-Write a 220-360 word community digest in English using 3-5 short paragraphs. Each paragraph should synthesize one distinct perspective found in the comments. Prioritize the strongest recurring viewpoints, meaningful disagreements, useful context, and genuine areas of agreement. Include supporting, skeptical, and supplementary perspectives only when the comments contain them.
+${digestFocus} Write the digest in English and choose the structure and level of detail that best represent the sampled discussion. Prioritize viewpoints that recur across multiple top-level threads, meaningful disagreements, useful context, and genuine areas of agreement. Include supporting, skeptical, and supplementary perspectives only when the comments contain them.
 
 Rules:
 - Write in English
 - Do not add a heading, bullets, numbering, usernames, or emoji
-- Focus on how the community interpreted or challenged the material instead of restating it
+- Do not let one long thread dominate the digest
+- Focus on the arguments, context, and disagreements present in the discussion
 - Synthesize and paraphrase; do not quote comments verbatim
 - Do not invent consensus or force opposing sides when the discussion does not support them
-- Keep claims from commenters clearly separate from facts established by the linked material
+- Present commenter claims as community perspectives, not established facts
 - Maintain a neutral, objective tone
-- Output only the paragraphs, without a code block`;
+- Output only the paragraphs, without a code block`,
+				system: HN_DISCUSSION_SYSTEM,
+				temperature: 0.3,
+				reasoning: 'none',
+				maxRetries: 0,
+			});
+			if (finishReason === 'length') throw new Error('Hacker News discussion digest hit its output token cap');
+			const generatedDigest = text.trim();
+			if (!generatedDigest) throw new Error('Hacker News discussion digest returned no text');
+			return generatedDigest;
+		},
+	);
+	return { ...resource, content: digest ? [resource.content, '---', digest].join('\n\n') : resource.content };
 }
 
-async function generateHnDiscussionDigest(
-	env: CoreEnv,
-	resourceId: string,
-	title: string,
-	articleContent: string,
-	hnText: string | null,
-	comments: HnCollectedComment[],
-): Promise<string | null> {
-	if (comments.length < 4) return null;
-
-	const commentInput = comments
-		.map((comment) => `${comment.author ? `${comment.author}: ` : ''}${comment.text}`)
-		.join('\n')
-		.slice(0, 30000);
-
-	return generateText(env, buildDiscussionPrompt(title, articleContent, hnText, commentInput, comments.length), {
-		feature: 'hn-discussion-digest-en',
-		resourceId,
-		systemPrompt: HN_DISCUSSION_SYSTEM,
-	});
-}
-
-function withoutPreviousDiscussion(content: string): string {
-	return content.split(`\n\n---\n\n${HN_DISCUSSION_HEADING}`, 1)[0].trim();
-}
-
-export async function buildHackerNewsContent(
-	resource: ResourceForProcessing,
-	env: CoreEnv,
-	acquiredItem?: HackerNewsItem,
-): Promise<string> {
-	const metadata = platformMetadataFor(resource, 'hackernews');
-	const itemId = metadata?.data?.itemId;
-	let item = acquiredItem;
-	if (!item) {
-		if (!itemId) throw new Error(`Hacker News resource ${resource.id} has no item id`);
-		item = await fetchHnItem(itemId);
-	}
-
-	if (!resource.content) throw new Error(`Hacker News resource ${resource.id} has no content to annotate`);
-	const articleContent = withoutPreviousDiscussion(resource.content);
-	if (!articleContent) throw new Error(`Hacker News resource ${resource.id} has no content to annotate`);
-	const comments = item.children?.length ? collectAllComments(item.children) : [];
-	const digest = await generateHnDiscussionDigest(env, resource.id, resource.title, articleContent, item.text ?? null, comments);
-	const discussionUrl = `https://news.ycombinator.com/item?id=${item.id}`;
-	// Count nodes, not text-bearing comments, so this matches platform_metadata.commentCount.
-	const commentCount = countHnComments(item.children);
-	const stats = [item.points !== undefined ? `${item.points} points` : null, commentCount > 0 ? `${commentCount} comments` : null]
-		.filter(Boolean)
-		.join(' | ');
-	const links = [item.url ? `[Linked article](${item.url})` : null, `[View the full discussion](${discussionUrl})`]
-		.filter(Boolean)
-		.join(' | ');
-
-	return [articleContent, '---', HN_DISCUSSION_HEADING, stats ? `*${stats}*` : null, links, digest].filter(Boolean).join('\n\n');
-}
+const HN_DISCUSSION_SYSTEM =
+	'You are a professional tech news editor. Synthesize Hacker News comments into community perspectives. Use only the provided material. Return only the finished digest, never your analysis process.';

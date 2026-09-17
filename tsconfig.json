@@ -5,7 +5,7 @@
 		/* Set the JavaScript language version for emitted JavaScript and include compatible library declarations. */
 		"target": "es2021",
 		/* Specify a set of bundled library declaration files that describe the target runtime environment. */
-		"lib": ["es2021", "es2022.object"],
+		"lib": ["es2021", "es2022.intl", "es2022.object"],
 		/* Specify what JSX code is generated. */
 		"jsx": "react-jsx",
 
@@ -13,16 +13,7 @@
 		"module": "es2022",
 		/* Specify how TypeScript looks up a file from a given module specifier. */
 		"moduleResolution": "Bundler",
-		/* Path aliases for the feature-first src layout.
-		   No baseUrl — since TS 5.0 paths resolve relative to this tsconfig's directory. */
-		"paths": {
-			"@app-domain/*": ["../../web-tanstack/src/server/domain/*"],
-			"@core-ai/*": ["./src/ai/*"],
-			"@db/*": ["./src/db/*"],
-			"@core-shared/*": ["./src/shared/*"],
-			"@entities/*": ["./src/entities/*"],
-			"@ingest/*": ["./src/ingest/*"]
-		},
+		"allowImportingTsExtensions": true,
 		/* Enable importing .json files */
 		"resolveJsonModule": true,
 

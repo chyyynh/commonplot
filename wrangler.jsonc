@@ -7,26 +7,52 @@
 	"name": "newsence-core",
 	"main": "src/index.ts",
 	"workers_dev": false,
-	"compatibility_date": "2026-07-22",
+	"compatibility_date": "2026-08-30",
 	/**
-	 * Keep request abort signals available to fetch-heavy ingest endpoints and
-	 * propagate them into subrequests.
-	 */
-	"compatibility_flags": ["nodejs_compat", "enable_request_signal", "request_signal_passthrough"],
-	/**
-	 * A full AI Search rebuild performs one upload subrequest per corpus item.
-	 * Keep enough headroom for the 500k-file hybrid-search instance limit.
+	 * Rebuilding 500k resources uploads 1M items across both search indexes.
+	 * Reserve additional subrequests for deltas, reconciliation, and retries.
 	 */
 	"limits": {
-		"subrequests": 1000000
+		"cpu_ms": 180000,
+		"subrequests": 5000000,
 	},
-	/**
-	 * Bundle `.wasm` files as compiled `WebAssembly.Module` imports. Used by the
-	 * PDF text-extraction stage (`@llamaindex/liteparse-wasm`) in
-	 * `src/ingest/platforms/pdf.ts`. `fallthrough` keeps default rules for any
-	 * other module types.
-	 */
-	"rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
+	/** PDF parsers stream uploaded PDFs from R2; their models and scratch disks are intentionally ephemeral. */
+	"containers": [
+		{
+			"class_name": "GrobidContainer",
+			"image": "registry.cloudflare.com/f62c923a073e06d7b88040b743b2ee0a/newsence-core-grobidcontainer:crf-0.9.1-amd64",
+			"instance_type": "standard-4",
+			"max_instances": 1,
+		},
+		{
+			"class_name": "ZoteroSdtContainer",
+			"image": "./containers/zotero-sdt/Dockerfile",
+			"instance_type": "basic",
+			"max_instances": 1,
+		},
+	],
+	"durable_objects": {
+		"bindings": [
+			{
+				"name": "GROBID",
+				"class_name": "GrobidContainer",
+			},
+			{
+				"name": "ZOTERO_SDT",
+				"class_name": "ZoteroSdtContainer",
+			},
+		],
+	},
+	"migrations": [
+		{
+			"tag": "grobid-v1",
+			"new_sqlite_classes": ["GrobidContainer"],
+		},
+		{
+			"tag": "zotero-sdt-v1",
+			"new_sqlite_classes": ["ZoteroSdtContainer"],
+		},
+	],
 	"observability": {
 		"enabled": true,
 		"head_sampling_rate": 1,
@@ -34,13 +60,13 @@
 			"enabled": true,
 			"head_sampling_rate": 1,
 			"persist": true,
-			"invocation_logs": true
+			"invocation_logs": true,
 		},
 		"traces": {
 			"enabled": true,
 			"persist": true,
-			"head_sampling_rate": 0.05
-		}
+			"head_sampling_rate": 0.05,
+		},
 	},
 	/**
 	 * Schedule Triggers
@@ -49,8 +75,25 @@
 	"triggers": {
 		"crons": [
 			"*/5 * * * *", // RSS monitor, incl. YouTube channel feeds (every 5 minutes)
-			"0 */6 * * *" // Twitter monitor (every 6 hours)
-		]
+			"0 */6 * * *", // Twitter monitor (every 6 hours)
+		],
+	},
+	/** AI Search is a derived index; this Queue keeps it off canonical Resource Workflows. */
+	"queues": {
+		"producers": [
+			{
+				"binding": "RESOURCE_SEARCH_SYNC_QUEUE",
+				"queue": "resource-search-sync",
+			},
+		],
+		"consumers": [
+			{
+				"queue": "resource-search-sync",
+				"max_batch_size": 10,
+				"max_batch_timeout": 5,
+				"max_retries": 3,
+			},
+		],
 	},
 	/**
 	 * Workflows
@@ -60,37 +103,40 @@
 		{
 			"binding": "RESOURCE_PROCESSING_V2_WORKFLOW",
 			"name": "newsence-resource-processing-v2",
-			"class_name": "ResourceProcessingV2Workflow"
+			"class_name": "ResourceProcessingV2Workflow",
 		},
 		{
 			"binding": "RESOURCE_TRANSLATION_V2_WORKFLOW",
 			"name": "newsence-resource-translation-v2",
-			"class_name": "ResourceTranslationV2Workflow"
+			"class_name": "ResourceTranslationV2Workflow",
+			"default_retention": { "success_retention": "7 days", "error_retention": "7 days" },
 		},
 		{
-			"binding": "SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW",
-			"name": "newsence-search-index-generation-5-rebuild",
-			"class_name": "SearchIndexGeneration5RebuildWorkflow"
+			"binding": "SEARCH_INDEX_REBUILD_WORKFLOW",
+			"name": "newsence-search-index-rebuild",
+			"class_name": "SearchIndexRebuildWorkflow",
+			/** 500k resources need 10k upload steps before deltas, pruning, and readiness checks. */
+			"limits": { "steps": 25000 },
 		},
-		{
-			"binding": "ACADEMIC_METADATA_BACKFILL_V3_WORKFLOW",
-			"name": "newsence-academic-metadata-backfill-v3",
-			"class_name": "AcademicMetadataBackfillV3Workflow"
-		}
 	],
 	/**
 	 * Workers AI Binding
 	 * https://developers.cloudflare.com/workers-ai/get-started/workers-wrangler/
 	 */
 	"ai": {
-		"binding": "AI"
+		"binding": "AI",
 	},
 	"ai_search": [
 		{
 			"binding": "AI_SEARCH",
 			"instance_name": "newsence-corpus-v6",
-			"remote": true
-		}
+			"remote": true,
+		},
+		{
+			"binding": "RELATED_SEARCH",
+			"instance_name": "newsence-related-v1",
+			"remote": true,
+		},
 	],
 	/**
 	 * Hyperdrive — PlanetScale PostgreSQL connection pooling
@@ -99,49 +145,55 @@
 	"hyperdrive": [
 		{
 			"binding": "HYPERDRIVE",
-			"id": "5d7b16cf287e4dcc8b36d43461ccbf5c"
-		}
+			"id": "5d7b16cf287e4dcc8b36d43461ccbf5c",
+		},
 	],
+	/** Cloudflare Images — hosted resource previews and creator avatars. */
+	"images": {
+		"binding": "IMAGES",
+	},
 	/**
 	 * R2 buckets.
 	 *
-	 * `R2` — uploaded PDF storage used for text extraction.
-	 *   Also written by the app worker; the core worker reads
-	 *   uploaded PDFs here for LiteParse WASM text extraction.
+	 * `R2` — shared resource blob storage. The app worker owns uploaded
+	 *   blob lifecycle. Core reads uploaded PDFs for local extraction and, only
+	 *   with a Web-issued grant after a hard defect, temporary provider upload.
 	 */
 	"r2_buckets": [
 		{
 			"binding": "R2",
-			"bucket_name": "newsence"
-		}
+			"bucket_name": "newsence",
+		},
 	],
 	"services": [
 		{
-			"binding": "DOMAIN",
+			"binding": "APP",
 			"service": "newsence-web-tanstack",
-			"entrypoint": "DomainRpc"
-		}
+			"entrypoint": "DomainRpc",
+		},
 	],
 	/**
 	 * Smart Placement — run close to database
 	 */
 	"placement": {
-		"mode": "smart"
+		"mode": "smart",
 	},
 	/**
 	 * `AI_GATEWAY_ENVIRONMENT` — trusted deployment label attached to Gateway logs.
-	 * System inference is pinned to the pre-created `core-ingest` Gateway in
-	 * `src/ai/generation.ts`; local scripts override this label to `development`.
+	 * System inference is pinned to the pre-created `core-ingest` Gateway at its
+	 * domain call sites; local scripts override this label to `development`.
 	 *
 	 * Required secrets:
 	 * - KAITO_API_KEY enables Twitter ingestion enrichment.
 	 * - YOUTUBE_API_KEY enables YouTube transcript/channel enrichment.
-	 * - S2_API_KEY increases Semantic Scholar quota for paper enrichment.
+	 * - OPENALEX_API_KEY enables exact paper metadata enrichment.
+	 * - LLAMA_CLOUD_API_KEY and LLAMA_CLOUD_PROJECT_ID identify this
+	 *   deployment's Llama Cloud project; development uses separate values.
 	 */
 	"secrets": {
-		"required": ["KAITO_API_KEY", "YOUTUBE_API_KEY", "S2_API_KEY"]
+		"required": ["KAITO_API_KEY", "YOUTUBE_API_KEY", "OPENALEX_API_KEY", "LLAMA_CLOUD_API_KEY", "LLAMA_CLOUD_PROJECT_ID"],
 	},
 	"vars": {
-		"AI_GATEWAY_ENVIRONMENT": "production"
-	}
+		"AI_GATEWAY_ENVIRONMENT": "production",
+	},
 }

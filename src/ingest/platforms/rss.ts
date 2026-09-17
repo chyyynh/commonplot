@@ -1,159 +1,143 @@
-import { normalizeUrl } from '@core-shared/url';
-import { withCoreDb, withCoreTx } from '@db/client';
-import {
-	attachSourceToResources,
-	type ExistingResourceRecord,
-	getExistingResourcesByUrl,
-	upsertPendingSourceResource,
-} from '@ingest/domain/resource-store';
-import {
-	loadMonitoredSources,
-	type MonitoredSource,
-	markSourceScraped,
-	parseRssAcquisitionMode,
-	recordSourceFailure,
-} from '@ingest/domain/source-store';
-import { enqueueProcessing } from '@ingest/workflow';
-import { canonicalFeedItemUrl, type FeedItem, feedItemMarkdown, feedPublishedDate, feedSummary, loadFeedEntries } from './rss-feed';
+import { type FeedEntry as ExtractedFeedEntry, extractFromJson, extractFromXml } from '@extractus/feed-extractor';
+import { sql } from 'drizzle-orm';
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { limitByteStream } from '../../shared/response';
+import { enqueueSourceDrafts, type SourceResourceDraft } from '../admission';
+import { resolveResourceUrl } from './resource-url';
 
+const MAX_FEED_BYTES = 3 * 1024 * 1024;
+const MAX_FEED_ITEMS = 30;
+const FEED_SUMMARY_MAX_CHARS = 500;
+const RSS_FETCH_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const FEED_CONCURRENCY = 4;
-const ITEM_CONCURRENCY = 5;
 
-type RssSource = MonitoredSource;
+type MonitoredFeedSource = {
+	id: string;
+	name: string;
+	handle: string;
+};
 
-async function enqueueFeedItem(env: CoreEnv, feed: RssSource, item: FeedItem, url: string): Promise<void> {
-	const title = item.title?.trim();
-	if (!title) throw new Error(`RSS item from ${feed.name} has no title: ${url}`);
-	const mode = parseRssAcquisitionMode(feed.acquisitionMode, feed.name);
-	const content = mode === 'feed' ? await feedItemMarkdown(env, item, url) : null;
-	const pending = await withCoreTx(env, (db) =>
-		upsertPendingSourceResource(db, {
-			sourceId: feed.id,
-			url,
-			title,
-			source: feed.name,
-			publishedDate: feedPublishedDate(item.published),
-			summary: feedSummary(item.summary),
-			kind: 'blog',
-			resourcePlatform: null,
-			originalLang: item.language,
-			content,
-			platformMetadata: mode === 'feed' ? { fetchedAt: new Date().toISOString(), data: null } : null,
-			previewImageUrl: item.previewImageUrl,
-		}),
-	);
-	if (pending.needsProcessing) {
-		await enqueueProcessing(env, pending.resourceId, pending.sourceRevision ?? undefined);
-	}
+function feedEntryUrl(item: ExtractedFeedEntry) {
+	const link = resolveResourceUrl(item.link);
+	// Keep this admission policy on the raw monitored-feed link. YouTube
+	// canonicalization turns /shorts/:id into /watch?v=:id and erases the signal.
+	if (link?.resourcePlatform === 'youtube' && new URL(link.url).pathname.startsWith('/shorts/')) return null;
+	const id = resolveResourceUrl(item.id);
+	return id?.resourcePlatform ? id : link;
 }
 
-function dedupedFeedItems(items: FeedItem[], feedName: string): Array<{ item: FeedItem; url: string }> {
-	const byUrl = new Map<string, { item: FeedItem; url: string }>();
+function createFeedDrafts(items: ExtractedFeedEntry[], feedLanguage?: string) {
+	const entries = new Map<string, SourceResourceDraft>();
 	for (const item of items) {
-		const url = canonicalFeedItemUrl(item);
-		if (url && !byUrl.has(url)) byUrl.set(url, { item, url });
+		const url = feedEntryUrl(item);
+		if (!url || entries.has(url.normalizedUrl)) continue;
+		const date = item.published ? new Date(item.published) : null;
+		entries.set(url.normalizedUrl, {
+			url: url.url,
+			sourceHints: {
+				summary: item.description?.slice(0, FEED_SUMMARY_MAX_CHARS) || undefined,
+				publishedDate: date && !Number.isNaN(date.getTime()) ? date.toISOString() : undefined,
+				originalLang: feedLanguage,
+			},
+		});
 	}
-	const deduped = [...byUrl.values()];
-	const skipped = items.length - deduped.length;
-	if (skipped) console.warn({ tag: 'RSS', msg: 'Skipped invalid or duplicate feed items', feed: feedName, count: skipped });
-	return deduped;
+	return [...entries.values()];
 }
 
-/**
- * Claims rows that already existed before this feed was monitored — a saved URL,
- * or an entry that resolved to a special platform (Hacker News from hnrss,
- * YouTube from a channel feed). Only unowned rows are sent, so after the first cycle
- * this issues no statement at all.
- */
-async function reattachFeedProvenance(env: CoreEnv, feed: RssSource, existing: ExistingResourceRecord[]): Promise<void> {
-	const unowned = existing.filter((resource) => resource.needsSourceAttach).map((resource) => resource.id);
-	if (!unowned.length) return;
-	await withCoreDb(env, (db) => attachSourceToResources(db, unowned, feed.id));
+async function loadFeed(feed: MonitoredFeedSource) {
+	const requestedUrl = resolveResourceUrl(feed.handle)?.url;
+	if (!requestedUrl) {
+		throw new Error('Enter a valid feed URL (http/https).');
+	}
+	const response = await fetch(requestedUrl, {
+		headers: {
+			'User-Agent': RSS_FETCH_USER_AGENT,
+			Accept: 'application/rss+xml, application/atom+xml, application/feed+json, application/json, application/xml, text/xml, */*',
+		},
+		signal: AbortSignal.timeout(15_000),
+	});
+	if (!response.ok) {
+		const status = response.status;
+		await response.body?.cancel();
+		throw new Error(`Feed fetch failed with HTTP ${status}.`);
+	}
+	const effectiveUrl = resolveResourceUrl(response.url)?.url;
+	if (!effectiveUrl) {
+		await response.body?.cancel();
+		throw new Error('Feed redirected to an invalid URL.');
+	}
+
+	const body = response.body && limitByteStream(response.body, MAX_FEED_BYTES, () => new Error(`Feed exceeded ${MAX_FEED_BYTES} bytes`));
+	const content = await new Response(body).text();
+	const parserOptions = {
+		baseUrl: effectiveUrl,
+		descriptionMaxLen: FEED_SUMMARY_MAX_CHARS,
+	};
+	const parsed =
+		response.headers.get('content-type')?.toLowerCase().includes('json') || content.trimStart().startsWith('{')
+			? extractFromJson(content, parserOptions)
+			: extractFromXml(content, parserOptions);
+	const items = (parsed.entries ?? []).slice(0, MAX_FEED_ITEMS);
+	return {
+		itemCount: items.length,
+		drafts: createFeedDrafts(items, parsed.language?.trim() || undefined),
+	};
 }
 
-/** Runs `work` over `items` in bounded batches, isolating and logging each failure. */
-async function enqueueInBatches<T>(items: T[], describe: (item: T) => string, msg: string, work: (item: T) => Promise<unknown>) {
-	let done = 0;
-	for (let index = 0; index < items.length; index += ITEM_CONCURRENCY) {
-		const batch = items.slice(index, index + ITEM_CONCURRENCY);
-		const results = await Promise.allSettled(batch.map(work));
+async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeedSource): Promise<void> {
+	const { drafts, itemCount } = await loadFeed(feed);
+	const skipped = itemCount - drafts.length;
+	if (skipped) console.warn({ tag: 'RSS', msg: 'Skipped invalid or duplicate feed items', feed: feed.name, count: skipped });
+
+	const created = await enqueueSourceDrafts(env, db, feed.id, drafts);
+	console.info({
+		tag: 'RSS',
+		msg: 'Feed processed',
+		feed: feed.name,
+		created,
+		deduplicated: drafts.length - created,
+		totalCount: itemCount,
+	});
+	const scrapedAt = new Date();
+	await db.execute(sql`
+		UPDATE sources
+		SET scraped_at = ${scrapedAt}, updated_at = NOW()
+		WHERE id = ${feed.id}::uuid
+		  AND (scraped_at IS NULL OR scraped_at <= ${scrapedAt})
+	`);
+}
+
+export async function handleRSSCron(env: CoreEnv, db: NodePgDatabase): Promise<void> {
+	console.info({ tag: 'RSS', msg: 'start' });
+	// Every feed source uses the same parser. A YouTube channel handle is an Atom
+	// feed URL, so there is nothing for a separate monitor to do.
+	// Its entries still resolve to resource_platform='youtube' at acquisition.
+	const { rows: feeds } = await db.execute<MonitoredFeedSource>(sql`
+		SELECT id::text AS id, name, handle
+		FROM sources
+		WHERE enabled = true
+		  AND monitor_kind = 'feed'
+		  AND (handle NOT LIKE 'https://www.youtube.com/feeds/videos.xml?channel_id=%'
+		    OR scraped_at IS NULL
+		    OR scraped_at < NOW() - INTERVAL '30 minutes')
+	`);
+	const failures: unknown[] = [];
+	for (let index = 0; index < feeds.length; index += FEED_CONCURRENCY) {
+		const batch = feeds.slice(index, index + FEED_CONCURRENCY);
+		const results = await Promise.allSettled(batch.map((feed) => processFeed(env, db, feed)));
 		for (const [resultIndex, result] of results.entries()) {
-			if (result.status === 'fulfilled') {
-				done++;
-				continue;
-			}
+			if (result.status === 'fulfilled') continue;
+			const failedFeed = batch[resultIndex];
+			failures.push(result.reason);
 			console.error({
 				tag: 'RSS',
-				msg,
-				url: describe(batch[resultIndex] as T),
+				msg: 'Feed processing failed',
+				feed: failedFeed.name,
 				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
 			});
 		}
 	}
-	return done;
-}
 
-async function processFeed(env: CoreEnv, feed: RssSource): Promise<void> {
-	const mode = parseRssAcquisitionMode(feed.acquisitionMode, feed.name);
-	const items = await loadFeedEntries(feed.handle);
-	if (!items.length) {
-		console.info({ tag: 'RSS', msg: 'Feed has no items', feed: feed.name });
-		await markSourceScraped(env, feed.id);
-		return;
-	}
-
-	const itemUrls = dedupedFeedItems(items, feed.name);
-	const existing = await withCoreDb(env, (db) =>
-		getExistingResourcesByUrl(
-			db,
-			itemUrls.map(({ url }) => url),
-		),
-	);
-	await reattachFeedProvenance(env, feed, existing);
-
-	const existingSet = new Set(existing.map((resource) => normalizeUrl(resource.url)));
-	const newItems = itemUrls.filter(({ url }) => !existingSet.has(url));
-	const retryable = existing.filter((resource) => resource.shouldRetryEnrichment);
-	const retried = await enqueueInBatches(
-		retryable,
-		(r) => r.url,
-		'Existing resource retry enqueue failed',
-		(r) => enqueueProcessing(env, r.id),
-	);
-	console.info({ tag: 'RSS', msg: 'Feed processed', feed: feed.name, mode, newCount: newItems.length, retried, totalCount: items.length });
-
-	const queued = await enqueueInBatches(
-		newItems,
-		({ url }) => url,
-		'Item enqueue failed',
-		({ item, url }) => enqueueFeedItem(env, feed, item, url),
-	);
-	console.info({ tag: 'RSS', msg: 'Feed enqueue done', feed: feed.name, queued, total: newItems.length });
-	await markSourceScraped(env, feed.id);
-}
-
-export async function handleRSSCron(env: CoreEnv): Promise<void> {
-	console.info({ tag: 'RSS', msg: 'start' });
-	// Every feed-discovered source, whatever its platform says: a YouTube channel
-	// handle is an Atom feed URL, so there is nothing for a separate monitor to do.
-	// Its entries still resolve to resource_platform='youtube' at acquisition.
-	const feeds = await loadMonitoredSources(env, 'feed');
-	for (let index = 0; index < feeds.length; index += FEED_CONCURRENCY) {
-		const batch = feeds.slice(index, index + FEED_CONCURRENCY);
-		const results = await Promise.allSettled(batch.map((feed) => processFeed(env, feed)));
-		for (const [resultIndex, result] of results.entries()) {
-			if (result.status === 'rejected') {
-				console.error({
-					tag: 'RSS',
-					msg: 'Feed processing failed',
-					feed: batch[resultIndex]?.name,
-					error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-				});
-				const failedFeed = batch[resultIndex];
-				if (failedFeed) await recordSourceFailure(env, failedFeed.id, result.reason);
-			}
-		}
-	}
-
-	console.info({ tag: 'RSS', msg: 'end' });
+	console.info({ tag: 'RSS', msg: 'end', sources: feeds.length, failed_sources: failures.length });
+	if (failures.length) throw new AggregateError(failures, `${failures.length} feed monitor operations failed`);
 }

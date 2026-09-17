@@ -20,7 +20,7 @@
 
 ## newsence 是什麼？
 
-[**newsence.app**](https://www.newsence.app) 的引擎。支援 RSS、Twitter/X、YouTube、Hacker News、一般網頁與上傳檔案，自動進行中英雙語 AI 分析並保留每筆 resource 的實體註記，再將完成 enrichment 的 corpus resource 同步到 Cloudflare AI Search。
+[**newsence.app**](https://www.newsence.app) 的引擎。支援 RSS、Twitter/X、YouTube、Hacker News、一般網頁與上傳檔案，自動進行結構化 AI 分析與繁中翻譯並保留每筆 resource 的實體註記，再將完成 enrichment 的 corpus resource 同步到 Cloudflare AI Search。
 
 ## 支援平台
 
@@ -29,16 +29,25 @@
 ![X](https://img.shields.io/badge/X%2FTwitter-000000?logo=x&logoColor=white)
 ![Hacker News](https://img.shields.io/badge/Hacker%20News-F0652F?logo=ycombinator&logoColor=white)
 
-| 平台            | 類型   | 排程       | 說明                                             |
-| --------------- | ------ | ---------- | ------------------------------------------------ |
-| **RSS 訂閱**    | 監控   | 每 5 分鐘  | 抓取 feed、依 URL 去重、偵測 HN 連結             |
-| **Twitter/X**   | 監控   | 每 6 小時  | 透過 Kaito API 追蹤用戶 — 推文、串文、長文、媒體 |
-| **YouTube**     | 監控   | 每 30 分鐘 | Atom feed → 影片資訊、字幕、章節、AI 精華段落    |
-| **Hacker News** | 處理器 | 經由 RSS   | 偵測 HN 連結 → Algolia 取評論 → 生成編輯筆記     |
-| **網頁**        | 爬蟲   | saved URL  | 全文擷取（Readability + Cheerio）、OG metadata   |
-| **App 輸入**    | 入口   | 即時       | Service-binding RPC — saved URL/blob acquisition + enrichment；membership 由 app 擁有 |
+| 輸入 | 取得內容的流程 |
+| --- | --- |
+| **網頁 URL** | 抓取／偵測轉址 → HTML 正文與來源資料 → Markdown；PDF 回應交給 PDF parser |
+| **上傳 PDF** | 讀取擁有權所屬的 R2 blob → 並行 Zotero 正文／圖片與 GROBID 書目辨識 → 必要時 Crossref 確認；無法辨識的文件維持私人檔案 |
+| **論文** | 精確 URL 或 PDF identity → 網頁查 OpenAlex／PDF 查 Crossref → canonical 識別碼與書目；選擇性取得 OpenAlex 全文 PDF |
+| **Twitter/X** | twitterapi.io → 推文或長文 Markdown、媒體與連結主題；監控每 6 小時以 cursor 分頁 |
+| **YouTube** | 影片資料 → 並行頻道頭像與字幕 → 章節或 AI 精華 → 字幕與 Resource 在同一交易寫入 |
+| **Hacker News** | Firebase 主文與排序留言 → Markdown 討論；外部文章保留為獨立 subject |
+| **LessWrong** | GraphQL 文章 → 原生 Markdown 與來源資料 |
+| **RSS / Atom / JSON Feed** | 抓取 → feed parser → 正規化 URL drafts → 一般 acquisition；每 5 分鐘執行，YouTube feed 間隔 30 分鐘 |
 
-所有平台輸出統一的 `NormalizedContent` 格式 → 進入同一個 AI 管線。
+單一 URL detector 先選出負責的 platform adapter。每個 platform/kind adapter
+自行負責來源解析、identity 與 Resource 輸出；共用部分只有輸出契約與來源提示小工具，
+沒有泛型 materializer。Workflow 再將輸出交給 analysis、image hosting 與 persistence。
+
+Web 與 PDF adapter 直接產出可讀的 Resource；paper resolution 在這份 Resource 上補齊書目 identity。
+修改平台行為從對應 adapter 開始，dispatcher 只負責路由。新增平台也要同步更新
+`src/shared/resource.ts` 的 identity 契約與資料庫 constraints。Debug 時先檢查 acquisition step
+輸出的 Resource，再追 analysis、canonical persistence，以及獨立的 app save／後續工作。
 
 ## 運作流程
 
@@ -47,31 +56,36 @@
 ```
 內容進入（source monitor / saved URL / uploaded blob / resync）
   │
-  ├─ 1. 讀取 Resource ───── canonical resources row；抓取 URL 內容或抽取上傳 PDF 文字
-  ├─ 2. AI 分析 ──────────── AI Gateway text/JSON calls → 中英標題、摘要、標籤、關鍵字、實體
-  ├─ 3. 存入資料庫 ────────── 更新 resources + resource_translations
-  ├─    儲存實體 ─────────── 取代該 resource 的 resources.entities JSON
-  ├─ 4. YouTube 精華 ─────── （僅 YouTube）從字幕生成 AI 精華段落
-  └─ 5. 同步 AI Search ───── 將完成 enrichment 的 corpus 文件上傳到 Cloudflare AI Search
+  ├─ 1. 取得內容 ──────────── 抓取 URL draft，或讀取／抽取 app-owned blob
+  ├─ 2. 決定 identity ─────── 完成 kind/platform、paper metadata 與 subject intent
+  ├─ 3. 準備儲存 ──────────── 本機判斷語言；只補缺少的摘要，與圖片託管並行
+  ├─ 4. 寫入 DB ───────────── 寫入 canonical／私人內容；發布符合條件的公開 PDF 圖片
+  ├─ 5. 原文可讀 ──────────── 套用 user save，回報資源已可閱讀
+  └─ 6. 後續工作 ──────────── 標籤／關鍵字分類後派送索引；翻譯、引用與 subject 獨立執行
 ```
 
-每個 resource 約 30 秒完成。每步獨立重試，指數退避。
+URL、source 與 derived-subject 都以 immutable Workflow draft 傳遞，只有第 4
+步成功時才建立 Resource。App-owned upload 因 ownership、quota 與 blob locator
+已存在，是唯一 record-first 例外。Source monitor 會先用 PostgreSQL 的 canonical
+Resource 過濾已完成項目；只有 in-flight 與 failed attempts 使用短期原生 Workflow
+retention。每個 durable step 各自重試。
+
+PDF 圖片辨識、來源權限、快取版本與重新處理流程，見 [PDF processing](README.md#pdf-processing-and-recovery)。
+
+驗證執行 `pnpm lint`、`pnpm run typecheck`、`pnpm test`。保留六項檢查：資源處理、平台抓取、翻譯、PDF 正規化、workerd/R2 儲存，以及 container HTTP／佇列；`pnpm check:pdf` 只執行三項 PDF 檢查。Runtime 使用隔離的本機 bindings，臨時修復與探索腳本不放進 repository。
 
 ## AI 管線
 
 | 階段         | 模型              | 說明                                                        |
 | ------------ | ----------------- | ----------------------------------------------------------- |
-| **分析**     | AI Gateway text model | Resource → 中英標題、摘要、標籤、關鍵字、分類               |
-| **實體提取** | AI Gateway JSON model | Resource → 具名實體（人物、組織、產品、技術、事件），含中英名稱 |
+| **摘要**     | AI Gateway structured output | 來源缺少摘要才生成；語言由本機 package 判斷                    |
+| **分類**     | AI Gateway structured output | 原文可讀後才產生標籤與關鍵字                                  |
+| **翻譯**     | AI Gateway text models      | 符合條件的已持久化 Resource → 繁中標題、摘要與正文             |
 | **搜尋索引** | Cloudflare AI Search  | 對完成 enrichment 的 corpus 文件提供 hybrid retrieval       |
 
-翻譯/摘要與分類/實體是分開的 structured calls，避免其中一個 schema 失敗就讓整個 resource 落入 fallback。
+摘要生成與背景分類是分開的 structured call；翻譯在獨立 Workflow 執行，因此 localization 失敗不會讓已寫入的 canonical Resource 失效。
 
-### 實體資料策略
-
-Core 會正規化明顯重複項目、限制實體類型、排除泛詞與來源別名，並限制每筆 resource 儲存的實體數量。
-
-Collection Wiki 產品介面雖已退役，entity extraction 仍刻意保持啟用。衍生註記只存在 `resources.entities`，供未來搜尋或呈現功能使用；目前沒有全域正規化 entity graph 或 reverse index。只有在真實產品需求需要跨 resource 查詢時，才應重新加入正規化 entity tables。
+Core 優先保留非空白的來源摘要或論文 abstract；缺少時由既有的分析呼叫一併生成原文語言摘要，正文截片不視為來源摘要。Metadata localization 完整翻譯已保存的摘要，不從正文自行補寫；舊資料沒有摘要時只翻譯標題，重新處理後才會補上原文摘要。以 `pnpm check:resource-identity` 和 `pnpm check:platform-acquisition` 驗證來源資料優先順序與平台摘要。
 
 ## 技術棧
 
@@ -86,13 +100,13 @@ Collection Wiki 產品介面雖已退役，entity extraction 仍刻意保持啟�
 
 ## 自行部署
 
-上方的一鍵 Deploy 按鈕會幫你建好 Worker + Workflows，**但 Hyperdrive、資料庫、secrets 需要手動設定**。完整步驟：
+上方的一鍵 Deploy 按鈕會幫你建好 Worker + Workflows，**但 Queues、Hyperdrive、資料庫、secrets 需要手動設定**。完整步驟：
 
 ### 1. 資料庫
 
 需要一個 PostgreSQL。正式環境目前透過 Cloudflare Hyperdrive 連到 PlanetScale Postgres。
 
-Core 使用的 app-owned tables 會同步定義在 `src/db/schema.ts`；canonical schema 位於 `web-tanstack/prisma/schema.prisma`，DB-only constraints 與 indexes 則位於 `web-tanstack/prisma/manual-indexes.sql`。任一 schema 變更後請執行 `pnpm check:db-schema`。
+App-owned canonical schema 位於 `web-tanstack/prisma/schema.prisma`，DB-only constraints 與 indexes 則位於 `web-tanstack/prisma/manual-indexes.sql`。Core 透過 Hyperdrive 使用 Drizzle 的參數化 SQL，不再維護第二份 table schema。Core identity domain 變更後請執行 `pnpm check:resource-identity`；schema 變更另需在可丟棄的資料庫執行 Web migration replay 與 `pnpm db:drift-check`。
 
 ### 2. Hyperdrive binding
 
@@ -109,6 +123,11 @@ wrangler hyperdrive create newsence-db \
 
 Workflows 會在第一次 deploy 時透過 `wrangler.jsonc` 裡的 `workflows` bindings 自動建立。
 
+`resource-search-sync` Queue 由 `wrangler.jsonc` 自動建立。Resource 與
+translation Workflows 只在 PostgreSQL commit 後 durable enqueue Resource ID；
+Queue consumer 再以原生逐訊息 ack 與有限 retry 更新衍生的 AI Search 文件。
+Workflow failures 直接透過 Cloudflare 原生 Workflow status 與 Workers Logs 查看。
+
 ### 4. Secrets
 
 AI 分析透過 Workers AI binding 與 AI Gateway 執行，不需要外部 LLM secret。平台/API secrets 由 Wrangler config 設為必填：
@@ -116,8 +135,26 @@ AI 分析透過 Workers AI binding 與 AI Gateway 執行，不需要外部 LLM s
 ```bash
 wrangler secret put KAITO_API_KEY            # Twitter 監控
 wrangler secret put YOUTUBE_API_KEY          # YouTube 監控
-wrangler secret put S2_API_KEY               # Semantic Scholar quota
+wrangler secret put OPENALEX_API_KEY          # 論文 metadata enrichment
+wrangler secret put LLAMA_CLOUD_API_KEY       # 付費 PDF fallback
+wrangler secret put LLAMA_CLOUD_PROJECT_ID    # 此 deployment 專用的 Llama Cloud project
 ```
+
+Zotero Structured Document Text 是主要 PDF parser。私人上傳只會串流到
+可休眠的 `basic` Cloudflare Container 一次；Core 從同一份 document 產生
+Markdown、bibliography、citation links 與 PDF source coordinates，並把有大小
+上限的 SDT JSON 存在原始 R2 object 旁，以來源 SHA-256 驗證。GROBID 只負責
+學術 header／identifier gate，Crossref 則補齊 bibliography metadata。
+
+LlamaParse 保留為 local-first OCR fallback。Web 負責產品 kill switch 與 Autumn
+資格，並在 authenticated URL 與新上傳 PDF workflow 附上單份文件的頁數
+grant。Core 只在 SDT extraction 為空、degraded 或大部分頁面只有圖片時執行
+已授權的 fallback，且獨立強制 100 頁與 25 MiB 安全上限。私人上傳使用暫時的
+Llama Cloud file，Core 會在 fallback 完成或中止時刪除；不明確的 provider
+mutation 會直接失敗，並留下穩定的 external ID 供 operator 清理。帶 OpenAlex
+key 的 content URL 仍只在本地處理。Provider adapter 固定使用美國 API、
+`cost_effective` tier 與具日期的 parser version。只有在明確授權 development
+smoke 並記錄實際 credits 後，才可開啟 Web grant。
 
 ### 5. 部署
 
@@ -130,7 +167,9 @@ pnpm run deploy
 
 ## API Surface
 
-HTTP surface 只提供 `GET /health`。App/chat 透過 Cloudflare service-binding RPC 傳入已持久化的 resource ID，cron monitor 使用 scheduled triggers；URL acquisition 只存在於 canonical resource workflow 內部。
+Core 沒有產品 HTTP API；default fetch handler 只回傳 404。App URL import 透過 Cloudflare service-binding RPC 傳入 Workflow instance ID、URL 與使用者的 `saveTarget`；monitor 與 derived subject 在 Core 內排入不含 save target 的相同 draft。只有 uploaded blob 與 explicit resync 傳入已持久化的 resource ID。URL acquisition 只存在於 canonical resource Workflow 內部。
+
+URL／platform acquisition 與 app-owned R2 PDF 讀取各自產生一個 canonical processing aggregate。Core 先選定可能的學術替代正文，再透過 Drizzle／Hyperdrive commit canonical Resource；只有需要處理使用者 save／container／file ownership 時，才在下一個 durable step 呼叫 Web。
 
 ## Hosted MCP
 
@@ -142,23 +181,28 @@ resource 讀取。已退役的本機 CLI／MCP 套件不屬於這個 Worker。
 
 ```
 src/
-├── index.ts              # 只保留 Cloudflare WorkerEntrypoint class
-├── ai/                   # Workers AI / AI Gateway helpers
-├── entities/             # resource-local entity normalization
+├── index.ts              # service RPC、cron 與 Workflow-error Queue entrypoints
 ├── shared/               # 小型跨子系統 primitives
-│   ├── types.ts          # ResourceForProcessing、NormalizedContent、YoutubeTranscript
-│   └── web.ts            # fetch、URL normalization、stream limits
+│   ├── resource.ts       # identity、identifier、canonical metadata contracts
+│   ├── image-mapping.ts  # canonical Hosted Images 欄位 mapping
+│   └── db.ts             # Drizzle over Hyperdrive
 ├── ingest/               # ── resource 入庫 pipeline（開源核心）──
-│   ├── workflow.ts       # Workflow class + enqueueProcessing
-│   ├── domain/           # sink、AI merge helpers
+│   ├── workflow.ts       # durable resource processing 與 follow-up orchestration
+│   ├── analysis.ts       # AI 分析與 resource-local entity normalization
+│   ├── acquisition.ts    # 單次 platform detection 與 adapter dispatch
+│   ├── resource-persistence.ts # canonical Resource transaction
+│   ├── translation-workflow.ts # durable translation 與 canonical writeback
 │   └── platforms/        # 每個來源或 stage 一個檔案
 │       ├── rss.ts        # feed polling
-│       ├── twitter.ts    # monitor + scraper + processor
-│       ├── youtube.ts    # monitor + transcript/highlights
+│       ├── twitter.ts    # source monitor
+│       ├── twitter-acquisition.ts # tweet acquisition
+│       ├── youtube.ts             # 來源解析、擷取、逐字稿／精華
 │       ├── hackernews.ts # HN processor
-│       ├── paper.ts      # Semantic Scholar enrichment stage
+│       ├── paper.ts      # OpenAlex enrichment stage
 │       └── pdf.ts        # PDF text extraction stage
-└── corpus.ts              # engine 讀取、搜尋輔助
+├── operations/           # operator 觸發的 durable jobs
+│   └── search-index-rebuild.ts # AI Search 全量 rebuild
+└── search-index.ts        # runtime AI Search projection、同步與排序檢索
 ```
 
 ## 環境變數與 Bindings
@@ -170,8 +214,10 @@ Bindings（在 `wrangler.jsonc` 裡設定）：
 | `HYPERDRIVE`       | 連線到你的 Postgres                         |
 | `RESOURCE_PROCESSING_V2_WORKFLOW` | 抓取、解析、分類並寫回 canonical resource |
 | `RESOURCE_TRANSLATION_V2_WORKFLOW` | 將已持久化的 resource 翻譯成繁體中文 |
-| `SEARCH_INDEX_GENERATION_5_REBUILD_WORKFLOW` | 全量重建並驗證 generation-5 搜尋索引 |
+| `SEARCH_INDEX_REBUILD_WORKFLOW` | 全量重建並驗證 canonical 搜尋索引 |
+| `RESOURCE_SEARCH_SYNC_QUEUE` | canonical PostgreSQL 寫入後 durable 同步 AI Search |
 | `R2`               | 讀取 app-owned uploaded blob，供 PDF extraction 使用 |
+| `IMAGES`           | 將遠端 resource 圖片串流上傳至 Cloudflare Images |
 | `AI`               | Workers AI binding（AI Gateway 文字呼叫）   |
 | `AI_SEARCH`        | `newsence-corpus-v6` canonical public corpus |
 
@@ -181,49 +227,51 @@ Secrets（透過 `wrangler secret put` 設定）：
 | ------------------------------ | ---- | ----------------------------- |
 | `KAITO_API_KEY`                | 是   | 啟用 Twitter 監控             |
 | `YOUTUBE_API_KEY`              | 是   | 啟用 YouTube 頻道監控         |
-| `S2_API_KEY`                   | 是   | 提高 Semantic Scholar paper enrichment quota |
+| `OPENALEX_API_KEY`             | 是   | 啟用精確論文 metadata enrichment |
+| `LLAMA_CLOUD_API_KEY`          | 是   | 此 deployment 的 LlamaParse API key |
+| `LLAMA_CLOUD_PROJECT_ID`       | 是   | 此 deployment 隔離使用的 Llama Cloud project |
 
 ## Canonical resource identity
 
 `ResourceKind` 是產品呈現語意，合法的 `(kind, resource_platform)` 組合只有
-`blog / null`、`forum / hackernews`、`post / twitter`、
-`video / youtube`、`paper / null`、`paper / hackernews`、
+`blog / null`、`blog / lesswrong`、`forum / hackernews`、`post / twitter`、
+`video / youtube`、`paper / null`、
 `image / null` 與 `file / null`。PDF 是 representation，不是另一個 kind；
-一般 PDF 是 `blog`，HN-linked PDF 是 `forum / hackernews`，經學術辨識後
-才可升級為對應的 `paper` identity。
+一般 PDF 是 `blog`；HN/Twitter carrier 保持原 identity，學術辨識後透過
+`subject_resource_id` 指向另一筆 canonical `paper / null` resource。
 
-`Source.kind` 的 `blog | news` 是獨立的 feed/editorial 分類；兩者建立的
-resource 都使用 `blog` shell，來源分類只負責 feed 層級的文案與篩選。
+Curated source 的 `Source.monitorKind` 只保存 `feed | twitter` 這個 cron
+路由；feed entry 進入正常 resource 偵測後，才選擇 LessWrong 或 YouTube
+adapter。
 
-AI Search 沿用 `newsence-corpus-v6`，目前 durable contract 是
-generation `5 / canonical-5-blog-forum-kind`。Rebuild 使用實體 Workflow
-`newsence-search-index-generation-5-rebuild`、class
-`SearchIndexGeneration5RebuildWorkflow`，runner 為
-`search-index-rebuild-canonical-5-blog-forum-kind-canonical-v1`。
-
-Generation 5 與 canonical `blog`/`forum` database cutover 已完成。一次性
-migration 保留在 git history；目前操作直接從 target schema 開始，依
-`AI_SEARCH_V6_RUNBOOK.md` 執行 active rebuild 與驗證流程。
+AI Search 沿用 `newsence-corpus-v6`。PostgreSQL 是 canonical source，Core
+只把 keyed search document 同步進 AI Search；rebuild 的 durable 狀態、重試、
+錯誤與 output 直接使用 Cloudflare Workflow。實體 Workflow 是
+`newsence-search-index-rebuild`，class 是 `SearchIndexRebuildWorkflow`；
+目前帶有 serving-index 版本的 runner 是 `search-index-rebuild-v6-native-v1`。
 
 ## 新增擷取 adapter
 
 擷取 adapter 集中在 `ingest/platforms/*.ts`，只放它真正需要的
-discovery / scrape / process 邏輯。App-owned saved URL 先寫入 `resources`
-與 `resource_saves`；upload 則寫入 `resources` 與 `user_files`。Workflow
-收到的是 `resourceId`，SQL 寫入留在 `ingest/domain/resource-store.ts`。
+discovery / scrape / process 邏輯。App-owned saved URL 以 Workflow draft
+進入 Core，成功處理後才建立 canonical row；upload 則先寫入 `resources`
+與 `user_files`，再以 `resourceId` 啟動 Workflow。Core 在自己的
+`resource-persistence.ts` transaction 寫入 canonical Resource、source 與 subject；
+使用者的 save／container／file target 則由下一個 durable step 交給 Web。
+Translation input query 與唯一 consumer 放在 `translation-workflow.ts`。
 
-各軸要分開：acquisition（`rss`、`web` 或專用 adapter）不是 canonical
-`ResourcePlatform`（`youtube`、`twitter`、`hackernews` 或 null），也不是
+各軸要分開：acquisition（generic web 或專用 adapter）不是 canonical
+`ResourcePlatform`（`youtube`、`twitter`、`hackernews`、`lesswrong` 或 null），也不是
 `ResourceKind`（`blog`、`forum`、`post`、`video`、`paper`、`image`、`file`）、
 blob representation（MIME／檔名／大小／頁數）或 lifecycle origin
-（`source`、`saved_url`、`upload`、`generated`）。PDF 解析和 Semantic
-Scholar paper enrichment 是 workflow stage，依 row 內容或 metadata
+（`source`、`saved_url`、`upload`、`generated`）。PDF 解析和外部 paper
+paper enrichment 是 workflow stage，依 row 內容或 metadata
 觸發，不是新的 identity 值。
 
 新增一個來源最少要做：
 
 1. **Adapter file**（`ingest/platforms/foo.ts`）— discovery / scrape helpers 和可選自訂 processor。
-2. **Metadata shape** — 只加入 `platform_metadata` 真的需要的平台 JSON payload。
+2. **Canonical fields** — provider payload 在 Core 內正規化成 creators、kind metadata、identifiers 與 optional subject；不保存 provider JSON。
 3. **Monitor**（可選）— 如果來源可以輪詢，從 `src/index.ts` 接上 cron handler。
 4. **Workflow hook**（可選）— 只有在來源需要不同於預設 AI merge 的行為時才加。
 

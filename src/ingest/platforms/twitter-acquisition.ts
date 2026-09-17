@@ -1,54 +1,195 @@
-import { fetchWithTimeout, readTextWithLimit } from '@core-shared/http';
-import type {
-	NormalizedContent,
-	PlatformMetadata,
-	QuotedTweetData,
-	RetweetedByData,
-	TwitterAuthorFields,
-	TwitterMedia,
-} from '@core-shared/types';
-import { extractTweetId } from '@core-shared/url';
+import type { WorkflowStep } from 'cloudflare:workers';
+import { NonRetryableError } from 'cloudflare:workflows';
+import { z } from 'zod';
+import type { AcquiredResource } from '../acquisition';
+import { resolveResourceUrl, ResourceUrlSchema } from './resource-url';
 
-// twitterapi.io tweet response shape used inside the Twitter platform only.
-export interface Tweet {
-	id?: string;
-	url: string;
-	createdAt: string;
-	viewCount?: number;
-	author?: {
-		id?: string;
-		userName: string;
-		name: string;
-		profilePicture?: string;
-		isBlueVerified?: boolean;
-	};
-	text: string;
-	likeCount?: number;
-	retweetCount?: number;
-	replyCount?: number;
-	quoteCount?: number;
-	extendedEntities?: {
-		media?: Array<{
-			media_url_https: string;
-			type: string;
-			sizes?: { large?: { w: number; h: number } };
-			video_info?: { variants?: Array<{ bitrate?: number; content_type?: string; url: string }> };
-		}>;
-	};
-	hashTags?: string[];
-	urls?: Array<{ expanded_url?: string; url?: string }>;
-	entities?: { urls?: Array<{ expanded_url?: string; url?: string }> };
-	lang?: string;
-	conversationId?: string;
-	isReply?: boolean;
-	inReplyToId?: string | null;
-	inReplyToUsername?: string | null;
-	quoted_tweet?: Tweet | null;
-	retweeted_tweet?: Tweet | null;
-	retweetedBy?: RetweetedByData;
+const TwitterAuthorSchema = z.object({
+	userName: z.string(),
+	name: z.string(),
+	profilePicture: z.string().optional(),
+	isBlueVerified: z.boolean().optional(),
+});
+
+const TwitterUrlEntitySchema = z.object({
+	expanded_url: z.string().optional(),
+	url: z.string().optional(),
+});
+
+const TwitterMediaEntitySchema = z.object({
+	media_url_https: z.string(),
+	type: z.string(),
+	sizes: z
+		.object({
+			large: z.object({ w: z.number(), h: z.number() }).optional(),
+		})
+		.optional(),
+});
+
+const TweetSchema = z.object({
+	id: z.string().optional(),
+	url: z.string().min(1),
+	createdAt: z.string().min(1),
+	author: TwitterAuthorSchema.optional(),
+	text: z.string(),
+	extendedEntities: z.object({ media: z.array(TwitterMediaEntitySchema).optional() }).optional(),
+	urls: z.array(TwitterUrlEntitySchema).optional(),
+	entities: z.object({ urls: z.array(TwitterUrlEntitySchema).optional() }).optional(),
+	lang: z.string().max(35).optional(),
+	get quoted_tweet(): z.ZodCatch<z.ZodOptional<z.ZodNullable<typeof TweetSchema>>> {
+		return TweetSchema.nullish().catch(null);
+	},
+});
+
+type Tweet = z.infer<typeof TweetSchema>;
+
+const TwitterTweetsResponseSchema = z.object({
+	tweets: z.array(TweetSchema),
+	status: z.string().optional(),
+	msg: z.string().optional(),
+	message: z.string().optional(),
+});
+
+const TwitterArticleInlineStyleSchema = z.object({
+	offset: z.int().nonnegative(),
+	length: z.int().nonnegative(),
+	style: z.string(),
+});
+
+const TwitterArticleContentSchema = z.object({
+	type: z.string(),
+	text: z.string().nullish(),
+	url: z.string().nullish(),
+	previewUrl: z.string().nullish(),
+	inlineStyleRanges: z.array(TwitterArticleInlineStyleSchema).nullish(),
+});
+
+const TwitterArticleSchema = z.object({
+	title: z.string().nullish(),
+	cover_media_img_url: z.string().nullish(),
+	contents: z.array(TwitterArticleContentSchema).nullish(),
+	author: z
+		.object({
+			userName: z.string().nullish(),
+			name: z.string().nullish(),
+			isBlueVerified: z.boolean().nullish(),
+			profilePicture: z.string().nullish(),
+		})
+		.nullish(),
+	createdAt: z.string().nullish(),
+});
+
+const TwitterArticleResponseSchema = z.object({
+	article: TwitterArticleSchema.nullish(),
+	status: z.enum(['success', 'failed']),
+	message: z.string().optional(),
+});
+
+type TwitterArticle = z.infer<typeof TwitterArticleSchema>;
+type TwitterArticleContent = NonNullable<TwitterArticle['contents']>[number];
+
+export function parseTwitterTweetsResponse(value: unknown): Tweet[] {
+	const response = TwitterTweetsResponseSchema.parse(value);
+	if (response.status?.toLowerCase() === 'error') {
+		throw new Error(`Twitter tweets request failed: ${(response.message ?? response.msg)?.trim() || 'unknown provider error'}`);
+	}
+	return response.tweets;
 }
 
-type AuthoredTweet = Tweet & { author: NonNullable<Tweet['author']> };
+function parseTwitterArticleResponse(value: unknown, tweetId: string): TwitterArticle {
+	const response = TwitterArticleResponseSchema.parse(value);
+	if (response.status !== 'success') {
+		throw new Error(`Twitter article ${tweetId} failed: ${response.message?.trim() || 'unknown provider error'}`);
+	}
+	if (!response.article) throw new Error(`Twitter article ${tweetId} omitted article content`);
+	return response.article;
+}
+
+function articleStyleMarker(style: string): string | null {
+	switch (style.trim().toLowerCase()) {
+		case 'bold':
+			return '**';
+		case 'italic':
+			return '_';
+		case 'strikethrough':
+			return '~~';
+		case 'code':
+		case 'monospace':
+			return '`';
+		default:
+			return null;
+	}
+}
+
+function styledArticleText(block: TwitterArticleContent): string {
+	const text = block.text;
+	if (!text?.trim()) return '';
+	type Marker = { end: number; marker: string; start: number };
+	const openings = new Map<number, Marker[]>();
+	const closings = new Map<number, Marker[]>();
+	for (const range of block.inlineStyleRanges ?? []) {
+		const marker = articleStyleMarker(range.style);
+		const start = range.offset;
+		const end = start + range.length;
+		if (!marker || range.length === 0 || end > text.length) continue;
+		const item = { end, marker, start };
+		openings.set(start, [...(openings.get(start) ?? []), item]);
+		closings.set(end, [...(closings.get(end) ?? []), item]);
+	}
+
+	let markdown = '';
+	for (let index = 0; index <= text.length; index++) {
+		for (const item of (closings.get(index) ?? []).sort((left, right) => right.start - left.start)) markdown += item.marker;
+		for (const item of (openings.get(index) ?? []).sort((left, right) => right.end - left.end)) markdown += item.marker;
+		if (index < text.length) markdown += text[index];
+	}
+	return markdown.trim();
+}
+
+function renderTwitterArticleBlock(block: TwitterArticleContent): string {
+	const text = styledArticleText(block);
+	switch (block.type) {
+		case 'header-one':
+			return text ? `# ${text}` : '';
+		case 'header-two':
+			return text ? `## ${text}` : '';
+		case 'header-three':
+			return text ? `### ${text}` : '';
+		case 'unordered-list-item':
+			return text ? `- ${text}` : '';
+		case 'ordered-list-item':
+			return text ? `1. ${text}` : '';
+		case 'image':
+			return block.url ? `![](${block.url})` : '';
+		case 'gif':
+			return [block.previewUrl ? `![GIF](${block.previewUrl})` : '', block.url ? `[GIF](${block.url})` : ''].filter(Boolean).join('\n\n');
+		case 'divider':
+			return '---';
+		case 'markdown':
+		case 'unstyled':
+			return text;
+		default:
+			return text || (block.url ? `[${block.type}](${block.url})` : '');
+	}
+}
+
+function renderTwitterArticleMarkdown(article: TwitterArticle): string {
+	let markdown = '';
+	let previous: TwitterArticleContent | undefined;
+	for (const block of article.contents ?? []) {
+		const rendered = renderTwitterArticleBlock(block);
+		if (!rendered) continue;
+		const sameList = previous?.type === block.type && (block.type === 'unordered-list-item' || block.type === 'ordered-list-item');
+		markdown += `${markdown ? (sameList ? '\n' : '\n\n') : ''}${rendered}`;
+		previous = block;
+	}
+	return markdown;
+}
+
+type TwitterAcquisitionInput = {
+	processingId: string;
+	tweetId: string;
+};
 
 function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {
 	if (!tweet.author?.userName.trim() || !tweet.author.name.trim()) {
@@ -57,48 +198,25 @@ function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {
 	return tweet.author;
 }
 
-const NON_RESOURCE_LINK_HOSTS = new Set(['twitter.com', 'x.com', 'instagram.com', 'tiktok.com', 'facebook.com', 'threads.net']);
+const NON_RESOURCE_LINK_HOSTS = ['t.co', 'twitter.com', 'x.com', 'instagram.com', 'tiktok.com', 'facebook.com', 'threads.net'];
 
 function isNonResourceLinkUrl(url: string): boolean {
-	let hostname: string;
-	try {
-		hostname = new URL(url).hostname.toLowerCase();
-	} catch {
-		return false;
-	}
-	if (hostname.startsWith('www.')) hostname = hostname.slice(4);
-	for (const host of NON_RESOURCE_LINK_HOSTS) {
-		if (hostname === host || hostname.endsWith(`.${host}`)) return true;
-	}
-	return false;
+	const hostname = URL.parse(url)?.hostname;
+	return !hostname || NON_RESOURCE_LINK_HOSTS.some((host) => hostname === host || hostname.endsWith(`.${host}`));
 }
 
-function extractTweetAuthor(tweet: Tweet): TwitterAuthorFields {
-	const author = requiredTweetAuthor(tweet);
-	return {
-		authorName: author.name,
-		authorUserName: author.userName,
-		authorProfilePicture: author.profilePicture,
-		authorVerified: author.isBlueVerified,
-	};
-}
-
-function extractTweetMedia(tweet: Tweet): TwitterMedia[] {
+function tweetAttachments(tweet: Tweet) {
 	return (
-		tweet.extendedEntities?.media?.flatMap((m) => {
-			if (!m.media_url_https) return [];
-			const result: TwitterMedia = { url: m.media_url_https, type: m.type as TwitterMedia['type'] };
-			if (m.sizes?.large) {
-				result.width = m.sizes.large.w;
-				result.height = m.sizes.large.h;
-			}
-			if (m.video_info?.variants) {
-				const mp4 = m.video_info.variants
-					.filter((v): v is typeof v & { bitrate: number } => v.content_type === 'video/mp4' && Number.isFinite(v.bitrate))
-					.sort((a, b) => b.bitrate - a.bitrate)[0];
-				if (mp4) result.videoUrl = mp4.url;
-			}
-			return [result];
+		tweet.extendedEntities?.media?.flatMap((media) => {
+			const url = media.media_url_https.trim();
+			if (!url) return [];
+			return [
+				{
+					kind: media.type === 'photo' ? 'image' : media.type === 'animated_gif' ? 'animated' : 'video',
+					url,
+					...(media.sizes?.large ? { width: media.sizes.large.w, height: media.sizes.large.h } : {}),
+				} as const,
+			];
 		}) ?? []
 	);
 }
@@ -107,18 +225,7 @@ function tweetUrlEntities(tweet: Tweet): Array<{ expanded_url?: string; url?: st
 	return tweet.urls ?? tweet.entities?.urls ?? [];
 }
 
-function extractExpandedUrls(tweet: Tweet): string[] {
-	return tweetUrlEntities(tweet).flatMap((url) => {
-		const expandedUrl = url.expanded_url?.trim();
-		return expandedUrl ? [expandedUrl] : [];
-	});
-}
-
 const TCO_TOKEN_RE = /https?:\/\/t\.co\/[A-Za-z0-9]+/g;
-
-function isTweetMediaPageUrl(url: string): boolean {
-	return /\/status\/\d+\/(?:photo|video)\/\d+/.test(url);
-}
 
 /**
  * Rewrite tweet text the way Twitter renders it: each t.co token becomes its
@@ -133,16 +240,27 @@ function expandTweetUrls(text: string, tweet: Tweet): string {
 		const token = entity.url?.trim();
 		const expanded = entity.expanded_url?.trim();
 		if (!token || !expanded) continue;
-		replacements.set(token, isTweetMediaPageUrl(expanded) ? '' : expanded);
+		const parsed = URL.parse(expanded);
+		const mediaLink =
+			parsed && resolveResourceUrl(expanded)?.resourcePlatform === 'twitter' && /\/status\/\d+\/(?:photo|video)\/\d+/.test(parsed.pathname);
+		replacements.set(token, mediaLink ? '' : expanded);
 	}
 	const quoted = tweet.quoted_tweet;
-	const quotedTweetId = quoted ? quoted.id?.trim() || extractTweetId(quoted.url) : null;
+	const quotedTweetId = quoted
+		? quoted.id?.trim() || resolveResourceUrl(quoted.url)?.identifiers.find(({ scheme }) => scheme === 'twitter')?.value
+		: null;
 	const trailing = text.match(/(https?:\/\/\S+)\s*$/)?.[1];
 	if (quotedTweetId && trailing) {
 		const expandedTrailing = replacements.get(trailing) ?? trailing;
-		if (extractTweetId(expandedTrailing) === quotedTweetId) replacements.set(trailing, '');
+		if (resolveResourceUrl(expandedTrailing)?.identifiers.find(({ scheme }) => scheme === 'twitter')?.value === quotedTweetId) {
+			replacements.set(trailing, '');
+		}
 	}
-	return collapseRemovedUrlGaps(text.replace(TCO_TOKEN_RE, (token) => replacements.get(token) ?? ''));
+	return text
+		.replace(TCO_TOKEN_RE, (token) => replacements.get(token) ?? '')
+		.replace(/[^\S\n]+\n/g, '\n')
+		.replace(/[^\S\n]{2,}/g, ' ')
+		.trim();
 }
 
 /** Expand mapped t.co tokens only — for longform bodies, where unmapped t.co are the article's own links. */
@@ -156,369 +274,164 @@ function expandKnownTweetUrls(text: string, tweet: Tweet): string {
 	return text.replace(TCO_TOKEN_RE, (token) => replacements.get(token) ?? token);
 }
 
-function collapseRemovedUrlGaps(text: string): string {
-	return text
-		.replace(/[^\S\n]+\n/g, '\n')
-		.replace(/[^\S\n]{2,}/g, ' ')
-		.trim();
+function tweetQuote(tweet: Tweet) {
+	const quote = tweet.quoted_tweet;
+	const author = quote?.author;
+	if (!quote || !author?.name.trim() || !author.userName.trim()) return undefined;
+	const text = expandTweetUrls(quote.text, quote);
+	return text ? { creator: twitterCreator(author), text } : undefined;
 }
 
-function stripTweetUrls(text: string): string {
-	return text.replace(/https?:\/\/\S+/g, '').trim();
-}
-
-function extractQuotedTweet(tweet: Tweet): QuotedTweetData | undefined {
-	const q = tweet.quoted_tweet;
-	if (!q) return undefined;
-	const authorName = q.author?.name?.trim();
-	const authorUserName = q.author?.userName?.trim();
-	const text = typeof q.text === 'string' ? expandTweetUrls(q.text, q) : '';
-	if (!authorName || !authorUserName || !text) return undefined;
-	return {
-		authorName,
-		authorUserName,
-		authorProfilePicture: q.author?.profilePicture,
-		text,
-	};
-}
-
-function findTwitterLongformUrl(urls: string[], tweetUrl?: string): string | undefined {
-	return [tweetUrl, ...urls].find((u) => u && /(?:twitter\.com|x\.com)\/i\/article\//.test(u));
-}
-
-function findLinkedContentUrl(urls: string[]): string | undefined {
-	return urls.find((u) => !/(?:t\.co)/.test(u) && !isNonResourceLinkUrl(u));
-}
-
-export function buildTweetTitle(tweet: Tweet, maxLength = 100): string {
-	const author = requiredTweetAuthor(tweet);
-	// Titles are display/search strings: drop URLs entirely (expanded ones would
-	// blow the length cap); URL-only tweets fall back to the raw text.
-	const text = stripTweetUrls(tweet.text) || tweet.text.trim();
-	if (!text) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no text`);
-	const suffix = text.length > maxLength ? '...' : '';
-	return `@${author.userName}: ${text.substring(0, maxLength)}${suffix}`;
-}
-
-export function buildThreadResourceParts(tweets: Tweet[]): {
-	first: AuthoredTweet;
-	combinedText: string;
-	platformMetadata: PlatformMetadata<'twitter'>;
-} {
-	const sorted = [...tweets].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-	const firstTweet = sorted[0];
-	if (!firstTweet) throw new Error('Cannot build twitter thread resource from empty tweets');
-	const first: AuthoredTweet = { ...firstTweet, author: requiredTweetAuthor(firstTweet) };
-
-	const seen = new Set<string>();
-	const uniqueTexts: string[] = [];
-	for (const tweet of sorted) {
-		const text = expandTweetUrls(tweet.text, tweet);
-		if (text && !seen.has(text)) {
-			seen.add(text);
-			uniqueTexts.push(text);
-		}
-	}
-
-	const media = sorted.flatMap(extractTweetMedia);
-	const quotedTweet = sorted.map(extractQuotedTweet).find(Boolean);
-	const platformMetadata = buildTweetPlatformMetadata(first, { media, quotedTweet });
-	return {
-		first,
-		combinedText: uniqueTexts.join('\n\n'),
-		platformMetadata,
-	};
-}
-
-function buildTweetPlatformMetadata(
-	tweet: Tweet,
-	options: {
-		externalUrl?: string;
-		media?: TwitterMedia[];
-		quotedTweet?: QuotedTweetData;
-	} = {},
-): PlatformMetadata<'twitter'> {
-	const media = options.media ?? extractTweetMedia(tweet);
-	const base = {
-		tweetId: tweet.id,
-		...extractTweetAuthor(tweet),
-		media,
-		createdAt: tweet.createdAt,
-	};
-
-	if (options.externalUrl) {
-		return {
-			fetchedAt: new Date().toISOString(),
-			data: {
-				...base,
-				externalUrl: options.externalUrl,
-			},
-		};
-	}
-
-	return {
-		fetchedAt: new Date().toISOString(),
-		data: { ...base, quotedTweet: options.quotedTweet ?? extractQuotedTweet(tweet) },
-	};
-}
-
-function buildTwitterLongformPlatformMetadata(
-	tweetId: string,
-	author: NonNullable<TwitterLongform['author']>,
-	coverImageUrl?: string,
-): PlatformMetadata<'twitter'> {
-	return {
-		fetchedAt: new Date().toISOString(),
-		data: {
-			tweetId,
-			authorName: author.name,
-			authorUserName: author.userName,
-			authorProfilePicture: author.profilePicture,
-			authorVerified: author.isBlueVerified,
-			coverImageUrl,
-			media: coverImageUrl ? [{ url: coverImageUrl, type: 'photo' }] : [],
-		},
-	};
-}
-
-interface TwitterLongform {
-	title?: string;
-	cover_media_img_url?: string;
-	contents?: Array<{ text?: string }>;
-	author?: {
-		userName: string;
-		name: string;
-		isBlueVerified?: boolean;
-		profilePicture?: string;
-	};
-	createdAt?: string;
-}
-
-async function scrapeTwitterLongform(
-	tweetId: string,
-	apiKey: string,
-	language?: string,
-): Promise<NormalizedContent<'twitter'> & { platformMetadata: PlatformMetadata<'twitter'> }> {
+async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
+	const tweetId = tweet.id?.trim();
+	if (!tweetId) throw new Error(`Could not resolve tweet id for Twitter article ${tweet.url}`);
 	console.info({ tag: 'TWITTER', msg: 'Fetching longform for tweet', tweetId });
 
-	const response = await fetchWithTimeout(`https://api.twitterapi.io/twitter/article?tweet_id=${tweetId}`, {
-		headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
+	const response = await fetch(`https://api.twitterapi.io/twitter/article?tweet_id=${tweetId}`, {
+		headers: { 'x-api-key': apiKey },
+		signal: AbortSignal.timeout(20_000),
 	});
 	if (!response.ok) {
 		await response.body?.cancel();
-		throw new Error(`Twitter longform request failed with HTTP ${response.status}`);
+		const message = `Twitter longform request failed with HTTP ${response.status}`;
+		if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+			throw new NonRetryableError(message);
+		}
+		throw new Error(message);
 	}
-	const data = JSON.parse(await readTextWithLimit(response)) as { article?: TwitterLongform; status?: string };
-	if (data.status !== 'success' || !data.article) throw new Error(`Twitter longform response was invalid for ${tweetId}`);
-
-	const longform = data.article;
-	if (!Array.isArray(longform.contents) || longform.contents.length === 0) {
-		throw new Error(`Twitter longform ${tweetId} requires contents`);
-	}
-	const contentText = longform.contents
-		.map((content, index) => {
-			const text = content.text?.trim();
-			if (!text) throw new Error(`Twitter longform ${tweetId} has invalid content ${index}`);
-			return text;
-		})
-		.join('\n\n');
-	if (!longform.title?.trim() || !contentText) throw new Error(`Twitter longform ${tweetId} requires both title and content`);
-	const title = longform.title.trim();
-	const author = longform.author;
-	if (!author?.name.trim() || !author.userName.trim()) throw new Error(`Twitter longform ${tweetId} requires a complete author`);
-	const publishedDate = longform.createdAt?.trim();
-	if (!publishedDate || Number.isNaN(new Date(publishedDate).getTime())) {
-		throw new Error(`Twitter longform ${tweetId} requires a valid published date`);
-	}
+	const longform = parseTwitterArticleResponse(await response.json(), tweetId);
+	const title = longform.title?.trim();
+	const contentText = expandKnownTweetUrls(renderTwitterArticleMarkdown(longform), tweet);
+	if (!title || !contentText) throw new Error(`Twitter longform ${tweetId} requires both title and renderable content`);
+	const tweetAuthor = requiredTweetAuthor(tweet);
+	const author = {
+		...tweetAuthor,
+		...(longform.author?.name?.trim() ? { name: longform.author.name.trim() } : {}),
+		...(longform.author?.userName?.trim() ? { userName: longform.author.userName.trim() } : {}),
+		...(longform.author?.profilePicture ? { profilePicture: longform.author.profilePicture } : {}),
+		...(longform.author?.isBlueVerified === null || longform.author?.isBlueVerified === undefined
+			? {}
+			: { isBlueVerified: longform.author.isBlueVerified }),
+	};
+	const publishedDate = longform.createdAt?.trim() || tweet.createdAt;
+	if (Number.isNaN(new Date(publishedDate).getTime())) throw new Error(`Twitter longform ${tweetId} requires a valid published date`);
+	const coverImageUrl = longform.cover_media_img_url?.trim();
 
 	console.info({ tag: 'TWITTER', msg: 'Longform fetched', title });
 
 	return {
-		kind: 'post',
-		resourcePlatform: 'twitter',
-		fileType: null,
 		title,
-		markdown: contentText,
-		metadata: {
-			author: author.userName,
-			language: language ?? null,
-			publishedDate,
-			siteName: 'Twitter',
-			description: null,
-		},
-		previewImageUrl: longform.cover_media_img_url ?? null,
-		platformMetadata: buildTwitterLongformPlatformMetadata(tweetId, author, longform.cover_media_img_url),
+		content: contentText,
+		publishedDate,
+		creators: [twitterCreator(author)],
+		kindMetadata: { attachments: coverImageUrl ? [{ kind: 'image' as const, url: coverImageUrl }] : [] },
+		subjectUrl: null,
 	};
 }
 
-function buildExternalLinkTweet(
-	tweet: Tweet,
-	externalUrl: string,
-	media: TwitterMedia[],
-): NormalizedContent<'twitter'> & { platformMetadata: PlatformMetadata<'twitter'> } {
-	const author = requiredTweetAuthor(tweet);
-	const tweetText = tweet.text.trim();
-	if (!tweetText) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no text`);
-	const title = `@${author.userName}: ${stripTweetUrls(tweetText) || tweetText}`.slice(0, 120);
-	return {
-		kind: 'post',
-		resourcePlatform: 'twitter',
-		fileType: null,
-		title,
-		markdown: expandTweetUrls(tweetText, tweet),
-		metadata: {
-			author: author.userName,
-			language: tweet.lang ?? null,
-			publishedDate: tweet.createdAt,
-			siteName: new URL(externalUrl).hostname.replace(/^www\./, ''),
-			description: null,
-		},
-		platformMetadata: buildTweetPlatformMetadata(tweet, {
-			media,
-			externalUrl,
-		}),
-	};
-}
-
-export async function resolveTweetContent(tweet: Tweet, apiKey: string) {
-	const media = extractTweetMedia(tweet);
-	const mediaPreviewImageUrl = media[0]?.url ?? null;
-	const expandedUrls = extractExpandedUrls(tweet);
-	const tweetText = stripTweetUrls(tweet.text);
-
-	const longformUrl = findTwitterLongformUrl(expandedUrls, tweet.url);
-	const linkedContentUrl = findLinkedContentUrl(expandedUrls);
+async function resolveTweetContent(tweet: Tweet, apiKey: string) {
+	const expandedUrls = tweetUrlEntities(tweet).flatMap((url) => {
+		const expandedUrl = url.expanded_url?.trim();
+		return expandedUrl ? [expandedUrl] : [];
+	});
+	const longformUrl = [tweet.url, ...expandedUrls].find((url) => {
+		const parsed = URL.parse(url);
+		return parsed && resolveResourceUrl(url)?.resourcePlatform === 'twitter' && parsed.pathname.startsWith('/i/article/');
+	});
+	const linkedContentUrl = expandedUrls.find((url) => !isNonResourceLinkUrl(url));
 
 	if (longformUrl) {
 		console.info({ tag: 'TWITTER', msg: 'Detected Twitter longform', longformUrl });
-		const tweetId = tweet.id?.trim();
-		if (!tweetId) throw new Error(`Could not resolve tweet id for longform URL ${longformUrl}`);
-		const longformContent = await scrapeTwitterLongform(tweetId, apiKey, tweet.lang);
-		const scraped = { ...longformContent, markdown: expandKnownTweetUrls(longformContent.markdown, tweet) };
-		return {
-			kind: 'longform' as const,
-			scraped,
-			canonicalUrl: tweet.url,
-			eventText: scraped.markdown,
-		};
-	}
-
-	if (linkedContentUrl) {
-		const scraped = {
-			...buildExternalLinkTweet(tweet, linkedContentUrl, media),
-			previewImageUrl: mediaPreviewImageUrl,
-		};
-		return { kind: 'share' as const, scraped, canonicalUrl: tweet.url, eventText: tweetText };
+		return scrapeTwitterLongform(tweet, apiKey);
 	}
 
 	const author = requiredTweetAuthor(tweet);
-	const title = buildTweetTitle(tweet, 80);
+	const text = tweet.text.trim();
+	if (!text) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no text`);
+	// Titles omit URLs unless the tweet contains only a URL.
+	const titleText = text.replace(/https?:\/\/\S+/g, '').trim() || text;
+	const title = linkedContentUrl
+		? `@${author.userName}: ${titleText}`.slice(0, 120)
+		: `@${author.userName}: ${titleText.slice(0, 80)}${titleText.length > 80 ? '...' : ''}`;
+	const content = expandTweetUrls(text, tweet);
+	const quote = tweetQuote(tweet);
 
 	console.info({ tag: 'TWITTER', msg: 'Tweet fetched', userName: author.userName });
 
 	return {
-		kind: 'tweet' as const,
-		scraped: {
-			kind: 'post' as const,
-			resourcePlatform: 'twitter' as const,
-			fileType: null,
-			title,
-			markdown: expandTweetUrls(tweet.text, tweet),
-			metadata: {
-				author: author.userName,
-				language: tweet.lang ?? null,
-				publishedDate: tweet.createdAt,
-				siteName: 'Twitter',
-				description: null,
-			},
-			previewImageUrl: mediaPreviewImageUrl,
-			platformMetadata: buildTweetPlatformMetadata(tweet),
-		},
-		canonicalUrl: tweet.url,
-		eventText: tweetText,
+		title,
+		content,
+		publishedDate: tweet.createdAt,
+		creators: [twitterCreator(author)],
+		kindMetadata: { attachments: tweetAttachments(tweet), ...(quote ? { quote } : {}) },
+		subjectUrl: linkedContentUrl,
 	};
 }
 
-export async function scrapeTweet(tweetId: string, apiKey: string): Promise<NormalizedContent<'twitter'>> {
+async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string) {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
-	const response = await fetchWithTimeout(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, {
-		headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
+	const response = await fetch(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, {
+		headers: { 'x-api-key': apiKey },
+		signal: AbortSignal.timeout(20_000),
 	});
 	if (!response.ok) {
 		await response.body?.cancel();
-		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+		const message =
+			response.status === 404 || response.status === 410
+				? `Twitter API: Tweet ${tweetId} was not found`
+				: `HTTP ${response.status}: ${response.statusText}`;
+		if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
+			throw new NonRetryableError(message);
+		}
+		throw new Error(message);
 	}
-	const data = JSON.parse(await readTextWithLimit(response)) as { tweets?: Tweet[]; status: string; msg?: string };
-	if (!Array.isArray(data.tweets)) throw new Error(`Twitter API response omitted tweets (status=${data.status})`);
-	const tweet = data.tweets[0];
-	if (!tweet) throw new Error(`Twitter API: Tweet not found (status=${data.status})`);
-	const resolved = await resolveTweetContent(tweet, apiKey);
-	if (resolved.kind !== 'tweet') return resolved.scraped;
+	const tweets = parseTwitterTweetsResponse(await response.json());
+	const tweet = tweets[0];
+	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
+	const { subjectUrl, ...content } = await resolveTweetContent(tweet, apiKey);
 
-	const contextTweets = await fetchTwitterThreadContext(tweetId, apiKey);
-	const conversationId = tweet.conversationId || tweet.id;
-	const authorUserName = tweet.author?.userName;
-	const seen = new Set<string>();
-	const thread = [tweet, ...contextTweets].filter((candidate) => {
-		const key = candidate.id || candidate.url;
-		if (!key || seen.has(key)) return false;
-		seen.add(key);
-		if (candidate.id === tweet.id) return true;
-		return (
-			!!conversationId && candidate.conversationId === conversationId && !!authorUserName && candidate.author?.userName === authorUserName
-		);
-	});
-	if (thread.length < 2) return resolved.scraped;
-
-	const parts = buildThreadResourceParts(thread);
 	return {
+		...content,
 		kind: 'post',
 		resourcePlatform: 'twitter',
+		resourceIdentifiers: [{ preferred: true, scheme: 'twitter', value: tweetId }],
+		url: `https://x.com/i/status/${tweetId}`,
+		title: content.title.trim(),
+		source: 'Twitter',
+		originalLang: tweet.lang ?? 'und',
+		summary: null,
 		fileType: null,
-		title: buildTweetTitle(parts.first, 80),
-		markdown: parts.combinedText,
-		metadata: {
-			author: parts.first.author.userName,
-			language: parts.first.lang ?? null,
-			publishedDate: parts.first.createdAt,
-			siteName: 'Twitter',
-			description: null,
-		},
-		previewImageUrl: parts.platformMetadata.data.media?.[0]?.url ?? null,
-		platformMetadata: parts.platformMetadata,
-	};
+		previewImageUrl: null,
+		subjectUrl: ResourceUrlSchema.safeParse(subjectUrl).data ?? null,
+	} satisfies AcquiredResource;
 }
 
-async function fetchTwitterThreadContext(tweetId: string, apiKey: string): Promise<Tweet[]> {
-	const tweets: Tweet[] = [];
-	const seenCursors = new Set<string>();
-	let cursor = '';
-	for (let page = 0; page < 5; page++) {
-		const params = new URLSearchParams({ tweetId });
-		if (cursor) params.set('cursor', cursor);
-		const response = await fetchWithTimeout(`https://api.twitterapi.io/twitter/tweet/thread_context?${params}`, {
-			headers: { 'x-api-key': apiKey, 'Content-Type': 'application/json' },
-		});
-		if (!response.ok) {
-			await response.body?.cancel();
-			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-		}
-		const data = JSON.parse(await readTextWithLimit(response, 2 * 1024 * 1024)) as {
-			tweets?: Tweet[];
-			has_next_page?: boolean;
-			next_cursor?: string;
-		};
-		if (!Array.isArray(data.tweets)) throw new Error(`Twitter thread context ${tweetId} omitted tweets`);
-		tweets.push(...data.tweets);
-		if (typeof data.has_next_page !== 'boolean') throw new Error(`Twitter thread context ${tweetId} omitted has_next_page`);
-		if (!data.has_next_page) break;
-		if (page === 4) throw new Error(`Twitter thread context ${tweetId} exceeded 5 pages`);
-		const nextCursor = data.next_cursor?.trim();
-		if (!nextCursor) throw new Error(`Twitter thread context ${tweetId} omitted the next cursor`);
-		cursor = nextCursor;
-		if (seenCursors.has(cursor)) throw new Error(`Twitter thread context ${tweetId} returned a repeated cursor`);
-		seenCursors.add(cursor);
-		await scheduler.wait(250);
-	}
-	return tweets;
+export async function stageTwitterAcquisition(env: CoreEnv, step: WorkflowStep, input: TwitterAcquisitionInput) {
+	const contentStream = await step.do(
+		'acquire-twitter-v3',
+		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+		async (ctx) => {
+			console.info({
+				tag: 'TWITTER',
+				event: 'acquisition_attempt',
+				processing_id: input.processingId,
+				attempt: ctx.attempt,
+			});
+			return Response.json(await scrapeTweet(input, env.KAITO_API_KEY)).body!;
+		},
+	);
+	return new Response(contentStream).json<Awaited<ReturnType<typeof scrapeTweet>>>();
+}
+
+function twitterCreator(author: NonNullable<Tweet['author']>) {
+	const handle = author.userName.replace(/^\s*@/, '').trim();
+	const profileUrl = handle ? `https://x.com/${encodeURIComponent(handle)}` : undefined;
+	return {
+		role: 'author' as const,
+		literal: author.name.trim(),
+		...(handle ? { handle } : {}),
+		...(author.profilePicture?.trim() ? { avatarUrl: author.profilePicture.trim() } : {}),
+		...(profileUrl ? { profileUrl } : {}),
+		...(author.isBlueVerified === undefined ? {} : { verified: author.isBlueVerified }),
+	};
 }
