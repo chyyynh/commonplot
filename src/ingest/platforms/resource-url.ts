@@ -49,7 +49,7 @@ export function resolveResourceUrl(value: string | null | undefined): ResolvedRe
 					: path.match(/^\/(?:embed|shorts|live|v)\/([^/]+)\/?$/)?.[1];
 		platformUrl = `https://youtube.com/watch?v=${id}`;
 	}
-	if (resourcePlatform && RESOURCE_PLATFORMS[resourcePlatform].identifier.safeParse(id).success) {
+	if (resourcePlatform && RESOURCE_PLATFORMS[resourcePlatform].identifier.validate(id)) {
 		return { url, normalizedUrl: platformUrl, resourcePlatform, identifiers: [{ preferred: true, scheme: resourcePlatform, value: id! }] };
 	}
 
