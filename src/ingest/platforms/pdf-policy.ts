@@ -3,7 +3,7 @@ import { z } from 'zod';
 export const MAX_PDF_BYTES = 25 * 1024 * 1024;
 export const PDF_MIME = 'application/pdf';
 
-export const LLAMA_PARSE_MAX_PAGES = 100;
+const LLAMA_PARSE_MAX_PAGES = 100;
 const FULL_PAGE_IMAGE_FALLBACK_RATIO = 0.8;
 const DOCUMENT_FALLBACK_REASONS = new Set(['empty-output', 'parse-failed']);
 
@@ -19,14 +19,14 @@ export type LocalPdfSummary = Readonly<{
 }>;
 
 /** Route image-backed PDFs only when the signal describes the document, not an isolated cover page. */
-export function localPdfNeedsFallback(local: Pick<LocalPdfSummary, 'fallbackReasons' | 'fullPageImagePages' | 'totalPages'>): boolean {
+function localPdfNeedsFallback(local: Pick<LocalPdfSummary, 'fallbackReasons' | 'fullPageImagePages' | 'totalPages'>): boolean {
 	return (
 		local.fallbackReasons.some((reason) => DOCUMENT_FALLBACK_REASONS.has(reason)) ||
 		(local.totalPages !== null && local.totalPages > 0 && local.fullPageImagePages / local.totalPages >= FULL_PAGE_IMAGE_FALLBACK_RATIO)
 	);
 }
 
-export function isAllowedPublicPdfUrl(value: string): boolean {
+function isAllowedPublicPdfUrl(value: string): boolean {
 	const url = URL.parse(value);
 	if (url?.protocol !== 'https:' || url.username || url.password || url.port) return false;
 	const hostname = url.hostname.toLowerCase();

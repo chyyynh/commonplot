@@ -26,17 +26,13 @@ if (!Number.isSafeInteger(MAX_CROP_BYTES) || MAX_CROP_BYTES < 1 || MAX_CROP_BYTE
 }
 
 class DocumentWorkerClient {
-	constructor(options = {}) {
+	constructor() {
 		this.nextRequestId = 0;
 		this.activeRequest = null;
 		this.pending = [];
 		this.running = false;
-		this.maxPendingRequests = options.maxPendingRequests ?? MAX_PENDING_REQUESTS;
-		this.queueTimeoutMs = options.queueTimeoutMs ?? WORKER_QUEUE_TIMEOUT_MS;
-		this.requestTimeoutMs = options.requestTimeoutMs ?? WORKER_REQUEST_TIMEOUT_MS;
-		this.onFatal = options.onFatal ?? (() => setImmediate(() => process.exit(1)));
 		this.failure = null;
-		this.worker = options.worker ?? new Worker(resolve(__dirname, 'worker-thread.cjs'), { workerData: { buildDir: BUILD_DIR } });
+		this.worker = new Worker(resolve(__dirname, 'worker-thread.cjs'), { workerData: { buildDir: BUILD_DIR } });
 		this.ready = Promise.withResolvers();
 		this.worker.on('message', (message) => this.handleMessage(message));
 		this.worker.on('error', (error) => this.crash(error));
@@ -92,12 +88,12 @@ class DocumentWorkerClient {
 			clearTimeout(pending.timeout);
 			pending.reject(failure);
 		}
-		this.onFatal(failure);
+		setImmediate(() => process.exit(1));
 	}
 
 	request(action, pdfBuffer, data) {
 		if (this.failure) return Promise.reject(this.failure);
-		if (this.running && this.pending.length >= this.maxPendingRequests) return Promise.reject(busyError('PDF worker queue is full.'));
+		if (this.running && this.pending.length >= MAX_PENDING_REQUESTS) return Promise.reject(busyError('PDF worker queue is full.'));
 		const result = Promise.withResolvers();
 		const entry = { action, pdfBuffer, data, ...result, timeout: null };
 		if (this.running) {
@@ -106,7 +102,7 @@ class DocumentWorkerClient {
 				if (index < 0) return;
 				this.pending.splice(index, 1);
 				entry.reject(busyError('PDF worker queue wait timed out.'));
-			}, this.queueTimeoutMs);
+			}, WORKER_QUEUE_TIMEOUT_MS);
 			this.pending.push(entry);
 		} else void this.run(entry);
 		return result.promise;
@@ -116,8 +112,8 @@ class DocumentWorkerClient {
 		this.running = true;
 		clearTimeout(entry.timeout);
 		const timeout = setTimeout(
-			() => this.crash(busyError(`Zotero document worker request ${entry.action} timed out after ${this.requestTimeoutMs}ms.`)),
-			this.requestTimeoutMs,
+			() => this.crash(busyError(`Zotero document worker request ${entry.action} timed out after ${WORKER_REQUEST_TIMEOUT_MS}ms.`)),
+			WORKER_REQUEST_TIMEOUT_MS,
 		);
 		try {
 			if (this.failure) throw this.failure;
@@ -167,94 +163,94 @@ function sendJson(response, status, body) {
 		.end(JSON.stringify(body));
 }
 
-function createDocumentServer(client, openStructuredDocumentTextPack) {
-	let activeRequests = 0;
-	return createServer(async (request, response) => {
-		if (activeRequests >= MAX_PENDING_REQUESTS + 1) return sendJson(response, 503, { error: 'PDF service is busy.' });
-		activeRequests++;
-		try {
-			const url = new URL(request.url ?? '/', 'http://container');
-			if (request.method !== 'POST' || !['/parse', '/render-areas'].includes(url.pathname)) {
-				return sendJson(response, 404, { error: 'Not found.' });
-			}
-			if (!request.headers['content-type']?.toLowerCase().startsWith('application/pdf')) {
-				return sendJson(response, 415, { error: 'Content-Type must be application/pdf.' });
-			}
-			let crops;
-			if (url.pathname === '/render-areas') {
-				try {
-					crops = JSON.parse(request.headers['x-pdf-crops'] ?? 'null');
-				} catch {
-					return sendJson(response, 400, { error: 'Invalid crop batch.' });
-				}
-				if (!validCropBatch(crops)) return sendJson(response, 400, { error: 'Invalid crop batch.' });
-			}
-			const pdfBuffer = await readBody(request);
-			if (!pdfBuffer.length) return sendJson(response, 400, { error: 'PDF body is empty.' });
-			if (url.pathname === '/render-areas') {
-				response.writeHead(200, { 'content-type': 'application/x-ndjson' });
-				for (const crop of crops) {
-					if (response.destroyed) return;
-					let row;
-					try {
-						const png = await renderCrop(client, pdfBuffer, crop);
-						row = { id: crop.id, pngBase64: png.toString('base64') };
-					} catch (error) {
-						row = {
-							id: crop.id,
-							error: (error instanceof Error ? error.message : 'PDF render failed.').slice(0, 1000),
-							retryable: !isPermanentPdfError(error),
-						};
-					}
-					await writeRow(response, row);
-				}
-				return response.end();
-			}
-			try {
-				const result = await client.request('getStructuredDocumentText', pdfBuffer, {
-					contentType: 'application/pdf',
-					sourceHash: hash('md5', pdfBuffer),
-				});
-				const reader = await openStructuredDocumentTextPack(result.buf, {
-					inflate: (bytes) => inflateRawSync(bytes, { maxOutputLength: MAX_DOCUMENT_BYTES }),
-				});
-				const document = await reader.materialize();
-				const json = JSON.stringify(document);
-				if (Buffer.byteLength(json) > MAX_DOCUMENT_BYTES)
-					throw new Error(`Structured document exceeds the ${MAX_DOCUMENT_BYTES}-byte limit.`);
-				return response.writeHead(200, { 'content-type': 'application/vnd.newsence.structured-document+json' }).end(json);
-			} catch (parseError) {
-				if (parseError?.statusCode === 503 || client.failure) throw parseError;
-				let totalPages = null;
-				try {
-					const inspection = await client.request('pdf.getFulltext', pdfBuffer, { maxPages: 1 });
-					if (Number.isInteger(inspection?.totalPages) && inspection.totalPages > 0) totalPages = inspection.totalPages;
-				} catch (inspectionError) {
-					console.warn({
-						error: inspectionError instanceof Error ? inspectionError.message : String(inspectionError),
-						event: 'zotero_sdt_page_count_failed',
-					});
-				}
-				console.error({ error: parseError instanceof Error ? parseError.message : String(parseError), event: 'zotero_sdt_parse_failed' });
-				return sendJson(response, 422, {
-					error: parseError instanceof Error ? parseError.message : 'Parse failed.',
-					totalPages,
-				});
-			}
-		} catch (error) {
-			console.error({ error: error instanceof Error ? error.message : String(error), event: 'zotero_sdt_request_failed' });
-			if (response.headersSent) {
-				if (!response.writableEnded) response.destroy(error instanceof Error ? error : undefined);
-				return;
-			}
-			return sendJson(response, error?.statusCode ?? (isPermanentPdfError(error) ? 422 : 500), {
-				error: error instanceof Error ? error.message : 'Parse failed.',
-			});
-		} finally {
-			activeRequests--;
+const { openStructuredDocumentTextPack } = require(resolve(BUILD_DIR, 'structured-document-text.js'));
+const client = new DocumentWorkerClient();
+let activeRequests = 0;
+const server = createServer(async (request, response) => {
+	if (activeRequests >= MAX_PENDING_REQUESTS + 1) return sendJson(response, 503, { error: 'PDF service is busy.' });
+	activeRequests++;
+	try {
+		const url = new URL(request.url ?? '/', 'http://container');
+		if (request.method !== 'POST' || !['/parse', '/render-areas'].includes(url.pathname)) {
+			return sendJson(response, 404, { error: 'Not found.' });
 		}
-	});
-}
+		if (!request.headers['content-type']?.toLowerCase().startsWith('application/pdf')) {
+			return sendJson(response, 415, { error: 'Content-Type must be application/pdf.' });
+		}
+		let crops;
+		if (url.pathname === '/render-areas') {
+			try {
+				crops = JSON.parse(request.headers['x-pdf-crops'] ?? 'null');
+			} catch {
+				return sendJson(response, 400, { error: 'Invalid crop batch.' });
+			}
+			if (!validCropBatch(crops)) return sendJson(response, 400, { error: 'Invalid crop batch.' });
+		}
+		const pdfBuffer = await readBody(request);
+		if (!pdfBuffer.length) return sendJson(response, 400, { error: 'PDF body is empty.' });
+		if (url.pathname === '/render-areas') {
+			response.writeHead(200, { 'content-type': 'application/x-ndjson' });
+			for (const crop of crops) {
+				if (response.destroyed) return;
+				let row;
+				try {
+					const png = await renderCrop(pdfBuffer, crop);
+					row = { id: crop.id, pngBase64: png.toString('base64') };
+				} catch (error) {
+					row = {
+						id: crop.id,
+						error: (error instanceof Error ? error.message : 'PDF render failed.').slice(0, 1000),
+						retryable: !isPermanentPdfError(error),
+					};
+				}
+				await writeRow(response, row);
+			}
+			return response.end();
+		}
+		try {
+			const result = await client.request('getStructuredDocumentText', pdfBuffer, {
+				contentType: 'application/pdf',
+				sourceHash: hash('md5', pdfBuffer),
+			});
+			const reader = await openStructuredDocumentTextPack(result.buf, {
+				inflate: (bytes) => inflateRawSync(bytes, { maxOutputLength: MAX_DOCUMENT_BYTES }),
+			});
+			const document = await reader.materialize();
+			const json = JSON.stringify(document);
+			if (Buffer.byteLength(json) > MAX_DOCUMENT_BYTES)
+				throw new Error(`Structured document exceeds the ${MAX_DOCUMENT_BYTES}-byte limit.`);
+			return response.writeHead(200, { 'content-type': 'application/vnd.newsence.structured-document+json' }).end(json);
+		} catch (parseError) {
+			if (parseError?.statusCode === 503 || client.failure) throw parseError;
+			let totalPages = null;
+			try {
+				const inspection = await client.request('pdf.getFulltext', pdfBuffer, { maxPages: 1 });
+				if (Number.isInteger(inspection?.totalPages) && inspection.totalPages > 0) totalPages = inspection.totalPages;
+			} catch (inspectionError) {
+				console.warn({
+					error: inspectionError instanceof Error ? inspectionError.message : String(inspectionError),
+					event: 'zotero_sdt_page_count_failed',
+				});
+			}
+			console.error({ error: parseError instanceof Error ? parseError.message : String(parseError), event: 'zotero_sdt_parse_failed' });
+			return sendJson(response, 422, {
+				error: parseError instanceof Error ? parseError.message : 'Parse failed.',
+				totalPages,
+			});
+		}
+	} catch (error) {
+		console.error({ error: error instanceof Error ? error.message : String(error), event: 'zotero_sdt_request_failed' });
+		if (response.headersSent) {
+			if (!response.writableEnded) response.destroy(error instanceof Error ? error : undefined);
+			return;
+		}
+		return sendJson(response, error?.statusCode ?? (isPermanentPdfError(error) ? 422 : 500), {
+			error: error instanceof Error ? error.message : 'Parse failed.',
+		});
+	} finally {
+		activeRequests--;
+	}
+});
 
 function validCropBatch(crops) {
 	return (
@@ -278,7 +274,7 @@ function validCropBatch(crops) {
 	);
 }
 
-async function renderCrop(client, pdfBuffer, crop) {
+async function renderCrop(pdfBuffer, crop) {
 	const width = crop.rect[2] - crop.rect[0];
 	const height = crop.rect[3] - crop.rect[1];
 	// Bound the canvas before allocation; a PNG byte limit alone cannot bound
@@ -324,14 +320,7 @@ async function writeRow(response, row) {
 	});
 }
 
-module.exports = { DocumentWorkerClient, createDocumentServer };
-
-if (require.main === module) {
-	const { openStructuredDocumentTextPack } = require(resolve(BUILD_DIR, 'structured-document-text.js'));
-	const client = new DocumentWorkerClient();
-	const server = createDocumentServer(client, openStructuredDocumentTextPack);
-	client.ready.promise.then(
-		() => server.listen(PORT, '0.0.0.0'),
-		() => undefined,
-	);
-}
+client.ready.promise.then(
+	() => server.listen(PORT, '0.0.0.0'),
+	() => undefined,
+);

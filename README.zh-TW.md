@@ -72,7 +72,7 @@ retention。每個 durable step 各自重試。
 
 PDF 圖片辨識、來源權限、快取版本與重新處理流程，見 [PDF processing](README.md#pdf-processing-and-recovery)。
 
-驗證執行 `pnpm lint`、`pnpm run typecheck`、`pnpm test`。保留六項檢查：資源處理、平台抓取、翻譯、PDF 正規化、workerd/R2 儲存，以及 container HTTP／佇列；`pnpm check:pdf` 只執行三項 PDF 檢查。Runtime 使用隔離的本機 bindings，臨時修復與探索腳本不放進 repository。
+驗證執行 `pnpm lint` 與 `pnpm run typecheck`，並透過既有 admission API，以代表性資源核對抓取、持久化與適用的後續工作。臨時驗證與探索腳本不放進 repository。
 
 ## AI 管線
 
@@ -85,7 +85,7 @@ PDF 圖片辨識、來源權限、快取版本與重新處理流程，見 [PDF p
 
 摘要生成與背景分類是分開的 structured call；翻譯在獨立 Workflow 執行，因此 localization 失敗不會讓已寫入的 canonical Resource 失效。
 
-Core 優先保留非空白的來源摘要或論文 abstract；缺少時由既有的分析呼叫一併生成原文語言摘要，正文截片不視為來源摘要。Metadata localization 完整翻譯已保存的摘要，不從正文自行補寫；舊資料沒有摘要時只翻譯標題，重新處理後才會補上原文摘要。以 `pnpm check:resource-identity` 和 `pnpm check:platform-acquisition` 驗證來源資料優先順序與平台摘要。
+Core 優先保留非空白的來源摘要或論文 abstract；缺少時由既有的分析呼叫一併生成原文語言摘要，正文截片不視為來源摘要。Metadata localization 完整翻譯已保存的摘要，不從正文自行補寫；舊資料沒有摘要時只翻譯標題，重新處理後才會補上原文摘要。
 
 ## 技術棧
 
@@ -106,7 +106,7 @@ Core 優先保留非空白的來源摘要或論文 abstract；缺少時由既有
 
 需要一個 PostgreSQL。正式環境目前透過 Cloudflare Hyperdrive 連到 PlanetScale Postgres。
 
-App-owned canonical schema 位於 `web-tanstack/prisma/schema.prisma`，DB-only constraints 與 indexes 則位於 `web-tanstack/prisma/manual-indexes.sql`。Core 透過 Hyperdrive 使用 Drizzle 的參數化 SQL，不再維護第二份 table schema。Core identity domain 變更後請執行 `pnpm check:resource-identity`；schema 變更另需在可丟棄的資料庫執行 Web migration replay 與 `pnpm db:drift-check`。
+App-owned canonical schema 位於 `web-tanstack/prisma/schema.prisma`，DB-only constraints 與 indexes 則位於 `web-tanstack/prisma/manual-indexes.sql`。Core 透過 Hyperdrive 使用 Drizzle 的參數化 SQL，不再維護第二份 table schema。Schema 變更需在可丟棄的資料庫執行 Web migration replay 與 `pnpm db:drift-check`。
 
 ### 2. Hyperdrive binding
 

@@ -143,16 +143,6 @@ function selectCrossrefResolution(rawResponse: unknown, matches: (work: Crossref
 	return CrossrefResponseSchema.parse(rawResponse).message.items.filter(matches).map(crossrefResolution).find(Boolean) ?? null;
 }
 
-/** Select only a Crossref hit whose deposited metadata strongly agrees with the citation. */
-export function selectCrossrefReference(citation: string, rawResponse: unknown) {
-	return selectCrossrefResolution(rawResponse, (work) => workMatchesCitation(citation, work));
-}
-
-/** Confirm a GROBID header only when Crossref agrees on title, author, work type, venue, and year. */
-export function selectCrossrefPaperCandidate(title: string, authors: readonly string[], rawResponse: unknown) {
-	return selectCrossrefResolution(rawResponse, (work) => workMatchesPaperCandidate(title, authors, work));
-}
-
 async function fetchCrossrefWorks(params: Readonly<Record<string, string>>): Promise<unknown> {
 	const url = new URL(CROSSREF_WORKS_URL);
 	url.search = new URLSearchParams({ mailto: CROSSREF_CONTACT, ...params }).toString();
@@ -172,13 +162,13 @@ async function fetchCrossrefWorks(params: Readonly<Record<string, string>>): Pro
 export async function resolveCrossrefReference(citation: string) {
 	const query = citation.trim();
 	if (!query || query.length > MAX_CITATION_CHARS) throw new TypeError(`Crossref citation must contain 1-${MAX_CITATION_CHARS} characters`);
-	return selectCrossrefReference(
-		query,
+	return selectCrossrefResolution(
 		await fetchCrossrefWorks({
 			'query.bibliographic': query,
 			rows: String(CROSSREF_ROWS),
 			select: 'DOI,title,author,published,container-title',
 		}),
+		(work) => workMatchesCitation(query, work),
 	);
 }
 
@@ -190,15 +180,14 @@ export async function resolveCrossrefPaperCandidate(title: string, authors: read
 	if (!queryAuthor || queryAuthor.length > MAX_AUTHOR_CHARS) {
 		throw new TypeError(`Crossref paper author must contain 1-${MAX_AUTHOR_CHARS} characters`);
 	}
-	return selectCrossrefPaperCandidate(
-		queryTitle,
-		authors,
+	return selectCrossrefResolution(
 		await fetchCrossrefWorks({
 			'query.author': queryAuthor,
 			'query.title': queryTitle,
 			rows: String(CROSSREF_ROWS),
 			select: 'DOI,title,author,published,container-title,type,is-referenced-by-count,references-count',
 		}),
+		(work) => workMatchesPaperCandidate(queryTitle, authors, work),
 	);
 }
 

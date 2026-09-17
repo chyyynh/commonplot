@@ -44,7 +44,7 @@ function nodeText(node: Nodes): string {
 }
 
 /** Remove a duplicate heading only after Core has resolved the resource title. */
-export function withoutDuplicateResourceTitle(markdown: string, title: string): string {
+function withoutDuplicateResourceTitle(markdown: string, title: string): string {
 	const first = fromMarkdown(markdown, { extensions: [gfm()], mdastExtensions: gfmFromMarkdown() }).children[0];
 	const comparable = (value: string) => value.normalize('NFC').replace(/\s+/gu, ' ').trim();
 	if (first?.type !== 'heading' || comparable(nodeText(first)) !== comparable(title)) return markdown;
@@ -54,7 +54,7 @@ export function withoutDuplicateResourceTitle(markdown: string, title: string): 
 	return body || markdown;
 }
 
-export async function stageUrlAcquisition(
+async function stageUrlAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {

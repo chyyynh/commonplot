@@ -99,7 +99,7 @@ Historical corpus bodies containing private crop images must be cleaned once bef
 
 #### Operator verification
 
-Run `pnpm lint`, `pnpm run typecheck`, and `pnpm test` from this workspace. Six checks cover resource processing, platform acquisition, translation, PDF normalization, real workerd/R2 storage, and container HTTP/queue behavior. Use `pnpm check:pdf` for the three PDF checks. Runtime checks use isolated local bindings; container HTTP checks bind localhost. Web checks cover user authorization, delivery, and deletion. Temporary repair or investigation scripts belong outside the repository.
+Run `pnpm lint` and `pnpm run typecheck` from this workspace. Verify acquisition, persistence, and applicable follow-ups with representative resources through the existing admission APIs. Temporary verification or investigation scripts belong outside the repository.
 
 Deploy the Web media/reading changes and the Core Worker **with its updated Zotero container image** before admitting new processing. A Worker-only deployment with `--containers-rollout=none` cannot activate the new batch endpoint.
 
@@ -118,7 +118,7 @@ The Cocoa regression was checked against the user-supplied 23-page PDF: the new 
 
 Summary generation and background classification are separate structured calls. Translation runs in its own Workflow, so localization failure cannot invalidate an already persisted canonical Resource.
 
-Core preserves a nonblank source summary or abstract. When it is missing, the existing analysis call also generates a summary in the original language; a body excerpt is not a source summary. Metadata localization translates the persisted summary in full and never creates one from the body. Existing records without a summary receive title-only metadata translation until reprocessed. Run `pnpm check:resource-identity` and `pnpm check:platform-acquisition` to check source metadata precedence and platform summaries.
+Core preserves a nonblank source summary or abstract. When it is missing, the existing analysis call also generates a summary in the original language; a body excerpt is not a source summary. Metadata localization translates the persisted summary in full and never creates one from the body. Existing records without a summary receive title-only metadata translation until reprocessed.
 
 ## Stack
 
@@ -139,7 +139,7 @@ The one-click Deploy button above handles Worker + Workflows, but **Queues, Hype
 
 You need a PostgreSQL instance. Production currently runs on PlanetScale Postgres through Cloudflare Hyperdrive.
 
-The canonical app-owned schema lives in `web-tanstack/prisma/schema.prisma`, with DB-only constraints and indexes in `web-tanstack/prisma/manual-indexes.sql`. Core uses Drizzle's parameterized SQL over Hyperdrive without maintaining a second table schema. Run `pnpm check:resource-identity` after Core identity-domain changes. Schema changes also require Web migration replay and `pnpm db:drift-check` against disposable databases.
+The canonical app-owned schema lives in `web-tanstack/prisma/schema.prisma`, with DB-only constraints and indexes in `web-tanstack/prisma/manual-indexes.sql`. Core uses Drizzle's parameterized SQL over Hyperdrive without maintaining a second table schema. Schema changes require Web migration replay and `pnpm db:drift-check` against disposable databases.
 
 ### 2. Hyperdrive binding
 

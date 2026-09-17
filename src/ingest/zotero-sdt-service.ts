@@ -20,7 +20,7 @@ const CROP_BATCH_SIZE = 8;
 const MAX_CROP_PNG_BYTES = 8 * 1024 * 1024;
 const MAX_CROP_ROW_BYTES = Math.ceil(MAX_CROP_PNG_BYTES / 3) * 4 + 4_096;
 
-export function parseStructuredPdfFailure(status: number, body: string): { message: string; totalPages: number | null } {
+function parseStructuredPdfFailure(status: number, body: string): { message: string; totalPages: number | null } {
 	let message = `Zotero SDT parse failed with ${status}`;
 	let totalPages: number | null = null;
 	try {
@@ -33,7 +33,7 @@ export function parseStructuredPdfFailure(status: number, body: string): { messa
 	return { message, totalPages };
 }
 
-export function structuredPdfStorageKey(pdfStorageKey: string): string {
+function structuredPdfStorageKey(pdfStorageKey: string): string {
 	return `${pdfStorageKey}.structured-document.json`;
 }
 
@@ -61,7 +61,7 @@ async function putPdfDerivative(
 	}
 }
 
-export function structuredPdfCropManifestKey(pdfStorageKey: string, inputContentHash: string): string {
+function structuredPdfCropManifestKey(pdfStorageKey: string, inputContentHash: string): string {
 	return `${pdfStorageKey}.structured-crops/${inputContentHash}/manifest.json`;
 }
 
@@ -105,7 +105,7 @@ function cropPng(row: Record<string, unknown>): Buffer {
 }
 
 /** Materialize Zotero Reading Mode source crops beside the private PDF. */
-export async function ensureStructuredPdfSourceCrops(
+async function ensureStructuredPdfSourceCrops(
 	env: CoreEnv,
 	input: Readonly<{
 		crops: readonly StructuredPdfSourceCrop[];
@@ -244,7 +244,7 @@ export async function parsePdfArtifactStream(
 	}
 }
 
-export async function readStructuredPdfArtifact(
+async function readStructuredPdfArtifact(
 	env: CoreEnv,
 	pdfStorageKey: string,
 	inputContentHash: string,
