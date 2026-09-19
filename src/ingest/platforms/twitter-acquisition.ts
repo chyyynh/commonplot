@@ -19,6 +19,11 @@ const TwitterUrlEntitySchema = z.object({
 const TwitterMediaEntitySchema = z.object({
 	media_url_https: z.string(),
 	type: z.string(),
+	video_info: z
+		.object({
+			variants: z.array(z.object({ url: z.string(), content_type: z.string(), bitrate: z.number().nonnegative().optional() })),
+		})
+		.optional(),
 	sizes: z
 		.object({
 			large: z.object({ w: z.number(), h: z.number() }).optional(),
@@ -210,10 +215,23 @@ function tweetAttachments(tweet: Tweet) {
 		tweet.extendedEntities?.media?.flatMap((media) => {
 			const url = media.media_url_https.trim();
 			if (!url) return [];
+			const playback =
+				media.type === 'photo'
+					? undefined
+					: media.video_info?.variants
+							.flatMap((variant) => {
+								const type = variant.content_type.toLowerCase();
+								const src = ResourceUrlSchema.safeParse(variant.url).data;
+								return src && (type === 'video/mp4' || type === 'application/x-mpegurl')
+									? [{ url: src, type, bitrate: variant.bitrate ?? 0 } as const]
+									: [];
+							})
+							.sort((a, b) => Number(b.type === 'video/mp4') - Number(a.type === 'video/mp4') || b.bitrate - a.bitrate)[0];
 			return [
 				{
 					kind: media.type === 'photo' ? 'image' : media.type === 'animated_gif' ? 'animated' : 'video',
 					url,
+					...(playback ? { playback: { url: playback.url, type: playback.type } } : {}),
 					...(media.sizes?.large ? { width: media.sizes.large.w, height: media.sizes.large.h } : {}),
 				} as const,
 			];

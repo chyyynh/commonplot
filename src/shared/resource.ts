@@ -30,6 +30,7 @@ export type ResourceCreator = Readonly<z.infer<typeof ResourceCreatorSchema>>;
 const ResourceMediaAttachmentSchema = z.object({
 	kind: z.enum(['image', 'video', 'animated']),
 	url: optionalHttpUrl,
+	playback: z.object({ url: optionalHttpUrl, type: z.enum(['video/mp4', 'application/x-mpegurl']) }).optional(),
 	width: z.int().positive().optional(),
 	height: z.int().positive().optional(),
 });
