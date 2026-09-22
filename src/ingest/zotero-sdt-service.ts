@@ -304,7 +304,7 @@ export async function parseStoredPdfRepresentation(
 }
 
 /** Public source provenance is kept separate even if its bytes match a private upload. */
-export async function parsePublicPdfResponse(env: CoreEnv, response: Response, sourceUrl: string) {
+export async function storePublicPdfResponse(env: CoreEnv, response: Response, sourceUrl: string) {
 	const source = URL.parse(sourceUrl);
 	if (!source || !['https:', 'http:'].includes(source.protocol) || source.username || source.password) {
 		await response.body?.cancel('Invalid public PDF source');
@@ -319,26 +319,25 @@ export async function parsePublicPdfResponse(env: CoreEnv, response: Response, s
 		await response.body.cancel('Public PDF is too large');
 		throw new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`);
 	}
-	// Bounded at 25 MiB; release this buffer before parsing the larger SDT response.
+	// Checkpoint the bounded source before parsing; retries must not download it again.
 	const sourceHash = createHash('sha256').update(source.toString()).digest('hex');
-	const stored = await (async () => {
-		const bytes = await new Response(
-			limitByteStream(response.body!, MAX_PDF_BYTES, () => new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`)),
-		).arrayBuffer();
-		if (!bytes.byteLength) throw new NonRetryableError('Fetched PDF response body is empty');
-		const inputContentHash = createHash('sha256').update(new Uint8Array(bytes)).digest('hex');
-		const pdfStorageKey = `public-pdf/${sourceHash}/${inputContentHash}/source.pdf`;
-		await env.R2.put(pdfStorageKey, bytes, {
-			customMetadata: { scope: 'corpus', sourceSha256: sourceHash, inputSha256: inputContentHash },
-			httpMetadata: { contentType: 'application/pdf' },
-		});
-		return { inputContentHash, pdfStorageKey };
-	})();
-	return parseStoredPdfRepresentation(env, {
-		...stored,
+	const bytes = await new Response(
+		limitByteStream(response.body, MAX_PDF_BYTES, () => new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`)),
+	).arrayBuffer();
+	if (!bytes.byteLength) throw new NonRetryableError('Fetched PDF response body is empty');
+	const inputContentHash = createHash('sha256').update(new Uint8Array(bytes)).digest('hex');
+	const pdfStorageKey = `public-pdf/${sourceHash}/${inputContentHash}/source.pdf`;
+	await env.R2.put(pdfStorageKey, bytes, {
+		customMetadata: { scope: 'corpus', sourceSha256: sourceHash, inputSha256: inputContentHash },
+		httpMetadata: { contentType: 'application/pdf' },
+	});
+	return {
+		url: source.toString(),
+		inputContentHash,
+		pdfStorageKey,
 		sourceLabel: `Public PDF ${sourceHash}`,
 		cropUrlPrefix: `/api/media/asset/public-pdf-crops/${sourceHash}`,
-	});
+	};
 }
 
 const PUBLIC_CROP_PATTERN = /\/api\/media\/asset\/public-pdf-crops\/([a-f\d]{64})\/([a-f\d]{64})\/(\d+(?:\.\d+)*-p\d+-[a-f\d]{16})\.png/gu;

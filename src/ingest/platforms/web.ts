@@ -10,7 +10,8 @@ import stripIndent from 'strip-indent';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
 import { limitByteStream } from '../../shared/response';
 import type { AcquiredResource } from '../acquisition';
-import { acquireFetchedPdfResponse, completeFetchedPdfAcquisition } from './pdf';
+import { storePublicPdfResponse } from '../zotero-sdt-service.ts';
+import { stagePublicPdfAcquisition } from './pdf';
 import { PDF_MIME, type PaidPdfFallbackGrant } from './pdf-policy';
 import { resolveResourceUrl, type ResolvedResourceUrl } from './resource-url';
 
@@ -174,7 +175,7 @@ function sourceHtmlSummary(document: ReturnType<DOMParser['parseFromString']>): 
 type WebAcquisition =
 	| { platform: ResolvedResourceUrl }
 	| Awaited<ReturnType<typeof acquireHtmlArticle>>
-	| Awaited<ReturnType<typeof acquireFetchedPdfResponse>>;
+	| Awaited<ReturnType<typeof storePublicPdfResponse>>;
 
 async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisition> {
 	const response = await fetch(url, {
@@ -205,9 +206,7 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
 	if (contentType.includes(PDF_MIME) || new URL(finalUrl).pathname.toLowerCase().endsWith('.pdf')) {
-		const acquired = await acquireFetchedPdfResponse(env, response, finalUrl);
-		acquired.resource.resourceIdentifiers = [...resolved.identifiers, ...acquired.resource.resourceIdentifiers];
-		return acquired;
+		return storePublicPdfResponse(env, response, finalUrl);
 	}
 	if (
 		contentType &&
@@ -237,7 +236,7 @@ export async function stageWebAcquisition(
 	input: { paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string },
 ) {
 	const result = await step.do(
-		'acquire-web-v10',
+		'acquire-web-v11',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 		async () => {
 			const acquired = await acquireWebResource(env, input.url);
@@ -246,9 +245,9 @@ export async function stageWebAcquisition(
 	);
 	if ('platform' in result) return result;
 	const acquired = await new Response(result).json<Exclude<WebAcquisition, { platform: ResolvedResourceUrl }>>();
-	return 'parse' in acquired
-		? completeFetchedPdfAcquisition(env, step, {
-				acquisition: acquired,
+	return 'pdfStorageKey' in acquired
+		? stagePublicPdfAcquisition(env, step, {
+				source: acquired,
 				grant: input.paidPdfFallback,
 				processingId: input.processingId,
 			})

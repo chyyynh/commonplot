@@ -15,7 +15,8 @@ import {
 } from '../../shared/paper-identity';
 import type { AcquiredResource } from '../acquisition';
 import { resolveCrossrefPaper, resolveCrossrefPaperCandidate } from '../crossref';
-import { acquireFetchedPdfResponse } from './pdf';
+import { storePublicPdfResponse } from '../zotero-sdt-service.ts';
+import { stagePublicPdfAcquisition } from './pdf';
 import { PDF_MIME } from './pdf-policy';
 import type { ResolvedResourceUrl } from './resource-url';
 import { stageWebAcquisition } from './web';
@@ -170,7 +171,8 @@ async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: reado
 		const retryAfter = response.headers.get('retry-after');
 		await response.body?.cancel();
 		if (response.status === 404) return null;
-		throw new Error(`OpenAlex request failed with HTTP ${response.status}${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
+		const ErrorType = [400, 401, 403, 410, 422].includes(response.status) ? NonRetryableError : Error;
+		throw new ErrorType(`OpenAlex request failed with HTTP ${response.status}${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
 	}
 	const work = OpenAlexWorkSchema.parse(await response.json());
 	return normalizeOpenAlexWork(work, identifiers);
@@ -179,8 +181,8 @@ async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: reado
 /** OpenAlex content URLs need our API key, so this optional representation is always local-only. */
 async function stageOpenAlexPdfContent(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
 	try {
-		const contentStream = await step.do(
-			'acquire-openalex-content-pdf-v13',
+		const source = await step.do(
+			'download-openalex-content-pdf-v1',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 			async () => {
 				const apiKey = env.OPENALEX_API_KEY?.trim();
@@ -193,14 +195,13 @@ async function stageOpenAlexPdfContent(env: CoreEnv, step: WorkflowStep, input: 
 				});
 				if (!response.ok) {
 					await response.body?.cancel();
-					throw new Error(`OpenAlex content PDF request failed with HTTP ${response.status}`);
+					const ErrorType = [400, 401, 403, 404, 410, 422].includes(response.status) ? NonRetryableError : Error;
+					throw new ErrorType(`OpenAlex content PDF request failed with HTTP ${response.status}`);
 				}
-				const { resource } = await acquireFetchedPdfResponse(env, response, input.contentPdfUrl);
-				return Response.json(resource).body!;
+				return storePublicPdfResponse(env, response, input.contentPdfUrl);
 			},
 		);
-		const resource = await new Response(contentStream).json<AcquiredResource & { resourcePlatform: null }>();
-		if (!resource.content.trim()) throw new NonRetryableError('OpenAlex content PDF has no usable text; OCR is required');
+		const resource = await stagePublicPdfAcquisition(env, step, { source, grant: null, processingId: input.processingId });
 		console.info({
 			tag: 'OPENALEX_CONTENT',
 			event: 'pdf_acquired',

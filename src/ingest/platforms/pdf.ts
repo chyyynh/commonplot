@@ -8,7 +8,7 @@ import { ResourceCreatorsSchema } from '../../shared/resource';
 import type { AcquiredResource } from '../acquisition';
 import type { GrobidPdfHeader } from '../grobid-tei';
 import { ResourceLanguageSchema } from '../resource-language';
-import { parsePublicPdfResponse, parseStoredPdfRepresentation } from '../zotero-sdt-service.ts';
+import { parseStoredPdfRepresentation, type storePublicPdfResponse } from '../zotero-sdt-service.ts';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
 import { PDF_MIME, type LocalPdfSummary, type PaidPdfFallbackGrant } from './pdf-policy';
 import { resolveResourceUrl } from './resource-url';
@@ -19,38 +19,6 @@ type PdfAcquisition = Readonly<{
 	resource: AcquiredResource & { kind: 'file'; resourcePlatform: null; url: string };
 	parse: LocalPdfSummary;
 }>;
-
-/** Finish a direct public PDF after the retrying fetch/local-parse step has ended. */
-export async function completeFetchedPdfAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: {
-		acquisition: PdfAcquisition;
-		grant: PaidPdfFallbackGrant | null;
-		processingId: string;
-	},
-): Promise<PdfAcquisition['resource']> {
-	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
-		grant: input.grant,
-		local: input.acquisition.parse,
-		processingId: input.processingId,
-		source: { kind: 'public-url', url: input.acquisition.resource.url },
-	});
-	if (!cloudMarkdown) {
-		if (!input.acquisition.resource.content) throw new NonRetryableError('Fetched PDF has no usable text; OCR is required');
-		return input.acquisition.resource;
-	}
-	const identity = paperIdentityFromText(cloudMarkdown.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS));
-	return {
-		...input.acquisition.resource,
-		citations: null,
-		content: cloudMarkdown,
-		resourceIdentifiers: [
-			...(resolveResourceUrl(input.acquisition.resource.url)?.identifiers ?? []),
-			...(identity ? paperIdentifiersFromIdentity(identity) : []),
-		],
-	};
-}
 
 type StoredPdfRow = {
 	content_hash: string | null;
@@ -108,39 +76,74 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 	};
 }
 
-export async function acquireFetchedPdfResponse(env: CoreEnv, response: Response, finalUrl: string): Promise<PdfAcquisition> {
-	const parsed = await parsePublicPdfResponse(env, response, finalUrl);
-	const identity = paperIdentityFromText(parsed.paperIdentifierText);
-	const url = new URL(finalUrl);
-	let fileName = url.pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';
-	try {
-		fileName = decodeURIComponent(fileName) || 'document.pdf';
-	} catch {
-		// Keep a malformed path segment in its encoded form.
-	}
-	const title = fileName.replace(/\.[a-z0-9]+$/i, '').trim();
-	if (!title) throw new NonRetryableError(`File name has no title: ${fileName}`);
-	const source = url.hostname.replace(/^www\./, '');
-	return {
-		resource: {
-			kind: 'file',
-			resourceIdentifiers: identity ? paperIdentifiersFromIdentity(identity) : [],
-			subjectUrl: null,
-			previewImageUrl: null,
-			resourcePlatform: null,
-			fileType: PDF_MIME,
-			url: finalUrl,
-			title,
-			content: parsed.markdown,
-			citations: parsed.citations,
-			source,
-			originalLang: 'und',
-			publishedDate: null,
-			summary: null,
-			creators: [],
-			kindMetadata: null,
+/** Parse a checkpointed public source without repeating its external download. */
+export async function stagePublicPdfAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: { source: Awaited<ReturnType<typeof storePublicPdfResponse>>; grant: PaidPdfFallbackGrant | null; processingId: string },
+): Promise<PdfAcquisition['resource']> {
+	const stream = await step.do(
+		`parse-public-pdf-v1-${input.source.pdfStorageKey}`,
+		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
+		async () => {
+			const parsed = await parseStoredPdfRepresentation(env, input.source);
+			const identity = paperIdentityFromText(parsed.paperIdentifierText);
+			const url = new URL(input.source.url);
+			let fileName = url.pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';
+			try {
+				fileName = decodeURIComponent(fileName) || 'document.pdf';
+			} catch {
+				// Keep a malformed path segment in its encoded form.
+			}
+			const title = fileName.replace(/\.[a-z0-9]+$/i, '').trim();
+			if (!title) throw new NonRetryableError(`File name has no title: ${fileName}`);
+			const source = url.hostname.replace(/^www\./, '');
+			return Response.json({
+				resource: {
+					kind: 'file',
+					resourceIdentifiers: [
+						...(resolveResourceUrl(input.source.url)?.identifiers ?? []),
+						...(identity ? paperIdentifiersFromIdentity(identity) : []),
+					],
+					subjectUrl: null,
+					previewImageUrl: null,
+					resourcePlatform: null,
+					fileType: PDF_MIME,
+					url: input.source.url,
+					title,
+					content: parsed.markdown,
+					citations: parsed.citations,
+					source,
+					originalLang: 'und',
+					publishedDate: null,
+					summary: null,
+					creators: [],
+					kindMetadata: null,
+				},
+				parse: parsed.parse,
+			} satisfies PdfAcquisition).body!;
 		},
-		parse: parsed.parse,
+	);
+	const acquisition = await new Response(stream).json<PdfAcquisition>();
+	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
+		grant: input.grant,
+		local: acquisition.parse,
+		processingId: input.processingId,
+		source: { kind: 'public-url', url: input.source.url },
+	});
+	if (!cloudMarkdown) {
+		if (!acquisition.resource.content) throw new NonRetryableError('Fetched PDF has no usable text; OCR is required');
+		return acquisition.resource;
+	}
+	const identity = paperIdentityFromText(cloudMarkdown.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS));
+	return {
+		...acquisition.resource,
+		citations: null,
+		content: cloudMarkdown,
+		resourceIdentifiers: [
+			...(resolveResourceUrl(input.source.url)?.identifiers ?? []),
+			...(identity ? paperIdentifiersFromIdentity(identity) : []),
+		],
 	};
 }
 
