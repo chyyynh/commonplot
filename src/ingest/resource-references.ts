@@ -6,8 +6,8 @@ import { createResourceTask, registerResourceTask, type ResourceTaskContext } fr
 
 const CROSSREF_BATCH_SIZE = 3;
 const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
-type ReferenceDoi = { ordinal: number; doi: string };
 type StoredReference = { ordinal: number; text: string };
+type ReferenceDoi = StoredReference & { doi: string };
 
 async function resolveReferenceDois(step: WorkflowStep, references: readonly StoredReference[]): Promise<ReferenceDoi[]> {
 	const updates: ReferenceDoi[] = [];
@@ -17,7 +17,7 @@ async function resolveReferenceDois(step: WorkflowStep, references: readonly Sto
 			batch.map(({ text, ordinal }) =>
 				step
 					.do(
-						`resolve-crossref-reference-doi-v1-${ordinal}`,
+						`resolve-crossref-reference-doi-v2-${ordinal}`,
 						{ retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 						async () => (await resolveCrossrefReference(text))?.doi ?? null,
 					)
@@ -33,7 +33,7 @@ async function resolveReferenceDois(step: WorkflowStep, references: readonly Sto
 			),
 		);
 		for (const [index, resolution] of resolutions.entries()) {
-			if (resolution) updates.push({ doi: resolution, ordinal: batch[index]!.ordinal });
+			if (resolution) updates.push({ ...batch[index]!, doi: resolution });
 		}
 		if (offset + CROSSREF_BATCH_SIZE < references.length) {
 			await step.sleep(`pace-crossref-batch-v2-${offset / CROSSREF_BATCH_SIZE}`, '1 second');
@@ -47,7 +47,6 @@ export async function stageResourceReferences(
 	env: CoreEnv,
 	step: WorkflowStep,
 	resourceId: string,
-	referenceRevision: string,
 	parent: ResourceTaskContext,
 ): Promise<void> {
 	const task = createResourceTask(env, step, `references-${parent.taskId}`, parent.required);
@@ -56,38 +55,37 @@ export async function stageResourceReferences(
 			await step.do('register-reference-progress-v1', REFERENCE_DB_STEP, () =>
 				registerResourceTask(env, { taskId: task.taskId, kind: 'references', resourceId }, parent),
 			);
-		const references = await step.do('load-unresolved-references-v1', REFERENCE_DB_STEP, async () => {
+		const referenceStream = await step.do('load-unresolved-references-v2', REFERENCE_DB_STEP, async () => {
 			const db = await connectCoreDb(env);
 			const result = await db.execute<StoredReference>(sql`
 				SELECT reference.ordinal, reference.text
 				FROM resource_references reference
 				JOIN resources resource ON resource.id = reference.resource_id
-				JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 				WHERE resource.id = ${resourceId}::uuid AND resource.scope = 'corpus' AND resource.kind = 'paper'
 				  AND reference.doi IS NULL AND reference.arxiv_id IS NULL
-				  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${referenceRevision}
 				ORDER BY reference.ordinal
 			`);
-			return result.rows;
+			return Response.json(result.rows).body!;
 		});
+		const references = await new Response(referenceStream).json<StoredReference[]>();
 		const updates = await resolveReferenceDois(step, references);
 		const enrichedCount = updates.length
-			? await step.do('persist-crossref-reference-dois-v1', REFERENCE_DB_STEP, async () => {
+			? await step.do('persist-crossref-reference-dois-v2', REFERENCE_DB_STEP, async () => {
 					const db = await connectCoreDb(env);
+					// A DOI belongs to this exact bibliography entry, independently of title, summary or body edits.
 					const result = await db.execute(sql`
 						WITH target AS (
 							SELECT resource.id
 							FROM resources resource
-							JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 							WHERE resource.id = ${resourceId}::uuid AND resource.scope = 'corpus' AND resource.kind = 'paper'
-							  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${referenceRevision}
-							FOR UPDATE OF resource, original
+							FOR UPDATE
 						)
 						UPDATE resource_references AS reference
 						SET doi = incoming.doi
-						FROM jsonb_to_recordset(${JSON.stringify(updates)}::jsonb) AS incoming(ordinal integer, doi text)
+						FROM jsonb_to_recordset(${JSON.stringify(updates)}::jsonb) AS incoming(ordinal integer, text text, doi text)
 						CROSS JOIN target
 						WHERE reference.resource_id = target.id AND reference.ordinal = incoming.ordinal
+						  AND reference.text = incoming.text
 						  AND reference.doi IS NULL AND reference.arxiv_id IS NULL
 					`);
 					return result.rowCount ?? 0;
