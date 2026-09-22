@@ -174,17 +174,6 @@ async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: reado
 	return normalizeOpenAlexWork(work, identifiers);
 }
 
-const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
-
-function choosePreferredIdentifiers(identifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
-	const normalized = normalizePaperIdentifiers(identifiers.map((identifier) => ({ ...identifier, preferred: false })));
-	const preferredDoi = normalized.find((identifier) => identifier.scheme === 'doi' && !identifier.value.startsWith(ARXIV_DOI_PREFIX));
-	if (!preferredDoi) return normalized;
-	return normalized.map((identifier) =>
-		identifier.scheme === 'doi' ? { ...identifier, preferred: identifier.value === preferredDoi.value } : identifier,
-	);
-}
-
 /** OpenAlex content URLs need our API key, so this optional representation is always local-only. */
 async function stageOpenAlexPdfContent(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
 	try {
@@ -240,7 +229,7 @@ export async function stagePaperResolution(
 ) {
 	const resource = input.resource;
 	const canonicalUrl = resource.url;
-	const identifiers = choosePreferredIdentifiers(
+	const identifiers = normalizePaperIdentifiers(
 		resource.resourceIdentifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
 	);
 	const doi = paperIdentityFromIdentifiers(identifiers)?.doi;
@@ -287,11 +276,9 @@ export async function stagePaperResolution(
 		: null;
 	const content = pdf?.markdown ?? resource.content;
 	if (!content.trim()) throw new Error(`Processing ${input.processingId} has no extractable content`);
-	const resourceIdentifiers = choosePreferredIdentifiers([
-		...identifiers,
-		...(crossref ? paperIdentifiersFromIdentity({ doi: crossref.doi }) : []),
-		...(openAlex?.identifiers ?? []),
-	]);
+	const resourceIdentifiers =
+		openAlex?.identifiers ??
+		normalizePaperIdentifiers([...(crossref ? paperIdentifiersFromIdentity({ doi: crossref.doi }) : []), ...identifiers]);
 	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
 	if (!identity) return resource;
 	let publishedDate = resource.publishedDate;
@@ -311,12 +298,7 @@ export async function stagePaperResolution(
 		citations: pdf ? pdf.citations : resource.citations,
 		source: pdf ? resource.source.trim() || (canonicalUrl ? new URL(canonicalUrl).hostname : 'OpenAlex') : resource.source,
 		publishedDate,
-		creators: authors
-			? authors
-					.map((author) => author.trim())
-					.filter(Boolean)
-					.map((literal) => ({ role: 'author', literal }))
-			: resource.creators,
+		creators: authors?.length ? authors.map((literal) => ({ role: 'author', literal })) : resource.creators,
 		kindMetadata,
 		fileType: pdf ? PDF_MIME : resource.fileType,
 	} satisfies AcquiredResource;
