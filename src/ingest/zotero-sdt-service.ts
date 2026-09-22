@@ -111,7 +111,7 @@ async function ensureStructuredPdfSourceCrops(
 		crops: readonly StructuredPdfSourceCrop[];
 		inputContentHash: string;
 		pdfStorageKey: string;
-		quality?: ReturnType<typeof normalizeStructuredPdf>['parse'];
+		quality: ReturnType<typeof normalizeStructuredPdf>['parse'];
 		resourceId: string;
 	}>,
 ): Promise<void> {
@@ -129,26 +129,6 @@ async function ensureStructuredPdfSourceCrops(
 			}),
 		);
 	}
-	const persistManifest = () =>
-		putPdfDerivative(
-			env,
-			input.pdfStorageKey,
-			structuredPdfCropManifestKey(input.pdfStorageKey, input.inputContentHash),
-			JSON.stringify({
-				artifactVersion: SOURCE_CROP_ARTIFACT_VERSION,
-				inputSha256: input.inputContentHash,
-				pdfStorageKey: input.pdfStorageKey,
-				planned: [...plannedIds],
-				ready: [...readyCropIds],
-				failed: [...plannedIds]
-					.filter((id) => !readyCropIds.has(id))
-					.map((id) => ({ id, ...(failed.get(id) ?? { reason: 'pending', retryable: true }) })),
-				state: readyCropIds.size === plannedIds.size ? 'complete' : 'partial',
-				quality: readyCropIds.size === plannedIds.size ? (input.quality ?? null) : null,
-			}),
-			{ httpMetadata: { contentType: 'application/json' } },
-		);
-	await persistManifest();
 	const missing = input.crops.filter(({ id }) => !readyCropIds.has(id));
 	for (let offset = 0; offset < missing.length; offset += CROP_BATCH_SIZE) {
 		const batch = missing.slice(offset, offset + CROP_BATCH_SIZE);
@@ -186,8 +166,24 @@ async function ensureStructuredPdfSourceCrops(
 		} catch (error) {
 			for (const { id } of batch) if (!readyCropIds.has(id)) failed.set(id, cropFailure(error));
 		}
-		await persistManifest();
 	}
+	// PNGs are the retry checkpoints; publish one manifest after the complete attempt.
+	await putPdfDerivative(
+		env,
+		input.pdfStorageKey,
+		structuredPdfCropManifestKey(input.pdfStorageKey, input.inputContentHash),
+		JSON.stringify({
+			artifactVersion: SOURCE_CROP_ARTIFACT_VERSION,
+			inputSha256: input.inputContentHash,
+			pdfStorageKey: input.pdfStorageKey,
+			planned: [...plannedIds],
+			ready: [...readyCropIds],
+			failed: [...failed].map(([id, failure]) => ({ id, ...failure })),
+			state: readyCropIds.size === plannedIds.size ? 'complete' : 'partial',
+			quality: readyCropIds.size === plannedIds.size ? input.quality : null,
+		}),
+		{ httpMetadata: { contentType: 'application/json' } },
+	);
 	console.info({
 		tag: 'PDF_PARSE',
 		event: 'zotero_source_crops_completed',
@@ -198,7 +194,7 @@ async function ensureStructuredPdfSourceCrops(
 	if (readyCropIds.size !== plannedIds.size) {
 		// Workflow retries reuse the parsed document and all successful immutable
 		// crops. A partial batch must never become a successful acquisition checkpoint.
-		const retryable = [...plannedIds].some((id) => !readyCropIds.has(id) && failed.get(id)?.retryable !== false);
+		const retryable = [...failed.values()].some(({ retryable }) => retryable);
 		const ErrorType = retryable ? Error : NonRetryableError;
 		throw new ErrorType(`Structured PDF crops incomplete: ${readyCropIds.size}/${plannedIds.size}; inspect missing crops in the manifest`);
 	}
