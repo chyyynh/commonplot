@@ -15,8 +15,10 @@ import {
 } from '../../shared/paper-identity';
 import type { AcquiredResource } from '../acquisition';
 import { resolveCrossrefPaper, resolveCrossrefPaperCandidate } from '../crossref';
-import { parsePublicPdfResponse } from '../zotero-sdt-service.ts';
+import { acquireFetchedPdfResponse } from './pdf';
 import { PDF_MIME } from './pdf-policy';
+import type { ResolvedResourceUrl } from './resource-url';
+import { stageWebAcquisition } from './web';
 
 const PAPER_METADATA_STEP = { retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 
@@ -178,7 +180,7 @@ async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: reado
 async function stageOpenAlexPdfContent(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
 	try {
 		const contentStream = await step.do(
-			'acquire-openalex-content-pdf-v12',
+			'acquire-openalex-content-pdf-v13',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 			async () => {
 				const apiKey = env.OPENALEX_API_KEY?.trim();
@@ -193,19 +195,19 @@ async function stageOpenAlexPdfContent(env: CoreEnv, step: WorkflowStep, input: 
 					await response.body?.cancel();
 					throw new Error(`OpenAlex content PDF request failed with HTTP ${response.status}`);
 				}
-				const { markdown, citations } = await parsePublicPdfResponse(env, response, input.contentPdfUrl);
-				return Response.json({ markdown, citations }).body!;
+				const { resource } = await acquireFetchedPdfResponse(env, response, input.contentPdfUrl);
+				return Response.json(resource).body!;
 			},
 		);
-		const content = await new Response(contentStream).json<{ markdown: string; citations: AcquiredResource['citations'] }>();
-		if (!content.markdown) throw new NonRetryableError('OpenAlex content PDF has no usable text; OCR is required');
+		const resource = await new Response(contentStream).json<AcquiredResource & { resourcePlatform: null }>();
+		if (!resource.content.trim()) throw new NonRetryableError('OpenAlex content PDF has no usable text; OCR is required');
 		console.info({
 			tag: 'OPENALEX_CONTENT',
 			event: 'pdf_acquired',
 			processing_id: input.processingId,
-			chars: content.markdown.length,
+			chars: resource.content.length,
 		});
-		return content;
+		return resource;
 	} catch (error) {
 		console.error({
 			tag: 'OPENALEX_CONTENT',
@@ -217,34 +219,47 @@ async function stageOpenAlexPdfContent(env: CoreEnv, step: WorkflowStep, input: 
 	}
 }
 
-export async function stagePaperResolution(
+type ParsedPaperInput = {
+	resource: AcquiredResource & { resourcePlatform: null };
+	/** Only a GROBID header may propose an uploaded PDF without an identifier. */
+	candidate?: { title: string; authors: readonly string[] };
+	processingId: string;
+};
+
+type PaperUrlInput = Parameters<typeof stageWebAcquisition>[2] & {
+	identifiers: AcquiredResource['resourceIdentifiers'];
+};
+
+export function stagePaperAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: {
-		resource: AcquiredResource & { resourcePlatform: null };
-		/** Only a GROBID header may propose an uploaded PDF without an identifier. */
-		candidate?: { title: string; authors: readonly string[] };
-		processingId: string;
-	},
-) {
-	const resource = input.resource;
-	const canonicalUrl = resource.url;
+	input: ParsedPaperInput,
+): Promise<AcquiredResource & { resourcePlatform: null }>;
+export function stagePaperAcquisition(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: PaperUrlInput,
+): Promise<(AcquiredResource & { resourcePlatform: null }) | { platform: ResolvedResourceUrl }>;
+export async function stagePaperAcquisition(env: CoreEnv, step: WorkflowStep, input: ParsedPaperInput | PaperUrlInput) {
+	const parsed = 'resource' in input ? input.resource : null;
+	const candidate = 'resource' in input ? input.candidate : undefined;
 	const identifiers = normalizePaperIdentifiers(
-		resource.resourceIdentifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
+		('resource' in input ? input.resource.resourceIdentifiers : input.identifiers).filter((identifier): identifier is PaperIdentifier =>
+			isPaperIdentifierScheme(identifier.scheme),
+		),
 	);
 	const doi = paperIdentityFromIdentifiers(identifiers)?.doi;
-	const provider =
-		resource.fileType === PDF_MIME && (input.candidate || (doi && !doi.startsWith('10.48550/arxiv.'))) ? 'crossref' : 'openalex';
+	const provider = parsed?.fileType === PDF_MIME && (candidate || (doi && !doi.startsWith('10.48550/arxiv.'))) ? 'crossref' : 'openalex';
 	let openAlex: Awaited<ReturnType<typeof resolveOpenAlexPaper>> = null;
 	let crossref: Awaited<ReturnType<typeof resolveCrossrefPaper>> = null;
-	if (provider === 'crossref' ? doi || input.candidate : identifiers.length) {
+	if (provider === 'crossref' ? doi || candidate : identifiers.length) {
 		const startedAt = Date.now();
 		try {
 			if (provider === 'crossref') {
 				crossref = doi
 					? await step.do('resolve-pdf-paper-crossref-by-doi-v2', PAPER_METADATA_STEP, () => resolveCrossrefPaper(doi))
 					: await step.do('confirm-stored-pdf-with-crossref-v2', PAPER_METADATA_STEP, () =>
-							resolveCrossrefPaperCandidate(input.candidate!.title, input.candidate!.authors),
+							resolveCrossrefPaperCandidate(candidate!.title, candidate!.authors),
 						);
 			} else {
 				openAlex = await step.do('resolve-paper-openalex-with-citations-v4', PAPER_METADATA_STEP, () =>
@@ -273,14 +288,26 @@ export async function stagePaperResolution(
 	}
 	const { doi: _doi, abstract, authors, publicationDate, title, ...kindMetadata } = { ...openAlex?.metadata, ...crossref };
 	const pdf =
-		resource.fileType !== PDF_MIME && openAlex?.contentPdfUrl
+		parsed?.fileType !== PDF_MIME && openAlex?.contentPdfUrl
 			? await stageOpenAlexPdfContent(env, step, { contentPdfUrl: openAlex.contentPdfUrl, processingId: input.processingId })
 			: null;
-	const content = pdf?.markdown ?? resource.content;
+	const resource =
+		'resource' in input
+			? input.resource
+			: pdf
+				? { ...pdf, url: input.url, source: new URL(input.url).hostname }
+				: await stageWebAcquisition(env, step, input);
+	if ('platform' in resource) return resource;
+	const canonicalUrl = resource.url;
+	const content = pdf?.content ?? resource.content;
 	if (!content.trim()) throw new Error(`Processing ${input.processingId} has no extractable content`);
 	const resourceIdentifiers =
 		openAlex?.identifiers ??
-		normalizePaperIdentifiers([...(crossref ? paperIdentifiersFromIdentity({ doi: crossref.doi }) : []), ...identifiers]);
+		normalizePaperIdentifiers([
+			...(crossref ? paperIdentifiersFromIdentity({ doi: crossref.doi }) : []),
+			...identifiers,
+			...resource.resourceIdentifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
+		]);
 	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
 	if (!identity) return resource;
 	let publishedDate = resource.publishedDate;

@@ -10,7 +10,7 @@ import type { ResourceCreator, ResourceIdentifier, ResourceKind, ResourceKindMet
 import type { ResourceProcessingTarget } from './admission';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
-import { stagePaperResolution } from './platforms/paper';
+import { stagePaperAcquisition } from './platforms/paper';
 import { stageStoredPdfAcquisition } from './platforms/pdf';
 import type { PaidPdfFallbackGrant } from './platforms/pdf-policy';
 import { resolveResourceUrl } from './platforms/resource-url';
@@ -66,10 +66,13 @@ async function stageUrlAcquisition(
 	let detected = resolveResourceUrl(input.url);
 	if (!detected) throw new NonRetryableError('Resource URL must be HTTP(S) without credentials');
 	if (!detected.resourcePlatform) {
-		const web = await stageWebAcquisition(env, step, input);
+		const web = detected.identifiers.length
+			? await stagePaperAcquisition(env, step, { ...input, identifiers: detected.identifiers })
+			: await stageWebAcquisition(env, step, input);
 		if (!('platform' in web)) {
-			web.resourceIdentifiers = [...detected.identifiers, ...web.resourceIdentifiers];
-			return web;
+			return !detected.identifiers.length && web.resourceIdentifiers.length
+				? stagePaperAcquisition(env, step, { resource: web, processingId: input.processingId })
+				: web;
 		}
 		detected = web.platform;
 	}
@@ -115,22 +118,18 @@ export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep,
 				: null;
 	const acquired =
 		target.kind === 'storedBlob'
-			? await stageStoredPdfAcquisition(env, step, target)
+			? await stagePaperAcquisition(env, step, { ...(await stageStoredPdfAcquisition(env, step, target)), processingId })
 			: await stageUrlAcquisition(env, step, { paidPdfFallback: target.paidPdfFallback ?? null, processingId, url: url! });
 	const source = target.kind === 'draft' ? target.sourceHints : undefined;
 	const language = ResourceLanguageSchema.safeParse(acquired.originalLang).data;
 	const parsedDate = Date.parse(acquired.publishedDate ?? '');
 	const publishedDate = Number.isNaN(parsedDate) ? (source?.publishedDate ?? null) : new Date(parsedDate).toISOString();
-	const resource = {
+	const content = withoutDuplicateResourceTitle(acquired.content, acquired.title);
+	return {
 		...acquired,
-		originalLang: language && language !== 'und' ? language : (source?.originalLang ?? 'und'),
+		content,
+		originalLang: detectResourceLanguage(content, language && language !== 'und' ? language : (source?.originalLang ?? 'und')),
 		publishedDate,
 		summary: acquired.summary?.trim() || source?.summary?.trim() || null,
 	};
-	const resolved =
-		resource.resourcePlatform === null && target.kind !== 'storedBlob'
-			? await stagePaperResolution(env, step, { resource, processingId })
-			: resource;
-	const content = withoutDuplicateResourceTitle(resolved.content, resolved.title);
-	return { ...resolved, content, originalLang: detectResourceLanguage(content, resolved.originalLang) };
 }

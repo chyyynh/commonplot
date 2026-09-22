@@ -9,7 +9,6 @@ import type { AcquiredResource } from '../acquisition';
 import type { GrobidPdfHeader } from '../grobid-tei';
 import { ResourceLanguageSchema } from '../resource-language';
 import { parsePublicPdfResponse, parseStoredPdfRepresentation } from '../zotero-sdt-service.ts';
-import { stagePaperResolution } from './paper';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
 import { PDF_MIME, type LocalPdfSummary, type PaidPdfFallbackGrant } from './pdf-policy';
 import { resolveResourceUrl } from './resource-url';
@@ -152,7 +151,7 @@ export async function stageStoredPdfAcquisition(
 		paidPdfFallback?: PaidPdfFallbackGrant;
 		resourceId: string;
 	}>,
-): Promise<AcquiredResource & { resourcePlatform: null }> {
+) {
 	const resource = await step.do(
 		'load-stored-pdf-input-v1',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
@@ -203,7 +202,7 @@ export async function stageStoredPdfAcquisition(
 	});
 	if (!cloudMarkdown && !parsed.markdown)
 		throw new NonRetryableError(`Stored PDF ${target.resourceId} has no usable text; OCR is required`);
-	return stagePaperResolution(env, step, {
+	return {
 		resource: {
 			kind: 'file',
 			resourceIdentifiers: paperIdentifiers,
@@ -223,10 +222,9 @@ export async function stageStoredPdfAcquisition(
 				? paperHeader.authors.map((literal) => ({ literal, role: 'author' as const }))
 				: resource.creators,
 			kindMetadata: null,
-		},
-		processingId: target.resourceId,
+		} satisfies AcquiredResource & { resourcePlatform: null },
 		...(!paperIdentifiers.length && grobidHeader?.title && grobidHeader.authors.length
 			? { candidate: { title: grobidHeader.title, authors: grobidHeader.authors } }
 			: {}),
-	});
+	};
 }
