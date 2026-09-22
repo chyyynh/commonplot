@@ -159,7 +159,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				}),
 				scope === 'corpus' &&
 				persistence.kind === 'paper' &&
-				(preparedResource.citations?.references.length || !persistence.originalWritten)
+				(preparedResource.citations?.references.some(({ doi, arxivId }) => !doi && !arxivId) || !persistence.originalWritten)
 					? stageResourceReferences(this.env, step, persistedResourceId, translationRevision, task)
 					: undefined,
 				preparedResource.youtube && persistence.originalWritten

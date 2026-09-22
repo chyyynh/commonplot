@@ -1,8 +1,8 @@
 const DOI_RE = /^10\.\d{4,9}\/[-._;()/:a-z0-9]+$/i;
 const MODERN_ARXIV_ID_RE = /^(\d{4}\.\d{4,5})(?:v\d+)?$/i;
 const LEGACY_ARXIV_ID_RE = /^([a-z][a-z0-9.-]*\/[0-9]{7})(?:v\d+)?$/i;
-const DOI_IN_TEXT_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)\b/i;
-const ARXIV_IN_TEXT_RE = /\barxiv[.:\s]*((?:\d{4}\.\d{4,5}|[a-z][a-z0-9.-]*\/\d{7})(?:v\d+)?)\b/i;
+const DOI_IN_TEXT_RE = /\b(10\.\d{4,9}\/[-._;()/:A-Z0-9]+)/i;
+const ARXIV_IN_TEXT_RE = /\barxiv(?:\.org\/(?:abs|html|pdf)\/|[.:\s]+)((?:\d{4}\.\d{4,5}|[a-z][a-z0-9.-]*\/\d{7})(?:v\d+)?)\b/i;
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
 const OPENALEX_ID_RE = /^(?:https?:\/\/openalex\.org\/)?(?:works\/)?(W\d+)\/?$/i;
 
@@ -157,7 +157,7 @@ export function canonicalPaperUrl(identity: PaperIdentity): string {
 	throw new Error('Paper identity has no canonical identifier');
 }
 
-/** Extract exact identifiers from bounded PDF/front-matter text. */
+/** Extract printed identifiers from PDF front matter or a single bibliography entry. */
 export function paperIdentityFromText(value: unknown): PaperIdentity | null {
 	if (typeof value !== 'string' || !value.trim()) return null;
 	const doi = normalizeDoi(value.match(DOI_IN_TEXT_RE)?.[1]);

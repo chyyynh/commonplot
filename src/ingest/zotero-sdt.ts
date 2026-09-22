@@ -22,6 +22,7 @@ import {
 } from 'structured-document-text/src/parts.js';
 import { isContentBoundary, isLeafBlock, refKey, sameRef } from 'structured-document-text/src/range.js';
 import { mergeTextNodes } from 'structured-document-text/src/text.js';
+import { paperIdentityFromText } from '../shared/paper-identity';
 
 const MAX_DOCUMENT_NODES = 100_000;
 const MAX_DOCUMENT_TEXT_CHARS = 2_000_000;
@@ -223,12 +224,15 @@ function walkNodes(nodes: readonly SdtNode[], parentPath: RefPath = []): Array<{
 	});
 }
 
-function referenceLabelAndText(value: string): { label: string | null; text: string } {
+function referenceLabelAndText(value: string) {
 	const text = cleanText(value);
 	const match = /^(?:\[([^\]]{1,64})\]|(\d{1,6})[.)])\s*/u.exec(text);
 	const label = cleanText(match?.[1] ?? match?.[2] ?? '') || null;
 	const withoutLabel = match ? text.slice(match[0].length).trim() : text;
+	const { doi = null, arxivId = null } = paperIdentityFromText(withoutLabel || text) ?? {};
 	return {
+		doi,
+		arxivId,
 		label,
 		text: boundedText(withoutLabel || text, MAX_REFERENCE_TEXT_CHARS),
 	};
@@ -550,7 +554,7 @@ export function normalizeStructuredPdf(
 	if (referenceEntries.length > MAX_REFERENCES) throw new Error(`Zotero SDT returned more than ${MAX_REFERENCES} references`);
 	const referenceKeyByPath = new Map<string, string>();
 	const visitedReferencePaths = new Set<string>();
-	const references: Array<{ key: string; label: string | null; text: string }> = [];
+	const references: Array<{ key: string } & ReturnType<typeof referenceLabelAndText>> = [];
 	const referencePaths = new Set(referenceEntries.map(({ path }) => refKey(path)));
 	const includeReferencePart = (path: SdtRefPath, value: unknown) =>
 		referencePaths.has(refKey(path)) && !visitedReferencePaths.has(refKey(path)) && isLeafBlock(value as Partial<SdtBlockNode>);

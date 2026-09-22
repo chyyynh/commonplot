@@ -250,8 +250,9 @@ async function writeCanonicalResource(
 		const { references } = resource.citations;
 		// These references describe exactly the original written in this transaction.
 		await db.execute(sql`
-			INSERT INTO resource_references (resource_id, ordinal, label, text)
-			SELECT ${resourceId}::uuid, incoming.ordinal::integer, incoming.value->>'label', incoming.value->>'text'
+			INSERT INTO resource_references (resource_id, ordinal, label, text, doi, arxiv_id)
+			SELECT ${resourceId}::uuid, incoming.ordinal::integer, incoming.value->>'label', incoming.value->>'text',
+			       incoming.value->>'doi', incoming.value->>'arxivId'
 			FROM jsonb_array_elements(${JSON.stringify(references)}::jsonb)
 			WITH ORDINALITY AS incoming(value, ordinal)
 		`);

@@ -64,7 +64,7 @@ export async function stageResourceReferences(
 				JOIN resources resource ON resource.id = reference.resource_id
 				JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 				WHERE resource.id = ${resourceId}::uuid AND resource.scope = 'corpus' AND resource.kind = 'paper'
-				  AND reference.doi IS NULL
+				  AND reference.doi IS NULL AND reference.arxiv_id IS NULL
 				  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${referenceRevision}
 				ORDER BY reference.ordinal
 			`);
@@ -87,7 +87,8 @@ export async function stageResourceReferences(
 						SET doi = incoming.doi
 						FROM jsonb_to_recordset(${JSON.stringify(updates)}::jsonb) AS incoming(ordinal integer, doi text)
 						CROSS JOIN target
-						WHERE reference.resource_id = target.id AND reference.ordinal = incoming.ordinal AND reference.doi IS NULL
+						WHERE reference.resource_id = target.id AND reference.ordinal = incoming.ordinal
+						  AND reference.doi IS NULL AND reference.arxiv_id IS NULL
 					`);
 					return result.rowCount ?? 0;
 				})
