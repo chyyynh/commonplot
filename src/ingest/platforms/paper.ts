@@ -233,7 +233,8 @@ export async function stagePaperResolution(
 		resource.resourceIdentifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
 	);
 	const doi = paperIdentityFromIdentifiers(identifiers)?.doi;
-	const provider = resource.fileType === PDF_MIME ? 'crossref' : 'openalex';
+	const provider =
+		resource.fileType === PDF_MIME && (input.candidate || (doi && !doi.startsWith('10.48550/arxiv.'))) ? 'crossref' : 'openalex';
 	let openAlex: Awaited<ReturnType<typeof resolveOpenAlexPaper>> = null;
 	let crossref: Awaited<ReturnType<typeof resolveCrossrefPaper>> = null;
 	if (provider === 'crossref' ? doi || input.candidate : identifiers.length) {
@@ -271,9 +272,10 @@ export async function stagePaperResolution(
 		}
 	}
 	const { doi: _doi, abstract, authors, publicationDate, title, ...kindMetadata } = { ...openAlex?.metadata, ...crossref };
-	const pdf = openAlex?.contentPdfUrl
-		? await stageOpenAlexPdfContent(env, step, { contentPdfUrl: openAlex.contentPdfUrl, processingId: input.processingId })
-		: null;
+	const pdf =
+		resource.fileType !== PDF_MIME && openAlex?.contentPdfUrl
+			? await stageOpenAlexPdfContent(env, step, { contentPdfUrl: openAlex.contentPdfUrl, processingId: input.processingId })
+			: null;
 	const content = pdf?.markdown ?? resource.content;
 	if (!content.trim()) throw new Error(`Processing ${input.processingId} has no extractable content`);
 	const resourceIdentifiers =
