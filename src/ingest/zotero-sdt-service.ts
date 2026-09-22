@@ -211,7 +211,7 @@ async function parsePdfArtifactStream(env: CoreEnv, input: ReadableStream<Uint8A
 			// outcome. Busy, startup, transport and malformed responses remain retryable.
 			if (response.status !== 400 && response.status !== 422) throw new Error(failure.message);
 			return {
-				citations: null,
+				references: [],
 				markdown: '',
 				paperIdentifierText: null,
 				parse: {
@@ -296,7 +296,7 @@ export async function parseStoredPdfRepresentation(
 	});
 	console.info({ tag: 'PDF_PARSE', event: 'zotero_sdt_completed', source: input.sourceLabel, ...normalized.parse });
 	return {
-		citations: { references: normalized.references },
+		references: normalized.references,
 		markdown: normalized.markdown,
 		paperIdentifierText: normalized.paperIdentifierText,
 		parse: normalized.parse,

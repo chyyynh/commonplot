@@ -83,7 +83,7 @@ export async function stagePublicPdfAcquisition(
 	input: { source: Awaited<ReturnType<typeof storePublicPdfResponse>>; grant: PaidPdfFallbackGrant | null; processingId: string },
 ): Promise<PdfAcquisition['resource']> {
 	const stream = await step.do(
-		`parse-public-pdf-v1-${input.source.pdfStorageKey}`,
+		`parse-public-pdf-v2-${input.source.pdfStorageKey}`,
 		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 		async () => {
 			const parsed = await parseStoredPdfRepresentation(env, input.source);
@@ -112,7 +112,7 @@ export async function stagePublicPdfAcquisition(
 					url: input.source.url,
 					title,
 					content: parsed.markdown,
-					citations: parsed.citations,
+					references: parsed.references,
 					source,
 					originalLang: 'und',
 					publishedDate: null,
@@ -138,7 +138,7 @@ export async function stagePublicPdfAcquisition(
 	const identity = paperIdentityFromText(cloudMarkdown.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS));
 	return {
 		...acquisition.resource,
-		citations: null,
+		references: [],
 		content: cloudMarkdown,
 		resourceIdentifiers: [
 			...(resolveResourceUrl(input.source.url)?.identifiers ?? []),
@@ -163,15 +163,15 @@ export async function stageStoredPdfAcquisition(
 	);
 	const [contentStream, grobidHeader] = await Promise.all([
 		step.do(
-			'acquire-stored-pdf-v12',
+			'acquire-stored-pdf-v13',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 			async () => {
-				const { markdown, citations, parse } = await parseStoredPdfRepresentation(env, {
+				const { markdown, references, parse } = await parseStoredPdfRepresentation(env, {
 					pdfStorageKey: resource.storageKey,
 					inputContentHash: resource.contentHash,
 					sourceLabel: `Stored PDF ${target.resourceId}`,
 				});
-				return Response.json({ markdown, citations, parse }).body!;
+				return Response.json({ markdown, references, parse }).body!;
 			},
 		),
 		step
@@ -191,7 +191,7 @@ export async function stageStoredPdfAcquisition(
 			}),
 	]);
 	const parsed = await new Response(contentStream).json<
-		Pick<Awaited<ReturnType<typeof parseStoredPdfRepresentation>>, 'markdown' | 'citations' | 'parse'>
+		Pick<Awaited<ReturnType<typeof parseStoredPdfRepresentation>>, 'markdown' | 'references' | 'parse'>
 	>();
 	const paperIdentifiers = grobidHeader?.resourceIdentifiers ?? [];
 	const paperHeader = paperIdentifiers.length ? grobidHeader : null;
@@ -217,7 +217,7 @@ export async function stageStoredPdfAcquisition(
 			url: null,
 			title: paperHeader?.title ? paperHeader.title.trim() : resource.title,
 			content: cloudMarkdown || parsed.markdown,
-			citations: cloudMarkdown ? null : parsed.citations,
+			references: cloudMarkdown ? [] : parsed.references,
 			source: resource.source,
 			originalLang: resource.originalLang,
 			publishedDate: resource.publishedDate,

@@ -28,9 +28,7 @@ import { ResourceLanguageSchema, detectResourceLanguage } from './resource-langu
 
 // Adapters share an output contract; each adapter owns its mapping and identity.
 export type AcquiredResource = {
-	citations?: {
-		references: readonly { key: string; label: string | null; text: string; doi: string | null; arxivId: string | null }[];
-	} | null;
+	references?: readonly { key: string; label: string | null; text: string; doi: string | null; arxivId: string | null }[];
 	kind: Exclude<ResourceKind, 'image'>;
 	resourcePlatform: ResourcePlatform | null;
 	resourceIdentifiers: ResourceIdentifier[];

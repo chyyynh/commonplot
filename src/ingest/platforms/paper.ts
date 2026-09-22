@@ -325,7 +325,7 @@ export async function stagePaperAcquisition(env: CoreEnv, step: WorkflowStep, in
 		title: title?.trim() || resource.title,
 		summary: abstract?.trim() || resource.summary,
 		content,
-		citations: pdf ? pdf.citations : resource.citations,
+		references: pdf ? pdf.references : resource.references,
 		source: pdf ? resource.source.trim() || (canonicalUrl ? new URL(canonicalUrl).hostname : 'OpenAlex') : resource.source,
 		publishedDate,
 		creators: authors?.length ? authors.map((literal) => ({ role: 'author', literal })) : resource.creators,
