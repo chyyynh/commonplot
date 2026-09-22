@@ -1,3 +1,4 @@
+import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
 import { normalizeDoi } from '../shared/paper-identity.ts';
 import { readBoundedResponseText } from '../shared/response.ts';
@@ -147,7 +148,8 @@ async function fetchCrossrefWorks(params: Readonly<Record<string, string>>): Pro
 	if (!response.ok) {
 		const retryAfter = response.headers.get('retry-after')?.slice(0, 100);
 		await response.body?.cancel();
-		throw new Error(`Crossref request failed with HTTP ${response.status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
+		const ErrorType = [400, 401, 403, 404, 410, 422].includes(response.status) ? NonRetryableError : Error;
+		throw new ErrorType(`Crossref request failed with HTTP ${response.status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
 	}
 	if (!response.body) throw new Error('Crossref response had no body');
 	return JSON.parse(await readBoundedResponseText(response, MAX_CROSSREF_RESPONSE_BYTES, 'Crossref response'));
