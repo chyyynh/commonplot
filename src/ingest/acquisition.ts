@@ -6,7 +6,14 @@ import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
 import { connectCoreDb } from '../shared/db';
-import type { ResourceCreator, ResourceIdentifier, ResourceKind, ResourceKindMetadata, ResourcePlatform } from '../shared/resource';
+import {
+	ResourceIdentifiersSchema,
+	type ResourceCreator,
+	type ResourceIdentifier,
+	type ResourceKind,
+	type ResourceKindMetadata,
+	type ResourcePlatform,
+} from '../shared/resource';
 import type { ResourceProcessingTarget } from './admission';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
@@ -61,16 +68,18 @@ async function stageUrlAcquisition(
 		paidPdfFallback: PaidPdfFallbackGrant | null;
 		processingId: string;
 		url: string;
+		identifiers?: ResourceIdentifier[];
 	},
 ) {
 	let detected = resolveResourceUrl(input.url);
 	if (!detected) throw new NonRetryableError('Resource URL must be HTTP(S) without credentials');
 	if (!detected.resourcePlatform) {
-		const web = detected.identifiers.length
-			? await stagePaperAcquisition(env, step, { ...input, identifiers: detected.identifiers })
+		const identifiers = [...(input.identifiers ?? []), ...detected.identifiers];
+		const web = identifiers.length
+			? await stagePaperAcquisition(env, step, { ...input, identifiers })
 			: await stageWebAcquisition(env, step, input);
 		if (!('platform' in web)) {
-			return !detected.identifiers.length && web.resourceIdentifiers.length
+			return !identifiers.length && web.resourceIdentifiers.length
 				? stagePaperAcquisition(env, step, { resource: web, processingId: input.processingId })
 				: web;
 		}
@@ -99,27 +108,34 @@ async function stageUrlAcquisition(
 }
 
 export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep, target: ResourceProcessingTarget, processingId: string) {
-	const url =
+	const urlInput =
 		target.kind === 'reacquire'
 			? await step.do(
-					'load-resource-reacquisition-url-v2',
+					'load-resource-reacquisition-source-v3',
 					{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 					async () => {
 						const db = await connectCoreDb(env);
-						const { rows } = await db.execute<{ url: string | null }>(sql`SELECT url FROM resources WHERE id = ${target.resourceId}::uuid`);
+						const { rows } = await db.execute<{ url: string | null; identifiers: unknown }>(sql`
+							SELECT resource.url, COALESCE((
+								SELECT jsonb_agg(jsonb_build_object('scheme', scheme, 'value', value, 'preferred', is_preferred)
+									ORDER BY scheme, is_preferred DESC, value)
+								FROM resource_identifiers WHERE resource_id = resource.id
+							), '[]'::jsonb) AS identifiers
+							FROM resources resource WHERE resource.id = ${target.resourceId}::uuid
+						`);
 						if (!rows[0]) throw new NonRetryableError(`Failed to fetch resource ${target.resourceId}: not found`);
 						const url = resolveResourceUrl(rows[0].url)?.url;
 						if (!url) throw new NonRetryableError(`Resource ${target.resourceId} has no valid external HTTP URL and cannot be reacquired`);
-						return url;
+						return { url, identifiers: ResourceIdentifiersSchema.parse(rows[0].identifiers) };
 					},
 				)
 			: target.kind === 'draft'
-				? target.url
+				? { url: target.url }
 				: null;
 	const acquired =
 		target.kind === 'storedBlob'
 			? await stagePaperAcquisition(env, step, { ...(await stageStoredPdfAcquisition(env, step, target)), processingId })
-			: await stageUrlAcquisition(env, step, { paidPdfFallback: target.paidPdfFallback ?? null, processingId, url: url! });
+			: await stageUrlAcquisition(env, step, { ...urlInput!, paidPdfFallback: target.paidPdfFallback ?? null, processingId });
 	const source = target.kind === 'draft' ? target.sourceHints : undefined;
 	const language = ResourceLanguageSchema.safeParse(acquired.originalLang).data;
 	const parsedDate = Date.parse(acquired.publishedDate ?? '');
