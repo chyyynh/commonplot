@@ -154,6 +154,7 @@ export async function stageStoredPdfAcquisition(
 		paidPdfFallback?: PaidPdfFallbackGrant;
 		resourceId: string;
 	}>,
+	processingId: string,
 ) {
 	const resource = await step.do(
 		'load-stored-pdf-input-v1',
@@ -197,7 +198,7 @@ export async function stageStoredPdfAcquisition(
 	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
 		grant: target.paidPdfFallback ?? null,
 		local: parsed.parse,
-		processingId: target.resourceId,
+		processingId,
 		source: {
 			kind: 'private-upload',
 			storageKey: resource.storageKey,

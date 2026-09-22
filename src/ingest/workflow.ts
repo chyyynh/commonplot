@@ -42,7 +42,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			}
 			if (!(await task.start(target.kind === 'storedBlob' ? 'parsing' : 'acquiring')))
 				return target.kind === 'draft' ? {} : { resourceId: target.resourceId };
-			const processingId = target.kind === 'draft' ? event.instanceId : target.resourceId;
+			// Provider reconciliation belongs to this attempt, not the resource shared by later retries.
+			const processingId = event.instanceId;
 			const resource = await stageResourceAcquisition(this.env, step, target, processingId);
 			const uploadedPaper = target.kind === 'storedBlob' && resource.kind === 'paper';
 			const ownedBlobId = target.kind === 'storedBlob' ? target.resourceId : undefined;

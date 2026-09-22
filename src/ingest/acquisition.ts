@@ -136,7 +136,7 @@ export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep,
 				: null;
 	const acquired =
 		target.kind === 'storedBlob'
-			? await stagePaperAcquisition(env, step, { ...(await stageStoredPdfAcquisition(env, step, target)), processingId })
+			? await stagePaperAcquisition(env, step, { ...(await stageStoredPdfAcquisition(env, step, target, processingId)), processingId })
 			: await stageUrlAcquisition(env, step, { ...urlInput!, paidPdfFallback: target.paidPdfFallback ?? null, processingId });
 	const source = target.kind === 'draft' ? target.sourceHints : undefined;
 	const language = ResourceLanguageSchema.safeParse(acquired.originalLang).data;
