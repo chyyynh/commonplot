@@ -20,6 +20,7 @@ const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) 
 const MIN_ARTICLE_CONTENT_CHARS = 180;
 function acquireHtmlArticle(html: string, url: string): AcquiredResource & { kind: 'blog'; resourcePlatform: null } {
 	const document = new DOMParser().parseFromString(html, 'text/html');
+	const summary = sourceHtmlSummary(document);
 	// Linkedom resolves baseURI from <base>; Readability uses it for relative links and images.
 	const base = document.createElement('base', {});
 	base.setAttribute('href', url);
@@ -125,7 +126,7 @@ function acquireHtmlArticle(html: string, url: string): AcquiredResource & { kin
 		source: siteName,
 		originalLang: 'und',
 		publishedDate: article.publishedTime?.trim() || null,
-		summary: sourceHtmlSummary(html),
+		summary,
 		creators: author ? [{ role: 'author', literal: author }] : [],
 		kindMetadata: { siteName },
 		previewImageUrl: normalizedResourceImageUrl(image, url),
@@ -135,8 +136,7 @@ function acquireHtmlArticle(html: string, url: string): AcquiredResource & { kin
 
 // The extractor's description may be a generated body excerpt. Only publisher
 // metadata counts as a source summary; otherwise feed hints or analysis supply it.
-function sourceHtmlSummary(html: string): string | null {
-	const nodes = [...fromHtml(html).children];
+function sourceHtmlSummary(document: ReturnType<DOMParser['parseFromString']>): string | null {
 	let metaSummary: string | null = null;
 	let schemaSummary: string | null = null;
 	function schemaDescription(value: unknown): string | null {
@@ -149,24 +149,20 @@ function sourceHtmlSummary(html: string): string | null {
 		}
 		return schemaDescription(entry['@graph']);
 	}
-	for (const node of nodes) {
-		if (node.type !== 'element') continue;
-		nodes.push(...node.children);
-		if (node.tagName === 'meta') {
-			const names = [node.properties.name, node.properties.property, node.properties.itemProp];
+	for (const node of document.querySelectorAll('meta, script[type="application/ld+json"]')) {
+		if (node.closest('template, noscript')) continue;
+		if (node.localName === 'meta') {
+			const names = ['name', 'property', 'itemprop'].map((name) => node.getAttribute(name));
 			if (
 				names.some(
 					(name) => typeof name === 'string' && /^(?:description|og:description|twitter:description|parsely-description)$/i.test(name),
 				)
 			) {
-				const content = node.properties.content;
-				if (typeof content === 'string' && content.trim()) metaSummary ??= content.trim();
+				metaSummary ??= node.getAttribute('content')?.trim() || null;
 			}
-		}
-		if (node.tagName === 'script' && node.properties.type === 'application/ld+json') {
+		} else {
 			try {
-				const text = node.children.map((child) => (child.type === 'text' ? child.value : '')).join('');
-				schemaSummary ??= schemaDescription(JSON.parse(text));
+				schemaSummary ??= schemaDescription(JSON.parse(node.textContent ?? ''));
 			} catch {
 				// Malformed optional metadata does not make the article unreadable.
 			}
