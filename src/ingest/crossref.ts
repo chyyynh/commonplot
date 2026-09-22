@@ -17,10 +17,7 @@ const CROSSREF_PAPER_TYPES = new Set(['dissertation', 'journal-article', 'posted
 
 const CrossrefWorkSchema = z.object({
 	DOI: z.string(),
-	author: z
-		.array(z.object({ family: z.string().nullish(), given: z.string().nullish() }))
-		.max(100)
-		.nullish(),
+	author: z.array(z.object({ family: z.string().nullish(), given: z.string().nullish(), name: z.string().nullish() })).nullish(),
 	'container-title': z.array(z.string()).max(10).nullish(),
 	published: z
 		.object({
@@ -61,11 +58,11 @@ function publishedYear(work: CrossrefWork): number | null {
 	return typeof year === 'number' && Number.isInteger(year) && year >= 1800 && year <= 2199 ? year : null;
 }
 
-function normalizedFamilyNames(work: CrossrefWork): string[] {
+function normalizedAuthorNames(work: CrossrefWork): string[] {
 	return (work.author ?? [])
 		.slice(0, 3)
-		.map(({ family }) => normalizeBibliographicText(family ?? ''))
-		.filter((family) => family.length >= 3);
+		.map(({ family, name }) => normalizeBibliographicText(family?.trim() || name || ''))
+		.filter((name) => name.length >= 3);
 }
 
 function boundedMetadata(value: string | null | undefined, maxChars: number): string | null {
@@ -74,9 +71,9 @@ function boundedMetadata(value: string | null | undefined, maxChars: number): st
 }
 
 function workAuthors(work: CrossrefWork): string[] {
-	return (work.author ?? []).flatMap(({ family, given }) => {
-		const name = boundedMetadata([given, family].filter(Boolean).join(' '), MAX_AUTHOR_CHARS);
-		return name ? [name] : [];
+	return (work.author ?? []).flatMap(({ family, given, name }) => {
+		const author = boundedMetadata(name?.trim() || [given, family].filter(Boolean).join(' '), MAX_AUTHOR_CHARS);
+		return author ? [author] : [];
 	});
 }
 
@@ -97,8 +94,7 @@ function workMatchesCitation(citation: string, work: CrossrefWork): boolean {
 	const year = publishedYear(work);
 	if (years.size && year !== null && !years.has(year)) return false;
 
-	const familyNames = normalizedFamilyNames(work);
-	const authorMatches = familyNames.some((family) => citationText.includes(family));
+	const authorMatches = normalizedAuthorNames(work).some((name) => ` ${citationText} `.includes(` ${name} `));
 	if (!exactTitle && !authorMatches) return false;
 	if (titleTokens.length < 5 && !authorMatches && !(year !== null && years.has(year))) return false;
 	return true;
@@ -113,10 +109,8 @@ function workMatchesPaperCandidate(title: string, authors: readonly string[], wo
 	if (!work.type || !CROSSREF_PAPER_TYPES.has(work.type)) return false;
 	if (!boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS) || publishedYear(work) === null) return false;
 
-	const authorTokens = new Set(
-		authors.flatMap((author) => normalizeBibliographicText(author).split(' ')).filter((token) => token.length >= 3),
-	);
-	return normalizedFamilyNames(work).some((family) => authorTokens.has(family));
+	const candidateAuthors = authors.map(normalizeBibliographicText);
+	return normalizedAuthorNames(work).some((name) => candidateAuthors.some((author) => ` ${author} `.includes(` ${name} `)));
 }
 
 function crossrefResolution(work: CrossrefWork) {
