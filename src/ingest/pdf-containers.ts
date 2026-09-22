@@ -7,8 +7,10 @@ const MAX_ERROR_BODY_BYTES = 1_000;
 const MAX_GROBID_RESPONSE_BYTES = 8 * 1024 * 1024;
 const textEncoder = new TextEncoder();
 
-async function ensureReady(container: Container<CoreEnv>, input: ReadableStream<Uint8Array>): Promise<void> {
+async function ensureReady(container: Container<CoreEnv>, context: DurableObjectState, input: ReadableStream<Uint8Array>): Promise<void> {
 	try {
+		const state = await container.getState();
+		if (context.container?.running && state.status === 'healthy') return;
 		await container.startAndWaitForPorts(container.defaultPort, {
 			instanceGetTimeoutMS: 30_000,
 			portReadyTimeoutMS: 240_000,
@@ -52,7 +54,7 @@ export class GrobidContainer extends Container<CoreEnv> {
 			await input.cancel('GROBID PDF size is outside the supported range');
 			throw new TypeError(`GROBID PDF must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
-		await ensureReady(this, input);
+		await ensureReady(this, this.ctx, input);
 
 		const boundary = `newsence-${crypto.randomUUID()}`;
 		const response = await this.containerFetch('http://grobid/api/processHeaderDocument', {
@@ -71,11 +73,11 @@ export class ZoteroSdtContainer extends Container<CoreEnv> {
 	sleepAfter = '2m';
 	enableInternet = false;
 
-	async processPdf(input: ReadableStream<Uint8Array>, byteLength: number | null): Promise<Response> {
-		await ensureReady(this, input);
+	async processPdf(input: ReadableStream<Uint8Array>, byteLength: number): Promise<Response> {
+		await ensureReady(this, this.ctx, input);
 
 		return this.containerFetch('http://zotero-sdt/parse', {
-			body: byteLength === null ? input : input.pipeThrough(new FixedLengthStream(byteLength)),
+			body: input.pipeThrough(new FixedLengthStream(byteLength)),
 			headers: { 'content-type': 'application/pdf' },
 			method: 'POST',
 		});
@@ -90,7 +92,7 @@ export class ZoteroSdtContainer extends Container<CoreEnv> {
 			await input.cancel('PDF crop batches must contain 1–8 areas');
 			throw new Error('PDF crop batches must contain 1–8 areas');
 		}
-		await ensureReady(this, input);
+		await ensureReady(this, this.ctx, input);
 		return this.containerFetch('http://zotero-sdt/render-areas', {
 			body: input.pipeThrough(new FixedLengthStream(byteLength)),
 			headers: {

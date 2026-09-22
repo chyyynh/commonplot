@@ -200,12 +200,7 @@ async function ensureStructuredPdfSourceCrops(
 	}
 }
 
-export async function parsePdfArtifactStream(
-	env: CoreEnv,
-	input: ReadableStream<Uint8Array>,
-	byteLength: number | null,
-	sourceLabel: string,
-) {
+async function parsePdfArtifactStream(env: CoreEnv, input: ReadableStream<Uint8Array>, byteLength: number, sourceLabel: string) {
 	try {
 		const response = await env.ZOTERO_SDT.getByName(ZOTERO_SDT_CONTAINER_NAME).processPdf(input, byteLength);
 		const maxBytes = response.ok ? ZOTERO_SDT_MAX_RESPONSE_BYTES : MAX_ERROR_BODY_BYTES;
