@@ -7,9 +7,6 @@ const MAX_ERROR_BODY_BYTES = 1_000;
 const MAX_GROBID_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_IDENTIFIER_CHARS = 300;
 const MAX_REFERENCE_URL_CHARS = 500;
-const MAX_HEADER_AUTHORS = 100;
-const MAX_HEADER_NAME_CHARS = 300;
-const MAX_HEADER_TITLE_CHARS = 500;
 const ARRAY_TAG_NAMES = new Set(['author', 'forename', 'genName', 'idno', 'nameLink', 'ptr', 'surname', 'title']);
 
 type XmlObject = Record<string, unknown>;
@@ -85,20 +82,18 @@ export async function parseGrobidPdfHeader(response: Response) {
 	const parsed = xmlObject(teiParser.parse(tei));
 	const fileDesc = xmlObject(xmlObject(xmlObject(parsed?.TEI)?.teiHeader)?.fileDesc);
 	const titleNode = xmlElements(xmlObject(fileDesc?.titleStmt)?.title).find((title) => title.type === 'main' || title.level === 'a');
-	const title = xmlText(titleNode).slice(0, MAX_HEADER_TITLE_CHARS) || null;
+	const title = xmlText(titleNode) || null;
 	const biblStruct = xmlObject(xmlObject(fileDesc?.sourceDesc)?.biblStruct);
 	const analytic = xmlObject(biblStruct?.analytic);
 
 	const authors = new Map<string, string>();
 	for (const author of xmlElements(analytic?.author)) {
-		if (authors.size >= MAX_HEADER_AUTHORS) break;
 		const personName = xmlObject(author.persName);
 		const name = ['forename', 'nameLink', 'surname', 'genName']
 			.flatMap((part) => xmlElements(personName?.[part]))
 			.map(xmlText)
 			.filter(Boolean)
-			.join(' ')
-			.slice(0, MAX_HEADER_NAME_CHARS);
+			.join(' ');
 		const key = name.toLocaleLowerCase('en-US');
 		if (name && !authors.has(key)) authors.set(key, name);
 	}

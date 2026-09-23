@@ -10,9 +10,8 @@ const CROSSREF_TIMEOUT_MS = 12_000;
 const MAX_CITATION_QUERY_CHARS = 600;
 const MAX_CROSSREF_RESPONSE_BYTES = 256 * 1024;
 const CROSSREF_ROWS = 3;
-const MAX_AUTHOR_CHARS = 300;
-const MAX_TITLE_CHARS = 500;
-const MAX_VENUE_CHARS = 300;
+const MAX_AUTHOR_QUERY_CHARS = 300;
+const MAX_TITLE_QUERY_CHARS = 500;
 const CROSSREF_PAPER_TYPES = new Set(['dissertation', 'journal-article', 'posted-content', 'proceedings-article', 'report']);
 
 const CrossrefWorkSchema = z.object({
@@ -64,14 +63,13 @@ function normalizedAuthorNames(work: CrossrefWork): string[] {
 		.filter((name) => name.length >= 3);
 }
 
-function boundedMetadata(value: string | null | undefined, maxChars: number): string | null {
-	const normalized = value?.replace(/\s+/g, ' ').trim();
-	return normalized ? normalized.slice(0, maxChars) : null;
+function metadataText(value: string | null | undefined): string | null {
+	return value?.replace(/\s+/g, ' ').trim() || null;
 }
 
 function workAuthors(work: CrossrefWork): string[] {
 	return (work.author ?? []).flatMap(({ family, given, name }) => {
-		const author = boundedMetadata(name?.trim() || [given, family].filter(Boolean).join(' '), MAX_AUTHOR_CHARS);
+		const author = metadataText(name?.trim() || [given, family].filter(Boolean).join(' '));
 		return author ? [author] : [];
 	});
 }
@@ -106,7 +104,7 @@ function workMatchesPaperCandidate(title: string, authors: readonly string[], wo
 	const longerTitle = candidateTitle.length <= workTitle.length ? workTitle : candidateTitle;
 	if (shorterTitle.length < 18 || shorterTitle.split(' ').length < 4 || !longerTitle.includes(shorterTitle)) return false;
 	if (!work.type || !CROSSREF_PAPER_TYPES.has(work.type)) return false;
-	if (!boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS) || publishedYear(work) === null) return false;
+	if (!metadataText(work['container-title']?.[0]) || publishedYear(work) === null) return false;
 
 	const candidateAuthors = authors.map(normalizeBibliographicText);
 	return normalizedAuthorNames(work).some((name) => candidateAuthors.some((author) => ` ${author} `.includes(` ${name} `)));
@@ -118,8 +116,8 @@ function crossrefResolution(work: CrossrefWork) {
 	const [, month, day] = work.published?.['date-parts'][0] ?? [];
 	const year = publishedYear(work);
 	const date = CrossrefPublicationDateSchema.safeParse(`${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`).data;
-	const title = boundedMetadata(work.title?.[0], MAX_TITLE_CHARS);
-	const venue = boundedMetadata(work['container-title']?.[0], MAX_VENUE_CHARS);
+	const title = metadataText(work.title?.[0]);
+	const venue = metadataText(work['container-title']?.[0]);
 	return {
 		doi,
 		authors: workAuthors(work),
@@ -169,15 +167,11 @@ export async function resolveCrossrefReference(citation: string) {
 export async function resolveCrossrefPaperCandidate(title: string, authors: readonly string[]) {
 	const queryTitle = title.trim();
 	const queryAuthor = authors[0]?.trim();
-	if (!queryTitle || queryTitle.length > MAX_TITLE_CHARS)
-		throw new TypeError(`Crossref paper title must contain 1-${MAX_TITLE_CHARS} characters`);
-	if (!queryAuthor || queryAuthor.length > MAX_AUTHOR_CHARS) {
-		throw new TypeError(`Crossref paper author must contain 1-${MAX_AUTHOR_CHARS} characters`);
-	}
+	if (!queryTitle || !queryAuthor) throw new TypeError('Crossref paper title and author must not be empty');
 	return selectCrossrefResolution(
 		await fetchCrossrefWorks({
-			'query.author': queryAuthor,
-			'query.title': queryTitle,
+			'query.author': queryAuthor.slice(0, MAX_AUTHOR_QUERY_CHARS),
+			'query.title': queryTitle.slice(0, MAX_TITLE_QUERY_CHARS),
 			rows: String(CROSSREF_ROWS),
 			select: 'DOI,title,author,published,container-title,type,is-referenced-by-count,references-count',
 		}),

@@ -161,7 +161,7 @@ export async function stageStoredPdfAcquisition(
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 		async () => loadStoredPdfInput(await connectCoreDb(env), target.resourceId),
 	);
-	const [contentStream, grobidHeader] = await Promise.all([
+	const [contentStream, headerStream] = await Promise.all([
 		step.do(
 			'acquire-stored-pdf-v13',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
@@ -175,10 +175,13 @@ export async function stageStoredPdfAcquisition(
 			},
 		),
 		step
-			.do<GrobidPdfHeader>('classify-stored-pdf-with-grobid-v2', GROBID_HEADER_STEP, async () => {
+			.do('classify-stored-pdf-with-grobid-v3', GROBID_HEADER_STEP, async () => {
 				const object = await env.R2.get(resource.storageKey);
 				if (!object) throw new NonRetryableError('Uploaded PDF object is missing');
-				return parseGrobidPdfHeader(await env.GROBID.getByName('citation-parser-v1').processPdfHeader(object.body, object.size));
+				const header = await parseGrobidPdfHeader(
+					await env.GROBID.getByName('citation-parser-v1').processPdfHeader(object.body, object.size),
+				);
+				return Response.json(header).body!;
 			})
 			.catch((error) => {
 				console.warn({
@@ -190,6 +193,7 @@ export async function stageStoredPdfAcquisition(
 				return null;
 			}),
 	]);
+	const grobidHeader = headerStream ? await new Response(headerStream).json<GrobidPdfHeader>() : null;
 	const parsed = await new Response(contentStream).json<
 		Pick<Awaited<ReturnType<typeof parseStoredPdfRepresentation>>, 'markdown' | 'references' | 'parse'>
 	>();
