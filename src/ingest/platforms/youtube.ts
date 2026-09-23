@@ -28,7 +28,6 @@ const YouTubeThumbnailsSchema = z.object({
 	standard: YouTubeThumbnailSchema.optional(),
 	maxres: YouTubeThumbnailSchema.optional(),
 });
-const YouTubeApiErrorSchema = z.object({ message: z.string() });
 const YouTubeVideoItemSchema = z.object({
 	id: z.string().min(1),
 	snippet: z.object({
@@ -44,7 +43,6 @@ const YouTubeVideoItemSchema = z.object({
 });
 const YouTubeVideosResponseSchema = z.object({
 	items: z.array(YouTubeVideoItemSchema).optional(),
-	error: YouTubeApiErrorSchema.optional(),
 });
 const YouTubeChannelsResponseSchema = z.object({
 	items: z
@@ -56,7 +54,6 @@ const YouTubeChannelsResponseSchema = z.object({
 			}),
 		)
 		.optional(),
-	error: YouTubeApiErrorSchema.optional(),
 });
 type YouTubeThumbnails = z.infer<typeof YouTubeThumbnailsSchema>;
 type YouTubeAcquisition = Awaited<ReturnType<typeof scrapeYouTube>>;
@@ -111,12 +108,6 @@ function isoDurationSeconds(duration: string): number | null {
 	return total > 0 ? total : null;
 }
 
-function toSeconds(value: string | number | undefined, field: string, videoId: string): number {
-	const parsed = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number.parseFloat(value) : Number.NaN;
-	if (!Number.isFinite(parsed) || parsed < 0) throw new Error(`YouTube transcript ${videoId} has invalid ${field}`);
-	return parsed;
-}
-
 async function fetchYouTubeVideoData(videoId: string, youtubeApiKey: string) {
 	const url = new URL('https://www.googleapis.com/youtube/v3/videos');
 	url.searchParams.set('id', videoId);
@@ -154,7 +145,6 @@ async function fetchChannelAvatar(youtubeApiKey: string, channelId: string): Pro
 		}
 
 		const channelData = YouTubeChannelsResponseSchema.parse(await response.json());
-		if (channelData.error) throw new Error(channelData.error.message);
 		const channel = channelData.items?.[0];
 		return channel ? bestThumbnailUrl(channel.snippet.thumbnails) : null;
 	} catch (error) {
@@ -169,11 +159,11 @@ async function fetchChannelAvatar(youtubeApiKey: string, channelId: string): Pro
 	}
 }
 
-async function fetchTranscript(videoId: string): Promise<{ segments: YouTubeTranscriptSegment[]; language: string | null }> {
-	const { YoutubeTranscript } = await import('youtube-transcript');
+async function fetchVideoTranscript(videoId: string): Promise<{ segments: YouTubeTranscriptSegment[]; language: string | null }> {
+	const { fetchTranscript } = await import('youtube-transcript');
 	let items: TranscriptResponse[];
 	try {
-		items = await YoutubeTranscript.fetchTranscript(videoId, { fetch: transcriptFetch });
+		items = await fetchTranscript(videoId, { fetch: transcriptFetch });
 	} catch (error) {
 		console.warn({
 			tag: 'YOUTUBE',
@@ -184,17 +174,18 @@ async function fetchTranscript(videoId: string): Promise<{ segments: YouTubeTran
 		return { segments: [], language: null };
 	}
 
-	if (!items?.length) {
+	if (!items.length) {
 		console.info({ tag: 'YOUTUBE', msg: 'Transcript unavailable; using video description', videoId });
 		return { segments: [], language: null };
 	}
 
-	const segments: YouTubeTranscriptSegment[] = items.map((item) => {
-		const startTime = toSeconds(item.offset, 'offset', videoId);
+	const segments: YouTubeTranscriptSegment[] = items.map(({ offset, duration, text }) => {
+		if (!Number.isFinite(offset) || offset < 0) throw new Error(`YouTube transcript ${videoId} has invalid offset`);
+		if (!Number.isFinite(duration) || duration < 0) throw new Error(`YouTube transcript ${videoId} has invalid duration`);
 		return {
-			startTime,
-			endTime: startTime + toSeconds(item.duration, 'duration', videoId),
-			text: item.text,
+			startTime: offset,
+			endTime: offset + duration,
+			text,
 		};
 	});
 	const language = items.find((item) => item.lang?.trim())?.lang?.trim() || null;
@@ -208,7 +199,6 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 
 	const videoData = await fetchYouTubeVideoData(videoId, youtubeApiKey);
 
-	if (videoData.error) throw new Error(`YouTube API: ${videoData.error.message}`);
 	if (!videoData.items?.length) throw new NonRetryableError(`YouTube video ${videoId} was not found`);
 
 	const video = videoData.items[0];
@@ -219,7 +209,10 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 	const chapters = parseChaptersFromDescription(snippet.description);
 
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching transcript', videoId });
-	const [channelAvatar, transcript] = await Promise.all([fetchChannelAvatar(youtubeApiKey, snippet.channelId), fetchTranscript(videoId)]);
+	const [channelAvatar, transcript] = await Promise.all([
+		fetchChannelAvatar(youtubeApiKey, snippet.channelId),
+		fetchVideoTranscript(videoId),
+	]);
 	const channelTitle = snippet.channelTitle.trim();
 
 	console.info({ tag: 'YOUTUBE', msg: 'Video fetched', title: snippet.title });
