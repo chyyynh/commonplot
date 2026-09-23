@@ -255,7 +255,7 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 
 /** Search one-vector-per-resource documents so AI Search results map directly to resources. */
 export async function searchRelatedResourceIds(env: CoreEnv, db: NodePgDatabase, input: RelatedResourceSearchInput): Promise<string[]> {
-	const resourceId = ResourceIdSchema.parse(input.resourceId);
+	const resourceId = ResourceIdSchema.parse(input.resourceId).toLowerCase();
 	if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > RELATED_RESULT_LIMIT_MAX) {
 		throw new Error(`Related Resource search limit must be 1-${RELATED_RESULT_LIMIT_MAX}`);
 	}
