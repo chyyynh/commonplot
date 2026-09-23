@@ -3,7 +3,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 
 export type ProgressReport = {
 	taskId: string;
-	stage?: 'acquiring' | 'parsing' | 'metadata' | 'analyzing' | 'persisting' | 'translating' | 'references' | 'indexing';
+	stage?: 'acquiring' | 'parsing' | 'analyzing' | 'persisting' | 'translating' | 'references' | 'indexing';
 	status: 'queued' | 'running' | 'complete' | 'failed' | 'skipped' | 'superseded';
 	resourceId?: string;
 	completed?: number;
