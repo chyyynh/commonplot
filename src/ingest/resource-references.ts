@@ -2,7 +2,6 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { sql } from 'drizzle-orm';
 import { connectCoreDb } from '../shared/db';
 import { resolveCrossrefReferenceDoi } from './crossref';
-import { createResourceTask, type ResourceTaskContext } from './progress';
 
 const CROSSREF_BATCH_SIZE = 3;
 const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
@@ -42,74 +41,49 @@ async function resolveReferenceDois(step: WorkflowStep, references: readonly Sto
 	return updates;
 }
 
-/** Continue the import's durable background work after its original is readable. */
-export async function stageResourceReferences(
-	env: CoreEnv,
-	step: WorkflowStep,
-	resourceId: string,
-	parent: ResourceTaskContext,
-): Promise<void> {
-	const task = createResourceTask(env, step, `references-${parent.taskId}`, parent.required);
-	try {
-		if (parent.required)
-			await step.do('register-reference-progress-v1', REFERENCE_DB_STEP, () =>
-				env.APP.registerResourceProgressTask({ taskId: task.taskId, kind: 'references', resourceId, parentTaskId: parent.taskId }),
-			);
-		const referenceStream = await step.do('load-unresolved-references-v2', REFERENCE_DB_STEP, async () => {
-			const db = await connectCoreDb(env);
-			const result = await db.execute<StoredReference>(sql`
-				SELECT reference.ordinal, reference.text
-				FROM resource_references reference
-				JOIN resources resource ON resource.id = reference.resource_id
-				WHERE resource.id = ${resourceId}::uuid AND resource.scope = 'corpus' AND resource.kind = 'paper'
-				  AND reference.doi IS NULL AND reference.arxiv_id IS NULL
-				ORDER BY reference.ordinal
-			`);
-			return Response.json(result.rows).body!;
-		});
-		const references = await new Response(referenceStream).json<StoredReference[]>();
-		const updates = await resolveReferenceDois(step, references);
-		const enrichedCount = updates.length
-			? await step.do('persist-crossref-reference-dois-v2', REFERENCE_DB_STEP, async () => {
-					const db = await connectCoreDb(env);
-					// A DOI belongs to this exact bibliography entry, independently of title, summary or body edits.
-					const result = await db.execute(sql`
-						WITH target AS (
-							SELECT resource.id
-							FROM resources resource
-							WHERE resource.id = ${resourceId}::uuid AND resource.scope = 'corpus' AND resource.kind = 'paper'
-							FOR UPDATE
-						)
-						UPDATE resource_references AS reference
-						SET doi = incoming.doi
-						FROM jsonb_to_recordset(${JSON.stringify(updates)}::jsonb) AS incoming(ordinal integer, text text, doi text)
-						CROSS JOIN target
-						WHERE reference.resource_id = target.id AND reference.ordinal = incoming.ordinal
-						  AND reference.text = incoming.text
-						  AND reference.doi IS NULL AND reference.arxiv_id IS NULL
-					`);
-					return result.rowCount ?? 0;
-				})
-			: 0;
-		console.info({
-			tag: 'RESOURCE_REFERENCES',
-			event: 'reference_enrichment_completed',
-			resource_id: resourceId,
-			unresolved_reference_count: references.length,
-			crossref_enriched_count: enrichedCount,
-		});
-		await task.report('references-complete', {
-			stage: 'references',
-			status: 'complete',
-			resourceId,
-		});
-	} catch (error) {
-		await task.report('references-failed', {
-			stage: 'references',
-			status: 'failed',
-			resourceId,
-			errorCode: 'references_failed',
-		});
-		throw error;
-	}
+/** Resolve and persist DOI matches for this paper's accepted bibliography. */
+export async function stageResourceReferences(env: CoreEnv, step: WorkflowStep, resourceId: string): Promise<void> {
+	const referenceStream = await step.do('load-unresolved-references-v2', REFERENCE_DB_STEP, async () => {
+		const db = await connectCoreDb(env);
+		const result = await db.execute<StoredReference>(sql`
+			SELECT reference.ordinal, reference.text
+			FROM resource_references reference
+			JOIN resources resource ON resource.id = reference.resource_id
+			WHERE resource.id = ${resourceId}::uuid AND resource.scope = 'corpus' AND resource.kind = 'paper'
+			  AND reference.doi IS NULL AND reference.arxiv_id IS NULL
+			ORDER BY reference.ordinal
+		`);
+		return Response.json(result.rows).body!;
+	});
+	const references = await new Response(referenceStream).json<StoredReference[]>();
+	const updates = await resolveReferenceDois(step, references);
+	const enrichedCount = updates.length
+		? await step.do('persist-crossref-reference-dois-v2', REFERENCE_DB_STEP, async () => {
+				const db = await connectCoreDb(env);
+				// A DOI belongs to this exact bibliography entry, independently of title, summary or body edits.
+				const result = await db.execute(sql`
+					WITH target AS (
+						SELECT resource.id
+						FROM resources resource
+						WHERE resource.id = ${resourceId}::uuid AND resource.scope = 'corpus' AND resource.kind = 'paper'
+						FOR UPDATE
+					)
+					UPDATE resource_references AS reference
+					SET doi = incoming.doi
+					FROM jsonb_to_recordset(${JSON.stringify(updates)}::jsonb) AS incoming(ordinal integer, text text, doi text)
+					CROSS JOIN target
+					WHERE reference.resource_id = target.id AND reference.ordinal = incoming.ordinal
+					  AND reference.text = incoming.text
+					  AND reference.doi IS NULL AND reference.arxiv_id IS NULL
+				`);
+				return result.rowCount ?? 0;
+			})
+		: 0;
+	console.info({
+		tag: 'RESOURCE_REFERENCES',
+		event: 'reference_enrichment_completed',
+		resource_id: resourceId,
+		unresolved_reference_count: references.length,
+		crossref_enriched_count: enrichedCount,
+	});
 }
