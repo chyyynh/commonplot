@@ -13,7 +13,7 @@ const optionalHttpUrl = z.url({ protocol: /^https?$/ }).refine((value) => {
 	return url !== null && !url.username && !url.password;
 });
 const ResourceCreatorSchema = z
-	.object({
+	.strictObject({
 		role: z.enum(RESOURCE_CREATOR_ROLES),
 		given: z.string().trim().min(1).optional(),
 		family: z.string().trim().min(1).optional(),
@@ -27,26 +27,26 @@ const ResourceCreatorSchema = z
 
 export type ResourceCreator = Readonly<z.infer<typeof ResourceCreatorSchema>>;
 
-const ResourceMediaAttachmentSchema = z.object({
+const ResourceMediaAttachmentSchema = z.strictObject({
 	kind: z.enum(['image', 'video', 'animated']),
 	url: optionalHttpUrl,
-	playback: z.object({ url: optionalHttpUrl, type: z.enum(['video/mp4', 'application/x-mpegurl']) }).optional(),
+	playback: z.strictObject({ url: optionalHttpUrl, type: z.enum(['video/mp4', 'application/x-mpegurl']) }).optional(),
 	width: z.int().positive().optional(),
 	height: z.int().positive().optional(),
 });
 
-const PostQuoteSchema = z.object({ creator: ResourceCreatorSchema, text: z.string().trim().min(1) });
+const PostQuoteSchema = z.strictObject({ creator: ResourceCreatorSchema, text: z.string().trim().min(1) });
 export const RESOURCE_KIND_METADATA = {
-	blog: z.object({ siteName: z.string().trim().min(1).optional() }).nullable(),
-	forum: z.object({
+	blog: z.strictObject({ siteName: z.string().trim().min(1).optional() }).nullable(),
+	forum: z.strictObject({
 		points: z.int().nonnegative().optional(),
 		commentCount: z.int().nonnegative().optional(),
 	}),
-	post: z.object({ attachments: z.array(ResourceMediaAttachmentSchema).max(16), quote: PostQuoteSchema.optional() }),
-	video: z.object({
+	post: z.strictObject({ attachments: z.array(ResourceMediaAttachmentSchema).max(16), quote: PostQuoteSchema.optional() }),
+	video: z.strictObject({
 		durationSeconds: z.int().positive().optional(),
 	}),
-	paper: z.object({
+	paper: z.strictObject({
 		venue: z.string().trim().min(1).optional(),
 		year: z.int().positive().optional(),
 		citedByCount: z.int().nonnegative().optional(),
