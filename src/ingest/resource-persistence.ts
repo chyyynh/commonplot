@@ -267,7 +267,7 @@ async function writeCanonicalResource(
 	}
 	if (resource.youtube) {
 		const transcript = resource.youtube;
-		await db.execute(sql`
+		const savedTranscript = await db.execute(sql`
 			INSERT INTO youtube_transcripts (resource_id, transcript, chapters, ai_highlights)
 			VALUES (
 				${resourceId}::uuid, ${JSON.stringify(transcript.segments)}::jsonb,
@@ -277,7 +277,10 @@ async function writeCanonicalResource(
 				transcript = EXCLUDED.transcript,
 				chapters = EXCLUDED.chapters,
 				ai_highlights = EXCLUDED.ai_highlights
+			WHERE youtube_transcripts.transcript = '[]'::jsonb OR EXCLUDED.transcript <> '[]'::jsonb
+			RETURNING resource_id
 		`);
+		if (!savedTranscript.rows.length) throw new NonRetryableError('YouTube reacquisition returned no captions for an existing transcript');
 	}
 	const original = written.rows[0];
 	if (!original) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
