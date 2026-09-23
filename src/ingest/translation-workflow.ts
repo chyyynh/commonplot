@@ -59,7 +59,6 @@ type ResourceTranslationInput = ResourceTranslationCandidate & {
 	summary: string | null;
 	content: string;
 	zhHantTranslation: {
-		aligned: boolean;
 		title: string | null;
 		summary: string | null;
 		content: string | null;
@@ -80,7 +79,6 @@ type ResourceTranslationInputRow = {
 	zh_hant_title: string | null;
 	zh_hant_summary: string | null;
 	zh_hant_content: string | null;
-	zh_hant_alignment_version: string | null;
 	zh_hant_source: string | null;
 	translation_revision: string;
 	url: string | null;
@@ -134,7 +132,6 @@ function hasTranslatableContent(content: string): boolean {
 }
 
 function needsMachineContentTranslation(resource: ResourceTranslationInput): boolean {
-	if (resource.kind === 'paper' && resource.zhHantTranslation?.source === 'machine' && !resource.zhHantTranslation.aligned) return true;
 	const translated = resource.zhHantTranslation?.content?.trim();
 	if (!translated) return true;
 	const content = resource.content.trim();
@@ -475,7 +472,6 @@ async function loadResourceTranslationInput(
 			zh_hant.title AS zh_hant_title,
 			zh_hant.summary AS zh_hant_summary,
 			zh_hant.content AS zh_hant_content,
-			zh_hant.alignment->>'version' AS zh_hant_alignment_version,
 			zh_hant.source AS zh_hant_source,
 			resource.url,
 			MD5(jsonb_build_array(
@@ -516,7 +512,6 @@ async function loadResourceTranslationInput(
 			url: row.url,
 			zhHantTranslation: zhHantSource
 				? {
-						aligned: row.zh_hant_alignment_version === '2',
 						title: row.zh_hant_title?.trim() || null,
 						summary: row.zh_hant_summary?.trim() || null,
 						content: row.zh_hant_content?.trim() || null,
