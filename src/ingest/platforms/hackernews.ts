@@ -39,10 +39,6 @@ const HackerNewsItemSchema = z.object({
 type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
 
 type HackerNewsAcquisition = Awaited<ReturnType<typeof scrapeHackerNews>>;
-type HackerNewsAcquisitionInput = {
-	itemId: string;
-	processingId: string;
-};
 
 async function fetchHnItem(itemId: number | string): Promise<HackerNewsItem | null> {
 	const response = await fetch(`${HN_ITEM_API}/${itemId}.json`, { signal: AbortSignal.timeout(15_000) });
@@ -87,7 +83,7 @@ function discussionExcerpt(markdown: string, maxChars: number): string {
 				.trimEnd()}…`;
 }
 
-async function scrapeHackerNews({ itemId }: HackerNewsAcquisitionInput) {
+async function scrapeHackerNews(itemId: string) {
 	console.info({ tag: 'HN', msg: 'Fetching item and ranked discussion', itemId });
 	const item = await fetchHnItem(itemId);
 	if (!item) throw new NonRetryableError(`Hacker News item ${itemId} was not found`);
@@ -175,18 +171,18 @@ async function scrapeHackerNews({ itemId }: HackerNewsAcquisitionInput) {
 	};
 }
 
-export async function stageHackerNewsAcquisition(env: CoreEnv, step: WorkflowStep, input: HackerNewsAcquisitionInput) {
+export async function stageHackerNewsAcquisition(env: CoreEnv, step: WorkflowStep, input: { itemId: string; processingId: string }) {
 	const contentStream = await step.do(
 		'acquire-hackernews-ranked-v5',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await scrapeHackerNews(input)).body!,
+		async () => Response.json(await scrapeHackerNews(input.itemId)).body!,
 	);
 	const { resource, discussion } = await new Response(contentStream).json<HackerNewsAcquisition>();
+	if (discussion.commentCount < 4 || discussion.threadCount < 2) return resource;
 	const digest = await step.do(
 		'build-hacker-news-annotation-ranked-v3',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
 		async () => {
-			if (discussion.commentCount < 4 || discussion.threadCount < 2) return null;
 			const hnPostSection = discussion.hnText ? `HN post text:\n${discussion.hnText}\n\n` : '';
 			const digestFocus =
 				discussion.itemType === 'ask'
@@ -227,7 +223,7 @@ Rules:
 			return generatedDigest;
 		},
 	);
-	return { ...resource, content: digest ? [resource.content, '---', digest].join('\n\n') : resource.content };
+	return { ...resource, content: [resource.content, '---', digest].join('\n\n') };
 }
 
 const HN_DISCUSSION_SYSTEM =
