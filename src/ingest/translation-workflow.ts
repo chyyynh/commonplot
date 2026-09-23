@@ -84,7 +84,6 @@ type ResourceTranslationInputRow = {
 	url: string | null;
 };
 
-const PARTIAL_CONTENT_TRANSLATION_RATIO = 0.2;
 const MARKDOWN_TRANSLATION_CONCURRENCY = 15;
 const AI_RATE_LIMIT_ERROR = /\b(?:3021|3040|429)\b|rate limit|too many requests|capacity temporarily exceeded/iu;
 
@@ -122,13 +121,6 @@ function isBlank(value: string | null | undefined): boolean {
 	return !value?.trim();
 }
 
-function needsMachineContentTranslation(resource: ResourceTranslationInput): boolean {
-	const translated = resource.zhHantTranslation?.content?.trim();
-	if (!translated) return true;
-	const content = resource.content.trim();
-	return content.length >= 1000 && translated.length / content.length < PARTIAL_CONTENT_TRANSLATION_RATIO;
-}
-
 function planZhHantTranslation(resource: ResourceTranslationInput, force: boolean): ZhHantTranslationPlan {
 	const translation = resource.zhHantTranslation;
 	if (
@@ -142,7 +134,7 @@ function planZhHantTranslation(resource: ResourceTranslationInput, force: boolea
 
 	return {
 		metadata: force || isBlank(translation?.title) || (!isBlank(resource.summary) && isBlank(translation?.summary)),
-		content: force || needsMachineContentTranslation(resource),
+		content: force || isBlank(translation?.content),
 	};
 }
 
