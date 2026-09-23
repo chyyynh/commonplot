@@ -66,8 +66,8 @@ type CorpusDocument = {
 	kind: SearchableResourceKind;
 	original_lang: string;
 	published_at: string | null;
-	tags: string[] | null;
-	keywords: string[] | null;
+	tags: string[];
+	keywords: string[];
 	source: string | null;
 	translations: CorpusTranslationRow[];
 };
@@ -99,8 +99,8 @@ function serializeDocument(row: CorpusDocument): string {
 	return [
 		`# ${requiredDocumentText(original.title, 'title', row.id)}`,
 		requiredDocumentText(row.source, 'source', row.id),
-		row.tags?.length ? `Tags: ${row.tags.join(', ')}` : '',
-		row.keywords?.length ? `Keywords: ${row.keywords.join(', ')}` : '',
+		row.tags.length ? `Tags: ${row.tags.join(', ')}` : '',
+		row.keywords.length ? `Keywords: ${row.keywords.join(', ')}` : '',
 		...row.translations.map(serializeTranslation),
 	]
 		.filter(Boolean)
@@ -113,8 +113,8 @@ function serializeRelatedDocument(row: CorpusDocument): string {
 	return [
 		`# ${requiredDocumentText(original.title, 'title', row.id)}`,
 		`Source: ${requiredDocumentText(row.source, 'source', row.id)}`,
-		row.tags?.length ? `Tags: ${row.tags.join(', ')}` : '',
-		row.keywords?.length ? `Keywords: ${row.keywords.join(', ')}` : '',
+		row.tags.length ? `Tags: ${row.tags.join(', ')}` : '',
+		row.keywords.length ? `Keywords: ${row.keywords.join(', ')}` : '',
 		...row.translations.flatMap((translation) => [
 			translation.lang === row.original_lang || !translation.title?.trim() ? '' : `${translation.lang} title: ${translation.title.trim()}`,
 			translation.summary?.trim() ? `${translation.lang} summary: ${translation.summary.trim().slice(0, RELATED_SUMMARY_MAX_CHARS)}` : '',
@@ -260,7 +260,7 @@ export async function searchRelatedResourceIds(env: CoreEnv, db: NodePgDatabase,
 		throw new Error(`Related Resource search limit must be 1-${RELATED_RESULT_LIMIT_MAX}`);
 	}
 	// Recommendation queries need titles and classification, not indexed article bodies.
-	const { rows } = await db.execute<{ titles: (string | null)[]; tags: string[] | null; keywords: string[] | null }>(sql`
+	const { rows } = await db.execute<{ titles: (string | null)[]; tags: string[]; keywords: string[] }>(sql`
 		SELECT r.tags, r.keywords,
 		       array_agg(translation.title ORDER BY (translation.lang = r.original_lang) DESC, translation.lang) AS titles
 		FROM resources r
@@ -275,8 +275,8 @@ export async function searchRelatedResourceIds(env: CoreEnv, db: NodePgDatabase,
 	if (!document) return [];
 	const query = [
 		requiredDocumentText(document.titles[0] ?? null, 'title', resourceId),
-		document.tags?.join(', '),
-		document.keywords?.join(', '),
+		document.tags.join(', '),
+		document.keywords.join(', '),
 		...document.titles.slice(1).map((title) => title?.trim()),
 	]
 		.filter(Boolean)
