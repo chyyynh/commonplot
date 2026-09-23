@@ -42,17 +42,21 @@ type PreparedResource = ReturnType<typeof prepareResolvedResource>;
 /** Update only the original that this acquisition published, never a newer import or human edit. */
 export async function persistResourceClassification(
 	db: NodePgDatabase,
-	target: { resourceId: string; acquisitionRevision: string; translationRevision: string },
+	targets: { resourceId: string; acquisitionRevision: string; translationRevision: string }[],
 	classification: ResourceClassification,
 ): Promise<void> {
+	if (!targets.length) return;
 	await db.execute(sql`
 		WITH target AS (
 			SELECT resource.id
-			FROM resources resource
+			FROM jsonb_to_recordset(${JSON.stringify(targets)}::jsonb)
+			  AS expected("resourceId" uuid, "acquisitionRevision" text, "translationRevision" text)
+			JOIN resources resource ON resource.id = expected."resourceId"
 			JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
-			WHERE resource.id = ${target.resourceId}::uuid AND original.source = 'original'
-			  AND MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) = ${target.acquisitionRevision}
-			  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${target.translationRevision}
+			WHERE original.source = 'original'
+			  AND MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) = expected."acquisitionRevision"
+			  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = expected."translationRevision"
+			ORDER BY resource.id
 			FOR UPDATE OF resource, original
 		)
 		UPDATE resources

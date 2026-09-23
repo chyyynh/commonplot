@@ -79,7 +79,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const translationTargets: { resourceId: string; translationRevision: string; forceRunKey?: string; stepName: string }[] = [];
 			// Ordinary imports share a translation; explicit reacquisition forces a fresh run.
 			const forceProcessingRunKey = target.kind === 'draft' ? undefined : (await sha256Hex(event.instanceId)).slice(0, 16);
-			const classificationTargets: Parameters<typeof persistResourceClassification>[1][] = [];
+			const classificationTargets: Parameters<typeof persistResourceClassification>[1] = [];
 			if (uploadedPaper) {
 				const privateRendition = prepareResolvedResource(
 					{
@@ -172,10 +172,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							const classification = await step.do('classify-published-resource-v1', AI_STEP, () =>
 								classifyResource(summarized, this.env, processingId),
 							);
-							await step.do('persist-resource-classification-v1', STORAGE_STEP, async () => {
-								const db = await connectCoreDb(this.env);
-								for (const target of classificationTargets) await persistResourceClassification(db, target, classification);
-							});
+							await step.do('persist-resource-classification-v1', STORAGE_STEP, async () =>
+								persistResourceClassification(await connectCoreDb(this.env), classificationTargets, classification),
+							);
 						} catch (error) {
 							console.error({ tag: 'WORKFLOW', msg: 'Classification failed', resource_id: persistedResourceId, error });
 						}
