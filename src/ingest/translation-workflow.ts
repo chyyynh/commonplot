@@ -50,7 +50,7 @@ export function shouldEnqueueResourceTranslation(candidate: ResourceTranslationC
 }
 
 type ResourceTranslationPayload = { force?: boolean; resourceId: string; translationRevision: string };
-const ResourceTranslationSourceSchema = z.enum(['original', 'machine', 'human']);
+const ResourceTranslationSourceSchema = z.enum(['original', 'machine']);
 
 type ResourceTranslationInput = ResourceTranslationCandidate & {
 	id: string;
@@ -126,7 +126,7 @@ function planZhHantTranslation(resource: ResourceTranslationInput, force: boolea
 		!shouldEnqueueResourceTranslation(resource) ||
 		isBlank(resource.title) ||
 		isBlank(resource.content) ||
-		translation?.source === 'human'
+		translation?.source === 'original'
 	) {
 		return { metadata: false, content: false };
 	}
