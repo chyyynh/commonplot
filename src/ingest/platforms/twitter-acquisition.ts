@@ -1,5 +1,10 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
+import type { PhrasingContent, Root } from 'mdast';
+import { gfmToMarkdown } from 'mdast-util-gfm';
+import { toMarkdown } from 'mdast-util-to-markdown';
+import { cjkFriendlyToMarkdown } from 'mdast-util-to-markdown-cjk-friendly';
+import { cjkFriendlyGfmStrikethroughToMarkdown } from 'mdast-util-to-markdown-cjk-friendly-gfm-strikethrough';
 import { z } from 'zod';
 import type { AcquiredResource } from '../acquisition';
 import { resolveResourceUrl, ResourceUrlSchema } from './resource-url';
@@ -38,7 +43,6 @@ const TweetSchema = z.object({
 	author: TwitterAuthorSchema.optional(),
 	text: z.string(),
 	extendedEntities: z.object({ media: z.array(TwitterMediaEntitySchema).optional() }).optional(),
-	urls: z.array(TwitterUrlEntitySchema).optional(),
 	entities: z.object({ urls: z.array(TwitterUrlEntitySchema).optional() }).optional(),
 	lang: z.string().max(35).optional(),
 	get quoted_tweet(): z.ZodCatch<z.ZodOptional<z.ZodNullable<typeof TweetSchema>>> {
@@ -62,7 +66,18 @@ const TwitterArticleInlineStyleSchema = z.object({
 });
 
 const TwitterArticleContentSchema = z.object({
-	type: z.string(),
+	type: z.enum([
+		'unstyled',
+		'header-one',
+		'header-two',
+		'header-three',
+		'unordered-list-item',
+		'ordered-list-item',
+		'image',
+		'gif',
+		'markdown',
+		'divider',
+	]),
 	text: z.string().nullish(),
 	url: z.string().nullish(),
 	previewUrl: z.string().nullish(),
@@ -93,72 +108,85 @@ const TwitterArticleResponseSchema = z.object({
 type TwitterArticle = z.infer<typeof TwitterArticleSchema>;
 type TwitterArticleContent = NonNullable<TwitterArticle['contents']>[number];
 
-function articleStyleMarker(style: string): string | null {
-	switch (style.trim().toLowerCase()) {
-		case 'bold':
-			return '**';
-		case 'italic':
-			return '_';
-		case 'strikethrough':
-			return '~~';
-		case 'code':
-		case 'monospace':
-			return '`';
-		default:
-			return null;
-	}
-}
+const ARTICLE_INLINE_STYLES = {
+	bold: 'strong',
+	italic: 'emphasis',
+	strikethrough: 'delete',
+	code: 'inlineCode',
+	monospace: 'inlineCode',
+} as const;
 
-function styledArticleText(block: TwitterArticleContent): string {
-	const text = block.text;
-	if (!text?.trim()) return '';
-	type Marker = { end: number; marker: string; start: number };
-	const openings = new Map<number, Marker[]>();
-	const closings = new Map<number, Marker[]>();
-	for (const range of block.inlineStyleRanges ?? []) {
-		const marker = articleStyleMarker(range.style);
-		const start = range.offset;
-		const end = start + range.length;
-		if (!marker || range.length === 0 || end > text.length) continue;
-		const item = { end, marker, start };
-		openings.set(start, [...(openings.get(start) ?? []), item]);
-		closings.set(end, [...(closings.get(end) ?? []), item]);
+function styledArticleText(block: TwitterArticleContent): PhrasingContent[] {
+	const text = block.text ?? '';
+	const ranges = (block.inlineStyleRanges ?? []).flatMap(({ offset, length, style }) => {
+		const type = ARTICLE_INLINE_STYLES[style.trim().toLowerCase() as keyof typeof ARTICLE_INLINE_STYLES];
+		return type && length > 0 && offset + length <= text.length ? [{ start: offset, end: offset + length, type }] : [];
+	});
+	const boundaries = [...new Set([0, text.length, ...ranges.flatMap(({ start, end }) => [start, end])])].sort((a, b) => a - b);
+	const children: PhrasingContent[] = [];
+	for (let index = 1; index < boundaries.length; index++) {
+		const start = boundaries[index - 1]!;
+		const end = boundaries[index]!;
+		const styles = new Set(ranges.filter((range) => range.start <= start && range.end >= end).map(({ type }) => type));
+		let target = children;
+		// Reuse adjacent containers so overlapping provider ranges remain valid Markdown nesting.
+		for (const type of ['strong', 'emphasis', 'delete'] as const) {
+			if (!styles.has(type)) continue;
+			const previous = target.at(-1);
+			if (previous?.type === type && 'children' in previous) target = previous.children;
+			else {
+				const children: PhrasingContent[] = [];
+				target.push({ type, children });
+				target = children;
+			}
+		}
+		const type = styles.has('inlineCode') ? 'inlineCode' : 'text';
+		const value = text.slice(start, end);
+		const previous = target.at(-1);
+		if (previous?.type === type) previous.value += value;
+		else target.push({ type, value });
 	}
-
-	let markdown = '';
-	for (let index = 0; index <= text.length; index++) {
-		for (const item of (closings.get(index) ?? []).sort((left, right) => right.start - left.start)) markdown += item.marker;
-		for (const item of (openings.get(index) ?? []).sort((left, right) => right.end - left.end)) markdown += item.marker;
-		if (index < text.length) markdown += text[index];
-	}
-	return markdown.trim();
+	return children;
 }
 
 function renderTwitterArticleBlock(block: TwitterArticleContent): string {
-	const text = styledArticleText(block);
+	if (block.type === 'markdown') return block.text?.trim() ?? '';
+	const children = styledArticleText(block);
+	const tree: Root = { type: 'root', children: [] };
 	switch (block.type) {
 		case 'header-one':
-			return text ? `# ${text}` : '';
 		case 'header-two':
-			return text ? `## ${text}` : '';
 		case 'header-three':
-			return text ? `### ${text}` : '';
+			if (block.text?.trim())
+				tree.children.push({ type: 'heading', depth: block.type === 'header-one' ? 1 : block.type === 'header-two' ? 2 : 3, children });
+			break;
 		case 'unordered-list-item':
-			return text ? `- ${text}` : '';
 		case 'ordered-list-item':
-			return text ? `1. ${text}` : '';
+			if (block.text?.trim())
+				tree.children.push({
+					type: 'list',
+					ordered: block.type === 'ordered-list-item',
+					children: [{ type: 'listItem', children: [{ type: 'paragraph', children }] }],
+				});
+			break;
 		case 'image':
-			return block.url ? `![](${block.url})` : '';
+			if (block.url) tree.children.push({ type: 'paragraph', children: [{ type: 'image', url: block.url, alt: '' }] });
+			break;
 		case 'gif':
-			return [block.previewUrl ? `![GIF](${block.previewUrl})` : '', block.url ? `[GIF](${block.url})` : ''].filter(Boolean).join('\n\n');
+			if (block.previewUrl) tree.children.push({ type: 'paragraph', children: [{ type: 'image', url: block.previewUrl, alt: 'GIF' }] });
+			if (block.url)
+				tree.children.push({ type: 'paragraph', children: [{ type: 'link', url: block.url, children: [{ type: 'text', value: 'GIF' }] }] });
+			break;
 		case 'divider':
-			return '---';
-		case 'markdown':
+			tree.children.push({ type: 'thematicBreak' });
+			break;
 		case 'unstyled':
-			return text;
-		default:
-			return text || (block.url ? `[${block.type}](${block.url})` : '');
+			if (block.text?.trim()) tree.children.push({ type: 'paragraph', children });
 	}
+	return toMarkdown(tree, {
+		emphasis: '_',
+		extensions: [gfmToMarkdown(), cjkFriendlyToMarkdown(), cjkFriendlyGfmStrikethroughToMarkdown()],
+	}).trimEnd();
 }
 
 function renderTwitterArticleMarkdown(article: TwitterArticle): string {
@@ -222,10 +250,6 @@ function tweetAttachments(tweet: Tweet) {
 	);
 }
 
-function tweetUrlEntities(tweet: Tweet): Array<{ expanded_url?: string; url?: string }> {
-	return tweet.urls ?? tweet.entities?.urls ?? [];
-}
-
 const TCO_TOKEN_RE = /https?:\/\/t\.co\/[A-Za-z0-9]+/g;
 
 /**
@@ -237,7 +261,7 @@ const TCO_TOKEN_RE = /https?:\/\/t\.co\/[A-Za-z0-9]+/g;
  */
 function expandTweetUrls(text: string, tweet: Tweet): string {
 	const replacements = new Map<string, string>();
-	for (const entity of tweetUrlEntities(tweet)) {
+	for (const entity of tweet.entities?.urls ?? []) {
 		const token = entity.url?.trim();
 		const expanded = entity.expanded_url?.trim();
 		if (!token || !expanded) continue;
@@ -264,7 +288,7 @@ function expandTweetUrls(text: string, tweet: Tweet): string {
 /** Expand mapped t.co tokens only — for longform bodies, where unmapped t.co are the article's own links. */
 function expandKnownTweetUrls(text: string, tweet: Tweet): string {
 	const replacements = new Map<string, string>();
-	for (const entity of tweetUrlEntities(tweet)) {
+	for (const entity of tweet.entities?.urls ?? []) {
 		const token = entity.url?.trim();
 		const expanded = entity.expanded_url?.trim();
 		if (token && expanded) replacements.set(token, expanded);
@@ -332,7 +356,7 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
 }
 
 async function resolveTweetContent(tweet: Tweet, apiKey: string) {
-	const expandedUrls = tweetUrlEntities(tweet).flatMap((url) => {
+	const expandedUrls = (tweet.entities?.urls ?? []).flatMap((url) => {
 		const expandedUrl = url.expanded_url?.trim();
 		return expandedUrl ? [expandedUrl] : [];
 	});
