@@ -38,12 +38,11 @@ type TwitterSource = {
 
 /** Fetch one fixed monitoring window using twitterapi.io's native cursor. */
 async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime: number, untilTime: number) {
-	const normalizedUserName = userName.replace(/^@/, '').trim().toLowerCase();
-	if (!/^[a-z0-9_]{1,15}$/.test(normalizedUserName)) throw new Error('Twitter source has an invalid handle');
+	if (!/^[a-z0-9_]{1,15}$/.test(userName)) throw new Error('Twitter source has an invalid handle');
 	if (!Number.isSafeInteger(sinceTime) || !Number.isSafeInteger(untilTime) || sinceTime < 0 || sinceTime >= untilTime) {
 		throw new Error('Twitter monitor has an invalid time window');
 	}
-	const query = `from:${normalizedUserName} include:nativeretweets -filter:replies since_time:${sinceTime} until_time:${untilTime}`;
+	const query = `from:${userName} include:nativeretweets -filter:replies since_time:${sinceTime} until_time:${untilTime}`;
 	const terminalTweets = new Map<string, DiscoveredTweet>();
 	const seenCursors = new Set<string>();
 	let providerTweets = 0;

@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { readBoundedResponseText } from '../../shared/response';
 import { enqueueSourceDrafts } from '../admission';
-import { resolveResourceUrl } from './resource-url';
+import { resolveResourceUrl, ResourceUrlSchema } from './resource-url';
 
 const MAX_FEED_BYTES = 3 * 1024 * 1024;
 const MAX_FEED_ITEMS = 30;
@@ -18,7 +18,7 @@ type MonitoredFeedSource = {
 };
 
 async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeedSource): Promise<void> {
-	const requestedUrl = resolveResourceUrl(feed.handle)?.url;
+	const requestedUrl = ResourceUrlSchema.safeParse(feed.handle).data;
 	if (!requestedUrl) {
 		throw new Error('Enter a valid feed URL (http/https).');
 	}
@@ -34,7 +34,7 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeed
 		await response.body?.cancel();
 		throw new Error(`Feed fetch failed with HTTP ${status}.`);
 	}
-	const effectiveUrl = resolveResourceUrl(response.url)?.url;
+	const effectiveUrl = ResourceUrlSchema.safeParse(response.url).data;
 	if (!effectiveUrl) {
 		await response.body?.cancel();
 		throw new Error('Feed redirected to an invalid URL.');
