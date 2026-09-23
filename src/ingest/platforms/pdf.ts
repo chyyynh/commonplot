@@ -24,7 +24,7 @@ type StoredPdfRow = {
 	content_hash: string | null;
 	creators: unknown;
 	original_lang: string;
-	published_date: Date | string | null;
+	published_date: string | null;
 	source: string;
 	storage_key: string;
 	summary: string | null;
@@ -60,7 +60,7 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 	if (!row.content_hash || !/^[a-f\d]{64}$/u.test(row.content_hash)) {
 		throw new NonRetryableError(`Stored PDF ${resourceId} has no valid content hash`);
 	}
-	const publishedDate = row.published_date instanceof Date ? row.published_date : row.published_date ? new Date(row.published_date) : null;
+	const publishedDate = row.published_date === null ? null : new Date(row.published_date);
 	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new NonRetryableError('Invalid published_date: expected date');
 	const creators = ResourceCreatorsSchema.safeParse(row.creators);
 	if (!creators.success) throw new NonRetryableError(`Invalid creators for ${resourceId}: ${creators.error.message}`);

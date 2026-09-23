@@ -32,8 +32,8 @@ const TWITTER_SOURCE_CONCURRENCY = 5;
 type TwitterSource = {
 	id: string;
 	handle: string;
-	scrapedAt: Date | null;
-	createdAt: Date;
+	scrapedAt: string | null;
+	createdAt: string;
 };
 
 /** Fetch one fixed monitoring window using twitterapi.io's native cursor. */

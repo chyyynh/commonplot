@@ -65,7 +65,7 @@ type CorpusDocument = {
 	id: string;
 	kind: SearchableResourceKind;
 	original_lang: string;
-	published_at: Date | string | null;
+	published_at: string | null;
 	tags: string[] | null;
 	keywords: string[] | null;
 	source: string | null;
