@@ -188,7 +188,7 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 	});
 	if (!response.ok) {
 		await response.body?.cancel();
-		if (response.status === 404 || response.status === 410) {
+		if ([400, 401, 403, 404, 410, 422].includes(response.status)) {
 			throw new NonRetryableError(`Fetched resource returned HTTP ${response.status}`);
 		}
 		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
