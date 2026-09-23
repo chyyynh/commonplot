@@ -8,7 +8,8 @@ const CROSSREF_CONTACT = 'hello@newsence.app';
 const CROSSREF_USER_AGENT = `Newsence/1.0 (https://www.newsence.app; mailto:${CROSSREF_CONTACT})`;
 const CROSSREF_TIMEOUT_MS = 12_000;
 const MAX_CITATION_QUERY_CHARS = 600;
-const MAX_CROSSREF_RESPONSE_BYTES = 256 * 1024;
+const MAX_CROSSREF_SEARCH_BYTES = 256 * 1024;
+const MAX_CROSSREF_WORK_BYTES = 8 * 1024 * 1024;
 const CROSSREF_ROWS = 3;
 const MAX_AUTHOR_QUERY_CHARS = 300;
 const MAX_TITLE_QUERY_CHARS = 500;
@@ -134,8 +135,8 @@ function selectCrossrefResolution(rawResponse: unknown, matches: (work: Crossref
 	return CrossrefResponseSchema.parse(rawResponse).message.items.filter(matches).map(crossrefResolution).find(Boolean) ?? null;
 }
 
-async function fetchCrossrefWorks(params: Readonly<Record<string, string>>): Promise<unknown> {
-	const url = new URL(CROSSREF_WORKS_URL);
+async function fetchCrossref(params: Readonly<Record<string, string>>, doi?: string): Promise<unknown> {
+	const url = new URL(doi ? `${CROSSREF_WORKS_URL}/${encodeURIComponent(doi)}` : CROSSREF_WORKS_URL);
 	url.search = new URLSearchParams({ mailto: CROSSREF_CONTACT, ...params }).toString();
 	const response = await fetch(url, {
 		headers: { Accept: 'application/json', 'User-Agent': CROSSREF_USER_AGENT },
@@ -144,18 +145,21 @@ async function fetchCrossrefWorks(params: Readonly<Record<string, string>>): Pro
 	if (!response.ok) {
 		const retryAfter = response.headers.get('retry-after')?.slice(0, 100);
 		await response.body?.cancel();
+		if (doi && response.status === 404) return null;
 		const ErrorType = [400, 401, 403, 404, 410, 422].includes(response.status) ? NonRetryableError : Error;
 		throw new ErrorType(`Crossref request failed with HTTP ${response.status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
 	}
 	if (!response.body) throw new Error('Crossref response had no body');
-	return JSON.parse(await readBoundedResponseText(response, MAX_CROSSREF_RESPONSE_BYTES, 'Crossref response'));
+	return JSON.parse(
+		await readBoundedResponseText(response, doi ? MAX_CROSSREF_WORK_BYTES : MAX_CROSSREF_SEARCH_BYTES, 'Crossref response'),
+	);
 }
 
 export async function resolveCrossrefReference(citation: string) {
 	const query = citation.trim();
 	if (!query) throw new TypeError('Crossref citation must not be empty');
 	return selectCrossrefResolution(
-		await fetchCrossrefWorks({
+		await fetchCrossref({
 			'query.bibliographic': query.slice(0, MAX_CITATION_QUERY_CHARS),
 			rows: String(CROSSREF_ROWS),
 			select: 'DOI,title,author,published,container-title',
@@ -169,7 +173,7 @@ export async function resolveCrossrefPaperCandidate(title: string, authors: read
 	const queryAuthor = authors[0]?.trim();
 	if (!queryTitle || !queryAuthor) throw new TypeError('Crossref paper title and author must not be empty');
 	return selectCrossrefResolution(
-		await fetchCrossrefWorks({
+		await fetchCrossref({
 			'query.author': queryAuthor.slice(0, MAX_AUTHOR_QUERY_CHARS),
 			'query.title': queryTitle.slice(0, MAX_TITLE_QUERY_CHARS),
 			rows: String(CROSSREF_ROWS),
@@ -182,12 +186,8 @@ export async function resolveCrossrefPaperCandidate(title: string, authors: read
 export async function resolveCrossrefPaper(doi: string) {
 	const normalizedDoi = normalizeDoi(doi);
 	if (!normalizedDoi) throw new TypeError('Crossref paper DOI is invalid');
-	return selectCrossrefResolution(
-		await fetchCrossrefWorks({
-			filter: `doi:${normalizedDoi}`,
-			rows: '1',
-			select: 'DOI,title,author,published,container-title,is-referenced-by-count,references-count',
-		}),
-		(work) => normalizeDoi(work.DOI) === normalizedDoi,
-	);
+	const response = await fetchCrossref({}, normalizedDoi);
+	if (response === null) return null;
+	const { message: work } = z.object({ status: z.literal('ok'), message: CrossrefWorkSchema }).parse(response);
+	return normalizeDoi(work.DOI) === normalizedDoi ? crossrefResolution(work) : null;
 }

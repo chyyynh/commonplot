@@ -82,6 +82,8 @@ DOI suffixes are opaque identifiers. Core decodes resolver URL paths once and en
 
 GROBID and Crossref preserve complete titles and author names; GROBID does not cap the author list. Crossref preserves complete venue names and matches candidates against the full metadata, capping only outgoing title/author queries at 500/300 characters. GROBID header checkpoints use streams; bounded provider responses still enforce the acquisition memory limits.
 
+Known DOIs use Crossref's `/works/{doi}` endpoint with an encoded identifier; they never enter the comma-delimited filter grammar. A missing work returns no enrichment. Candidate/reference searches retain field projection and a 256 KiB response limit. Single-work responses do not support projection, so they allow up to 8 MiB; only normalized metadata enters the streamed Workflow checkpoint.
+
 #### Quality and retries
 
 `structuredPdfVisualPlan` selects semantic figures/tables and conservative caption-bounded regions. It retains author text while excluding repeated first-page affiliation blocks misclassified as tables. The 64-crop budget and unavailable/ambiguous geometry produce explicit missing-region outcomes. Inferred regions remain marked `caption-region-inferred`; usable text does not imply proven visual completeness. No inferred region automatically authorizes a paid OCR provider.

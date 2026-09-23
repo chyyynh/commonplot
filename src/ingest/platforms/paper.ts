@@ -238,11 +238,18 @@ export async function stagePaperAcquisition(env: CoreEnv, step: WorkflowStep, in
 		const startedAt = Date.now();
 		try {
 			if (provider === 'crossref') {
-				crossref = doi
-					? await step.do('resolve-pdf-paper-crossref-by-doi-v2', PAPER_METADATA_STEP, () => resolveCrossrefPaper(doi))
-					: await step.do('confirm-stored-pdf-with-crossref-v2', PAPER_METADATA_STEP, () =>
-							resolveCrossrefPaperCandidate(candidate!.title, candidate!.authors),
-						);
+				if (doi) {
+					const stream = await step.do(
+						'resolve-pdf-paper-crossref-by-doi-v3',
+						PAPER_METADATA_STEP,
+						async () => Response.json(await resolveCrossrefPaper(doi)).body!,
+					);
+					crossref = await new Response(stream).json<Awaited<ReturnType<typeof resolveCrossrefPaper>>>();
+				} else {
+					crossref = await step.do('confirm-stored-pdf-with-crossref-v2', PAPER_METADATA_STEP, () =>
+						resolveCrossrefPaperCandidate(candidate!.title, candidate!.authors),
+					);
+				}
 			} else {
 				openAlex = await step.do('resolve-paper-openalex-with-citations-v4', PAPER_METADATA_STEP, () =>
 					resolveOpenAlexPaper({ apiKey: env.OPENALEX_API_KEY, identifiers }),
