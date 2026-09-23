@@ -160,7 +160,8 @@ export async function resolveCrossrefReferenceDoi(citation: string) {
 		select: 'DOI,title,author,published',
 	});
 	const matches = CrossrefResponseSchema.parse(response).message.items.filter((work) => workMatchesCitation(query, work));
-	return matches.map((work) => normalizeDoi(work.DOI)).find(Boolean) ?? null;
+	const dois = [...new Set(matches.map((work) => normalizeDoi(work.DOI)).filter((doi) => doi !== null))];
+	return dois.length === 1 ? dois[0]! : null;
 }
 
 export async function resolveCrossrefPaperCandidate(title: string, authors: readonly string[]) {
@@ -176,7 +177,9 @@ export async function resolveCrossrefPaperCandidate(title: string, authors: read
 	const matches = CrossrefResponseSchema.parse(response).message.items.filter((work) =>
 		workMatchesPaperCandidate(queryTitle, authors, work),
 	);
-	return matches.map(crossrefResolution).find(Boolean) ?? null;
+	const papers = matches.map(crossrefResolution).filter((paper) => paper !== null);
+	// Search rank is not identity: different matching DOIs must remain unresolved.
+	return new Set(papers.map(({ doi }) => doi)).size === 1 ? papers[0]! : null;
 }
 
 export async function resolveCrossrefPaper(doi: string) {
