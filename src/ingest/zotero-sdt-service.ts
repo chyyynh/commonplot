@@ -310,6 +310,10 @@ export async function storePublicPdfResponse(env: CoreEnv, response: Response, s
 		limitByteStream(response.body, MAX_PDF_BYTES, () => new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`)),
 	).arrayBuffer();
 	if (!bytes.byteLength) throw new NonRetryableError('Fetched PDF response body is empty');
+	// Reject HTML/error payloads before storing them as PDFs or starting the parser.
+	if (!Buffer.from(bytes, 0, Math.min(bytes.byteLength, 1024)).includes('%PDF-')) {
+		throw new NonRetryableError('Fetched PDF response has no PDF header');
+	}
 	const inputContentHash = hash('sha256', new Uint8Array(bytes), 'hex');
 	const pdfStorageKey = `public-pdf/${sourceHash}/${inputContentHash}/source.pdf`;
 	await env.R2.put(pdfStorageKey, bytes, {
