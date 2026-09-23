@@ -85,7 +85,6 @@ type ResourceTranslationInputRow = {
 };
 
 const PARTIAL_CONTENT_TRANSLATION_RATIO = 0.2;
-const MIN_TRANSLATABLE_TEXT_LENGTH = 20;
 const MARKDOWN_TRANSLATION_CONCURRENCY = 15;
 const AI_RATE_LIMIT_ERROR = /\b(?:3021|3040|429)\b|rate limit|too many requests|capacity temporarily exceeded/iu;
 
@@ -123,14 +122,6 @@ function isBlank(value: string | null | undefined): boolean {
 	return !value?.trim();
 }
 
-function hasTranslatableContent(content: string): boolean {
-	const text = content
-		.replace(/https?:\/\/\S+/gi, ' ')
-		.replace(/<[^>]+>/g, ' ')
-		.replace(/[^\p{L}\p{N}]+/gu, '');
-	return text.length >= MIN_TRANSLATABLE_TEXT_LENGTH;
-}
-
 function needsMachineContentTranslation(resource: ResourceTranslationInput): boolean {
 	const translated = resource.zhHantTranslation?.content?.trim();
 	if (!translated) return true;
@@ -151,7 +142,7 @@ function planZhHantTranslation(resource: ResourceTranslationInput, force: boolea
 
 	return {
 		metadata: force || isBlank(translation?.title) || (!isBlank(resource.summary) && isBlank(translation?.summary)),
-		content: hasTranslatableContent(resource.content) && (force || needsMachineContentTranslation(resource)),
+		content: force || needsMachineContentTranslation(resource),
 	};
 }
 
