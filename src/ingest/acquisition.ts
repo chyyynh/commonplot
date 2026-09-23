@@ -20,7 +20,7 @@ import { stageLessWrongAcquisition } from './platforms/lesswrong';
 import { stagePaperAcquisition } from './platforms/paper';
 import { stageStoredPdfAcquisition } from './platforms/pdf';
 import type { PaidPdfFallbackGrant } from './platforms/pdf-policy';
-import { resolveResourceUrl } from './platforms/resource-url';
+import { resolveResourceUrl, ResourceUrlSchema } from './platforms/resource-url';
 import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
 import { stageYouTubeAcquisition } from './platforms/youtube';
@@ -120,7 +120,7 @@ export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep,
 							FROM resources resource WHERE resource.id = ${target.resourceId}::uuid
 						`);
 						if (!rows[0]) throw new NonRetryableError(`Failed to fetch resource ${target.resourceId}: not found`);
-						const url = resolveResourceUrl(rows[0].url)?.url;
+						const url = ResourceUrlSchema.safeParse(rows[0].url).data;
 						if (!url) throw new NonRetryableError(`Resource ${target.resourceId} has no valid external HTTP URL and cannot be reacquired`);
 						return { url, identifiers: ResourceIdentifiersSchema.parse(rows[0].identifiers) };
 					},
