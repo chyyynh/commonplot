@@ -125,20 +125,6 @@ function serializeRelatedDocument(row: CorpusDocument): string {
 		.slice(0, RELATED_DOCUMENT_MAX_CHARS);
 }
 
-function serializeRelatedQuery(row: CorpusDocument): string {
-	const original = row.translations.find((translation) => translation.lang === row.original_lang);
-	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
-	return [
-		requiredDocumentText(original.title, 'title', row.id),
-		row.tags?.join(', '),
-		row.keywords?.join(', '),
-		...row.translations.map((translation) => (translation.lang === row.original_lang ? '' : translation.title?.trim())),
-	]
-		.filter(Boolean)
-		.join('\n')
-		.slice(0, RELATED_QUERY_MAX_CHARS);
-}
-
 export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly string[]): Promise<CorpusDocument[]> {
 	if (!resourceIds.length) return [];
 	const result = await db.execute<CorpusDocument>(sql`
@@ -273,10 +259,31 @@ export async function searchRelatedResourceIds(env: CoreEnv, db: NodePgDatabase,
 	if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > RELATED_RESULT_LIMIT_MAX) {
 		throw new Error(`Related Resource search limit must be 1-${RELATED_RESULT_LIMIT_MAX}`);
 	}
-	const [document] = await loadCorpusDocuments(db, [resourceId]);
+	// Recommendation queries need titles and classification, not indexed article bodies.
+	const { rows } = await db.execute<{ titles: (string | null)[]; tags: string[] | null; keywords: string[] | null }>(sql`
+		SELECT r.tags, r.keywords,
+		       array_agg(translation.title ORDER BY (translation.lang = r.original_lang) DESC, translation.lang) AS titles
+		FROM resources r
+		JOIN resource_translations translation ON translation.resource_id = r.id
+		  AND (translation.lang = r.original_lang OR ${inArray(sql`translation.lang`, INDEX_TRANSLATION_LANGS)})
+		WHERE r.id = ${resourceId}::uuid
+		  AND r.scope = 'corpus'
+		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
+		GROUP BY r.id
+	`);
+	const [document] = rows;
 	if (!document) return [];
+	const query = [
+		requiredDocumentText(document.titles[0] ?? null, 'title', resourceId),
+		document.tags?.join(', '),
+		document.keywords?.join(', '),
+		...document.titles.slice(1).map((title) => title?.trim()),
+	]
+		.filter(Boolean)
+		.join('\n')
+		.slice(0, RELATED_QUERY_MAX_CHARS);
 	const response = await env.RELATED_SEARCH.search({
-		query: serializeRelatedQuery(document),
+		query,
 		ai_search_options: {
 			query_rewrite: { enabled: false },
 			reranking: { enabled: false },
