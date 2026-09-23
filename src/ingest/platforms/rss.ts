@@ -1,8 +1,8 @@
-import { type FeedEntry as ExtractedFeedEntry, extractFromJson, extractFromXml } from '@extractus/feed-extractor';
+import { extractFromJson, extractFromXml } from '@extractus/feed-extractor';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { readBoundedResponseText } from '../../shared/response';
-import { enqueueSourceDrafts, type SourceResourceDraft } from '../admission';
+import { enqueueSourceDrafts } from '../admission';
 import { resolveResourceUrl } from './resource-url';
 
 const MAX_FEED_BYTES = 3 * 1024 * 1024;
@@ -16,32 +16,6 @@ type MonitoredFeedSource = {
 	name: string;
 	handle: string;
 };
-
-function feedEntryUrl(item: ExtractedFeedEntry) {
-	const link = resolveResourceUrl(item.link);
-	// Keep this admission policy on the raw monitored-feed link. YouTube
-	// canonicalization turns /shorts/:id into /watch?v=:id and erases the signal.
-	if (link?.resourcePlatform === 'youtube' && new URL(link.url).pathname.startsWith('/shorts/')) return null;
-	const id = resolveResourceUrl(item.id);
-	return id?.resourcePlatform ? id : link;
-}
-
-function createFeedDrafts(items: ExtractedFeedEntry[], feedLanguage?: string) {
-	const entries = new Map<string, SourceResourceDraft>();
-	for (const item of items) {
-		const url = feedEntryUrl(item);
-		if (!url || entries.has(url.normalizedUrl)) continue;
-		entries.set(url.normalizedUrl, {
-			url: url.url,
-			sourceHints: {
-				summary: item.description || undefined,
-				publishedDate: item.published || undefined,
-				originalLang: feedLanguage,
-			},
-		});
-	}
-	return [...entries.values()];
-}
 
 async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeedSource): Promise<void> {
 	const requestedUrl = resolveResourceUrl(feed.handle)?.url;
@@ -76,17 +50,31 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeed
 			? extractFromJson(content, parserOptions)
 			: extractFromXml(content, parserOptions);
 	const items = (parsed.entries ?? []).slice(0, MAX_FEED_ITEMS);
-	const drafts = createFeedDrafts(items, parsed.language?.trim() || undefined);
-	const skipped = items.length - drafts.length;
-	if (skipped) console.warn({ tag: 'RSS', msg: 'Skipped invalid or duplicate feed items', feed: feed.name, count: skipped });
-
+	const drafts = items.flatMap((item) => {
+		const link = resolveResourceUrl(item.link);
+		// Check the source link before canonical identity erases the Shorts path.
+		if (link?.resourcePlatform === 'youtube' && new URL(link.url).pathname.startsWith('/shorts/')) return [];
+		const id = resolveResourceUrl(item.id);
+		const url = id?.resourcePlatform ? id : link;
+		if (!url) return [];
+		return [
+			{
+				url: url.url,
+				sourceHints: {
+					summary: item.description || undefined,
+					publishedDate: item.published || undefined,
+					originalLang: parsed.language?.trim() || undefined,
+				},
+			},
+		];
+	});
 	const admission = await enqueueSourceDrafts(env, db, feed.id, drafts);
 	console.info({
 		tag: 'RSS',
 		msg: 'Feed processed',
 		feed: feed.name,
 		...admission,
-		skipped: skipped + admission.skipped,
+		skipped: items.length - drafts.length + admission.skipped,
 		totalCount: items.length,
 	});
 	const scrapedAt = new Date();

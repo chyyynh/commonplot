@@ -51,9 +51,18 @@ export type SourceResourceDraft = z.infer<typeof SourceResourceDraftSchema>;
 /** Crosses the discovery -> Resource Workflow boundary for every monitor. */
 export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, sourceId: string, drafts: SourceResourceDraft[]) {
 	const relation = { kind: 'source' as const, sourceId: z.uuid().parse(sourceId) };
+	const seen = new Set<string>();
+	let skipped = 0;
 	const targets = drafts.flatMap((draft, index) => {
 		const parsed = SourceResourceDraftSchema.safeParse(draft);
-		if (parsed.success) return [{ ...parsed.data, kind: 'draft' as const, relation }];
+		if (parsed.success) {
+			// Invalid drafts must not claim an identity and hide a valid duplicate.
+			const url = resolveResourceUrl(parsed.data.url)!;
+			if (seen.has(url.normalizedUrl)) return [];
+			seen.add(url.normalizedUrl);
+			return [{ url, target: { ...parsed.data, kind: 'draft' as const, relation } }];
+		}
+		skipped++;
 		console.warn({
 			tag: 'SOURCE',
 			msg: 'Invalid source draft skipped',
@@ -63,8 +72,10 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, sour
 		});
 		return [];
 	});
-	const resolvedUrls = targets.map(({ url }) => resolveResourceUrl(url)!);
-	const known = await findResourcesByUrls(db, resolvedUrls);
+	const known = await findResourcesByUrls(
+		db,
+		targets.map(({ url }) => url),
+	);
 	const unassigned = known.flatMap(({ resourceId, sourceId }) => (resourceId && !sourceId ? [resourceId] : []));
 	// A readable original only needs its discovery source attached.
 	const attached = new Set<string>();
@@ -84,7 +95,7 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, sour
 	}
 	const instances = known
 		.flatMap(({ resourceId, sourceId: existingSourceId, normalizedUrl }, index) =>
-			resourceId && (existingSourceId || attached.has(resourceId)) ? [] : [{ target: targets[index]!, normalizedUrl }],
+			resourceId && (existingSourceId || attached.has(resourceId)) ? [] : [{ target: targets[index]!.target, normalizedUrl }],
 		)
 		.map(({ target, normalizedUrl }) => ({
 			id: `source-draft-v7-${hash('sha256', `${sourceId}:${normalizedUrl}`, 'hex')}`,
@@ -95,5 +106,5 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, sour
 	for (let offset = 0; offset < instances.length; offset += 100) {
 		created += (await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(instances.slice(offset, offset + 100))).length;
 	}
-	return { created, deduplicated: targets.length - created, skipped: drafts.length - targets.length };
+	return { created, deduplicated: drafts.length - skipped - created, skipped };
 }

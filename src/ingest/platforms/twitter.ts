@@ -106,7 +106,7 @@ async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime:
 }
 
 async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Iterable<DiscoveredTweet>, source: TwitterSource) {
-	const drafts = new Map<string, SourceResourceDraft>();
+	const drafts: SourceResourceDraft[] = [];
 	let skippedItems = 0;
 	for (const carrier of tweets) {
 		const tweet = carrier.retweeted_tweet ?? carrier;
@@ -121,7 +121,7 @@ async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Iterable<
 			const url = `https://x.com/i/status/${tweet.id}`;
 			const publishedDate = new Date(tweet.createdAt);
 			if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id} has invalid publishedDate`);
-			drafts.set(url, {
+			drafts.push({
 				url,
 				sourceHints: { publishedDate: publishedDate.toISOString(), originalLang: tweet.lang },
 			});
@@ -136,10 +136,8 @@ async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Iterable<
 			});
 		}
 	}
-	const pending = [...drafts.values()];
-	const admission = await enqueueSourceDrafts(env, db, source.id, pending);
+	const admission = await enqueueSourceDrafts(env, db, source.id, drafts);
 	return {
-		admittedDrafts: pending.length - admission.skipped,
 		created: admission.created,
 		deduplicated: admission.deduplicated,
 		skippedItems: skippedItems + admission.skipped,
@@ -167,7 +165,6 @@ async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: Tw
 			until_time: untilTime,
 			pages: fetched.pages,
 			provider_tweets: fetched.providerTweets,
-			admitted_drafts: admission.admittedDrafts,
 			skipped_items: fetched.skippedItems + admission.skippedItems,
 			created: admission.created,
 			deduplicated: admission.deduplicated,
