@@ -3,6 +3,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fromHtml } from 'hast-util-from-html';
 import { toMdast } from 'hast-util-to-mdast';
+import { toText } from 'hast-util-to-text';
 import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import { createWorkersAI } from 'workers-ai-provider';
@@ -96,7 +97,8 @@ async function scrapeHackerNews(itemId: string) {
 	const fetchedReplies = await fetchHnItems(replyIds);
 	if (!item.title && !item.text && !rankedThreads.length) throw new NonRetryableError(`Hacker News item ${itemId} has no content`);
 
-	const convertedTitle = item.title ? hnMarkdown(item.title) : null;
+	// HN titles are HTML, but the Resource title is plain text, not Markdown.
+	const convertedTitle = item.title ? toText(fromHtml(item.title, { fragment: true })).trim() : null;
 	if (item.title && !convertedTitle) throw new Error(`Hacker News item ${itemId} has no readable title`);
 	const title =
 		convertedTitle ||
@@ -131,7 +133,8 @@ async function scrapeHackerNews(itemId: string) {
 	else if (/^Ask HN:/i.test(title)) itemType = 'ask';
 	else if (/^Show HN:/i.test(title)) itemType = 'show';
 	else if (item.type === 'story') itemType = 'story';
-	const markdown = [`# ${title}`, hnText].filter(Boolean).join('\n\n');
+	const heading = toMarkdown({ type: 'heading', depth: 1, children: [{ type: 'text', value: title }] }).trimEnd();
+	const markdown = [heading, hnText].filter(Boolean).join('\n\n');
 	console.info({
 		tag: 'HN',
 		msg: 'Item and ranked discussion fetched',
