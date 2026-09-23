@@ -86,7 +86,7 @@ export async function persistYouTubeHighlights(
 /** Use the same candidates for admission, canonical persistence, and subject attachment. */
 async function findResourceCandidates(
 	db: NodePgDatabase,
-	identities: readonly { url: string | null; normalizedUrl: string | null; identifiers: ResolvedResourceUrl['identifiers'] }[],
+	identities: readonly { normalizedUrl: string | null; identifiers: ResolvedResourceUrl['identifiers'] }[],
 ) {
 	if (!identities.length) return [];
 	const { rows } = await db.execute<{
@@ -96,10 +96,9 @@ async function findResourceCandidates(
 		  'id', resource.id, 'sourceId', resource.source_id, 'scope', resource.scope,
 		  'hasOriginal', COALESCE(BTRIM(original.title) <> '' AND BTRIM(original.content) <> '', false)))
 		  FILTER (WHERE resource.id IS NOT NULL), '[]'::jsonb) AS owners
-		FROM jsonb_array_elements(${JSON.stringify(identities.map(({ url, normalizedUrl, identifiers }) => ({ url, normalizedUrl, identifiers })))}::jsonb) WITH ORDINALITY AS input(value, ordinal)
+		FROM jsonb_array_elements(${JSON.stringify(identities.map(({ normalizedUrl, identifiers }) => ({ normalizedUrl, identifiers })))}::jsonb) WITH ORDINALITY AS input(value, ordinal)
 		LEFT JOIN LATERAL (
 			SELECT id FROM resources WHERE scope = 'corpus' AND normalized_url = input.value->>'normalizedUrl'
-			UNION SELECT id FROM resources WHERE scope = 'corpus' AND url = input.value->>'url'
 			UNION SELECT stored.resource_id AS id
 			FROM jsonb_to_recordset(input.value->'identifiers') AS incoming(scheme text, value text)
 			JOIN resource_identifiers stored USING (scheme, value)
