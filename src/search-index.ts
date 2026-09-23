@@ -85,13 +85,12 @@ function requiredDocumentText(value: string | null, field: string, resourceId: s
 	return text;
 }
 
-function serializeTranslation(translation: CorpusTranslationRow, originalLang: string): string {
-	const contentLimit = translation.lang === originalLang ? ORIGINAL_CONTENT_MAX_CHARS : TRANSLATED_CONTENT_MAX_CHARS;
+function serializeTranslation(translation: CorpusTranslationRow): string {
 	return [
 		`## ${translation.lang}`,
 		translation.title?.trim() ? `Title: ${translation.title.trim()}` : '',
 		markdownSection('Summary', translation.summary),
-		markdownSection('Content', translation.content?.slice(0, contentLimit)),
+		markdownSection('Content', translation.content),
 	]
 		.filter(Boolean)
 		.join('\n\n');
@@ -105,7 +104,7 @@ function serializeDocument(row: CorpusDocument): string {
 		requiredDocumentText(row.source, 'source', row.id),
 		row.tags?.length ? `Tags: ${row.tags.join(', ')}` : '',
 		row.keywords?.length ? `Keywords: ${row.keywords.join(', ')}` : '',
-		...row.translations.map((translation) => serializeTranslation(translation, row.original_lang)),
+		...row.translations.map(serializeTranslation),
 	]
 		.filter(Boolean)
 		.join('\n\n');
