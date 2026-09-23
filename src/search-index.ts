@@ -14,8 +14,7 @@ const RELATED_DOCUMENT_MAX_CHARS = 3_000;
 const RELATED_QUERY_MAX_CHARS = 1_000;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 const RESULT_LIMIT_MAX = 50;
-const RELATED_RESULT_LIMIT_MAX = RESULT_LIMIT_MAX - 1;
-const SEARCHABLE_RESOURCE_KIND_COUNT = Object.keys(RESOURCE_KIND_METADATA).filter((kind) => kind !== 'image').length;
+const SearchableResourceKindSchema = z.enum(Object.keys(RESOURCE_KIND_METADATA) as ResourceKind[]).exclude(['image']);
 
 export const SEARCHABLE_CORPUS_RESOURCE_SQL = sql`(
 	r.kind <> 'image'
@@ -28,21 +27,29 @@ export const SEARCHABLE_CORPUS_RESOURCE_SQL = sql`(
 	)
 )`;
 
-type SearchableResourceKind = Exclude<ResourceKind, 'image'>;
+type SearchableResourceKind = z.infer<typeof SearchableResourceKindSchema>;
 
-export type PublicResourceSearchInput = {
-	query: string;
-	limit: number;
-	filters?: {
-		publishedAfter?: Date;
-		kinds?: SearchableResourceKind[];
-	};
-};
+const PublicResourceSearchInputSchema = z.strictObject({
+	query: z.string().trim(),
+	limit: z.int().min(1).max(RESULT_LIMIT_MAX),
+	filters: z
+		.strictObject({
+			publishedAfter: z.date().optional(),
+			kinds: z.array(SearchableResourceKindSchema).optional(),
+		})
+		.optional(),
+});
 
-export type RelatedResourceSearchInput = {
-	resourceId: string;
-	limit: number;
-};
+const RelatedResourceSearchInputSchema = z.strictObject({
+	resourceId: ResourceIdSchema.toLowerCase(),
+	limit: z
+		.int()
+		.min(1)
+		.max(RESULT_LIMIT_MAX - 1),
+});
+
+export type PublicResourceSearchInput = z.input<typeof PublicResourceSearchInputSchema>;
+export type RelatedResourceSearchInput = z.input<typeof RelatedResourceSearchInputSchema>;
 
 function aiSearchItemKey(resourceId: string): string {
 	return `${AI_SEARCH_ITEM_PREFIX}${resourceId}${AI_SEARCH_ITEM_SUFFIX}`;
@@ -193,24 +200,6 @@ export async function syncCorpusItem(env: CoreEnv, resourceId: string, document:
 	}
 }
 
-/** Null means an explicitly empty selection; undefined means unrestricted search. */
-function aiSearchFilters(input: PublicResourceSearchInput['filters']): VectorizeVectorMetadataFilter | null | undefined {
-	const filters = input ?? {};
-	const publishedAfter = filters.publishedAfter ?? null;
-	if (publishedAfter && (!(publishedAfter instanceof Date) || Number.isNaN(publishedAfter.getTime()))) {
-		throw new Error('Invalid publishedAfter');
-	}
-	const kinds = filters.kinds === undefined ? undefined : [...new Set(filters.kinds)];
-	if (kinds?.some((value) => !Object.hasOwn(RESOURCE_KIND_METADATA, value) || String(value) === 'image')) {
-		throw new Error('Invalid resource kinds');
-	}
-	if (kinds?.length === 0) return null;
-	const metadata: VectorizeVectorMetadataFilter = {};
-	if (kinds?.length && kinds.length < SEARCHABLE_RESOURCE_KIND_COUNT) metadata.kind = { $in: kinds };
-	if (publishedAfter) metadata.published_at = { $gte: publishedAfter.toISOString() };
-	return Object.keys(metadata).length ? metadata : undefined;
-}
-
 function resourceIdsFromSearchResponse(response: AiSearchSearchResponse): string[] {
 	const ids: string[] = [];
 	const seen = new Set<string>();
@@ -225,13 +214,13 @@ function resourceIdsFromSearchResponse(response: AiSearchSearchResponse): string
 
 /** Return AI Search candidates only; Web authoritatively filters and hydrates them from Postgres. */
 export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourceSearchInput): Promise<string[]> {
-	if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > RESULT_LIMIT_MAX) {
-		throw new Error(`Public Resource search limit must be 1-${RESULT_LIMIT_MAX}`);
-	}
-	const query = input.query.trim();
-	if (!query) return [];
-	const metadataFilters = aiSearchFilters(input.filters);
-	if (metadataFilters === null) return [];
+	const { query, limit, filters } = PublicResourceSearchInputSchema.parse(input);
+	const kinds = filters?.kinds && [...new Set(filters.kinds)];
+	// An explicit empty selection matches nothing; missing kinds match everything.
+	if (!query || kinds?.length === 0) return [];
+	const metadataFilters: VectorizeVectorMetadataFilter = {};
+	if (kinds && kinds.length < SearchableResourceKindSchema.options.length) metadataFilters.kind = { $in: kinds };
+	if (filters?.publishedAfter) metadataFilters.published_at = { $gte: filters.publishedAfter.toISOString() };
 	const response = await env.AI_SEARCH.search({
 		query,
 		ai_search_options: {
@@ -243,10 +232,10 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 				fusion_method: 'rrf',
 				keyword_match_mode: 'or',
 				match_threshold: 0,
-				max_num_results: input.limit,
+				max_num_results: limit,
 				metadata_only: true,
 				return_on_failure: true,
-				...(metadataFilters ? { filters: metadataFilters } : {}),
+				...(Object.keys(metadataFilters).length ? { filters: metadataFilters } : {}),
 			},
 		},
 	});
@@ -255,10 +244,7 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 
 /** Search one-vector-per-resource documents so AI Search results map directly to resources. */
 export async function searchRelatedResourceIds(env: CoreEnv, db: NodePgDatabase, input: RelatedResourceSearchInput): Promise<string[]> {
-	const resourceId = ResourceIdSchema.parse(input.resourceId).toLowerCase();
-	if (!Number.isSafeInteger(input.limit) || input.limit < 1 || input.limit > RELATED_RESULT_LIMIT_MAX) {
-		throw new Error(`Related Resource search limit must be 1-${RELATED_RESULT_LIMIT_MAX}`);
-	}
+	const { resourceId, limit } = RelatedResourceSearchInputSchema.parse(input);
 	// Recommendation queries need titles and classification, not indexed article bodies.
 	const { rows } = await db.execute<{ titles: (string | null)[]; tags: string[]; keywords: string[] }>(sql`
 		SELECT r.tags, r.keywords,
@@ -290,7 +276,7 @@ export async function searchRelatedResourceIds(env: CoreEnv, db: NodePgDatabase,
 			retrieval: {
 				retrieval_type: 'vector',
 				match_threshold: 0,
-				max_num_results: input.limit + 1,
+				max_num_results: limit + 1,
 				metadata_only: true,
 				return_on_failure: false,
 			},
@@ -298,5 +284,5 @@ export async function searchRelatedResourceIds(env: CoreEnv, db: NodePgDatabase,
 	});
 	return resourceIdsFromSearchResponse(response)
 		.filter((candidateId) => candidateId !== resourceId)
-		.slice(0, input.limit);
+		.slice(0, limit);
 }
