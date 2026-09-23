@@ -112,7 +112,7 @@ async function ensureStructuredPdfSourceCrops(
 		inputContentHash: string;
 		pdfStorageKey: string;
 		quality: ReturnType<typeof normalizeStructuredPdf>['parse'];
-		resourceId: string;
+		sourceLabel: string;
 	}>,
 ): Promise<void> {
 	const prefix = `${input.pdfStorageKey}.structured-crops/${input.inputContentHash}/`;
@@ -189,7 +189,7 @@ async function ensureStructuredPdfSourceCrops(
 		event: 'zotero_source_crops_completed',
 		crop_count: input.crops.length,
 		ready_count: readyCropIds.size,
-		resource_id: input.resourceId,
+		source: input.sourceLabel,
 	});
 	if (readyCropIds.size !== plannedIds.size) {
 		// Workflow retries reuse the parsed document and all successful immutable
@@ -280,7 +280,6 @@ export async function parseStoredPdfRepresentation(
 		});
 	}
 	const visualPlan = structuredPdfVisualPlan(document);
-	const crops = visualPlan.crops;
 	const cropUrlPrefix = input.cropUrlPrefix ?? '/api/media/asset/pdf-crops';
 	const normalized = normalizeStructuredPdf(document, {
 		visualPlan,
@@ -290,17 +289,11 @@ export async function parseStoredPdfRepresentation(
 	// crop is stored and its quality is committed in the same completion manifest.
 	await ensureStructuredPdfSourceCrops(env, {
 		...input,
-		crops,
+		crops: visualPlan.crops,
 		quality: normalized.parse,
-		resourceId: input.sourceLabel,
 	});
 	console.info({ tag: 'PDF_PARSE', event: 'zotero_sdt_completed', source: input.sourceLabel, ...normalized.parse });
-	return {
-		references: normalized.references,
-		markdown: normalized.markdown,
-		paperIdentifierText: normalized.paperIdentifierText,
-		parse: normalized.parse,
-	};
+	return normalized;
 }
 
 /** Public source provenance is kept separate even if its bytes match a private upload. */
