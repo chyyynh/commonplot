@@ -1,3 +1,4 @@
+import { hash } from 'node:crypto';
 import { createResourceTask, enqueueSearchProgress, type ResourceTask, type ResourceTaskContext } from './progress';
 import { ResourceLanguageSchema } from './resource-language';
 // Durable translation execution; resource processing only enqueues this Workflow.
@@ -8,7 +9,6 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
-import { sha256Hex } from '../shared/hash';
 import type { ResourceKind, ResourcePlatform } from '../shared/resource';
 import { coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
@@ -583,7 +583,7 @@ async function currentTranslationAttempt(env: CoreEnv, resourceId: string, trans
 		}
 		if (snapshot.status !== 'errored' && snapshot.status !== 'terminated') return { id, status: snapshot.status };
 		if (attempt === 15) throw new Error('Translation retry limit reached');
-		id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-retry-${resourceId}-${(await sha256Hex(id)).slice(0, 16)}`;
+		id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-retry-${resourceId}-${hash('sha256', id, 'hex').slice(0, 16)}`;
 	}
 	throw new Error('Translation retry limit reached');
 }

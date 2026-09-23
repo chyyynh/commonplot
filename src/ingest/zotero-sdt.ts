@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { hash } from 'node:crypto';
 import type { Element } from 'hast';
 import { toHtml } from 'hast-util-to-html';
 import type { BlockContent, Heading, PhrasingContent, Root, Table } from 'mdast';
@@ -384,21 +384,20 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 	});
 	function addCrop(crop: Omit<StructuredPdfSourceCrop, 'id'>) {
 		if (crops.length >= MAX_SOURCE_CROPS) return false;
-		const digest = createHash('sha256')
-			.update(
-				JSON.stringify([
-					ZOTERO_SDT_ARTIFACT_VERSION,
-					document.schemaVersion,
-					document.metadata.processor.version,
-					SOURCE_CROP_RECIPE_VERSION,
-					crop.blockPath,
-					crop.source,
-					crop.pageIndex,
-					crop.rect,
-				]),
-			)
-			.digest('hex')
-			.slice(0, 16);
+		const digest = hash(
+			'sha256',
+			JSON.stringify([
+				ZOTERO_SDT_ARTIFACT_VERSION,
+				document.schemaVersion,
+				document.metadata.processor.version,
+				SOURCE_CROP_RECIPE_VERSION,
+				crop.blockPath,
+				crop.source,
+				crop.pageIndex,
+				crop.rect,
+			]),
+			'hex',
+		).slice(0, 16);
 		crops.push({ ...crop, id: `${crop.blockPath}-p${crop.pageIndex}-${digest}` });
 		return true;
 	}

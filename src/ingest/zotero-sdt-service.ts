@@ -1,5 +1,5 @@
 import { Buffer } from 'node:buffer';
-import { createHash } from 'node:crypto';
+import { hash } from 'node:crypto';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { limitByteStream, readBoundedResponseText } from '../shared/response.ts';
 import { MAX_PDF_BYTES } from './platforms/pdf-policy.ts';
@@ -313,12 +313,12 @@ export async function storePublicPdfResponse(env: CoreEnv, response: Response, s
 		throw new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`);
 	}
 	// Checkpoint the bounded source before parsing; retries must not download it again.
-	const sourceHash = createHash('sha256').update(source.toString()).digest('hex');
+	const sourceHash = hash('sha256', source.toString(), 'hex');
 	const bytes = await new Response(
 		limitByteStream(response.body, MAX_PDF_BYTES, () => new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`)),
 	).arrayBuffer();
 	if (!bytes.byteLength) throw new NonRetryableError('Fetched PDF response body is empty');
-	const inputContentHash = createHash('sha256').update(new Uint8Array(bytes)).digest('hex');
+	const inputContentHash = hash('sha256', new Uint8Array(bytes), 'hex');
 	const pdfStorageKey = `public-pdf/${sourceHash}/${inputContentHash}/source.pdf`;
 	await env.R2.put(pdfStorageKey, bytes, {
 		customMetadata: { scope: 'corpus', sourceSha256: sourceHash, inputSha256: inputContentHash },

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { hash } from 'node:crypto';
 import type { Emphasis, Heading, Link, Nodes, Paragraph, Parents, PhrasingContent, Root, Strong, TableCell } from 'mdast';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { frontmatterFromMarkdown, frontmatterToMarkdown } from 'mdast-util-frontmatter';
@@ -817,8 +817,8 @@ function createMarkdownTranslationAlignment(sourceMarkdown: string, translatedMa
 	walk(parseMarkdownOnce(sourceMarkdown), parseMarkdownOnce(translatedMarkdown), []);
 	return {
 		version: 2 as const,
-		sourceHash: createHash('sha256').update(sourceMarkdown).digest('hex'),
-		translatedHash: createHash('sha256').update(translatedMarkdown).digest('hex'),
+		sourceHash: hash('sha256', sourceMarkdown, 'hex'),
+		translatedHash: hash('sha256', translatedMarkdown, 'hex'),
 		paths,
 	};
 }

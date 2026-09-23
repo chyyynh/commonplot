@@ -1,6 +1,6 @@
+import { hash } from 'node:crypto';
 // Shared media rehosting for every Resource platform; this is not the image Resource kind adapter.
 import type { WorkflowStep } from 'cloudflare:workers';
-import { sha256Hex } from '../shared/hash';
 import {
 	type HostedResourceImage,
 	hostedResourceImageUrl,
@@ -113,7 +113,7 @@ async function rehostResourceImage(images: ImagesBinding, sourceUrl: string, ref
 			...(await probeImageDimensions(images, images.hosted.image(imageId).bytes(), imageId, sourceUrl)),
 		};
 	}
-	const imageId = `resource-${await sha256Hex(refreshKey ? `${sourceUrl}:${refreshKey}` : sourceUrl)}`;
+	const imageId = `resource-${hash('sha256', refreshKey ? `${sourceUrl}:${refreshKey}` : sourceUrl, 'hex')}`;
 	let existing: ImageMetadata | null;
 	try {
 		existing = await images.hosted.image(imageId).details();

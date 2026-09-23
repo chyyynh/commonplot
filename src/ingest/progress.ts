@@ -1,5 +1,5 @@
+import { hash } from 'node:crypto';
 import type { WorkflowStep } from 'cloudflare:workers';
-import { sha256Hex } from '../shared/hash';
 
 export type ProgressReport = {
 	taskId: string;
@@ -47,7 +47,7 @@ export async function enqueueSearchProgress(env: CoreEnv, resourceId: string, pa
 		await env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId });
 		return;
 	}
-	const taskId = `index-${await sha256Hex(`${parent.taskId}:${resourceId}:${revision}`)}`;
+	const taskId = `index-${hash('sha256', `${parent.taskId}:${resourceId}:${revision}`, 'hex')}`;
 	await env.APP.registerResourceProgressTask({ taskId, kind: 'index', resourceId, parentTaskId: parent.taskId });
 	await env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId, taskId });
 }

@@ -1,6 +1,6 @@
+import { hash } from 'node:crypto';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { connectCoreDb } from '../shared/db';
-import { sha256Hex } from '../shared/hash';
 import { resourceImageSourceUrls } from '../shared/image-mapping';
 import { stageResourceAcquisition } from './acquisition';
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from './admission';
@@ -78,7 +78,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			await task.report('persisting', { stage: 'persisting', status: 'running' });
 			const translationTargets: { resourceId: string; translationRevision: string; forceRunKey?: string; stepName: string }[] = [];
 			// Ordinary imports share a translation; explicit reacquisition forces a fresh run.
-			const forceProcessingRunKey = target.kind === 'draft' ? undefined : (await sha256Hex(event.instanceId)).slice(0, 16);
+			const forceProcessingRunKey = target.kind === 'draft' ? undefined : hash('sha256', event.instanceId, 'hex').slice(0, 16);
 			const classificationTargets: Parameters<typeof persistResourceClassification>[1] = [];
 			if (uploadedPaper) {
 				const privateRendition = prepareResolvedResource(
@@ -199,7 +199,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							});
 							// Separate tracked and automatic executions so neither inherits the other's progress ledger.
 							const prefix = task.required ? 'subject-draft-v4' : 'subject-draft-auto-v1';
-							const id = `${prefix}-${await sha256Hex(JSON.stringify(subjectTarget))}`;
+							const id = `${prefix}-${hash('sha256', JSON.stringify(subjectTarget), 'hex')}`;
 							if (task.required)
 								await this.env.APP.registerResourceProgressTask({ taskId: id, kind: 'processing', parentTaskId: task.taskId });
 							await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { ...subjectTarget, progress: task.required } }]);

@@ -1,7 +1,7 @@
+import { hash } from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import { sha256Hex } from '../shared/hash';
 import { PaidPdfFallbackGrantSchema } from './platforms/pdf-policy';
 import { resolveResourceUrl, ResourceUrlSchema } from './platforms/resource-url';
 import { ResourceLanguageSchema } from './resource-language';
@@ -82,17 +82,15 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, sour
 		`);
 		for (const { id } of rows) attached.add(id);
 	}
-	const instances = await Promise.all(
-		known
-			.flatMap(({ resourceId, sourceId: existingSourceId, normalizedUrl }, index) =>
-				resourceId && (existingSourceId || attached.has(resourceId)) ? [] : [{ target: targets[index]!, normalizedUrl }],
-			)
-			.map(async ({ target, normalizedUrl }) => ({
-				id: `source-draft-v7-${await sha256Hex(`${sourceId}:${normalizedUrl}`)}`,
-				params: target,
-				retention: { successRetention: '5 minutes', errorRetention: '1 hour' } as const,
-			})),
-	);
+	const instances = known
+		.flatMap(({ resourceId, sourceId: existingSourceId, normalizedUrl }, index) =>
+			resourceId && (existingSourceId || attached.has(resourceId)) ? [] : [{ target: targets[index]!, normalizedUrl }],
+		)
+		.map(({ target, normalizedUrl }) => ({
+			id: `source-draft-v7-${hash('sha256', `${sourceId}:${normalizedUrl}`, 'hex')}`,
+			params: target,
+			retention: { successRetention: '5 minutes', errorRetention: '1 hour' } as const,
+		}));
 	let created = 0;
 	for (let offset = 0; offset < instances.length; offset += 100) {
 		created += (await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(instances.slice(offset, offset + 100))).length;
