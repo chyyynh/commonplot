@@ -6,7 +6,7 @@ import { connectCoreDb } from '../../shared/db';
 import { paperIdentifiersFromIdentity, paperIdentityFromText } from '../../shared/paper-identity';
 import { ResourceCreatorsSchema } from '../../shared/resource';
 import type { AcquiredResource } from '../acquisition';
-import type { GrobidPdfHeader } from '../grobid-tei';
+import { type GrobidPdfHeader, parseGrobidPdfHeader } from '../grobid-tei';
 import { ResourceLanguageSchema } from '../resource-language';
 import { parseStoredPdfRepresentation, type storePublicPdfResponse } from '../zotero-sdt-service.ts';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
@@ -178,7 +178,7 @@ export async function stageStoredPdfAcquisition(
 			.do<GrobidPdfHeader>('classify-stored-pdf-with-grobid-v2', GROBID_HEADER_STEP, async () => {
 				const object = await env.R2.get(resource.storageKey);
 				if (!object) throw new NonRetryableError('Uploaded PDF object is missing');
-				return env.GROBID.getByName('citation-parser-v1').processPdfHeader(object.body, object.size);
+				return parseGrobidPdfHeader(await env.GROBID.getByName('citation-parser-v1').processPdfHeader(object.body, object.size));
 			})
 			.catch((error) => {
 				console.warn({

@@ -1,10 +1,6 @@
 import { Container } from '@cloudflare/containers';
-import { readBoundedResponseText } from '../shared/response.ts';
-import { type GrobidPdfHeader, parseGrobidPdfHeaderTei } from './grobid-tei.ts';
 import { MAX_PDF_BYTES } from './platforms/pdf-policy.ts';
 
-const MAX_ERROR_BODY_BYTES = 1_000;
-const MAX_GROBID_RESPONSE_BYTES = 8 * 1024 * 1024;
 const textEncoder = new TextEncoder();
 
 async function ensureReady(container: Container<CoreEnv>, context: DurableObjectState, input: ReadableStream<Uint8Array>): Promise<void> {
@@ -48,7 +44,7 @@ export class GrobidContainer extends Container<CoreEnv> {
 	sleepAfter = '2m';
 	enableInternet = false;
 
-	async processPdfHeader(input: ReadableStream<Uint8Array>, byteLength: number): Promise<GrobidPdfHeader> {
+	async processPdfHeader(input: ReadableStream<Uint8Array>, byteLength: number): Promise<Response> {
 		if (!input || typeof input.getReader !== 'function') throw new TypeError('GROBID PDF input must be a readable byte stream');
 		if (!Number.isInteger(byteLength) || byteLength < 1 || byteLength > MAX_PDF_BYTES) {
 			await input.cancel('GROBID PDF size is outside the supported range');
@@ -57,14 +53,11 @@ export class GrobidContainer extends Container<CoreEnv> {
 		await ensureReady(this, this.ctx, input);
 
 		const boundary = `newsence-${crypto.randomUUID()}`;
-		const response = await this.containerFetch('http://grobid/api/processHeaderDocument', {
+		return this.containerFetch('http://grobid/api/processHeaderDocument', {
 			body: multipartPdfBody(input, boundary, byteLength),
 			headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
 			method: 'POST',
 		});
-		const text = await readBoundedResponseText(response, response.ok ? MAX_GROBID_RESPONSE_BYTES : MAX_ERROR_BODY_BYTES, 'GROBID response');
-		if (!response.ok) throw new Error(`GROBID processHeaderDocument failed with ${response.status}${text ? `: ${text}` : ''}`);
-		return parseGrobidPdfHeaderTei(text);
 	}
 }
 

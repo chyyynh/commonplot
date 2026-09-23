@@ -182,6 +182,11 @@ single document and stores the bounded SDT JSON beside the original R2 object,
 guarded by the source SHA-256. GROBID handles only the academic header/identifier
 gate, and Crossref enriches the resulting bibliography.
 
+Both Container RPCs return native HTTP responses. Core reads and validates them
+inside the acquisition Workflow. GROBID's explicit invalid-input/no-text/size-limit
+errors stop header retries; busy, timeout, transport, and unknown failures remain
+retryable. A failed header extraction still leaves the parsed upload as a private file.
+
 LlamaParse remains a local-first OCR fallback. Web owns the product kill switch
 and Autumn eligibility, then attaches a per-document page grant to authenticated
 URL and newly uploaded PDF workflows. Core executes only granted fallbacks when

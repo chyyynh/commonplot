@@ -1,6 +1,10 @@
+import { NonRetryableError } from 'cloudflare:workflows';
 import { XMLParser } from 'fast-xml-parser';
 import { normalizeArxivId, normalizeDoi, paperIdentifiersFromIdentity, paperIdentityFromText } from '../shared/paper-identity.ts';
+import { readBoundedResponseText } from '../shared/response.ts';
 
+const MAX_ERROR_BODY_BYTES = 1_000;
+const MAX_GROBID_RESPONSE_BYTES = 8 * 1024 * 1024;
 const MAX_IDENTIFIER_CHARS = 300;
 const MAX_REFERENCE_URL_CHARS = 500;
 const MAX_HEADER_AUTHORS = 100;
@@ -67,7 +71,17 @@ function identifiersFromHeader(biblStruct: XmlObject | null, analytic: XmlObject
 }
 
 /** The uploaded-PDF paper gate uses only metadata extracted by GROBID itself. */
-export function parseGrobidPdfHeaderTei(tei: string) {
+export async function parseGrobidPdfHeader(response: Response) {
+	const tei = await readBoundedResponseText(response, response.ok ? MAX_GROBID_RESPONSE_BYTES : MAX_ERROR_BODY_BYTES, 'GROBID response');
+	if (!response.ok) {
+		// GROBID reports deterministic PDF failures as HTTP 500 with a bracketed
+		// code. Classify them in the Workflow, after the Container RPC boundary.
+		const permanent =
+			[400, 401, 403, 404, 413, 415, 422].includes(response.status) ||
+			(response.status === 500 && /^\[(?:BAD_INPUT_DATA|NO_BLOCKS|TOO_MANY_BLOCKS|TOO_MANY_TOKENS)\]/u.test(tei));
+		const ErrorType = permanent ? NonRetryableError : Error;
+		throw new ErrorType(`GROBID processHeaderDocument failed with ${response.status}${tei ? `: ${tei}` : ''}`);
+	}
 	const parsed = xmlObject(teiParser.parse(tei));
 	const fileDesc = xmlObject(xmlObject(xmlObject(parsed?.TEI)?.teiHeader)?.fileDesc);
 	const titleNode = xmlElements(xmlObject(fileDesc?.titleStmt)?.title).find((title) => title.type === 'main' || title.level === 'a');
@@ -92,4 +106,4 @@ export function parseGrobidPdfHeaderTei(tei: string) {
 	return { authors: [...authors.values()], resourceIdentifiers: identifiersFromHeader(biblStruct, analytic), title };
 }
 
-export type GrobidPdfHeader = ReturnType<typeof parseGrobidPdfHeaderTei>;
+export type GrobidPdfHeader = Awaited<ReturnType<typeof parseGrobidPdfHeader>>;
