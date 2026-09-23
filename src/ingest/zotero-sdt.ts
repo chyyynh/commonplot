@@ -26,7 +26,6 @@ import { paperIdentityFromText } from '../shared/paper-identity';
 
 const MAX_DOCUMENT_NODES = 100_000;
 const MAX_DOCUMENT_TEXT_CHARS = 2_000_000;
-const MAX_REFERENCE_TEXT_CHARS = 600;
 const MAX_REFERENCES = 1_000;
 const MAX_CITATION_MARKER_CHARS = 128;
 const MAX_CITATION_MARKERS = 3_000;
@@ -234,7 +233,7 @@ function referenceLabelAndText(value: string) {
 		doi,
 		arxivId,
 		label,
-		text: boundedText(withoutLabel || text, MAX_REFERENCE_TEXT_CHARS),
+		text: withoutLabel || text,
 	};
 }
 

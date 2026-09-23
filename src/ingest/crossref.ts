@@ -7,9 +7,8 @@ const CROSSREF_WORKS_URL = 'https://api.crossref.org/works';
 const CROSSREF_CONTACT = 'hello@newsence.app';
 const CROSSREF_USER_AGENT = `Newsence/1.0 (https://www.newsence.app; mailto:${CROSSREF_CONTACT})`;
 const CROSSREF_TIMEOUT_MS = 12_000;
-const MAX_CITATION_CHARS = 600;
+const MAX_CITATION_QUERY_CHARS = 600;
 const MAX_CROSSREF_RESPONSE_BYTES = 256 * 1024;
-const MAX_NORMALIZED_CITATION_CHARS = 1_200;
 const CROSSREF_ROWS = 3;
 const MAX_AUTHOR_CHARS = 300;
 const MAX_TITLE_CHARS = 500;
@@ -46,8 +45,7 @@ function normalizeBibliographicText(value: string): string {
 		.toLocaleLowerCase('en-US')
 		.replace(/[^\p{Letter}\p{Number}]+/gu, ' ')
 		.replace(/\s+/g, ' ')
-		.trim()
-		.slice(0, MAX_NORMALIZED_CITATION_CHARS);
+		.trim();
 }
 
 function significantTokens(value: string): string[] {
@@ -157,10 +155,10 @@ async function fetchCrossrefWorks(params: Readonly<Record<string, string>>): Pro
 
 export async function resolveCrossrefReference(citation: string) {
 	const query = citation.trim();
-	if (!query || query.length > MAX_CITATION_CHARS) throw new TypeError(`Crossref citation must contain 1-${MAX_CITATION_CHARS} characters`);
+	if (!query) throw new TypeError('Crossref citation must not be empty');
 	return selectCrossrefResolution(
 		await fetchCrossrefWorks({
-			'query.bibliographic': query,
+			'query.bibliographic': query.slice(0, MAX_CITATION_QUERY_CHARS),
 			rows: String(CROSSREF_ROWS),
 			select: 'DOI,title,author,published,container-title',
 		}),

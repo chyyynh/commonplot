@@ -76,6 +76,10 @@ in-flight and failed attempts use short native Workflow retention. Each durable 
 
 Core uses the pinned Zotero document-worker for structured text and source-region rendering. Uploaded and fetched PDFs share `parseStoredPdfRepresentation`; Web only projects persisted renditions and authorizes their media.
 
+Printed bibliography entries retain their full text in both Markdown footnotes and `resource_references`. Only the outgoing Crossref search query is capped at 600 characters; candidate matching and stale-result checks use the complete entry. Apply Web migration `20260923090000_preserve_full_reference_text` before deploying this Core change. Existing truncated entries and footnotes need normal reacquisition; the migration preserves existing rows without inventing missing text.
+
+DOI suffixes are opaque identifiers. Core decodes resolver URL paths once and encodes canonical links, preserving reserved characters such as `#` and `?`. Sentence punctuation is removed only when extracting a DOI from prose, never from an explicit provider identifier.
+
 #### Quality and retries
 
 `structuredPdfVisualPlan` selects semantic figures/tables and conservative caption-bounded regions. It retains author text while excluding repeated first-page affiliation blocks misclassified as tables. The 64-crop budget and unavailable/ambiguous geometry produce explicit missing-region outcomes. Inferred regions remain marked `caption-region-inferred`; usable text does not imply proven visual completeness. No inferred region automatically authorizes a paid OCR provider.
