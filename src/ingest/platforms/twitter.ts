@@ -25,34 +25,6 @@ const TwitterAdvancedSearchEnvelopeSchema = z.object({
 	msg: z.string().optional(),
 });
 
-export function parseTwitterAdvancedSearchPage(value: unknown) {
-	const response = TwitterAdvancedSearchEnvelopeSchema.parse(value);
-	if (response.status?.toLowerCase() === 'error') {
-		throw new Error(`Twitter Advanced Search failed: ${(response.message ?? response.msg)?.trim() || 'unknown provider error'}`);
-	}
-	const tweets: DiscoveredTweet[] = [];
-	const invalidItems: Array<{ index: number; message: string }> = [];
-	for (const [index, item] of response.tweets.entries()) {
-		const parsed = DiscoveredTweetSchema.safeParse(item);
-		if (parsed.success) {
-			tweets.push(parsed.data);
-			continue;
-		}
-		const issue = parsed.error.issues[0];
-		invalidItems.push({
-			index,
-			message: issue ? `${issue.path.join('.') || 'tweet'}: ${issue.message}` : 'Tweet is invalid',
-		});
-	}
-	return {
-		tweets,
-		rawTweetCount: response.tweets.length,
-		invalidItems,
-		hasNextPage: response.has_next_page,
-		nextCursor: response.next_cursor?.trim() || null,
-	};
-}
-
 const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
 
 const TWITTER_SOURCE_CONCURRENCY = 5;
@@ -91,26 +63,35 @@ async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime:
 			await response.body?.cancel();
 			throw new Error(`Twitter Advanced Search failed with HTTP ${response.status}`);
 		}
-		const apiRes = parseTwitterAdvancedSearchPage(await response.json());
+		const apiRes = TwitterAdvancedSearchEnvelopeSchema.parse(await response.json());
+		if (apiRes.status?.toLowerCase() === 'error') {
+			throw new Error(`Twitter Advanced Search failed: ${(apiRes.message ?? apiRes.msg)?.trim() || 'unknown provider error'}`);
+		}
 		pages++;
-		providerTweets += apiRes.rawTweetCount;
-		skippedItems += apiRes.invalidItems.length;
-		for (const item of apiRes.invalidItems) {
+		providerTweets += apiRes.tweets.length;
+		for (const [index, item] of apiRes.tweets.entries()) {
+			const parsed = DiscoveredTweetSchema.safeParse(item);
+			if (parsed.success) {
+				terminalTweets.set(parsed.data.id, parsed.data);
+				continue;
+			}
+			skippedItems++;
+			const issue = parsed.error.issues[0];
 			console.error({
 				tag: 'TWITTER',
 				event: 'twitter_provider_item_skipped',
 				userName,
 				page: pages,
-				item_index: item.index,
-				error: item.message,
+				item_index: index,
+				error: issue ? `${issue.path.join('.') || 'tweet'}: ${issue.message}` : 'Tweet is invalid',
 			});
 		}
-		for (const tweet of apiRes.tweets) terminalTweets.set(tweet.id, tweet);
-		if (!apiRes.hasNextPage) break;
-		if (!apiRes.nextCursor) throw new Error(`Twitter Advanced Search omitted the next cursor for @${userName}`);
-		if (seenCursors.has(apiRes.nextCursor)) throw new Error(`Twitter Advanced Search repeated its cursor for @${userName}`);
-		seenCursors.add(apiRes.nextCursor);
-		cursor = apiRes.nextCursor;
+		if (!apiRes.has_next_page) break;
+		const nextCursor = apiRes.next_cursor?.trim();
+		if (!nextCursor) throw new Error(`Twitter Advanced Search omitted the next cursor for @${userName}`);
+		if (seenCursors.has(nextCursor)) throw new Error(`Twitter Advanced Search repeated its cursor for @${userName}`);
+		seenCursors.add(nextCursor);
+		cursor = nextCursor;
 	}
 	console.info({
 		tag: 'TWITTER',
