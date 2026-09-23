@@ -87,7 +87,7 @@ Each source has:
 
 The renderer receives one PDF per batch of at most eight regions. It streams bounded PNG rows; Core stores each result independently. An incomplete batch persists its manifest and fails the acquisition checkpoint. Workflow retries retain the structured document and successful PNGs and render only missing crops. Permanent input failures stop retries; transport, capacity, and server errors remain retryable. Container queue wait expiry rejects only that waiting request; the active processing watchdog starts after admission.
 
-When changing the document-worker build or crop algorithm, update the explicit artifact/recipe versions in `zotero-sdt.ts` alongside the pinned Docker build as applicable. Do not overwrite old crop objects: stored content may still reference their immutable URLs. Existing private crop URLs without a digest remain readable.
+When changing the document-worker build or crop algorithm, update the explicit artifact/recipe versions in `zotero-sdt.ts` alongside the pinned Docker build as applicable. Do not overwrite old crop objects: stored content may still reference their immutable URLs. Media routes require crop IDs with a recipe digest.
 
 #### Source ownership
 
