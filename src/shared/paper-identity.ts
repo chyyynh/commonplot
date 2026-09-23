@@ -26,31 +26,23 @@ export type PaperIdentity = Readonly<{
 	openAlexId?: string;
 }>;
 
-function normalizePaperIdentifier(identifier: Omit<PaperIdentifier, 'preferred'> & { preferred?: boolean }): PaperIdentifier | null {
-	const value =
-		identifier.scheme === 'doi'
-			? normalizeDoi(identifier.value)
-			: identifier.scheme === 'arxiv'
-				? normalizeArxivId(identifier.value)
-				: normalizeOpenAlexId(identifier.value);
-	return value ? { preferred: identifier.preferred !== false, scheme: identifier.scheme, value } : null;
-}
-
 /**
  * Normalize and deduplicate exact identifiers while keeping at most one
  * preferred value per scheme. Input order is meaningful: the resolver puts
  * the selected version of record before aliases from other versions.
  */
-export function normalizePaperIdentifiers(
-	identifiers: readonly (Omit<PaperIdentifier, 'preferred'> & { preferred?: boolean })[],
-): PaperIdentifier[] {
+export function normalizePaperIdentifiers(identifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
 	const deduplicated = new Map<string, PaperIdentifier>();
 	for (const candidate of identifiers) {
-		const identifier = normalizePaperIdentifier(candidate);
-		if (!identifier) continue;
-		const key = `${identifier.scheme}:${identifier.value}`;
-		const existing = deduplicated.get(key);
-		deduplicated.set(key, existing ? { ...existing, preferred: existing.preferred || identifier.preferred } : identifier);
+		const value =
+			candidate.scheme === 'doi'
+				? normalizeDoi(candidate.value)
+				: candidate.scheme === 'arxiv'
+					? normalizeArxivId(candidate.value)
+					: normalizeOpenAlexId(candidate.value);
+		if (!value) continue;
+		const key = `${candidate.scheme}:${value}`;
+		deduplicated.set(key, { scheme: candidate.scheme, value, preferred: deduplicated.get(key)?.preferred || candidate.preferred });
 	}
 
 	const preferredSchemes = new Set<PaperIdentifierScheme>();
@@ -78,11 +70,11 @@ export function paperIdentifiersFromIdentity(identity: PaperIdentity): PaperIden
 	];
 }
 
+/** Select from the adapter's normalized identifiers without normalizing the list again. */
 export function paperIdentityFromIdentifiers(identifiers: readonly PaperIdentifier[]): PaperIdentity | null {
-	const normalized = normalizePaperIdentifiers(identifiers);
 	const value = (scheme: PaperIdentifierScheme, accept: (value: string) => boolean = () => true) =>
-		normalized.find((identifier) => identifier.scheme === scheme && identifier.preferred && accept(identifier.value))?.value ??
-		normalized.find((identifier) => identifier.scheme === scheme && accept(identifier.value))?.value;
+		identifiers.find((identifier) => identifier.scheme === scheme && identifier.preferred && accept(identifier.value))?.value ??
+		identifiers.find((identifier) => identifier.scheme === scheme && accept(identifier.value))?.value;
 	const doi = value('doi', (candidate) => !candidate.startsWith(ARXIV_DOI_PREFIX)) ?? value('doi');
 	const arxivId = value('arxiv');
 	const openAlexId = value('openalex');
