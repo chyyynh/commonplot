@@ -33,10 +33,6 @@ function parseStructuredPdfFailure(status: number, body: string): { message: str
 	return { message, totalPages };
 }
 
-function structuredPdfStorageKey(pdfStorageKey: string): string {
-	return `${pdfStorageKey}.structured-document.json`;
-}
-
 function cropFailure(error: unknown) {
 	return {
 		reason: (error instanceof Error ? error.message : String(error)).slice(0, MAX_ERROR_BODY_BYTES),
@@ -59,10 +55,6 @@ async function putPdfDerivative(
 		await env.R2.delete(key);
 		throw new NonRetryableError('PDF source was removed during processing');
 	}
-}
-
-function structuredPdfCropManifestKey(pdfStorageKey: string, inputContentHash: string): string {
-	return `${pdfStorageKey}.structured-crops/${inputContentHash}/manifest.json`;
 }
 
 /** Keep only one bounded PNG row in memory while the container streams a batch. */
@@ -171,7 +163,7 @@ async function ensureStructuredPdfSourceCrops(
 	await putPdfDerivative(
 		env,
 		input.pdfStorageKey,
-		structuredPdfCropManifestKey(input.pdfStorageKey, input.inputContentHash),
+		`${prefix}manifest.json`,
 		JSON.stringify({
 			artifactVersion: SOURCE_CROP_ARTIFACT_VERSION,
 			inputSha256: input.inputContentHash,
@@ -240,7 +232,7 @@ async function readStructuredPdfArtifact(
 	pdfStorageKey: string,
 	inputContentHash: string,
 ): Promise<StructuredPdfDocument | null> {
-	const object = await env.R2.get(structuredPdfStorageKey(pdfStorageKey));
+	const object = await env.R2.get(`${pdfStorageKey}.structured-document.json`);
 	if (!object) return null;
 	if (object.customMetadata?.artifactVersion !== ZOTERO_SDT_ARTIFACT_VERSION || object.customMetadata?.inputSha256 !== inputContentHash) {
 		await object.body.cancel('Structured PDF artifact revision is stale');
@@ -275,7 +267,7 @@ export async function parseStoredPdfRepresentation(
 		const attempt = await parsePdfArtifactStream(env, object.body, object.size, input.sourceLabel);
 		if (!('schemaVersion' in attempt)) return attempt;
 		document = attempt;
-		await putPdfDerivative(env, input.pdfStorageKey, structuredPdfStorageKey(input.pdfStorageKey), JSON.stringify(document), {
+		await putPdfDerivative(env, input.pdfStorageKey, `${input.pdfStorageKey}.structured-document.json`, JSON.stringify(document), {
 			customMetadata: { artifactVersion: ZOTERO_SDT_ARTIFACT_VERSION, inputSha256: input.inputContentHash },
 		});
 	}
@@ -356,7 +348,7 @@ export async function publishPublicPdfCrops(env: CoreEnv, resourceId: string, co
 		) {
 			throw new Error('Public PDF crop publication has no independent public source');
 		}
-		const object = await env.R2.get(structuredPdfCropManifestKey(pdfStorageKey, inputHash));
+		const object = await env.R2.get(`${pdfStorageKey}.structured-crops/${inputHash}/manifest.json`);
 		if (!object) throw new Error('Public PDF crop publication manifest is missing');
 		if (object.size > MAX_MANIFEST_BYTES) {
 			await object.body.cancel('Invalid public PDF manifest size');

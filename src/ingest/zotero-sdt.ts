@@ -20,6 +20,8 @@ import {
 	getPartChain,
 	shouldDropHardHyphenAtPartBoundary,
 } from 'structured-document-text/src/parts.js';
+// @ts-expect-error SDT's PDF decoder has no declarations; validate its runs below.
+import { parseTextMap } from 'structured-document-text/src/pdf/decode.js';
 import { isContentBoundary, isLeafBlock, refKey, sameRef } from 'structured-document-text/src/range.js';
 import { mergeTextNodes } from 'structured-document-text/src/text.js';
 import { paperIdentityFromText } from '../shared/paper-identity';
@@ -302,24 +304,15 @@ function pageRects(node: SdtNode): PageRect[] {
 /** Text-map runs, unlike block bounds, do not include nearby unrecognized graphics. */
 function textRects(node: SdtNode): PageRect[] {
 	if ('content' in node) return node.content.flatMap(textRects);
-	if (node.anchor && 'textMap' in node.anchor && node.anchor.textMap) {
-		try {
-			const runs: unknown = JSON.parse(node.anchor.textMap);
-			if (Array.isArray(runs)) {
-				const rects: PageRect[] = [];
-				for (const run of runs) {
-					if (!Array.isArray(run) || run.length < 6 || !run.slice(0, 6).every((part) => typeof part === 'number' && Number.isFinite(part)))
-						continue;
-					const [, page, x1, y1, x2, y2] = run as number[];
-					if (Number.isInteger(page) && x2! > x1! && y2! > y1!) rects.push([page!, x1!, y1!, x2!, y2!]);
-				}
-				if (rects.length) return rects;
-			}
-		} catch {
-			// The SDT text-map contract permits unknown encodings. Use bounded anchors.
-		}
+	const rects: PageRect[] = [];
+	const runs: unknown[] = parseTextMap(node.anchor && 'textMap' in node.anchor ? node.anchor.textMap : undefined);
+	for (const run of runs) {
+		if (!Array.isArray(run) || run.length < 6 || !run.slice(0, 6).every((part) => typeof part === 'number' && Number.isFinite(part)))
+			continue;
+		const [, page, x1, y1, x2, y2] = run as number[];
+		if (Number.isInteger(page) && x2! > x1! && y2! > y1!) rects.push([page!, x1!, y1!, x2!, y2!]);
 	}
-	return pageRects(node);
+	return rects.length ? rects : pageRects(node);
 }
 
 function blockRects(node: SdtBlockNode): PageRect[] {
