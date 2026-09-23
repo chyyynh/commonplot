@@ -33,7 +33,7 @@ Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content
 | --- | --- |
 | **Web URL** | Fetch/redirect detection → HTML article and source metadata → Markdown; PDF responses enter the PDF parser |
 | **Uploaded PDF** | Read owned R2 blob → Zotero text/figures and GROBID header in parallel → optional Crossref confirmation; unresolved documents remain private files |
-| **Paper** | Exact URL or PDF identity → OpenAlex for web sources / Crossref for PDFs → canonical identifiers and bibliography; optional OpenAlex content PDF |
+| **Paper** | Exact URL or PDF identity → OpenAlex for web sources / Crossref for PDFs → canonical identifiers and bibliography; OpenAlex content or licensed OA PDF |
 | **Twitter/X** | twitterapi.io → post or article Markdown, media and linked subject; monitoring uses cursor pagination every 6 hours |
 | **YouTube** | Video metadata → channel avatar and transcript in parallel → canonical transaction saves transcript and native chapters → optional AI highlights after publication, guarded by the acquisition revision |
 | **Hacker News** | Firebase story and ranked comments → Markdown discussion; an external article remains a separate subject |
@@ -87,6 +87,8 @@ GROBID and Crossref preserve complete titles and author names; GROBID does not c
 Known DOIs use Crossref's `/works/{doi}` endpoint with an encoded identifier; they never enter the comma-delimited filter grammar. A missing work returns no enrichment. Candidate/reference searches retain field projection and a 256 KiB response limit. Single-work responses do not support projection, so they allow up to 8 MiB; only normalized metadata enters the streamed Workflow checkpoint.
 
 OpenAlex responses are bounded to 8 MiB before parsing. All paper metadata checkpoints use streams so complete normalized metadata can exceed the 1 MiB non-stream limit without discarding enrichment or repeating provider requests.
+
+When the input has no parsed PDF, acquisition tries OpenAlex's cached PDF, then the selected licensed open-access PDF, then the original URL (or retains already acquired HTML). Each alternate source has its own download checkpoint and uses the shared SDT/crop pipeline. A public PDF equal to the original URL is left to normal URL acquisition rather than downloaded twice. Alternate PDFs use local parsing only; paid OCR remains tied to the original admitted source. API keys are added only to validated OpenAlex content requests and are never persisted in source URLs or sent to external PDF hosts.
 
 #### Quality and retries
 

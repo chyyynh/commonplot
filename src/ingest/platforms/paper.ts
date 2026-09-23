@@ -160,46 +160,60 @@ async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: reado
 	return normalizeOpenAlexWork(work, input.identifiers);
 }
 
-/** OpenAlex content URLs need our API key, so this optional representation is always local-only. */
-async function stageOpenAlexPdfContent(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
-	try {
-		const source = await step.do(
-			'download-openalex-content-pdf-v1',
-			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
-			async () => {
-				const apiKey = env.OPENALEX_API_KEY?.trim();
-				if (!apiKey) throw new Error('OpenAlex content download requires an API key');
-				const contentUrl = new URL(input.contentPdfUrl);
-				contentUrl.searchParams.set('api_key', apiKey);
-				const response = await fetch(contentUrl, {
-					headers: { Accept: 'application/pdf' },
-					signal: AbortSignal.timeout(CONTENT_REQUEST_TIMEOUT_MS),
-				});
-				if (!response.ok) {
-					await response.body?.cancel();
-					const ErrorType = [400, 401, 403, 404, 410, 422].includes(response.status) ? NonRetryableError : Error;
-					throw new ErrorType(`OpenAlex content PDF request failed with HTTP ${response.status}`);
-				}
-				return storePublicPdfResponse(env, response, input.contentPdfUrl);
-			},
-		);
-		const resource = await stagePublicPdfAcquisition(env, step, { source, grant: null, processingId: input.processingId });
-		console.info({
-			tag: 'OPENALEX_CONTENT',
-			event: 'pdf_acquired',
-			processing_id: input.processingId,
-			chars: resource.content.length,
-		});
-		return resource;
-	} catch (error) {
-		console.error({
-			tag: 'OPENALEX_CONTENT',
-			event: 'pdf_acquisition_failed',
-			processing_id: input.processingId,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return null;
+/** Alternate paper PDFs share acquisition; key-bearing OpenAlex content stays local-only. */
+async function stagePaperPdfContent(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: { contentPdfUrl: string | null; publicPdfUrl: string | null; processingId: string },
+) {
+	for (const [provider, url] of [
+		['openalex', input.contentPdfUrl],
+		['open-access', input.publicPdfUrl],
+	] as const) {
+		if (!url || (provider === 'open-access' && url === input.contentPdfUrl)) continue;
+		try {
+			const source = await step.do(
+				`download-paper-${provider}-pdf-v1`,
+				{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
+				async () => {
+					const requestUrl = new URL(url);
+					if (provider === 'openalex') {
+						const apiKey = env.OPENALEX_API_KEY?.trim();
+						if (!apiKey) throw new Error('OpenAlex content download requires an API key');
+						requestUrl.searchParams.set('api_key', apiKey);
+					}
+					const response = await fetch(requestUrl, {
+						headers: { Accept: 'application/pdf' },
+						signal: AbortSignal.timeout(CONTENT_REQUEST_TIMEOUT_MS),
+					});
+					if (!response.ok) {
+						await response.body?.cancel();
+						const ErrorType = [400, 401, 403, 404, 410, 422].includes(response.status) ? NonRetryableError : Error;
+						throw new ErrorType(`Paper PDF request failed (${provider}) with HTTP ${response.status}`);
+					}
+					return storePublicPdfResponse(env, response, url);
+				},
+			);
+			const resource = await stagePublicPdfAcquisition(env, step, { source, grant: null, processingId: input.processingId });
+			console.info({
+				tag: 'PAPER_CONTENT',
+				event: 'pdf_acquired',
+				provider,
+				processing_id: input.processingId,
+				chars: resource.content.length,
+			});
+			return resource;
+		} catch (error) {
+			console.error({
+				tag: 'PAPER_CONTENT',
+				event: 'pdf_acquisition_failed',
+				provider,
+				processing_id: input.processingId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
+	return null;
 }
 
 type ParsedPaperInput = {
@@ -278,9 +292,15 @@ export async function stagePaperAcquisition(env: CoreEnv, step: WorkflowStep, in
 			});
 		}
 	}
+	const sourceUrl = 'resource' in input ? input.resource.url : input.url;
+	const publicPdfUrl = openAlex?.metadata.pdfUrl;
 	const pdf =
-		parsed?.fileType !== PDF_MIME && openAlex?.contentPdfUrl
-			? await stageOpenAlexPdfContent(env, step, { contentPdfUrl: openAlex.contentPdfUrl, processingId: input.processingId })
+		parsed?.fileType !== PDF_MIME && openAlex
+			? await stagePaperPdfContent(env, step, {
+					contentPdfUrl: openAlex.contentPdfUrl,
+					publicPdfUrl: publicPdfUrl && publicPdfUrl !== sourceUrl ? publicPdfUrl : null,
+					processingId: input.processingId,
+				})
 			: null;
 	const resource =
 		'resource' in input
