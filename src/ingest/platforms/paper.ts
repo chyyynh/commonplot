@@ -17,14 +17,13 @@ import type { AcquiredResource } from '../acquisition';
 import { resolveCrossrefPaper, resolveCrossrefPaperCandidate } from '../crossref';
 import { storePublicPdfResponse } from '../zotero-sdt-service.ts';
 import { stagePublicPdfAcquisition } from './pdf';
-import { PDF_MIME } from './pdf-policy';
+import { PDF_MIME, type PaidPdfFallbackGrant } from './pdf-policy';
 import type { ResolvedResourceUrl } from './resource-url';
 import { stageWebAcquisition } from './web';
 
 const PAPER_METADATA_STEP = { retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 
 const OPENALEX_BASE = 'https://api.openalex.org';
-const OPENALEX_CONTENT_HOST = 'content.openalex.org';
 const REQUEST_TIMEOUT_MS = 8_000;
 const CONTENT_REQUEST_TIMEOUT_MS = 90_000;
 
@@ -56,17 +55,11 @@ const WORK_FIELDS = Object.keys(OpenAlexWorkSchema.shape).join(',');
 
 type OpenAlexWork = z.infer<typeof OpenAlexWorkSchema>;
 
-function httpsUrl(value: string | null | undefined): string | undefined {
-	if (!value?.trim()) return undefined;
-	const url = URL.parse(value);
-	return url?.protocol === 'https:' ? url.toString() : undefined;
-}
-
 function licensedPdfUrl(work: OpenAlexWork): string | null {
 	const locations = [work.best_oa_location, work.primary_location, ...(work.locations ?? [])];
 	for (const location of locations) {
-		const pdfUrl = location?.is_oa === true && location.license?.trim() ? httpsUrl(location.pdf_url) : undefined;
-		if (pdfUrl) return pdfUrl;
+		const url = location?.is_oa === true && location.license?.trim() ? URL.parse(location.pdf_url ?? '') : null;
+		if (url?.protocol === 'https:' && !url.username && !url.password) return url.toString();
 	}
 	return null;
 }
@@ -81,28 +74,6 @@ function arxivIdFromWork(work: OpenAlexWork, identity: PaperIdentity | null): st
 		if (arxivId) return arxivId;
 	}
 	return undefined;
-}
-
-function openAlexContentPdfUrl(input: {
-	hasContent: boolean;
-	openAlexId: string | null | undefined;
-	value: string | null | undefined;
-}): string | null {
-	if (!input.openAlexId || !input.hasContent) return null;
-	const value = httpsUrl(input.value);
-	if (!value) return null;
-	const url = new URL(value);
-	if (
-		url.hostname !== OPENALEX_CONTENT_HOST ||
-		url.username ||
-		url.password ||
-		url.search ||
-		url.hash ||
-		url.pathname !== `/works/${input.openAlexId}.pdf`
-	) {
-		return null;
-	}
-	return url.toString();
 }
 
 function resolvedWorkIdentifiers(work: OpenAlexWork, inputIdentifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
@@ -127,6 +98,18 @@ function normalizeOpenAlexWork(work: OpenAlexWork, inputIdentifiers: readonly Pa
 	const identifiers = resolvedWorkIdentifiers(work, inputIdentifiers);
 	const identity = paperIdentityFromIdentifiers(identifiers);
 	const openAlexId = identity?.openAlexId;
+	const contentUrl = work.has_content?.pdf === true ? URL.parse(work.content_urls?.pdf ?? '') : null;
+	// Only the exact content endpoint may receive our API key.
+	const contentPdfUrl =
+		openAlexId &&
+		contentUrl?.origin === 'https://content.openalex.org' &&
+		!contentUrl.username &&
+		!contentUrl.password &&
+		!contentUrl.search &&
+		!contentUrl.hash &&
+		contentUrl.pathname === `/works/${openAlexId}.pdf`
+			? contentUrl.toString()
+			: null;
 	const abstract =
 		Object.entries(work.abstract_inverted_index ?? {})
 			.flatMap(([word, positions]) => positions.map((position) => ({ position, word })))
@@ -135,11 +118,7 @@ function normalizeOpenAlexWork(work: OpenAlexWork, inputIdentifiers: readonly Pa
 			.join(' ')
 			.trim() || undefined;
 	return {
-		contentPdfUrl: openAlexContentPdfUrl({
-			hasContent: work.has_content?.pdf === true,
-			openAlexId,
-			value: work.content_urls?.pdf,
-		}),
+		contentPdfUrl,
 		identifiers,
 		metadata: {
 			title: work.title ?? undefined,
@@ -158,8 +137,7 @@ function normalizeOpenAlexWork(work: OpenAlexWork, inputIdentifiers: readonly Pa
 async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: readonly PaperIdentifier[] }) {
 	const apiKey = input.apiKey?.trim();
 	if (!apiKey) return null;
-	const identifiers = normalizePaperIdentifiers(input.identifiers);
-	const identity = paperIdentityFromIdentifiers(identifiers);
+	const identity = paperIdentityFromIdentifiers(input.identifiers);
 	const doi = identity?.doi ?? (identity?.arxivId ? `10.48550/arxiv.${identity.arxivId}` : null);
 	const workId = doi ? `https://doi.org/${encodeURIComponent(doi)}` : identity?.openAlexId ? encodeURIComponent(identity.openAlexId) : null;
 	if (!workId) return null;
@@ -175,7 +153,7 @@ async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: reado
 		throw new ErrorType(`OpenAlex request failed with HTTP ${response.status}${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
 	}
 	const work = OpenAlexWorkSchema.parse(await response.json());
-	return normalizeOpenAlexWork(work, identifiers);
+	return normalizeOpenAlexWork(work, input.identifiers);
 }
 
 /** OpenAlex content URLs need our API key, so this optional representation is always local-only. */
@@ -227,7 +205,10 @@ type ParsedPaperInput = {
 	processingId: string;
 };
 
-type PaperUrlInput = Parameters<typeof stageWebAcquisition>[2] & {
+type PaperUrlInput = {
+	url: string;
+	paidPdfFallback: PaidPdfFallbackGrant | null;
+	processingId: string;
 	identifiers: AcquiredResource['resourceIdentifiers'];
 };
 
@@ -287,21 +268,19 @@ export async function stagePaperAcquisition(env: CoreEnv, step: WorkflowStep, in
 			});
 		}
 	}
-	const { doi: _doi, abstract, authors, publicationDate, title, ...kindMetadata } = { ...openAlex?.metadata, ...crossref };
 	const pdf =
 		parsed?.fileType !== PDF_MIME && openAlex?.contentPdfUrl
 			? await stageOpenAlexPdfContent(env, step, { contentPdfUrl: openAlex.contentPdfUrl, processingId: input.processingId })
 			: null;
 	const resource =
 		'resource' in input
-			? input.resource
+			? { ...input.resource, ...(pdf ? { content: pdf.content, references: pdf.references, fileType: pdf.fileType } : {}) }
 			: pdf
 				? { ...pdf, url: input.url, source: new URL(input.url).hostname }
 				: await stageWebAcquisition(env, step, input);
 	if ('platform' in resource) return resource;
-	const canonicalUrl = resource.url;
-	const content = pdf?.content ?? resource.content;
-	if (!content.trim()) throw new Error(`Processing ${input.processingId} has no extractable content`);
+	if (!resource.content.trim()) throw new Error(`Processing ${input.processingId} has no extractable content`);
+	const { doi: _doi, abstract, authors, publicationDate, title, ...kindMetadata } = { ...openAlex?.metadata, ...crossref };
 	const resourceIdentifiers =
 		openAlex?.identifiers ??
 		normalizePaperIdentifiers([
@@ -321,15 +300,11 @@ export async function stagePaperAcquisition(env: CoreEnv, step: WorkflowStep, in
 		kind: 'paper',
 		resourcePlatform: null,
 		resourceIdentifiers,
-		url: canonicalUrl ?? canonicalPaperUrl(identity),
+		url: resource.url ?? canonicalPaperUrl(identity),
 		title: title?.trim() || resource.title,
 		summary: abstract?.trim() || resource.summary,
-		content,
-		references: pdf ? pdf.references : resource.references,
-		source: pdf ? resource.source.trim() || (canonicalUrl ? new URL(canonicalUrl).hostname : 'OpenAlex') : resource.source,
 		publishedDate,
 		creators: authors?.length ? authors.map((literal) => ({ role: 'author', literal })) : resource.creators,
 		kindMetadata,
-		fileType: pdf ? PDF_MIME : resource.fileType,
 	} satisfies AcquiredResource;
 }
