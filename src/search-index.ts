@@ -177,10 +177,13 @@ export async function upsertCorpusItem(env: CoreEnv, document: CorpusDocument): 
 		},
 	};
 	const key = aiSearchItemKey(document.id);
-	await Promise.all([
+	const uploads = await Promise.allSettled([
 		env.AI_SEARCH.items.upload(key, serializeDocument(document), options),
 		env.RELATED_SEARCH.items.upload(key, serializeRelatedDocument(document), options),
 	]);
+	for (const upload of uploads) {
+		if (upload.status === 'rejected') throw upload.reason;
+	}
 }
 
 async function deleteCorpusItem(instance: AiSearchInstance, index: 'corpus' | 'related', resourceId: string): Promise<void> {
@@ -196,7 +199,13 @@ export async function syncCorpusItem(env: CoreEnv, resourceId: string, document:
 	if (document) {
 		await upsertCorpusItem(env, document);
 	} else {
-		await Promise.all([deleteCorpusItem(env.AI_SEARCH, 'corpus', resourceId), deleteCorpusItem(env.RELATED_SEARCH, 'related', resourceId)]);
+		const deletions = await Promise.allSettled([
+			deleteCorpusItem(env.AI_SEARCH, 'corpus', resourceId),
+			deleteCorpusItem(env.RELATED_SEARCH, 'related', resourceId),
+		]);
+		for (const deletion of deletions) {
+			if (deletion.status === 'rejected') throw deletion.reason;
+		}
 	}
 }
 

@@ -60,9 +60,11 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 			pending.set(input.data.resourceId, group);
 		}
 		if (!pending.size) return;
+		let db: Awaited<ReturnType<typeof connectCoreDb>>;
 		let documents: Awaited<ReturnType<typeof loadCorpusDocuments>>;
 		try {
-			documents = await loadCorpusDocuments(await connectCoreDb(this.env), [...pending.keys()]);
+			db = await connectCoreDb(this.env);
+			documents = await loadCorpusDocuments(db, [...pending.keys()]);
 		} catch (error) {
 			console.error({ tag: 'AI_SEARCH', msg: 'Resource sync batch could not be loaded', error });
 			for (const { messages } of pending.values()) {
@@ -73,7 +75,12 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		const documentsById = new Map(documents.map((document) => [document.id, document]));
 		for (const [resourceId, { messages, taskIds }] of pending) {
 			try {
-				await syncCorpusItem(this.env, resourceId, documentsById.get(resourceId));
+				const document = documentsById.get(resourceId);
+				await syncCorpusItem(this.env, resourceId, document);
+				// Another consumer may have uploaded a newer snapshot first. Retry from
+				// Postgres instead of acknowledging a stale upload or deletion.
+				const [current] = await loadCorpusDocuments(db, [resourceId]);
+				if (JSON.stringify(current) !== JSON.stringify(document)) throw new Error('Resource changed during search sync');
 				for (const taskId of taskIds) {
 					await this.env.APP.reportResourceProgress({
 						taskId,
