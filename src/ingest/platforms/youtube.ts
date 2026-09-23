@@ -79,6 +79,7 @@ function parseChaptersFromDescription(description: string): YouTubeChapter[] {
 	}
 
 	for (let i = 0; i < chapters.length - 1; i++) {
+		if (chapters[i].startTime >= chapters[i + 1].startTime) return [];
 		chapters[i].endTime = chapters[i + 1].startTime;
 	}
 
