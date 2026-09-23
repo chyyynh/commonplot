@@ -13,12 +13,10 @@ import { frontmatter } from 'micromark-extension-frontmatter';
 import { gfm } from 'micromark-extension-gfm';
 import { math } from 'micromark-extension-math';
 
-const DEFAULT_PLAN_OPTIONS = {
-	maxBatchCharacters: 24_000,
-	maxBatchSegments: 16,
-	maxContextCharacters: 800,
-	maxSegmentCharacters: 20_000,
-} as const;
+const MAX_BATCH_CHARACTERS = 24_000;
+const MAX_BATCH_SEGMENTS = 16;
+const MAX_CONTEXT_CHARACTERS = 800;
+const MAX_SEGMENT_CHARACTERS = 20_000;
 const TRANSLATABLE_CHARACTER = /[\p{L}\p{N}]/u;
 const URL_OR_EMAIL = /^(?:https?:\/\/|mailto:|www\.)\S+$|^[^\s@]+@[^\s@]+\.[^\s@]+$/iu;
 const TRANSLATED_PROSE_SENTINEL = '<translated-prose>';
@@ -58,10 +56,6 @@ type MarkdownTranslationSourcePart = string | Readonly<{ id: string }>;
 export type MarkdownSegmentTranslation = Readonly<{
 	texts: Readonly<Record<string, string>>;
 }>;
-
-type ResolvedPlanOptions = Record<keyof typeof DEFAULT_PLAN_OPTIONS, number>;
-
-export type MarkdownTranslationPlanOptions = Readonly<Partial<ResolvedPlanOptions>>;
 
 type MarkdownTranslationReconstructionPart =
 	| Readonly<{ id: string; type: 'fixed-inline' }>
@@ -238,29 +232,6 @@ function splitProse(value: string, maxCharacters: number): string[] {
 	}
 	flush();
 	return chunks;
-}
-
-function positiveInteger(value: number | undefined, fallback: number, name: string): number {
-	const resolved = value ?? fallback;
-	if (!Number.isSafeInteger(resolved) || resolved < 1) {
-		throw new MarkdownTranslationInvariantError('invalid-plan', `${name} must be a positive integer`);
-	}
-	return resolved;
-}
-
-function resolvePlanOptions(options: MarkdownTranslationPlanOptions) {
-	const maxBatchCharacters = positiveInteger(options.maxBatchCharacters, DEFAULT_PLAN_OPTIONS.maxBatchCharacters, 'maxBatchCharacters');
-	const maxBatchSegments = positiveInteger(options.maxBatchSegments, DEFAULT_PLAN_OPTIONS.maxBatchSegments, 'maxBatchSegments');
-	const requestedContext = positiveInteger(options.maxContextCharacters, DEFAULT_PLAN_OPTIONS.maxContextCharacters, 'maxContextCharacters');
-	const maxContextCharacters = Math.min(requestedContext, Math.max(1, Math.floor(maxBatchCharacters * 0.2)));
-	const availableSegmentCharacters = Math.max(1, maxBatchCharacters - maxContextCharacters - 64);
-	const requestedSegment = positiveInteger(options.maxSegmentCharacters, DEFAULT_PLAN_OPTIONS.maxSegmentCharacters, 'maxSegmentCharacters');
-	return {
-		maxBatchCharacters,
-		maxBatchSegments,
-		maxContextCharacters,
-		maxSegmentCharacters: Math.min(requestedSegment, availableSegmentCharacters),
-	};
 }
 
 function structuralNode(
@@ -639,16 +610,16 @@ function createBatch(segments: readonly MarkdownTranslationSegment[], index: num
 
 export type MarkdownTranslationBatch = Readonly<ReturnType<typeof createBatch>>;
 
-function batchSegments(segments: readonly MarkdownTranslationSegment[], options: ResolvedPlanOptions): MarkdownTranslationBatch[] {
+function batchSegments(segments: readonly MarkdownTranslationSegment[]): MarkdownTranslationBatch[] {
 	const batches: MarkdownTranslationBatch[] = [];
 	let current: MarkdownTranslationSegment[] = [];
 	let currentCharacters = 0;
 	for (const segment of segments) {
 		const characters = segmentInputCharacters(segment);
-		if (characters > options.maxBatchCharacters) {
+		if (characters > MAX_BATCH_CHARACTERS) {
 			throw new MarkdownTranslationInvariantError('invalid-plan', `Markdown segment ${segment.id} exceeds the batch character budget`);
 		}
-		if (current.length > 0 && (currentCharacters + characters > options.maxBatchCharacters || current.length >= options.maxBatchSegments)) {
+		if (current.length > 0 && (currentCharacters + characters > MAX_BATCH_CHARACTERS || current.length >= MAX_BATCH_SEGMENTS)) {
 			batches.push(createBatch(current, batches.length));
 			current = [];
 			currentCharacters = 0;
@@ -685,13 +656,13 @@ function splitWhitespace(value: string): Readonly<{ leading: string; prose: stri
 	};
 }
 
-function planProseBlock(block: ProseBlock, context: VisitContext, options: ResolvedPlanOptions, accumulator: PlanAccumulator): void {
+function planProseBlock(block: ProseBlock, context: VisitContext, accumulator: PlanAccumulator): void {
 	if (!containsTranslatableProse(block)) return;
 	const translationContext =
-		context.heading && block.type !== 'heading' ? `Heading: ${context.heading}`.slice(0, options.maxContextCharacters) : null;
+		context.heading && block.type !== 'heading' ? `Heading: ${context.heading}`.slice(0, MAX_CONTEXT_CHARACTERS) : null;
 	const phrasing = planPhrasing(block.children, accumulator.nextInlineIndex + 1);
 	accumulator.nextInlineIndex += Object.keys(phrasing.inlines).length;
-	if (phrasing.characterCount <= options.maxSegmentCharacters) {
+	if (phrasing.characterCount <= MAX_SEGMENT_CHARACTERS) {
 		const segment = addSegment(phrasing, translationContext, accumulator);
 		accumulator.targets.push({ boundaries: null, path: context.path, segmentIds: [segment.id] });
 		return;
@@ -704,7 +675,7 @@ function planProseBlock(block: ProseBlock, context: VisitContext, options: Resol
 	}
 	const boundaries = [''];
 	const segmentIds: string[] = [];
-	for (const chunk of splitProse(block.children[0].value, options.maxSegmentCharacters)) {
+	for (const chunk of splitProse(block.children[0].value, MAX_SEGMENT_CHARACTERS)) {
 		const { leading, prose, trailing } = splitWhitespace(chunk);
 		boundaries[boundaries.length - 1] += leading;
 		if (prose) {
@@ -719,16 +690,16 @@ function planProseBlock(block: ProseBlock, context: VisitContext, options: Resol
 	accumulator.targets.push({ boundaries, path: context.path, segmentIds });
 }
 
-function visitNode(node: Nodes, context: VisitContext, options: ResolvedPlanOptions, accumulator: PlanAccumulator): void {
+function visitNode(node: Nodes, context: VisitContext, accumulator: PlanAccumulator): void {
 	if (isProseBlock(node)) {
-		planProseBlock(node, context, options, accumulator);
+		planProseBlock(node, context, accumulator);
 		return;
 	}
 	if (!isParent(node)) return;
 	let heading = context.heading;
 	for (const [index, child] of node.children.entries()) {
 		const childHeading = child.type === 'heading' ? translatablePlainText(child).trim() || heading : heading;
-		visitNode(child, { heading: childHeading, path: [...context.path, index] }, options, accumulator);
+		visitNode(child, { heading: childHeading, path: [...context.path, index] }, accumulator);
 		if (child.type === 'heading') heading = childHeading;
 	}
 }
@@ -771,12 +742,11 @@ export function validateMarkdownBatchTranslations(
 	return translations;
 }
 
-export function planMarkdownTranslation(sourceMarkdown: string, options: MarkdownTranslationPlanOptions = {}) {
-	const resolvedOptions = resolvePlanOptions(options);
+export function planMarkdownTranslation(sourceMarkdown: string) {
 	const canonicalSourceMarkdown = serializeMarkdown(parseMarkdown(sourceMarkdown));
 	const tree = parseMarkdown(canonicalSourceMarkdown);
 	const accumulator: PlanAccumulator = { nextInlineIndex: 0, segments: [], targets: [] };
-	visitNode(tree, { heading: null, path: [] }, resolvedOptions, accumulator);
+	visitNode(tree, { heading: null, path: [] }, accumulator);
 	const targetPaths = accumulator.targets.map((target) => target.path);
 	const sourceSkeleton = markdownSkeleton(tree, targetPaths);
 	const normalizedTree = parseMarkdown(serializeMarkdown(tree));
@@ -787,7 +757,7 @@ export function planMarkdownTranslation(sourceMarkdown: string, options: Markdow
 		);
 	}
 	return {
-		batches: batchSegments(accumulator.segments, resolvedOptions),
+		batches: batchSegments(accumulator.segments),
 		segments: accumulator.segments,
 		sourceMarkdown: canonicalSourceMarkdown,
 		originalMarkdown: sourceMarkdown,
@@ -799,7 +769,7 @@ export function planMarkdownTranslation(sourceMarkdown: string, options: Markdow
 // Store correspondence, not a second copy of every source/translated paragraph.
 // Walk the persisted Markdown (before canonical serialization) so paths match
 // the reader's native parser. Digests bind those paths to both exact bodies.
-export function createMarkdownTranslationAlignment(sourceMarkdown: string, translatedMarkdown: string) {
+function createMarkdownTranslationAlignment(sourceMarkdown: string, translatedMarkdown: string) {
 	const paths: number[][] = [];
 	const walk = (source: Nodes, translated: Nodes, path: number[]): void => {
 		if (source.type !== translated.type)
