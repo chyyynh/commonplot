@@ -125,7 +125,7 @@ function acquireHtmlArticle(html: string, url: string): AcquiredResource & { kin
 		title,
 		content,
 		source: siteName,
-		originalLang: 'und',
+		originalLang: article.lang || 'und',
 		publishedDate: article.publishedTime?.trim() || null,
 		summary,
 		creators: author ? [{ role: 'author', literal: author }] : [],
