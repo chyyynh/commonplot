@@ -15,18 +15,6 @@ function resourcePostMetadata(resource: ResourceImageFields): PostKindMetadata |
 	return resource.kindMetadata && 'attachments' in resource.kindMetadata ? (resource.kindMetadata as PostKindMetadata) : null;
 }
 
-function resourceImageCandidates(resource: ResourceImageFields): string[] {
-	const metadata = resourcePostMetadata(resource);
-	const attachments = metadata?.attachments.map((item) => item.url) ?? [];
-	return [
-		attachments[0],
-		resource.ogImageUrl,
-		...attachments.slice(1),
-		...(resource.creators?.map((creator) => creator.avatarUrl) ?? []),
-		metadata?.quote?.creator.avatarUrl,
-	].filter((url): url is string => typeof url === 'string');
-}
-
 export function hostedResourceImageUrl(value: string | null | undefined): string | null {
 	const url = value?.trim();
 	return url && HOSTED_RESOURCE_IMAGE_PATTERN.test(url) ? url : null;
@@ -68,13 +56,22 @@ export function normalizedResourceImageUrl(rawUrl: string | null | undefined, ba
 }
 
 export function resourceImageSourceUrls(resource: ResourceImageFields): string[] {
-	const normalized: string[] = [];
-	for (const candidate of resourceImageCandidates(resource)) {
+	const metadata = resourcePostMetadata(resource);
+	const attachments = metadata?.attachments.map((item) => item.url) ?? [];
+	const normalized = new Set<string>();
+	for (const candidate of [
+		attachments[0],
+		resource.ogImageUrl,
+		...attachments.slice(1),
+		...(resource.creators?.map((creator) => creator.avatarUrl) ?? []),
+		metadata?.quote?.creator.avatarUrl,
+	]) {
+		if (typeof candidate !== 'string') continue;
 		const url = normalizedResourceImageUrl(candidate);
 		if (!url) throw new TypeError('Resource image source URL is invalid');
-		normalized.push(url);
+		normalized.add(url);
 	}
-	return [...new Set(normalized)];
+	return [...normalized];
 }
 
 function hostedImageMap(images: readonly HostedResourceImage[]): ReadonlyMap<string, HostedResourceImage> {
