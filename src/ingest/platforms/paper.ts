@@ -7,7 +7,7 @@ import {
 	normalizeArxivId,
 	normalizeDoi,
 	normalizeOpenAlexId,
-	normalizePaperIdentifiers,
+	mergePaperIdentifiers,
 	type PaperIdentifier,
 	paperIdentifiersFromIdentity,
 	paperIdentityFromIdentifiers,
@@ -78,7 +78,7 @@ function resolvedWorkIdentifiers(work: OpenAlexWork, inputIdentifiers: readonly 
 	const arxivProxyDoi = arxivId ? `10.48550/arxiv.${arxivId}` : null;
 	const doi = providerDoi === arxivProxyDoi ? identity?.doi : (providerDoi ?? identity?.doi);
 	const openAlexId = normalizeOpenAlexId(work.id);
-	return normalizePaperIdentifiers([
+	return mergePaperIdentifiers([
 		...(doi && doi !== arxivProxyDoi ? [{ preferred: true, scheme: 'doi' as const, value: doi }] : []),
 		...(arxivId ? [{ preferred: true, scheme: 'arxiv' as const, value: arxivId }] : []),
 		...(openAlexId ? [{ preferred: true, scheme: 'openalex' as const, value: openAlexId }] : []),
@@ -236,7 +236,7 @@ export function stagePaperAcquisition(
 export async function stagePaperAcquisition(env: CoreEnv, step: WorkflowStep, input: ParsedPaperInput | PaperUrlInput) {
 	const parsed = 'resource' in input ? input.resource : null;
 	const candidate = 'resource' in input ? input.candidate : undefined;
-	const identifiers = normalizePaperIdentifiers(
+	const identifiers = mergePaperIdentifiers(
 		('resource' in input ? input.resource.resourceIdentifiers : input.identifiers).filter((identifier): identifier is PaperIdentifier =>
 			isPaperIdentifierScheme(identifier.scheme),
 		),
@@ -306,7 +306,7 @@ export async function stagePaperAcquisition(env: CoreEnv, step: WorkflowStep, in
 	const { doi: _doi, abstract, authors, publicationDate, title, ...kindMetadata } = { ...openAlex?.metadata, ...crossref };
 	const resourceIdentifiers =
 		openAlex?.identifiers ??
-		normalizePaperIdentifiers([
+		mergePaperIdentifiers([
 			...(crossref ? paperIdentifiersFromIdentity({ doi: crossref.doi }) : []),
 			...identifiers,
 			...resource.resourceIdentifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),

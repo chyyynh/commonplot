@@ -27,22 +27,15 @@ export type PaperIdentity = Readonly<{
 }>;
 
 /**
- * Normalize and deduplicate exact identifiers while keeping at most one
+ * Merge canonical identifiers while keeping at most one
  * preferred value per scheme. Input order is meaningful: the resolver puts
  * the selected version of record before aliases from other versions.
  */
-export function normalizePaperIdentifiers(identifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
+export function mergePaperIdentifiers(identifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
 	const deduplicated = new Map<string, PaperIdentifier>();
 	for (const candidate of identifiers) {
-		const value =
-			candidate.scheme === 'doi'
-				? normalizeDoi(candidate.value)
-				: candidate.scheme === 'arxiv'
-					? normalizeArxivId(candidate.value)
-					: normalizeOpenAlexId(candidate.value);
-		if (!value) continue;
-		const key = `${candidate.scheme}:${value}`;
-		deduplicated.set(key, { scheme: candidate.scheme, value, preferred: deduplicated.get(key)?.preferred || candidate.preferred });
+		const key = `${candidate.scheme}:${candidate.value}`;
+		deduplicated.set(key, { ...candidate, preferred: deduplicated.get(key)?.preferred || candidate.preferred });
 	}
 
 	const preferredSchemes = new Set<PaperIdentifierScheme>();
@@ -60,13 +53,16 @@ export function normalizePaperIdentifiers(identifiers: readonly PaperIdentifier[
 	return normalized;
 }
 
-export function paperIdentifiersFromIdentity(identity: PaperIdentity): PaperIdentifier[] {
-	const normalized = normalizePaperIdentity(identity);
-	if (!normalized) return [];
+/** Adapter inputs have already been normalized; an arXiv DOI also identifies its preprint. */
+export function paperIdentifiersFromIdentity({
+	doi,
+	arxivId = normalizeArxivId(doi) ?? undefined,
+	openAlexId,
+}: PaperIdentity): PaperIdentifier[] {
 	return [
-		...(normalized.doi ? [{ preferred: true, scheme: 'doi' as const, value: normalized.doi }] : []),
-		...(normalized.arxivId ? [{ preferred: true, scheme: 'arxiv' as const, value: normalized.arxivId }] : []),
-		...(normalized.openAlexId ? [{ preferred: true, scheme: 'openalex' as const, value: normalized.openAlexId }] : []),
+		...(doi ? [{ preferred: true, scheme: 'doi' as const, value: doi }] : []),
+		...(arxivId ? [{ preferred: true, scheme: 'arxiv' as const, value: arxivId }] : []),
+		...(openAlexId ? [{ preferred: true, scheme: 'openalex' as const, value: openAlexId }] : []),
 	];
 }
 
@@ -76,9 +72,11 @@ export function paperIdentityFromIdentifiers(identifiers: readonly PaperIdentifi
 		identifiers.find((identifier) => identifier.scheme === scheme && identifier.preferred && accept(identifier.value))?.value ??
 		identifiers.find((identifier) => identifier.scheme === scheme && accept(identifier.value))?.value;
 	const doi = value('doi', (candidate) => !candidate.startsWith(ARXIV_DOI_PREFIX)) ?? value('doi');
-	const arxivId = value('arxiv');
+	const arxivId = value('arxiv') ?? normalizeArxivId(doi);
 	const openAlexId = value('openalex');
-	return normalizePaperIdentity({ doi, arxivId, openAlexId });
+	return doi || arxivId || openAlexId
+		? { ...(doi ? { doi } : {}), ...(arxivId ? { arxivId } : {}), ...(openAlexId ? { openAlexId } : {}) }
+		: null;
 }
 
 function nonEmptyString(value: unknown): string | null {
@@ -156,17 +154,4 @@ export function paperIdentityFromText(value: unknown): PaperIdentity | null {
 		...(doi ? { doi } : {}),
 		...(arxivId ? { arxivId } : {}),
 	};
-}
-
-function normalizePaperIdentity(identity: PaperIdentity): PaperIdentity | null {
-	const doi = normalizeDoi(identity.doi);
-	const arxivId = normalizeArxivId(identity.arxivId) ?? normalizeArxivId(doi);
-	const openAlexId = normalizeOpenAlexId(identity.openAlexId);
-	return doi || arxivId || openAlexId
-		? {
-				...(doi ? { doi } : {}),
-				...(arxivId ? { arxivId } : {}),
-				...(openAlexId ? { openAlexId } : {}),
-			}
-		: null;
 }
