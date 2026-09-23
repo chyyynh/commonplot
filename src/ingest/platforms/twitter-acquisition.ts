@@ -32,7 +32,7 @@ const TwitterMediaEntitySchema = z.object({
 });
 
 const TweetSchema = z.object({
-	id: z.string().optional(),
+	id: z.string().regex(/^\d+$/),
 	url: z.string().min(1),
 	createdAt: z.string().min(1),
 	author: TwitterAuthorSchema.optional(),
@@ -92,23 +92,6 @@ const TwitterArticleResponseSchema = z.object({
 
 type TwitterArticle = z.infer<typeof TwitterArticleSchema>;
 type TwitterArticleContent = NonNullable<TwitterArticle['contents']>[number];
-
-export function parseTwitterTweetsResponse(value: unknown): Tweet[] {
-	const response = TwitterTweetsResponseSchema.parse(value);
-	if (response.status?.toLowerCase() === 'error') {
-		throw new Error(`Twitter tweets request failed: ${(response.message ?? response.msg)?.trim() || 'unknown provider error'}`);
-	}
-	return response.tweets;
-}
-
-function parseTwitterArticleResponse(value: unknown, tweetId: string): TwitterArticle {
-	const response = TwitterArticleResponseSchema.parse(value);
-	if (response.status !== 'success') {
-		throw new Error(`Twitter article ${tweetId} failed: ${response.message?.trim() || 'unknown provider error'}`);
-	}
-	if (!response.article) throw new Error(`Twitter article ${tweetId} omitted article content`);
-	return response.article;
-}
 
 function articleStyleMarker(style: string): string | null {
 	switch (style.trim().toLowerCase()) {
@@ -198,7 +181,7 @@ type TwitterAcquisitionInput = {
 
 function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {
 	if (!tweet.author?.userName.trim() || !tweet.author.name.trim()) {
-		throw new Error(`Tweet ${tweet.id ?? tweet.url} has no complete author`);
+		throw new Error(`Tweet ${tweet.id} has no complete author`);
 	}
 	return tweet.author;
 }
@@ -263,10 +246,7 @@ function expandTweetUrls(text: string, tweet: Tweet): string {
 			parsed && resolveResourceUrl(expanded)?.resourcePlatform === 'twitter' && /\/status\/\d+\/(?:photo|video)\/\d+/.test(parsed.pathname);
 		replacements.set(token, mediaLink ? '' : expanded);
 	}
-	const quoted = tweet.quoted_tweet;
-	const quotedTweetId = quoted
-		? quoted.id?.trim() || resolveResourceUrl(quoted.url)?.identifiers.find(({ scheme }) => scheme === 'twitter')?.value
-		: null;
+	const quotedTweetId = tweet.quoted_tweet?.id;
 	const trailing = text.match(/(https?:\/\/\S+)\s*$/)?.[1];
 	if (quotedTweetId && trailing) {
 		const expandedTrailing = replacements.get(trailing) ?? trailing;
@@ -301,8 +281,7 @@ function tweetQuote(tweet: Tweet) {
 }
 
 async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
-	const tweetId = tweet.id?.trim();
-	if (!tweetId) throw new Error(`Could not resolve tweet id for Twitter article ${tweet.url}`);
+	const tweetId = tweet.id;
 	console.info({ tag: 'TWITTER', msg: 'Fetching longform for tweet', tweetId });
 
 	const response = await fetch(`https://api.twitterapi.io/twitter/article?tweet_id=${tweetId}`, {
@@ -317,7 +296,12 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
 		}
 		throw new Error(message);
 	}
-	const longform = parseTwitterArticleResponse(await response.json(), tweetId);
+	const payload = TwitterArticleResponseSchema.parse(await response.json());
+	if (payload.status !== 'success') {
+		throw new Error(`Twitter article ${tweetId} failed: ${payload.message?.trim() || 'unknown provider error'}`);
+	}
+	const longform = payload.article;
+	if (!longform) throw new Error(`Twitter article ${tweetId} omitted article content`);
 	const title = longform.title?.trim();
 	const contentText = expandKnownTweetUrls(renderTwitterArticleMarkdown(longform), tweet);
 	if (!title || !contentText) throw new Error(`Twitter longform ${tweetId} requires both title and renderable content`);
@@ -365,7 +349,7 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 
 	const author = requiredTweetAuthor(tweet);
 	const text = tweet.text.trim();
-	if (!text) throw new Error(`Tweet ${tweet.id ?? tweet.url} has no text`);
+	if (!text) throw new Error(`Tweet ${tweet.id} has no text`);
 	// Titles omit URLs unless the tweet contains only a URL.
 	const titleText = text.replace(/https?:\/\/\S+/g, '').trim() || text;
 	const title = linkedContentUrl
@@ -403,9 +387,13 @@ async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string)
 		}
 		throw new Error(message);
 	}
-	const tweets = parseTwitterTweetsResponse(await response.json());
-	const tweet = tweets[0];
-	if (!tweet) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
+	const payload = TwitterTweetsResponseSchema.parse(await response.json());
+	if (payload.status?.toLowerCase() === 'error') {
+		throw new Error(`Twitter tweets request failed: ${(payload.message ?? payload.msg)?.trim() || 'unknown provider error'}`);
+	}
+	if (!payload.tweets.length) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
+	const tweet = payload.tweets.find((tweet) => tweet.id === tweetId);
+	if (!tweet) throw new Error(`Twitter API returned no matching tweet for ${tweetId}`);
 	const { subjectUrl, ...content } = await resolveTweetContent(tweet, apiKey);
 
 	return {

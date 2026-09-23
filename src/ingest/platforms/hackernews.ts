@@ -51,8 +51,9 @@ async function fetchHnItem(itemId: number | string): Promise<HackerNewsItem | nu
 		if (response.status === 404 || response.status === 410) return null;
 		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
 	}
-	const payload: unknown = await response.json();
-	return payload === null ? null : HackerNewsItemSchema.parse(payload);
+	const item = HackerNewsItemSchema.nullable().parse(await response.json());
+	if (item && String(item.id) !== String(itemId)) throw new Error(`Hacker News API returned no matching item for ${itemId}`);
+	return item;
 }
 
 async function fetchHnItems(itemIds: readonly number[]): Promise<Map<number, HackerNewsItem>> {

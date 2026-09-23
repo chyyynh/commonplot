@@ -48,6 +48,7 @@ const YouTubeChannelsResponseSchema = z.object({
 	items: z
 		.array(
 			z.object({
+				id: z.string().min(1),
 				snippet: z.object({
 					thumbnails: YouTubeThumbnailsSchema,
 				}),
@@ -145,7 +146,8 @@ async function fetchChannelAvatar(youtubeApiKey: string, channelId: string): Pro
 		}
 
 		const channelData = YouTubeChannelsResponseSchema.parse(await response.json());
-		const channel = channelData.items?.[0];
+		const channel = channelData.items?.find((item) => item.id === channelId);
+		if (channelData.items?.length && !channel) throw new Error('YouTube API returned no matching channel');
 		return channel ? bestThumbnailUrl(channel.snippet.thumbnails) : null;
 	} catch (error) {
 		const message = String(error);
@@ -201,7 +203,8 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 
 	if (!videoData.items?.length) throw new NonRetryableError(`YouTube video ${videoId} was not found`);
 
-	const video = videoData.items[0];
+	const video = videoData.items.find((item) => item.id === videoId);
+	if (!video) throw new Error(`YouTube API returned no matching video for ${videoId}`);
 	const snippet = video.snippet;
 
 	const durationSeconds = isoDurationSeconds(video.contentDetails.duration);
