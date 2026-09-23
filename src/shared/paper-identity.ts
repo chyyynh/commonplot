@@ -120,17 +120,16 @@ export function normalizeDoi(value: unknown): string | null {
 	return DOI_RE.test(doi) ? doi : null;
 }
 
-function arxivIdFromUrl(value: string): string | null {
-	const url = URL.parse(value);
-	if (!url) return null;
-	if (url.hostname.toLowerCase() !== 'arxiv.org' && !url.hostname.toLowerCase().endsWith('.arxiv.org')) return null;
-	return url.pathname.match(/^\/(?:abs|html|pdf)\/(.+?)(?:\.pdf)?\/?$/i)?.[1] ?? null;
-}
-
 export function normalizeArxivId(value: unknown): string | null {
 	const raw = nonEmptyString(value);
 	if (!raw) return null;
-	const candidate = (arxivIdFromUrl(raw) ?? raw.replace(/^arxiv\s*:\s*/i, ''))
+	const doi = normalizeDoi(raw);
+	const url = URL.parse(raw);
+	const path =
+		url && (url.hostname === 'arxiv.org' || url.hostname.endsWith('.arxiv.org'))
+			? url.pathname.match(/^\/(?:abs|html|pdf)\/(.+?)(?:\.pdf)?\/?$/i)?.[1]
+			: null;
+	const candidate = (doi?.startsWith(ARXIV_DOI_PREFIX) ? doi.slice(ARXIV_DOI_PREFIX.length) : (path ?? raw.replace(/^arxiv\s*:\s*/i, '')))
 		.replace(/[?#].*$/, '')
 		.replace(/\.pdf$/i, '')
 		.trim();
@@ -147,10 +146,6 @@ export function normalizeOpenAlexId(value: unknown): string | null {
 	return raw?.match(OPENALEX_ID_RE)?.[1]?.toUpperCase() ?? null;
 }
 
-function arxivIdFromDoi(doi: string): string | null {
-	return doi.startsWith(ARXIV_DOI_PREFIX) ? normalizeArxivId(doi.slice(ARXIV_DOI_PREFIX.length)) : null;
-}
-
 export function canonicalPaperUrl(identity: PaperIdentity): string {
 	if (identity.arxivId) return `https://arxiv.org/abs/${identity.arxivId}`;
 	if (identity.doi) return `https://doi.org/${identity.doi.split('/').map(encodeURIComponent).join('/')}`;
@@ -163,7 +158,7 @@ export function paperIdentityFromText(value: unknown): PaperIdentity | null {
 	if (typeof value !== 'string' || !value.trim()) return null;
 	const match = value.match(DOI_IN_TEXT_RE)?.[0];
 	const doi = match ? normalizeDoi(stripUnbalancedDoiPunctuation(match)) : null;
-	const arxivId = normalizeArxivId(value.match(ARXIV_IN_TEXT_RE)?.[1]) ?? (doi ? arxivIdFromDoi(doi) : null);
+	const arxivId = normalizeArxivId(value.match(ARXIV_IN_TEXT_RE)?.[1]) ?? normalizeArxivId(doi);
 	if (!doi && !arxivId) return null;
 	return {
 		...(doi ? { doi } : {}),
@@ -173,7 +168,7 @@ export function paperIdentityFromText(value: unknown): PaperIdentity | null {
 
 function normalizePaperIdentity(identity: PaperIdentity): PaperIdentity | null {
 	const doi = normalizeDoi(identity.doi);
-	const arxivId = normalizeArxivId(identity.arxivId) ?? (doi ? arxivIdFromDoi(doi) : null);
+	const arxivId = normalizeArxivId(identity.arxivId) ?? normalizeArxivId(doi);
 	const openAlexId = normalizeOpenAlexId(identity.openAlexId);
 	return doi || arxivId || openAlexId
 		? {

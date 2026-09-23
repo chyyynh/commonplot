@@ -121,8 +121,7 @@ export function resolveResourceUrl(value: string | null | undefined): ResolvedRe
 	// Query/fragment decorations do not form part of an exact bibliographic identifier.
 	const paperUrl = `${parsed.origin}${path}`;
 	const doi = normalizeDoi(paperUrl);
-	const arxivId =
-		normalizeArxivId(paperUrl) ?? (doi?.startsWith('10.48550/arxiv.') ? normalizeArxivId(doi.slice('10.48550/arxiv.'.length)) : null);
+	const arxivId = normalizeArxivId(paperUrl);
 	const openAlexId = normalizeOpenAlexId(paperUrl);
 	if (doi || arxivId || openAlexId) {
 		const identity = { ...(arxivId ? { arxivId } : doi ? { doi } : {}), ...(openAlexId ? { openAlexId } : {}) };

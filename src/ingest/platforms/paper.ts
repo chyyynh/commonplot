@@ -9,7 +9,6 @@ import {
 	normalizeOpenAlexId,
 	normalizePaperIdentifiers,
 	type PaperIdentifier,
-	type PaperIdentity,
 	paperIdentifiersFromIdentity,
 	paperIdentityFromIdentifiers,
 } from '../../shared/paper-identity';
@@ -66,23 +65,17 @@ function licensedPdfUrl(work: OpenAlexWork): string | null {
 	return null;
 }
 
-function arxivIdFromWork(work: OpenAlexWork, identity: PaperIdentity | null): string | undefined {
-	if (identity?.arxivId) return identity.arxivId;
-	const doi = normalizeDoi(work.doi);
-	const fromDoi = doi?.startsWith('10.48550/arxiv.') ? normalizeArxivId(doi.slice('10.48550/arxiv.'.length)) : null;
-	if (fromDoi) return fromDoi;
-	for (const location of work.locations ?? []) {
-		const arxivId = normalizeArxivId(location.landing_page_url) ?? normalizeArxivId(location.pdf_url);
-		if (arxivId) return arxivId;
-	}
-	return undefined;
-}
-
 function resolvedWorkIdentifiers(work: OpenAlexWork, inputIdentifiers: readonly PaperIdentifier[]): PaperIdentifier[] {
 	const identity = paperIdentityFromIdentifiers(inputIdentifiers);
-	const arxivId = arxivIdFromWork(work, identity);
+	let arxivId = identity?.arxivId ?? normalizeArxivId(work.doi);
+	if (!arxivId) {
+		for (const location of work.locations ?? []) {
+			arxivId = normalizeArxivId(location.landing_page_url) ?? normalizeArxivId(location.pdf_url);
+			if (arxivId) break;
+		}
+	}
 	const providerDoi = normalizeDoi(work.doi);
-	const arxivProxyDoi = arxivId ? normalizeDoi(`10.48550/arxiv.${arxivId}`) : null;
+	const arxivProxyDoi = arxivId ? `10.48550/arxiv.${arxivId}` : null;
 	const doi = providerDoi === arxivProxyDoi ? identity?.doi : (providerDoi ?? identity?.doi);
 	const openAlexId = normalizeOpenAlexId(work.id);
 	return normalizePaperIdentifiers([
