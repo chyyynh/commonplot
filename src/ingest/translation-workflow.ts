@@ -598,8 +598,8 @@ export async function enqueueResourceTranslation(
 	env: CoreEnv,
 	resourceId: string,
 	translationRevision: string,
-	forceRunKey?: string,
-	parent?: ResourceTaskContext,
+	forceRunKey: string | undefined,
+	parent: ResourceTaskContext,
 ): Promise<string> {
 	ResourceTranslationRevisionSchema.parse(translationRevision);
 	const validatedForceRunKey = forceRunKey === undefined ? null : ForcedTranslationRunKeySchema.parse(forceRunKey);
@@ -619,7 +619,7 @@ export async function enqueueResourceTranslation(
 		taskId: id,
 		kind: 'translation',
 		resourceId,
-		...(parent?.required ? { parentTaskId: parent.taskId } : {}),
+		...(parent.required ? { parentTaskId: parent.taskId } : {}),
 	});
 	if (!registered) throw new Error('Translation progress registration was rejected');
 	await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([

@@ -8,7 +8,7 @@ import { summarizeResource, classifyResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { withoutPrivatePdfImages } from './pdf-markdown.ts';
 import { stageYouTubeHighlights } from './platforms/youtube';
-import { createResourceTask, enqueueSearchProgress, registerResourceTask } from './progress';
+import { createResourceTask, enqueueSearchProgress } from './progress';
 import {
 	persistResolvedResource,
 	persistResourceClassification,
@@ -200,7 +200,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							// Separate tracked and automatic executions so neither inherits the other's progress ledger.
 							const prefix = task.required ? 'subject-draft-v4' : 'subject-draft-auto-v1';
 							const id = `${prefix}-${await sha256Hex(JSON.stringify(subjectTarget))}`;
-							await registerResourceTask(this.env, { taskId: id, kind: 'processing' }, task);
+							if (task.required)
+								await this.env.APP.registerResourceProgressTask({ taskId: id, kind: 'processing', parentTaskId: task.taskId });
 							await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { ...subjectTarget, progress: task.required } }]);
 							return id;
 						})

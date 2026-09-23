@@ -2,7 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { sql } from 'drizzle-orm';
 import { connectCoreDb } from '../shared/db';
 import { resolveCrossrefReferenceDoi } from './crossref';
-import { createResourceTask, registerResourceTask, type ResourceTaskContext } from './progress';
+import { createResourceTask, type ResourceTaskContext } from './progress';
 
 const CROSSREF_BATCH_SIZE = 3;
 const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
@@ -53,7 +53,7 @@ export async function stageResourceReferences(
 	try {
 		if (parent.required)
 			await step.do('register-reference-progress-v1', REFERENCE_DB_STEP, () =>
-				registerResourceTask(env, { taskId: task.taskId, kind: 'references', resourceId }, parent),
+				env.APP.registerResourceProgressTask({ taskId: task.taskId, kind: 'references', resourceId, parentTaskId: parent.taskId }),
 			);
 		const referenceStream = await step.do('load-unresolved-references-v2', REFERENCE_DB_STEP, async () => {
 			const db = await connectCoreDb(env);

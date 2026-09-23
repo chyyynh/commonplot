@@ -42,22 +42,12 @@ export function createResourceTask(env: CoreEnv, step: WorkflowStep, taskId: str
 export type ResourceTask = ReturnType<typeof createResourceTask>;
 export type ResourceTaskContext = Pick<ResourceTask, 'taskId' | 'required'>;
 
-export async function registerResourceTask(
-	env: CoreEnv,
-	input: Omit<Parameters<CoreEnv['APP']['registerResourceProgressTask']>[0], 'parentTaskId'>,
-	parent: ResourceTaskContext | undefined,
-) {
-	// Ordinary descendants only report when their parent has a task ledger.
-	if (!parent?.required) return false;
-	return env.APP.registerResourceProgressTask({ ...input, parentTaskId: parent.taskId });
-}
-
 export async function enqueueSearchProgress(env: CoreEnv, resourceId: string, parent: ResourceTaskContext, revision: string) {
 	if (!parent.required) {
 		await env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId });
 		return;
 	}
 	const taskId = `index-${await sha256Hex(`${parent.taskId}:${resourceId}:${revision}`)}`;
-	await registerResourceTask(env, { taskId, kind: 'index', resourceId }, parent);
+	await env.APP.registerResourceProgressTask({ taskId, kind: 'index', resourceId, parentTaskId: parent.taskId });
 	await env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId, taskId });
 }
