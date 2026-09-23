@@ -1,12 +1,11 @@
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import { RESOURCE_KIND_METADATA, type ResourceKind, type ResourcePlatform } from './shared/resource';
+import { RESOURCE_KIND_METADATA, type ResourceKind } from './shared/resource';
 
 // Postgres is canonical; AI Search is its derived public-corpus index.
 export const AI_SEARCH_ITEM_PREFIX = 'resources/';
 const AI_SEARCH_ITEM_SUFFIX = '.md';
-const NULL_RESOURCE_PLATFORM_METADATA = 'none';
 const ResourceIdSchema = z.uuid();
 const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
 const TRANSLATED_CONTENT_MAX_CHARS = 4_000;
@@ -65,7 +64,6 @@ type CorpusTranslationRow = {
 type CorpusDocument = {
 	id: string;
 	kind: SearchableResourceKind;
-	resource_platform: ResourcePlatform | null;
 	original_lang: string;
 	published_at: Date | string | null;
 	tags: string[] | null;
@@ -146,7 +144,6 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 	const result = await db.execute<CorpusDocument>(sql`
 		SELECT r.id::text,
 		       r.kind,
-		       r.resource_platform,
 		       r.original_lang,
 		       r.published_date AS published_at,
 		       r.tags,
@@ -184,7 +181,6 @@ export async function upsertCorpusItem(env: CoreEnv, document: CorpusDocument): 
 		metadata: {
 			...(publishedAt ? { published_at: publishedAt.toISOString() } : {}),
 			kind: document.kind,
-			resource_platform: document.resource_platform ?? NULL_RESOURCE_PLATFORM_METADATA,
 		},
 	};
 	const key = aiSearchItemKey(document.id);

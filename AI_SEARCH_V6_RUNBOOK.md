@@ -15,23 +15,14 @@ surface.
 | Current runner | `search-index-rebuild-v6-metadata-v2` |
 | Observability | Native Workflow instance status/output and AI Search item status |
 
-The instance owns three custom metadata fields: `published_at`, `kind`,
-and `resource_platform`. Monitored-source provenance stays in PostgreSQL.
-A null platform is stored as
-`none`. Searchable identities are:
+The instance owns two custom metadata fields: `published_at` and `kind`, matching
+the supported search filters. Platform and monitored-source provenance stay in
+PostgreSQL. Corpus blogs, forums, posts, videos, papers, and PDF files with a
+readable original enter the index. Private Resources and images never enter it.
+PostgreSQL is the canonical corpus; AI Search is a keyed, eventually consistent
+secondary index. Web hydrates and authoritatively filters every returned Resource ID.
 
-- `blog / none`
-- `blog / lesswrong`
-- `forum / hackernews`
-- `post / twitter`
-- `video / youtube`
-- `paper / none`
-
-Private `image` and `file` Resources never enter this index. PostgreSQL is the
-canonical corpus; AI Search is a keyed, eventually consistent secondary index.
-Web hydrates and authoritatively filters every returned Resource ID.
-
-This runner removes the unused custom `source_id` field from both search
+This runner removes the unused custom `source_id` and `resource_platform` fields from both search
 instances. Updating the custom metadata schema triggers a full re-index;
 complete the rebuild before judging its readiness.
 

@@ -274,15 +274,13 @@ Secrets (via `wrangler secret put`):
 
 ### Canonical AI Search v6
 
-`AI_SEARCH` serves `newsence-corpus-v6`. Its three custom metadata fields are
-`published_at`, `kind`, and `resource_platform`; null
-platforms use the reserved `none` sentinel. PostgreSQL remains canonical;
-AI Search stores only keyed search documents and eventually consistent status.
-Monitored-source provenance stays in PostgreSQL and does not affect indexed content.
+`AI_SEARCH` serves `newsence-corpus-v6`. Its two custom metadata fields are
+`published_at` and `kind`, matching the supported search filters. PostgreSQL
+remains canonical; AI Search stores only keyed search documents and eventually
+consistent status. Platform and monitored-source provenance stay in PostgreSQL.
 
-The searchable identity pairs are `blog / none`, `blog / lesswrong`,
-`forum / hackernews`, `post / twitter`, `video / youtube`, and `paper / none`.
-Private image and file Resources never enter the public index.
+Corpus blogs, forums, posts, videos, papers, and PDF files with a readable
+original enter the index. Private Resources and images never enter the public index.
 
 Run the static gates, then start and inspect the rebuild Workflow with Wrangler.
 The runner ID carries the serving-index version:
