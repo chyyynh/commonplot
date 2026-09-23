@@ -318,8 +318,13 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 			: []),
 	];
 	return db.transaction(async (tx) => {
-		for (const key of [...new Set(lockKeys)].sort()) {
-			await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${`newsence:resource:${key}`}, 0))`);
+		if (lockKeys.length) {
+			// Preserve the same lock order while acquiring all identities in one round trip.
+			await tx.execute(sql`
+				SELECT pg_advisory_xact_lock(hashtextextended('newsence:resource:' || key, 0))
+				FROM unnest(${sql.param([...new Set(lockKeys)].sort())}::text[]) WITH ORDINALITY AS locks(key, ordinal)
+				ORDER BY ordinal
+			`);
 		}
 		if (target.ownedBlobId) {
 			const owned = await tx.execute(sql`SELECT resource_id FROM user_files WHERE resource_id = ${target.ownedBlobId}::uuid FOR UPDATE`);
