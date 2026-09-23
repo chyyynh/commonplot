@@ -1,19 +1,15 @@
 // Pure Resource image selection and Hosted Images URL mapping; Cloudflare I/O lives in image-rehosting.ts.
-import type { PostKindMetadata, ResourceCreator, ResourceKindMetadata } from './resource.ts';
+import type { ResourceCreator, ResourceKindMetadata } from './resource.ts';
 
 const HOSTED_RESOURCE_IMAGE_PATTERN = /^https:\/\/imagedelivery\.net\/[a-zA-Z0-9_-]+\/resource-[a-f0-9]{64}\/public$/;
 const PREVIEW_IMAGE_TARGET_WIDTH = 1200;
 const WORDPRESS_UPLOAD_PATH = /\/wp-content\/uploads\//i;
 
-export type ResourceImageFields = Readonly<{
-	creators?: readonly ResourceCreator[] | null;
-	kindMetadata?: ResourceKindMetadata | null;
-	ogImageUrl?: string | null;
+type ResourceImageFields = Readonly<{
+	creators: readonly ResourceCreator[];
+	kindMetadata: ResourceKindMetadata;
+	ogImageUrl: string | null;
 }>;
-
-function resourcePostMetadata(resource: ResourceImageFields): PostKindMetadata | null {
-	return resource.kindMetadata && 'attachments' in resource.kindMetadata ? (resource.kindMetadata as PostKindMetadata) : null;
-}
 
 export function hostedResourceImageUrl(value: string | null | undefined): string | null {
 	const url = value?.trim();
@@ -56,17 +52,17 @@ export function normalizedResourceImageUrl(rawUrl: string | null | undefined, ba
 }
 
 export function resourceImageSourceUrls(resource: ResourceImageFields): string[] {
-	const metadata = resourcePostMetadata(resource);
+	const metadata = resource.kindMetadata && 'attachments' in resource.kindMetadata ? resource.kindMetadata : null;
 	const attachments = metadata?.attachments.map((item) => item.url) ?? [];
 	const normalized = new Set<string>();
 	for (const candidate of [
 		attachments[0],
 		resource.ogImageUrl,
 		...attachments.slice(1),
-		...(resource.creators?.map((creator) => creator.avatarUrl) ?? []),
+		...resource.creators.map((creator) => creator.avatarUrl),
 		metadata?.quote?.creator.avatarUrl,
 	]) {
-		if (typeof candidate !== 'string') continue;
+		if (candidate === null || candidate === undefined) continue;
 		const url = normalizedResourceImageUrl(candidate);
 		if (!url) throw new TypeError('Resource image source URL is invalid');
 		normalized.add(url);
@@ -96,33 +92,6 @@ function hostedImageMap(images: readonly HostedResourceImage[]): ReadonlyMap<str
 	return result;
 }
 
-type MapImageUrl = (rawUrl: string | null | undefined) => string | null;
-
-function withHostedAvatar(creator: ResourceCreator, mapImageUrl: MapImageUrl): ResourceCreator {
-	const { avatarUrl: sourceAvatarUrl, ...rest } = creator;
-	const avatarUrl = mapImageUrl(sourceAvatarUrl);
-	return avatarUrl ? { ...rest, avatarUrl } : rest;
-}
-
-function withHostedPostMetadata(metadata: PostKindMetadata, mapImageUrl: MapImageUrl): PostKindMetadata {
-	const attachments = metadata.attachments.flatMap((attachment) => {
-		const url = mapImageUrl(attachment.url);
-		return url ? [{ ...attachment, url }] : [];
-	});
-	return {
-		...metadata,
-		attachments,
-		...(metadata.quote
-			? {
-					quote: {
-						...metadata.quote,
-						creator: withHostedAvatar(metadata.quote.creator, mapImageUrl),
-					},
-				}
-			: {}),
-	};
-}
-
 export function hostedResourceImageFields(
 	resource: ResourceImageFields,
 	images: readonly HostedResourceImage[],
@@ -135,8 +104,7 @@ export function hostedResourceImageFields(
 } {
 	const imageMap = hostedImageMap(images);
 	const consumedSources = new Set<string>();
-	const mapHostedImage = (rawUrl: string | null | undefined): HostedResourceImage | null => {
-		if (rawUrl === null || rawUrl === undefined) return null;
+	const mapHostedImage = (rawUrl: string): HostedResourceImage => {
 		const sourceUrl = normalizedResourceImageUrl(rawUrl);
 		if (!sourceUrl) throw new TypeError('Resource image source URL is invalid');
 		const image = imageMap.get(sourceUrl);
@@ -144,12 +112,20 @@ export function hostedResourceImageFields(
 		consumedSources.add(sourceUrl);
 		return image;
 	};
-	const mapImageUrl: MapImageUrl = (rawUrl) => mapHostedImage(rawUrl)?.deliveryUrl ?? null;
-	const postMetadata = resourcePostMetadata(resource);
-	const kindMetadata = postMetadata ? withHostedPostMetadata(postMetadata, mapImageUrl) : (resource.kindMetadata ?? null);
-	const ogImage = mapHostedImage(resource.ogImageUrl);
+	const withHostedAvatar = ({ avatarUrl, ...creator }: ResourceCreator): ResourceCreator =>
+		avatarUrl === undefined ? creator : { ...creator, avatarUrl: mapHostedImage(avatarUrl).deliveryUrl };
+	const metadata = resource.kindMetadata;
+	const kindMetadata =
+		metadata && 'attachments' in metadata
+			? {
+					...metadata,
+					attachments: metadata.attachments.map((attachment) => ({ ...attachment, url: mapHostedImage(attachment.url).deliveryUrl })),
+					...(metadata.quote ? { quote: { ...metadata.quote, creator: withHostedAvatar(metadata.quote.creator) } } : {}),
+				}
+			: metadata;
+	const ogImage = resource.ogImageUrl === null ? null : mapHostedImage(resource.ogImageUrl);
 	const result = {
-		creators: resource.creators?.map((creator) => withHostedAvatar(creator, mapImageUrl)) ?? [],
+		creators: resource.creators.map(withHostedAvatar),
 		kindMetadata,
 		ogImageHeight: ogImage?.height ?? null,
 		ogImageUrl: ogImage?.deliveryUrl ?? null,

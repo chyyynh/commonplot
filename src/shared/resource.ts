@@ -58,7 +58,6 @@ export const RESOURCE_KIND_METADATA = {
 } as const;
 
 export type ResourceKind = keyof typeof RESOURCE_KIND_METADATA;
-export type PostKindMetadata = z.infer<typeof RESOURCE_KIND_METADATA.post>;
 export type ResourceKindMetadata = z.infer<(typeof RESOURCE_KIND_METADATA)[ResourceKind]>;
 
 export const RESOURCE_PLATFORMS = {
