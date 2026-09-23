@@ -13,6 +13,7 @@ import {
 	paperIdentifiersFromIdentity,
 	paperIdentityFromIdentifiers,
 } from '../../shared/paper-identity';
+import { readBoundedResponseText } from '../../shared/response';
 import type { AcquiredResource } from '../acquisition';
 import { resolveCrossrefPaper, resolveCrossrefPaperCandidate } from '../crossref';
 import { storePublicPdfResponse } from '../zotero-sdt-service.ts';
@@ -25,6 +26,7 @@ const PAPER_METADATA_STEP = { retries: { limit: 2, delay: '15 seconds', backoff:
 
 const OPENALEX_BASE = 'https://api.openalex.org';
 const REQUEST_TIMEOUT_MS = 8_000;
+const MAX_OPENALEX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const CONTENT_REQUEST_TIMEOUT_MS = 90_000;
 
 const OpenAlexLocationSchema = z.object({
@@ -152,7 +154,9 @@ async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: reado
 		const ErrorType = [400, 401, 403, 410, 422].includes(response.status) ? NonRetryableError : Error;
 		throw new ErrorType(`OpenAlex request failed with HTTP ${response.status}${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
 	}
-	const work = OpenAlexWorkSchema.parse(await response.json());
+	const work = OpenAlexWorkSchema.parse(
+		JSON.parse(await readBoundedResponseText(response, MAX_OPENALEX_RESPONSE_BYTES, 'OpenAlex response')),
+	);
 	return normalizeOpenAlexWork(work, input.identifiers);
 }
 
@@ -238,22 +242,21 @@ export async function stagePaperAcquisition(env: CoreEnv, step: WorkflowStep, in
 		const startedAt = Date.now();
 		try {
 			if (provider === 'crossref') {
-				if (doi) {
-					const stream = await step.do(
-						'resolve-pdf-paper-crossref-by-doi-v3',
-						PAPER_METADATA_STEP,
-						async () => Response.json(await resolveCrossrefPaper(doi)).body!,
-					);
-					crossref = await new Response(stream).json<Awaited<ReturnType<typeof resolveCrossrefPaper>>>();
-				} else {
-					crossref = await step.do('confirm-stored-pdf-with-crossref-v2', PAPER_METADATA_STEP, () =>
-						resolveCrossrefPaperCandidate(candidate!.title, candidate!.authors),
-					);
-				}
-			} else {
-				openAlex = await step.do('resolve-paper-openalex-with-citations-v4', PAPER_METADATA_STEP, () =>
-					resolveOpenAlexPaper({ apiKey: env.OPENALEX_API_KEY, identifiers }),
+				const stream = await step.do(
+					doi ? 'resolve-pdf-paper-crossref-by-doi-v3' : 'confirm-stored-pdf-with-crossref-v3',
+					PAPER_METADATA_STEP,
+					async () =>
+						Response.json(doi ? await resolveCrossrefPaper(doi) : await resolveCrossrefPaperCandidate(candidate!.title, candidate!.authors))
+							.body!,
 				);
+				crossref = await new Response(stream).json<Awaited<ReturnType<typeof resolveCrossrefPaper>>>();
+			} else {
+				const stream = await step.do(
+					'resolve-paper-openalex-with-citations-v5',
+					PAPER_METADATA_STEP,
+					async () => Response.json(await resolveOpenAlexPaper({ apiKey: env.OPENALEX_API_KEY, identifiers })).body!,
+				);
+				openAlex = await new Response(stream).json<Awaited<ReturnType<typeof resolveOpenAlexPaper>>>();
 			}
 			console.info({
 				tag: 'PAPER_PROVIDER',

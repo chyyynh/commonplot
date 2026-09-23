@@ -86,6 +86,8 @@ GROBID and Crossref preserve complete titles and author names; GROBID does not c
 
 Known DOIs use Crossref's `/works/{doi}` endpoint with an encoded identifier; they never enter the comma-delimited filter grammar. A missing work returns no enrichment. Candidate/reference searches retain field projection and a 256 KiB response limit. Single-work responses do not support projection, so they allow up to 8 MiB; only normalized metadata enters the streamed Workflow checkpoint.
 
+OpenAlex responses are bounded to 8 MiB before parsing. All paper metadata checkpoints use streams so complete normalized metadata can exceed the 1 MiB non-stream limit without discarding enrichment or repeating provider requests.
+
 #### Quality and retries
 
 `structuredPdfVisualPlan` selects semantic figures/tables and conservative caption-bounded regions. It retains author text while excluding repeated first-page affiliation blocks misclassified as tables. The 64-crop budget and unavailable/ambiguous geometry produce explicit missing-region outcomes. Inferred regions remain marked `caption-region-inferred`; usable text does not imply proven visual completeness. No inferred region automatically authorizes a paid OCR provider.
@@ -325,7 +327,10 @@ incompatible graph change; do not add another binding or entrypoint. See
 ### Paper enrichment
 
 Exact DOI, arXiv, and OpenAlex identities resolve through the official OpenAlex
-REST API. Provider failures preserve an existing compact academic snapshot.
+REST API for URL acquisition. Already parsed PDFs with a publication DOI use
+Crossref; uploaded PDFs without identifiers require a GROBID title/author
+candidate confirmed by Crossref. Provider failures retain the acquired body
+and source identifiers without inventing missing academic metadata.
 
 ## Adding an Ingest Adapter
 
@@ -342,9 +347,9 @@ Keep the axes separate: acquisition (generic web or a specialized adapter) is
 not canonical `ResourcePlatform` (`youtube`, `twitter`, `hackernews`, `lesswrong`, or null),
 `ResourceKind` (`blog`, `forum`, `post`, `video`, `paper`, `image`, `file`), blob
 representation (MIME/filename/size/pages), or lifecycle origin (`source`,
-`saved_url`, `upload`, `generated`). External URL PDF extraction happens from
-the acquired response without an R2 write; uploaded PDF extraction reads the
-app-owned blob. Neither representation is an additional identity value.
+`saved_url`, `upload`, `generated`). External URL PDFs are checkpointed in R2
+before parsing; uploaded PDF extraction reads the app-owned blob. Neither
+representation is an additional identity value.
 
 Curated sources store only their operational `feed` or `twitter` cron route in
 `Source.monitorKind`. Feed entries acquire their canonical URL, where normal
