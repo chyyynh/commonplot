@@ -12,11 +12,12 @@ surface.
 | Rebuild binding | `SEARCH_INDEX_REBUILD_WORKFLOW` |
 | Physical Workflow | `newsence-search-index-rebuild` |
 | Entrypoint | `SearchIndexRebuildWorkflow` |
-| Current runner | `search-index-rebuild-v6-native-v1` |
+| Current runner | `search-index-rebuild-v6-metadata-v2` |
 | Observability | Native Workflow instance status/output and AI Search item status |
 
-The instance owns four custom metadata fields: `effective_at`, `source_id`,
-`kind`, and `resource_platform`. A null platform is stored as
+The instance owns three custom metadata fields: `published_at`, `kind`,
+and `resource_platform`. Monitored-source provenance stays in PostgreSQL.
+A null platform is stored as
 `none`. Searchable identities are:
 
 - `blog / none`
@@ -29,6 +30,10 @@ The instance owns four custom metadata fields: `effective_at`, `source_id`,
 Private `image` and `file` Resources never enter this index. PostgreSQL is the
 canonical corpus; AI Search is a keyed, eventually consistent secondary index.
 Web hydrates and authoritatively filters every returned Resource ID.
+
+This runner removes the unused custom `source_id` field from both search
+instances. Updating the custom metadata schema triggers a full re-index;
+complete the rebuild before judging its readiness.
 
 ## Runtime sync
 
@@ -88,7 +93,7 @@ runner ID:
 pnpm -C workers/core-worker exec wrangler workflows trigger \
   newsence-search-index-rebuild \
   '{}' \
-  --id search-index-rebuild-v6-native-v1
+  --id search-index-rebuild-v6-metadata-v2
 ```
 
 ## Verify
@@ -98,7 +103,7 @@ Inspect the same Workflow instance:
 ```sh
 pnpm -C workers/core-worker exec wrangler workflows instances describe \
   newsence-search-index-rebuild \
-  search-index-rebuild-v6-native-v1
+  search-index-rebuild-v6-metadata-v2
 ```
 
 A completed instance has already returned a final observation with:

@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { sha256Hex } from '../shared/hash';
@@ -63,10 +64,27 @@ export async function enqueueSourceDrafts(
 	if (!targets.length) return 0;
 	const resolvedUrls = targets.map(({ url }) => resolveResourceUrl(url)!);
 	const known = await findResourcesByUrls(db, resolvedUrls);
+	const unassigned = known.flatMap(({ resourceId, sourceId }) => (resourceId && !sourceId ? [resourceId] : []));
+	// A readable original only needs its discovery source attached.
+	const attached = new Set<string>();
+	if (unassigned.length) {
+		const { rows } = await db.execute<{ id: string }>(sql`
+			UPDATE resources
+			SET source_id = ${sourceId}::uuid, updated_at = NOW()
+			WHERE id = ANY(${sql.param(unassigned)}::uuid[]) AND scope = 'corpus' AND source_id IS NULL
+			  AND EXISTS (
+			    SELECT 1 FROM resource_translations original
+			    WHERE original.resource_id = resources.id AND original.lang = resources.original_lang
+			      AND BTRIM(original.title) <> '' AND BTRIM(original.content) <> ''
+			  )
+			RETURNING id::text
+		`);
+		for (const { id } of rows) attached.add(id);
+	}
 	const instances = await Promise.all(
 		known
 			.flatMap(({ resourceId, sourceId: existingSourceId, normalizedUrl }, index) =>
-				resourceId && existingSourceId ? [] : [{ target: targets[index]!, normalizedUrl }],
+				resourceId && (existingSourceId || attached.has(resourceId)) ? [] : [{ target: targets[index]!, normalizedUrl }],
 			)
 			.map(async ({ target, normalizedUrl }) => ({
 				id: `source-draft-v7-${await sha256Hex(`${sourceId}:${normalizedUrl}`)}`,

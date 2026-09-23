@@ -64,7 +64,6 @@ type CorpusTranslationRow = {
 
 type CorpusDocument = {
 	id: string;
-	source_id: string | null;
 	kind: SearchableResourceKind;
 	resource_platform: ResourcePlatform | null;
 	original_lang: string;
@@ -146,7 +145,6 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 	if (!resourceIds.length) return [];
 	const result = await db.execute<CorpusDocument>(sql`
 		SELECT r.id::text,
-		       r.source_id::text,
 		       r.kind,
 		       r.resource_platform,
 		       r.original_lang,
@@ -185,7 +183,6 @@ export async function upsertCorpusItem(env: CoreEnv, document: CorpusDocument): 
 	const options = {
 		metadata: {
 			...(publishedAt ? { published_at: publishedAt.toISOString() } : {}),
-			...(document.source_id ? { source_id: document.source_id } : {}),
 			kind: document.kind,
 			resource_platform: document.resource_platform ?? NULL_RESOURCE_PLATFORM_METADATA,
 		},

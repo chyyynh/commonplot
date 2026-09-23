@@ -85,8 +85,12 @@ async function findResourceCandidates(
 	identities: readonly { url: string | null; normalizedUrl: string | null; identifiers: ResolvedResourceUrl['identifiers'] }[],
 ) {
 	if (!identities.length) return [];
-	const { rows } = await db.execute<{ owners: { id: string; sourceId: string | null; scope: 'corpus' | 'private' }[] }>(sql`
-		SELECT COALESCE(jsonb_agg(jsonb_build_object('id', resource.id, 'sourceId', resource.source_id, 'scope', resource.scope))
+	const { rows } = await db.execute<{
+		owners: { id: string; sourceId: string | null; scope: 'corpus' | 'private'; hasOriginal: boolean }[];
+	}>(sql`
+		SELECT COALESCE(jsonb_agg(jsonb_build_object(
+		  'id', resource.id, 'sourceId', resource.source_id, 'scope', resource.scope,
+		  'hasOriginal', COALESCE(BTRIM(original.title) <> '' AND BTRIM(original.content) <> '', false)))
 		  FILTER (WHERE resource.id IS NOT NULL), '[]'::jsonb) AS owners
 		FROM jsonb_array_elements(${JSON.stringify(identities.map(({ url, normalizedUrl, identifiers }) => ({ url, normalizedUrl, identifiers })))}::jsonb) WITH ORDINALITY AS input(value, ordinal)
 		LEFT JOIN LATERAL (
@@ -97,17 +101,18 @@ async function findResourceCandidates(
 			JOIN resource_identifiers stored USING (scheme, value)
 		) candidate ON true
 		LEFT JOIN resources resource ON resource.id = candidate.id
+		LEFT JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 		GROUP BY input.ordinal ORDER BY input.ordinal
 	`);
 	return rows.map(({ owners }) => owners);
 }
 
-/** Admission only reuses an unambiguous public identity. */
+/** Admission only reuses an unambiguous public identity with a readable original. */
 export async function findResourcesByUrls(db: NodePgDatabase, urls: readonly ResolvedResourceUrl[]) {
 	const candidates = await findResourceCandidates(db, urls);
 	return urls.map(({ url, normalizedUrl }, index) => {
 		const owners = candidates[index]!.filter(({ scope }) => scope === 'corpus');
-		const owner = owners.length === 1 ? owners[0] : null;
+		const owner = owners.length === 1 && owners[0]!.hasOriginal ? owners[0] : null;
 		return { url, normalizedUrl, resourceId: owner?.id ?? null, sourceId: owner?.sourceId ?? null };
 	});
 }

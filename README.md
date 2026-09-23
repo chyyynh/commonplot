@@ -67,9 +67,10 @@ Content arrives (source monitor / saved URL / uploaded blob / resync)
 
 URL, source, and derived-subject attempts carry immutable Workflow drafts and create no
 Resource row until step 4 succeeds. App-owned uploads are the record-first exception because
-their ownership, quota, and blob locator already exist. Source monitors filter completed
-canonical Resources in PostgreSQL before enqueueing; only in-flight and failed attempts use
-short native Workflow retention. Each durable step retries independently.
+their ownership, quota, and blob locator already exist. Source monitors reuse canonical
+Resources with a readable original and attach missing source provenance directly, without
+repeating acquisition or AI work. Incomplete originals still enter the Workflow. Only
+in-flight and failed attempts use short native Workflow retention. Each durable step retries independently.
 
 ### PDF processing and recovery
 
@@ -273,10 +274,11 @@ Secrets (via `wrangler secret put`):
 
 ### Canonical AI Search v6
 
-`AI_SEARCH` serves `newsence-corpus-v6`. Its four custom metadata fields are
-`published_at`, `source_id`, `kind`, and `resource_platform`; null
+`AI_SEARCH` serves `newsence-corpus-v6`. Its three custom metadata fields are
+`published_at`, `kind`, and `resource_platform`; null
 platforms use the reserved `none` sentinel. PostgreSQL remains canonical;
 AI Search stores only keyed search documents and eventually consistent status.
+Monitored-source provenance stays in PostgreSQL and does not affect indexed content.
 
 The searchable identity pairs are `blog / none`, `blog / lesswrong`,
 `forum / hackernews`, `post / twitter`, `video / youtube`, and `paper / none`.
@@ -289,11 +291,11 @@ The runner ID carries the serving-index version:
 pnpm exec wrangler workflows trigger \
   newsence-search-index-rebuild \
   '{}' \
-  --id search-index-rebuild-v6-publication-time-v1
+  --id search-index-rebuild-v6-metadata-v2
 
 pnpm exec wrangler workflows instances describe \
   newsence-search-index-rebuild \
-  search-index-rebuild-v6-publication-time-v1
+  search-index-rebuild-v6-metadata-v2
 ```
 
 Wrangler's native instance description is the operator view of Workflow status,
