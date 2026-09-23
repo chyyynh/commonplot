@@ -1,7 +1,7 @@
 import { type FeedEntry as ExtractedFeedEntry, extractFromJson, extractFromXml } from '@extractus/feed-extractor';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { limitByteStream } from '../../shared/response';
+import { readBoundedResponseText } from '../../shared/response';
 import { enqueueSourceDrafts, type SourceResourceDraft } from '../admission';
 import { resolveResourceUrl } from './resource-url';
 
@@ -31,12 +31,11 @@ function createFeedDrafts(items: ExtractedFeedEntry[], feedLanguage?: string) {
 	for (const item of items) {
 		const url = feedEntryUrl(item);
 		if (!url || entries.has(url.normalizedUrl)) continue;
-		const date = item.published ? new Date(item.published) : null;
 		entries.set(url.normalizedUrl, {
 			url: url.url,
 			sourceHints: {
-				summary: item.description?.slice(0, FEED_SUMMARY_MAX_CHARS) || undefined,
-				publishedDate: date && !Number.isNaN(date.getTime()) ? date.toISOString() : undefined,
+				summary: item.description || undefined,
+				publishedDate: item.published || undefined,
 				originalLang: feedLanguage,
 			},
 		});
@@ -44,7 +43,7 @@ function createFeedDrafts(items: ExtractedFeedEntry[], feedLanguage?: string) {
 	return [...entries.values()];
 }
 
-async function loadFeed(feed: MonitoredFeedSource) {
+async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeedSource): Promise<void> {
 	const requestedUrl = resolveResourceUrl(feed.handle)?.url;
 	if (!requestedUrl) {
 		throw new Error('Enter a valid feed URL (http/https).');
@@ -67,8 +66,7 @@ async function loadFeed(feed: MonitoredFeedSource) {
 		throw new Error('Feed redirected to an invalid URL.');
 	}
 
-	const body = response.body && limitByteStream(response.body, MAX_FEED_BYTES, () => new Error(`Feed exceeded ${MAX_FEED_BYTES} bytes`));
-	const content = await new Response(body).text();
+	const content = await readBoundedResponseText(response, MAX_FEED_BYTES, 'Feed');
 	const parserOptions = {
 		baseUrl: effectiveUrl,
 		descriptionMaxLen: FEED_SUMMARY_MAX_CHARS,
@@ -78,15 +76,8 @@ async function loadFeed(feed: MonitoredFeedSource) {
 			? extractFromJson(content, parserOptions)
 			: extractFromXml(content, parserOptions);
 	const items = (parsed.entries ?? []).slice(0, MAX_FEED_ITEMS);
-	return {
-		itemCount: items.length,
-		drafts: createFeedDrafts(items, parsed.language?.trim() || undefined),
-	};
-}
-
-async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeedSource): Promise<void> {
-	const { drafts, itemCount } = await loadFeed(feed);
-	const skipped = itemCount - drafts.length;
+	const drafts = createFeedDrafts(items, parsed.language?.trim() || undefined);
+	const skipped = items.length - drafts.length;
 	if (skipped) console.warn({ tag: 'RSS', msg: 'Skipped invalid or duplicate feed items', feed: feed.name, count: skipped });
 
 	const created = await enqueueSourceDrafts(env, db, feed.id, drafts);
@@ -96,7 +87,7 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeed
 		feed: feed.name,
 		created,
 		deduplicated: drafts.length - created,
-		totalCount: itemCount,
+		totalCount: items.length,
 	});
 	const scrapedAt = new Date();
 	await db.execute(sql`
