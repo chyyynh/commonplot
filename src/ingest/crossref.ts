@@ -131,10 +131,6 @@ function crossrefResolution(work: CrossrefWork) {
 	};
 }
 
-function selectCrossrefResolution(rawResponse: unknown, matches: (work: CrossrefWork) => boolean) {
-	return CrossrefResponseSchema.parse(rawResponse).message.items.filter(matches).map(crossrefResolution).find(Boolean) ?? null;
-}
-
 async function fetchCrossref(params: Readonly<Record<string, string>>, doi?: string): Promise<unknown> {
 	const url = new URL(doi ? `${CROSSREF_WORKS_URL}/${encodeURIComponent(doi)}` : CROSSREF_WORKS_URL);
 	url.search = new URLSearchParams({ mailto: CROSSREF_CONTACT, ...params }).toString();
@@ -155,32 +151,32 @@ async function fetchCrossref(params: Readonly<Record<string, string>>, doi?: str
 	);
 }
 
-export async function resolveCrossrefReference(citation: string) {
+export async function resolveCrossrefReferenceDoi(citation: string) {
 	const query = citation.trim();
 	if (!query) throw new TypeError('Crossref citation must not be empty');
-	return selectCrossrefResolution(
-		await fetchCrossref({
-			'query.bibliographic': query.slice(0, MAX_CITATION_QUERY_CHARS),
-			rows: String(CROSSREF_ROWS),
-			select: 'DOI,title,author,published,container-title',
-		}),
-		(work) => workMatchesCitation(query, work),
-	);
+	const response = await fetchCrossref({
+		'query.bibliographic': query.slice(0, MAX_CITATION_QUERY_CHARS),
+		rows: String(CROSSREF_ROWS),
+		select: 'DOI,title,author,published',
+	});
+	const matches = CrossrefResponseSchema.parse(response).message.items.filter((work) => workMatchesCitation(query, work));
+	return matches.map((work) => normalizeDoi(work.DOI)).find(Boolean) ?? null;
 }
 
 export async function resolveCrossrefPaperCandidate(title: string, authors: readonly string[]) {
 	const queryTitle = title.trim();
 	const queryAuthor = authors[0]?.trim();
 	if (!queryTitle || !queryAuthor) throw new TypeError('Crossref paper title and author must not be empty');
-	return selectCrossrefResolution(
-		await fetchCrossref({
-			'query.author': queryAuthor.slice(0, MAX_AUTHOR_QUERY_CHARS),
-			'query.title': queryTitle.slice(0, MAX_TITLE_QUERY_CHARS),
-			rows: String(CROSSREF_ROWS),
-			select: 'DOI,title,author,published,container-title,type,is-referenced-by-count,references-count',
-		}),
-		(work) => workMatchesPaperCandidate(queryTitle, authors, work),
+	const response = await fetchCrossref({
+		'query.author': queryAuthor.slice(0, MAX_AUTHOR_QUERY_CHARS),
+		'query.title': queryTitle.slice(0, MAX_TITLE_QUERY_CHARS),
+		rows: String(CROSSREF_ROWS),
+		select: 'DOI,title,author,published,container-title,type,is-referenced-by-count,references-count',
+	});
+	const matches = CrossrefResponseSchema.parse(response).message.items.filter((work) =>
+		workMatchesPaperCandidate(queryTitle, authors, work),
 	);
+	return matches.map(crossrefResolution).find(Boolean) ?? null;
 }
 
 export async function resolveCrossrefPaper(doi: string) {

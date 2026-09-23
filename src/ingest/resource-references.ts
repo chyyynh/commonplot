@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { sql } from 'drizzle-orm';
 import { connectCoreDb } from '../shared/db';
-import { resolveCrossrefReference } from './crossref';
+import { resolveCrossrefReferenceDoi } from './crossref';
 import { createResourceTask, registerResourceTask, type ResourceTaskContext } from './progress';
 
 const CROSSREF_BATCH_SIZE = 3;
@@ -19,7 +19,7 @@ async function resolveReferenceDois(step: WorkflowStep, references: readonly Sto
 					.do(
 						`resolve-crossref-reference-doi-v2-${ordinal}`,
 						{ retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-						async () => (await resolveCrossrefReference(text))?.doi ?? null,
+						() => resolveCrossrefReferenceDoi(text),
 					)
 					.catch((error) => {
 						console.warn({
