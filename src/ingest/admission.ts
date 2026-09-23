@@ -45,23 +45,24 @@ export const ResourceImportDispatchSchema = z.strictObject({
 	payload: z.discriminatedUnion('kind', [ResourceDraftTargetSchema, StoredResourceTargetSchema.extend({ kind: z.literal('storedBlob') })]),
 });
 
-export type SourceResourceDraft = Pick<z.infer<typeof ResourceDraftTargetSchema>, 'url' | 'sourceHints'>;
+const SourceResourceDraftSchema = ResourceDraftTargetSchema.pick({ url: true, sourceHints: true });
+export type SourceResourceDraft = z.infer<typeof SourceResourceDraftSchema>;
 
 /** Crosses the discovery -> Resource Workflow boundary for every monitor. */
-export async function enqueueSourceDrafts(
-	env: CoreEnv,
-	db: NodePgDatabase,
-	sourceId: string,
-	drafts: SourceResourceDraft[],
-): Promise<number> {
-	const targets = drafts.map((draft) =>
-		ResourceDraftTargetSchema.parse({
-			...draft,
-			kind: 'draft',
-			relation: { kind: 'source', sourceId },
-		}),
-	);
-	if (!targets.length) return 0;
+export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, sourceId: string, drafts: SourceResourceDraft[]) {
+	const relation = { kind: 'source' as const, sourceId: z.uuid().parse(sourceId) };
+	const targets = drafts.flatMap((draft, index) => {
+		const parsed = SourceResourceDraftSchema.safeParse(draft);
+		if (parsed.success) return [{ ...parsed.data, kind: 'draft' as const, relation }];
+		console.warn({
+			tag: 'SOURCE',
+			msg: 'Invalid source draft skipped',
+			source_id: sourceId,
+			item_index: index,
+			error: parsed.error.message,
+		});
+		return [];
+	});
 	const resolvedUrls = targets.map(({ url }) => resolveResourceUrl(url)!);
 	const known = await findResourcesByUrls(db, resolvedUrls);
 	const unassigned = known.flatMap(({ resourceId, sourceId }) => (resourceId && !sourceId ? [resourceId] : []));
@@ -96,5 +97,5 @@ export async function enqueueSourceDrafts(
 	for (let offset = 0; offset < instances.length; offset += 100) {
 		created += (await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(instances.slice(offset, offset + 100))).length;
 	}
-	return created;
+	return { created, deduplicated: targets.length - created, skipped: drafts.length - targets.length };
 }

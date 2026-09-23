@@ -156,8 +156,13 @@ async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Iterable<
 		}
 	}
 	const pending = [...drafts.values()];
-	const created = await enqueueSourceDrafts(env, db, source.id, pending);
-	return { admittedDrafts: pending.length, created, deduplicated: pending.length - created, skippedItems };
+	const admission = await enqueueSourceDrafts(env, db, source.id, pending);
+	return {
+		admittedDrafts: pending.length - admission.skipped,
+		created: admission.created,
+		deduplicated: admission.deduplicated,
+		skippedItems: skippedItems + admission.skipped,
+	};
 }
 
 async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: TwitterSource, windowEnd: Date) {

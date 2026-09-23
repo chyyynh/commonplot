@@ -80,13 +80,13 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeed
 	const skipped = items.length - drafts.length;
 	if (skipped) console.warn({ tag: 'RSS', msg: 'Skipped invalid or duplicate feed items', feed: feed.name, count: skipped });
 
-	const created = await enqueueSourceDrafts(env, db, feed.id, drafts);
+	const admission = await enqueueSourceDrafts(env, db, feed.id, drafts);
 	console.info({
 		tag: 'RSS',
 		msg: 'Feed processed',
 		feed: feed.name,
-		created,
-		deduplicated: drafts.length - created,
+		...admission,
+		skipped: skipped + admission.skipped,
 		totalCount: items.length,
 	});
 	const scrapedAt = new Date();
