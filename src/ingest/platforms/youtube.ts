@@ -19,12 +19,7 @@ export type YouTubeTranscript = Readonly<{
 	language: string | null;
 	chapters: YouTubeChapter[];
 }>;
-export type YouTubeHighlights = z.infer<typeof YouTubeHighlightsSchema> &
-	Readonly<{
-		version: '1.0';
-		model: string;
-		generatedAt: string;
-	}>;
+export type YouTubeHighlights = z.infer<typeof YouTubeHighlightsSchema>;
 
 const YouTubeThumbnailSchema = z.object({ url: z.string().min(1) });
 const YouTubeThumbnailsSchema = z.object({
@@ -34,7 +29,6 @@ const YouTubeThumbnailsSchema = z.object({
 	standard: YouTubeThumbnailSchema.optional(),
 	maxres: YouTubeThumbnailSchema.optional(),
 });
-const YouTubeCountSchema = z.string().regex(/^\d+$/).transform(Number);
 const YouTubeApiErrorSchema = z.object({ message: z.string() });
 const YouTubeVideoItemSchema = z.object({
 	id: z.string().min(1),
@@ -48,11 +42,6 @@ const YouTubeVideoItemSchema = z.object({
 		thumbnails: YouTubeThumbnailsSchema,
 	}),
 	contentDetails: z.object({ duration: z.string().min(1) }),
-	statistics: z.object({
-		viewCount: YouTubeCountSchema.optional(),
-		likeCount: YouTubeCountSchema.optional(),
-		commentCount: YouTubeCountSchema.optional(),
-	}),
 });
 const YouTubeVideosResponseSchema = z.object({
 	items: z.array(YouTubeVideoItemSchema).optional(),
@@ -132,7 +121,7 @@ function toSeconds(value: string | number | undefined, field: string, videoId: s
 async function fetchYouTubeVideoData(videoId: string, youtubeApiKey: string) {
 	const url = new URL('https://www.googleapis.com/youtube/v3/videos');
 	url.searchParams.set('id', videoId);
-	url.searchParams.set('part', 'snippet,contentDetails,statistics');
+	url.searchParams.set('part', 'snippet,contentDetails');
 	url.searchParams.set('key', youtubeApiKey);
 
 	try {
@@ -225,7 +214,6 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 
 	const video = videoData.items[0];
 	const snippet = video.snippet;
-	const stats = video.statistics;
 
 	const durationSeconds = isoDurationSeconds(video.contentDetails.duration);
 	const thumbnailUrl = bestThumbnailUrl(snippet.thumbnails);
@@ -265,10 +253,7 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 					},
 				]
 			: [],
-		kindMetadata: {
-			...(durationSeconds === null ? {} : { durationSeconds }),
-			...stats,
-		},
+		kindMetadata: durationSeconds === null ? {} : { durationSeconds },
 		previewImageUrl: thumbnailUrl?.trim() || null,
 		subjectUrl: null,
 		youtube: { ...transcript, language: transcript.language ?? snippet.defaultAudioLanguage ?? null, chapters },
@@ -347,13 +332,7 @@ async function prepareYouTubeHighlightsFromTranscript(
 		maxRetries: 0,
 	});
 	if (finishReason === 'length') throw new Error(`YouTube highlights hit the output token cap for ${processingId}`);
-	if (!highlights?.highlights.length) throw new Error(`YouTube highlights did not return valid output for ${processingId}`);
 
 	console.info({ tag: 'AI', msg: 'YouTube highlights generated', resource_id: processingId, count: highlights.highlights.length });
-	return {
-		version: '1.0',
-		model: CORE_TEXT_MODEL,
-		highlights: highlights.highlights,
-		generatedAt: new Date().toISOString(),
-	};
+	return highlights;
 }

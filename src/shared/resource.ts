@@ -45,9 +45,6 @@ export const RESOURCE_KIND_METADATA = {
 	post: z.object({ attachments: z.array(ResourceMediaAttachmentSchema).max(16), quote: PostQuoteSchema.optional() }),
 	video: z.object({
 		durationSeconds: z.int().positive().optional(),
-		viewCount: z.int().nonnegative().optional(),
-		likeCount: z.int().nonnegative().optional(),
-		commentCount: z.int().nonnegative().optional(),
 	}),
 	paper: z.object({
 		venue: z.string().trim().min(1).optional(),
