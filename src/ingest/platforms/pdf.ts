@@ -21,7 +21,7 @@ type PdfAcquisition = Readonly<{
 }>;
 
 type StoredPdfRow = {
-	content_hash: string | null;
+	content_hash: string;
 	creators: unknown;
 	original_lang: string;
 	published_date: string | null;
@@ -57,9 +57,6 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 	if (!row) throw new NonRetryableError(`Failed to fetch stored PDF ${resourceId}: not found or not an owned private blob`);
 	const title = row.title?.trim();
 	if (!title) throw new NonRetryableError(`Stored PDF ${resourceId} has no title`);
-	if (!row.content_hash || !/^[a-f\d]{64}$/u.test(row.content_hash)) {
-		throw new NonRetryableError(`Stored PDF ${resourceId} has no valid content hash`);
-	}
 	const publishedDate = row.published_date === null ? null : new Date(row.published_date);
 	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new NonRetryableError('Invalid published_date: expected date');
 	const creators = ResourceCreatorsSchema.safeParse(row.creators);
