@@ -264,14 +264,13 @@ async function writeCanonicalResource(
 	if (resource.youtube) {
 		const transcript = resource.youtube;
 		await db.execute(sql`
-			INSERT INTO youtube_transcripts (resource_id, transcript, language, chapters, ai_highlights)
+			INSERT INTO youtube_transcripts (resource_id, transcript, chapters, ai_highlights)
 			VALUES (
-				${resourceId}::uuid, ${JSON.stringify(transcript.segments)}::jsonb, ${transcript.language},
+				${resourceId}::uuid, ${JSON.stringify(transcript.segments)}::jsonb,
 				${JSON.stringify(transcript.chapters)}::jsonb, NULL
 			)
 			ON CONFLICT (resource_id) DO UPDATE SET
 				transcript = EXCLUDED.transcript,
-				language = EXCLUDED.language,
 				chapters = EXCLUDED.chapters,
 				ai_highlights = EXCLUDED.ai_highlights
 		`);

@@ -16,7 +16,6 @@ type YouTubeTranscriptSegment = Readonly<{ startTime: number; endTime: number; t
 type YouTubeChapter = { title: string; startTime: number; endTime?: number };
 export type YouTubeTranscript = Readonly<{
 	segments: YouTubeTranscriptSegment[];
-	language: string | null;
 	chapters: YouTubeChapter[];
 }>;
 export type YouTubeHighlights = z.infer<typeof YouTubeHighlightsSchema>;
@@ -170,7 +169,7 @@ async function fetchChannelAvatar(youtubeApiKey: string, channelId: string): Pro
 	}
 }
 
-async function fetchTranscript(videoId: string): Promise<Pick<YouTubeTranscript, 'segments' | 'language'>> {
+async function fetchTranscript(videoId: string): Promise<{ segments: YouTubeTranscriptSegment[]; language: string | null }> {
 	const { YoutubeTranscript } = await import('youtube-transcript');
 	let items: TranscriptResponse[];
 	try {
@@ -256,7 +255,7 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 		kindMetadata: durationSeconds === null ? {} : { durationSeconds },
 		previewImageUrl: thumbnailUrl?.trim() || null,
 		subjectUrl: null,
-		youtube: { ...transcript, language: transcript.language ?? snippet.defaultAudioLanguage ?? null, chapters },
+		youtube: { segments: transcript.segments, chapters },
 	} satisfies AcquiredResource & { youtube: YouTubeTranscript };
 }
 

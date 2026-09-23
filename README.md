@@ -72,6 +72,8 @@ Resources with a readable original and attach missing source provenance directly
 repeating acquisition or AI work. Incomplete originals still enter the Workflow. Only
 in-flight and failed attempts use short native Workflow retention. Each durable step retries independently.
 
+YouTube language is normalized once into `resources.original_lang`; the transcript table stores only timed text, chapters and highlights. Apply `20260923100000_drop_unused_youtube_language` after deploying Core that no longer writes the duplicate column and draining older Workflow versions. This migration does not change resource languages or transcript content.
+
 ### PDF processing and recovery
 
 Core uses the pinned Zotero document-worker for structured text and source-region rendering. Uploaded and fetched PDFs share `parseStoredPdfRepresentation`; Web only projects persisted renditions and authorizes their media.
