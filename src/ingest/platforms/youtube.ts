@@ -273,12 +273,42 @@ export async function stageYouTubeHighlights(
 ) {
 	if (!transcript.segments.length || transcript.chapters.length) return;
 	const highlights = await step.do(
-		'prepare-youtube-highlights-v3',
+		'prepare-youtube-highlights-v4',
 		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
-		() => prepareYouTubeHighlightsFromTranscript(env, target.resourceId, transcript.segments),
+		async () => {
+			console.info({ tag: 'AI', msg: 'Generating YouTube highlights', resource_id: target.resourceId });
+			const transcriptText = transcript.segments.map((segment) => `[${Math.floor(segment.startTime)}s] ${segment.text}`).join('\n');
+			const transcriptEndTime = transcript.segments.reduce((end, segment) => Math.max(end, segment.endTime), 0);
+			const { finishReason, output: highlights } = await generateText({
+				model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
+					...CORE_STRUCTURED_MODEL_SETTINGS,
+					...coreGatewayOptions(env, { feature: 'youtube-highlights', processing_id: target.resourceId }),
+				}),
+				prompt: `逐字稿涵蓋到：${transcriptEndTime} 秒\n\n逐字稿：\n${transcriptText}`,
+				system: HIGHLIGHTS_SYSTEM_PROMPT,
+				output: Output.object({
+					name: 'youtube_highlights',
+					schema: YouTubeHighlightsSchema.refine(
+						({ highlights }) =>
+							highlights.every(
+								(highlight, index) =>
+									highlight.endTime <= transcriptEndTime && (index === 0 || highlight.startTime >= highlights[index - 1].endTime),
+							),
+						{ message: 'Highlights must be ordered, non-overlapping and within the transcript duration' },
+					),
+				}),
+				maxOutputTokens: 2000,
+				temperature: 0.3,
+				reasoning: 'none',
+				maxRetries: 0,
+			});
+			if (finishReason === 'length') throw new Error(`YouTube highlights hit the output token cap for ${target.resourceId}`);
+			console.info({ tag: 'AI', msg: 'YouTube highlights generated', resource_id: target.resourceId, count: highlights.highlights.length });
+			return highlights;
+		},
 	);
 	await step.do(
-		'persist-youtube-highlights-v1',
+		'persist-youtube-highlights-v2',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 		async () => persistYouTubeHighlights(await connectCoreDb(env), target, highlights),
 	);
@@ -297,38 +327,9 @@ const HIGHLIGHTS_SYSTEM_PROMPT = `你是專業的影片內容分析師。分析 
 
 規則：
 1. 每個段落代表一個獨立主題
-2. 段落之間不重疊
+2. 段落按時間排列且不重疊，結束時間不得超出逐字稿涵蓋範圍
 3. 標題要精簡有力（30字內）
 4. 時間戳記要準確對應討論內容的起止
 5. 所有文字使用繁體中文
 
 只回傳符合 schema 的資料。`;
-
-async function prepareYouTubeHighlightsFromTranscript(
-	env: CoreEnv,
-	processingId: string,
-	transcript: YouTubeTranscriptSegment[],
-): Promise<YouTubeHighlights> {
-	console.info({ tag: 'AI', msg: 'Generating YouTube highlights', resource_id: processingId });
-
-	const transcriptText = transcript.map((segment) => `[${Math.floor(segment.startTime)}s] ${segment.text}`).join('\n');
-	const last = transcript[transcript.length - 1];
-	const duration = Math.ceil(last.endTime);
-	const { finishReason, output: highlights } = await generateText({
-		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
-			...CORE_STRUCTURED_MODEL_SETTINGS,
-			...coreGatewayOptions(env, { feature: 'youtube-highlights', processing_id: processingId }),
-		}),
-		prompt: `影片總長度：${duration} 秒\n\n逐字稿：\n${transcriptText}`,
-		system: HIGHLIGHTS_SYSTEM_PROMPT,
-		output: Output.object({ name: 'youtube_highlights', schema: YouTubeHighlightsSchema }),
-		maxOutputTokens: 2000,
-		temperature: 0.3,
-		reasoning: 'none',
-		maxRetries: 0,
-	});
-	if (finishReason === 'length') throw new Error(`YouTube highlights hit the output token cap for ${processingId}`);
-
-	console.info({ tag: 'AI', msg: 'YouTube highlights generated', resource_id: processingId, count: highlights.highlights.length });
-	return highlights;
-}
