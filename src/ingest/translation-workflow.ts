@@ -220,6 +220,7 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - 英文冠詞、空白等不需要一一產生中文表面文字；但不要把正文移入或移出 n ID 所屬的 container
 - 維持同一批段落的敘事語氣與術語一致，不要重複相鄰 segment 或 context
 - 忠實完整翻譯，不要摘要、評論、解釋、補充背景或新增原文沒有的資訊
+- 網址與 email 保留原文的字元和間隔，不要修復或補上網址；包含空格的網址也照原樣保留
 - 保留原文語氣、時態、否定、程度、條件、不確定性、引述關係、數字、單位與引用指向
 - 使用台灣常用詞彙與自然的繁體中文標點；中文敘述通常使用全形的，。；：！？、（）與「」『』，不要機械沿用英文半形標點。URL、email、程式碼、版本號、小數與完整英文片語內的符號仍照原文保留
 - 人名、組織、產品和技術術語有通行譯名時採用通行譯名，沒有時保留原文，不要自創譯名或縮寫
@@ -354,7 +355,7 @@ async function translateDurableBatch(
 	depth = 0,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	const result = await step.do(
-		`translate-zh-hant-markdown-${batch.id}-v16`,
+		`translate-zh-hant-markdown-${batch.id}-v17`,
 		{ retries: { limit: 3, delay: translationRetryDelay, backoff: 'constant' }, timeout: '300 seconds' },
 		async () => {
 			try {
@@ -450,7 +451,7 @@ async function translatePlannedContent(content: string, env: CoreEnv, resourceId
 	return translated;
 }
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v32';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v33';
 const ResourceTranslationRevisionSchema = z.hash('md5').lowercase();
 const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
 

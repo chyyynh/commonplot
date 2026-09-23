@@ -738,7 +738,30 @@ export function validateMarkdownBatchTranslations(
 	batch: Pick<MarkdownTranslationBatch, 'segments'>,
 	translations: readonly MarkdownSegmentTranslation[],
 ): readonly MarkdownSegmentTranslation[] {
-	orderedTranslationMap(batch.segments, translations);
+	const values = orderedTranslationMap(batch.segments, translations);
+	const tree: Root = {
+		type: 'root',
+		children: [...values.values()].map((children) => ({ type: 'paragraph', children })),
+	};
+	const sourceTree: Root = {
+		type: 'root',
+		children: batch.segments.map((segment) => ({
+			type: 'paragraph',
+			children: compileMarkdownTranslationTarget(segment, { texts: segment.template.texts }),
+		})),
+	};
+	const links = (node: Nodes): string[] => [
+		...(node.type === 'link' ? [node.url] : []),
+		...(isParent(node) ? node.children.flatMap(links) : []),
+	];
+	// GFM's AST transform can turn even escaped prose URLs into links. Reject
+	// added links inside the retryable batch, before the whole-document compile.
+	if (
+		JSON.stringify(links(parseMarkdown(serializeMarkdown(sourceTree))).sort()) !==
+		JSON.stringify(links(parseMarkdown(serializeMarkdown(tree))).sort())
+	) {
+		throw new MarkdownTranslationInvariantError('invalid-result', 'Translated prose changed the protected Markdown links');
+	}
 	return translations;
 }
 
