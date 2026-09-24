@@ -343,14 +343,13 @@ async function translateDurableBatch(
 			try {
 				return { ok: true as const, translations: await translateMarkdownBatchToZhHant(batch, env, resourceId) };
 			} catch (error) {
-				if (!isMarkdownTranslationFormatError(error)) throw error;
+				if (batch.segments.length === 1 || !isMarkdownTranslationFormatError(error)) throw error;
 				// Persist the format failure so replay goes straight to the same smaller groups.
 				return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
 			}
 		},
 	);
 	if (result.ok) return result.translations;
-	if (batch.segments.length === 1) throw new MarkdownTranslationInvariantError('invalid-result', result.error);
 	const groups = depth === 0 ? splitSegmentsInHalf(batch.segments) : batch.segments.map((segment) => [segment]);
 	const translations: MarkdownSegmentTranslation[] = [];
 	for (const [index, segments] of groups.entries()) {
