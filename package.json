@@ -20,12 +20,12 @@
 		"format": "oxfmt --write \"**/*.{js,cjs,mjs,ts,tsx,json,jsonc}\""
 	},
 	"dependencies": {
-		"@ai-sdk/openai": "^4.0.67",
+		"@ai-sdk/openai": "^4.0.72",
 		"@cloudflare/containers": "^0.3.7",
 		"@extractus/feed-extractor": "8.0.3",
 		"@llamaindex/llama-cloud": "2.16.0",
 		"@mozilla/readability": "0.6.0",
-		"ai": "7.0.102",
+		"ai": "7.0.111",
 		"drizzle-orm": "^0.45.2",
 		"fast-xml-parser": "5.11.1",
 		"franc-min": "^6.2.0",
