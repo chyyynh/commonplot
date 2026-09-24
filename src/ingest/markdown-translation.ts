@@ -328,10 +328,10 @@ function planPhrasing(children: readonly PhrasingContent[], firstInlineIndex: nu
 			const empty = image ? !node.alt : isParent(node) && node.children.length === 0;
 			parts.push({ id });
 			if (empty || isAutolink(node) || (!isParent(node) && !image)) {
-				inlines[id] = { kind: 'atom', node: structuredClone(node) };
+				inlines[id] = { kind: 'atom', node };
 				characterCount += id.length + 3;
 			} else {
-				inlines[id] = { kind: 'container', mode: image ? 'alt' : 'children', node: structuredClone(node) };
+				inlines[id] = { kind: 'container', mode: image ? 'alt' : 'children', node };
 				characterCount += id.length * 2 + 5;
 				visitSequence(image ? [{ type: 'text', value: node.alt ?? '' }] : isParent(node) ? node.children : [], id);
 			}
@@ -470,14 +470,12 @@ function protectedPlainText(node: Nodes): string {
 }
 
 function restoreContainer(inline: ProtectedContainer, children: PhrasingContent[]): PhrasingContent {
-	const node = structuredClone(inline.node);
+	const node = inline.node;
 	if (inline.mode === 'alt' && (node.type === 'image' || node.type === 'imageReference')) {
-		node.alt = children.map((child) => protectedPlainText(child)).join('');
-		return node;
+		return { ...node, alt: children.map((child) => protectedPlainText(child)).join('') };
 	}
 	if (inline.mode === 'children' && isParent(node)) {
-		node.children = children;
-		return node;
+		return { ...node, children };
 	}
 	throw new MarkdownTranslationInvariantError('invalid-plan', 'Protected inline node cannot contain translated prose');
 }
@@ -836,8 +834,7 @@ export function compileMarkdownTranslationArtifact(
 	translations: readonly MarkdownSegmentTranslation[],
 ) {
 	const values = orderedTranslationMap(plan.segments, translations);
-	const sourceTree = parseMarkdown(plan.sourceMarkdown);
-	const tree = structuredClone(sourceTree);
+	const tree = parseMarkdown(plan.sourceMarkdown);
 	for (const target of plan.targets) {
 		const translatedParts = target.segmentIds.map((id) => {
 			const translated = values.get(id);
