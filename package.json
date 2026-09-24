@@ -20,13 +20,13 @@
 		"format": "oxfmt --write \"**/*.{js,cjs,mjs,ts,tsx,json,jsonc}\""
 	},
 	"dependencies": {
-		"@ai-sdk/openai": "^4.0.72",
+		"@ai-sdk/openai": "^4.0.73",
 		"@cloudflare/containers": "^0.3.7",
 		"@extractus/feed-extractor": "8.0.3",
 		"@llamaindex/llama-cloud": "2.16.0",
 		"@mozilla/readability": "0.6.0",
-		"ai": "7.0.111",
-		"drizzle-orm": "^0.45.2",
+		"ai": "7.0.112",
+		"drizzle-orm": "^0.45.3",
 		"fast-xml-parser": "5.11.1",
 		"franc-min": "^6.2.0",
 		"hast-util-from-html": "^2.0.3",
@@ -63,9 +63,9 @@
 		"@types/mdast": "^4.0.4",
 		"@types/node": "^22.20.3",
 		"@types/pg": "^8.23.1",
-		"oxfmt": "0.68.0",
-		"oxlint": "1.83.0",
+		"oxfmt": "0.70.0",
+		"oxlint": "1.85.0",
 		"typescript": "^7.0.2",
-		"wrangler": "^4.132.0"
+		"wrangler": "^4.136.3"
 	}
 }
