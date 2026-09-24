@@ -50,37 +50,16 @@ export function shouldEnqueueResourceTranslation(candidate: ResourceTranslationC
 }
 
 type ResourceTranslationPayload = { force?: boolean; resourceId: string; translationRevision: string };
-const ResourceTranslationSourceSchema = z.enum(['original', 'machine']);
 
 type ResourceTranslationInput = ResourceTranslationCandidate & {
 	id: string;
 	title: string;
 	summary: string | null;
 	content: string;
-	zhHantTranslation: {
-		title: string | null;
-		summary: string | null;
-		content: string | null;
-		source: z.infer<typeof ResourceTranslationSourceSchema>;
-	} | null;
-};
-
-type ResourceTranslationInputRow = {
-	file_type: string | null;
-	id: string;
-	kind: ResourceTranslationCandidate['kind'];
-	resource_platform: ResourceTranslationCandidate['resourcePlatform'];
-	original_lang: string;
-	scope: 'corpus' | 'private';
-	title: string | null;
-	summary: string | null;
-	content: string | null;
-	zh_hant_title: string | null;
-	zh_hant_summary: string | null;
-	zh_hant_content: string | null;
-	zh_hant_source: string | null;
-	translation_revision: string;
-	url: string | null;
+	hasTranslatedTitle: boolean;
+	hasTranslatedSummary: boolean;
+	hasTranslatedContent: boolean;
+	translationSource: 'original' | 'machine' | null;
 };
 
 const MARKDOWN_TRANSLATION_CONCURRENCY = 15;
@@ -121,19 +100,18 @@ function isBlank(value: string | null | undefined): boolean {
 }
 
 function planZhHantTranslation(resource: ResourceTranslationInput, force: boolean): ZhHantTranslationPlan {
-	const translation = resource.zhHantTranslation;
 	if (
 		!shouldEnqueueResourceTranslation(resource) ||
 		isBlank(resource.title) ||
 		isBlank(resource.content) ||
-		translation?.source === 'original'
+		resource.translationSource === 'original'
 	) {
 		return { metadata: false, content: false };
 	}
 
 	return {
-		metadata: force || isBlank(translation?.title) || (!isBlank(resource.summary) && isBlank(translation?.summary)),
-		content: force || isBlank(translation?.content),
+		metadata: force || !resource.hasTranslatedTitle || (!isBlank(resource.summary) && !resource.hasTranslatedSummary),
+		content: force || !resource.hasTranslatedContent,
 	};
 }
 
@@ -442,28 +420,29 @@ async function loadResourceTranslationInput(
 	db: NodePgDatabase,
 	resourceId: string,
 ): Promise<{ resource: ResourceTranslationInput; translationRevision: string } | null> {
-	const result = await db.execute<ResourceTranslationInputRow>(sql`
+	// Machine fields are validated before persistence; planning needs their presence, not another copy of the translation.
+	const result = await db.execute<ResourceTranslationInput & { translationRevision: string }>(sql`
 		SELECT
-			resource.file_type,
+			resource.file_type AS "fileType",
 			resource.id::text AS id,
 			resource.kind,
-			resource.resource_platform,
-			resource.original_lang,
+			resource.resource_platform AS "resourcePlatform",
+			resource.original_lang AS "originalLang",
 			resource.scope,
-			original.title AS title,
+			COALESCE(original.title, '') AS title,
 			original.summary AS summary,
-			original.content AS content,
-			zh_hant.title AS zh_hant_title,
-			zh_hant.summary AS zh_hant_summary,
-			zh_hant.content AS zh_hant_content,
-			zh_hant.source AS zh_hant_source,
+			COALESCE(original.content, '') AS content,
+			zh_hant.title IS NOT NULL AS "hasTranslatedTitle",
+			zh_hant.summary IS NOT NULL AS "hasTranslatedSummary",
+			zh_hant.content IS NOT NULL AS "hasTranslatedContent",
+			zh_hant.source AS "translationSource",
 			resource.url,
 			MD5(jsonb_build_array(
 				original.lang,
 				original.title,
 				original.summary,
 				original.content
-			)::text) AS translation_revision
+			)::text) AS "translationRevision"
 		FROM resources resource
 		JOIN resource_translations original
 		  ON original.resource_id = resource.id
@@ -480,31 +459,8 @@ async function loadResourceTranslationInput(
 	`);
 	const row = result.rows[0];
 	if (!row) return null;
-	const translationRevision = ResourceTranslationRevisionSchema.parse(row.translation_revision);
-	const zhHantSource = row.zh_hant_source == null ? null : ResourceTranslationSourceSchema.parse(row.zh_hant_source);
-	return {
-		resource: {
-			kind: row.kind,
-			resourcePlatform: row.resource_platform,
-			fileType: row.file_type,
-			id: row.id,
-			originalLang: row.original_lang,
-			scope: row.scope,
-			title: row.title ?? '',
-			summary: row.summary,
-			content: row.content ?? '',
-			url: row.url,
-			zhHantTranslation: zhHantSource
-				? {
-						title: row.zh_hant_title?.trim() || null,
-						summary: row.zh_hant_summary?.trim() || null,
-						content: row.zh_hant_content?.trim() || null,
-						source: zhHantSource,
-					}
-				: null,
-		},
-		translationRevision,
-	};
+	const { translationRevision, ...resource } = row;
+	return { resource, translationRevision: ResourceTranslationRevisionSchema.parse(translationRevision) };
 }
 
 async function persistMachineZhHantTranslation(
@@ -622,7 +578,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		try {
 			if (!(await task.start('translating'))) return { status: 'superseded', resourceId };
 			const inputStream = await step.do<ReadableStream<Uint8Array> | null>(
-				'load-resource-translation-input-stream-v4',
+				'load-resource-translation-input-stream-v5',
 				{
 					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 					timeout: '30 seconds',
