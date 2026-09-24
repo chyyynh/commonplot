@@ -487,17 +487,22 @@ function isAttentionNode(node: PhrasingContent): boolean {
 }
 
 // CommonMark uses the same delimiter runs for adjacent attention nodes. Without a boundary, two sibling nodes such as
-// `*one**two*` are parsed as one emphasis node. The upstream serializer cannot round-trip every arbitrary mdast tree, so
+// `*one**two*` are parsed as one emphasis node; `$x$$y$` similarly merges adjacent formulas. The serializer cannot round-trip every tree, so
 // add a visible word boundary only when translated prose produced this otherwise unrepresentable sibling shape.
-function separateAdjacentAttentionNodes(children: PhrasingContent[]): boolean {
+function separateAdjacentDelimitedNodes(children: PhrasingContent[]): boolean {
 	let changed = false;
 	for (const child of children) {
-		if (isParent(child)) changed = separateAdjacentAttentionNodes(child.children as PhrasingContent[]) || changed;
+		if (isParent(child)) changed = separateAdjacentDelimitedNodes(child.children as PhrasingContent[]) || changed;
 	}
 	for (let index = 1; index < children.length; index += 1) {
 		const previous = children[index - 1];
 		const current = children[index];
-		if (!previous || !current || !isAttentionNode(previous) || !isAttentionNode(current)) continue;
+		if (
+			!previous ||
+			!current ||
+			!((isAttentionNode(previous) && isAttentionNode(current)) || (previous.type === 'inlineMath' && current.type === 'inlineMath'))
+		)
+			continue;
 		children.splice(index, 0, { type: 'text', value: ' ' });
 		changed = true;
 		index += 1;
@@ -864,12 +869,12 @@ export function compileMarkdownTranslationArtifact(
 	let translatedMarkdown = serializeMarkdown(tree);
 	let translatedSkeleton = markdownSkeleton(parseMarkdown(translatedMarkdown), targetPaths);
 	if (translatedSkeleton !== plan.sourceSkeleton) {
-		let separatedAttention = false;
+		let separatedDelimiters = false;
 		for (const target of plan.targets) {
 			const block = nodeAtPath(tree, target.path);
-			if (isProseBlock(block)) separatedAttention = separateAdjacentAttentionNodes(block.children) || separatedAttention;
+			if (isProseBlock(block)) separatedDelimiters = separateAdjacentDelimitedNodes(block.children) || separatedDelimiters;
 		}
-		if (separatedAttention) {
+		if (separatedDelimiters) {
 			translatedMarkdown = serializeMarkdown(tree);
 			translatedSkeleton = markdownSkeleton(parseMarkdown(translatedMarkdown), targetPaths);
 		}
