@@ -39,10 +39,10 @@ type LockedResource = Readonly<{
 
 type PreparedResource = ReturnType<typeof prepareResolvedResource>;
 
-/** Update only the original that this acquisition published, never a newer import or human edit. */
+/** Original writes advance scraped_date in the same transaction; classification belongs to that acquisition. */
 export async function persistResourceClassification(
 	db: NodePgDatabase,
-	targets: { resourceId: string; acquisitionRevision: string; translationRevision: string }[],
+	targets: { resourceId: string; acquisitionRevision: string }[],
 	classification: ResourceClassification,
 ): Promise<void> {
 	if (!targets.length) return;
@@ -50,14 +50,11 @@ export async function persistResourceClassification(
 		WITH target AS (
 			SELECT resource.id
 			FROM jsonb_to_recordset(${JSON.stringify(targets)}::jsonb)
-			  AS expected("resourceId" uuid, "acquisitionRevision" text, "translationRevision" text)
+			  AS expected("resourceId" uuid, "acquisitionRevision" text)
 			JOIN resources resource ON resource.id = expected."resourceId"
-			JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
-			WHERE original.source = 'original'
-			  AND MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) = expected."acquisitionRevision"
-			  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = expected."translationRevision"
+			WHERE MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) = expected."acquisitionRevision"
 			ORDER BY resource.id
-			FOR UPDATE OF resource, original
+			FOR UPDATE OF resource
 		)
 		UPDATE resources
 		SET tags = ${sql.param(classification.tags)}::text[], keywords = ${sql.param(classification.keywords)}::text[], updated_at = NOW()
