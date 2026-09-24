@@ -155,10 +155,7 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 								texts: z.strictObject(
 									Object.fromEntries(
 										Object.keys(template.texts).map((id) => {
-											const text = z
-												.string()
-												.regex(/^[^\r\n\0]*$/u)
-												.describe('Single-line prose. Preserve literal backslash escape sequences.');
+											const text = z.string().describe('Single-line prose. Preserve literal backslash escape sequences.');
 											return [id, requiredTextIds.has(id) ? text.min(1) : text];
 										}),
 									),
