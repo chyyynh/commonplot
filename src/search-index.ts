@@ -1,6 +1,7 @@
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
+import { connectCoreDb } from './shared/db';
 import { RESOURCE_KIND_METADATA, type ResourceKind } from './shared/resource';
 
 // Postgres is canonical; AI Search is its derived public-corpus index.
@@ -252,8 +253,9 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 }
 
 /** Search one-vector-per-resource documents so AI Search results map directly to resources. */
-export async function searchRelatedResourceIds(env: CoreEnv, db: NodePgDatabase, input: RelatedResourceSearchInput): Promise<string[]> {
+export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResourceSearchInput): Promise<string[]> {
 	const { resourceId, limit } = RelatedResourceSearchInputSchema.parse(input);
+	const db = await connectCoreDb(env);
 	// Recommendation queries need titles and classification, not indexed article bodies.
 	const { rows } = await db.execute<{ titles: (string | null)[]; tags: string[]; keywords: string[] }>(sql`
 		SELECT r.tags, r.keywords,

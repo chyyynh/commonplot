@@ -144,7 +144,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	/** Resource-level semantic neighbors; the app Worker authoritatively filters and hydrates them. */
-	async searchRelatedResourceIds(input: RelatedResourceSearchInput) {
-		return searchRelatedResourceIds(this.env, await connectCoreDb(this.env), input);
+	searchRelatedResourceIds(input: RelatedResourceSearchInput) {
+		return searchRelatedResourceIds(this.env, input);
 	}
 }
