@@ -278,7 +278,7 @@ function protectedAtomReference(inline: ProtectedInline): string | undefined {
 	if (inline.kind !== 'atom') return undefined;
 	const node = inline.node;
 	const value =
-		node.type === 'inlineCode' || node.type === 'inlineMath' || node.type === 'html'
+		node.type === 'inlineCode' || node.type === 'inlineMath'
 			? node.value
 			: isAutolink(node)
 				? node.children[0]?.type === 'text'
