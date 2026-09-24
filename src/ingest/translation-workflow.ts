@@ -73,20 +73,18 @@ function translationRetryDelay({ ctx, error }: WorkflowDynamicDelayContext): num
 	return ctx.attempt * 15_000;
 }
 
-function privateUploadedPdfTranslationSqlAdmission() {
-	return sql`(
-		resource.scope = 'private'
-		AND resource.kind = 'file'
-		AND resource.resource_platform IS NULL
-		AND resource.file_type = ${PDF_MIME}
-		AND resource.storage_key IS NOT NULL
-		AND EXISTS (
-			SELECT 1
-			FROM user_files file
-			WHERE file.resource_id = resource.id
-		)
-	)`;
-}
+const PRIVATE_UPLOADED_PDF_TRANSLATION_SQL = sql`(
+	resource.scope = 'private'
+	AND resource.kind = 'file'
+	AND resource.resource_platform IS NULL
+	AND resource.file_type = ${PDF_MIME}
+	AND resource.storage_key IS NOT NULL
+	AND EXISTS (
+		SELECT 1
+		FROM user_files file
+		WHERE file.resource_id = resource.id
+	)
+)`;
 
 type ZhHantTranslationPlan = { metadata: boolean; content: boolean };
 const MetadataTranslationSchema = z.object({ title: z.string().trim().min(1), summary: z.string().trim().min(1) });
@@ -325,7 +323,7 @@ async function translateDurableBatch(
 			} catch (error) {
 				if (batch.segments.length === 1 || !isMarkdownTranslationFormatError(error)) throw error;
 				// Persist the format failure so replay goes straight to the same smaller groups.
-				return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+				return { ok: false as const };
 			}
 		},
 	);
@@ -453,7 +451,7 @@ async function loadResourceTranslationInput(
 		WHERE resource.id = ${resourceId}::uuid
 		  AND (
 			resource.scope = 'corpus'
-			OR ${privateUploadedPdfTranslationSqlAdmission()}
+			OR ${PRIVATE_UPLOADED_PDF_TRANSLATION_SQL}
 		  )
 		LIMIT 1
 	`);
@@ -478,7 +476,7 @@ async function persistMachineZhHantTranslation(
 			SELECT resource.id
 			FROM resources resource
 			WHERE resource.id = ${resourceId}::uuid
-			  AND (resource.scope = 'corpus' OR ${privateUploadedPdfTranslationSqlAdmission()})
+			  AND (resource.scope = 'corpus' OR ${PRIVATE_UPLOADED_PDF_TRANSLATION_SQL})
 			  AND EXISTS (
 				SELECT 1
 				FROM resource_translations original
