@@ -487,7 +487,7 @@ function isAttentionNode(node: PhrasingContent): boolean {
 }
 
 // CommonMark uses the same delimiter runs for adjacent attention nodes. Without a boundary, two sibling nodes such as
-// `*one**two*` are parsed as one emphasis node; `$x$$y$` similarly merges adjacent formulas. The serializer cannot round-trip every tree, so
+// `*one**two*` are parsed as one emphasis node; adjacent formulas or code spans can merge too. The serializer cannot round-trip every tree, so
 // add a visible word boundary only when translated prose produced this otherwise unrepresentable sibling shape.
 function separateAdjacentDelimitedNodes(children: PhrasingContent[]): boolean {
 	let changed = false;
@@ -500,7 +500,10 @@ function separateAdjacentDelimitedNodes(children: PhrasingContent[]): boolean {
 		if (
 			!previous ||
 			!current ||
-			!((isAttentionNode(previous) && isAttentionNode(current)) || (previous.type === 'inlineMath' && current.type === 'inlineMath'))
+			!(
+				(isAttentionNode(previous) && isAttentionNode(current)) ||
+				((previous.type === 'inlineMath' || previous.type === 'inlineCode') && current.type === previous.type)
+			)
 		)
 			continue;
 		children.splice(index, 0, { type: 'text', value: ' ' });
