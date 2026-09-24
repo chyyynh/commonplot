@@ -213,6 +213,7 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 格式契約：
 - translations 的每個 key 對應輸入的 segment ID；每個 segment 只輸出 texts，包含該 segment 所有 sequences 的 t ID，不要輸出 sequence ID 或 n ID
 - 每個 t value 只放該位置的譯文純文字，可以是空字串；不要把 n ID、sequence、reference、Markdown 或 HTML 寫進 t value
+- 不得在 t value 新增空白行或段落；原文的字面反斜線跳脫序列必須保持字面文字，不要解碼成換行或控制字元
 - n ID 的次序、數量與結構完全由 Core 還原，不能也不需要在輸出中重複
 - reference 只供理解，不能複製成譯文；URL、Markdown 語法和其他受保護內容由 Core 還原
 - 不要沿用英文在 inline、中文標點或中文字之間的多餘空白，也不要為中文與英文、數字或 inline 邊界額外補空格；英文單字內與連續拉丁文字之間仍保留正常空格
