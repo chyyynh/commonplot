@@ -60,7 +60,6 @@ export function resourceImageSourceUrls(resource: ResourceImageFields): string[]
 		resource.ogImageUrl,
 		...attachments.slice(1),
 		...resource.creators.map((creator) => creator.avatarUrl),
-		metadata?.quote?.creator.avatarUrl,
 	]) {
 		if (candidate === null || candidate === undefined) continue;
 		const url = normalizedResourceImageUrl(candidate);
@@ -120,7 +119,6 @@ export function hostedResourceImageFields(
 			? {
 					...metadata,
 					attachments: metadata.attachments.map((attachment) => ({ ...attachment, url: mapHostedImage(attachment.url).deliveryUrl })),
-					...(metadata.quote ? { quote: { ...metadata.quote, creator: withHostedAvatar(metadata.quote.creator) } } : {}),
 				}
 			: metadata;
 	const ogImage = resource.ogImageUrl === null ? null : mapHostedImage(resource.ogImageUrl);

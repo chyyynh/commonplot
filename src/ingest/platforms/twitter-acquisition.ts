@@ -296,12 +296,12 @@ function expandKnownTweetUrls(text: string, tweet: Tweet): string {
 	return text.replace(TCO_TOKEN_RE, (token) => replacements.get(token) ?? token);
 }
 
-function tweetQuote(tweet: Tweet) {
+/** The quoted tweet is its own Resource; the quote box renders from that subject. */
+function quotedTweetUrl(tweet: Tweet): string | undefined {
 	const quote = tweet.quoted_tweet;
-	const author = quote?.author;
-	if (!quote || !author?.name.trim() || !author.userName.trim()) return undefined;
-	const text = expandTweetUrls(quote.text, quote);
-	return text ? { creator: twitterCreator(author), text } : undefined;
+	if (!quote) return undefined;
+	const identifier = resolveResourceUrl(quote.url)?.identifiers.find(({ scheme }) => scheme === 'twitter');
+	return identifier?.value === quote.id ? quote.url : undefined;
 }
 
 async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
@@ -365,6 +365,8 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 		return parsed && resolveResourceUrl(url)?.resourcePlatform === 'twitter' && parsed.pathname.startsWith('/i/article/');
 	});
 	const linkedContentUrl = expandedUrls.find((url) => !isNonResourceLinkUrl(url));
+	// X shows the quote box instead of a link card, so the quote wins.
+	const subjectUrl = quotedTweetUrl(tweet) ?? linkedContentUrl ?? null;
 
 	if (longformUrl) {
 		console.info({ tag: 'TWITTER', msg: 'Detected Twitter longform', longformUrl });
@@ -380,7 +382,6 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 		? `@${author.userName}: ${titleText}`.slice(0, 120)
 		: `@${author.userName}: ${titleText.slice(0, 80)}${titleText.length > 80 ? '...' : ''}`;
 	const content = expandTweetUrls(text, tweet);
-	const quote = tweetQuote(tweet);
 
 	console.info({ tag: 'TWITTER', msg: 'Tweet fetched', userName: author.userName });
 
@@ -389,8 +390,8 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 		content,
 		publishedDate: tweet.createdAt,
 		creators: [twitterCreator(author)],
-		kindMetadata: { attachments: tweetAttachments(tweet), ...(quote ? { quote } : {}) },
-		subjectUrl: linkedContentUrl,
+		kindMetadata: { attachments: tweetAttachments(tweet) },
+		subjectUrl,
 	};
 }
 

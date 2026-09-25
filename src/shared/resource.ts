@@ -35,14 +35,13 @@ const ResourceMediaAttachmentSchema = z.strictObject({
 	height: z.int().positive().optional(),
 });
 
-const PostQuoteSchema = z.strictObject({ creator: ResourceCreatorSchema, text: z.string().trim().min(1) });
 export const RESOURCE_KIND_METADATA = {
 	blog: z.strictObject({ siteName: z.string().trim().min(1).optional() }).nullable(),
 	forum: z.strictObject({
 		points: z.int().nonnegative().optional(),
 		commentCount: z.int().nonnegative().optional(),
 	}),
-	post: z.strictObject({ attachments: z.array(ResourceMediaAttachmentSchema).max(16), quote: PostQuoteSchema.optional() }),
+	post: z.strictObject({ attachments: z.array(ResourceMediaAttachmentSchema).max(16) }),
 	video: z.strictObject({
 		durationSeconds: z.int().positive().optional(),
 	}),
