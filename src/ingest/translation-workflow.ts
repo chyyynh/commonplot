@@ -564,6 +564,43 @@ export async function enqueueResourceTranslation(
 	return id;
 }
 
+// Kept small so recovery never crowds new imports out of the provider's per-minute window.
+const TRANSLATION_SWEEP_BATCH = 25;
+
+/**
+ * Re-admit corpus translations that never landed, usually after a burst hit the provider rate limit. Only recent
+ * acquisitions qualify: completed attempts stay visible for the Workflow retention window, so an attempt that
+ * found nothing to translate is not repeated every tick.
+ */
+export async function enqueueMissingTranslations(env: CoreEnv, db: NodePgDatabase): Promise<void> {
+	const { rows } = await db.execute<{ id: string; translationRevision: string }>(sql`
+		SELECT resource.id::text,
+		       MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS "translationRevision"
+		FROM resources resource
+		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+		WHERE resource.scope = 'corpus'
+		  AND resource.url IS NOT NULL
+		  AND resource.original_lang <> 'zh-Hant'
+		  AND resource.kind = ANY(${sql.param([...TRANSLATABLE_RESOURCE_KINDS])}::text[])
+		  AND resource.scraped_date > now() - interval '6 days'
+		  AND resource.scraped_date < now() - interval '15 minutes'
+		  AND BTRIM(COALESCE(original.content, '')) <> ''
+		  AND NOT EXISTS (
+		    SELECT 1 FROM resource_translations translated
+		    WHERE translated.resource_id = resource.id AND translated.lang = 'zh-Hant'
+		  )
+		ORDER BY resource.published_date DESC NULLS LAST
+		LIMIT ${TRANSLATION_SWEEP_BATCH}
+	`);
+	const results = await Promise.allSettled(
+		rows.map(({ id, translationRevision }) =>
+			enqueueResourceTranslation(env, id, translationRevision, undefined, { taskId: 'translation-sweep', required: false }),
+		),
+	);
+	const failed = results.filter((result) => result.status === 'rejected').length;
+	console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Missing translation sweep', admitted: rows.length - failed, failed });
+}
+
 export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceTranslationPayload> {
 	async run(
 		event: WorkflowEvent<ResourceTranslationPayload>,

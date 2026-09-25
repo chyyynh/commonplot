@@ -7,6 +7,7 @@ import { resolveResourceUrl, ResourceUrlSchema } from './ingest/platforms/resour
 import { handleRSSCron } from './ingest/platforms/rss';
 import { handleTwitterCron } from './ingest/platforms/twitter';
 import { findResourcesByUrls } from './ingest/resource-persistence';
+import { enqueueMissingTranslations } from './ingest/translation-workflow';
 import {
 	loadCorpusDocuments,
 	type PublicResourceSearchInput,
@@ -39,7 +40,9 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		// YouTube channels ride the feed monitor through their Atom URLs; Core
 		// derives their slower polling cadence from the canonical feed URL.
 		if (event.cron === '*/5 * * * *') {
-			this.ctx.waitUntil(connectCoreDb(this.env).then((db) => handleRSSCron(this.env, db)));
+			this.ctx.waitUntil(
+				connectCoreDb(this.env).then((db) => Promise.allSettled([handleRSSCron(this.env, db), enqueueMissingTranslations(this.env, db)])),
+			);
 		} else if (event.cron === '0 */6 * * *') {
 			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
 		}
