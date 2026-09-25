@@ -1,6 +1,7 @@
 import { extractFromJson, extractFromXml } from '@extractus/feed-extractor';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { DOMParser } from 'linkedom';
 import { readBoundedResponseText } from '../../shared/response';
 import { enqueueSourceDrafts } from '../admission';
 import { resolveResourceUrl, ResourceUrlSchema } from './resource-url';
@@ -43,7 +44,7 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeed
 	const content = await readBoundedResponseText(response, MAX_FEED_BYTES, 'Feed');
 	const parserOptions = {
 		baseUrl: effectiveUrl,
-		descriptionMaxLen: FEED_SUMMARY_MAX_CHARS,
+		getExtraEntryFields: (entry: Record<string, unknown>) => ({ description: feedEntryDescription(entry) }),
 	};
 	const parsed =
 		response.headers.get('content-type')?.toLowerCase().includes('json') || content.trimStart().startsWith('{')
@@ -84,6 +85,37 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeed
 		WHERE id = ${feed.id}::uuid
 		  AND (scraped_at IS NULL OR scraped_at <= ${scrapedAt})
 	`);
+}
+
+const FEED_BLOCK_TAG_RE =
+	/<\/?(?:address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|ol|p|pre|section|table|td|th|tr|ul)\b[^>]*>/gi;
+
+function feedFieldText(value: unknown): string {
+	if (typeof value === 'string') return value;
+	if (value && typeof value === 'object') {
+		const node = value as Record<string, unknown>;
+		const text = node._text ?? node['#text'] ?? node._cdata ?? node.$t;
+		if (typeof text === 'string') return text;
+	}
+	return '';
+}
+
+/**
+ * The extractor strips tags without a separator, gluing adjacent blocks
+ * ("Thomas KwaConstellation"). Break at block boundaries before taking text.
+ */
+function feedEntryDescription(entry: Record<string, unknown>): string {
+	const html = [entry.description, entry.summary, entry['content:encoded'], entry.content, entry.content_text, entry.content_html]
+		.map(feedFieldText)
+		.find((value) => value.trim());
+	if (!html) return '';
+	const document = new DOMParser().parseFromString(`<html><body>${html.replace(FEED_BLOCK_TAG_RE, ' $&')}</body></html>`, 'text/html');
+	for (const node of document.querySelectorAll('script, style')) node.remove();
+	const text = (document.body?.textContent ?? '').replace(/\s+/g, ' ').trim();
+	if (text.length <= FEED_SUMMARY_MAX_CHARS) return text;
+	const cut = text.slice(0, FEED_SUMMARY_MAX_CHARS);
+	const wordEnd = cut.lastIndexOf(' ');
+	return `${(wordEnd > FEED_SUMMARY_MAX_CHARS * 0.8 ? cut.slice(0, wordEnd) : cut).trimEnd()}…`;
 }
 
 /** HN feeds describe each item with its URLs and scores, not a summary; the pipeline summarizes instead. */
