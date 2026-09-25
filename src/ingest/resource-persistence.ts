@@ -172,7 +172,7 @@ export function prepareResolvedResource(
 		publishedDate,
 		sourceName,
 		subject,
-		summary: resource.summary ?? '',
+		summary: resource.summary?.trim() || null,
 		title,
 		url: resolvedUrl?.url ?? null,
 		youtube: resource.youtube ?? null,
