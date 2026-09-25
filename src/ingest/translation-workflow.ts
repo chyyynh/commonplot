@@ -2,14 +2,14 @@ import { hash } from 'node:crypto';
 import { createResourceTask, enqueueSearchProgress, type ResourceTask, type ResourceTaskContext } from './progress';
 // Durable translation execution; resource processing only enqueues this Workflow.
 import { generateText, NoObjectGeneratedError, Output } from 'ai';
-import { type WorkflowDynamicDelayContext, WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
+import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { connectCoreDb } from '../shared/db';
 import type { ResourceKind, ResourcePlatform } from '../shared/resource';
-import { coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
+import { aiRetryDelay, coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from './ai-model';
 import {
 	compileMarkdownTranslationArtifact,
 	type MarkdownSegmentTranslation,
@@ -63,16 +63,6 @@ type ResourceTranslationInput = ResourceTranslationCandidate & {
 };
 
 const MARKDOWN_TRANSLATION_CONCURRENCY = 15;
-const AI_RATE_LIMIT_ERROR = /\b(?:3021|3040|429)\b|rate limit|too many requests|capacity temporarily exceeded/iu;
-
-function translationRetryDelay({ ctx, error }: WorkflowDynamicDelayContext): number {
-	// Delay already scales with attempt; use constant Workflow backoff to avoid multiplying it again.
-	// The provider's RPM window is one minute. Short exponential retries all land inside the same exhausted window,
-	// especially when a source cron starts several translations together. Waiting durably costs no active Worker time.
-	if (AI_RATE_LIMIT_ERROR.test(error.message)) return ctx.attempt * 60_000;
-	return ctx.attempt * 15_000;
-}
-
 const PRIVATE_UPLOADED_PDF_TRANSLATION_SQL = sql`(
 	resource.scope = 'private'
 	AND resource.kind = 'file'
@@ -316,7 +306,7 @@ async function translateDurableBatch(
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	const result = await step.do(
 		`translate-zh-hant-markdown-${batch.id}-v17`,
-		{ retries: { limit: 3, delay: translationRetryDelay, backoff: 'constant' }, timeout: '300 seconds' },
+		{ retries: { limit: 3, delay: aiRetryDelay, backoff: 'constant' }, timeout: '300 seconds' },
 		async () => {
 			try {
 				return { ok: true as const, translations: await translateMarkdownBatchToZhHant(batch, env, resourceId) };
@@ -650,7 +640,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				translationPlan.metadata
 					? step.do(
 							'translate-zh-hant-title-summary-v3',
-							{ retries: { limit: 5, delay: translationRetryDelay, backoff: 'constant' }, timeout: '180 seconds' },
+							{ retries: { limit: 5, delay: aiRetryDelay, backoff: 'constant' }, timeout: '180 seconds' },
 							() => translateResourceMetadata(resource, this.env),
 						)
 					: undefined,

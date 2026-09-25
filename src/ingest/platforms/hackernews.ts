@@ -9,7 +9,7 @@ import { toMarkdown } from 'mdast-util-to-markdown';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import type { AcquiredResource } from '../acquisition';
-import { coreGatewayOptions, CORE_TEXT_MODEL } from '../ai-model';
+import { AI_STEP_RETRIES, coreGatewayOptions, CORE_TEXT_MODEL } from '../ai-model';
 import { ResourceUrlSchema } from './resource-url';
 
 const HN_ITEM_API = 'https://hacker-news.firebaseio.com/v0/item';
@@ -182,22 +182,19 @@ export async function stageHackerNewsAcquisition(env: CoreEnv, step: WorkflowSte
 	);
 	const { resource, discussion } = await new Response(contentStream).json<HackerNewsAcquisition>();
 	if (discussion.commentCount < 4 || discussion.threadCount < 2) return resource;
-	const digest = await step.do(
-		'build-hacker-news-annotation-ranked-v3',
-		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' },
-		async () => {
-			const hnPostSection = discussion.hnText ? `HN post text:\n${discussion.hnText}\n\n` : '';
-			const digestFocus =
-				discussion.itemType === 'ask'
-					? 'Synthesize the answers, experiences, and advice offered in response to the question.'
-					: discussion.itemType === 'show'
-						? 'Synthesize the community feedback, questions, use cases, and technical observations about the project.'
-						: 'Synthesize the arguments, context, reactions, and disagreements in the discussion.';
-			const { finishReason, text } = await generateText({
-				model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
-					...coreGatewayOptions(env, { feature: 'hn-discussion-digest-en', resource_id: input.processingId }),
-				}),
-				prompt: `Title: ${resource.title}
+	const digest = await step.do('build-hacker-news-annotation-ranked-v3', { retries: AI_STEP_RETRIES, timeout: '600 seconds' }, async () => {
+		const hnPostSection = discussion.hnText ? `HN post text:\n${discussion.hnText}\n\n` : '';
+		const digestFocus =
+			discussion.itemType === 'ask'
+				? 'Synthesize the answers, experiences, and advice offered in response to the question.'
+				: discussion.itemType === 'show'
+					? 'Synthesize the community feedback, questions, use cases, and technical observations about the project.'
+					: 'Synthesize the arguments, context, reactions, and disagreements in the discussion.';
+		const { finishReason, text } = await generateText({
+			model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
+				...coreGatewayOptions(env, { feature: 'hn-discussion-digest-en', resource_id: input.processingId }),
+			}),
+			prompt: `Title: ${resource.title}
 ${hnPostSection}Ranked HN discussion sample (${discussion.commentCount} comments from ${discussion.threadCount} top-level threads):
 ${discussion.commentInput}
 
@@ -215,17 +212,16 @@ Rules:
 - Present commenter claims as community perspectives, not established facts
 - Maintain a neutral, objective tone
 - Output only the paragraphs, without a code block`,
-				system: HN_DISCUSSION_SYSTEM,
-				temperature: 0.3,
-				reasoning: 'none',
-				maxRetries: 0,
-			});
-			if (finishReason === 'length') throw new Error('Hacker News discussion digest hit its output token cap');
-			const generatedDigest = text.trim();
-			if (!generatedDigest) throw new Error('Hacker News discussion digest returned no text');
-			return generatedDigest;
-		},
-	);
+			system: HN_DISCUSSION_SYSTEM,
+			temperature: 0.3,
+			reasoning: 'none',
+			maxRetries: 0,
+		});
+		if (finishReason === 'length') throw new Error('Hacker News discussion digest hit its output token cap');
+		const generatedDigest = text.trim();
+		if (!generatedDigest) throw new Error('Hacker News discussion digest returned no text');
+		return generatedDigest;
+	});
 	return { ...resource, content: [resource.content, '---', digest].join('\n\n') };
 }
 

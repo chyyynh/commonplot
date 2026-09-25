@@ -4,6 +4,7 @@ import { connectCoreDb } from '../shared/db';
 import { resourceImageSourceUrls } from '../shared/image-mapping';
 import { stageResourceAcquisition } from './acquisition';
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from './admission';
+import { AI_STEP_RETRIES } from './ai-model';
 import { summarizeResource, classifyResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { withoutPrivatePdfImages } from './pdf-markdown.ts';
@@ -21,8 +22,7 @@ import { enqueueResourceTranslation, shouldEnqueueResourceTranslation } from './
 import { publishPublicPdfCrops } from './zotero-sdt-service.ts';
 
 const STORAGE_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
-// Workers AI limits requests per minute; retries back off past that window.
-const AI_STEP = { retries: { limit: 5, delay: '30 seconds', backoff: 'exponential' }, timeout: '600 seconds' } as const;
+const AI_STEP = { retries: AI_STEP_RETRIES, timeout: '600 seconds' } as const;
 
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep) {

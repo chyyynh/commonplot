@@ -1,3 +1,5 @@
+import type { WorkflowDynamicDelayContext } from 'cloudflare:workers';
+
 export const CORE_TEXT_MODEL = '@cf/zai-org/glm-5.3-flash';
 
 export const CORE_STRUCTURED_MODEL_SETTINGS = {
@@ -15,3 +17,16 @@ export function coreGatewayOptions(env: Pick<CoreEnv, 'AI_GATEWAY_ENVIRONMENT'>,
 		extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
 	};
 }
+
+const AI_RATE_LIMIT_ERROR = /\b(?:3021|3040|429)\b|rate limit|too many requests|capacity temporarily exceeded/iu;
+
+export function aiRetryDelay({ ctx, error }: WorkflowDynamicDelayContext): number {
+	// Delay already scales with attempt; use constant Workflow backoff to avoid multiplying it again.
+	// The provider's RPM window is one minute. Short exponential retries all land inside the same exhausted window,
+	// especially when a source cron starts several translations together. Waiting durably costs no active Worker time.
+	if (AI_RATE_LIMIT_ERROR.test(error.message)) return ctx.attempt * 60_000;
+	return ctx.attempt * 15_000;
+}
+
+/** Step retries for Workers AI calls: waits past the per-minute rate window. */
+export const AI_STEP_RETRIES = { limit: 5, delay: aiRetryDelay, backoff: 'constant' } as const;

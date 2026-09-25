@@ -6,7 +6,7 @@ import type { TranscriptResponse } from 'youtube-transcript';
 import { z } from 'zod';
 import { connectCoreDb } from '../../shared/db';
 import type { AcquiredResource } from '../acquisition';
-import { coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
+import { AI_STEP_RETRIES, coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
 import { persistYouTubeHighlights } from '../resource-persistence';
 
 const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
@@ -272,41 +272,37 @@ export async function stageYouTubeHighlights(
 	transcript: YouTubeTranscript,
 ) {
 	if (!transcript.segments.length || transcript.chapters.length) return;
-	const highlights = await step.do(
-		'prepare-youtube-highlights-v4',
-		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
-		async () => {
-			console.info({ tag: 'AI', msg: 'Generating YouTube highlights', resource_id: target.resourceId });
-			const transcriptText = transcript.segments.map((segment) => `[${Math.floor(segment.startTime)}s] ${segment.text}`).join('\n');
-			const transcriptEndTime = transcript.segments.reduce((end, segment) => Math.max(end, segment.endTime), 0);
-			const { finishReason, output: highlights } = await generateText({
-				model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
-					...CORE_STRUCTURED_MODEL_SETTINGS,
-					...coreGatewayOptions(env, { feature: 'youtube-highlights', processing_id: target.resourceId }),
-				}),
-				prompt: `逐字稿涵蓋到：${transcriptEndTime} 秒\n\n逐字稿：\n${transcriptText}`,
-				system: HIGHLIGHTS_SYSTEM_PROMPT,
-				output: Output.object({
-					name: 'youtube_highlights',
-					schema: YouTubeHighlightsSchema.refine(
-						({ highlights }) =>
-							highlights.every(
-								(highlight, index) =>
-									highlight.endTime <= transcriptEndTime && (index === 0 || highlight.startTime >= highlights[index - 1].endTime),
-							),
-						{ message: 'Highlights must be ordered, non-overlapping and within the transcript duration' },
-					),
-				}),
-				maxOutputTokens: 2000,
-				temperature: 0.3,
-				reasoning: 'none',
-				maxRetries: 0,
-			});
-			if (finishReason === 'length') throw new Error(`YouTube highlights hit the output token cap for ${target.resourceId}`);
-			console.info({ tag: 'AI', msg: 'YouTube highlights generated', resource_id: target.resourceId, count: highlights.highlights.length });
-			return highlights;
-		},
-	);
+	const highlights = await step.do('prepare-youtube-highlights-v4', { retries: AI_STEP_RETRIES, timeout: '60 seconds' }, async () => {
+		console.info({ tag: 'AI', msg: 'Generating YouTube highlights', resource_id: target.resourceId });
+		const transcriptText = transcript.segments.map((segment) => `[${Math.floor(segment.startTime)}s] ${segment.text}`).join('\n');
+		const transcriptEndTime = transcript.segments.reduce((end, segment) => Math.max(end, segment.endTime), 0);
+		const { finishReason, output: highlights } = await generateText({
+			model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
+				...CORE_STRUCTURED_MODEL_SETTINGS,
+				...coreGatewayOptions(env, { feature: 'youtube-highlights', processing_id: target.resourceId }),
+			}),
+			prompt: `逐字稿涵蓋到：${transcriptEndTime} 秒\n\n逐字稿：\n${transcriptText}`,
+			system: HIGHLIGHTS_SYSTEM_PROMPT,
+			output: Output.object({
+				name: 'youtube_highlights',
+				schema: YouTubeHighlightsSchema.refine(
+					({ highlights }) =>
+						highlights.every(
+							(highlight, index) =>
+								highlight.endTime <= transcriptEndTime && (index === 0 || highlight.startTime >= highlights[index - 1].endTime),
+						),
+					{ message: 'Highlights must be ordered, non-overlapping and within the transcript duration' },
+				),
+			}),
+			maxOutputTokens: 2000,
+			temperature: 0.3,
+			reasoning: 'none',
+			maxRetries: 0,
+		});
+		if (finishReason === 'length') throw new Error(`YouTube highlights hit the output token cap for ${target.resourceId}`);
+		console.info({ tag: 'AI', msg: 'YouTube highlights generated', resource_id: target.resourceId, count: highlights.highlights.length });
+		return highlights;
+	});
 	await step.do(
 		'persist-youtube-highlights-v2',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
