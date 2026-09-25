@@ -62,7 +62,8 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeed
 			{
 				url: url.url,
 				sourceHints: {
-					summary: (item.description && !isHackerNewsFeedBoilerplate(item.description) && item.description) || undefined,
+					// Platform adapters own their text; a feed description only fills in for a generic page.
+					summary: (!url.resourcePlatform && item.description) || undefined,
 					publishedDate: item.published || undefined,
 					originalLang: parsed.language?.trim() || undefined,
 				},
@@ -116,11 +117,6 @@ function feedEntryDescription(entry: Record<string, unknown>): string {
 	const cut = text.slice(0, FEED_SUMMARY_MAX_CHARS);
 	const wordEnd = cut.lastIndexOf(' ');
 	return `${(wordEnd > FEED_SUMMARY_MAX_CHARS * 0.8 ? cut.slice(0, wordEnd) : cut).trimEnd()}…`;
-}
-
-/** HN feeds describe each item with its URLs and scores, not a summary; the pipeline summarizes instead. */
-function isHackerNewsFeedBoilerplate(description: string): boolean {
-	return /Comments URL:/.test(description) && /news\.ycombinator\.com\/item\?id=\d+/.test(description);
 }
 
 export async function handleRSSCron(env: CoreEnv, db: NodePgDatabase): Promise<void> {
