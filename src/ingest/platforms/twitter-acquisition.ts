@@ -344,7 +344,6 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
 	};
 	const publishedDate = longform.createdAt?.trim() || tweet.createdAt;
 	if (Number.isNaN(new Date(publishedDate).getTime())) throw new Error(`Twitter longform ${tweetId} requires a valid published date`);
-	const coverImageUrl = longform.cover_media_img_url?.trim();
 
 	console.info({ tag: 'TWITTER', msg: 'Longform fetched', title });
 
@@ -354,7 +353,8 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
 		content: contentText,
 		publishedDate,
 		creators: [twitterCreator(author)],
-		kindMetadata: { attachments: coverImageUrl ? [{ kind: 'image' as const, url: coverImageUrl }] : [] },
+		kindMetadata: null,
+		previewImageUrl: longform.cover_media_img_url?.trim() || null,
 		subjectUrl: null,
 	};
 }
@@ -393,6 +393,7 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 		publishedDate: tweet.createdAt,
 		creators: [twitterCreator(author)],
 		kindMetadata: { attachments: tweetAttachments(tweet) },
+		previewImageUrl: null,
 		subjectUrl,
 	};
 }
@@ -432,7 +433,6 @@ async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string)
 		originalLang: tweet.lang ?? 'und',
 		summary: null,
 		fileType: null,
-		previewImageUrl: null,
 		subjectUrl: ResourceUrlSchema.safeParse(subjectUrl).data ?? null,
 	} satisfies AcquiredResource;
 }
