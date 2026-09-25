@@ -21,7 +21,8 @@ import { enqueueResourceTranslation, shouldEnqueueResourceTranslation } from './
 import { publishPublicPdfCrops } from './zotero-sdt-service.ts';
 
 const STORAGE_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
-const AI_STEP = { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '600 seconds' } as const;
+// Workers AI limits requests per minute; retries back off past that window.
+const AI_STEP = { retries: { limit: 5, delay: '30 seconds', backoff: 'exponential' }, timeout: '600 seconds' } as const;
 
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep) {
