@@ -102,7 +102,7 @@ export function resolveResourceUrl(value: string | null | undefined): ResolvedRe
 		platformUrl = `https://lesswrong.com/posts/${id}`;
 	} else if (/(^|\.)(twitter|x)\.com$/.test(hostname)) {
 		resourcePlatform = 'twitter';
-		id = path.match(/^\/[^/]+\/status\/(\d+)(?:\/|$)/)?.[1] ?? path.match(/^\/i\/article\/(\d+)(?:\/|$)/)?.[1];
+		id = path.match(/^\/[^/]+\/status\/(\d+)(?:\/|$)/)?.[1];
 		platformUrl = `https://x.com/i/status/${id}`;
 	} else if (hostname === 'youtube.com' || hostname.endsWith('.youtube.com') || hostname === 'youtu.be') {
 		resourcePlatform = 'youtube';

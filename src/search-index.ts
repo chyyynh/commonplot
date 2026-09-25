@@ -23,7 +23,7 @@ export const SEARCHABLE_CORPUS_RESOURCE_SQL = sql`(
 	AND EXISTS (
 		SELECT 1 FROM resource_translations original
 		WHERE original.resource_id = r.id AND original.lang = r.original_lang
-		  AND BTRIM(COALESCE(original.title, '')) <> ''
+		  AND (r.kind = 'post' OR BTRIM(COALESCE(original.title, '')) <> '')
 		  AND BTRIM(COALESCE(original.content, '')) <> ''
 	)
 )`;
@@ -90,6 +90,14 @@ function requiredDocumentText(value: string | null, field: string, resourceId: s
 	return text;
 }
 
+const POST_HEADING_MAX_CHARS = 120;
+
+/** Posts have no title; their opening text stands in for one. */
+function documentHeading(row: CorpusDocument, original: CorpusTranslationRow): string {
+	if (row.kind !== 'post') return requiredDocumentText(original.title, 'title', row.id);
+	return requiredDocumentText(original.content, 'content', row.id).replace(/\s+/g, ' ').slice(0, POST_HEADING_MAX_CHARS);
+}
+
 function serializeTranslation(translation: CorpusTranslationRow): string {
 	return [
 		`## ${translation.lang}`,
@@ -105,7 +113,7 @@ function serializeDocument(row: CorpusDocument): string {
 	const original = row.translations.find((translation) => translation.lang === row.original_lang);
 	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
 	return [
-		`# ${requiredDocumentText(original.title, 'title', row.id)}`,
+		`# ${documentHeading(row, original)}`,
 		requiredDocumentText(row.source, 'source', row.id),
 		row.tags.length ? `Tags: ${row.tags.join(', ')}` : '',
 		row.keywords.length ? `Keywords: ${row.keywords.join(', ')}` : '',
@@ -119,7 +127,7 @@ function serializeRelatedDocument(row: CorpusDocument): string {
 	const original = row.translations.find((translation) => translation.lang === row.original_lang);
 	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
 	return [
-		`# ${requiredDocumentText(original.title, 'title', row.id)}`,
+		`# ${documentHeading(row, original)}`,
 		`Source: ${requiredDocumentText(row.source, 'source', row.id)}`,
 		row.tags.length ? `Tags: ${row.tags.join(', ')}` : '',
 		row.keywords.length ? `Keywords: ${row.keywords.join(', ')}` : '',
@@ -256,10 +264,10 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResourceSearchInput): Promise<string[]> {
 	const { resourceId, limit } = RelatedResourceSearchInputSchema.parse(input);
 	const db = await connectCoreDb(env);
-	// Recommendation queries need titles and classification, not indexed article bodies.
+	// Recommendation queries need titles and classification, not indexed article bodies; a post's text is its title.
 	const { rows } = await db.execute<{ titles: (string | null)[]; tags: string[]; keywords: string[] }>(sql`
 		SELECT r.tags, r.keywords,
-		       array_agg(translation.title ORDER BY (translation.lang = r.original_lang) DESC, translation.lang) AS titles
+		       array_agg(CASE WHEN r.kind = 'post' THEN LEFT(translation.content, ${POST_HEADING_MAX_CHARS}) ELSE translation.title END ORDER BY (translation.lang = r.original_lang) DESC, translation.lang) AS titles
 		FROM resources r
 		JOIN resource_translations translation ON translation.resource_id = r.id
 		  AND (translation.lang = r.original_lang OR ${inArray(sql`translation.lang`, INDEX_TRANSLATION_LANGS)})

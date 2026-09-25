@@ -72,7 +72,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			await task.report('analysis', { stage: 'analyzing', status: 'running' });
 			const imageSources = resourceImageSourceUrls({ ...resource, ogImageUrl: resource.previewImageUrl });
 			const [summary, hostedImages] = await Promise.all([
-				resource.summary ?? step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, processingId)),
+				// Posts are their text; a summary would only restate it.
+				resource.summary ??
+					(resource.kind === 'post'
+						? null
+						: step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, processingId))),
 				stageResourceImages(this.env, step, processingId, imageSources, target.kind === 'reacquire' ? event.instanceId : undefined),
 			]);
 			const summarized = { ...resource, summary };

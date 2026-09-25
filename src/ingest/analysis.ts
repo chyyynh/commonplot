@@ -35,8 +35,7 @@ function analysisModel(env: CoreEnv, processingId: string, feature: string) {
 
 function analysisPrompt(resource: AcquiredResource) {
 	return `文章資訊:
-標題: ${resource.title}
-來源: ${resource.source.trim()}
+${resource.title ? `標題: ${resource.title}\n` : ''}來源: ${resource.source.trim()}
 資源種類: ${resource.kind}
 資源平台: ${resource.resourcePlatform ?? 'none'}
 原文語言: ${resource.originalLang}

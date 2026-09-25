@@ -330,6 +330,9 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
 	const contentText = expandKnownTweetUrls(renderTwitterArticleMarkdown(longform), tweet);
 	if (!title || !contentText) throw new Error(`Twitter longform ${tweetId} requires both title and renderable content`);
 	const tweetAuthor = requiredTweetAuthor(tweet);
+	// Sharing someone else's Article keeps the tweet a post; only the author's own Article is this Resource.
+	const articleHandle = longform.author?.userName?.trim().toLowerCase();
+	if (articleHandle && articleHandle !== tweetAuthor.userName.trim().toLowerCase()) return null;
 	const author = {
 		...tweetAuthor,
 		...(longform.author?.name?.trim() ? { name: longform.author.name.trim() } : {}),
@@ -346,6 +349,7 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
 	console.info({ tag: 'TWITTER', msg: 'Longform fetched', title });
 
 	return {
+		kind: 'blog' as const,
 		title,
 		content: contentText,
 		publishedDate,
@@ -362,7 +366,7 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 	});
 	const longformUrl = [tweet.url, ...expandedUrls].find((url) => {
 		const parsed = URL.parse(url);
-		return parsed && resolveResourceUrl(url)?.resourcePlatform === 'twitter' && parsed.pathname.startsWith('/i/article/');
+		return parsed && /(^|\.)(twitter|x)\.com$/.test(parsed.hostname) && parsed.pathname.startsWith('/i/article/');
 	});
 	const linkedContentUrl = expandedUrls.find((url) => !isNonResourceLinkUrl(url));
 	// X shows the quote box instead of a link card, so the quote wins.
@@ -370,23 +374,21 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 
 	if (longformUrl) {
 		console.info({ tag: 'TWITTER', msg: 'Detected Twitter longform', longformUrl });
-		return scrapeTwitterLongform(tweet, apiKey);
+		const longform = await scrapeTwitterLongform(tweet, apiKey);
+		if (longform) return longform;
 	}
 
 	const author = requiredTweetAuthor(tweet);
 	const text = tweet.text.trim();
 	if (!text) throw new Error(`Tweet ${tweet.id} has no text`);
-	// Titles omit URLs unless the tweet contains only a URL.
-	const titleText = text.replace(/https?:\/\/\S+/g, '').trim() || text;
-	const title = linkedContentUrl
-		? `@${author.userName}: ${titleText}`.slice(0, 120)
-		: `@${author.userName}: ${titleText.slice(0, 80)}${titleText.length > 80 ? '...' : ''}`;
 	const content = expandTweetUrls(text, tweet);
 
 	console.info({ tag: 'TWITTER', msg: 'Tweet fetched', userName: author.userName });
 
+	// A post is its author and text; it has no title or summary.
 	return {
-		title,
+		kind: 'post' as const,
+		title: null,
 		content,
 		publishedDate: tweet.createdAt,
 		creators: [twitterCreator(author)],
@@ -423,11 +425,9 @@ async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string)
 
 	return {
 		...content,
-		kind: 'post',
 		resourcePlatform: 'twitter',
 		resourceIdentifiers: [{ preferred: true, scheme: 'twitter', value: tweetId }],
 		url: `https://x.com/i/status/${tweetId}`,
-		title: content.title.trim(),
 		source: 'Twitter',
 		originalLang: tweet.lang ?? 'und',
 		summary: null,

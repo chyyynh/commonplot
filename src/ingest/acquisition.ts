@@ -33,7 +33,8 @@ export type AcquiredResource = {
 	resourcePlatform: ResourcePlatform | null;
 	resourceIdentifiers: ResourceIdentifier[];
 	url: string | null;
-	title: string;
+	/** Null only for posts, which are an author and text. */
+	title: string | null;
 	summary: string | null;
 	content: string;
 	source: string;
@@ -136,7 +137,7 @@ export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep,
 	const language = ResourceLanguageSchema.safeParse(acquired.originalLang).data;
 	const parsedDate = Date.parse(acquired.publishedDate ?? '');
 	const publishedDate = Number.isNaN(parsedDate) ? (source?.publishedDate ?? null) : new Date(parsedDate).toISOString();
-	const content = withoutDuplicateResourceTitle(acquired.content, acquired.title);
+	const content = acquired.title ? withoutDuplicateResourceTitle(acquired.content, acquired.title) : acquired.content;
 	return {
 		...acquired,
 		content,

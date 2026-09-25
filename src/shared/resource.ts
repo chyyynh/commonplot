@@ -59,12 +59,13 @@ export const RESOURCE_KIND_METADATA = {
 export type ResourceKind = keyof typeof RESOURCE_KIND_METADATA;
 export type ResourceKindMetadata = z.infer<(typeof RESOURCE_KIND_METADATA)[ResourceKind]>;
 
+// A tweet is a post, or a blog when it publishes an X Article; its identity is the tweet either way.
 export const RESOURCE_PLATFORMS = {
-	lesswrong: { kind: 'blog', identifier: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/) },
-	hackernews: { kind: 'forum', identifier: z.string().regex(/^[1-9]\d*$/) },
-	twitter: { kind: 'post', identifier: z.string().regex(/^\d+$/) },
-	youtube: { kind: 'video', identifier: z.string().regex(/^[A-Za-z0-9_-]{11}$/) },
-} as const satisfies Record<string, { kind: ResourceKind; identifier: z.ZodString }>;
+	lesswrong: { kinds: ['blog'], identifier: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/) },
+	hackernews: { kinds: ['forum'], identifier: z.string().regex(/^[1-9]\d*$/) },
+	twitter: { kinds: ['post', 'blog'], identifier: z.string().regex(/^\d+$/) },
+	youtube: { kinds: ['video'], identifier: z.string().regex(/^[A-Za-z0-9_-]{11}$/) },
+} as const satisfies Record<string, { kinds: readonly ResourceKind[]; identifier: z.ZodString }>;
 export type ResourcePlatform = keyof typeof RESOURCE_PLATFORMS;
 export const ResourceCreatorsSchema = z.array(ResourceCreatorSchema);
 

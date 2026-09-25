@@ -90,7 +90,7 @@ function isBlank(value: string | null | undefined): boolean {
 function planZhHantTranslation(resource: ResourceTranslationInput, force: boolean): ZhHantTranslationPlan {
 	if (
 		!shouldEnqueueResourceTranslation(resource) ||
-		isBlank(resource.title) ||
+		(resource.kind !== 'post' && isBlank(resource.title)) ||
 		isBlank(resource.content) ||
 		resource.translationSource === 'original'
 	) {
@@ -98,7 +98,9 @@ function planZhHantTranslation(resource: ResourceTranslationInput, force: boolea
 	}
 
 	return {
-		metadata: force || !resource.hasTranslatedTitle || (!isBlank(resource.summary) && !resource.hasTranslatedSummary),
+		// Posts are their text alone, so only the content is translated.
+		metadata:
+			resource.kind !== 'post' && (force || !resource.hasTranslatedTitle || (!isBlank(resource.summary) && !resource.hasTranslatedSummary)),
 		content: force || !resource.hasTranslatedContent,
 	};
 }

@@ -91,7 +91,7 @@ async function findResourceCandidates(
 	}>(sql`
 		SELECT COALESCE(jsonb_agg(jsonb_build_object(
 		  'id', resource.id, 'sourceId', resource.source_id, 'scope', resource.scope,
-		  'hasOriginal', COALESCE(BTRIM(original.title) <> '' AND BTRIM(original.content) <> '', false)))
+		  'hasOriginal', COALESCE((resource.kind = 'post' OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> '', false)))
 		  FILTER (WHERE resource.id IS NOT NULL), '[]'::jsonb) AS owners
 		FROM jsonb_array_elements(${JSON.stringify(identities.map(({ normalizedUrl, identifiers }) => ({ normalizedUrl, identifiers })))}::jsonb) WITH ORDINALITY AS input(value, ordinal)
 		LEFT JOIN LATERAL (
@@ -121,10 +121,13 @@ export function prepareResolvedResource(
 	resource: AcquiredResource & { youtube?: YouTubeTranscript },
 	hostedImages: readonly HostedResourceImage[],
 ) {
-	const title = resource.title.trim();
+	const title = resource.title?.trim() || null;
 	const content = resource.content.trim();
 	const sourceName = resource.source.trim();
-	if (!title || !content) throw new TypeError('Resolved Resource requires title and content');
+	if (!content) throw new TypeError('Resolved Resource requires content');
+	if (resource.kind === 'post' ? title !== null || resource.summary !== null : !title) {
+		throw new TypeError('Posts have no title or summary; every other Resource requires a title');
+	}
 	if (!sourceName) throw new TypeError('Resolved Resource requires a source name');
 	const creators = ResourceCreatorsSchema.parse(resource.creators);
 	const kindMetadata = RESOURCE_KIND_METADATA[resource.kind].parse(resource.kindMetadata);
@@ -132,7 +135,7 @@ export function prepareResolvedResource(
 	const identifiers = ResourceIdentifiersSchema.parse(resource.resourceIdentifiers);
 	if (
 		resource.resourcePlatform !== null
-			? RESOURCE_PLATFORMS[resource.resourcePlatform].kind !== resource.kind ||
+			? !(RESOURCE_PLATFORMS[resource.resourcePlatform].kinds as readonly string[]).includes(resource.kind) ||
 				!identifiers.length ||
 				identifiers.some(({ scheme }) => scheme !== resource.resourcePlatform)
 			: resource.kind === 'paper'
@@ -181,7 +184,7 @@ async function lockResource(db: NodePgDatabase, resourceId: string): Promise<Loc
 		SELECT resource.id::text, resource.scope, resource.kind, resource.url,
 		       resource.original_lang AS "originalLang", resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform",
 		       resource.subject_resource_id::text AS "subjectResourceId",
-		       COALESCE(BTRIM(original.title) <> '' AND BTRIM(original.content) <> '', false) AS "hasOriginal",
+		       COALESCE((resource.kind = 'post' OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> '', false) AS "hasOriginal",
 		       MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS "translationRevision",
 		       MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) AS "acquisitionRevision"
 		FROM resources resource

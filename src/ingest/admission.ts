@@ -87,7 +87,7 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, sour
 			  AND EXISTS (
 			    SELECT 1 FROM resource_translations original
 			    WHERE original.resource_id = resources.id AND original.lang = resources.original_lang
-			      AND BTRIM(original.title) <> '' AND BTRIM(original.content) <> ''
+			      AND (resources.kind = 'post' OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> ''
 			  )
 			RETURNING id::text
 		`);
