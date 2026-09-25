@@ -92,10 +92,9 @@ function requiredDocumentText(value: string | null, field: string, resourceId: s
 
 const POST_HEADING_MAX_CHARS = 120;
 
-/** Posts have no title; their opening text stands in for one. */
+/** Posts have no title, so their document opens with the source line. */
 function documentHeading(row: CorpusDocument, original: CorpusTranslationRow): string {
-	if (row.kind !== 'post') return requiredDocumentText(original.title, 'title', row.id);
-	return requiredDocumentText(original.content, 'content', row.id).replace(/\s+/g, ' ').slice(0, POST_HEADING_MAX_CHARS);
+	return row.kind === 'post' ? '' : `# ${requiredDocumentText(original.title, 'title', row.id)}`;
 }
 
 function serializeTranslation(translation: CorpusTranslationRow): string {
@@ -113,7 +112,7 @@ function serializeDocument(row: CorpusDocument): string {
 	const original = row.translations.find((translation) => translation.lang === row.original_lang);
 	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
 	return [
-		`# ${documentHeading(row, original)}`,
+		documentHeading(row, original),
 		requiredDocumentText(row.source, 'source', row.id),
 		row.tags.length ? `Tags: ${row.tags.join(', ')}` : '',
 		row.keywords.length ? `Keywords: ${row.keywords.join(', ')}` : '',
@@ -127,7 +126,7 @@ function serializeRelatedDocument(row: CorpusDocument): string {
 	const original = row.translations.find((translation) => translation.lang === row.original_lang);
 	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
 	return [
-		`# ${documentHeading(row, original)}`,
+		documentHeading(row, original),
 		`Source: ${requiredDocumentText(row.source, 'source', row.id)}`,
 		row.tags.length ? `Tags: ${row.tags.join(', ')}` : '',
 		row.keywords.length ? `Keywords: ${row.keywords.join(', ')}` : '',
