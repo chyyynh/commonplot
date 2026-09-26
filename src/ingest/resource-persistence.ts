@@ -15,7 +15,7 @@ import type { AcquiredResource } from './acquisition';
 import type { ResourceDraftRelation } from './admission';
 import type { ResourceClassification } from './analysis';
 import { resolveResourceUrl, type ResolvedResourceUrl } from './platforms/resource-url';
-import type { YouTubeHighlights, YouTubeTranscript } from './platforms/youtube';
+import type { YouTubeTranscript } from './platforms/youtube';
 import { ResourceLanguageSchema } from './resource-language';
 
 export type ResourcePersistenceTarget = { ownedBlobId?: string } & (
@@ -59,24 +59,6 @@ export async function persistResourceClassification(
 		UPDATE resources
 		SET tags = ${sql.param(classification.tags)}::text[], keywords = ${sql.param(classification.keywords)}::text[], updated_at = NOW()
 		FROM target WHERE resources.id = target.id
-	`);
-}
-
-/** Lock the acquisition revision so an old AI result cannot overwrite a newer transcript. */
-export async function persistYouTubeHighlights(
-	db: NodePgDatabase,
-	target: { resourceId: string; acquisitionRevision: string },
-	highlights: YouTubeHighlights,
-): Promise<void> {
-	await db.execute(sql`
-		WITH current_resource AS (
-			SELECT id FROM resources
-			WHERE id = ${target.resourceId}::uuid AND resource_platform = 'youtube'
-			  AND MD5(EXTRACT(EPOCH FROM scraped_date)::text) = ${target.acquisitionRevision}
-			FOR UPDATE
-		)
-		UPDATE youtube_transcripts SET ai_highlights = ${JSON.stringify(highlights)}::jsonb
-		FROM current_resource WHERE youtube_transcripts.resource_id = current_resource.id
 	`);
 }
 
@@ -267,15 +249,11 @@ async function writeCanonicalResource(
 	if (resource.youtube) {
 		const transcript = resource.youtube;
 		const savedTranscript = await db.execute(sql`
-			INSERT INTO youtube_transcripts (resource_id, transcript, chapters, ai_highlights)
-			VALUES (
-				${resourceId}::uuid, ${JSON.stringify(transcript.segments)}::jsonb,
-				${JSON.stringify(transcript.chapters)}::jsonb, NULL
-			)
+			INSERT INTO youtube_transcripts (resource_id, transcript, chapters)
+			VALUES (${resourceId}::uuid, ${JSON.stringify(transcript.segments)}::jsonb, ${JSON.stringify(transcript.chapters)}::jsonb)
 			ON CONFLICT (resource_id) DO UPDATE SET
 				transcript = EXCLUDED.transcript,
-				chapters = EXCLUDED.chapters,
-				ai_highlights = EXCLUDED.ai_highlights
+				chapters = EXCLUDED.chapters
 			WHERE youtube_transcripts.transcript = '[]'::jsonb OR EXCLUDED.transcript <> '[]'::jsonb
 			RETURNING resource_id
 		`);

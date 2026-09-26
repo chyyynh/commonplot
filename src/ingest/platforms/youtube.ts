@@ -1,12 +1,7 @@
-import { generateText, Output } from 'ai';
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { connectCoreDb } from '../../shared/db';
 import type { AcquiredResource } from '../acquisition';
-import { AI_STEP_RETRIES, coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
-import { persistYouTubeHighlights } from '../resource-persistence';
 import { fetchYouTubeCaptions, type YouTubeCaptionCue, type YouTubeCaptions } from './youtube-captions';
 
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
@@ -16,7 +11,6 @@ export type YouTubeTranscript = Readonly<{
 	segments: YouTubeCaptionCue[];
 	chapters: YouTubeChapter[];
 }>;
-export type YouTubeHighlights = z.infer<typeof YouTubeHighlightsSchema>;
 
 const YouTubeThumbnailSchema = z.object({ url: z.string().min(1) });
 const YouTubeThumbnailsSchema = z.object({
@@ -63,7 +57,8 @@ function bestThumbnailUrl(thumbnails: YouTubeThumbnails): string | null {
 }
 
 function parseChaptersFromDescription(description: string): YouTubeChapter[] {
-	const chapterRegex = /(?:^|\n)(\d{1,2}:)?(\d{1,2}):(\d{2})\s+(.+?)(?=\n|$)/g;
+	// `0:00 Intro`, `[00:00:00] — Intro`, `(1:02:03) Intro`
+	const chapterRegex = /(?:^|\n)[ \t]*[[(]?(\d{1,2}:)?(\d{1,2}):(\d{2})[\])]?[ \t]+(.+?)(?=\n|$)/g;
 	const chapters: YouTubeChapter[] = [];
 
 	for (const [, hours, minutes, seconds, chapterTitle] of description.matchAll(chapterRegex)) {
@@ -221,68 +216,3 @@ export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, 
 		youtube: { segments: captions.cues, chapters },
 	} satisfies AcquiredResource & { youtube: YouTubeTranscript };
 }
-
-export async function stageYouTubeHighlights(
-	env: CoreEnv,
-	step: WorkflowStep,
-	target: { resourceId: string; acquisitionRevision: string },
-	transcript: YouTubeTranscript,
-) {
-	if (!transcript.segments.length || transcript.chapters.length) return;
-	const highlights = await step.do('prepare-youtube-highlights-v4', { retries: AI_STEP_RETRIES, timeout: '60 seconds' }, async () => {
-		console.info({ tag: 'AI', msg: 'Generating YouTube highlights', resource_id: target.resourceId });
-		const transcriptText = transcript.segments.map((segment) => `[${Math.floor(segment.startTime)}s] ${segment.text}`).join('\n');
-		const transcriptEndTime = transcript.segments.reduce((end, segment) => Math.max(end, segment.endTime), 0);
-		const { finishReason, output: highlights } = await generateText({
-			model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
-				...CORE_STRUCTURED_MODEL_SETTINGS,
-				...coreGatewayOptions(env, { feature: 'youtube-highlights', processing_id: target.resourceId }),
-			}),
-			prompt: `逐字稿涵蓋到：${transcriptEndTime} 秒\n\n逐字稿：\n${transcriptText}`,
-			system: HIGHLIGHTS_SYSTEM_PROMPT,
-			output: Output.object({
-				name: 'youtube_highlights',
-				schema: YouTubeHighlightsSchema.refine(
-					({ highlights }) =>
-						highlights.every(
-							(highlight, index) =>
-								highlight.endTime <= transcriptEndTime && (index === 0 || highlight.startTime >= highlights[index - 1].endTime),
-						),
-					{ message: 'Highlights must be ordered, non-overlapping and within the transcript duration' },
-				),
-			}),
-			maxOutputTokens: 2000,
-			temperature: 0.3,
-			reasoning: 'none',
-			maxRetries: 0,
-		});
-		if (finishReason === 'length') throw new Error(`YouTube highlights hit the output token cap for ${target.resourceId}`);
-		console.info({ tag: 'AI', msg: 'YouTube highlights generated', resource_id: target.resourceId, count: highlights.highlights.length });
-		return highlights;
-	});
-	await step.do(
-		'persist-youtube-highlights-v2',
-		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-		async () => persistYouTubeHighlights(await connectCoreDb(env), target, highlights),
-	);
-}
-
-const YouTubeHighlightSchema = z
-	.object({
-		title: z.string().min(1),
-		summary: z.string().min(1),
-		startTime: z.number().nonnegative(),
-		endTime: z.number().nonnegative(),
-	})
-	.refine(({ startTime, endTime }) => endTime > startTime, { message: 'Highlight endTime must be after startTime' });
-const YouTubeHighlightsSchema = z.object({ highlights: z.array(YouTubeHighlightSchema).min(5).max(8) });
-const HIGHLIGHTS_SYSTEM_PROMPT = `你是專業的影片內容分析師。分析 YouTube 影片逐字稿，找出 5-8 個最重要的主題段落。
-
-規則：
-1. 每個段落代表一個獨立主題
-2. 段落按時間排列且不重疊，結束時間不得超出逐字稿涵蓋範圍
-3. 標題要精簡有力（30字內）
-4. 時間戳記要準確對應討論內容的起止
-5. 所有文字使用繁體中文
-
-只回傳符合 schema 的資料。`;

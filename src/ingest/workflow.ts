@@ -8,7 +8,6 @@ import { AI_STEP_RETRIES } from './ai-model';
 import { summarizeResource, classifyResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { withoutPrivatePdfImages } from './pdf-markdown.ts';
-import { stageYouTubeHighlights } from './platforms/youtube';
 import { createResourceTask } from './progress';
 import {
 	persistResolvedResource,
@@ -172,9 +171,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					status: 'complete',
 					resourceId: persistedResourceId,
 				}),
-				preparedResource.youtube && persistence.originalWritten
-					? stageYouTubeHighlights(this.env, step, persistence, preparedResource.youtube)
-					: undefined,
 				(async () => {
 					if (classificationTargets.length) {
 						try {
@@ -212,9 +208,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							return id;
 						})
 					: undefined,
-			]).then(async ([ready, highlights, ...dispatches]) => {
-				if (highlights.status === 'rejected')
-					console.error({ tag: 'WORKFLOW', msg: 'Background work failed', resource_id: persistedResourceId, error: highlights.reason });
+			]).then(async ([ready, ...dispatches]) => {
 				const failures = [ready, ...dispatches].flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
 				await task.seal(failures.length ? 'followup_dispatch_failed' : undefined);
 				if (failures.length) throw new AggregateError(failures, 'Resource persisted, but one or more follow-ups failed');
