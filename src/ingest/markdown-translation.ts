@@ -13,10 +13,11 @@ import { frontmatter } from 'micromark-extension-frontmatter';
 import { gfm } from 'micromark-extension-gfm';
 import { math } from 'micromark-extension-math';
 
-const MAX_BATCH_CHARACTERS = 24_000;
-const MAX_BATCH_SEGMENTS = 16;
+// Batches are sized by source length (about 2k source tokens); segment count only bounds the output schema.
+const MAX_BATCH_CHARACTERS = 8_000;
+const MAX_BATCH_SEGMENTS = 48;
 const MAX_CONTEXT_CHARACTERS = 800;
-const MAX_SEGMENT_CHARACTERS = 20_000;
+const MAX_SEGMENT_CHARACTERS = 6_000;
 const TRANSLATABLE_CHARACTER = /[\p{L}\p{N}]/u;
 const URL_OR_EMAIL = /^(?:https?:\/\/|mailto:|www\.)\S+$|^[^\s@]+@[^\s@]+\.[^\s@]+$/iu;
 const TRANSLATED_PROSE_SENTINEL = '<translated-prose>';
@@ -630,9 +631,6 @@ function batchSegments(segments: readonly MarkdownTranslationSegment[]): Markdow
 	let currentCharacters = 0;
 	for (const segment of segments) {
 		const characters = segmentInputCharacters(segment);
-		if (characters > MAX_BATCH_CHARACTERS) {
-			throw new MarkdownTranslationInvariantError('invalid-plan', `Markdown segment ${segment.id} exceeds the batch character budget`);
-		}
 		if (current.length > 0 && (currentCharacters + characters > MAX_BATCH_CHARACTERS || current.length >= MAX_BATCH_SEGMENTS)) {
 			batches.push(createBatch(current, batches.length));
 			current = [];

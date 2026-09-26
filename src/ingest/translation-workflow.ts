@@ -137,6 +137,28 @@ function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslation
 	});
 }
 
+type TranslationDocument = Readonly<{ title: string; summary: string | null }>;
+
+const DOCUMENT_SUMMARY_CONTEXT_CHARACTERS = 600;
+const MAX_TRANSLATION_OUTPUT_TOKENS = 12_000;
+
+/**
+ * Room for a complete translation of this batch. Translations run at most
+ * ~1.1x the source characters, so a degenerate, repeating response stops here
+ * and splits instead of running to the global cap.
+ */
+function translationOutputTokenBudget(segments: readonly MarkdownTranslationSegment[]): number {
+	let characters = 0;
+	let slots = 0;
+	for (const { template } of segments) {
+		for (const text of Object.values(template.texts)) {
+			characters += text.length;
+			slots += 1;
+		}
+	}
+	return Math.min(MAX_TRANSLATION_OUTPUT_TOKENS, Math.max(1_024, Math.ceil(characters * 1.25) + slots * 24 + 256));
+}
+
 function markdownTranslationModelInput({ id, context, template }: MarkdownTranslationSegment) {
 	return {
 		context,
@@ -162,7 +184,8 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - sequences 直接列出各個語意範圍內的原始排列；{ id: t, text } 是可寫入譯文的位置，{ id: n, inline } 是受保護的 inline
 - t ID 是 inline 前後可寫入譯文的位置，不是一對一翻譯單位；n ID 是 Core 保管的連結、強調、圖片、程式碼、公式或其他 Markdown inline
 - 若某個 n ID 也有同名 sequence，該 sequence 是該 container 內的可見文字；同一 segment 的所有 sequences 合起來才是完整句意
-- context、ID、kind 與 reference 只供翻譯判斷，不屬於譯文
+- document 是整份文件的標題與摘要，context、ID、kind 與 reference 只供翻譯判斷，不屬於譯文
+- 文件會分成多批翻譯；依 document 判斷主題，人名、組織與術語在整份文件採用同一譯名
 
 翻譯準則：
 - 把同一 segment 當作完整段落理解，不要逐 t ID 直譯
@@ -210,6 +233,7 @@ function isMarkdownTranslationFormatError(error: unknown): boolean {
 
 async function translateMarkdownBatchToZhHant(
 	batch: MarkdownTranslationBatch,
+	document: TranslationDocument,
 	env: CoreEnv,
 	resourceId: string,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
@@ -228,6 +252,10 @@ async function translateMarkdownBatchToZhHant(
 			prompt: `${JSON.stringify({
 				targetLocale: 'zh-Hant',
 				editorialVariant: 'zh-TW',
+				document: {
+					title: document.title,
+					summary: document.summary?.slice(0, DOCUMENT_SUMMARY_CONTEXT_CHARACTERS) || null,
+				},
 				segments: promptSegments,
 			})}`,
 			system: ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT,
@@ -236,7 +264,7 @@ async function translateMarkdownBatchToZhHant(
 				description: 'Complete, faithful, naturally edited Taiwan Traditional Chinese prose blocks keyed by exact input segment IDs.',
 				schema: zhHantMarkdownTranslationsSchema(batch.segments),
 			}),
-			maxOutputTokens: 12000,
+			maxOutputTokens: translationOutputTokenBudget(batch.segments),
 			temperature: 0.2,
 			reasoning: 'none',
 			maxRetries: 0,
@@ -301,37 +329,56 @@ Title: ${resource.title}${summary ? `\nSummary: ${summary}` : ''}`,
 
 async function translateDurableBatch(
 	batch: MarkdownTranslationBatch,
+	document: TranslationDocument,
 	env: CoreEnv,
 	resourceId: string,
 	step: WorkflowStep,
 	depth = 0,
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	const result = await step.do(
-		`translate-zh-hant-markdown-${batch.id}-v17`,
+		`translate-zh-hant-markdown-${batch.id}-v18`,
 		{ retries: { limit: 3, delay: aiRetryDelay, backoff: 'constant' }, timeout: '300 seconds' },
 		async () => {
 			try {
-				return { ok: true as const, translations: await translateMarkdownBatchToZhHant(batch, env, resourceId) };
+				return { ok: true as const, translations: await translateMarkdownBatchToZhHant(batch, document, env, resourceId) };
 			} catch (error) {
-				if (batch.segments.length === 1 || !isMarkdownTranslationFormatError(error)) throw error;
+				if (!isMarkdownTranslationFormatError(error)) throw error;
 				// Persist the format failure so replay goes straight to the same smaller groups.
 				return { ok: false as const };
 			}
 		},
 	);
 	if (result.ok) return result.translations;
+	if (batch.segments.length === 1) {
+		// One block the model cannot translate within the contract stays in its source language, not the whole document.
+		const segment = batch.segments[0]!;
+		console.warn({
+			tag: 'RESOURCE_TRANSLATION',
+			event: 'segment_kept_in_source_language',
+			resource_id: resourceId,
+			segment_id: segment.id,
+		});
+		return [{ texts: segment.template.texts }];
+	}
 	const groups = depth === 0 ? splitSegmentsInHalf(batch.segments) : batch.segments.map((segment) => [segment]);
 	const translations: MarkdownSegmentTranslation[] = [];
 	for (const [index, segments] of groups.entries()) {
 		// Each subgroup has its own checkpoint; a later failure never redoes an earlier successful group.
 		translations.push(
-			...(await translateDurableBatch({ ...batch, id: `${batch.id}-${index + 1}`, segments }, env, resourceId, step, depth + 1)),
+			...(await translateDurableBatch({ ...batch, id: `${batch.id}-${index + 1}`, segments }, document, env, resourceId, step, depth + 1)),
 		);
 	}
 	return translations;
 }
 
-async function translatePlannedContent(content: string, env: CoreEnv, resourceId: string, step: WorkflowStep, task: ResourceTask) {
+async function translatePlannedContent(
+	content: string,
+	document: TranslationDocument,
+	env: CoreEnv,
+	resourceId: string,
+	step: WorkflowStep,
+	task: ResourceTask,
+) {
 	const markdownPlan = planMarkdownTranslation(content);
 	console.info({
 		tag: 'RESOURCE_TRANSLATION',
@@ -368,7 +415,7 @@ async function translatePlannedContent(content: string, env: CoreEnv, resourceId
 			const batchIndex = nextBatch++;
 			const batch = markdownPlan.batches[batchIndex]!;
 			try {
-				translatedBatches[batchIndex] = await translateDurableBatch(batch, env, resourceId, step);
+				translatedBatches[batchIndex] = await translateDurableBatch(batch, document, env, resourceId, step);
 				const count = ++completed;
 				// Serialize progress delivery; completion order differs from source order and can change on replay.
 				progress = progress.then(() =>
@@ -646,7 +693,16 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 							() => translateResourceMetadata(resource, this.env),
 						)
 					: undefined,
-				translationPlan.content ? translatePlannedContent(resource.content, this.env, resourceId, step, task) : undefined,
+				translationPlan.content
+					? translatePlannedContent(
+							resource.content,
+							{ title: resource.title, summary: resource.summary },
+							this.env,
+							resourceId,
+							step,
+							task,
+						)
+					: undefined,
 			]);
 			if (content.status === 'rejected') {
 				const error = content.reason;
