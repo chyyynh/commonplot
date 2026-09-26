@@ -2,20 +2,18 @@ import { generateText, Output } from 'ai';
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { createWorkersAI } from 'workers-ai-provider';
-import type { TranscriptResponse } from 'youtube-transcript';
 import { z } from 'zod';
 import { connectCoreDb } from '../../shared/db';
 import type { AcquiredResource } from '../acquisition';
 import { AI_STEP_RETRIES, coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
 import { persistYouTubeHighlights } from '../resource-persistence';
+import { fetchYouTubeCaptions, type YouTubeCaptionCue } from './youtube-captions';
 
-const TRANSCRIPT_FETCH_TIMEOUT_MS = 8_000;
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
 
-type YouTubeTranscriptSegment = Readonly<{ startTime: number; endTime: number; text: string }>;
 type YouTubeChapter = { title: string; startTime: number; endTime?: number };
 export type YouTubeTranscript = Readonly<{
-	segments: YouTubeTranscriptSegment[];
+	segments: YouTubeCaptionCue[];
 	chapters: YouTubeChapter[];
 }>;
 export type YouTubeHighlights = z.infer<typeof YouTubeHighlightsSchema>;
@@ -57,7 +55,6 @@ const YouTubeChannelsResponseSchema = z.object({
 		.optional(),
 });
 type YouTubeThumbnails = z.infer<typeof YouTubeThumbnailsSchema>;
-type YouTubeAcquisition = Awaited<ReturnType<typeof scrapeYouTube>>;
 
 function bestThumbnailUrl(thumbnails: YouTubeThumbnails): string | null {
 	return (
@@ -85,17 +82,6 @@ function parseChaptersFromDescription(description: string): YouTubeChapter[] {
 
 	return chapters.length >= 2 ? chapters : [];
 }
-
-const transcriptFetch: typeof fetch = (input, init) => {
-	const url = new URL(input instanceof Request ? input.url : input);
-	if (url.pathname === '/api/timedtext') {
-		// Request classic XML explicitly: this package returns its timestamps in seconds.
-		url.searchParams.set('fmt', 'srv1');
-		input = input instanceof Request ? new Request(url, input) : url;
-	}
-	const timeout = AbortSignal.timeout(TRANSCRIPT_FETCH_TIMEOUT_MS);
-	return fetch(input, { ...init, signal: init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout });
-};
 
 /**
  * ISO-8601 duration as the videos endpoint returns it: PT1H2M3S, PT58S, PT3M.
@@ -162,42 +148,7 @@ async function fetchChannelAvatar(youtubeApiKey: string, channelId: string): Pro
 	}
 }
 
-async function fetchVideoTranscript(videoId: string): Promise<{ segments: YouTubeTranscriptSegment[]; language: string | null }> {
-	const { fetchTranscript } = await import('youtube-transcript');
-	let items: TranscriptResponse[];
-	try {
-		items = await fetchTranscript(videoId, { fetch: transcriptFetch });
-	} catch (error) {
-		console.warn({
-			tag: 'YOUTUBE',
-			msg: 'Transcript unavailable; using video description',
-			videoId,
-			error: error instanceof Error ? error.message : String(error),
-		});
-		return { segments: [], language: null };
-	}
-
-	if (!items.length) {
-		console.info({ tag: 'YOUTUBE', msg: 'Transcript unavailable; using video description', videoId });
-		return { segments: [], language: null };
-	}
-
-	const segments: YouTubeTranscriptSegment[] = items.map(({ offset, duration, text }) => {
-		if (!Number.isFinite(offset) || offset < 0) throw new Error(`YouTube transcript ${videoId} has invalid offset`);
-		if (!Number.isFinite(duration) || duration < 0) throw new Error(`YouTube transcript ${videoId} has invalid duration`);
-		return {
-			startTime: offset,
-			endTime: offset + duration,
-			text,
-		};
-	});
-	const language = items.find((item) => item.lang?.trim())?.lang?.trim() || null;
-
-	console.info({ tag: 'YOUTUBE', msg: 'Transcript fetched', provider: 'youtube-transcript', count: segments.length, language });
-	return { segments, language };
-}
-
-async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
+async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching video', videoId });
 
 	const videoData = await fetchYouTubeVideoData(videoId, youtubeApiKey);
@@ -212,11 +163,7 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 	const thumbnailUrl = bestThumbnailUrl(snippet.thumbnails);
 	const chapters = parseChaptersFromDescription(snippet.description);
 
-	console.info({ tag: 'YOUTUBE', msg: 'Fetching transcript', videoId });
-	const [channelAvatar, transcript] = await Promise.all([
-		fetchChannelAvatar(youtubeApiKey, snippet.channelId),
-		fetchVideoTranscript(videoId),
-	]);
+	const channelAvatar = await fetchChannelAvatar(youtubeApiKey, snippet.channelId);
 	const channelTitle = snippet.channelTitle.trim();
 
 	console.info({ tag: 'YOUTUBE', msg: 'Video fetched', title: snippet.title });
@@ -228,13 +175,8 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 		url: `https://youtube.com/watch?v=${videoId}`,
 		fileType: null,
 		title: snippet.title.trim(),
-		content:
-			transcript.segments
-				.map((segment) => segment.text.trim())
-				.filter(Boolean)
-				.join('\n') || snippet.description.trim(),
 		source: channelTitle || 'YouTube',
-		originalLang: transcript.language ?? snippet.defaultAudioLanguage ?? 'und',
+		audioLanguage: snippet.defaultAudioLanguage ?? null,
 		publishedDate: snippet.publishedAt,
 		summary: snippet.description,
 		creators: channelTitle
@@ -252,17 +194,45 @@ async function scrapeYouTube(videoId: string, youtubeApiKey: string) {
 		kindMetadata: durationSeconds === null ? {} : { durationSeconds },
 		previewImageUrl: thumbnailUrl?.trim() || null,
 		subjectUrl: null,
-		youtube: { segments: transcript.segments, chapters },
-	} satisfies AcquiredResource & { youtube: YouTubeTranscript };
+		chapters,
+	} satisfies Omit<AcquiredResource, 'content' | 'originalLang'> & { audioLanguage: string | null; chapters: YouTubeChapter[] };
 }
 
+type YouTubeVideo = Awaited<ReturnType<typeof scrapeYouTubeVideo>>;
+type YouTubeCaptions = Awaited<ReturnType<typeof fetchYouTubeCaptions>>;
+
 export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, videoId: string) {
-	const contentStream = await step.do(
-		'acquire-youtube-v4',
-		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await scrapeYouTube(videoId, env.YOUTUBE_API_KEY)).body!,
+	const { audioLanguage, chapters, ...video } = await step.do(
+		'acquire-youtube-video-v1',
+		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
+		async (): Promise<YouTubeVideo> => scrapeYouTubeVideo(videoId, env.YOUTUBE_API_KEY),
 	);
-	return new Response(contentStream).json<YouTubeAcquisition>();
+	// Captions are optional: when YouTube keeps withholding them, keep the video
+	// with its description rather than failing the whole acquisition.
+	const captions = await step
+		.do(
+			'acquire-youtube-captions-v1',
+			{ retries: { limit: 4, delay: '30 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
+			// Long videos exceed the step result limit as JSON values; stream them.
+			async () => Response.json(await fetchYouTubeCaptions(videoId, audioLanguage)).body!,
+		)
+		.then((body) => new Response(body).json<YouTubeCaptions>())
+		.catch((error: unknown): YouTubeCaptions => {
+			console.warn({
+				tag: 'YOUTUBE',
+				msg: 'Captions unavailable after retries; using video description',
+				videoId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return { cues: [], language: null };
+		});
+	console.info({ tag: 'YOUTUBE', msg: 'Captions fetched', videoId, count: captions.cues.length, language: captions.language });
+	return {
+		...video,
+		content: captions.cues.map((cue) => cue.text).join('\n') || video.summary.trim(),
+		originalLang: captions.language ?? audioLanguage ?? 'und',
+		youtube: { segments: captions.cues, chapters },
+	} satisfies AcquiredResource & { youtube: YouTubeTranscript };
 }
 
 export async function stageYouTubeHighlights(
