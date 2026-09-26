@@ -1,5 +1,5 @@
 import { hash } from 'node:crypto';
-import { createResourceTask, enqueueSearchProgress, type ResourceTask, type ResourceTaskContext } from './progress';
+import { createResourceTask, type ResourceTask, type ResourceTaskContext } from './progress';
 // Durable translation execution; resource processing only enqueues this Workflow.
 import { generateText, NoObjectGeneratedError, Output } from 'ai';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
@@ -708,7 +708,9 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 					? step.do(
 							'enqueue-translated-ai-search-sync-v1',
 							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							() => enqueueSearchProgress(this.env, resourceId, task, `${translationRevision}-zh-hant`),
+							async () => {
+								await this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId });
+							},
 						)
 					: undefined,
 			]);

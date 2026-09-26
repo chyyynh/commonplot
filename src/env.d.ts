@@ -8,7 +8,7 @@ declare global {
 				verifyStoredBlobProcessing(resourceId: string, workflowId: string): Promise<boolean>;
 				registerResourceProgressTask(input: {
 					taskId: string;
-					kind: 'processing' | 'translation' | 'references' | 'index';
+					kind: 'processing' | 'translation';
 					resourceId?: string;
 					parentTaskId?: string;
 				}): Promise<boolean>;

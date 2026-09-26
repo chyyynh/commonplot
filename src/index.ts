@@ -24,9 +24,9 @@ export { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 export { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
 export { ResourceProcessingV2Workflow } from './ingest/workflow';
 
-const ResourceSearchSyncMessageSchema = z.strictObject({
+// Not strict: messages queued by earlier revisions also carried a progress task id.
+const ResourceSearchSyncMessageSchema = z.object({
 	resourceId: z.uuid().toLowerCase(),
-	taskId: z.string().min(1).max(150).optional(),
 });
 
 export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
@@ -49,7 +49,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	override async queue(batch: MessageBatch<unknown>): Promise<void> {
-		const pending = new Map<string, { messages: Message<unknown>[]; taskIds: Set<string> }>();
+		const pending = new Map<string, Message<unknown>[]>();
 		for (const message of batch.messages) {
 			const input = ResourceSearchSyncMessageSchema.safeParse(message.body);
 			if (!input.success) {
@@ -57,10 +57,9 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 				message.ack();
 				continue;
 			}
-			const group = pending.get(input.data.resourceId) ?? { messages: [], taskIds: new Set<string>() };
-			group.messages.push(message);
-			if (input.data.taskId) group.taskIds.add(input.data.taskId);
-			pending.set(input.data.resourceId, group);
+			const messages = pending.get(input.data.resourceId) ?? [];
+			messages.push(message);
+			pending.set(input.data.resourceId, messages);
 		}
 		if (!pending.size) return;
 		let db: Awaited<ReturnType<typeof connectCoreDb>>;
@@ -70,13 +69,13 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 			documents = await loadCorpusDocuments(db, [...pending.keys()]);
 		} catch (error) {
 			console.error({ tag: 'AI_SEARCH', msg: 'Resource sync batch could not be loaded', error });
-			for (const { messages } of pending.values()) {
+			for (const messages of pending.values()) {
 				for (const message of messages) message.retry();
 			}
 			return;
 		}
 		const documentsById = new Map(documents.map((document) => [document.id, document]));
-		for (const [resourceId, { messages, taskIds }] of pending) {
+		for (const [resourceId, messages] of pending) {
 			try {
 				const document = documentsById.get(resourceId);
 				await syncCorpusItem(this.env, resourceId, document);
@@ -84,14 +83,6 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 				// Postgres instead of acknowledging a stale upload or deletion.
 				const [current] = await loadCorpusDocuments(db, [resourceId]);
 				if (JSON.stringify(current) !== JSON.stringify(document)) throw new Error('Resource changed during search sync');
-				for (const taskId of taskIds) {
-					await this.env.APP.reportResourceProgress({
-						taskId,
-						stage: 'indexing',
-						status: documentsById.has(resourceId) ? 'complete' : 'skipped',
-						resourceId,
-					});
-				}
 				for (const message of messages) message.ack();
 			} catch (error) {
 				console.error({

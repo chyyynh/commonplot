@@ -9,7 +9,7 @@ import { summarizeResource, classifyResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { withoutPrivatePdfImages } from './pdf-markdown.ts';
 import { stageYouTubeHighlights } from './platforms/youtube';
-import { createResourceTask, enqueueSearchProgress } from './progress';
+import { createResourceTask } from './progress';
 import {
 	persistResolvedResource,
 	persistResourceClassification,
@@ -156,40 +156,15 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			publishedResourceId = persistedResourceId;
 
 			const subjectUrl = resource.subjectUrl;
-			// Enrollment must finish before sealing, but Crossref execution is hidden background work.
-			const referenceTask =
+			// Crossref enrichment is background work that no import waits on.
+			const references =
 				scope === 'corpus' &&
 				persistence.kind === 'paper' &&
 				(preparedResource.references?.some(({ doi, arxivId }) => !doi && !arxivId) || !persistence.originalWritten)
-					? createResourceTask(this.env, step, `references-${task.taskId}`, task.required)
-					: null;
-			const referenceRegistration = referenceTask?.required
-				? step.do('register-reference-progress-v1', STORAGE_STEP, () =>
-						this.env.APP.registerResourceProgressTask({
-							taskId: referenceTask.taskId,
-							kind: 'references',
-							resourceId: persistedResourceId,
-							parentTaskId: task.taskId,
-						}),
-					)
-				: Promise.resolve();
-			const references = referenceTask
-				? referenceRegistration
-						.then(() => stageResourceReferences(this.env, step, persistedResourceId))
-						.then(
-							() =>
-								referenceTask.report('references-complete', { stage: 'references', status: 'complete', resourceId: persistedResourceId }),
-							(error) => {
-								console.error({ tag: 'WORKFLOW', msg: 'Reference enrichment failed', resource_id: persistedResourceId, error });
-								return referenceTask.report('references-failed', {
-									stage: 'references',
-									status: 'failed',
-									resourceId: persistedResourceId,
-									errorCode: 'references_failed',
-								});
-							},
-						)
-				: undefined;
+					? stageResourceReferences(this.env, step, persistedResourceId).catch((error: unknown) => {
+							console.error({ tag: 'WORKFLOW', msg: 'Reference enrichment failed', resource_id: persistedResourceId, error });
+						})
+					: undefined;
 
 			const followups = Promise.allSettled([
 				task.report('ready', {
@@ -197,7 +172,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					status: 'complete',
 					resourceId: persistedResourceId,
 				}),
-				referenceRegistration,
 				preparedResource.youtube && persistence.originalWritten
 					? stageYouTubeHighlights(this.env, step, persistence, preparedResource.youtube)
 					: undefined,
@@ -216,9 +190,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					}
 					// Classification is optional; handing the published body to search is required.
 					if (scope === 'corpus')
-						await step.do('enqueue-resolved-ai-search-sync-v2', STORAGE_STEP, () =>
-							enqueueSearchProgress(this.env, persistedResourceId, task, translationRevision),
-						);
+						await step.do('enqueue-resolved-ai-search-sync-v2', STORAGE_STEP, async () => {
+							await this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId: persistedResourceId });
+						});
 				})(),
 				...translationTargets.map(({ stepName, resourceId, translationRevision, forceRunKey }) =>
 					step.do(stepName, STORAGE_STEP, () => enqueueResourceTranslation(this.env, resourceId, translationRevision, forceRunKey, task)),
@@ -232,16 +206,13 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 								...(resource.publishedDate ? { sourceHints: { publishedDate: resource.publishedDate } } : {}),
 								url: subjectUrl,
 							});
-							// Separate tracked and automatic executions so neither inherits the other's progress ledger.
-							const prefix = task.required ? 'subject-draft-v4' : 'subject-draft-auto-v1';
-							const id = `${prefix}-${hash('sha256', JSON.stringify(subjectTarget), 'hex')}`;
-							if (task.required)
-								await this.env.APP.registerResourceProgressTask({ taskId: id, kind: 'processing', parentTaskId: task.taskId });
-							await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { ...subjectTarget, progress: task.required } }]);
+							// The linked page is background work, never part of the importer's progress.
+							const id = `subject-draft-auto-v1-${hash('sha256', JSON.stringify(subjectTarget), 'hex')}`;
+							await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { ...subjectTarget, progress: false } }]);
 							return id;
 						})
 					: undefined,
-			]).then(async ([ready, _referenceRegistration, highlights, ...dispatches]) => {
+			]).then(async ([ready, highlights, ...dispatches]) => {
 				if (highlights.status === 'rejected')
 					console.error({ tag: 'WORKFLOW', msg: 'Background work failed', resource_id: persistedResourceId, error: highlights.reason });
 				const failures = [ready, ...dispatches].flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
@@ -249,14 +220,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				if (failures.length) throw new AggregateError(failures, 'Resource persisted, but one or more follow-ups failed');
 			});
 			// Keep every durable branch awaited even when an independent handoff fails.
-			const [referenceProgress, dispatched] = await Promise.allSettled([references, followups]);
-			if (referenceProgress.status === 'rejected')
-				console.error({
-					tag: 'WORKFLOW',
-					msg: 'Reference progress delivery failed',
-					resource_id: persistedResourceId,
-					error: referenceProgress.reason,
-				});
+			const [, dispatched] = await Promise.allSettled([references, followups]);
 			if (dispatched.status === 'rejected') throw dispatched.reason;
 
 			console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });

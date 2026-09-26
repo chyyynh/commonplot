@@ -1,9 +1,8 @@
-import { hash } from 'node:crypto';
 import type { WorkflowStep } from 'cloudflare:workers';
 
 export type ProgressReport = {
 	taskId: string;
-	stage?: 'acquiring' | 'parsing' | 'analyzing' | 'persisting' | 'translating' | 'references' | 'indexing';
+	stage?: 'acquiring' | 'parsing' | 'analyzing' | 'persisting' | 'translating';
 	status: 'queued' | 'running' | 'complete' | 'failed' | 'skipped' | 'superseded';
 	resourceId?: string;
 	completed?: number;
@@ -41,13 +40,3 @@ export function createResourceTask(env: CoreEnv, step: WorkflowStep, taskId: str
 
 export type ResourceTask = ReturnType<typeof createResourceTask>;
 export type ResourceTaskContext = Pick<ResourceTask, 'taskId' | 'required'>;
-
-export async function enqueueSearchProgress(env: CoreEnv, resourceId: string, parent: ResourceTaskContext, revision: string) {
-	if (!parent.required) {
-		await env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId });
-		return;
-	}
-	const taskId = `index-${hash('sha256', `${parent.taskId}:${resourceId}:${revision}`, 'hex')}`;
-	await env.APP.registerResourceProgressTask({ taskId, kind: 'index', resourceId, parentTaskId: parent.taskId });
-	await env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId, taskId });
-}
