@@ -222,7 +222,8 @@ Rules:
 		if (!generatedDigest) throw new Error('Hacker News discussion digest returned no text');
 		return generatedDigest;
 	});
-	return { ...resource, content: [resource.content, '---', digest].join('\n\n') };
+	// The title heading is dropped as a duplicate, so the rule only separates HN post text from the digest.
+	return { ...resource, content: [resource.content, discussion.hnText ? '---' : null, digest].filter(Boolean).join('\n\n') };
 }
 
 const HN_DISCUSSION_SYSTEM =
