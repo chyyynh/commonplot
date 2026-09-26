@@ -23,6 +23,7 @@ export { GrobidContainer, ZoteroSdtContainer } from './ingest/pdf-containers';
 export { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 export { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
 export { ResourceProcessingV2Workflow } from './ingest/workflow';
+export { YouTubeCaptionFetcher } from './ingest/platforms/youtube-captions';
 
 // Not strict: messages queued by earlier revisions also carried a progress task id.
 const ResourceSearchSyncMessageSchema = z.object({

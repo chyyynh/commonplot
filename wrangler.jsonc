@@ -41,6 +41,10 @@
 				"name": "ZOTERO_SDT",
 				"class_name": "ZoteroSdtContainer",
 			},
+			{
+				"name": "YOUTUBE_CAPTIONS",
+				"class_name": "YouTubeCaptionFetcher",
+			},
 		],
 	},
 	"migrations": [
@@ -51,6 +55,10 @@
 		{
 			"tag": "zotero-sdt-v1",
 			"new_sqlite_classes": ["ZoteroSdtContainer"],
+		},
+		{
+			"tag": "youtube-captions-v1",
+			"new_sqlite_classes": ["YouTubeCaptionFetcher"],
 		},
 	],
 	"observability": {

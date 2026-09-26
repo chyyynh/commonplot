@@ -1,6 +1,14 @@
+import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod';
 
 const CAPTION_FETCH_TIMEOUT_MS = 8_000;
+/**
+ * YouTube bot-checks individual Cloudflare egress machines. A fresh Durable
+ * Object lands on another machine, and about 40% of machines pass (measured
+ * 2026-09-26, independent of region), so retry on new instances, not in place.
+ */
+const CAPTION_FETCHER_ATTEMPTS = 8;
+const CAPTION_FETCHER_HINTS: readonly DurableObjectLocationHint[] = ['wnam', 'enam', 'weur', 'apac', 'oc', 'eeur', 'sam', 'me'];
 const INNERTUBE_PLAYER_URL = 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false';
 const ANDROID_CLIENT_VERSION = '20.10.38';
 const ANDROID_USER_AGENT = `com.google.android.youtube/${ANDROID_CLIENT_VERSION} (Linux; U; Android 14)`;
@@ -8,6 +16,8 @@ const WEB_USER_AGENT =
 	'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36,gzip(gfe)';
 
 export type YouTubeCaptionCue = Readonly<{ startTime: number; endTime: number; text: string }>;
+export type YouTubeCaptions = { cues: YouTubeCaptionCue[]; language: string | null };
+type CaptionAttempt = ({ status: 'fetched' } & YouTubeCaptions) | { status: 'withheld'; reason: string };
 
 const CaptionTrackSchema = z.object({
 	baseUrl: z.string().min(1),
@@ -28,11 +38,6 @@ const PlayerResponseSchema = z.object({
 		.optional(),
 });
 type PlayerResponse = z.infer<typeof PlayerResponseSchema>;
-
-/** YouTube withheld the player (bot check, rate limit); another attempt may be served normally. */
-export class YouTubeCaptionsWithheldError extends Error {
-	override name = 'YouTubeCaptionsWithheldError';
-}
 
 function captionFetch(input: string, init: RequestInit = {}) {
 	return fetch(input, { ...init, signal: AbortSignal.timeout(CAPTION_FETCH_TIMEOUT_MS) });
@@ -115,7 +120,7 @@ async function fetchCaptionCues(videoId: string, track: CaptionTrack): Promise<Y
 	const response = await captionFetch(url.href, { headers: { 'User-Agent': WEB_USER_AGENT } });
 	if (!response.ok) {
 		await response.body?.cancel();
-		throw new YouTubeCaptionsWithheldError(`YouTube timedtext ${videoId} returned HTTP ${response.status}`);
+		throw new Error(`YouTube timedtext ${videoId} returned HTTP ${response.status}`);
 	}
 	const xml = await response.text();
 	return [...xml.matchAll(/<text start="([^"]*)" dur="([^"]*)"[^>]*>([^<]*)<\/text>/g)].flatMap(([, start, dur, raw]) => {
@@ -129,15 +134,8 @@ async function fetchCaptionCues(videoId: string, track: CaptionTrack): Promise<Y
 	});
 }
 
-/**
- * Captions in the video's spoken language. Returns no cues only when YouTube
- * served the player and it lists no captions; a withheld player throws so the
- * caller can retry.
- */
-export async function fetchYouTubeCaptions(
-	videoId: string,
-	audioLanguage: string | null,
-): Promise<{ cues: YouTubeCaptionCue[]; language: string | null }> {
+/** One attempt from the current machine; a withheld player is a result, not an error. */
+async function attemptCaptions(videoId: string, audioLanguage: string | null): Promise<CaptionAttempt> {
 	const withheld: string[] = [];
 	for (const load of [innerTubePlayer, watchPagePlayer]) {
 		const player = await load(videoId).catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
@@ -150,8 +148,39 @@ export async function fetchYouTubeCaptions(
 			continue;
 		}
 		const track = originalTrack(player, audioLanguage);
-		if (!track) return { cues: [], language: null };
-		return { cues: await fetchCaptionCues(videoId, track), language: track.languageCode };
+		if (!track) return { status: 'fetched', cues: [], language: null };
+		return { status: 'fetched', cues: await fetchCaptionCues(videoId, track), language: track.languageCode };
 	}
-	throw new YouTubeCaptionsWithheldError(`YouTube withheld the player for ${videoId}: ${withheld.join('; ')}`);
+	return { status: 'withheld', reason: withheld.join('; ') };
+}
+
+/** Stateless: each instance exists only to run an attempt from another egress machine. */
+export class YouTubeCaptionFetcher extends DurableObject<CoreEnv> {
+	attempt(videoId: string, audioLanguage: string | null): Promise<CaptionAttempt> {
+		return attemptCaptions(videoId, audioLanguage);
+	}
+}
+
+/**
+ * Captions in the video's spoken language. Returns no cues when the video has
+ * none, or when every attempt was withheld by YouTube's bot check.
+ */
+export async function fetchYouTubeCaptions(env: CoreEnv, videoId: string, audioLanguage: string | null): Promise<YouTubeCaptions> {
+	const withheld: string[] = [];
+	for (let attempt = 0; attempt < CAPTION_FETCHER_ATTEMPTS; attempt++) {
+		const hint = CAPTION_FETCHER_HINTS[(attempt - 1) % CAPTION_FETCHER_HINTS.length];
+		// A failed timedtext fetch or instance is just another lost draw.
+		const result: CaptionAttempt = await (
+			attempt === 0 || !hint
+				? attemptCaptions(videoId, audioLanguage)
+				: env.YOUTUBE_CAPTIONS.get(env.YOUTUBE_CAPTIONS.newUniqueId(), { locationHint: hint }).attempt(videoId, audioLanguage)
+		).catch((error: unknown) => ({ status: 'withheld', reason: error instanceof Error ? error.message : String(error) }));
+		if (result.status === 'fetched') {
+			console.info({ tag: 'YOUTUBE', msg: 'Captions fetched', videoId, attempt, count: result.cues.length, language: result.language });
+			return { cues: result.cues, language: result.language };
+		}
+		withheld.push(`${hint ?? 'workflow'}: ${result.reason}`);
+	}
+	console.warn({ tag: 'YOUTUBE', msg: 'Captions withheld on every attempt; using video description', videoId, withheld });
+	return { cues: [], language: null };
 }

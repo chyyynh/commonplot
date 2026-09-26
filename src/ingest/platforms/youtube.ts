@@ -7,7 +7,7 @@ import { connectCoreDb } from '../../shared/db';
 import type { AcquiredResource } from '../acquisition';
 import { AI_STEP_RETRIES, coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../ai-model';
 import { persistYouTubeHighlights } from '../resource-persistence';
-import { fetchYouTubeCaptions, type YouTubeCaptionCue } from './youtube-captions';
+import { fetchYouTubeCaptions, type YouTubeCaptionCue, type YouTubeCaptions } from './youtube-captions';
 
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
 
@@ -199,7 +199,6 @@ async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
 }
 
 type YouTubeVideo = Awaited<ReturnType<typeof scrapeYouTubeVideo>>;
-type YouTubeCaptions = Awaited<ReturnType<typeof fetchYouTubeCaptions>>;
 
 export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, videoId: string) {
 	const { audioLanguage, chapters, ...video } = await step.do(
@@ -207,26 +206,14 @@ export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, 
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
 		async (): Promise<YouTubeVideo> => scrapeYouTubeVideo(videoId, env.YOUTUBE_API_KEY),
 	);
-	// Captions are optional: when YouTube keeps withholding them, keep the video
-	// with its description rather than failing the whole acquisition.
 	const captions = await step
 		.do(
-			'acquire-youtube-captions-v1',
-			{ retries: { limit: 4, delay: '30 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
+			'acquire-youtube-captions-v2',
+			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 			// Long videos exceed the step result limit as JSON values; stream them.
-			async () => Response.json(await fetchYouTubeCaptions(videoId, audioLanguage)).body!,
+			async () => Response.json(await fetchYouTubeCaptions(env, videoId, audioLanguage)).body!,
 		)
-		.then((body) => new Response(body).json<YouTubeCaptions>())
-		.catch((error: unknown): YouTubeCaptions => {
-			console.warn({
-				tag: 'YOUTUBE',
-				msg: 'Captions unavailable after retries; using video description',
-				videoId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-			return { cues: [], language: null };
-		});
-	console.info({ tag: 'YOUTUBE', msg: 'Captions fetched', videoId, count: captions.cues.length, language: captions.language });
+		.then((body) => new Response(body).json<YouTubeCaptions>());
 	return {
 		...video,
 		content: captions.cues.map((cue) => cue.text).join('\n') || video.summary.trim(),
