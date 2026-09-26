@@ -2,13 +2,14 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
 import type { AcquiredResource } from '../acquisition';
-import { fetchYouTubeCaptions, type YouTubeCaptionCue, type YouTubeCaptions } from './youtube-captions';
+import { fetchYouTubeCaptions, type YouTubeCaptions } from './youtube-captions';
+import { buildTranscriptLines, transcriptMarkdown, type YouTubeTranscriptLine } from './youtube-transcript';
 
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
 
 type YouTubeChapter = { title: string; startTime: number; endTime?: number };
 export type YouTubeTranscript = Readonly<{
-	segments: YouTubeCaptionCue[];
+	lines: YouTubeTranscriptLine[];
 	chapters: YouTubeChapter[];
 }>;
 
@@ -209,10 +210,11 @@ export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, 
 			async () => Response.json(await fetchYouTubeCaptions(env, videoId, audioLanguage)).body!,
 		)
 		.then((body) => new Response(body).json<YouTubeCaptions>());
+	const lines = buildTranscriptLines(captions.cues);
 	return {
 		...video,
-		content: captions.cues.map((cue) => cue.text).join('\n') || video.summary.trim(),
+		content: lines.length ? transcriptMarkdown(lines) : video.summary.trim(),
 		originalLang: captions.language ?? audioLanguage ?? 'und',
-		youtube: { segments: captions.cues, chapters },
+		youtube: { lines, chapters },
 	} satisfies AcquiredResource & { youtube: YouTubeTranscript };
 }

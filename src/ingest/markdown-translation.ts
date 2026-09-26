@@ -144,6 +144,14 @@ function serializeMarkdown(tree: Root): string {
 	}).trimEnd();
 }
 
+/** Plain text as one paragraph each, escaped by the same serializer translation round-trips through. */
+export function paragraphsMarkdown(texts: readonly string[]): string {
+	return serializeMarkdown({
+		type: 'root',
+		children: texts.map((value) => ({ type: 'paragraph', children: [{ type: 'text', value }] })),
+	});
+}
+
 function isParent(node: Nodes): node is Parents {
 	return 'children' in node && Array.isArray(node.children);
 }

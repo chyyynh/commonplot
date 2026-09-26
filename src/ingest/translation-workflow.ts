@@ -21,7 +21,7 @@ import {
 } from './markdown-translation';
 import { PDF_MIME } from './platforms/pdf-policy';
 
-const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper'] as const;
+const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper', 'video'] as const;
 
 type ResourceTranslationCandidate = Readonly<{
 	fileType: string | null;

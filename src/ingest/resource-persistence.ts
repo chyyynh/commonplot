@@ -250,7 +250,7 @@ async function writeCanonicalResource(
 		const transcript = resource.youtube;
 		const savedTranscript = await db.execute(sql`
 			INSERT INTO youtube_transcripts (resource_id, transcript, chapters)
-			VALUES (${resourceId}::uuid, ${JSON.stringify(transcript.segments)}::jsonb, ${JSON.stringify(transcript.chapters)}::jsonb)
+			VALUES (${resourceId}::uuid, ${JSON.stringify(transcript.lines)}::jsonb, ${JSON.stringify(transcript.chapters)}::jsonb)
 			ON CONFLICT (resource_id) DO UPDATE SET
 				transcript = EXCLUDED.transcript,
 				chapters = EXCLUDED.chapters
