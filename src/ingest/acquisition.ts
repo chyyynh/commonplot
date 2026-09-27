@@ -165,9 +165,15 @@ async function stageStoredPdfUpload(
 	target: Readonly<{ paidPdfFallback?: PaidPdfFallbackGrant; resourceId: string }>,
 	processingId: string,
 ) {
-	const { printedTitle, resourceIdentifiers, ...uploaded } = await stageStoredPdfAcquisition(env, step, target, processingId);
-	const file = { ...uploaded, resourceIdentifiers: [] };
-	const paper = await stagePaper(env, step, { identifiers: resourceIdentifiers, printedTitle, url: null, processingId });
+	const { titlePageText, resourceIdentifiers, ...uploaded } = await stageStoredPdfAcquisition(env, step, target, processingId);
+	const paper = await stagePaper(env, step, { identifiers: resourceIdentifiers, titlePageText, url: null, processingId });
+	// A file that is a paper carries the paper's title and authors instead of its file name.
+	const file = {
+		...uploaded,
+		resourceIdentifiers: [],
+		title: paper?.title ?? uploaded.title,
+		creators: paper?.creators.length ? paper.creators : uploaded.creators,
+	};
 	return { file, paper };
 }
 

@@ -10,7 +10,7 @@ import {
 	mergePaperIdentifiers,
 	type PaperIdentifier,
 	paperIdentityFromIdentifiers,
-	samePaperTitle,
+	titlePageNamesTitle,
 } from '../../shared/paper-identity';
 import type { ResourceIdentifier } from '../../shared/resource';
 import { readBoundedResponseText } from '../../shared/response';
@@ -193,13 +193,13 @@ type PaperMetadata = NonNullable<Awaited<ReturnType<typeof resolveOpenAlexPaper>
 
 /**
  * OpenAlex describes every paper. Identifiers read from a PDF only count when the
- * title printed on that PDF names the resolved work; `printedTitle` is omitted for
+ * resolved title appears on that PDF's title page; `titlePageText` is omitted for
  * identifiers taken from the link itself.
  */
 async function stagePaperMetadata(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { identifiers: PaperIdentifier[]; printedTitle?: string | null; processingId: string },
+	input: { identifiers: PaperIdentifier[]; titlePageText?: string | null; processingId: string },
 ): Promise<PaperMetadata | null> {
 	if (!input.identifiers.length) return null;
 	const startedAt = Date.now();
@@ -211,8 +211,8 @@ async function stagePaperMetadata(
 	const work = await new Response(stream).json<PaperMetadata | null>();
 	const verified =
 		!work ||
-		input.printedTitle === undefined ||
-		(!!input.printedTitle && !!work.metadata.title && samePaperTitle(input.printedTitle, work.metadata.title));
+		input.titlePageText === undefined ||
+		(!!input.titlePageText && !!work.metadata.title && titlePageNamesTitle(input.titlePageText, work.metadata.title));
 	console.info({
 		tag: 'PAPER_PROVIDER',
 		event: 'paper_metadata',
@@ -253,19 +253,19 @@ async function stagePaperFullText(
 
 /**
  * A paper reads as its full text, else its abstract; null when it has neither, or when
- * identifiers read from a PDF (`printedTitle` given) do not resolve to that printed title.
+ * identifiers read from a PDF (`titlePageText` given) resolve to a work not named on it.
  * Without `url` the paper lives at its canonical identifier URL, not at the source it was read from.
  */
 export async function stagePaper(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { identifiers: readonly ResourceIdentifier[]; printedTitle?: string | null; url: string | null; processingId: string },
+	input: { identifiers: readonly ResourceIdentifier[]; titlePageText?: string | null; url: string | null; processingId: string },
 ): Promise<(AcquiredResource & { kind: 'paper'; resourcePlatform: null }) | null> {
 	const identifiers = mergePaperIdentifiers(
 		input.identifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
 	);
-	const work = await stagePaperMetadata(env, step, { identifiers, printedTitle: input.printedTitle, processingId: input.processingId });
-	if (!work && input.printedTitle !== undefined) return null;
+	const work = await stagePaperMetadata(env, step, { identifiers, titlePageText: input.titlePageText, processingId: input.processingId });
+	if (!work && input.titlePageText !== undefined) return null;
 	const resourceIdentifiers = work?.identifiers ?? identifiers;
 	const fullText = await stagePaperFullText(env, step, {
 		identifiers: resourceIdentifiers,

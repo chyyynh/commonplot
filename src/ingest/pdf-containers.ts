@@ -1,7 +1,4 @@
 import { Container } from '@cloudflare/containers';
-import { MAX_PDF_BYTES } from './platforms/pdf-policy.ts';
-
-const textEncoder = new TextEncoder();
 
 async function ensureReady(container: Container<CoreEnv>, context: DurableObjectState, input: ReadableStream<Uint8Array>): Promise<void> {
 	try {
@@ -15,49 +12,6 @@ async function ensureReady(container: Container<CoreEnv>, context: DurableObject
 	} catch (error) {
 		await input.cancel('PDF container failed to become ready');
 		throw error;
-	}
-}
-
-function multipartPdfBody(pdf: ReadableStream<Uint8Array>, boundary: string, byteLength: number) {
-	const prefix = textEncoder.encode(
-		`--${boundary}\r\nContent-Disposition: form-data; name="input"; filename="document.pdf"\r\nContent-Type: application/pdf\r\n\r\n`,
-	);
-	const suffix = textEncoder.encode(
-		`\r\n--${boundary}\r\nContent-Disposition: form-data; name="consolidateHeader"\r\n\r\n0\r\n--${boundary}--\r\n`,
-	);
-	return pdf
-		.pipeThrough(
-			new TransformStream<Uint8Array, Uint8Array>({
-				start(controller) {
-					controller.enqueue(prefix);
-				},
-				flush(controller) {
-					controller.enqueue(suffix);
-				},
-			}),
-		)
-		.pipeThrough(new FixedLengthStream(byteLength + prefix.byteLength + suffix.byteLength));
-}
-
-export class GrobidContainer extends Container<CoreEnv> {
-	defaultPort = 8070;
-	sleepAfter = '2m';
-	enableInternet = false;
-
-	async processPdfHeader(input: ReadableStream<Uint8Array>, byteLength: number): Promise<Response> {
-		if (!input || typeof input.getReader !== 'function') throw new TypeError('GROBID PDF input must be a readable byte stream');
-		if (!Number.isInteger(byteLength) || byteLength < 1 || byteLength > MAX_PDF_BYTES) {
-			await input.cancel('GROBID PDF size is outside the supported range');
-			throw new TypeError(`GROBID PDF must contain 1-${MAX_PDF_BYTES} bytes`);
-		}
-		await ensureReady(this, this.ctx, input);
-
-		const boundary = `newsence-${crypto.randomUUID()}`;
-		return this.containerFetch('http://grobid/api/processHeaderDocument', {
-			body: multipartPdfBody(input, boundary, byteLength),
-			headers: { 'content-type': `multipart/form-data; boundary=${boundary}` },
-			method: 'POST',
-		});
 	}
 }
 

@@ -2,7 +2,8 @@
 const DOI_RE = /^10\.\d{4,9}\/[^\s\p{C}]+$/u;
 const MODERN_ARXIV_ID_RE = /^(\d{4}\.\d{4,5})(?:v\d+)?$/i;
 const LEGACY_ARXIV_ID_RE = /^([a-z][a-z0-9.-]*\/[0-9]{7})(?:v\d+)?$/i;
-const DOI_IN_TEXT_RE = /\b(?:https?:\/\/(?:dx\.)?doi\.org\/)?10\.\d{4,9}\/(?:(?!\]\()\S)+/iu;
+// Typesetting can break a line right after the DOI prefix's slash.
+const DOI_IN_TEXT_RE = /\b(?:https?:\/\/(?:dx\.)?doi\.org\/)?10\.\d{4,9}\/[^\S\n]?(?:(?!\]\()\S)+/iu;
 const ARXIV_IN_TEXT_RE = /\barxiv(?:\.org\/(?:abs|html|pdf)\/|[.:\s]+)((?:\d{4}\.\d{4,5}|[a-z][a-z0-9.-]*\/\d{7})(?:v\d+)?)\b/i;
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
 const OPENALEX_ID_RE = /^(?:https?:\/\/openalex\.org\/)?(?:works\/)?(W\d+)\/?$/i;
@@ -147,7 +148,7 @@ export function canonicalPaperUrl(identity: PaperIdentity): string {
 export function paperIdentityFromText(value: unknown): PaperIdentity | null {
 	if (typeof value !== 'string' || !value.trim()) return null;
 	const match = value.match(DOI_IN_TEXT_RE)?.[0];
-	const doi = match ? normalizeDoi(stripUnbalancedDoiPunctuation(match)) : null;
+	const doi = match ? normalizeDoi(stripUnbalancedDoiPunctuation(match.replace(/\/\s+/u, '/'))) : null;
 	const arxivId = normalizeArxivId(value.match(ARXIV_IN_TEXT_RE)?.[1]) ?? normalizeArxivId(doi);
 	if (!doi && !arxivId) return null;
 	return {
@@ -167,15 +168,8 @@ export function normalizeBibliographicText(value: string): string {
 		.trim();
 }
 
-/** A title page and a metadata record name the same work when one title contains the other or nearly all words agree. */
-export function samePaperTitle(printed: string, resolved: string): boolean {
-	const left = normalizeBibliographicText(printed);
-	const right = normalizeBibliographicText(resolved);
-	if (!left || !right) return false;
-	const [shorter, longer] = left.length <= right.length ? [left, right] : [right, left];
-	if (shorter.length >= 12 && longer.includes(shorter)) return true;
-	const leftTokens = new Set(left.split(' '));
-	const rightTokens = new Set(right.split(' '));
-	const shared = [...leftTokens].filter((token) => rightTokens.has(token)).length;
-	return shared / Math.max(leftTokens.size, rightTokens.size) >= 0.8;
+/** A PDF's title page names a work when the work's full title appears on it. */
+export function titlePageNamesTitle(titlePageText: string, title: string): boolean {
+	const normalizedTitle = normalizeBibliographicText(title);
+	return !!normalizedTitle && normalizeBibliographicText(titlePageText).includes(normalizedTitle);
 }

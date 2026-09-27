@@ -32,7 +32,7 @@ Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content
 | Input | Acquisition flow |
 | --- | --- |
 | **Web URL** | Fetch/redirect detection → HTML article and source metadata → Markdown; PDF responses enter the PDF parser |
-| **Uploaded PDF** | Read owned R2 blob → Zotero text/figures and GROBID header in parallel → optional Crossref confirmation; unresolved documents remain private files |
+| **Uploaded PDF** | Read owned R2 blob → Zotero text/figures and first-page identifiers → OpenAlex, accepted only when its title appears on the first page; the upload stays a private file and a recognized paper is published from licensed full text or its abstract |
 | **Paper** | Exact URL or PDF identity → OpenAlex for web sources / Crossref for PDFs → canonical identifiers and bibliography; OpenAlex content or licensed OA PDF |
 | **Twitter/X** | twitterapi.io → post or article Markdown, media and linked subject; monitoring uses cursor pagination every 6 hours |
 | **YouTube** | Video metadata → channel avatar and transcript in parallel → canonical transaction saves transcript and native chapters → optional AI highlights after publication, guarded by the acquisition revision |
@@ -82,7 +82,7 @@ Printed bibliography entries retain their full text in both Markdown footnotes a
 
 DOI suffixes are opaque identifiers. Core decodes resolver URL paths once and encodes canonical links, preserving reserved characters such as `#` and `?`. Sentence punctuation is removed only when extracting a DOI from prose, never from an explicit provider identifier.
 
-GROBID and Crossref preserve complete titles and author names; GROBID does not cap the author list. Crossref preserves complete venue names and matches candidates against the full metadata, capping only outgoing title/author queries at 500/300 characters. GROBID header checkpoints use streams; bounded provider responses still enforce the acquisition memory limits.
+OpenAlex preserves complete titles, author names, and venue names. Crossref reference lookups cap only outgoing citation queries at 600 characters. Provider checkpoints use streams; bounded provider responses still enforce the acquisition memory limits.
 
 Known DOIs use Crossref's `/works/{doi}` endpoint with an encoded identifier; they never enter the comma-delimited filter grammar. A missing work returns no enrichment. Candidate/reference searches retain field projection and a 256 KiB response limit. Single-work responses do not support projection, so they allow up to 8 MiB; only normalized metadata enters the streamed Workflow checkpoint.
 
@@ -195,13 +195,11 @@ Zotero Structured Document Text is the primary PDF parser. A private upload is
 streamed to a sleeping `basic` Cloudflare Container once; Core derives its
 Markdown, bibliography, citation links, and PDF source coordinates from that
 single document and stores the bounded SDT JSON beside the original R2 object,
-guarded by the source SHA-256. GROBID handles only the academic header/identifier
-gate, and Crossref enriches the resulting bibliography.
+guarded by the source SHA-256. The same document's first page and PDF properties
+supply an upload's DOI or arXiv id, and Crossref enriches the resulting bibliography.
 
-Both Container RPCs return native HTTP responses. Core reads and validates them
-inside the acquisition Workflow. GROBID's explicit invalid-input/no-text/size-limit
-errors stop header retries; busy, timeout, transport, and unknown failures remain
-retryable. A failed header extraction still leaves the parsed upload as a private file.
+The Container RPCs return native HTTP responses. Core reads and validates them
+inside the acquisition Workflow.
 
 LlamaParse remains a local-first OCR fallback. Web owns the product kill switch
 and Autumn eligibility, then attaches a per-document page grant to authenticated
@@ -331,10 +329,10 @@ incompatible graph change; do not add another binding or entrypoint. See
 ### Paper enrichment
 
 Exact DOI, arXiv, and OpenAlex identities resolve through the official OpenAlex
-REST API for URL acquisition. Already parsed PDFs with a publication DOI use
-Crossref; uploaded PDFs without identifiers require a GROBID title/author
-candidate confirmed by Crossref. Provider failures retain the acquired body
-and source identifiers without inventing missing academic metadata.
+REST API. Identifiers found on an uploaded PDF's first page count only when the
+resolved title appears on that page; otherwise the upload stays a private file.
+A linked paper with neither full text nor an abstract fails instead of storing
+its landing page.
 
 ## Adding an Ingest Adapter
 

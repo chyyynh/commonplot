@@ -32,7 +32,7 @@
 | 輸入 | 取得內容的流程 |
 | --- | --- |
 | **網頁 URL** | 抓取／偵測轉址 → HTML 正文與來源資料 → Markdown；PDF 回應交給 PDF parser |
-| **上傳 PDF** | 讀取擁有權所屬的 R2 blob → 並行 Zotero 正文／圖片與 GROBID 書目辨識 → 必要時 Crossref 確認；無法辨識的文件維持私人檔案 |
+| **上傳 PDF** | 讀取擁有權所屬的 R2 blob → Zotero 正文／圖片與第一頁識別碼 → OpenAlex，標題出現在第一頁才採用；上傳檔維持私人檔案，辨識出的論文以授權全文或摘要公開 |
 | **論文** | 精確 URL 或 PDF identity → 網頁查 OpenAlex／PDF 查 Crossref → canonical 識別碼與書目；選擇性取得 OpenAlex 全文 PDF |
 | **Twitter/X** | twitterapi.io → 推文或長文 Markdown、媒體與連結主題；監控每 6 小時以 cursor 分頁 |
 | **YouTube** | 影片資料 → 並行頻道頭像與字幕 → 章節或 AI 精華 → 字幕與 Resource 在同一交易寫入 |
@@ -143,8 +143,8 @@ wrangler secret put LLAMA_CLOUD_PROJECT_ID    # 此 deployment 專用的 Llama C
 Zotero Structured Document Text 是主要 PDF parser。私人上傳只會串流到
 可休眠的 `basic` Cloudflare Container 一次；Core 從同一份 document 產生
 Markdown、bibliography、citation links 與 PDF source coordinates，並把有大小
-上限的 SDT JSON 存在原始 R2 object 旁，以來源 SHA-256 驗證。GROBID 只負責
-學術 header／identifier gate，Crossref 則補齊 bibliography metadata。
+上限的 SDT JSON 存在原始 R2 object 旁，以來源 SHA-256 驗證。同一份 document 的
+第一頁與 PDF 屬性提供上傳檔的 DOI／arXiv id，Crossref 則補齊 bibliography metadata。
 
 LlamaParse 保留為 local-first OCR fallback。Web 負責產品 kill switch 與 Autumn
 資格，並在 authenticated URL 與新上傳 PDF workflow 附上單份文件的頁數

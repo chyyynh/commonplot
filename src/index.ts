@@ -19,7 +19,7 @@ import {
 import { connectCoreDb } from './shared/db';
 
 export { ContainerProxy } from '@cloudflare/containers';
-export { GrobidContainer, ZoteroSdtContainer } from './ingest/pdf-containers';
+export { ZoteroSdtContainer } from './ingest/pdf-containers';
 export { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
 export { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
 export { ResourceProcessingV2Workflow } from './ingest/workflow';

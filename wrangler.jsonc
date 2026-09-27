@@ -19,12 +19,6 @@
 	/** PDF parsers stream uploaded PDFs from R2; their models and scratch disks are intentionally ephemeral. */
 	"containers": [
 		{
-			"class_name": "GrobidContainer",
-			"image": "registry.cloudflare.com/f62c923a073e06d7b88040b743b2ee0a/newsence-core-grobidcontainer:crf-0.9.1-amd64",
-			"instance_type": "standard-4",
-			"max_instances": 1,
-		},
-		{
 			"class_name": "ZoteroSdtContainer",
 			"image": "./containers/zotero-sdt/Dockerfile",
 			"instance_type": "basic",
@@ -33,10 +27,6 @@
 	],
 	"durable_objects": {
 		"bindings": [
-			{
-				"name": "GROBID",
-				"class_name": "GrobidContainer",
-			},
 			{
 				"name": "ZOTERO_SDT",
 				"class_name": "ZoteroSdtContainer",
@@ -59,6 +49,10 @@
 		{
 			"tag": "youtube-captions-v1",
 			"new_sqlite_classes": ["YouTubeCaptionFetcher"],
+		},
+		{
+			"tag": "grobid-removed-v1",
+			"deleted_classes": ["GrobidContainer"],
 		},
 	],
 	"observability": {
