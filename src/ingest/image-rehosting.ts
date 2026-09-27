@@ -167,7 +167,7 @@ function markdownImages(node: Nodes, found: Image[] = []): Image[] {
 }
 
 /** Content-addressed, so the same embedded image is stored once however often it is acquired. */
-async function hostInlineImage(images: ImagesBinding, bytes: Uint8Array): Promise<string> {
+async function hostInlineImage(images: ImagesBinding, bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 	const imageId = `resource-${hash('sha256', bytes, 'hex')}`;
 	const stored = () => images.hosted.image(imageId).details();
 	const existing = await stored();
@@ -203,7 +203,7 @@ export async function rehostInlineImages(images: ImagesBinding, markdown: string
 		let url = hosted.get(image.url);
 		const base64 = INLINE_RASTER_IMAGE.exec(image.url)?.[1];
 		if (!url && base64 && hosted.size < MAX_INLINE_IMAGES) {
-			const bytes = Buffer.from(base64, 'base64');
+			const bytes = new Uint8Array(Buffer.from(base64, 'base64'));
 			if (bytes.length <= MAX_INLINE_IMAGE_BYTES) {
 				url = await hostInlineImage(images, bytes);
 				hosted.set(image.url, url);
