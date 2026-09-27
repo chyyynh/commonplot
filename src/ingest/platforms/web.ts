@@ -16,12 +16,13 @@ import { storePublicPdfResponse } from '../zotero-sdt-service.ts';
 import { stagePublicPdfAcquisition } from './pdf';
 import { PDF_MIME, type PaidPdfFallbackGrant } from './pdf-policy';
 import { resolveResourceUrl, type ResolvedResourceUrl } from './resource-url';
+import { fetchSubstackPost, type SubstackPost } from './substack';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
-function acquireHtmlArticle(html: string, url: string): AcquiredResource & { kind: 'blog'; resourcePlatform: null } {
+async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredResource & { kind: 'blog'; resourcePlatform: null }> {
 	// linkedom does not imply the <head>/<body> that HTML lets pages omit, and Readability
 	// needs <body>. Serialize the spec parser's tree so linkedom reads the implied structure.
 	const document = new DOMParser().parseFromString(toHtml(fromHtml(html)), 'text/html');
@@ -63,7 +64,10 @@ function acquireHtmlArticle(html: string, url: string): AcquiredResource & { kin
 	// Substack/Pencraft uses this article-body hierarchy on custom domains too,
 	// so detect its source DOM instead of hard-coding substack.com hostnames.
 	const substackArticle = document.querySelector('.dt-post-body .available-content .body.markup');
+	let substackPost: SubstackPost | null = null;
 	if (substackArticle) {
+		// The post API owns access, bylines, and dates; a paid post is refused before extraction.
+		substackPost = await fetchSubstackPost(url);
 		// @mozilla/readability's `unlikelyCandidates` rule contains "header", so
 		// Substack's class would make it discard the otherwise semantic h2/h3.
 		for (const heading of substackArticle.querySelectorAll('.header-anchor-post')) {
@@ -93,10 +97,11 @@ function acquireHtmlArticle(html: string, url: string): AcquiredResource & { kin
 	}).parse();
 	if (!article?.content?.trim()) throw new NonRetryableError('No readable article content found');
 	const articleHtml = article.content.trim();
-	const title = article.title?.trim();
+	const title = substackPost?.title || article.title?.trim();
 	if (!title) throw new NonRetryableError('Extracted article has no title');
 	const siteName = article.siteName?.trim() || new URL(url).hostname;
 	const author = article.byline?.trim();
+	const authors = substackPost?.authors.length ? substackPost.authors : author ? [author] : [];
 
 	const content = toMarkdown(
 		toMdast(fromHtml(articleHtml, { fragment: true }), {
@@ -130,9 +135,9 @@ function acquireHtmlArticle(html: string, url: string): AcquiredResource & { kin
 		content,
 		source: siteName,
 		originalLang: article.lang || 'und',
-		publishedDate: article.publishedTime?.trim() || null,
-		summary,
-		creators: author ? [{ role: 'author', literal: author }] : [],
+		publishedDate: substackPost?.publishedDate ?? (article.publishedTime?.trim() || null),
+		summary: substackPost?.subtitle ?? summary,
+		creators: authors.map((literal) => ({ role: 'author', literal })),
 		kindMetadata: { siteName },
 		previewImageUrl: normalizedResourceImageUrl(image, url),
 		subjectUrl: null,
@@ -232,7 +237,7 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 			() => new NonRetryableError(`HTML response exceeded ${GENERIC_HTML_MAX_BYTES} bytes`),
 		);
 	const html = await new Response(body).text();
-	const article = acquireHtmlArticle(html, finalUrl);
+	const article = await acquireHtmlArticle(html, finalUrl);
 	return { ...article, content: await rehostInlineImages(env.IMAGES, article.content) };
 }
 
@@ -242,7 +247,7 @@ export async function stageWebAcquisition(
 	input: { paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string },
 ) {
 	const result = await step.do(
-		'acquire-web-v13',
+		'acquire-web-v14',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 		async () => {
 			const acquired = await acquireWebResource(env, input.url);
