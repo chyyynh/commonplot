@@ -266,6 +266,19 @@ async function writeCanonicalResource(
 	return { translationRevision: original.revision, acquisitionRevision: original.acquisition_revision };
 }
 
+/** Another version's identifiers join the paper that is already stored, so both find it next time. */
+async function mergePaperIdentifiers(db: NodePgDatabase, resourceId: string, identifiers: PreparedResource['identifiers']) {
+	if (!identifiers.length) return;
+	await db.execute(sql`
+		INSERT INTO resource_identifiers (resource_id, scheme, value, is_preferred)
+		SELECT ${resourceId}::uuid, incoming.scheme, incoming.value, incoming.preferred AND NOT EXISTS (
+			SELECT 1 FROM resource_identifiers stored WHERE stored.resource_id = ${resourceId}::uuid AND stored.scheme = incoming.scheme
+		)
+		FROM jsonb_to_recordset(${JSON.stringify(identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
+		ON CONFLICT (scheme, value) DO NOTHING
+	`);
+}
+
 async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relation: ResourceDraftRelation) {
 	if (relation.kind === 'source') {
 		const source = await db.execute<{ id: string }>(sql`SELECT id::text FROM sources WHERE id = ${relation.sourceId}::uuid`);
@@ -318,8 +331,9 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 		]);
 		const rootCandidates = target.kind === 'draft' ? candidates.shift()! : [];
 		const subjectCandidates = candidates[0] ?? [];
+		// Each candidate is already committed; another attempt finds the same ones.
 		if (target.kind === 'draft' && (rootCandidates.length > 1 || rootCandidates[0]?.scope === 'private'))
-			throw new Error('Resolved identity is ambiguous or belongs to a private Resource');
+			throw new NonRetryableError('Resolved identity is ambiguous or belongs to a private Resource');
 		const existingId = target.kind === 'existing' ? target.resourceId : rootCandidates[0]?.id;
 		const root = existingId ? await lockResource(tx, existingId) : null;
 		const resourceId = root?.id ?? crypto.randomUUID();
@@ -331,6 +345,8 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 			subjectResourceId = subject && subject.id !== resourceId && (await lockResource(tx, subject.id)).hasOriginal ? subject.id : null;
 			const written = await writeCanonicalResource(tx, resourceId, resource, root !== null, subjectResourceId);
 			accepted = { ...resource, ...written, id: resourceId, scope: root?.scope ?? 'corpus', hasOriginal: true, subjectResourceId };
+		} else if (root?.kind === 'paper' && resource.kind === 'paper') {
+			await mergePaperIdentifiers(tx, resourceId, resource.identifiers);
 		}
 		if (target.kind === 'draft' && target.relation) await applyDraftRelation(tx, resourceId, target.relation);
 		// Follow-ups use the accepted original, which can differ from this draft.
