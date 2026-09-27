@@ -25,6 +25,7 @@ import { parseTextMap } from 'structured-document-text/src/pdf/decode.js';
 import { isContentBoundary, isLeafBlock, refKey, sameRef } from 'structured-document-text/src/range.js';
 import { mergeTextNodes } from 'structured-document-text/src/text.js';
 import { paperIdentityFromText } from '../shared/paper-identity';
+import { parseReferenceCitation } from './reference-citation';
 
 const MAX_DOCUMENT_NODES = 100_000;
 const MAX_DOCUMENT_TEXT_CHARS = 2_000_000;
@@ -236,6 +237,7 @@ function referenceLabelAndText(value: string) {
 		arxivId,
 		label,
 		text: withoutLabel || text,
+		...parseReferenceCitation(withoutLabel || text),
 	};
 }
 

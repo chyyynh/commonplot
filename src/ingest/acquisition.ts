@@ -24,11 +24,18 @@ import { resolveResourceUrl, ResourceUrlSchema } from './platforms/resource-url'
 import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
 import { stageYouTubeAcquisition } from './platforms/youtube';
+import type { ReferenceCitation } from './reference-citation';
 import { ResourceLanguageSchema, detectResourceLanguage } from './resource-language';
 
 // Adapters share an output contract; each adapter owns its mapping and identity.
 export type AcquiredResource = {
-	references?: readonly { key: string; label: string | null; text: string; doi: string | null; arxivId: string | null }[];
+	references?: readonly ({
+		key: string;
+		label: string | null;
+		text: string;
+		doi: string | null;
+		arxivId: string | null;
+	} & ReferenceCitation)[];
 	kind: Exclude<ResourceKind, 'image'>;
 	resourcePlatform: ResourcePlatform | null;
 	resourceIdentifiers: ResourceIdentifier[];

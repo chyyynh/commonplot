@@ -141,7 +141,7 @@ export function prepareResolvedResource(
 		kind: resource.kind,
 		resourcePlatform: resource.resourcePlatform,
 		content,
-		references: resource.kind === 'paper' ? resource.references : undefined,
+		references: resource.references,
 		creators: media.creators,
 		fileType: resource.fileType ?? null,
 		identifiers,
@@ -239,9 +239,11 @@ async function writeCanonicalResource(
 	if (resource.references?.length) {
 		// These references describe exactly the original written in this transaction.
 		await db.execute(sql`
-			INSERT INTO resource_references (resource_id, ordinal, label, text, doi, arxiv_id)
+			INSERT INTO resource_references
+				(resource_id, ordinal, label, text, doi, arxiv_id, title, year, lead_author, has_coauthors, venue)
 			SELECT ${resourceId}::uuid, incoming.ordinal::integer, incoming.value->>'label', incoming.value->>'text',
-			       incoming.value->>'doi', incoming.value->>'arxivId'
+			       incoming.value->>'doi', incoming.value->>'arxivId', incoming.value->>'title', (incoming.value->>'year')::integer,
+			       incoming.value->>'leadAuthor', coalesce((incoming.value->>'hasCoauthors')::boolean, false), incoming.value->>'venue'
 			FROM jsonb_array_elements(${JSON.stringify(resource.references)}::jsonb)
 			WITH ORDINALITY AS incoming(value, ordinal)
 		`);
