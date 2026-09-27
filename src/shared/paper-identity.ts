@@ -137,7 +137,10 @@ export function normalizeOpenAlexId(value: unknown): string | null {
 	return raw?.match(OPENALEX_ID_RE)?.[1]?.toUpperCase() ?? null;
 }
 
+/** A published paper lives at its version of record; a preprint at arXiv. */
 export function canonicalPaperUrl(identity: PaperIdentity): string {
+	if (identity.doi && !identity.doi.startsWith(ARXIV_DOI_PREFIX))
+		return `https://doi.org/${identity.doi.split('/').map(encodeURIComponent).join('/')}`;
 	if (identity.arxivId) return `https://arxiv.org/abs/${identity.arxivId}`;
 	if (identity.doi) return `https://doi.org/${identity.doi.split('/').map(encodeURIComponent).join('/')}`;
 	if (identity.openAlexId) return `https://openalex.org/${identity.openAlexId}`;

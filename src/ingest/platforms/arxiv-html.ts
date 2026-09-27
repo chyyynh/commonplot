@@ -59,28 +59,33 @@ function markerElement(document: Dom, attributes: Record<string, string>) {
 
 function bibliography(document: Dom, baseUrl: string) {
 	const items = [...document.querySelectorAll('.ltx_bibliography li.ltx_bibitem')].slice(0, MAX_REFERENCES);
-	return items.flatMap((item) => {
-		const id = item.getAttribute('id');
-		if (!id) return [];
-		const label = clean(item.querySelector('.ltx_tag_bibitem')?.textContent).replace(/^[[(](.*)[\])]$/u, '$1') || null;
-		const text = clean([...item.querySelectorAll('.ltx_bibblock')].map((block) => block.textContent).join(' '));
-		if (!text) return [];
-		const links = [...item.querySelectorAll('a[href]')].map(
-			(link) => URL.parse(link.getAttribute('href') ?? '', baseUrl)?.toString() ?? '',
-		);
-		const identity = paperIdentityFromText([text, ...links].join(' '));
-		return [
-			{
-				id,
-				key: `arxiv-${id.replace(/^bib\./u, '')}`,
-				label,
-				text,
-				doi: identity?.doi ?? null,
-				arxivId: identity?.arxivId ?? null,
-				...parseReferenceCitation(text),
-			},
-		];
-	});
+	return items
+		.flatMap((item) => {
+			const id = item.getAttribute('id');
+			if (!id) return [];
+			const label = clean(item.querySelector('.ltx_tag_bibitem')?.textContent).replace(/^[[(](.*)[\])]$/u, '$1') || null;
+			const text = clean([...item.querySelectorAll('.ltx_bibblock')].map((block) => block.textContent).join(' '));
+			if (!text) return [];
+			const links = [...item.querySelectorAll('a[href]')].map(
+				(link) => URL.parse(link.getAttribute('href') ?? '', baseUrl)?.toString() ?? '',
+			);
+			const identity = paperIdentityFromText([text, ...links].join(' '));
+			return [
+				{
+					id,
+					label,
+					text,
+					doi: identity?.doi ?? null,
+					arxivId: identity?.arxivId ?? null,
+					...parseReferenceCitation(text),
+				},
+			];
+		})
+		.map((reference, index) => ({
+			...reference,
+			// The persisted reference ordinal, which the reader resolves to its parsed citation.
+			key: `arxiv-${index + 1}`,
+		}));
 }
 
 function htmlToMdast(html: string): Root {
@@ -261,7 +266,7 @@ export async function stageArxivHtmlAcquisition(
 	step: WorkflowStep,
 	arxivId: string,
 ): Promise<(AcquiredResource & { kind: 'paper'; resourcePlatform: null }) | null> {
-	const stream = await step.do('acquire-arxiv-html-v2', ARXIV_HTML_STEP, async () => Response.json(await fetchArxivHtml(arxivId)).body!);
+	const stream = await step.do('acquire-arxiv-html-v3', ARXIV_HTML_STEP, async () => Response.json(await fetchArxivHtml(arxivId)).body!);
 	const document = await new Response(stream).json<Awaited<ReturnType<typeof fetchArxivHtml>>>();
 	if (!document) return null;
 	return {
