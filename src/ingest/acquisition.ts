@@ -74,8 +74,8 @@ async function stageLinkedPaper(
 	input: { paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string; identifiers: ResourceIdentifier[] },
 ) {
 	const work = await stagePaperMetadata(env, step, { identifiers: input.identifiers, processingId: input.processingId });
-	const fullText = work ? await stagePaperFullText(env, step, { work, processingId: input.processingId }) : null;
-	if (fullText) return paperResource({ ...fullText, url: input.url, source: new URL(input.url).hostname }, work);
+	const fullText = await stagePaperFullText(env, step, { work, identifiers: input.identifiers, processingId: input.processingId });
+	if (fullText) return paperResource({ ...fullText, url: input.url, source: new URL(input.url).hostname }, work, input.identifiers);
 	const abstract = work ? paperAbstractDocument(work) : null;
 	if (abstract) return paperResource({ ...abstract, url: input.url, source: new URL(input.url).hostname }, work);
 	const page = await stageWebAcquisition(env, step, input);

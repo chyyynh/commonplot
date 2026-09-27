@@ -245,9 +245,19 @@ export async function stagePaperMetadata(
 	return verified ? work : null;
 }
 
-/** Readable full text, best source first: arXiv's HTML, then a licensed PDF; null leaves the paper with its abstract. */
-export async function stagePaperFullText(env: CoreEnv, step: WorkflowStep, input: { work: PaperMetadata; processingId: string }) {
-	const arxivId = paperIdentityFromIdentifiers(input.work.identifiers)?.arxivId;
+/**
+ * Readable full text, best source first: arXiv's HTML, then a licensed PDF; null leaves the paper
+ * with its abstract. arXiv's rendering needs no metadata, so a paper OpenAlex has not indexed yet still reads.
+ */
+export async function stagePaperFullText(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: { work: PaperMetadata | null; identifiers?: readonly ResourceIdentifier[]; processingId: string },
+) {
+	const identifiers =
+		input.work?.identifiers ??
+		(input.identifiers ?? []).filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme));
+	const arxivId = paperIdentityFromIdentifiers(identifiers)?.arxivId;
 	if (arxivId) {
 		try {
 			const html = await stageArxivHtmlAcquisition(step, arxivId);
@@ -261,6 +271,7 @@ export async function stagePaperFullText(env: CoreEnv, step: WorkflowStep, input
 			});
 		}
 	}
+	if (!input.work) return null;
 	return stagePaperPdfContent(env, step, {
 		contentPdfUrl: input.work.contentPdfUrl,
 		publicPdfUrl: input.work.metadata.pdfUrl ?? null,

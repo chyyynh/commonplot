@@ -117,6 +117,20 @@ export function arxivHtmlDocument(html: string, url: string) {
 	const article = document.querySelector('article.ltx_document');
 	if (!article) return null;
 	const title = clean(article.querySelector('h1.ltx_title_document')?.textContent) || clean(document.querySelector('title')?.textContent);
+	// A person block runs name, affiliation, and address together; the name ends at the first line break.
+	const authors = [...article.querySelectorAll('.ltx_authors .ltx_personname')].flatMap((person) => {
+		let name = '';
+		for (const node of person.childNodes) {
+			if (node.nodeName.toLowerCase() === 'br') break;
+			// Affiliation marks are notes, superscripts, or math.
+			if (['math', 'sup'].includes(node.nodeName.toLowerCase()) || (node as DomElement).classList?.contains('ltx_note')) continue;
+			name += node.textContent ?? '';
+		}
+		const author = clean(name)
+			.replace(/[\d,*†‡§¶∗]+$/u, '')
+			.trim();
+		return author && author.length <= 80 ? [author] : [];
+	});
 	const references = bibliography(document, url);
 	const referenceKeys = new Map(references.map(({ id, key }) => [id, key]));
 	const citedKeys = new Set<string>();
@@ -221,7 +235,7 @@ export function arxivHtmlDocument(html: string, url: string) {
 		extensions: [gfmToMarkdown({ tablePipeAlign: false }), mathToMarkdown()],
 	}).trim();
 	if (!title || content.length < MIN_ARXIV_BODY_CHARS) return null;
-	return { title, content, references: references.map(({ id: _id, ...reference }) => reference) };
+	return { title, authors, content, references: references.map(({ id: _id, ...reference }) => reference) };
 }
 
 async function fetchArxivHtml(arxivId: string) {
@@ -247,7 +261,7 @@ export async function stageArxivHtmlAcquisition(
 	step: WorkflowStep,
 	arxivId: string,
 ): Promise<(AcquiredResource & { kind: 'paper'; resourcePlatform: null }) | null> {
-	const stream = await step.do('acquire-arxiv-html-v1', ARXIV_HTML_STEP, async () => Response.json(await fetchArxivHtml(arxivId)).body!);
+	const stream = await step.do('acquire-arxiv-html-v2', ARXIV_HTML_STEP, async () => Response.json(await fetchArxivHtml(arxivId)).body!);
 	const document = await new Response(stream).json<Awaited<ReturnType<typeof fetchArxivHtml>>>();
 	if (!document) return null;
 	return {
@@ -263,7 +277,7 @@ export async function stageArxivHtmlAcquisition(
 		source: 'arxiv.org',
 		originalLang: 'und',
 		publishedDate: null,
-		creators: [],
+		creators: document.authors.map((literal) => ({ role: 'author', literal })),
 		kindMetadata: {},
 		previewImageUrl: null,
 		subjectUrl: null,
