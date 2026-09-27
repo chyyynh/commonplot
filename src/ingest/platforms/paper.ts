@@ -16,6 +16,7 @@ import type { ResourceIdentifier } from '../../shared/resource';
 import { readBoundedResponseText } from '../../shared/response';
 import type { AcquiredResource } from '../acquisition';
 import { storePublicPdfResponse } from '../zotero-sdt-service.ts';
+import { stageArxivHtmlAcquisition } from './arxiv-html';
 import { stagePublicPdfAcquisition } from './pdf';
 
 const PAPER_METADATA_STEP = { retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
@@ -244,8 +245,22 @@ export async function stagePaperMetadata(
 	return verified ? work : null;
 }
 
-/** Readable full text, best source first; null leaves the paper with its abstract. */
+/** Readable full text, best source first: arXiv's HTML, then a licensed PDF; null leaves the paper with its abstract. */
 export async function stagePaperFullText(env: CoreEnv, step: WorkflowStep, input: { work: PaperMetadata; processingId: string }) {
+	const arxivId = paperIdentityFromIdentifiers(input.work.identifiers)?.arxivId;
+	if (arxivId) {
+		try {
+			const html = await stageArxivHtmlAcquisition(step, arxivId);
+			if (html) return html;
+		} catch (error) {
+			console.error({
+				tag: 'PAPER_CONTENT',
+				event: 'arxiv_html_failed',
+				processing_id: input.processingId,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 	return stagePaperPdfContent(env, step, {
 		contentPdfUrl: input.work.contentPdfUrl,
 		publicPdfUrl: input.work.metadata.pdfUrl ?? null,
