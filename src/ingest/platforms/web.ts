@@ -2,6 +2,7 @@ import { Readability } from '@mozilla/readability';
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fromHtml } from 'hast-util-from-html';
+import { toHtml } from 'hast-util-to-html';
 import { defaultHandlers, toMdast } from 'hast-util-to-mdast';
 import { DOMParser } from 'linkedom';
 import { gfmToMarkdown } from 'mdast-util-gfm';
@@ -10,6 +11,7 @@ import stripIndent from 'strip-indent';
 import { normalizedResourceImageUrl } from '../../shared/image-mapping';
 import { limitByteStream } from '../../shared/response';
 import type { AcquiredResource } from '../acquisition';
+import { rehostInlineImages } from '../image-rehosting';
 import { storePublicPdfResponse } from '../zotero-sdt-service.ts';
 import { stagePublicPdfAcquisition } from './pdf';
 import { PDF_MIME, type PaidPdfFallbackGrant } from './pdf-policy';
@@ -20,7 +22,9 @@ const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
 function acquireHtmlArticle(html: string, url: string): AcquiredResource & { kind: 'blog'; resourcePlatform: null } {
-	const document = new DOMParser().parseFromString(html, 'text/html');
+	// linkedom does not imply the <head>/<body> that HTML lets pages omit, and Readability
+	// needs <body>. Serialize the spec parser's tree so linkedom reads the implied structure.
+	const document = new DOMParser().parseFromString(toHtml(fromHtml(html)), 'text/html');
 	const summary = sourceHtmlSummary(document);
 	// Linkedom resolves baseURI from <base>; Readability uses it for relative links and images.
 	const base = document.createElement('base', {});
@@ -228,7 +232,8 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 			() => new NonRetryableError(`HTML response exceeded ${GENERIC_HTML_MAX_BYTES} bytes`),
 		);
 	const html = await new Response(body).text();
-	return acquireHtmlArticle(html, finalUrl);
+	const article = acquireHtmlArticle(html, finalUrl);
+	return { ...article, content: await rehostInlineImages(env.IMAGES, article.content) };
 }
 
 export async function stageWebAcquisition(
@@ -237,7 +242,7 @@ export async function stageWebAcquisition(
 	input: { paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string },
 ) {
 	const result = await step.do(
-		'acquire-web-v12',
+		'acquire-web-v13',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 		async () => {
 			const acquired = await acquireWebResource(env, input.url);

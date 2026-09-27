@@ -1,6 +1,10 @@
 import { hash } from 'node:crypto';
 // Shared media rehosting for every Resource platform; this is not the image Resource kind adapter.
 import type { WorkflowStep } from 'cloudflare:workers';
+import type { Image, Nodes } from 'mdast';
+import { fromMarkdown } from 'mdast-util-from-markdown';
+import { gfmFromMarkdown } from 'mdast-util-gfm';
+import { gfm } from 'micromark-extension-gfm';
 import {
 	type HostedResourceImage,
 	hostedResourceImageUrl,
@@ -12,6 +16,9 @@ const REHOST_TIMEOUT_MS = 8_000;
 const MAX_SOURCE_REDIRECTS = 3;
 const SOURCE_USER_AGENT = 'Newsence-Media-Rehost/1.0 (+https://newsence.app)';
 const NULL_IMAGE_DIMENSIONS = { height: null, width: null } as const;
+const MAX_INLINE_IMAGES = 20;
+const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
+const INLINE_RASTER_IMAGE = /^data:image\/(?:png|jpeg|gif|webp|avif);base64,([a-z0-9+/=]+)$/i;
 
 type ImageDimensions = Readonly<Pick<HostedResourceImage, 'height' | 'width'>>;
 
@@ -151,6 +158,63 @@ async function rehostResourceImage(images: ImagesBinding, sourceUrl: string, ref
 		source_host: new URL(sourceUrl).hostname,
 	});
 	return { deliveryUrl: deliveryUrl(image), sourceUrl, ...dimensions };
+}
+
+function markdownImages(node: Nodes, found: Image[] = []): Image[] {
+	if (node.type === 'image') found.push(node);
+	if ('children' in node) for (const child of node.children) markdownImages(child, found);
+	return found;
+}
+
+/** Content-addressed, so the same embedded image is stored once however often it is acquired. */
+async function hostInlineImage(images: ImagesBinding, bytes: Uint8Array): Promise<string> {
+	const imageId = `resource-${hash('sha256', bytes, 'hex')}`;
+	const stored = () => images.hosted.image(imageId).details();
+	const existing = await stored();
+	if (existing) return deliveryUrl(existing);
+	try {
+		return deliveryUrl(
+			await images.hosted.upload(new Blob([bytes]).stream(), { id: imageId, filename: 'inline-image', requireSignedURLs: false }),
+		);
+	} catch (error) {
+		const raced = await stored().catch(() => null);
+		if (!raced) throw new Error(`images_write_error: ${error instanceof Error ? error.message : String(error)}`);
+		return deliveryUrl(raced);
+	}
+}
+
+/**
+ * Pages can embed images as `data:` URIs, which have no source to link. Hosted Images keeps
+ * the first bounded set of raster images; the rest are dropped instead of stored as Markdown.
+ */
+export async function rehostInlineImages(images: ImagesBinding, markdown: string): Promise<string> {
+	const inline = markdownImages(fromMarkdown(markdown, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] })).filter((image) =>
+		image.url.startsWith('data:'),
+	);
+	if (!inline.length) return markdown;
+	const hosted = new Map<string, string>();
+	let content = markdown;
+	let dropped = 0;
+	// Replace from the end so earlier offsets stay valid.
+	for (const image of [...inline].reverse()) {
+		const start = image.position?.start.offset;
+		const end = image.position?.end.offset;
+		if (start === undefined || end === undefined) continue;
+		let url = hosted.get(image.url);
+		const base64 = INLINE_RASTER_IMAGE.exec(image.url)?.[1];
+		if (!url && base64 && hosted.size < MAX_INLINE_IMAGES) {
+			const bytes = Buffer.from(base64, 'base64');
+			if (bytes.length <= MAX_INLINE_IMAGE_BYTES) {
+				url = await hostInlineImage(images, bytes);
+				hosted.set(image.url, url);
+			}
+		}
+		if (!url) dropped += 1;
+		const source = content.slice(start, end);
+		content = content.slice(0, start) + (url ? source.replace(image.url, url) : '') + content.slice(end);
+	}
+	console.info({ tag: 'RESOURCE_IMAGE', event: 'inline_images_rehosted', hosted: hosted.size, dropped });
+	return content;
 }
 
 export async function stageResourceImages(
