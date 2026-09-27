@@ -267,7 +267,7 @@ export async function stageArxivHtmlAcquisition(
 	return {
 		kind: 'paper',
 		resourcePlatform: null,
-		resourceIdentifiers: [],
+		resourceIdentifiers: [{ preferred: true, scheme: 'arxiv', value: arxivId }],
 		url: `https://arxiv.org/abs/${arxivId}`,
 		fileType: null,
 		title: document.title,

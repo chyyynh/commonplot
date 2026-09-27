@@ -198,7 +198,8 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 		await response.body?.cancel();
 		throw new Error('Fetch response has no valid final URL');
 	}
-	if (resolved.resourcePlatform) {
+	// A redirect to a platform or a paper re-enters acquisition at its own adapter.
+	if (resolved.resourcePlatform || resolved.identifiers.length) {
 		await response.body?.cancel();
 		return { platform: resolved };
 	}
@@ -227,7 +228,7 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 			() => new NonRetryableError(`HTML response exceeded ${GENERIC_HTML_MAX_BYTES} bytes`),
 		);
 	const html = await new Response(body).text();
-	return { ...acquireHtmlArticle(html, finalUrl), resourceIdentifiers: resolved.identifiers };
+	return acquireHtmlArticle(html, finalUrl);
 }
 
 export async function stageWebAcquisition(
@@ -236,7 +237,7 @@ export async function stageWebAcquisition(
 	input: { paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string },
 ) {
 	const result = await step.do(
-		'acquire-web-v11',
+		'acquire-web-v12',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 		async () => {
 			const acquired = await acquireWebResource(env, input.url);

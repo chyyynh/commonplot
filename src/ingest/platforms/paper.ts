@@ -151,60 +151,42 @@ async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: reado
 	return normalizeOpenAlexWork(work, input.identifiers);
 }
 
-/** Alternate paper PDFs share acquisition; key-bearing OpenAlex content stays local-only. */
-async function stagePaperPdfContent(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: { contentPdfUrl: string | null; publicPdfUrl: string | null; processingId: string },
-) {
-	for (const [provider, url] of [
-		['openalex', input.contentPdfUrl],
-		['open-access', input.publicPdfUrl],
-	] as const) {
-		if (!url || (provider === 'open-access' && url === input.contentPdfUrl)) continue;
-		try {
-			const source = await step.do(
-				`download-paper-${provider}-pdf-v1`,
-				{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
-				async () => {
-					const requestUrl = new URL(url);
-					if (provider === 'openalex') {
-						const apiKey = env.OPENALEX_API_KEY?.trim();
-						if (!apiKey) throw new Error('OpenAlex content download requires an API key');
-						requestUrl.searchParams.set('api_key', apiKey);
-					}
-					const response = await fetch(requestUrl, {
-						headers: { Accept: 'application/pdf' },
-						signal: AbortSignal.timeout(CONTENT_REQUEST_TIMEOUT_MS),
-					});
-					if (!response.ok) {
-						await response.body?.cancel();
-						const ErrorType = [400, 401, 403, 404, 410, 422].includes(response.status) ? NonRetryableError : Error;
-						throw new ErrorType(`Paper PDF request failed (${provider}) with HTTP ${response.status}`);
-					}
-					return storePublicPdfResponse(env, response, url);
-				},
-			);
-			const resource = await stagePublicPdfAcquisition(env, step, { source, grant: null, processingId: input.processingId });
-			console.info({
-				tag: 'PAPER_CONTENT',
-				event: 'pdf_acquired',
-				provider,
-				processing_id: input.processingId,
-				chars: resource.content.length,
-			});
-			return resource;
-		} catch (error) {
-			console.error({
-				tag: 'PAPER_CONTENT',
-				event: 'pdf_acquisition_failed',
-				provider,
-				processing_id: input.processingId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
+/** OpenAlex's hosted copy of a licensed PDF; publisher servers often refuse automated downloads. */
+async function stagePaperPdfContent(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
+	try {
+		const source = await step.do(
+			'download-paper-openalex-pdf-v1',
+			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
+			async () => {
+				const apiKey = env.OPENALEX_API_KEY?.trim();
+				if (!apiKey) throw new NonRetryableError('OpenAlex content download requires an API key');
+				const requestUrl = new URL(input.contentPdfUrl);
+				requestUrl.searchParams.set('api_key', apiKey);
+				const response = await fetch(requestUrl, {
+					headers: { Accept: 'application/pdf' },
+					signal: AbortSignal.timeout(CONTENT_REQUEST_TIMEOUT_MS),
+				});
+				if (!response.ok) {
+					await response.body?.cancel();
+					const ErrorType = [400, 401, 403, 404, 410, 422].includes(response.status) ? NonRetryableError : Error;
+					throw new ErrorType(`OpenAlex PDF request failed with HTTP ${response.status}`);
+				}
+				// The checkpoint keeps the key-free URL.
+				return storePublicPdfResponse(env, response, input.contentPdfUrl);
+			},
+		);
+		const resource = await stagePublicPdfAcquisition(env, step, { source, grant: null, processingId: input.processingId });
+		console.info({ tag: 'PAPER_CONTENT', event: 'pdf_acquired', processing_id: input.processingId, chars: resource.content.length });
+		return resource;
+	} catch (error) {
+		console.error({
+			tag: 'PAPER_CONTENT',
+			event: 'pdf_acquisition_failed',
+			processing_id: input.processingId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
 	}
-	return null;
 }
 
 export type PaperMetadata = NonNullable<Awaited<ReturnType<typeof resolveOpenAlexPaper>>>;
@@ -271,30 +253,24 @@ export async function stagePaperFullText(
 			});
 		}
 	}
-	if (!input.work) return null;
-	return stagePaperPdfContent(env, step, {
-		contentPdfUrl: input.work.contentPdfUrl,
-		publicPdfUrl: input.work.metadata.pdfUrl ?? null,
-		processingId: input.processingId,
-	});
+	if (!input.work?.contentPdfUrl) return null;
+	return stagePaperPdfContent(env, step, { contentPdfUrl: input.work.contentPdfUrl, processingId: input.processingId });
 }
 
 /** The abstract stands in for the body when no licensed full text exists. */
-export function paperAbstractDocument(work: PaperMetadata): (AcquiredResource & { resourcePlatform: null }) | null {
+export function paperAbstractDocument(work: PaperMetadata): AcquiredResource | null {
 	const abstract = work.metadata.abstract?.trim();
-	const identity = paperIdentityFromIdentifiers(work.identifiers);
-	if (!abstract || !identity) return null;
-	const url = canonicalPaperUrl(identity);
+	if (!abstract) return null;
 	return {
 		kind: 'paper',
 		resourcePlatform: null,
-		resourceIdentifiers: work.identifiers,
-		url,
+		resourceIdentifiers: [],
+		url: null,
 		fileType: null,
-		title: work.metadata.title ?? null,
-		summary: abstract,
+		title: null,
+		summary: null,
 		content: abstract,
-		source: new URL(url).hostname,
+		source: '',
 		originalLang: 'und',
 		publishedDate: null,
 		creators: [],
@@ -306,16 +282,16 @@ export function paperAbstractDocument(work: PaperMetadata): (AcquiredResource & 
 
 /**
  * Describe the document that carries a paper's readable text with the paper's identity and
- * metadata. Without resolved metadata only `identifiers` the caller trusts name the paper.
+ * metadata. Without resolved metadata the document's own identifiers name the paper; without
+ * its own URL the paper lives at its canonical identifier URL.
  */
 export function paperResource(
 	document: AcquiredResource,
 	work: PaperMetadata | null,
-	identifiers: readonly ResourceIdentifier[] = [],
 ): AcquiredResource & { kind: 'paper'; resourcePlatform: null } {
 	const resourceIdentifiers =
 		work?.identifiers ??
-		mergePaperIdentifiers(identifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)));
+		document.resourceIdentifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme));
 	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
 	if (!identity) throw new TypeError('A paper requires a DOI, arXiv, or OpenAlex identifier');
 	const { abstract, authors, publicationDate, title, ...kindMetadata } = work?.metadata ?? {};
@@ -324,13 +300,14 @@ export function paperResource(
 		const date = new Date(`${publicationDate}T00:00:00.000Z`);
 		if (!Number.isNaN(date.getTime())) publishedDate = date.toISOString();
 	}
-	const { printedTitle: _printedTitle, ...rest } = document;
+	const url = document.url ?? canonicalPaperUrl(identity);
 	return {
-		...rest,
+		...document,
 		kind: 'paper',
 		resourcePlatform: null,
 		resourceIdentifiers,
-		url: document.url ?? canonicalPaperUrl(identity),
+		url,
+		source: document.url ? document.source : new URL(url).hostname,
 		title: title?.trim() || document.title,
 		summary: abstract?.trim() || document.summary,
 		publishedDate,

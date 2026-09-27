@@ -19,7 +19,7 @@ import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
 import { paperAbstractDocument, paperResource, stagePaperFullText, stagePaperMetadata } from './platforms/paper';
 import { stageStoredPdfAcquisition } from './platforms/pdf';
-import { PDF_MIME, type PaidPdfFallbackGrant } from './platforms/pdf-policy';
+import type { PaidPdfFallbackGrant } from './platforms/pdf-policy';
 import { resolveResourceUrl, ResourceUrlSchema } from './platforms/resource-url';
 import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
@@ -36,8 +36,6 @@ export type AcquiredResource = {
 		doi: string | null;
 		arxivId: string | null;
 	} & ReferenceCitation)[];
-	/** The title a PDF prints on its title page; metadata found through the PDF must name the same work. */
-	printedTitle?: string | null;
 	kind: Exclude<ResourceKind, 'image'>;
 	resourcePlatform: ResourcePlatform | null;
 	resourceIdentifiers: ResourceIdentifier[];
@@ -67,39 +65,18 @@ function withoutDuplicateResourceTitle(markdown: string, title: string): string 
 	return body || markdown;
 }
 
-/** Full text, else the abstract, else the linked page carries a paper's body. */
+/** A paper reads as its full text, else its abstract; a paper with neither is not acquired. */
 async function stageLinkedPaper(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string; identifiers: ResourceIdentifier[] },
+	input: { processingId: string; url: string; identifiers: ResourceIdentifier[] },
 ) {
 	const work = await stagePaperMetadata(env, step, { identifiers: input.identifiers, processingId: input.processingId });
-	const fullText = await stagePaperFullText(env, step, { work, identifiers: input.identifiers, processingId: input.processingId });
-	if (fullText) return paperResource({ ...fullText, url: input.url, source: new URL(input.url).hostname }, work, input.identifiers);
-	const abstract = work ? paperAbstractDocument(work) : null;
-	if (abstract) return paperResource({ ...abstract, url: input.url, source: new URL(input.url).hostname }, work);
-	const page = await stageWebAcquisition(env, step, input);
-	return 'platform' in page ? page : paperResource(page, work, input.identifiers);
-}
-
-/** A fetched page or PDF names a paper only through its link or a verified title page. */
-async function stageDiscoveredPaper(
-	env: CoreEnv,
-	step: WorkflowStep,
-	document: AcquiredResource & { resourcePlatform: null },
-	processingId: string,
-) {
-	if (!document.resourceIdentifiers.length) return document;
-	const linkIdentifiers = resolveResourceUrl(document.url)?.identifiers ?? [];
-	const work = await stagePaperMetadata(env, step, {
-		identifiers: document.resourceIdentifiers,
-		...(linkIdentifiers.length ? {} : { printedTitle: document.printedTitle ?? null }),
-		processingId,
-	});
-	if (!work) return linkIdentifiers.length ? paperResource(document, null, linkIdentifiers) : { ...document, resourceIdentifiers: [] };
-	// A linked PDF is already the full text; an article page yields to it.
-	const fullText = document.fileType === PDF_MIME ? null : await stagePaperFullText(env, step, { work, processingId });
-	return paperResource(fullText ? { ...fullText, url: document.url, source: document.source } : document, work);
+	const document =
+		(await stagePaperFullText(env, step, { work, identifiers: input.identifiers, processingId: input.processingId })) ??
+		(work && paperAbstractDocument(work));
+	if (!document) throw new NonRetryableError(`Paper ${input.url} has no readable full text or abstract`);
+	return paperResource({ ...document, url: input.url, source: new URL(input.url).hostname }, work);
 }
 
 async function stageUrlAcquisition(
@@ -116,11 +93,12 @@ async function stageUrlAcquisition(
 	if (!detected) throw new NonRetryableError('Resource URL must be HTTP(S) without credentials');
 	if (!detected.resourcePlatform) {
 		const identifiers = [...(input.identifiers ?? []), ...detected.identifiers];
-		const acquired = identifiers.length
-			? await stageLinkedPaper(env, step, { ...input, identifiers })
-			: await stageWebAcquisition(env, step, input);
-		if (!('platform' in acquired)) return identifiers.length ? acquired : stageDiscoveredPaper(env, step, acquired, input.processingId);
+		if (identifiers.length) return stageLinkedPaper(env, step, { ...input, identifiers });
+		const acquired = await stageWebAcquisition(env, step, input);
+		if (!('platform' in acquired)) return acquired;
 		detected = acquired.platform;
+		if (!detected.resourcePlatform)
+			return stageLinkedPaper(env, step, { processingId: input.processingId, url: detected.url, identifiers: detected.identifiers });
 	}
 
 	const platformId = detected.identifiers[0]!.value;
@@ -196,23 +174,16 @@ async function stageStoredPdfUpload(
 	target: Readonly<{ paidPdfFallback?: PaidPdfFallbackGrant; resourceId: string }>,
 	processingId: string,
 ) {
-	const uploaded = await stageStoredPdfAcquisition(env, step, target, processingId);
+	const { printedTitle, resourceIdentifiers, ...uploaded } = await stageStoredPdfAcquisition(env, step, target, processingId);
 	const file = { ...uploaded, resourceIdentifiers: [] };
-	const work = await stagePaperMetadata(env, step, {
-		identifiers: uploaded.resourceIdentifiers,
-		printedTitle: uploaded.printedTitle ?? null,
-		processingId,
-	});
+	const work = await stagePaperMetadata(env, step, { identifiers: resourceIdentifiers, printedTitle, processingId });
 	if (!work) return { file, paper: null };
-	const abstract = paperAbstractDocument(work);
-	const fullText = await stagePaperFullText(env, step, { work, processingId });
+	const document = (await stagePaperFullText(env, step, { work, processingId })) ?? paperAbstractDocument(work);
 	// The public paper lives at its canonical identifier URL, not at the licensed PDF it was read from.
-	const document = fullText ? { ...fullText, url: null, source: abstract?.source ?? fullText.source } : abstract;
-	return { file, paper: document ? paperResource(document, work) : null };
+	return { file, paper: document ? paperResource({ ...document, url: null }, work) : null };
 }
 
-function finishAcquisition(acquired: AcquiredResource, source: Extract<ResourceProcessingTarget, { kind: 'draft' }>['sourceHints']) {
-	const { printedTitle: _printedTitle, ...resource } = acquired;
+function finishAcquisition(resource: AcquiredResource, source: Extract<ResourceProcessingTarget, { kind: 'draft' }>['sourceHints']) {
 	const language = ResourceLanguageSchema.safeParse(resource.originalLang).data;
 	const parsedDate = Date.parse(resource.publishedDate ?? '');
 	const publishedDate = Number.isNaN(parsedDate) ? (source?.publishedDate ?? null) : new Date(parsedDate).toISOString();
