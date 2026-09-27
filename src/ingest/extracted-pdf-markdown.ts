@@ -280,7 +280,7 @@ function normalizeTable(source: string, inline: Range[]): string | null {
 }
 
 /** Normalize LlamaParse PDF output before persistence, leaving native Markdown syntax intact. */
-export function normalizeExtractedPdfMarkdown(markdown: string): string {
+function normalizeExtractedPdfMarkdown(markdown: string): string {
 	const ranges = protectedRanges(markdown);
 	const replacements: Replacement[] = [];
 	let tableStart = -1;

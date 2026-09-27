@@ -112,7 +112,7 @@ function readableText(element: DomElement | null | undefined): string {
 }
 
 /** Convert arXiv's LaTeXML rendering to the Markdown shape PDF parsing produces. */
-export function arxivHtmlDocument(html: string, url: string) {
+function arxivHtmlDocument(html: string, url: string) {
 	const document = new DOMParser().parseFromString(html, 'text/html');
 	const article = document.querySelector('article.ltx_document');
 	if (!article) return null;

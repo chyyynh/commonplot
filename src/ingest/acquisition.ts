@@ -17,7 +17,7 @@ import {
 import type { ResourceProcessingTarget } from './admission';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
-import { paperAbstractDocument, paperResource, stagePaperFullText, stagePaperMetadata } from './platforms/paper';
+import { stagePaper } from './platforms/paper';
 import { stageStoredPdfAcquisition } from './platforms/pdf';
 import type { PaidPdfFallbackGrant } from './platforms/pdf-policy';
 import { resolveResourceUrl, ResourceUrlSchema } from './platforms/resource-url';
@@ -65,18 +65,15 @@ function withoutDuplicateResourceTitle(markdown: string, title: string): string 
 	return body || markdown;
 }
 
-/** A paper reads as its full text, else its abstract; a paper with neither is not acquired. */
+/** A linked paper with neither full text nor an abstract is not acquired. */
 async function stageLinkedPaper(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: { processingId: string; url: string; identifiers: ResourceIdentifier[] },
 ) {
-	const work = await stagePaperMetadata(env, step, { identifiers: input.identifiers, processingId: input.processingId });
-	const document =
-		(await stagePaperFullText(env, step, { work, identifiers: input.identifiers, processingId: input.processingId })) ??
-		(work && paperAbstractDocument(work));
-	if (!document) throw new NonRetryableError(`Paper ${input.url} has no readable full text or abstract`);
-	return paperResource({ ...document, url: input.url, source: new URL(input.url).hostname }, work);
+	const paper = await stagePaper(env, step, input);
+	if (!paper) throw new NonRetryableError(`Paper ${input.url} has no readable full text or abstract`);
+	return paper;
 }
 
 async function stageUrlAcquisition(
@@ -149,19 +146,13 @@ export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep,
 				: null;
 	const source = target.kind === 'draft' ? target.sourceHints : undefined;
 	if (target.kind === 'storedBlob') {
-		const upload = await stageStoredPdfUpload(env, step, target, processingId);
-		return {
-			...finishAcquisition(upload.paper ?? upload.file, source),
-			upload: upload.paper ? finishAcquisition(upload.file, source) : null,
-		};
+		const { file, paper } = await stageStoredPdfUpload(env, step, target, processingId);
+		return paper
+			? { resource: finishAcquisition(paper, source), privateFile: finishAcquisition(file, source) }
+			: { resource: finishAcquisition(file, source), privateFile: null };
 	}
-	return {
-		...finishAcquisition(
-			await stageUrlAcquisition(env, step, { ...urlInput!, paidPdfFallback: target.paidPdfFallback ?? null, processingId }),
-			source,
-		),
-		upload: null,
-	};
+	const resource = await stageUrlAcquisition(env, step, { ...urlInput!, paidPdfFallback: target.paidPdfFallback ?? null, processingId });
+	return { resource: finishAcquisition(resource, source), privateFile: null };
 }
 
 /**
@@ -176,11 +167,8 @@ async function stageStoredPdfUpload(
 ) {
 	const { printedTitle, resourceIdentifiers, ...uploaded } = await stageStoredPdfAcquisition(env, step, target, processingId);
 	const file = { ...uploaded, resourceIdentifiers: [] };
-	const work = await stagePaperMetadata(env, step, { identifiers: resourceIdentifiers, printedTitle, processingId });
-	if (!work) return { file, paper: null };
-	const document = (await stagePaperFullText(env, step, { work, processingId })) ?? paperAbstractDocument(work);
-	// The public paper lives at its canonical identifier URL, not at the licensed PDF it was read from.
-	return { file, paper: document ? paperResource({ ...document, url: null }, work) : null };
+	const paper = await stagePaper(env, step, { identifiers: resourceIdentifiers, printedTitle, url: null, processingId });
+	return { file, paper };
 }
 
 function finishAcquisition(resource: AcquiredResource, source: Extract<ResourceProcessingTarget, { kind: 'draft' }>['sourceHints']) {

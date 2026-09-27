@@ -189,27 +189,24 @@ async function stagePaperPdfContent(env: CoreEnv, step: WorkflowStep, input: { c
 	}
 }
 
-export type PaperMetadata = NonNullable<Awaited<ReturnType<typeof resolveOpenAlexPaper>>>;
+type PaperMetadata = NonNullable<Awaited<ReturnType<typeof resolveOpenAlexPaper>>>;
 
 /**
  * OpenAlex describes every paper. Identifiers read from a PDF only count when the
  * title printed on that PDF names the resolved work; `printedTitle` is omitted for
  * identifiers taken from the link itself.
  */
-export async function stagePaperMetadata(
+async function stagePaperMetadata(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { identifiers: readonly ResourceIdentifier[]; printedTitle?: string | null; processingId: string },
+	input: { identifiers: PaperIdentifier[]; printedTitle?: string | null; processingId: string },
 ): Promise<PaperMetadata | null> {
-	const identifiers = mergePaperIdentifiers(
-		input.identifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
-	);
-	if (!identifiers.length) return null;
+	if (!input.identifiers.length) return null;
 	const startedAt = Date.now();
 	const stream = await step.do(
 		'resolve-paper-openalex-v6',
 		PAPER_METADATA_STEP,
-		async () => Response.json(await resolveOpenAlexPaper({ apiKey: env.OPENALEX_API_KEY, identifiers })).body!,
+		async () => Response.json(await resolveOpenAlexPaper({ apiKey: env.OPENALEX_API_KEY, identifiers: input.identifiers })).body!,
 	);
 	const work = await new Response(stream).json<PaperMetadata | null>();
 	const verified =
@@ -228,18 +225,15 @@ export async function stagePaperMetadata(
 }
 
 /**
- * Readable full text, best source first: arXiv's HTML, then a licensed PDF; null leaves the paper
- * with its abstract. arXiv's rendering needs no metadata, so a paper OpenAlex has not indexed yet still reads.
+ * Readable full text, best source first: arXiv's HTML, then a licensed PDF. arXiv's rendering
+ * needs no metadata, so a paper OpenAlex has not indexed yet still reads.
  */
-export async function stagePaperFullText(
+async function stagePaperFullText(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { work: PaperMetadata | null; identifiers?: readonly ResourceIdentifier[]; processingId: string },
+	input: { identifiers: readonly PaperIdentifier[]; contentPdfUrl: string | null; processingId: string },
 ) {
-	const identifiers =
-		input.work?.identifiers ??
-		(input.identifiers ?? []).filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme));
-	const arxivId = paperIdentityFromIdentifiers(identifiers)?.arxivId;
+	const arxivId = paperIdentityFromIdentifiers(input.identifiers)?.arxivId;
 	if (arxivId) {
 		try {
 			const html = await stageArxivHtmlAcquisition(step, arxivId);
@@ -253,65 +247,54 @@ export async function stagePaperFullText(
 			});
 		}
 	}
-	if (!input.work?.contentPdfUrl) return null;
-	return stagePaperPdfContent(env, step, { contentPdfUrl: input.work.contentPdfUrl, processingId: input.processingId });
-}
-
-/** The abstract stands in for the body when no licensed full text exists. */
-export function paperAbstractDocument(work: PaperMetadata): AcquiredResource | null {
-	const abstract = work.metadata.abstract?.trim();
-	if (!abstract) return null;
-	return {
-		kind: 'paper',
-		resourcePlatform: null,
-		resourceIdentifiers: [],
-		url: null,
-		fileType: null,
-		title: null,
-		summary: null,
-		content: abstract,
-		source: '',
-		originalLang: 'und',
-		publishedDate: null,
-		creators: [],
-		kindMetadata: {},
-		previewImageUrl: null,
-		subjectUrl: null,
-	};
+	if (!input.contentPdfUrl) return null;
+	return stagePaperPdfContent(env, step, { contentPdfUrl: input.contentPdfUrl, processingId: input.processingId });
 }
 
 /**
- * Describe the document that carries a paper's readable text with the paper's identity and
- * metadata. Without resolved metadata the document's own identifiers name the paper; without
- * its own URL the paper lives at its canonical identifier URL.
+ * A paper reads as its full text, else its abstract; null when it has neither, or when
+ * identifiers read from a PDF (`printedTitle` given) do not resolve to that printed title.
+ * Without `url` the paper lives at its canonical identifier URL, not at the source it was read from.
  */
-export function paperResource(
-	document: AcquiredResource,
-	work: PaperMetadata | null,
-): AcquiredResource & { kind: 'paper'; resourcePlatform: null } {
-	const resourceIdentifiers =
-		work?.identifiers ??
-		document.resourceIdentifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme));
+export async function stagePaper(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: { identifiers: readonly ResourceIdentifier[]; printedTitle?: string | null; url: string | null; processingId: string },
+): Promise<(AcquiredResource & { kind: 'paper'; resourcePlatform: null }) | null> {
+	const identifiers = mergePaperIdentifiers(
+		input.identifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
+	);
+	const work = await stagePaperMetadata(env, step, { identifiers, printedTitle: input.printedTitle, processingId: input.processingId });
+	if (!work && input.printedTitle !== undefined) return null;
+	const resourceIdentifiers = work?.identifiers ?? identifiers;
+	const fullText = await stagePaperFullText(env, step, {
+		identifiers: resourceIdentifiers,
+		contentPdfUrl: work?.contentPdfUrl ?? null,
+		processingId: input.processingId,
+	});
+	const { abstract, authors, publicationDate, title, ...kindMetadata } = work?.metadata ?? {};
+	const content = fullText?.content ?? abstract?.trim();
+	if (!content) return null;
 	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
 	if (!identity) throw new TypeError('A paper requires a DOI, arXiv, or OpenAlex identifier');
-	const { abstract, authors, publicationDate, title, ...kindMetadata } = work?.metadata ?? {};
-	let publishedDate = document.publishedDate;
-	if (!publishedDate && publicationDate) {
-		const date = new Date(`${publicationDate}T00:00:00.000Z`);
-		if (!Number.isNaN(date.getTime())) publishedDate = date.toISOString();
-	}
-	const url = document.url ?? canonicalPaperUrl(identity);
+	const url = input.url ?? canonicalPaperUrl(identity);
+	const publishedDate = publicationDate ? new Date(`${publicationDate}T00:00:00.000Z`) : null;
 	return {
-		...document,
 		kind: 'paper',
 		resourcePlatform: null,
 		resourceIdentifiers,
 		url,
-		source: document.url ? document.source : new URL(url).hostname,
-		title: title?.trim() || document.title,
-		summary: abstract?.trim() || document.summary,
-		publishedDate,
-		creators: authors?.length ? authors.map((literal) => ({ role: 'author', literal })) : document.creators,
+		source: new URL(url).hostname,
+		fileType: fullText?.fileType ?? null,
+		title: title?.trim() || fullText?.title || null,
+		summary: abstract?.trim() || null,
+		content,
+		references: fullText?.references ?? [],
+		originalLang: fullText?.originalLang ?? 'und',
+		publishedDate: publishedDate && !Number.isNaN(publishedDate.getTime()) ? publishedDate.toISOString() : null,
+		creators: authors?.length ? authors.map((literal) => ({ role: 'author', literal })) : (fullText?.creators ?? []),
 		kindMetadata,
+		previewImageUrl: fullText?.previewImageUrl ?? null,
+		subjectUrl: fullText?.subjectUrl ?? null,
 	};
 }

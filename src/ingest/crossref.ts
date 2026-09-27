@@ -135,7 +135,7 @@ export async function fetchCrossrefDepositedReferences(doi: string) {
 	});
 }
 
-export type CrossrefDepositedReference = Awaited<ReturnType<typeof fetchCrossrefDepositedReferences>>[number];
+type CrossrefDepositedReference = Awaited<ReturnType<typeof fetchCrossrefDepositedReferences>>[number];
 
 function tokenCoverage(expected: string, actual: ReadonlySet<string>): number {
 	const tokens = significantTokens(expected);

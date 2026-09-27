@@ -43,9 +43,10 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				return target.kind === 'draft' ? {} : { resourceId: target.resourceId };
 			// Provider reconciliation belongs to this attempt, not the resource shared by later retries.
 			const processingId = event.instanceId;
-			const { upload, ...resource } = await stageResourceAcquisition(this.env, step, target, processingId);
-			// An uploaded PDF that names a paper also publishes that paper, built without the upload's text.
-			const uploadedPaper = upload !== null;
+			// An uploaded PDF that names a paper publishes that paper, built without the upload's text,
+			// and keeps the upload as its uploader's private file.
+			const { resource, privateFile } = await stageResourceAcquisition(this.env, step, target, processingId);
+			const uploadedPaper = privateFile !== null;
 			const ownedBlobId = target.kind === 'storedBlob' ? target.resourceId : undefined;
 			const persistenceTarget: ResourcePersistenceTarget =
 				target.kind === 'draft'
@@ -84,8 +85,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			// Ordinary imports share a translation; explicit reacquisition forces a fresh run.
 			const forceProcessingRunKey = target.kind === 'draft' ? undefined : hash('sha256', event.instanceId, 'hex').slice(0, 16);
 			const classificationTargets: Parameters<typeof persistResourceClassification>[1] = [];
-			if (upload && target.kind === 'storedBlob') {
-				const privateRendition = prepareResolvedResource({ ...upload, summary: upload.summary ?? summary }, hostedImages);
+			if (privateFile && target.kind === 'storedBlob') {
+				const privateRendition = prepareResolvedResource({ ...privateFile, summary: privateFile.summary ?? summary }, hostedImages);
 				const privatePersistence = await step.do('persist-private-pdf-rendition-v3', STORAGE_STEP, async () =>
 					persistResolvedResource(await connectCoreDb(this.env), privateRendition, {
 						kind: 'existing',
