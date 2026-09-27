@@ -2,6 +2,8 @@
 export type ReferenceCitation = {
 	title: string | null;
 	year: number | null;
+	/** The entry's author list as printed, for readers that show the full citation. */
+	authors: string | null;
 	leadAuthor: string | null;
 	hasCoauthors: boolean;
 	venue: string | null;
@@ -55,14 +57,18 @@ function sentenceEnd(value: string): number {
 	return Number.isFinite(question) ? question + 1 : -1;
 }
 
-function authorSummary(authors: string, surnameFirst: boolean): Pick<ReferenceCitation, 'leadAuthor' | 'hasCoauthors'> {
+function authorSummary(authors: string, surnameFirst: boolean): Pick<ReferenceCitation, 'authors' | 'leadAuthor' | 'hasCoauthors'> {
 	const hasEtAl = /\bet\s+al\b/u.test(authors);
 	const body = clean(authors.replace(/,?\s*\bet\s+al\b\.?/gu, '')).replace(/[.,;]$/u, '');
-	if (!body || PSEUDO_AUTHORS.has(body.toLowerCase())) return { leadAuthor: null, hasCoauthors: false };
+	if (!body || PSEUDO_AUTHORS.has(body.toLowerCase())) return { authors: null, leadAuthor: null, hasCoauthors: false };
+	// The year split can take the final initial's period: `Cai, J. (2024)` → `Cai, J`.
+	const printed = clean(authors)
+		.replace(/[,;:]$/u, '')
+		.replace(/(\p{Lu}\.[^]*\s\p{Lu})$/u, '$1.');
 	if (surnameFirst) {
 		const surname = new RegExp(`^${SURNAME}`, 'u').exec(body)?.[0] ?? null;
 		const rest = surname ? body.slice(surname.length) : '';
-		return { leadAuthor: surname, hasCoauthors: hasEtAl || /&|\band\b|;|,\s*\p{Lu}\p{Ll}/u.test(rest) };
+		return { authors: printed, leadAuthor: surname, hasCoauthors: hasEtAl || /&|\band\b|;|,\s*\p{Lu}\p{Ll}/u.test(rest) };
 	}
 	const entries = body
 		.split(/\s*(?:,\s*and\s+|,\s+|\s+and\s+|\s*&\s*)\s*/u)
@@ -70,12 +76,13 @@ function authorSummary(authors: string, surnameFirst: boolean): Pick<ReferenceCi
 		.filter(Boolean);
 	const first = entries[0] ?? body;
 	const hasCoauthors = hasEtAl || entries.length > 1;
-	if (entries.length === 1 && (ORGANIZATION.test(first) || !/\s/u.test(first))) return { leadAuthor: first, hasCoauthors };
+	if (entries.length === 1 && (ORGANIZATION.test(first) || !/\s/u.test(first)))
+		return { authors: printed, leadAuthor: first, hasCoauthors };
 	const tokens = first.split(/\s+/u);
 	let start = tokens.length - 1;
 	while (start > 0 && new RegExp(`^${PARTICLE}$`, 'u').test(tokens[start - 1]!)) start -= 1;
 	const surname = tokens.slice(start).join(' ');
-	return { leadAuthor: /\p{L}{2}/u.test(surname) ? surname : null, hasCoauthors };
+	return { authors: printed, leadAuthor: /\p{L}{2}/u.test(surname) ? surname : null, hasCoauthors };
 }
 
 function normalizeVenue(value: string): string | null {
@@ -170,7 +177,7 @@ export function parseReferenceCitation(value: string): ReferenceCitation {
 	const parsed = titleAndVenue(authors ? text.slice(authorEnd).replace(/^[.\s]+/u, '') : text);
 	const year = citationYear(text);
 	return {
-		...(authors ? authorSummary(authors, surnameFirst.length >= 4) : { leadAuthor: null, hasCoauthors: false }),
+		...(authors ? authorSummary(authors, surnameFirst.length >= 4) : { authors: null, leadAuthor: null, hasCoauthors: false }),
 		year,
 		...parsed,
 	};

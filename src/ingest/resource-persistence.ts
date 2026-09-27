@@ -240,10 +240,10 @@ async function writeCanonicalResource(
 		// These references describe exactly the original written in this transaction.
 		await db.execute(sql`
 			INSERT INTO resource_references
-				(resource_id, ordinal, label, text, doi, arxiv_id, title, year, lead_author, has_coauthors, venue)
+				(resource_id, ordinal, label, text, doi, arxiv_id, title, year, authors, lead_author, has_coauthors, venue)
 			SELECT ${resourceId}::uuid, incoming.ordinal::integer, incoming.value->>'label', incoming.value->>'text',
 			       incoming.value->>'doi', incoming.value->>'arxivId', incoming.value->>'title', (incoming.value->>'year')::integer,
-			       incoming.value->>'leadAuthor', coalesce((incoming.value->>'hasCoauthors')::boolean, false), incoming.value->>'venue'
+			       incoming.value->>'authors', incoming.value->>'leadAuthor', coalesce((incoming.value->>'hasCoauthors')::boolean, false), incoming.value->>'venue'
 			FROM jsonb_array_elements(${JSON.stringify(resource.references)}::jsonb)
 			WITH ORDINALITY AS incoming(value, ordinal)
 		`);
