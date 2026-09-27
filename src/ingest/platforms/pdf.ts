@@ -9,14 +9,12 @@ import type { AcquiredResource } from '../acquisition';
 import { type GrobidPdfHeader, parseGrobidPdfHeader } from '../grobid-tei';
 import { parseStoredPdfRepresentation, type storePublicPdfResponse } from '../zotero-sdt-service.ts';
 import { stagePaidLlamaParseFallback } from './pdf-llamaparse';
-import { PDF_MIME, type LocalPdfSummary, type PaidPdfFallbackGrant } from './pdf-policy';
+import { PDF_MIME, type PaidPdfFallbackGrant } from './pdf-policy';
 import { resolveResourceUrl } from './resource-url';
 
-const MAX_PAPER_IDENTIFIER_TEXT_CHARS = 20_000;
 const GROBID_HEADER_STEP = { retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '600 seconds' } as const;
 type PdfAcquisition = Readonly<{
 	resource: AcquiredResource & { kind: 'file'; resourcePlatform: null; url: string };
-	parse: LocalPdfSummary;
 }>;
 
 type StoredPdfRow = {
@@ -72,74 +70,106 @@ async function loadStoredPdfInput(db: NodePgDatabase, resourceId: string) {
 	};
 }
 
+const PDF_PARSE_STEP = { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' } as const;
+
+type ParsedPdf = Pick<Awaited<ReturnType<typeof parseStoredPdfRepresentation>>, 'markdown' | 'references' | 'parse'> & {
+	/** Identifiers printed on the title page: GROBID's header, else DOI/arXiv text found on the first page. */
+	resourceIdentifiers: AcquiredResource['resourceIdentifiers'];
+	/** The title GROBID read from the title page; resolved metadata must name the same work. */
+	printedTitle: string | null;
+	printedAuthors: string[];
+};
+
+/** The one PDF parse: Zotero reads the body, GROBID reads the title page. */
+async function stagePdfParse(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: Readonly<{ stepKey: string; pdfStorageKey: string; inputContentHash: string; sourceLabel: string; cropUrlPrefix?: string }>,
+): Promise<ParsedPdf> {
+	const [contentStream, header] = await Promise.all([
+		step.do(`parse-pdf-body-v1-${input.stepKey}`, PDF_PARSE_STEP, async () => {
+			const { markdown, references, parse, paperIdentifierText } = await parseStoredPdfRepresentation(env, input);
+			return Response.json({ markdown, references, parse, paperIdentifierText }).body!;
+		}),
+		step
+			.do(`parse-pdf-header-grobid-v1-${input.stepKey}`, GROBID_HEADER_STEP, async () => {
+				const object = await env.R2.get(input.pdfStorageKey);
+				if (!object) throw new NonRetryableError('PDF source object is missing');
+				const parsed = await parseGrobidPdfHeader(
+					await env.GROBID.getByName('citation-parser-v1').processPdfHeader(object.body, object.size),
+				);
+				return Response.json(parsed).body!;
+			})
+			.then((stream) => new Response(stream).json<GrobidPdfHeader>())
+			.catch((error: unknown) => {
+				// Without a printed title no identifier found in the PDF can be verified, so it stays a file.
+				console.warn({
+					tag: 'GROBID',
+					event: 'pdf_header_failed',
+					source: input.sourceLabel,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				return null;
+			}),
+	]);
+	const { paperIdentifierText, ...parsed } = await new Response(contentStream).json<
+		Pick<Awaited<ReturnType<typeof parseStoredPdfRepresentation>>, 'markdown' | 'references' | 'parse' | 'paperIdentifierText'>
+	>();
+	const printedIdentity = paperIdentityFromText(paperIdentifierText);
+	return {
+		...parsed,
+		resourceIdentifiers: header?.resourceIdentifiers.length
+			? header.resourceIdentifiers
+			: printedIdentity
+				? paperIdentifiersFromIdentity(printedIdentity)
+				: [],
+		printedTitle: header?.title?.trim() || null,
+		printedAuthors: header?.authors ?? [],
+	};
+}
+
 /** Parse a checkpointed public source without repeating its external download. */
 export async function stagePublicPdfAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: { source: Awaited<ReturnType<typeof storePublicPdfResponse>>; grant: PaidPdfFallbackGrant | null; processingId: string },
 ): Promise<PdfAcquisition['resource']> {
-	const stream = await step.do(
-		`parse-public-pdf-v2-${input.source.pdfStorageKey}`,
-		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
-		async () => {
-			const parsed = await parseStoredPdfRepresentation(env, input.source);
-			const identity = paperIdentityFromText(parsed.paperIdentifierText);
-			const url = new URL(input.source.url);
-			let fileName = url.pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';
-			try {
-				fileName = decodeURIComponent(fileName) || 'document.pdf';
-			} catch {
-				// Keep a malformed path segment in its encoded form.
-			}
-			const title = fileName.replace(/\.[a-z0-9]+$/i, '').trim();
-			if (!title) throw new NonRetryableError(`File name has no title: ${fileName}`);
-			const source = url.hostname.replace(/^www\./, '');
-			return Response.json({
-				resource: {
-					kind: 'file',
-					resourceIdentifiers: [
-						...(resolveResourceUrl(input.source.url)?.identifiers ?? []),
-						...(identity ? paperIdentifiersFromIdentity(identity) : []),
-					],
-					subjectUrl: null,
-					previewImageUrl: null,
-					resourcePlatform: null,
-					fileType: PDF_MIME,
-					url: input.source.url,
-					title,
-					content: parsed.markdown,
-					references: parsed.references,
-					source,
-					originalLang: 'und',
-					publishedDate: null,
-					summary: null,
-					creators: [],
-					kindMetadata: null,
-				},
-				parse: parsed.parse,
-			} satisfies PdfAcquisition).body!;
-		},
-	);
-	const acquisition = await new Response(stream).json<PdfAcquisition>();
+	const url = new URL(input.source.url);
+	let fileName = url.pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';
+	try {
+		fileName = decodeURIComponent(fileName) || 'document.pdf';
+	} catch {
+		// Keep a malformed path segment in its encoded form.
+	}
+	const title = fileName.replace(/\.[a-z0-9]+$/i, '').trim();
+	if (!title) throw new NonRetryableError(`File name has no title: ${fileName}`);
+	const parsed = await stagePdfParse(env, step, { ...input.source, stepKey: input.source.pdfStorageKey });
+	const linkIdentifiers = resolveResourceUrl(input.source.url)?.identifiers ?? [];
 	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
 		grant: input.grant,
-		local: acquisition.parse,
+		local: parsed.parse,
 		processingId: input.processingId,
 		source: { kind: 'public-url', url: input.source.url },
 	});
-	if (!cloudMarkdown) {
-		if (!acquisition.resource.content) throw new NonRetryableError('Fetched PDF has no usable text; OCR is required');
-		return acquisition.resource;
-	}
-	const identity = paperIdentityFromText(cloudMarkdown.slice(0, MAX_PAPER_IDENTIFIER_TEXT_CHARS));
+	if (!cloudMarkdown && !parsed.markdown) throw new NonRetryableError('Fetched PDF has no usable text; OCR is required');
 	return {
-		...acquisition.resource,
-		references: [],
-		content: cloudMarkdown,
-		resourceIdentifiers: [
-			...(resolveResourceUrl(input.source.url)?.identifiers ?? []),
-			...(identity ? paperIdentifiersFromIdentity(identity) : []),
-		],
+		kind: 'file',
+		resourceIdentifiers: [...linkIdentifiers, ...parsed.resourceIdentifiers],
+		printedTitle: parsed.printedTitle,
+		subjectUrl: null,
+		previewImageUrl: null,
+		resourcePlatform: null,
+		fileType: PDF_MIME,
+		url: input.source.url,
+		title,
+		content: cloudMarkdown || parsed.markdown,
+		references: cloudMarkdown ? [] : parsed.references,
+		source: url.hostname.replace(/^www\./, ''),
+		originalLang: 'und',
+		publishedDate: null,
+		summary: null,
+		creators: [],
+		kindMetadata: null,
 	};
 }
 
@@ -151,50 +181,18 @@ export async function stageStoredPdfAcquisition(
 		resourceId: string;
 	}>,
 	processingId: string,
-) {
+): Promise<AcquiredResource & { kind: 'file'; resourcePlatform: null }> {
 	const resource = await step.do(
 		'load-stored-pdf-input-v1',
 		{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
 		async () => loadStoredPdfInput(await connectCoreDb(env), target.resourceId),
 	);
-	const [contentStream, headerStream] = await Promise.all([
-		step.do(
-			'acquire-stored-pdf-v13',
-			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
-			async () => {
-				const { markdown, references, parse } = await parseStoredPdfRepresentation(env, {
-					pdfStorageKey: resource.storageKey,
-					inputContentHash: resource.contentHash,
-					sourceLabel: `Stored PDF ${target.resourceId}`,
-				});
-				return Response.json({ markdown, references, parse }).body!;
-			},
-		),
-		step
-			.do('classify-stored-pdf-with-grobid-v3', GROBID_HEADER_STEP, async () => {
-				const object = await env.R2.get(resource.storageKey);
-				if (!object) throw new NonRetryableError('Uploaded PDF object is missing');
-				const header = await parseGrobidPdfHeader(
-					await env.GROBID.getByName('citation-parser-v1').processPdfHeader(object.body, object.size),
-				);
-				return Response.json(header).body!;
-			})
-			.catch((error) => {
-				console.warn({
-					tag: 'GROBID',
-					event: 'paper_classification_failed',
-					resource_id: target.resourceId,
-					error: error instanceof Error ? error.message : String(error),
-				});
-				return null;
-			}),
-	]);
-	const grobidHeader = headerStream ? await new Response(headerStream).json<GrobidPdfHeader>() : null;
-	const parsed = await new Response(contentStream).json<
-		Pick<Awaited<ReturnType<typeof parseStoredPdfRepresentation>>, 'markdown' | 'references' | 'parse'>
-	>();
-	const paperIdentifiers = grobidHeader?.resourceIdentifiers ?? [];
-	const paperHeader = paperIdentifiers.length ? grobidHeader : null;
+	const parsed = await stagePdfParse(env, step, {
+		stepKey: 'stored',
+		pdfStorageKey: resource.storageKey,
+		inputContentHash: resource.contentHash,
+		sourceLabel: `Stored PDF ${target.resourceId}`,
+	});
 	const cloudMarkdown = await stagePaidLlamaParseFallback(env, step, {
 		grant: target.paidPdfFallback ?? null,
 		local: parsed.parse,
@@ -206,29 +204,27 @@ export async function stageStoredPdfAcquisition(
 	});
 	if (!cloudMarkdown && !parsed.markdown)
 		throw new NonRetryableError(`Stored PDF ${target.resourceId} has no usable text; OCR is required`);
+	// GROBID reads a heading from any PDF; only a title page that names a paper replaces the file name.
+	const header = parsed.resourceIdentifiers.length ? parsed : null;
 	return {
-		resource: {
-			kind: 'file',
-			resourceIdentifiers: paperIdentifiers,
-			subjectUrl: null,
-			previewImageUrl: null,
-			resourcePlatform: null,
-			fileType: PDF_MIME,
-			url: null,
-			title: paperHeader?.title ? paperHeader.title.trim() : resource.title,
-			content: cloudMarkdown || parsed.markdown,
-			references: cloudMarkdown ? [] : parsed.references,
-			source: resource.source,
-			originalLang: resource.originalLang,
-			publishedDate: resource.publishedDate,
-			summary: resource.summary,
-			creators: paperHeader?.authors.length
-				? paperHeader.authors.map((literal) => ({ literal, role: 'author' as const }))
-				: resource.creators,
-			kindMetadata: null,
-		} satisfies AcquiredResource & { resourcePlatform: null },
-		...(!paperIdentifiers.length && grobidHeader?.title && grobidHeader.authors.length
-			? { candidate: { title: grobidHeader.title, authors: grobidHeader.authors } }
-			: {}),
+		kind: 'file',
+		resourceIdentifiers: parsed.resourceIdentifiers,
+		printedTitle: parsed.printedTitle,
+		subjectUrl: null,
+		previewImageUrl: null,
+		resourcePlatform: null,
+		fileType: PDF_MIME,
+		url: null,
+		title: header?.printedTitle ?? resource.title,
+		content: cloudMarkdown || parsed.markdown,
+		references: cloudMarkdown ? [] : parsed.references,
+		source: resource.source,
+		originalLang: resource.originalLang,
+		publishedDate: resource.publishedDate,
+		summary: resource.summary,
+		creators: header?.printedAuthors.length
+			? header.printedAuthors.map((literal) => ({ literal, role: 'author' as const }))
+			: resource.creators,
+		kindMetadata: null,
 	};
 }

@@ -7,7 +7,6 @@ import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type Resourc
 import { AI_STEP_RETRIES } from './ai-model';
 import { summarizeResource, classifyResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
-import { withoutPrivatePdfImages } from './pdf-markdown.ts';
 import { createResourceTask } from './progress';
 import {
 	persistResolvedResource,
@@ -44,8 +43,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				return target.kind === 'draft' ? {} : { resourceId: target.resourceId };
 			// Provider reconciliation belongs to this attempt, not the resource shared by later retries.
 			const processingId = event.instanceId;
-			const resource = await stageResourceAcquisition(this.env, step, target, processingId);
-			const uploadedPaper = target.kind === 'storedBlob' && resource.kind === 'paper';
+			const { upload, ...resource } = await stageResourceAcquisition(this.env, step, target, processingId);
+			// An uploaded PDF that names a paper also publishes that paper, built without the upload's text.
+			const uploadedPaper = upload !== null;
 			const ownedBlobId = target.kind === 'storedBlob' ? target.resourceId : undefined;
 			const persistenceTarget: ResourcePersistenceTarget =
 				target.kind === 'draft'
@@ -84,20 +84,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			// Ordinary imports share a translation; explicit reacquisition forces a fresh run.
 			const forceProcessingRunKey = target.kind === 'draft' ? undefined : hash('sha256', event.instanceId, 'hex').slice(0, 16);
 			const classificationTargets: Parameters<typeof persistResourceClassification>[1] = [];
-			if (uploadedPaper) {
-				const privateRendition = prepareResolvedResource(
-					{
-						...summarized,
-						kind: 'file',
-						kindMetadata: null,
-						resourcePlatform: null,
-						resourceIdentifiers: [],
-						url: null,
-						subjectUrl: null,
-					},
-					hostedImages,
-				);
-				const privatePersistence = await step.do('persist-private-pdf-rendition-v2', STORAGE_STEP, async () =>
+			if (upload && target.kind === 'storedBlob') {
+				const privateRendition = prepareResolvedResource({ ...upload, summary: upload.summary ?? summary }, hostedImages);
+				const privatePersistence = await step.do('persist-private-pdf-rendition-v3', STORAGE_STEP, async () =>
 					persistResolvedResource(await connectCoreDb(this.env), privateRendition, {
 						kind: 'existing',
 						resourceId: target.resourceId,
@@ -112,10 +101,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					});
 				classificationTargets.push(privatePersistence);
 			}
-			const preparedResource = prepareResolvedResource(
-				uploadedPaper ? { ...summarized, content: withoutPrivatePdfImages(resource.content) } : summarized,
-				hostedImages,
-			);
+			const preparedResource = prepareResolvedResource(summarized, hostedImages);
 			const persistence = await step.do('persist-resolved-resource-scope-v6', STORAGE_STEP, async () => {
 				const startedAt = Date.now();
 				const db = await connectCoreDb(this.env);

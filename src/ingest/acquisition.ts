@@ -17,9 +17,9 @@ import {
 import type { ResourceProcessingTarget } from './admission';
 import { stageHackerNewsAcquisition } from './platforms/hackernews';
 import { stageLessWrongAcquisition } from './platforms/lesswrong';
-import { stagePaperAcquisition } from './platforms/paper';
+import { paperAbstractDocument, paperResource, stagePaperFullText, stagePaperMetadata } from './platforms/paper';
 import { stageStoredPdfAcquisition } from './platforms/pdf';
-import type { PaidPdfFallbackGrant } from './platforms/pdf-policy';
+import { PDF_MIME, type PaidPdfFallbackGrant } from './platforms/pdf-policy';
 import { resolveResourceUrl, ResourceUrlSchema } from './platforms/resource-url';
 import { stageTwitterAcquisition } from './platforms/twitter-acquisition';
 import { stageWebAcquisition } from './platforms/web';
@@ -36,6 +36,8 @@ export type AcquiredResource = {
 		doi: string | null;
 		arxivId: string | null;
 	} & ReferenceCitation)[];
+	/** The title a PDF prints on its title page; metadata found through the PDF must name the same work. */
+	printedTitle?: string | null;
 	kind: Exclude<ResourceKind, 'image'>;
 	resourcePlatform: ResourcePlatform | null;
 	resourceIdentifiers: ResourceIdentifier[];
@@ -65,6 +67,41 @@ function withoutDuplicateResourceTitle(markdown: string, title: string): string 
 	return body || markdown;
 }
 
+/** Full text, else the abstract, else the linked page carries a paper's body. */
+async function stageLinkedPaper(
+	env: CoreEnv,
+	step: WorkflowStep,
+	input: { paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string; identifiers: ResourceIdentifier[] },
+) {
+	const work = await stagePaperMetadata(env, step, { identifiers: input.identifiers, processingId: input.processingId });
+	const fullText = work ? await stagePaperFullText(env, step, { work, processingId: input.processingId }) : null;
+	if (fullText) return paperResource({ ...fullText, url: input.url, source: new URL(input.url).hostname }, work);
+	const abstract = work ? paperAbstractDocument(work) : null;
+	if (abstract) return paperResource({ ...abstract, url: input.url, source: new URL(input.url).hostname }, work);
+	const page = await stageWebAcquisition(env, step, input);
+	return 'platform' in page ? page : paperResource(page, work, input.identifiers);
+}
+
+/** A fetched page or PDF names a paper only through its link or a verified title page. */
+async function stageDiscoveredPaper(
+	env: CoreEnv,
+	step: WorkflowStep,
+	document: AcquiredResource & { resourcePlatform: null },
+	processingId: string,
+) {
+	if (!document.resourceIdentifiers.length) return document;
+	const linkIdentifiers = resolveResourceUrl(document.url)?.identifiers ?? [];
+	const work = await stagePaperMetadata(env, step, {
+		identifiers: document.resourceIdentifiers,
+		...(linkIdentifiers.length ? {} : { printedTitle: document.printedTitle ?? null }),
+		processingId,
+	});
+	if (!work) return linkIdentifiers.length ? paperResource(document, null, linkIdentifiers) : { ...document, resourceIdentifiers: [] };
+	// A linked PDF is already the full text; an article page yields to it.
+	const fullText = document.fileType === PDF_MIME ? null : await stagePaperFullText(env, step, { work, processingId });
+	return paperResource(fullText ? { ...fullText, url: document.url, source: document.source } : document, work);
+}
+
 async function stageUrlAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
@@ -79,15 +116,11 @@ async function stageUrlAcquisition(
 	if (!detected) throw new NonRetryableError('Resource URL must be HTTP(S) without credentials');
 	if (!detected.resourcePlatform) {
 		const identifiers = [...(input.identifiers ?? []), ...detected.identifiers];
-		const web = identifiers.length
-			? await stagePaperAcquisition(env, step, { ...input, identifiers })
+		const acquired = identifiers.length
+			? await stageLinkedPaper(env, step, { ...input, identifiers })
 			: await stageWebAcquisition(env, step, input);
-		if (!('platform' in web)) {
-			return !identifiers.length && web.resourceIdentifiers.length
-				? stagePaperAcquisition(env, step, { resource: web, processingId: input.processingId })
-				: web;
-		}
-		detected = web.platform;
+		if (!('platform' in acquired)) return identifiers.length ? acquired : stageDiscoveredPaper(env, step, acquired, input.processingId);
+		detected = acquired.platform;
 	}
 
 	const platformId = detected.identifiers[0]!.value;
@@ -136,20 +169,59 @@ export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep,
 			: target.kind === 'draft'
 				? { url: target.url }
 				: null;
-	const acquired =
-		target.kind === 'storedBlob'
-			? await stagePaperAcquisition(env, step, { ...(await stageStoredPdfAcquisition(env, step, target, processingId)), processingId })
-			: await stageUrlAcquisition(env, step, { ...urlInput!, paidPdfFallback: target.paidPdfFallback ?? null, processingId });
 	const source = target.kind === 'draft' ? target.sourceHints : undefined;
-	const language = ResourceLanguageSchema.safeParse(acquired.originalLang).data;
-	const parsedDate = Date.parse(acquired.publishedDate ?? '');
-	const publishedDate = Number.isNaN(parsedDate) ? (source?.publishedDate ?? null) : new Date(parsedDate).toISOString();
-	const content = acquired.title ? withoutDuplicateResourceTitle(acquired.content, acquired.title) : acquired.content;
+	if (target.kind === 'storedBlob') {
+		const upload = await stageStoredPdfUpload(env, step, target, processingId);
+		return {
+			...finishAcquisition(upload.paper ?? upload.file, source),
+			upload: upload.paper ? finishAcquisition(upload.file, source) : null,
+		};
+	}
 	return {
-		...acquired,
+		...finishAcquisition(
+			await stageUrlAcquisition(env, step, { ...urlInput!, paidPdfFallback: target.paidPdfFallback ?? null, processingId }),
+			source,
+		),
+		upload: null,
+	};
+}
+
+/**
+ * An uploaded PDF always stays its uploader's private file. When its title page names a
+ * paper, the public paper is built from licensed full text or the abstract, never the upload.
+ */
+async function stageStoredPdfUpload(
+	env: CoreEnv,
+	step: WorkflowStep,
+	target: Readonly<{ paidPdfFallback?: PaidPdfFallbackGrant; resourceId: string }>,
+	processingId: string,
+) {
+	const uploaded = await stageStoredPdfAcquisition(env, step, target, processingId);
+	const file = { ...uploaded, resourceIdentifiers: [] };
+	const work = await stagePaperMetadata(env, step, {
+		identifiers: uploaded.resourceIdentifiers,
+		printedTitle: uploaded.printedTitle ?? null,
+		processingId,
+	});
+	if (!work) return { file, paper: null };
+	const abstract = paperAbstractDocument(work);
+	const fullText = await stagePaperFullText(env, step, { work, processingId });
+	// The public paper lives at its canonical identifier URL, not at the licensed PDF it was read from.
+	const document = fullText ? { ...fullText, url: null, source: abstract?.source ?? fullText.source } : abstract;
+	return { file, paper: document ? paperResource(document, work) : null };
+}
+
+function finishAcquisition(acquired: AcquiredResource, source: Extract<ResourceProcessingTarget, { kind: 'draft' }>['sourceHints']) {
+	const { printedTitle: _printedTitle, ...resource } = acquired;
+	const language = ResourceLanguageSchema.safeParse(resource.originalLang).data;
+	const parsedDate = Date.parse(resource.publishedDate ?? '');
+	const publishedDate = Number.isNaN(parsedDate) ? (source?.publishedDate ?? null) : new Date(parsedDate).toISOString();
+	const content = resource.title ? withoutDuplicateResourceTitle(resource.content, resource.title) : resource.content;
+	return {
+		...resource,
 		content,
 		originalLang: detectResourceLanguage(content, language && language !== 'und' ? language : (source?.originalLang ?? 'und')),
 		publishedDate,
-		summary: acquired.summary?.trim() || source?.summary?.trim() || null,
+		summary: resource.summary?.trim() || source?.summary?.trim() || null,
 	};
 }

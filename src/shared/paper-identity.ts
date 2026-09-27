@@ -155,3 +155,27 @@ export function paperIdentityFromText(value: unknown): PaperIdentity | null {
 		...(arxivId ? { arxivId } : {}),
 	};
 }
+
+/** Compare bibliographic text without case, accents, or punctuation. */
+export function normalizeBibliographicText(value: string): string {
+	return value
+		.normalize('NFKD')
+		.replace(/\p{Mark}/gu, '')
+		.toLocaleLowerCase('en-US')
+		.replace(/[^\p{Letter}\p{Number}]+/gu, ' ')
+		.replace(/\s+/g, ' ')
+		.trim();
+}
+
+/** A title page and a metadata record name the same work when one title contains the other or nearly all words agree. */
+export function samePaperTitle(printed: string, resolved: string): boolean {
+	const left = normalizeBibliographicText(printed);
+	const right = normalizeBibliographicText(resolved);
+	if (!left || !right) return false;
+	const [shorter, longer] = left.length <= right.length ? [left, right] : [right, left];
+	if (shorter.length >= 12 && longer.includes(shorter)) return true;
+	const leftTokens = new Set(left.split(' '));
+	const rightTokens = new Set(right.split(' '));
+	const shared = [...leftTokens].filter((token) => rightTokens.has(token)).length;
+	return shared / Math.max(leftTokens.size, rightTokens.size) >= 0.8;
+}

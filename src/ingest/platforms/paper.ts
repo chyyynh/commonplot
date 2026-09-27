@@ -9,17 +9,14 @@ import {
 	normalizeOpenAlexId,
 	mergePaperIdentifiers,
 	type PaperIdentifier,
-	paperIdentifiersFromIdentity,
 	paperIdentityFromIdentifiers,
+	samePaperTitle,
 } from '../../shared/paper-identity';
+import type { ResourceIdentifier } from '../../shared/resource';
 import { readBoundedResponseText } from '../../shared/response';
 import type { AcquiredResource } from '../acquisition';
-import { resolveCrossrefPaper, resolveCrossrefPaperCandidate } from '../crossref';
 import { storePublicPdfResponse } from '../zotero-sdt-service.ts';
 import { stagePublicPdfAcquisition } from './pdf';
-import { PDF_MIME, type PaidPdfFallbackGrant } from './pdf-policy';
-import type { ResolvedResourceUrl } from './resource-url';
-import { stageWebAcquisition } from './web';
 
 const PAPER_METADATA_STEP = { retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 
@@ -131,7 +128,7 @@ function normalizeOpenAlexWork(work: OpenAlexWork, inputIdentifiers: readonly Pa
 
 async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: readonly PaperIdentifier[] }) {
 	const apiKey = input.apiKey?.trim();
-	if (!apiKey) return null;
+	if (!apiKey) throw new NonRetryableError('OPENALEX_API_KEY is not configured');
 	const identity = paperIdentityFromIdentifiers(input.identifiers);
 	const doi = identity?.doi ?? (identity?.arxivId ? `10.48550/arxiv.${identity.arxivId}` : null);
 	const workId = doi ? `https://doi.org/${encodeURIComponent(doi)}` : identity?.openAlexId ? encodeURIComponent(identity.openAlexId) : null;
@@ -209,125 +206,109 @@ async function stagePaperPdfContent(
 	return null;
 }
 
-type ParsedPaperInput = {
-	resource: AcquiredResource & { resourcePlatform: null };
-	/** Only a GROBID header may propose an uploaded PDF without an identifier. */
-	candidate?: { title: string; authors: readonly string[] };
-	processingId: string;
-};
+export type PaperMetadata = NonNullable<Awaited<ReturnType<typeof resolveOpenAlexPaper>>>;
 
-type PaperUrlInput = {
-	url: string;
-	paidPdfFallback: PaidPdfFallbackGrant | null;
-	processingId: string;
-	identifiers: AcquiredResource['resourceIdentifiers'];
-};
-
-export function stagePaperAcquisition(
+/**
+ * OpenAlex describes every paper. Identifiers read from a PDF only count when the
+ * title printed on that PDF names the resolved work; `printedTitle` is omitted for
+ * identifiers taken from the link itself.
+ */
+export async function stagePaperMetadata(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: ParsedPaperInput,
-): Promise<AcquiredResource & { resourcePlatform: null }>;
-export function stagePaperAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: PaperUrlInput,
-): Promise<(AcquiredResource & { resourcePlatform: null }) | { platform: ResolvedResourceUrl }>;
-export async function stagePaperAcquisition(env: CoreEnv, step: WorkflowStep, input: ParsedPaperInput | PaperUrlInput) {
-	const parsed = 'resource' in input ? input.resource : null;
-	const candidate = 'resource' in input ? input.candidate : undefined;
+	input: { identifiers: readonly ResourceIdentifier[]; printedTitle?: string | null; processingId: string },
+): Promise<PaperMetadata | null> {
 	const identifiers = mergePaperIdentifiers(
-		('resource' in input ? input.resource.resourceIdentifiers : input.identifiers).filter((identifier): identifier is PaperIdentifier =>
-			isPaperIdentifierScheme(identifier.scheme),
-		),
+		input.identifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
 	);
-	const doi = paperIdentityFromIdentifiers(identifiers)?.doi;
-	const provider = parsed?.fileType === PDF_MIME && (candidate || (doi && !doi.startsWith('10.48550/arxiv.'))) ? 'crossref' : 'openalex';
-	let openAlex: Awaited<ReturnType<typeof resolveOpenAlexPaper>> = null;
-	let crossref: Awaited<ReturnType<typeof resolveCrossrefPaper>> = null;
-	if (provider === 'crossref' ? doi || candidate : identifiers.length) {
-		const startedAt = Date.now();
-		try {
-			if (provider === 'crossref') {
-				const stream = await step.do(
-					doi ? 'resolve-pdf-paper-crossref-by-doi-v3' : 'confirm-stored-pdf-with-crossref-v3',
-					PAPER_METADATA_STEP,
-					async () =>
-						Response.json(doi ? await resolveCrossrefPaper(doi) : await resolveCrossrefPaperCandidate(candidate!.title, candidate!.authors))
-							.body!,
-				);
-				crossref = await new Response(stream).json<Awaited<ReturnType<typeof resolveCrossrefPaper>>>();
-			} else {
-				const stream = await step.do(
-					'resolve-paper-openalex-with-citations-v5',
-					PAPER_METADATA_STEP,
-					async () => Response.json(await resolveOpenAlexPaper({ apiKey: env.OPENALEX_API_KEY, identifiers })).body!,
-				);
-				openAlex = await new Response(stream).json<Awaited<ReturnType<typeof resolveOpenAlexPaper>>>();
-			}
-			console.info({
-				tag: 'PAPER_PROVIDER',
-				event: 'academic_enrichment',
-				provider,
-				processing_id: input.processingId,
-				outcome: openAlex || crossref ? 'resolved' : 'not_found',
-				latency_ms: Date.now() - startedAt,
-			});
-		} catch (error) {
-			console.warn({
-				tag: 'PAPER_PROVIDER',
-				event: 'academic_enrichment',
-				provider,
-				processing_id: input.processingId,
-				outcome: 'failed',
-				latency_ms: Date.now() - startedAt,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-	}
-	const sourceUrl = 'resource' in input ? input.resource.url : input.url;
-	const publicPdfUrl = openAlex?.metadata.pdfUrl;
-	const pdf =
-		parsed?.fileType !== PDF_MIME && openAlex
-			? await stagePaperPdfContent(env, step, {
-					contentPdfUrl: openAlex.contentPdfUrl,
-					publicPdfUrl: publicPdfUrl && publicPdfUrl !== sourceUrl ? publicPdfUrl : null,
-					processingId: input.processingId,
-				})
-			: null;
-	const resource =
-		'resource' in input
-			? { ...input.resource, ...(pdf ? { content: pdf.content, references: pdf.references, fileType: pdf.fileType } : {}) }
-			: pdf
-				? { ...pdf, url: input.url, source: new URL(input.url).hostname }
-				: await stageWebAcquisition(env, step, input);
-	if ('platform' in resource) return resource;
-	if (!resource.content.trim()) throw new Error(`Processing ${input.processingId} has no extractable content`);
-	const { doi: _doi, abstract, authors, publicationDate, title, ...kindMetadata } = { ...openAlex?.metadata, ...crossref };
-	const resourceIdentifiers =
-		openAlex?.identifiers ??
-		mergePaperIdentifiers([
-			...(crossref ? paperIdentifiersFromIdentity({ doi: crossref.doi }) : []),
-			...identifiers,
-			...resource.resourceIdentifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
-		]);
-	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
-	if (!identity) return resource;
-	let publishedDate = resource.publishedDate;
-	if (!publishedDate && publicationDate) {
-		const candidate = new Date(`${publicationDate}T00:00:00.000Z`);
-		if (!Number.isNaN(candidate.getTime())) publishedDate = candidate.toISOString();
-	}
+	if (!identifiers.length) return null;
+	const startedAt = Date.now();
+	const stream = await step.do(
+		'resolve-paper-openalex-v6',
+		PAPER_METADATA_STEP,
+		async () => Response.json(await resolveOpenAlexPaper({ apiKey: env.OPENALEX_API_KEY, identifiers })).body!,
+	);
+	const work = await new Response(stream).json<PaperMetadata | null>();
+	const verified =
+		!work ||
+		input.printedTitle === undefined ||
+		(!!input.printedTitle && !!work.metadata.title && samePaperTitle(input.printedTitle, work.metadata.title));
+	console.info({
+		tag: 'PAPER_PROVIDER',
+		event: 'paper_metadata',
+		provider: 'openalex',
+		processing_id: input.processingId,
+		outcome: !work ? 'not_found' : verified ? 'resolved' : 'title_mismatch',
+		latency_ms: Date.now() - startedAt,
+	});
+	return verified ? work : null;
+}
+
+/** Readable full text, best source first; null leaves the paper with its abstract. */
+export async function stagePaperFullText(env: CoreEnv, step: WorkflowStep, input: { work: PaperMetadata; processingId: string }) {
+	return stagePaperPdfContent(env, step, {
+		contentPdfUrl: input.work.contentPdfUrl,
+		publicPdfUrl: input.work.metadata.pdfUrl ?? null,
+		processingId: input.processingId,
+	});
+}
+
+/** The abstract stands in for the body when no licensed full text exists. */
+export function paperAbstractDocument(work: PaperMetadata): (AcquiredResource & { resourcePlatform: null }) | null {
+	const abstract = work.metadata.abstract?.trim();
+	const identity = paperIdentityFromIdentifiers(work.identifiers);
+	if (!abstract || !identity) return null;
+	const url = canonicalPaperUrl(identity);
 	return {
-		...resource,
+		kind: 'paper',
+		resourcePlatform: null,
+		resourceIdentifiers: work.identifiers,
+		url,
+		fileType: null,
+		title: work.metadata.title ?? null,
+		summary: abstract,
+		content: abstract,
+		source: new URL(url).hostname,
+		originalLang: 'und',
+		publishedDate: null,
+		creators: [],
+		kindMetadata: {},
+		previewImageUrl: null,
+		subjectUrl: null,
+	};
+}
+
+/**
+ * Describe the document that carries a paper's readable text with the paper's identity and
+ * metadata. Without resolved metadata only `identifiers` the caller trusts name the paper.
+ */
+export function paperResource(
+	document: AcquiredResource,
+	work: PaperMetadata | null,
+	identifiers: readonly ResourceIdentifier[] = [],
+): AcquiredResource & { kind: 'paper'; resourcePlatform: null } {
+	const resourceIdentifiers =
+		work?.identifiers ??
+		mergePaperIdentifiers(identifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)));
+	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
+	if (!identity) throw new TypeError('A paper requires a DOI, arXiv, or OpenAlex identifier');
+	const { abstract, authors, publicationDate, title, ...kindMetadata } = work?.metadata ?? {};
+	let publishedDate = document.publishedDate;
+	if (!publishedDate && publicationDate) {
+		const date = new Date(`${publicationDate}T00:00:00.000Z`);
+		if (!Number.isNaN(date.getTime())) publishedDate = date.toISOString();
+	}
+	const { printedTitle: _printedTitle, ...rest } = document;
+	return {
+		...rest,
 		kind: 'paper',
 		resourcePlatform: null,
 		resourceIdentifiers,
-		url: resource.url ?? canonicalPaperUrl(identity),
-		title: title?.trim() || resource.title,
-		summary: abstract?.trim() || resource.summary,
+		url: document.url ?? canonicalPaperUrl(identity),
+		title: title?.trim() || document.title,
+		summary: abstract?.trim() || document.summary,
 		publishedDate,
-		creators: authors?.length ? authors.map((literal) => ({ role: 'author', literal })) : resource.creators,
+		creators: authors?.length ? authors.map((literal) => ({ role: 'author', literal })) : document.creators,
 		kindMetadata,
-	} satisfies AcquiredResource;
+	};
 }
