@@ -101,3 +101,63 @@ export async function resolveCrossrefReferenceDoi(citation: string) {
 	const dois = [...new Set(matches.map((work) => normalizeDoi(work.DOI)).filter((doi) => doi !== null))];
 	return dois.length === 1 ? dois[0]! : null;
 }
+
+const CrossrefDepositedReferencesSchema = z.object({
+	status: z.literal('ok'),
+	message: z.object({
+		DOI: z.string(),
+		reference: z
+			.array(
+				z.object({
+					DOI: z.string().nullish(),
+					'article-title': z.string().nullish(),
+					unstructured: z.string().nullish(),
+				}),
+			)
+			.max(5_000)
+			.nullish(),
+	}),
+});
+
+/** The reference list a publisher deposited with the paper's DOI; only entries with a DOI can enrich a citation. */
+export async function fetchCrossrefDepositedReferences(doi: string) {
+	const normalizedDoi = normalizeDoi(doi);
+	if (!normalizedDoi) throw new NonRetryableError('Crossref paper DOI is invalid');
+	const response = await fetchCrossref({}, normalizedDoi);
+	if (response === null) return [];
+	const { message } = CrossrefDepositedReferencesSchema.parse(response);
+	if (normalizeDoi(message.DOI) !== normalizedDoi) return [];
+	return (message.reference ?? []).flatMap((reference) => {
+		const referenceDoi = normalizeDoi(reference.DOI);
+		const title = reference['article-title'] ? normalizeBibliographicText(reference['article-title']) : '';
+		const text = reference.unstructured ? normalizeBibliographicText(reference.unstructured) : '';
+		return referenceDoi && (title || text) ? [{ doi: referenceDoi, title, text }] : [];
+	});
+}
+
+export type CrossrefDepositedReference = Awaited<ReturnType<typeof fetchCrossrefDepositedReferences>>[number];
+
+function tokenCoverage(expected: string, actual: ReadonlySet<string>): number {
+	const tokens = significantTokens(expected);
+	return tokens.length ? tokens.filter((token) => actual.has(token)).length / tokens.length : 0;
+}
+
+/** Pair each printed citation with the one deposited entry whose title or text it reproduces. */
+export function matchDepositedReferences<T extends { text: string }>(
+	printed: readonly T[],
+	deposited: readonly CrossrefDepositedReference[],
+): (T & { doi: string })[] {
+	const unused = new Set(deposited);
+	return printed.flatMap((citation) => {
+		const text = normalizeBibliographicText(citation.text);
+		const tokens = new Set(significantTokens(text));
+		const matches = [...unused].filter(
+			(entry) =>
+				(entry.title.length >= 12 && significantTokens(entry.title).length >= 3 && text.includes(entry.title)) ||
+				(!!entry.text && tokenCoverage(entry.text, tokens) >= 0.85 && tokenCoverage(text, new Set(significantTokens(entry.text))) >= 0.85),
+		);
+		if (new Set(matches.map(({ doi }) => doi)).size !== 1) return [];
+		for (const match of matches) unused.delete(match);
+		return [{ ...citation, doi: matches[0]!.doi }];
+	});
+}

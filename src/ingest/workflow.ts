@@ -145,7 +145,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const references =
 				scope === 'corpus' &&
 				persistence.kind === 'paper' &&
-				(preparedResource.references?.some(({ doi, arxivId }) => !doi && !arxivId) || !persistence.originalWritten)
+				persistence.originalWritten &&
+				preparedResource.references?.some(({ doi, arxivId }) => !doi && !arxivId)
 					? stageResourceReferences(this.env, step, persistedResourceId).catch((error: unknown) => {
 							console.error({ tag: 'WORKFLOW', msg: 'Reference enrichment failed', resource_id: persistedResourceId, error });
 						})
