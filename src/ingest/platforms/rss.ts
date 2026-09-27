@@ -6,7 +6,7 @@ import { readBoundedResponseText } from '../../shared/response';
 import { enqueueSourceDrafts } from '../admission';
 import { resolveResourceUrl, ResourceUrlSchema } from './resource-url';
 
-const MAX_FEED_BYTES = 3 * 1024 * 1024;
+const MAX_FEED_BYTES = 8 * 1024 * 1024;
 const MAX_FEED_ITEMS = 30;
 const FEED_SUMMARY_MAX_CHARS = 500;
 const RSS_FETCH_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
