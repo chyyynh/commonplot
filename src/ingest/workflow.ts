@@ -1,7 +1,7 @@
 import { hash } from 'node:crypto';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { connectCoreDb } from '../shared/db';
-import { resourceImageSourceUrls } from '../shared/image-mapping';
+import { normalizedResourceImageUrl, resourceImageSourceUrls } from '../shared/image-mapping';
 import { stageResourceAcquisition } from './acquisition';
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from './admission';
 import { AI_STEP_RETRIES } from './ai-model';
@@ -71,15 +71,31 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			});
 			await task.report('analysis', { stage: 'analyzing', status: 'running' });
 			const imageSources = resourceImageSourceUrls({ ...resource, ogImageUrl: resource.previewImageUrl });
+			// A page's preview image is decoration: a dead one is dropped instead of failing the resource.
+			const previewSource = normalizedResourceImageUrl(resource.previewImageUrl);
+			const optionalPreview =
+				previewSource && !resourceImageSourceUrls({ ...resource, ogImageUrl: null }).includes(previewSource) ? previewSource : null;
 			const [summary, hostedImages] = await Promise.all([
 				// Posts are their text; a summary would only restate it.
 				resource.summary ??
 					(resource.kind === 'post'
 						? null
 						: step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, processingId))),
-				stageResourceImages(this.env, step, processingId, imageSources, target.kind === 'reacquire' ? event.instanceId : undefined),
+				stageResourceImages(
+					this.env,
+					step,
+					processingId,
+					imageSources,
+					optionalPreview,
+					target.kind === 'reacquire' ? event.instanceId : undefined,
+				),
 			]);
-			const summarized = { ...resource, summary };
+			const summarized = {
+				...resource,
+				summary,
+				previewImageUrl:
+					optionalPreview && !hostedImages.some((image) => image.sourceUrl === optionalPreview) ? null : resource.previewImageUrl,
+			};
 			await task.report('persisting', { stage: 'persisting', status: 'running' });
 			const translationTargets: { resourceId: string; translationRevision: string; forceRunKey?: string; stepName: string }[] = [];
 			// Ordinary imports share a translation; explicit reacquisition forces a fresh run.
