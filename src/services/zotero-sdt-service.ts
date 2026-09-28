@@ -263,7 +263,7 @@ export async function parseStoredPdfRepresentation(
 		});
 	}
 	const visualPlan = structuredPdfVisualPlan(document);
-	const cropUrlPrefix = input.cropUrlPrefix ?? '/api/media/asset/pdf-crops';
+	const cropUrlPrefix = input.cropUrlPrefix ?? '/api/media/pdf-crops';
 	const normalized = normalizeStructuredPdf(document, {
 		visualPlan,
 		cropUrlPrefix: `${cropUrlPrefix}/${input.inputContentHash}`,
@@ -316,11 +316,11 @@ export async function storePublicPdfResponse(env: CoreEnv, response: Response, s
 		inputContentHash,
 		pdfStorageKey,
 		sourceLabel: `Public PDF ${sourceHash}`,
-		cropUrlPrefix: `/api/media/asset/public-pdf-crops/${sourceHash}`,
+		cropUrlPrefix: `/api/media/pdf-crops/public/${sourceHash}`,
 	};
 }
 
-const PUBLIC_CROP_PATTERN = /\/api\/media\/asset\/public-pdf-crops\/([a-f\d]{64})\/([a-f\d]{64})\/(\d+(?:\.\d+)*-p\d+-[a-f\d]{16})\.png/gu;
+const PUBLIC_CROP_PATTERN = /\/api\/media\/pdf-crops\/public\/([a-f\d]{64})\/([a-f\d]{64})\/(\d+(?:\.\d+)*-p\d+-[a-f\d]{16})\.png/gu;
 const MAX_MANIFEST_BYTES = 64 * 1024;
 
 /** Publish only persisted references to crops produced from an independent public fetch. */
