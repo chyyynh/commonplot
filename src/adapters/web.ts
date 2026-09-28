@@ -4,6 +4,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { fromHtml } from 'hast-util-from-html';
 import { toHtml } from 'hast-util-to-html';
 import { defaultHandlers } from 'hast-util-to-mdast';
+import { toText } from 'hast-util-to-text';
 import { DOMParser } from 'linkedom';
 import stripIndent from 'strip-indent';
 import type { AcquiredResource } from '../contracts/acquired-resource';
@@ -87,6 +88,24 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 					const code = defaultHandlers.pre(state, node);
 					code.value = stripIndent(code.value.replace(/^\n+/, ''));
 					return code;
+				},
+				// Markdown has no caption, so a captioned figure stays an HTML block around
+				// Markdown blocks: the caption remains a translatable paragraph with its links.
+				figure(state, node) {
+					const caption = node.children.find((child) => child.type === 'element' && child.tagName === 'figcaption');
+					const media = state.toFlow(state.all({ ...node, children: node.children.filter((child) => child !== caption) }));
+					if (caption?.type !== 'element' || !toText(caption).trim()) return media;
+					// Publishers often italicize the whole caption; the reader styles captions itself.
+					const [only, ...rest] = caption.children.filter((child) => child.type !== 'text' || child.value.trim());
+					const wrapper = !rest.length && only?.type === 'element' && (only.tagName === 'em' || only.tagName === 'i') ? only : caption;
+					return [
+						{ type: 'html', value: '<figure>' },
+						...media,
+						{ type: 'html', value: '<figcaption>' },
+						...state.toFlow(state.all(wrapper)),
+						{ type: 'html', value: '</figcaption>' },
+						{ type: 'html', value: '</figure>' },
+					];
 				},
 			},
 		}),
