@@ -66,7 +66,7 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 	let substackPost: SubstackPost | null = null;
 	if (substackArticle) {
 		// The post API owns access, bylines, and dates; a paid post is refused before extraction.
-		substackPost = await fetchSubstackPost(url);
+		substackPost = await fetchSubstackPost(html, url);
 		// @mozilla/readability's `unlikelyCandidates` rule contains "header", so
 		// Substack's class would make it discard the otherwise semantic h2/h3.
 		for (const heading of substackArticle.querySelectorAll('.header-anchor-post')) {
