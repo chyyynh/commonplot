@@ -56,21 +56,15 @@ async function innerTubePlayer(videoId: string): Promise<PlayerResponse | string
 	return PlayerResponseSchema.parse(await response.json());
 }
 
-/** The watch page inlines the same player response as `var ytInitialPlayerResponse = {...};`. */
+/** The watch page inlines the same player response as `var ytInitialPlayerResponse = {...};</script>`. */
 async function watchPagePlayer(videoId: string): Promise<PlayerResponse | string> {
 	const response = await captionFetch(`https://www.youtube.com/watch?v=${videoId}`, { headers: { 'User-Agent': WEB_USER_AGENT } });
 	const html = await response.text();
 	if (!response.ok) return `watch page HTTP ${response.status}`;
 	if (html.includes('class="g-recaptcha"')) return 'watch page recaptcha';
-	const start = html.indexOf('var ytInitialPlayerResponse = ');
-	if (start === -1) return 'watch page without player response';
-	const jsonStart = start + 'var ytInitialPlayerResponse = '.length;
-	let depth = 0;
-	for (let i = jsonStart; i < html.length; i++) {
-		if (html[i] === '{') depth++;
-		else if (html[i] === '}' && --depth === 0) return PlayerResponseSchema.parse(JSON.parse(html.slice(jsonStart, i + 1)));
-	}
-	return 'watch page player response is truncated';
+	const json = /var ytInitialPlayerResponse = (\{.*?\});(?:var |<\/script>)/s.exec(html)?.[1];
+	if (!json) return 'watch page without player response';
+	return PlayerResponseSchema.parse(JSON.parse(json));
 }
 
 /**
@@ -98,39 +92,36 @@ function originalTrack(player: PlayerResponse, audioLanguage: string | null): Ca
 	);
 }
 
-function decodeEntities(text: string) {
-	return (
-		text
-			// srv1 escapes the already-escaped caption text, so `&amp;` goes first.
-			.replace(/&amp;/g, '&')
-			.replace(/&lt;/g, '<')
-			.replace(/&gt;/g, '>')
-			.replace(/&quot;/g, '"')
-			.replace(/&#39;|&apos;/g, "'")
-			.replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
-			.replace(/&#(\d+);/g, (_, dec: string) => String.fromCodePoint(Number.parseInt(dec, 10)))
-	);
-}
+// Rolling ASR captions interleave `aAppend` line-break events that carry no duration.
+const TimedTextSchema = z.object({
+	events: z
+		.array(
+			z.object({
+				tStartMs: z.number().nonnegative(),
+				dDurationMs: z.number().nonnegative().optional(),
+				segs: z.array(z.object({ utf8: z.string() })).optional(),
+			}),
+		)
+		.default([]),
+});
 
-/** Classic timedtext XML (`fmt=srv1`): `<text start="s" dur="s">…</text>`, timestamps in seconds. */
+/** Timedtext JSON (`fmt=json3`): millisecond events whose segments hold plain text. */
 async function fetchCaptionCues(videoId: string, track: CaptionTrack): Promise<YouTubeCaptionCue[]> {
 	const url = new URL(track.baseUrl);
 	if (!url.hostname.endsWith('.youtube.com')) throw new Error(`YouTube caption track ${videoId} points outside youtube.com`);
-	url.searchParams.set('fmt', 'srv1');
+	url.searchParams.set('fmt', 'json3');
 	const response = await captionFetch(url.href, { headers: { 'User-Agent': WEB_USER_AGENT } });
 	if (!response.ok) {
 		await response.body?.cancel();
 		throw new Error(`YouTube timedtext ${videoId} returned HTTP ${response.status}`);
 	}
-	const xml = await response.text();
-	return [...xml.matchAll(/<text start="([^"]*)" dur="([^"]*)"[^>]*>([^<]*)<\/text>/g)].flatMap(([, start, dur, raw]) => {
-		const startTime = Number(start);
-		const duration = Number(dur);
-		if (!Number.isFinite(startTime) || startTime < 0 || !Number.isFinite(duration) || duration < 0) {
-			throw new Error(`YouTube transcript ${videoId} has an invalid cue timestamp`);
-		}
-		const text = decodeEntities(raw ?? '').trim();
-		return text ? [{ startTime, endTime: startTime + duration, text }] : [];
+	return TimedTextSchema.parse(await response.json()).events.flatMap(({ tStartMs, dDurationMs, segs }) => {
+		const text = segs
+			?.map((segment) => segment.utf8)
+			.join('')
+			.trim();
+		if (dDurationMs === undefined || !text) return [];
+		return [{ startTime: tStartMs / 1000, endTime: (tStartMs + dDurationMs) / 1000, text }];
 	});
 }
 
