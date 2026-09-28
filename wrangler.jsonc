@@ -94,6 +94,8 @@
 				"max_batch_size": 10,
 				"max_batch_timeout": 5,
 				"max_retries": 3,
+				/** Exhausted syncs stay inspectable and replayable instead of being dropped. */
+				"dead_letter_queue": "resource-search-sync-dlq",
 			},
 		],
 	},
