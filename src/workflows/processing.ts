@@ -8,7 +8,7 @@ import { AI_STEP_RETRIES } from '../services/ai-model';
 import { stageResourceImages } from '../services/image-rehosting';
 import { summarizeResource } from '../services/summary';
 import { publishPublicPdfCrops } from '../services/zotero-sdt-service.ts';
-import { connectCoreDb } from '../store/db';
+import { withCoreDb } from '../store/db';
 import {
 	claimAcquisitionFence,
 	loadReacquisitionSource,
@@ -50,7 +50,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const input = await loadAcquisitionInput(this.env, step, target);
 			const { resource, privateFile } = await stageResourceAcquisition(this.env, step, input, processingId);
 			const plan = await planAttempt(target, privateFile !== null, event.instanceId, (resourceId) =>
-				step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () => claimAcquisitionFence(await connectCoreDb(this.env), resourceId)),
+				step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () =>
+					withCoreDb(this.env, (db) => claimAcquisitionFence(db, resourceId)),
+				),
 			);
 
 			console.info({
@@ -110,7 +112,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const persisted = [];
 			for (const rendition of renditions) {
 				const persistence = await step.do(rendition.persistStep, STORAGE_STEP, async () =>
-					persistResolvedResource(await connectCoreDb(this.env), rendition.resource, hostedImages, rendition.target),
+					withCoreDb(this.env, (db) => persistResolvedResource(db, rendition.resource, hostedImages, rendition.target)),
 				);
 				if (persistence.outcome === 'superseded') {
 					await task.report('persist-superseded', { stage: 'persisting', status: 'superseded' });
@@ -125,7 +127,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					publishPublicPdfCrops(
 						this.env,
 						persistedResourceId,
-						await loadPublicPdfContent(await connectCoreDb(this.env), persistedResourceId),
+						await withCoreDb(this.env, (db) => loadPublicPdfContent(db, persistedResourceId)),
 					),
 				);
 			}
@@ -204,13 +206,13 @@ async function loadAcquisitionInput(env: CoreEnv, step: WorkflowStep, target: Re
 			return { kind: 'url', url: target.url, paidPdfFallback, ...(target.sourceHints ? { sourceHints: target.sourceHints } : {}) };
 		case 'reacquire': {
 			const source = await step.do('load-resource-reacquisition-source-v3', STORAGE_STEP, async () =>
-				loadReacquisitionSource(await connectCoreDb(env), target.resourceId),
+				withCoreDb(env, (db) => loadReacquisitionSource(db, target.resourceId)),
 			);
 			return { kind: 'url', ...source, paidPdfFallback };
 		}
 		case 'storedBlob': {
 			const pdf = await step.do('load-stored-pdf-input-v1', STORAGE_STEP, async () =>
-				loadStoredPdf(await connectCoreDb(env), target.resourceId),
+				withCoreDb(env, (db) => loadStoredPdf(db, target.resourceId)),
 			);
 			return { kind: 'storedPdf', resourceId: target.resourceId, pdf, paidPdfFallback };
 		}

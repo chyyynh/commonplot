@@ -1,7 +1,7 @@
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import type { SourceResourceDraft } from '../contracts/processing-target';
-import { connectCoreDb } from '../store/db';
+import { withCoreDb } from '../store/db';
 import { advanceSourceWatermark, listTwitterSources, type TwitterSource } from '../store/sources';
 import { enqueueSourceDrafts } from './source-drafts';
 
@@ -173,8 +173,11 @@ async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: Tw
 export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date()): Promise<void> {
 	if (!env.KAITO_API_KEY) throw new Error('KAITO_API_KEY is not configured');
 	if (!Number.isFinite(windowEnd.getTime())) throw new Error('Twitter monitor window end is invalid');
-	const db = await connectCoreDb(env);
 	console.info({ tag: 'TWITTER', msg: 'start', window_end: windowEnd.toISOString() });
+	await withCoreDb(env, (db) => monitorTwitterSources(env, db, windowEnd));
+}
+
+async function monitorTwitterSources(env: CoreEnv, db: NodePgDatabase, windowEnd: Date): Promise<void> {
 	const sources = await listTwitterSources(db);
 	if (!sources.length) {
 		console.info({ tag: 'TWITTER', msg: 'No twitter sources configured' });

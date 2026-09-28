@@ -1,7 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { connectCoreDb } from '../store/db';
+import { withCoreDb } from '../store/db';
 import {
 	AI_SEARCH_ITEM_PREFIX,
 	loadCorpusDocuments,
@@ -183,14 +183,15 @@ async function reconcileSearchItems(env: CoreEnv, instance: AiSearchInstance, in
 		let passDeleted = 0;
 		for (let lastPage = pageCount; lastPage >= 1; lastPage -= REINDEX_PRUNE_PAGES_PER_STEP) {
 			const firstPage = Math.max(1, lastPage - REINDEX_PRUNE_PAGES_PER_STEP + 1);
-			passDeleted += await step.do(`prune-${index}-search-items-${pass}-${firstPage}-${lastPage}`, BATCH_STEP_OPTIONS, async () => {
-				const db = await connectCoreDb(env);
-				let deleted = 0;
-				for (let page = lastPage; page >= firstPage; page--) {
-					deleted += await pruneSearchItemPage(instance, db, page);
-				}
-				return deleted;
-			});
+			passDeleted += await step.do(`prune-${index}-search-items-${pass}-${firstPage}-${lastPage}`, BATCH_STEP_OPTIONS, () =>
+				withCoreDb(env, async (db) => {
+					let deleted = 0;
+					for (let page = lastPage; page >= firstPage; page--) {
+						deleted += await pruneSearchItemPage(instance, db, page);
+					}
+					return deleted;
+				}),
+			);
 		}
 		deleted += passDeleted;
 		if (passDeleted === 0) return { deleted, passes: pass + 1 };
@@ -284,8 +285,8 @@ async function retryFailedSearchItems(instance: AiSearchInstance): Promise<numbe
 async function waitForSearchIndex(env: CoreEnv, instance: AiSearchInstance, index: SearchIndexName, step: WorkflowStep) {
 	let last: (SearchIndexStats & { configReady: boolean }) | null = null;
 	for (let attempt = 0; attempt < REINDEX_READY_POLL_ATTEMPTS; attempt++) {
-		last = await step.do(`observe-${index}-search-index-${attempt}`, SHORT_STEP_OPTIONS, async () =>
-			observeSearchIndex(instance, index, await connectCoreDb(env)),
+		last = await step.do(`observe-${index}-search-index-${attempt}`, SHORT_STEP_OPTIONS, () =>
+			withCoreDb(env, (db) => observeSearchIndex(instance, index, db)),
 		);
 		if (last.error > 0) {
 			const retried = await step.do(`retry-${index}-search-errors-${attempt}`, BATCH_STEP_OPTIONS, () => retryFailedSearchItems(instance));
@@ -322,12 +323,13 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 		let uploaded = 0;
 		let pages = 0;
 		while (true) {
-			const result = await step.do(`upload-corpus-page-${pages}`, BATCH_STEP_OPTIONS, async () => {
-				const db = await connectCoreDb(this.env);
-				const ids = await listCorpusIdsAfter(db, cursor);
-				if (!ids.length) return { cursor, done: true, uploaded: 0 };
-				return { cursor: ids.at(-1)!, done: false, uploaded: await uploadCorpusIds(this.env, db, ids) };
-			});
+			const result = await step.do(`upload-corpus-page-${pages}`, BATCH_STEP_OPTIONS, () =>
+				withCoreDb(this.env, async (db) => {
+					const ids = await listCorpusIdsAfter(db, cursor);
+					if (!ids.length) return { cursor, done: true, uploaded: 0 };
+					return { cursor: ids.at(-1)!, done: false, uploaded: await uploadCorpusIds(this.env, db, ids) };
+				}),
+			);
 			if (result.done) break;
 			if (!result.cursor) throw new Error(`AI Search rebuild page ${pages} did not return a cursor`);
 			cursor = result.cursor;
@@ -339,20 +341,21 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 		let deltaUploaded = 0;
 		let deltaPages = 0;
 		while (true) {
-			const result = await step.do(`upload-delta-page-${deltaPages}`, BATCH_STEP_OPTIONS, async () => {
-				const db = await connectCoreDb(this.env);
-				const rows = await listCorpusDeltaAfter(db, startedAt, deltaCursor);
-				if (!rows.length) return { cursor: deltaCursor, done: true, uploaded: 0 };
-				return {
-					cursor: rows.at(-1)!,
-					done: false,
-					uploaded: await uploadCorpusIds(
-						this.env,
-						db,
-						rows.map((row) => row.id),
-					),
-				};
-			});
+			const result = await step.do(`upload-delta-page-${deltaPages}`, BATCH_STEP_OPTIONS, () =>
+				withCoreDb(this.env, async (db) => {
+					const rows = await listCorpusDeltaAfter(db, startedAt, deltaCursor);
+					if (!rows.length) return { cursor: deltaCursor, done: true, uploaded: 0 };
+					return {
+						cursor: rows.at(-1)!,
+						done: false,
+						uploaded: await uploadCorpusIds(
+							this.env,
+							db,
+							rows.map((row) => row.id),
+						),
+					};
+				}),
+			);
 			if (result.done) break;
 			deltaCursor = result.cursor;
 			deltaUploaded += result.uploaded;

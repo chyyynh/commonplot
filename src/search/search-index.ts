@@ -2,7 +2,7 @@ import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { RESOURCE_KIND_METADATA, type ResourceKind } from '../contracts/resource';
-import { connectCoreDb } from '../store/db';
+import { withCoreDb } from '../store/db';
 
 // Postgres is canonical; AI Search is its derived public-corpus index.
 export const AI_SEARCH_ITEM_PREFIX = 'resources/';
@@ -250,9 +250,9 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 /** Search one-vector-per-resource documents so AI Search results map directly to resources. */
 export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResourceSearchInput): Promise<string[]> {
 	const { resourceId, limit } = RelatedResourceSearchInputSchema.parse(input);
-	const db = await connectCoreDb(env);
 	// Recommendation queries need titles and the original summary, not indexed article bodies; a post's text is its title.
-	const { rows } = await db.execute<{ titles: (string | null)[]; summary: string | null }>(sql`
+	const { rows } = await withCoreDb(env, (db) =>
+		db.execute<{ titles: (string | null)[]; summary: string | null }>(sql`
 		SELECT (array_agg(translation.summary) FILTER (WHERE translation.lang = r.original_lang))[1] AS summary,
 		       array_agg(CASE WHEN r.kind = 'post' THEN LEFT(translation.content, ${POST_HEADING_MAX_CHARS}) ELSE translation.title END ORDER BY (translation.lang = r.original_lang) DESC, translation.lang) AS titles
 		FROM resources r
@@ -262,7 +262,8 @@ export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResou
 		  AND r.scope = 'corpus'
 		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		GROUP BY r.id
-	`);
+	`),
+	);
 	const [document] = rows;
 	if (!document) return [];
 	const query = [

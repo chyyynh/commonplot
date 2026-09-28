@@ -14,7 +14,7 @@ import {
 	searchRelatedResourceIds,
 	syncCorpusItem,
 } from './search/search-index';
-import { connectCoreDb } from './store/db';
+import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
 import { enqueueMissingTranslations } from './workflows/translation';
 
@@ -42,7 +42,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		// derives their slower polling cadence from the canonical feed URL.
 		if (event.cron === '*/5 * * * *') {
 			this.ctx.waitUntil(
-				connectCoreDb(this.env).then((db) => Promise.allSettled([handleRSSCron(this.env, db), enqueueMissingTranslations(this.env, db)])),
+				withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(this.env, db), enqueueMissingTranslations(this.env, db)])),
 			);
 		} else if (event.cron === '0 */6 * * *') {
 			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
@@ -63,36 +63,35 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 			pending.set(input.data.resourceId, messages);
 		}
 		if (!pending.size) return;
-		let db: Awaited<ReturnType<typeof connectCoreDb>>;
-		let documents: Awaited<ReturnType<typeof loadCorpusDocuments>>;
 		try {
-			db = await connectCoreDb(this.env);
-			documents = await loadCorpusDocuments(db, [...pending.keys()]);
+			await withCoreDb(this.env, async (db) => {
+				const documents = await loadCorpusDocuments(db, [...pending.keys()]);
+				const documentsById = new Map(documents.map((document) => [document.id, document]));
+				for (const [resourceId, messages] of pending) {
+					try {
+						const document = documentsById.get(resourceId);
+						await syncCorpusItem(this.env, resourceId, document);
+						// Another consumer may have uploaded a newer snapshot first. Retry from
+						// Postgres instead of acknowledging a stale upload or deletion.
+						const [current] = await loadCorpusDocuments(db, [resourceId]);
+						if (JSON.stringify(current) !== JSON.stringify(document)) throw new Error('Resource changed during search sync');
+						for (const message of messages) message.ack();
+					} catch (error) {
+						console.error({
+							tag: 'AI_SEARCH',
+							msg: 'Resource sync failed',
+							resource_id: resourceId,
+							attempt: Math.max(...messages.map((message) => message.attempts)),
+							error,
+						});
+						for (const message of messages) message.retry();
+					}
+				}
+			});
 		} catch (error) {
+			// Only the batch load can throw here; each resource settles its own messages.
 			console.error({ tag: 'AI_SEARCH', msg: 'Resource sync batch could not be loaded', error });
 			for (const messages of pending.values()) {
-				for (const message of messages) message.retry();
-			}
-			return;
-		}
-		const documentsById = new Map(documents.map((document) => [document.id, document]));
-		for (const [resourceId, messages] of pending) {
-			try {
-				const document = documentsById.get(resourceId);
-				await syncCorpusItem(this.env, resourceId, document);
-				// Another consumer may have uploaded a newer snapshot first. Retry from
-				// Postgres instead of acknowledging a stale upload or deletion.
-				const [current] = await loadCorpusDocuments(db, [resourceId]);
-				if (JSON.stringify(current) !== JSON.stringify(document)) throw new Error('Resource changed during search sync');
-				for (const message of messages) message.ack();
-			} catch (error) {
-				console.error({
-					tag: 'AI_SEARCH',
-					msg: 'Resource sync failed',
-					resource_id: resourceId,
-					attempt: Math.max(...messages.map((message) => message.attempts)),
-					error,
-				});
 				for (const message of messages) message.retry();
 			}
 		}
@@ -105,9 +104,11 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	async resolveResourceUrls(urls: string[]) {
 		const parsed = z.array(ResourceUrlSchema.max(2_048)).max(20).parse(urls);
 		if (!parsed.length) return [];
-		return findResourcesByUrls(
-			await connectCoreDb(this.env),
-			parsed.map((url) => resolveResourceUrl(url)!),
+		return withCoreDb(this.env, (db) =>
+			findResourcesByUrls(
+				db,
+				parsed.map((url) => resolveResourceUrl(url)!),
+			),
 		);
 	}
 

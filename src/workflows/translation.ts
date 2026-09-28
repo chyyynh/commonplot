@@ -5,7 +5,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { isTranslatable, type ResourceTranslationCandidate } from '../contracts/translation-policy';
 import { aiRetryDelay } from '../services/ai-model';
 import { MarkdownTranslationInvariantError } from '../services/markdown-translation';
-import { connectCoreDb } from '../store/db';
+import { withCoreDb } from '../store/db';
 import {
 	listMissingTranslations,
 	loadResourceTranslationInput,
@@ -105,7 +105,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 					timeout: '30 seconds',
 				},
 				async () => {
-					const input = await loadResourceTranslationInput(await connectCoreDb(this.env), resourceId);
+					const input = await withCoreDb(this.env, (db) => loadResourceTranslationInput(db, resourceId));
 					return input ? Response.json(input).body! : null;
 				},
 			);
@@ -177,7 +177,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 					timeout: '30 seconds',
 				},
-				async () => persistMachineZhHantTranslation(await connectCoreDb(this.env), resourceId, originalHash, patch),
+				async () => withCoreDb(this.env, (db) => persistMachineZhHantTranslation(db, resourceId, originalHash, patch)),
 			);
 			if (!persisted) {
 				await task.report('persist-superseded', {

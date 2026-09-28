@@ -1,6 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { fetchCrossrefDepositedReferences, matchDepositedReferences, resolveCrossrefReferenceDoi } from '../services/crossref';
-import { connectCoreDb } from '../store/db';
+import { withCoreDb } from '../store/db';
 import { loadUnresolvedReferences, persistReferenceDois, type ReferenceDoi, type StoredReference } from '../store/references';
 
 const CROSSREF_BATCH_SIZE = 3;
@@ -44,7 +44,7 @@ export async function stageResourceReferences(env: CoreEnv, step: WorkflowStep, 
 	const referenceStream = await step.do(
 		'load-unresolved-references-v3',
 		REFERENCE_DB_STEP,
-		async () => Response.json(await loadUnresolvedReferences(await connectCoreDb(env), resourceId)).body!,
+		async () => Response.json(await withCoreDb(env, (db) => loadUnresolvedReferences(db, resourceId))).body!,
 	);
 	const { doi, references } = await new Response(referenceStream).json<{ doi: string | null; references: StoredReference[] }>();
 	if (!references.length) return;
@@ -60,7 +60,7 @@ export async function stageResourceReferences(env: CoreEnv, step: WorkflowStep, 
 	const updates = deposited.length ? matchDepositedReferences(references, deposited) : await resolveReferenceDois(step, references);
 	const enrichedCount = updates.length
 		? await step.do('persist-crossref-reference-dois-v2', REFERENCE_DB_STEP, async () => {
-				return persistReferenceDois(await connectCoreDb(env), resourceId, updates);
+				return withCoreDb(env, (db) => persistReferenceDois(db, resourceId, updates));
 			})
 		: 0;
 	console.info({
