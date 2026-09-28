@@ -2,7 +2,7 @@ import { hash } from 'node:crypto';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { stageResourceAcquisition } from '../adapters/acquire';
 import type { AcquisitionInput } from '../contracts/acquired-resource';
-import { normalizedResourceImageUrl, resourceImageSourceUrls } from '../contracts/image-mapping';
+import { resourceImageSources, withHostedImages } from '../contracts/image-mapping';
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { AI_STEP_RETRIES } from '../services/ai-model';
 import { stageResourceImages } from '../services/image-rehosting';
@@ -64,11 +64,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				target_kind: target.kind,
 			});
 			await task.report('analysis', { stage: 'analyzing', status: 'running' });
-			const imageSources = resourceImageSourceUrls({ ...resource, ogImageUrl: resource.previewImageUrl });
-			// A page's preview image is decoration: a dead one is dropped instead of failing the resource.
-			const previewSource = normalizedResourceImageUrl(resource.previewImageUrl);
-			const optionalPreview =
-				previewSource && !resourceImageSourceUrls({ ...resource, ogImageUrl: null }).includes(previewSource) ? previewSource : null;
 			const [summary, hostedImages] = await Promise.all([
 				// Posts are their text; a summary would only restate it.
 				resource.summary ??
@@ -79,17 +74,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					this.env,
 					step,
 					processingId,
-					imageSources,
-					optionalPreview,
+					resourceImageSources(privateFile ? [resource, privateFile] : [resource]),
 					target.kind === 'reacquire' ? event.instanceId : undefined,
 				),
 			]);
-			const summarized = {
-				...resource,
-				summary,
-				previewImageUrl:
-					optionalPreview && !hostedImages.some((image) => image.sourceUrl === optionalPreview) ? null : resource.previewImageUrl,
-			};
+			const summarized = withHostedImages({ ...resource, summary }, hostedImages);
 			await task.report('persisting', { stage: 'persisting', status: 'running' });
 			const renditions = [
 				...(privateFile && plan.privateRendition
@@ -97,7 +86,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							{
 								persistStep: 'persist-private-pdf-rendition-v4',
 								translationStep: 'enqueue-private-pdf-translation-v3',
-								resource: { ...privateFile, summary: privateFile.summary ?? summary },
+								resource: withHostedImages({ ...privateFile, summary: privateFile.summary ?? summary }, hostedImages),
 								target: plan.privateRendition,
 							},
 						]
@@ -112,7 +101,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const persisted = [];
 			for (const rendition of renditions) {
 				const persistence = await step.do(rendition.persistStep, STORAGE_STEP, async () =>
-					withCoreDb(this.env, (db) => persistResolvedResource(db, rendition.resource, hostedImages, rendition.target)),
+					withCoreDb(this.env, (db) => persistResolvedResource(db, rendition.resource, rendition.target)),
 				);
 				if (persistence.outcome === 'superseded') {
 					await task.report('persist-superseded', { stage: 'persisting', status: 'superseded' });

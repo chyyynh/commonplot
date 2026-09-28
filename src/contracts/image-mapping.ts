@@ -5,10 +5,10 @@ const HOSTED_RESOURCE_IMAGE_PATTERN = /^https:\/\/imagedelivery\.net\/[a-zA-Z0-9
 const PREVIEW_IMAGE_TARGET_WIDTH = 1200;
 const WORDPRESS_UPLOAD_PATH = /\/wp-content\/uploads\//i;
 
-type ResourceImageFields = Readonly<{
+export type ResourceImageFields = Readonly<{
 	creators: readonly ResourceCreator[];
-	kindMetadata: ResourceKindMetadata;
-	ogImageUrl: string | null;
+	kindMetadata: ResourceKindMetadata | null;
+	previewImageUrl: string | null;
 }>;
 
 export function hostedResourceImageUrl(value: string | null | undefined): string | null {
@@ -51,84 +51,61 @@ export function normalizedResourceImageUrl(rawUrl: string | null | undefined, ba
 	return url.toString();
 }
 
-export function resourceImageSourceUrls(resource: ResourceImageFields): string[] {
-	const metadata = resource.kindMetadata && 'attachments' in resource.kindMetadata ? resource.kindMetadata : null;
-	const attachments = metadata?.attachments.map((item) => item.url) ?? [];
-	const normalized = new Set<string>();
-	for (const candidate of [
-		attachments[0],
-		resource.ogImageUrl,
-		...attachments.slice(1),
-		...resource.creators.map((creator) => creator.avatarUrl),
-	]) {
-		if (candidate === null || candidate === undefined) continue;
+export type ResourceImageSources = Readonly<{ urls: readonly string[]; optional: ReadonlySet<string> }>;
+
+/**
+ * Every image the resources reference, in a stable order. A preview that nothing else uses is optional:
+ * it is decoration, so a dead one is dropped instead of failing the resource.
+ */
+export function resourceImageSources(resources: readonly ResourceImageFields[]): ResourceImageSources {
+	const urls = new Set<string>();
+	const required = new Set<string>();
+	const previews = new Set<string>();
+	const add = (candidate: string | null | undefined, preview = false) => {
+		if (candidate === null || candidate === undefined) return;
 		const url = normalizedResourceImageUrl(candidate);
 		if (!url) throw new TypeError('Resource image source URL is invalid');
-		normalized.add(url);
-	}
-	return [...normalized];
-}
-
-function hostedImageMap(images: readonly HostedResourceImage[]): ReadonlyMap<string, HostedResourceImage> {
-	const result = new Map<string, HostedResourceImage>();
-	for (const image of images) {
-		const sourceUrl = normalizedResourceImageUrl(image.sourceUrl);
-		const deliveryUrl = hostedResourceImageUrl(image.deliveryUrl);
-		const hasDimensions = image.width !== null || image.height !== null;
-		if (
-			!sourceUrl ||
-			sourceUrl !== image.sourceUrl ||
-			!deliveryUrl ||
-			deliveryUrl !== image.deliveryUrl ||
-			(hasDimensions &&
-				(!Number.isSafeInteger(image.width) || !Number.isSafeInteger(image.height) || (image.width ?? 0) <= 0 || (image.height ?? 0) <= 0))
-		) {
-			throw new TypeError('Hosted Resource image is invalid');
-		}
-		if (result.has(sourceUrl)) throw new TypeError('Hosted Resource images contain duplicate sources');
-		result.set(sourceUrl, image);
-	}
-	return result;
-}
-
-export function hostedResourceImageFields(
-	resource: ResourceImageFields,
-	images: readonly HostedResourceImage[],
-): {
-	creators: ResourceCreator[];
-	kindMetadata: ResourceKindMetadata | null;
-	ogImageHeight: number | null;
-	ogImageUrl: string | null;
-	ogImageWidth: number | null;
-} {
-	const imageMap = hostedImageMap(images);
-	const consumedSources = new Set<string>();
-	const mapHostedImage = (rawUrl: string): HostedResourceImage => {
-		const sourceUrl = normalizedResourceImageUrl(rawUrl);
-		if (!sourceUrl) throw new TypeError('Resource image source URL is invalid');
-		const image = imageMap.get(sourceUrl);
-		if (!image) throw new TypeError('Hosted Resource images do not cover every source');
-		consumedSources.add(sourceUrl);
-		return image;
+		urls.add(url);
+		(preview ? previews : required).add(url);
 	};
-	const withHostedAvatar = ({ avatarUrl, ...creator }: ResourceCreator): ResourceCreator =>
-		avatarUrl === undefined ? creator : { ...creator, avatarUrl: mapHostedImage(avatarUrl).deliveryUrl };
+	for (const resource of resources) {
+		const attachments = attachmentUrls(resource.kindMetadata);
+		add(attachments[0]);
+		add(resource.previewImageUrl, true);
+		for (const url of attachments.slice(1)) add(url);
+		for (const creator of resource.creators) add(creator.avatarUrl);
+	}
+	return { urls: [...urls], optional: new Set([...previews].filter((url) => !required.has(url))) };
+}
+
+function attachmentUrls(metadata: ResourceKindMetadata | null): string[] {
+	return metadata && 'attachments' in metadata ? metadata.attachments.map((item) => item.url) : [];
+}
+
+export type HostedPreview = Readonly<{ previewImageWidth: number | null; previewImageHeight: number | null }>;
+
+/** Substitute Hosted Images URLs for every source; a preview that could not be hosted is dropped. */
+export function withHostedImages<T extends ResourceImageFields>(resource: T, images: readonly HostedResourceImage[]): T & HostedPreview {
+	const bySource = new Map(images.map((image) => [image.sourceUrl, image]));
+	const hosted = (rawUrl: string) => bySource.get(normalizedResourceImageUrl(rawUrl) ?? '');
+	const required = (rawUrl: string) => {
+		const image = hosted(rawUrl);
+		if (!image) throw new TypeError('Resource image was not hosted');
+		return image.deliveryUrl;
+	};
 	const metadata = resource.kindMetadata;
-	const kindMetadata =
-		metadata && 'attachments' in metadata
-			? {
-					...metadata,
-					attachments: metadata.attachments.map((attachment) => ({ ...attachment, url: mapHostedImage(attachment.url).deliveryUrl })),
-				}
-			: metadata;
-	const ogImage = resource.ogImageUrl === null ? null : mapHostedImage(resource.ogImageUrl);
-	const result = {
-		creators: resource.creators.map(withHostedAvatar),
-		kindMetadata,
-		ogImageHeight: ogImage?.height ?? null,
-		ogImageUrl: ogImage?.deliveryUrl ?? null,
-		ogImageWidth: ogImage?.width ?? null,
+	const preview = resource.previewImageUrl === null ? undefined : hosted(resource.previewImageUrl);
+	return {
+		...resource,
+		creators: resource.creators.map(({ avatarUrl, ...creator }) =>
+			avatarUrl === undefined ? creator : { ...creator, avatarUrl: required(avatarUrl) },
+		),
+		kindMetadata:
+			metadata && 'attachments' in metadata
+				? { ...metadata, attachments: metadata.attachments.map((attachment) => ({ ...attachment, url: required(attachment.url) })) }
+				: metadata,
+		previewImageUrl: preview?.deliveryUrl ?? null,
+		previewImageWidth: preview?.width ?? null,
+		previewImageHeight: preview?.height ?? null,
 	};
-	if (consumedSources.size !== imageMap.size) throw new TypeError('Hosted Resource images do not cover every source');
-	return result;
 }

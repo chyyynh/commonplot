@@ -2,12 +2,15 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { StoredPdf } from '../contracts/acquired-resource';
-import { type HostedResourceImage, hostedResourceImageFields } from '../contracts/image-mapping';
+import type { HostedPreview } from '../contracts/image-mapping';
 import type { NormalizedResource } from '../contracts/normalize-resource';
 import { PDF_MIME } from '../contracts/pdf-policy';
 import type { ResourceDraftRelation } from '../contracts/processing-target';
 import { ResourceCreatorsSchema, type ResourceKind, type ResourcePlatform, ResourceIdentifiersSchema } from '../contracts/resource';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
+
+/** A normalized resource whose images are already Hosted Images URLs. */
+type HostedResource = NormalizedResource & HostedPreview;
 
 /**
  * A draft writes an original only where none is readable yet. An existing Resource is
@@ -103,16 +106,11 @@ async function lockResource(db: NodePgDatabase, resourceId: string): Promise<Sto
 async function writeCanonicalResource(
 	db: NodePgDatabase,
 	resourceId: string,
-	resource: NormalizedResource,
-	hostedImages: readonly HostedResourceImage[],
+	resource: HostedResource,
 	existing: boolean,
 	subjectResourceId: string | null,
 	fence: number | null,
 ) {
-	const media = hostedResourceImageFields(
-		{ creators: resource.creators, kindMetadata: resource.kindMetadata, ogImageUrl: resource.previewImageUrl },
-		hostedImages,
-	);
 	const columns = sql`
 		kind, resource_platform, source_name, url, normalized_url, file_type, original_lang, published_date,
 		og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id, original_hash,
@@ -121,8 +119,8 @@ async function writeCanonicalResource(
 	const values = sql`
 		${resource.kind}, ${resource.resourcePlatform}, ${resource.source}, ${resource.url}, ${resource.normalizedUrl},
 		${resource.fileType}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
-		${media.ogImageUrl}, ${media.ogImageWidth}, ${media.ogImageHeight}, ${JSON.stringify(media.creators)}::jsonb,
-		${media.kindMetadata === null ? null : JSON.stringify(media.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
+		${resource.previewImageUrl}, ${resource.previewImageWidth}, ${resource.previewImageHeight}, ${JSON.stringify(resource.creators)}::jsonb,
+		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
 		(SELECT MD5(jsonb_build_array(lang, title, summary, content)::text) FROM incoming), NOW(), NOW()
 	`;
 	// The cleanup excludes the incoming language: no CTE deletes a row another CTE writes.
@@ -229,12 +227,7 @@ async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relati
 	if (attached.rowCount !== 1) throw new NonRetryableError('Subject parent was reacquired or is no longer eligible for attachment');
 }
 
-export async function persistResolvedResource(
-	db: NodePgDatabase,
-	resource: NormalizedResource,
-	hostedImages: readonly HostedResourceImage[],
-	target: ResourcePersistenceTarget,
-) {
+export async function persistResolvedResource(db: NodePgDatabase, resource: HostedResource, target: ResourcePersistenceTarget) {
 	const lockKeys = [
 		...(resource.normalizedUrl ? [`url:${resource.normalizedUrl}`] : []),
 		...resource.resourceIdentifiers.map(({ scheme, value }) => `id:${scheme}:${value}`),
@@ -288,7 +281,7 @@ export async function persistResolvedResource(
 			const subject = subjectCandidates.length === 1 && subjectCandidates[0]?.scope === 'corpus' ? subjectCandidates[0] : null;
 			const subjectResourceId =
 				subject && subject.id !== resourceId && (await lockResource(tx, subject.id)).hasOriginal ? subject.id : null;
-			await writeCanonicalResource(tx, resourceId, resource, hostedImages, root !== null, subjectResourceId, fence);
+			await writeCanonicalResource(tx, resourceId, resource, root !== null, subjectResourceId, fence);
 		} else {
 			if (target.kind === 'existing')
 				console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });

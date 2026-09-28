@@ -8,6 +8,7 @@ import { gfm } from 'micromark-extension-gfm';
 import {
 	type HostedResourceImage,
 	hostedResourceImageUrl,
+	type ResourceImageSources,
 	normalizedExternalMediaUrl,
 	normalizedResourceImageUrl,
 } from '../contracts/image-mapping';
@@ -221,9 +222,7 @@ export async function stageResourceImages(
 	env: CoreEnv,
 	step: WorkflowStep,
 	processingId: string,
-	sourceUrls: readonly string[],
-	/** A source the resource can do without; its failure is skipped instead of failing the resource. */
-	optionalUrl: string | null,
+	{ urls: sourceUrls, optional }: ResourceImageSources,
 	refreshKey?: string,
 ): Promise<HostedResourceImage[]> {
 	if (sourceUrls.length === 0) return [];
@@ -239,7 +238,7 @@ export async function stageResourceImages(
 							() => rehostResourceImage(env.IMAGES, url, refreshKey),
 						)
 						.catch((error: unknown) => {
-							if (url !== optionalUrl) throw error;
+							if (!optional.has(url)) throw error;
 							console.warn({
 								tag: 'RESOURCE_IMAGE',
 								event: 'optional_image_skipped',
