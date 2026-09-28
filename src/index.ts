@@ -7,13 +7,12 @@ import type {} from './env';
 import { handleRSSCron } from './monitors/rss';
 import { handleTwitterCron } from './monitors/twitter';
 import {
-	loadCorpusDocuments,
 	type PublicResourceSearchInput,
 	type RelatedResourceSearchInput,
 	searchPublicResourceIds,
 	searchRelatedResourceIds,
-	syncCorpusItem,
 } from './search/search-index';
+import { consumeSearchSyncBatch } from './search/sync-consumer';
 import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
 import { enqueueMissingTranslations } from './workflows/translation';
@@ -24,11 +23,6 @@ export { ResourceTranslationV2Workflow } from './workflows/translation';
 export { SearchIndexRebuildWorkflow } from './search/rebuild-workflow';
 export { ResourceProcessingV2Workflow } from './workflows/processing';
 export { YouTubeCaptionFetcher } from './services/youtube-captions';
-
-// Not strict: messages queued by earlier revisions also carried a progress task id.
-const ResourceSearchSyncMessageSchema = z.object({
-	resourceId: z.uuid().toLowerCase(),
-});
 
 export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	override fetch(_request: Request): Response {
@@ -49,52 +43,8 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		}
 	}
 
-	override async queue(batch: MessageBatch<unknown>): Promise<void> {
-		const pending = new Map<string, Message<unknown>[]>();
-		for (const message of batch.messages) {
-			const input = ResourceSearchSyncMessageSchema.safeParse(message.body);
-			if (!input.success) {
-				console.warn({ tag: 'AI_SEARCH', msg: 'Invalid resource sync message', message_id: message.id });
-				message.ack();
-				continue;
-			}
-			const messages = pending.get(input.data.resourceId) ?? [];
-			messages.push(message);
-			pending.set(input.data.resourceId, messages);
-		}
-		if (!pending.size) return;
-		try {
-			await withCoreDb(this.env, async (db) => {
-				const documents = await loadCorpusDocuments(db, [...pending.keys()]);
-				const documentsById = new Map(documents.map((document) => [document.id, document]));
-				for (const [resourceId, messages] of pending) {
-					try {
-						const document = documentsById.get(resourceId);
-						await syncCorpusItem(this.env, resourceId, document);
-						// Another consumer may have uploaded a newer snapshot first. Retry from
-						// Postgres instead of acknowledging a stale upload or deletion.
-						const [current] = await loadCorpusDocuments(db, [resourceId]);
-						if (JSON.stringify(current) !== JSON.stringify(document)) throw new Error('Resource changed during search sync');
-						for (const message of messages) message.ack();
-					} catch (error) {
-						console.error({
-							tag: 'AI_SEARCH',
-							msg: 'Resource sync failed',
-							resource_id: resourceId,
-							attempt: Math.max(...messages.map((message) => message.attempts)),
-							error,
-						});
-						for (const message of messages) message.retry();
-					}
-				}
-			});
-		} catch (error) {
-			// Only the batch load can throw here; each resource settles its own messages.
-			console.error({ tag: 'AI_SEARCH', msg: 'Resource sync batch could not be loaded', error });
-			for (const messages of pending.values()) {
-				for (const message of messages) message.retry();
-			}
-		}
+	override queue(batch: MessageBatch<unknown>): Promise<void> {
+		return consumeSearchSyncBatch(this.env, batch);
 	}
 
 	// Service-binding RPC for engine capabilities. Product-domain writes live on

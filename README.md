@@ -240,29 +240,14 @@ Worker.
 
 ```
 src/
-├── index.ts              # service RPC, cron, and Workflow-error Queue entrypoints
-├── shared/               # small cross-subsystem primitives
-│   ├── resource.ts       # identity, identifiers, and canonical metadata contracts
-│   ├── image-mapping.ts  # canonical Hosted Images field mapping
-│   └── db.ts             # Drizzle over Hyperdrive
-├── ingest/               # ── resource ingestion pipeline (the open-source core) ──
-│   ├── workflow.ts       # durable resource processing and follow-up orchestration
-│   ├── admission.ts      # processing input schemas and deduplicated source dispatch
-│   ├── analysis.ts       # AI classification and resource-local entity normalization
-│   ├── acquisition.ts    # URL/upload/resync acquisition and content contract
-│   ├── resource-persistence.ts # canonical Resource transaction
-│   ├── translation-workflow.ts # durable translation and canonical writeback
-│   └── platforms/        # one file per source/stage
-│       ├── rss.ts        # feed polling
-│       ├── twitter.ts    # source monitor
-│       ├── twitter-acquisition.ts # tweet acquisition
-│       ├── youtube.ts             # source resolution, acquisition, transcript/highlights
-│       ├── hackernews.ts # HN processor
-│       ├── paper.ts      # OpenAlex enrichment stage
-│       └── pdf.ts        # app-owned and external PDF acquisition/extraction
-├── operations/           # operator-triggered durable jobs
-│   └── search-index-rebuild.ts # full AI Search rebuild
-└── search-index.ts        # runtime AI Search projection, sync, and ordered retrieval
+├── index.ts          # service RPC, cron, and queue entrypoints (wiring only)
+├── contracts/        # schemas and pure rules: acquired/normalized resource, targets, images, translation policy
+├── services/         # external systems: AI, Crossref, Hosted Images, PDF parsers, YouTube captions
+├── adapters/         # provider acquisition without a database; acquire.ts routes and normalizes
+├── store/            # all canonical SQL: resources, translations, references, sources, withCoreDb
+├── monitors/         # RSS/YouTube feeds and Twitter discovery into source drafts
+├── workflows/        # processing, translation, references, and progress reporting
+└── search/           # AI Search projection, queue consumer, retrieval, and full rebuild
 ```
 
 ## Environment Variables & Bindings

@@ -181,28 +181,14 @@ resource 讀取。已退役的本機 CLI／MCP 套件不屬於這個 Worker。
 
 ```
 src/
-├── index.ts              # service RPC、cron 與 Workflow-error Queue entrypoints
-├── shared/               # 小型跨子系統 primitives
-│   ├── resource.ts       # identity、identifier、canonical metadata contracts
-│   ├── image-mapping.ts  # canonical Hosted Images 欄位 mapping
-│   └── db.ts             # Drizzle over Hyperdrive
-├── ingest/               # ── resource 入庫 pipeline（開源核心）──
-│   ├── workflow.ts       # durable resource processing 與 follow-up orchestration
-│   ├── analysis.ts       # AI 分析與 resource-local entity normalization
-│   ├── acquisition.ts    # 單次 platform detection 與 adapter dispatch
-│   ├── resource-persistence.ts # canonical Resource transaction
-│   ├── translation-workflow.ts # durable translation 與 canonical writeback
-│   └── platforms/        # 每個來源或 stage 一個檔案
-│       ├── rss.ts        # feed polling
-│       ├── twitter.ts    # source monitor
-│       ├── twitter-acquisition.ts # tweet acquisition
-│       ├── youtube.ts             # 來源解析、擷取、逐字稿／精華
-│       ├── hackernews.ts # HN processor
-│       ├── paper.ts      # OpenAlex enrichment stage
-│       └── pdf.ts        # PDF text extraction stage
-├── operations/           # operator 觸發的 durable jobs
-│   └── search-index-rebuild.ts # AI Search 全量 rebuild
-└── search-index.ts        # runtime AI Search projection、同步與排序檢索
+├── index.ts          # service RPC、cron 與 queue entrypoints（只負責接線）
+├── contracts/        # schema 與純規則：acquired/normalized resource、target、圖片、翻譯政策
+├── services/         # 外部系統：AI、Crossref、Hosted Images、PDF parser、YouTube 字幕
+├── adapters/         # 不碰資料庫的 provider acquisition；acquire.ts 負責路由與正規化
+├── store/            # 所有 canonical SQL：resources、translations、references、sources、withCoreDb
+├── monitors/         # RSS/YouTube feed 與 Twitter 探索，產生 source drafts
+├── workflows/        # processing、translation、references 與進度回報
+└── search/           # AI Search projection、queue consumer、檢索與全量 rebuild
 ```
 
 ## 環境變數與 Bindings
