@@ -26,7 +26,7 @@ export type ResourcePersistenceTarget = { ownedBlobId?: string } & (
 const MIN_REACQUIRED_CONTENT_RATIO = 0.5;
 
 /** Whether a Resource has a readable original, over the `resource` and `original` aliases. Posts need no title. */
-export const READABLE_ORIGINAL_SQL = sql`COALESCE((resource.kind = 'post' OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> '', false)`;
+const READABLE_ORIGINAL_SQL = sql`COALESCE((resource.kind = 'post' OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> '', false)`;
 
 /** A Resource row as its transaction sees it, locked; also what persistence hands its follow-ups. */
 type StoredResource = Readonly<{

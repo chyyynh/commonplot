@@ -9,7 +9,7 @@ const DOCUMENT_FALLBACK_REASONS = new Set(['empty-output', 'parse-failed']);
 
 export const PaidPdfFallbackGrantSchema = z.strictObject({ maxPages: z.int().min(1).max(LLAMA_PARSE_MAX_PAGES) });
 export type PaidPdfFallbackGrant = Readonly<z.infer<typeof PaidPdfFallbackGrantSchema>>;
-export type LlamaParseSource = Readonly<{ kind: 'private-upload' }> | Readonly<{ kind: 'public-url'; url: string }>;
+type LlamaParseSource = Readonly<{ kind: 'private-upload' }> | Readonly<{ kind: 'public-url'; url: string }>;
 
 export type LocalPdfSummary = Readonly<{
 	fallbackReasons: readonly string[];

@@ -2,12 +2,16 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { PDF_MIME } from '../contracts/pdf-policy';
+import type { ResourceKind } from '../contracts/resource';
 import { TRANSLATABLE_RESOURCE_KINDS, type ResourceTranslationCandidate } from '../contracts/translation-policy';
 
 export const OriginalHashSchema = z.hash('md5').lowercase();
 
-export type ResourceTranslationInput = ResourceTranslationCandidate & {
+export type ResourceTranslationInput = {
 	id: string;
+	kind: ResourceKind;
+	originalLang: string;
+	scope: 'corpus' | 'private';
 	title: string;
 	summary: string | null;
 	content: string;
@@ -40,10 +44,8 @@ export async function loadResourceTranslationInput(
 	// Machine fields are validated before persistence; planning needs their presence, not another copy of the translation.
 	const result = await db.execute<ResourceTranslationInput & { originalHash: string }>(sql`
 		SELECT
-			resource.file_type AS "fileType",
 			resource.id::text AS id,
 			resource.kind,
-			resource.resource_platform AS "resourcePlatform",
 			resource.original_lang AS "originalLang",
 			resource.scope,
 			COALESCE(original.title, '') AS title,
@@ -53,7 +55,6 @@ export async function loadResourceTranslationInput(
 			zh_hant.summary IS NOT NULL AS "hasTranslatedSummary",
 			zh_hant.content IS NOT NULL AS "hasTranslatedContent",
 			zh_hant.source AS "translationSource",
-			resource.url,
 			resource.original_hash AS "originalHash"
 		FROM resources resource
 		JOIN resource_translations original

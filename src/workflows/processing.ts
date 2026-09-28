@@ -43,12 +43,10 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			}
 			if (!(await task.start(target.kind === 'storedBlob' ? 'parsing' : 'acquiring')))
 				return target.kind === 'draft' ? {} : { resourceId: target.resourceId };
-			// Provider reconciliation belongs to this attempt, not the resource shared by later retries.
-			const processingId = event.instanceId;
 			// An uploaded PDF that names a paper publishes that paper, built without the upload's text,
 			// and keeps the upload as its uploader's private file.
 			const input = await loadAcquisitionInput(this.env, step, target);
-			const { resource, privateFile } = await stageResourceAcquisition(this.env, step, input, processingId);
+			const { resource, privateFile } = await stageResourceAcquisition(this.env, step, input, event.instanceId);
 			const plan = await planAttempt(target, privateFile !== null, event.instanceId, (resourceId) =>
 				step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () =>
 					withCoreDb(this.env, (db) => claimAcquisitionFence(db, resourceId)),
@@ -60,7 +58,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				msg: 'Starting',
 				resourceKind: resource.kind,
 				resourcePlatform: resource.resourcePlatform,
-				processing_id: processingId,
+				processing_id: event.instanceId,
 				target_kind: target.kind,
 			});
 			await task.report('analysis', { stage: 'analyzing', status: 'running' });
@@ -69,11 +67,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				resource.summary ??
 					(resource.kind === 'post'
 						? null
-						: step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, processingId))),
+						: step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, event.instanceId))),
 				stageResourceImages(
 					this.env,
 					step,
-					processingId,
+					event.instanceId,
 					resourceImageSources(privateFile ? [resource, privateFile] : [resource]),
 					target.kind === 'reacquire' ? event.instanceId : undefined,
 				),
