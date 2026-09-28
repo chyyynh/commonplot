@@ -1,4 +1,5 @@
 import { hash } from 'node:crypto';
+import { type Schema, Validator } from '@cfworker/json-schema';
 import type { Element } from 'hast';
 import { toHtml } from 'hast-util-to-html';
 import type { BlockContent, Heading, PhrasingContent, Root, Table } from 'mdast';
@@ -13,6 +14,7 @@ import type {
 	TextNode as SdtTextNode,
 	StructuredDocumentText,
 } from 'structured-document-text/schema';
+import SDT_SCHEMA from 'structured-document-text/schema.json';
 import { getFulltextFromStructuredText } from 'structured-document-text/src/fulltext.js';
 import {
 	getLogicalBlockText,
@@ -22,7 +24,7 @@ import {
 } from 'structured-document-text/src/parts.js';
 // @ts-expect-error SDT's PDF decoder has no declarations; validate its runs below.
 import { parseTextMap } from 'structured-document-text/src/pdf/decode.js';
-import { isContentBoundary, isLeafBlock, refKey, sameRef } from 'structured-document-text/src/range.js';
+import { isLeafBlock, refKey, sameRef } from 'structured-document-text/src/range.js';
 import { mergeTextNodes } from 'structured-document-text/src/text.js';
 import { paperIdentityFromText } from '../contracts/paper-identity';
 import { parseReferenceCitation } from '../contracts/reference-citation';
@@ -68,123 +70,52 @@ export type StructuredPdfDocument = Readonly<{
 	schemaVersion: string;
 }>;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === 'object' && value !== null && !Array.isArray(value);
+/**
+ * Zotero's official schema, minus `additionalProperties: false`: its PDF processor emits fields the
+ * schema does not list yet (e.g. `rightMostWords` on math blocks), and those are harmless to ignore.
+ */
+function withoutClosedObjects(schema: unknown): unknown {
+	if (Array.isArray(schema)) return schema.map(withoutClosedObjects);
+	if (typeof schema !== 'object' || schema === null) return schema;
+	return Object.fromEntries(
+		Object.entries(schema)
+			.filter(([key, value]) => !(key === 'additionalProperties' && value === false))
+			.map(([key, value]) => [key, withoutClosedObjects(value)]),
+	);
 }
 
-function assertRefPath(value: unknown, field: string): asserts value is number[] {
-	if (!isContentBoundary(value) || (value as unknown[]).length > MAX_REF_PATH_DEPTH) {
-		throw new Error(`Zotero SDT ${field} is not a valid node path`);
+const SDT_VALIDATOR = new Validator(withoutClosedObjects(SDT_SCHEMA) as Schema, '2020-12', false);
+
+/** The schema has no size limits; bound the tree before anything walks it recursively. */
+function assertBoundedContent(nodes: unknown, state: { characters: number; nodes: number }, depth = 1): void {
+	if (!Array.isArray(nodes) || !nodes.length) return;
+	if (depth > MAX_REF_PATH_DEPTH) throw new Error(`Zotero SDT exceeded ${MAX_REF_PATH_DEPTH} node path depth`);
+	for (const node of nodes as { content?: unknown; text?: unknown }[]) {
+		if (++state.nodes > MAX_DOCUMENT_NODES) throw new Error(`Zotero SDT exceeded ${MAX_DOCUMENT_NODES} nodes`);
+		if (typeof node?.text === 'string') state.characters += node.text.length;
+		if (state.characters > MAX_DOCUMENT_TEXT_CHARS) throw new Error(`Zotero SDT exceeded ${MAX_DOCUMENT_TEXT_CHARS} text characters`);
+		assertBoundedContent(node?.content, state, depth + 1);
 	}
 }
 
-function assertRefPaths(value: unknown, field: string): asserts value is number[][] {
-	if (!Array.isArray(value)) throw new Error(`Zotero SDT ${field} is not an array`);
-	for (const path of value) assertRefPath(path, field);
-}
-
-function assertAnchor(value: unknown, field: string): asserts value is PdfAnchor {
-	if (!isRecord(value)) throw new Error(`Zotero SDT ${field} is not an anchor`);
-	if (value.textMap !== undefined && typeof value.textMap !== 'string') {
-		throw new Error(`Zotero SDT ${field}.textMap is invalid`);
-	}
-	if (value.pageRects !== undefined) {
-		if (!Array.isArray(value.pageRects)) throw new Error(`Zotero SDT ${field}.pageRects is invalid`);
-		for (const rect of value.pageRects) {
-			if (!Array.isArray(rect) || rect.length !== 5 || rect.some((part) => typeof part !== 'number' || !Number.isFinite(part))) {
-				throw new Error(`Zotero SDT ${field}.pageRects contains an invalid rectangle`);
-			}
-		}
-	}
-}
-
-const BLOCK_TYPES = new Set([
-	'blockquote',
-	'caption',
-	'heading',
-	'image',
-	'list',
-	'listitem',
-	'math',
-	'note',
-	'paragraph',
-	'preformatted',
-	'table',
-	'tablecell',
-	'tablerow',
-]);
-
-function assertSdtNodes(value: unknown, state: { characters: number; nodes: number }, path: string, depth = 1): asserts value is SdtNode[] {
-	if (!Array.isArray(value)) throw new Error(`Zotero SDT ${path} is not an array`);
-	if (value.length && depth > MAX_REF_PATH_DEPTH) throw new Error(`Zotero SDT exceeded ${MAX_REF_PATH_DEPTH} node path depth`);
-	for (const [index, node] of value.entries()) {
-		state.nodes += 1;
-		if (state.nodes > MAX_DOCUMENT_NODES) throw new Error(`Zotero SDT exceeded ${MAX_DOCUMENT_NODES} nodes`);
-		if (!isRecord(node)) throw new Error(`Zotero SDT ${path}[${index}] is not a node`);
-		if (typeof node.text === 'string') {
-			state.characters += node.text.length;
-			if (state.characters > MAX_DOCUMENT_TEXT_CHARS) throw new Error(`Zotero SDT exceeded ${MAX_DOCUMENT_TEXT_CHARS} text characters`);
-		} else {
-			if (typeof node.type !== 'string' || !BLOCK_TYPES.has(node.type) || !Array.isArray(node.content)) {
-				throw new Error(`Zotero SDT ${path}[${index}] is not a supported block`);
-			}
-			if (node.flowClass !== undefined && node.flowClass !== 'auxiliary' && node.flowClass !== 'excluded') {
-				throw new Error(`Zotero SDT ${path}[${index}].flowClass is invalid`);
-			}
-			if (node.previousPart !== undefined) assertRefPath(node.previousPart, `${path}[${index}].previousPart`);
-			if (node.nextPart !== undefined) assertRefPath(node.nextPart, `${path}[${index}].nextPart`);
-			if (node.type === 'tablecell') {
-				if (node.header !== undefined && typeof node.header !== 'boolean')
-					throw new Error(`Zotero SDT ${path}[${index}].header is invalid`);
-				if (node.axis !== undefined && node.axis !== 'row' && node.axis !== 'column')
-					throw new Error(`Zotero SDT ${path}[${index}].axis is invalid`);
-				for (const span of ['colspan', 'rowspan'] as const) {
-					if (node[span] !== undefined && (!Number.isInteger(node[span]) || Number(node[span]) < 1)) {
-						throw new Error(`Zotero SDT ${path}[${index}].${span} is invalid`);
-					}
-				}
-			}
-			assertSdtNodes(node.content, state, `${path}[${index}].content`, depth + 1);
-		}
-		if (node.anchor !== undefined) assertAnchor(node.anchor, `${path}[${index}].anchor`);
-		if (node.refs !== undefined) assertRefPaths(node.refs, `${path}[${index}].refs`);
-	}
-}
-
-function assertOutline(value: unknown, depth = 0): asserts value is SdtOutlineItem[] {
-	if (!Array.isArray(value) || depth > MAX_REF_PATH_DEPTH) throw new Error('Zotero SDT outline is invalid');
-	for (const item of value) {
-		if (!isRecord(item) || typeof item.title !== 'string') throw new Error('Zotero SDT outline entry is invalid');
-		if (item.ref !== undefined) assertRefPath(item.ref, 'outline.ref');
-		if (item.children !== undefined) assertOutline(item.children, depth + 1);
-	}
+function assertBoundedOutline(items: unknown, depth = 0): void {
+	if (!Array.isArray(items)) return;
+	if (depth > MAX_REF_PATH_DEPTH) throw new Error('Zotero SDT outline is too deep');
+	for (const item of items as { children?: unknown }[]) assertBoundedOutline(item?.children, depth + 1);
 }
 
 export function parseStructuredPdfDocumentJson(json: string): StructuredPdfDocument {
-	const value: unknown = JSON.parse(json);
-	if (!isRecord(value) || typeof value.schemaVersion !== 'string' || !/^\d+\.\d+\.\d+$/u.test(value.schemaVersion)) {
-		throw new Error('Zotero SDT schema version is invalid');
+	const value = JSON.parse(json) as { catalog?: { outline?: unknown }; content?: unknown; metadata?: { processor?: { type?: unknown } } };
+	assertBoundedContent(value?.content, { characters: 0, nodes: 0 });
+	assertBoundedOutline(value?.catalog?.outline);
+	const result = SDT_VALIDATOR.validate(value);
+	if (!result.valid) {
+		const error = result.errors.reduce((deepest, candidate) =>
+			candidate.instanceLocation.length > deepest.instanceLocation.length ? candidate : deepest,
+		);
+		throw new Error(`Zotero SDT ${error.instanceLocation} is invalid: ${error.error}`);
 	}
-	if (!isRecord(value.metadata) || !isRecord(value.metadata.processor) || !isRecord(value.metadata.source)) {
-		throw new Error('Zotero SDT metadata is invalid');
-	}
-	if (value.metadata.processor.type !== 'pdf' || !Number.isInteger(value.metadata.processor.version)) {
-		throw new Error('Zotero SDT PDF source metadata is invalid');
-	}
-	if (!isRecord(value.catalog) || !Array.isArray(value.catalog.pages)) throw new Error('Zotero SDT catalog is invalid');
-	assertOutline(value.catalog.outline);
-	for (const page of value.catalog.pages) {
-		if (!isRecord(page) || !Array.isArray(page.contentRange) || page.contentRange.length !== 2) {
-			throw new Error('Zotero SDT page catalog entry is invalid');
-		}
-		assertRefPath(page.contentRange[0], 'page.contentRange');
-		assertRefPath(page.contentRange[1], 'page.contentRange');
-		if (page.textSource !== undefined && page.textSource !== 'born-digital' && page.textSource !== 'ocr') {
-			throw new Error('Zotero SDT page text source is invalid');
-		}
-	}
-	const state = { characters: 0, nodes: 0 };
-	assertSdtNodes(value.content, state, 'content');
+	if (value.metadata?.processor?.type !== 'pdf') throw new Error('Zotero SDT PDF source metadata is invalid');
 	return value as StructuredPdfDocument;
 }
 

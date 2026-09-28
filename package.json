@@ -21,6 +21,7 @@
 	},
 	"dependencies": {
 		"@ai-sdk/openai": "^4.0.73",
+		"@cfworker/json-schema": "^4.1.1",
 		"@cloudflare/containers": "^0.3.7",
 		"@extractus/feed-extractor": "8.0.3",
 		"@llamaindex/llama-cloud": "2.16.0",

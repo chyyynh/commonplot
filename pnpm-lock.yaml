@@ -11,6 +11,9 @@ importers:
       '@ai-sdk/openai':
         specifier: ^4.0.73
         version: 4.0.73(zod@4.6.5)
+      '@cfworker/json-schema':
+        specifier: ^4.1.1
+        version: 4.1.1
       '@cloudflare/containers':
         specifier: ^0.3.7
         version: 0.3.7
@@ -165,6 +168,9 @@ packages:
   '@ai-sdk/provider@4.0.18':
     resolution: {integrity: sha512-+GZJIgz1jk86pwEbb3f1BD2bdoSKyWE4Jg4YUc7NMnMozbWemSKYZcw2F4nMaO5qwsL5A8RmioAKW81YktRpIQ==}
     engines: {node: '>=22'}
+
+  '@cfworker/json-schema@4.1.1':
+    resolution: {integrity: sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og==}
 
   '@cloudflare/containers@0.3.7':
     resolution: {integrity: sha512-DM9dm3FnIBSyiSJ1FLavKwl/lk3oAmTaynCzZQ9pZR0ncRPquSxkxd8Nu2MFILxmDDsPkxKsSNEh9mHHMty4Fw==}
@@ -1821,6 +1827,8 @@ snapshots:
   '@ai-sdk/provider@4.0.18':
     dependencies:
       json-schema: 0.4.0
+
+  '@cfworker/json-schema@4.1.1': {}
 
   '@cloudflare/containers@0.3.7': {}
 
