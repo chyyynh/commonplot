@@ -12,9 +12,7 @@ export type ProgressReport = {
 
 const PROGRESS_STEP = { retries: { limit: 5, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 /** One execution policy, shared by the Workflow and every follow-up it admits. */
-export function createResourceTask(env: CoreEnv, step: WorkflowStep, taskId: string, required = true) {
-	// Managed imports can never opt out of their admission/start gate.
-	if (taskId.startsWith('app-ingest-v1-')) required = true;
+export function createResourceTask(env: CoreEnv, step: WorkflowStep, taskId: string, required: boolean) {
 	return {
 		taskId,
 		required,

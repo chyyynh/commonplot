@@ -27,8 +27,8 @@ const AI_STEP = { retries: AI_STEP_RETRIES, timeout: '600 seconds' } as const;
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep) {
 		const target = ResourceProcessingTargetSchema.parse(event.payload);
-		const required =
-			target.kind === 'storedBlob' || (target.kind === 'draft' && target.relation?.kind !== 'source' && target.progress !== false);
+		// Only Web admissions report progress: monitor discoveries, subject children and resyncs are background work.
+		const required = target.kind === 'storedBlob' || (target.kind === 'draft' && !target.relation);
 		const task = createResourceTask(this.env, step, event.instanceId, required);
 		let publishedResourceId: string | undefined;
 		try {
@@ -160,9 +160,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 								...(resource.publishedDate ? { sourceHints: { publishedDate: resource.publishedDate } } : {}),
 								url: subjectUrl,
 							});
-							// The linked page is background work, never part of the importer's progress.
 							const id = `subject-draft-auto-v1-${hash('sha256', JSON.stringify(subjectTarget), 'hex')}`;
-							await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: { ...subjectTarget, progress: false } }]);
+							await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: subjectTarget }]);
 							return id;
 						})
 					: undefined,

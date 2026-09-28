@@ -93,7 +93,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		step: WorkflowStep,
 	): Promise<{ status: 'complete' | 'skipped' | 'superseded'; resourceId: string }> {
 		const { force = false, resourceId, originalHash } = event.payload;
-		const task = createResourceTask(this.env, step, event.instanceId);
+		const task = createResourceTask(this.env, step, event.instanceId, true);
 		let translationPublished = false;
 		let followupFailed = false;
 		try {

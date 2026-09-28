@@ -12,7 +12,6 @@ export type ResourceDraftRelation = z.infer<typeof ResourceDraftRelationSchema>;
 
 export const ResourceDraftTargetSchema = z.strictObject({
 	kind: z.literal('draft'),
-	progress: z.boolean().optional(),
 	paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
 	relation: ResourceDraftRelationSchema.optional(),
 	saveTarget: z.record(z.string(), z.json()).optional(),
@@ -50,7 +49,8 @@ export type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSc
 
 export const ResourceImportDispatchSchema = z.strictObject({
 	workflowId: z.string().pipe(z.templateLiteral(['app-ingest-v1-', z.uuidv4()])),
-	payload: z.discriminatedUnion('kind', [ResourceDraftTargetSchema, StoredBlobTargetSchema]),
+	// Relations belong to Core's own background drafts; a Web admission always reports progress.
+	payload: z.discriminatedUnion('kind', [ResourceDraftTargetSchema.omit({ relation: true }), StoredBlobTargetSchema]),
 });
 
 export const SourceResourceDraftSchema = ResourceDraftTargetSchema.pick({ url: true, sourceHints: true });
