@@ -1,17 +1,6 @@
 import { hash } from 'node:crypto';
-import type { Emphasis, Heading, Link, Nodes, Paragraph, Parents, PhrasingContent, Root, Strong, TableCell } from 'mdast';
-import { fromMarkdown } from 'mdast-util-from-markdown';
-import { frontmatterFromMarkdown, frontmatterToMarkdown } from 'mdast-util-frontmatter';
-import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm';
-import { mathFromMarkdown, mathToMarkdown } from 'mdast-util-math';
-import { type Info, type State, toMarkdown } from 'mdast-util-to-markdown';
-import { cjkFriendlyToMarkdown } from 'mdast-util-to-markdown-cjk-friendly';
-import { cjkFriendlyGfmStrikethroughToMarkdown } from 'mdast-util-to-markdown-cjk-friendly-gfm-strikethrough';
-import { cjkFriendlyExtension } from 'micromark-extension-cjk-friendly';
-import { gfmStrikethroughCjkFriendly } from 'micromark-extension-cjk-friendly-gfm-strikethrough';
-import { frontmatter } from 'micromark-extension-frontmatter';
-import { gfm } from 'micromark-extension-gfm';
-import { math } from 'micromark-extension-math';
+import type { Heading, Link, Nodes, Paragraph, Parents, PhrasingContent, Root, TableCell } from 'mdast';
+import { parseMarkdown as parseDialect, stringifyMarkdown } from '../contracts/markdown';
 
 // Batches are sized by source length (about 2k source tokens); segment count only bounds the output schema.
 const MAX_BATCH_CHARACTERS = 8_000;
@@ -24,14 +13,6 @@ const TRANSLATED_PROSE_SENTINEL = '<translated-prose>';
 const MAX_INLINE_REFERENCE_CHARACTERS = 256;
 const ROOT_TRANSLATION_SEQUENCE = 'root';
 const TEXT_TRANSLATION_ID_PREFIX = 't';
-const CJK_MARKDOWN = cjkFriendlyToMarkdown();
-const FRONTMATTER_PRESETS: Array<'toml' | 'yaml'> = ['yaml', 'toml'];
-
-declare module 'mdast' {
-	interface RootContentMap {
-		toml: Literal & { type: 'toml' };
-	}
-}
 
 type ProseBlock = Heading | Paragraph | TableCell;
 
@@ -91,66 +72,19 @@ export class MarkdownTranslationInvariantError extends Error {
 	}
 }
 
-function parseMarkdownOnce(markdown: string): Root {
-	return fromMarkdown(markdown, {
-		extensions: [frontmatter(FRONTMATTER_PRESETS), math(), gfm(), cjkFriendlyExtension(), gfmStrikethroughCjkFriendly()],
-		mdastExtensions: [frontmatterFromMarkdown(FRONTMATTER_PRESETS), mathFromMarkdown(), ...gfmFromMarkdown()],
-	});
-}
-
 function parseMarkdown(markdown: string): Root {
-	const tree = parseMarkdownOnce(markdown);
+	const tree = parseDialect(markdown);
 	const offsets = currencyDelimiterOffsets(tree, markdown);
 	if (!offsets.length) return tree;
 	let escaped = markdown;
 	for (const offset of offsets.sort((left, right) => right - left)) {
 		escaped = `${escaped.slice(0, offset)}\\${escaped.slice(offset)}`;
 	}
-	return parseMarkdownOnce(escaped);
+	return parseDialect(escaped);
 }
 
 function isCurrencyMath(source: string, start: number, end: number): boolean {
 	return source.slice(start, start + 2) !== '$$' && /\p{Nd}/u.test(source[start + 1] ?? '') && /\p{Nd}/u.test(source[end] ?? '');
-}
-
-function attentionMarker(state: State, kind: 'strong' | 'emphasis'): '*' | '_' {
-	return state.stack.filter((construct) => construct === kind).length % 2 === 0 ? '*' : '_';
-}
-
-// Alternate nested attention markers so translated text cannot change delimiter pairing.
-function serializeAttention(node: Strong | Emphasis, parent: Parents | undefined, state: State, info: Info): string {
-	const previousMarker = state.options[node.type];
-	state.options[node.type] = attentionMarker(state, node.type);
-	try {
-		return node.type === 'strong'
-			? CJK_MARKDOWN.handlers!.strong!(node, parent, state, info)
-			: CJK_MARKDOWN.handlers!.emphasis!(node, parent, state, info);
-	} finally {
-		state.options[node.type] = previousMarker;
-	}
-}
-serializeAttention.peek = (node: Strong | Emphasis, _parent: Parents | undefined, state: State): string =>
-	attentionMarker(state, node.type);
-
-function serializeMarkdown(tree: Root): string {
-	return toMarkdown(tree, {
-		extensions: [
-			frontmatterToMarkdown(FRONTMATTER_PRESETS),
-			mathToMarkdown(),
-			gfmToMarkdown(),
-			CJK_MARKDOWN,
-			cjkFriendlyGfmStrikethroughToMarkdown(),
-		],
-		handlers: { strong: serializeAttention, emphasis: serializeAttention },
-	}).trimEnd();
-}
-
-/** Plain text as one paragraph each, escaped by the same serializer translation round-trips through. */
-export function paragraphsMarkdown(texts: readonly string[]): string {
-	return serializeMarkdown({
-		type: 'root',
-		children: texts.map((value) => ({ type: 'paragraph', children: [{ type: 'text', value }] })),
-	});
 }
 
 function isParent(node: Nodes): node is Parents {
@@ -769,8 +703,8 @@ export function validateMarkdownBatchTranslations(
 	// GFM's AST transform can turn even escaped prose URLs into links. Reject
 	// added links inside the retryable batch, before the whole-document compile.
 	if (
-		JSON.stringify(links(parseMarkdown(serializeMarkdown(sourceTree))).sort()) !==
-		JSON.stringify(links(parseMarkdown(serializeMarkdown(tree))).sort())
+		JSON.stringify(links(parseMarkdown(stringifyMarkdown(sourceTree))).sort()) !==
+		JSON.stringify(links(parseMarkdown(stringifyMarkdown(tree))).sort())
 	) {
 		throw new MarkdownTranslationInvariantError('invalid-result', 'Translated prose changed the protected Markdown links');
 	}
@@ -778,13 +712,13 @@ export function validateMarkdownBatchTranslations(
 }
 
 export function planMarkdownTranslation(sourceMarkdown: string) {
-	const canonicalSourceMarkdown = serializeMarkdown(parseMarkdown(sourceMarkdown));
+	const canonicalSourceMarkdown = stringifyMarkdown(parseMarkdown(sourceMarkdown));
 	const tree = parseMarkdown(canonicalSourceMarkdown);
 	const accumulator: PlanAccumulator = { nextInlineIndex: 0, segments: [], targets: [] };
 	visitNode(tree, { heading: null, path: [] }, accumulator);
 	const targetPaths = accumulator.targets.map((target) => target.path);
 	const sourceSkeleton = markdownSkeleton(tree, targetPaths);
-	const normalizedTree = parseMarkdown(serializeMarkdown(tree));
+	const normalizedTree = parseMarkdown(stringifyMarkdown(tree));
 	if (markdownSkeleton(normalizedTree, targetPaths) !== sourceSkeleton) {
 		throw new MarkdownTranslationInvariantError(
 			'source-not-roundtrippable',
@@ -826,7 +760,7 @@ function createMarkdownTranslationAlignment(sourceMarkdown: string, translatedMa
 			source.children.forEach((child, index) => walk(child, translated.children[index]!, [...path, index]));
 		}
 	};
-	walk(parseMarkdownOnce(sourceMarkdown), parseMarkdownOnce(translatedMarkdown), []);
+	walk(parseDialect(sourceMarkdown), parseDialect(translatedMarkdown), []);
 	return {
 		version: 2 as const,
 		sourceHash: hash('sha256', sourceMarkdown, 'hex'),
@@ -872,7 +806,7 @@ export function compileMarkdownTranslationArtifact(
 		block.children = [{ type: 'text', value: text }];
 	}
 	const targetPaths = plan.targets.map((target) => target.path);
-	let translatedMarkdown = serializeMarkdown(tree);
+	let translatedMarkdown = stringifyMarkdown(tree);
 	let translatedSkeleton = markdownSkeleton(parseMarkdown(translatedMarkdown), targetPaths);
 	if (translatedSkeleton !== plan.sourceSkeleton) {
 		let separatedDelimiters = false;
@@ -881,7 +815,7 @@ export function compileMarkdownTranslationArtifact(
 			if (isProseBlock(block)) separatedDelimiters = separateAdjacentDelimitedNodes(block.children) || separatedDelimiters;
 		}
 		if (separatedDelimiters) {
-			translatedMarkdown = serializeMarkdown(tree);
+			translatedMarkdown = stringifyMarkdown(tree);
 			translatedSkeleton = markdownSkeleton(parseMarkdown(translatedMarkdown), targetPaths);
 		}
 	}

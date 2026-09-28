@@ -3,13 +3,12 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fromHtml } from 'hast-util-from-html';
 import { toHtml } from 'hast-util-to-html';
-import { defaultHandlers, toMdast } from 'hast-util-to-mdast';
+import { defaultHandlers } from 'hast-util-to-mdast';
 import { DOMParser } from 'linkedom';
-import { gfmToMarkdown } from 'mdast-util-gfm';
-import { toMarkdown } from 'mdast-util-to-markdown';
 import stripIndent from 'strip-indent';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { normalizedResourceImageUrl } from '../contracts/image-mapping';
+import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { PDF_MIME, type PaidPdfFallbackGrant } from '../contracts/pdf-policy';
 import { resolveResourceUrl, type ResolvedResourceUrl } from '../contracts/resource-url';
 import { rehostInlineImages } from '../services/image-rehosting';
@@ -103,8 +102,8 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 	const author = article.byline?.trim();
 	const authors = substackPost?.authors.length ? substackPost.authors : author ? [author] : [];
 
-	const content = toMarkdown(
-		toMdast(fromHtml(articleHtml, { fragment: true }), {
+	const content = stringifyMarkdown(
+		htmlToMdast(articleHtml, {
 			handlers: {
 				// linkedom keeps the newline after <pre> that HTML parsing drops, and
 				// publisher templates indent whole blocks; neither is the author's code.
@@ -114,13 +113,7 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 					return code;
 				},
 			},
-			// HTML comments are invisible implementation metadata. The converter
-			// preserves them as raw Markdown by default, so opt out at its AST boundary.
-			nodeHandlers: { comment() {} },
 		}),
-		{
-			extensions: [gfmToMarkdown()],
-		},
 	).trim();
 	if (content.length < MIN_ARTICLE_CONTENT_CHARS) {
 		throw new NonRetryableError(`Extracted HTML content is too short (${content.length} chars)`);

@@ -2,9 +2,6 @@ import { hash } from 'node:crypto';
 // Shared media rehosting for every Resource platform; this is not the image Resource kind adapter.
 import type { WorkflowStep } from 'cloudflare:workers';
 import type { Image, Nodes } from 'mdast';
-import { fromMarkdown } from 'mdast-util-from-markdown';
-import { gfmFromMarkdown } from 'mdast-util-gfm';
-import { gfm } from 'micromark-extension-gfm';
 import pLimit from 'p-limit';
 import {
 	type HostedResourceImage,
@@ -13,6 +10,7 @@ import {
 	normalizedExternalMediaUrl,
 	normalizedResourceImageUrl,
 } from '../contracts/image-mapping';
+import { parseMarkdown } from '../contracts/markdown';
 
 const REHOST_TIMEOUT_MS = 8_000;
 const MAX_SOURCE_REDIRECTS = 3;
@@ -190,9 +188,7 @@ async function hostInlineImage(images: ImagesBinding, bytes: Uint8Array<ArrayBuf
  * the first bounded set of raster images; the rest are dropped instead of stored as Markdown.
  */
 export async function rehostInlineImages(images: ImagesBinding, markdown: string): Promise<string> {
-	const inline = markdownImages(fromMarkdown(markdown, { extensions: [gfm()], mdastExtensions: [gfmFromMarkdown()] })).filter((image) =>
-		image.url.startsWith('data:'),
-	);
+	const inline = markdownImages(parseMarkdown(markdown)).filter((image) => image.url.startsWith('data:'));
 	if (!inline.length) return markdown;
 	const hosted = new Map<string, string>();
 	let content = markdown;

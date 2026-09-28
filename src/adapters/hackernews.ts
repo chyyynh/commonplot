@@ -2,14 +2,12 @@ import { generateText } from 'ai';
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fromHtml } from 'hast-util-from-html';
-import { toMdast } from 'hast-util-to-mdast';
 import { toText } from 'hast-util-to-text';
-import { gfmToMarkdown } from 'mdast-util-gfm';
-import { toMarkdown } from 'mdast-util-to-markdown';
 import pLimit from 'p-limit';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
+import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { ResourceUrlSchema } from '../contracts/resource-url';
 import { AI_STEP_RETRIES, coreGatewayOptions, CORE_TEXT_MODEL } from '../services/ai-model';
 
@@ -64,10 +62,7 @@ function isReadableComment(item: HackerNewsItem | undefined): item is HackerNews
 }
 
 function hnMarkdown(html: string): string {
-	return toMarkdown(
-		toMdast(fromHtml(`<base href="https://news.ycombinator.com/">${html}`, { fragment: true }), { nodeHandlers: { comment() {} } }),
-		{ extensions: [gfmToMarkdown()] },
-	).trim();
+	return stringifyMarkdown(htmlToMdast(`<base href="https://news.ycombinator.com/">${html}`)).trim();
 }
 
 function discussionExcerpt(markdown: string, maxChars: number): string {
@@ -128,7 +123,7 @@ async function scrapeHackerNews(itemId: string) {
 	else if (/^Ask HN:/i.test(title)) itemType = 'ask';
 	else if (/^Show HN:/i.test(title)) itemType = 'show';
 	else if (item.type === 'story') itemType = 'story';
-	const heading = toMarkdown({ type: 'heading', depth: 1, children: [{ type: 'text', value: title }] }).trimEnd();
+	const heading = stringifyMarkdown({ type: 'heading', depth: 1, children: [{ type: 'text', value: title }] });
 	const markdown = [heading, hnText].filter(Boolean).join('\n\n');
 	console.info({
 		tag: 'HN',

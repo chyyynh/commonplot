@@ -3,9 +3,6 @@ import { type Schema, Validator } from '@cfworker/json-schema';
 import type { Element } from 'hast';
 import { toHtml } from 'hast-util-to-html';
 import type { BlockContent, Heading, PhrasingContent, Root, Table } from 'mdast';
-import { gfmToMarkdown } from 'mdast-util-gfm';
-import type {} from 'mdast-util-to-hast';
-import { toMarkdown } from 'mdast-util-to-markdown';
 import type {
 	ContentBlockNode,
 	ListItemNode,
@@ -29,6 +26,7 @@ import {
 import { parseTextMap } from 'structured-document-text/src/pdf/decode.js';
 import { isLeafBlock, refKey, sameRef } from 'structured-document-text/src/range.js';
 import { mergeTextNodes } from 'structured-document-text/src/text.js';
+import { markdownHtmlContent, stringifyMarkdown } from '../contracts/markdown';
 import { paperIdentityFromText } from '../contracts/paper-identity';
 import { parseReferenceCitation } from '../contracts/reference-citation';
 
@@ -696,12 +694,7 @@ export function normalizeStructuredPdf(
 							...(cell.colspan !== undefined ? { colSpan: cell.colspan } : {}),
 							...(cell.rowspan !== undefined ? { rowSpan: cell.rowspan } : {}),
 						},
-						children: [
-							{
-								type: 'raw',
-								value: `\n\n${toMarkdown({ type: 'root', children: content }, { extensions: [gfmToMarkdown()] }).trimEnd()}\n\n`,
-							},
-						],
+						children: [markdownHtmlContent({ type: 'root', children: content })],
 					})),
 				})),
 			};
@@ -744,14 +737,7 @@ export function normalizeStructuredPdf(
 			children: [{ type: 'paragraph', children: [{ type: 'text', value: reference.text }] }],
 		});
 	}
-	const extensions = [gfmToMarkdown({ tablePipeAlign: false })];
-	const markdown = toMarkdown(tree, {
-		bullet: '-',
-		emphasis: '_',
-		extensions,
-		// Keep persisted table formatting stable while the surrounding prose uses underscores.
-		handlers: { table: (table) => toMarkdown(table, { extensions }).trimEnd() },
-	}).trimEnd();
+	const markdown = stringifyMarkdown(tree);
 	const visual = {
 		planned: visualPlan.crops.length,
 		missing: visualPlan.missing,

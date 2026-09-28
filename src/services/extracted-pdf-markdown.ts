@@ -3,14 +3,8 @@ import { fromHtml } from 'hast-util-from-html';
 import { sanitize, type Schema } from 'hast-util-sanitize';
 import { toHtml } from 'hast-util-to-html';
 import { toMdast } from 'hast-util-to-mdast';
-import type { Nodes } from 'mdast';
-import { fromMarkdown } from 'mdast-util-from-markdown';
-import { gfmFromMarkdown, gfmToMarkdown } from 'mdast-util-gfm';
-import { mathFromMarkdown, mathToMarkdown } from 'mdast-util-math';
-import type {} from 'mdast-util-to-hast';
-import { toMarkdown } from 'mdast-util-to-markdown';
-import { gfm } from 'micromark-extension-gfm';
-import { math } from 'micromark-extension-math';
+import type { Nodes, Root } from 'mdast';
+import { markdownHtmlContent, parseMarkdown as parseDialect, stringifyMarkdown } from '../contracts/markdown';
 
 type Range = { start: number; end: number };
 type Replacement = Range & { value: string };
@@ -68,11 +62,8 @@ const PROSE_HTML_TAGS = new Set([
 ]);
 
 function parseMarkdown(value: string, html = false) {
-	return fromMarkdown(value, {
-		// Recognize code and math even when extraction tags surround them at a line start.
-		extensions: [gfm(), math(), ...(html ? [] : [{ disable: { null: ['htmlFlow', 'htmlText'] } }])],
-		mdastExtensions: [gfmFromMarkdown(), mathFromMarkdown()],
-	});
+	// Recognize code and math even when extraction tags surround them at a line start.
+	return parseDialect(value, html ? [] : [{ disable: { null: ['htmlFlow', 'htmlText'] } }]);
 }
 
 function escapeHtml(value: string): string {
@@ -234,7 +225,6 @@ function normalizeTable(source: string, inline: Range[]): string | null {
 	if (invalid || !cells) return null;
 	const safe = sanitize(table, TABLE_SCHEMA);
 	if (safe.type !== 'element') return null;
-	const markdownOptions = { extensions: [gfmToMarkdown({ tablePipeAlign: false }), mathToMarkdown()] };
 	function markdownCells(node: Element): void {
 		if (['td', 'th', 'caption'].includes(node.tagName)) {
 			const content = toMdast(
@@ -249,13 +239,11 @@ function normalizeTable(source: string, inline: Range[]): string | null {
 					},
 				},
 			);
-			node.children = [{ type: 'raw', value: `\n\n${toMarkdown(content, markdownOptions).trimEnd()}\n\n` }];
+			node.children = [markdownHtmlContent(content as Root)];
 		} else for (const child of node.children) if (child.type === 'element') markdownCells(child);
 	}
 	if (merged) markdownCells(safe);
-	let result = merged
-		? toHtml(safe, { allowDangerousHtml: true })
-		: toMarkdown(toMdast({ type: 'root', children: [safe] }), markdownOptions).trimEnd();
+	let result = merged ? toHtml(safe, { allowDangerousHtml: true }) : stringifyMarkdown(toMdast({ type: 'root', children: [safe] }));
 	for (const { token, value } of tokens) {
 		let restored = value;
 		const replacements: Replacement[] = [];
@@ -267,7 +255,7 @@ function normalizeTable(source: string, inline: Range[]): string | null {
 				replacements.push({
 					start: node.position.start.offset!,
 					end: node.position.end.offset!,
-					value: toMarkdown(node, markdownOptions).trimEnd(),
+					value: stringifyMarkdown(node),
 				});
 			} else if ('children' in node) node.children.forEach(decodeMath);
 		}

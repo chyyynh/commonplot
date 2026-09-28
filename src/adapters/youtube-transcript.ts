@@ -1,5 +1,5 @@
 import type { YouTubeTranscriptLine } from '../contracts/acquired-resource';
-import { paragraphsMarkdown } from '../services/markdown-translation';
+import { paragraphsMarkdown } from '../contracts/markdown';
 import type { YouTubeCaptionCue } from '../services/youtube-captions';
 
 const LINE_MIN_CHARS = 60;

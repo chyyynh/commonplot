@@ -1,14 +1,10 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { Element as HastElement } from 'hast';
-import { fromHtml } from 'hast-util-from-html';
-import { toMdast } from 'hast-util-to-mdast';
 import { DOMParser } from 'linkedom';
 import type { FootnoteDefinition, Root } from 'mdast';
-import { gfmToMarkdown } from 'mdast-util-gfm';
-import { mathToMarkdown } from 'mdast-util-math';
-import { toMarkdown } from 'mdast-util-to-markdown';
 import type { AcquiredResource } from '../contracts/acquired-resource';
+import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { paperIdentityFromText } from '../contracts/paper-identity';
 import { parseReferenceCitation } from '../contracts/reference-citation';
 import { limitByteStream } from '../services/response';
@@ -88,8 +84,8 @@ function bibliography(document: Dom, baseUrl: string) {
 		}));
 }
 
-function htmlToMdast(html: string): Root {
-	return toMdast(fromHtml(html, { fragment: true }), {
+function arxivMdast(html: string): Root {
+	return htmlToMdast(html, {
 		handlers: {
 			span(state, node: HastElement) {
 				const { dataMath, dataDisplay, dataCites, dataNote } = node.properties;
@@ -100,8 +96,7 @@ function htmlToMdast(html: string): Root {
 				return state.all(node);
 			},
 		},
-		nodeHandlers: { comment() {} },
-	}) as Root;
+	});
 }
 
 /** Visible text with math as its TeX source, for image descriptions. */
@@ -218,12 +213,12 @@ function arxivHtmlDocument(html: string, url: string) {
 		if (!clean(table.textContent) && !table.querySelector('img, span[data-math]')) table.remove();
 	}
 
-	const tree = htmlToMdast(article.innerHTML);
+	const tree = arxivMdast(article.innerHTML);
 	const definitions: FootnoteDefinition[] = [
 		...notes.map(({ id, html }) => ({
 			type: 'footnoteDefinition' as const,
 			identifier: id,
-			children: htmlToMdast(`<p>${html}</p>`).children as FootnoteDefinition['children'],
+			children: arxivMdast(`<p>${html}</p>`).children as FootnoteDefinition['children'],
 		})),
 		...references
 			.filter(({ key }) => citedKeys.has(key))
@@ -234,11 +229,7 @@ function arxivHtmlDocument(html: string, url: string) {
 			})),
 	];
 	tree.children.push(...definitions);
-	const content = toMarkdown(tree, {
-		bullet: '-',
-		emphasis: '_',
-		extensions: [gfmToMarkdown({ tablePipeAlign: false }), mathToMarkdown()],
-	}).trim();
+	const content = stringifyMarkdown(tree).trim();
 	if (!title || content.length < MIN_ARXIV_BODY_CHARS) return null;
 	return { title, authors, content, references: references.map(({ id: _id, ...reference }) => reference) };
 }

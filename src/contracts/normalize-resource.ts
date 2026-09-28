@@ -1,8 +1,6 @@
-import { fromMarkdown } from 'mdast-util-from-markdown';
-import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { toString } from 'mdast-util-to-string';
-import { gfm } from 'micromark-extension-gfm';
 import type { AcquiredResource, SourceHints } from './acquired-resource';
+import { parseMarkdown } from './markdown';
 import { isPaperIdentifierScheme } from './paper-identity';
 import { RESOURCE_KIND_METADATA, RESOURCE_PLATFORMS, ResourceCreatorsSchema, ResourceIdentifiersSchema } from './resource';
 import { detectResourceLanguage, ResourceLanguageSchema } from './resource-language';
@@ -10,7 +8,7 @@ import { resolveResourceUrl } from './resource-url';
 
 /** Remove a duplicate heading only after Core has resolved the resource title. */
 function withoutDuplicateResourceTitle(markdown: string, title: string): string {
-	const first = fromMarkdown(markdown, { extensions: [gfm()], mdastExtensions: gfmFromMarkdown() }).children[0];
+	const first = parseMarkdown(markdown).children[0];
 	const comparable = (value: string) => value.normalize('NFC').replace(/\s+/gu, ' ').trim();
 	if (first?.type !== 'heading' || comparable(toString(first, { includeImageAlt: false })) !== comparable(title)) return markdown;
 	const end = first.position?.end.offset;

@@ -241,7 +241,7 @@ Worker.
 ```
 src/
 ├── index.ts          # service RPC, cron, and queue entrypoints (wiring only)
-├── contracts/        # schemas and pure rules: acquired/normalized resource, targets, images, translation policy
+├── contracts/        # schemas and pure rules: acquired/normalized resource, targets, images, translation policy, the Markdown dialect
 ├── services/         # external systems: AI, Crossref, Hosted Images, PDF parsers, YouTube captions
 ├── adapters/         # provider acquisition without a database; acquire.ts routes and normalizes
 ├── store/            # all canonical SQL: resources, translations, references, sources, withCoreDb

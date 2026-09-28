@@ -182,7 +182,7 @@ resource 讀取。已退役的本機 CLI／MCP 套件不屬於這個 Worker。
 ```
 src/
 ├── index.ts          # service RPC、cron 與 queue entrypoints（只負責接線）
-├── contracts/        # schema 與純規則：acquired/normalized resource、target、圖片、翻譯政策
+├── contracts/        # schema 與純規則：acquired/normalized resource、target、圖片、翻譯政策、Markdown 方言
 ├── services/         # 外部系統：AI、Crossref、Hosted Images、PDF parser、YouTube 字幕
 ├── adapters/         # 不碰資料庫的 provider acquisition；acquire.ts 負責路由與正規化
 ├── store/            # 所有 canonical SQL：resources、translations、references、sources、withCoreDb

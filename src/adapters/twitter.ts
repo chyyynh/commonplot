@@ -1,12 +1,9 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { PhrasingContent, Root } from 'mdast';
-import { gfmToMarkdown } from 'mdast-util-gfm';
-import { toMarkdown } from 'mdast-util-to-markdown';
-import { cjkFriendlyToMarkdown } from 'mdast-util-to-markdown-cjk-friendly';
-import { cjkFriendlyGfmStrikethroughToMarkdown } from 'mdast-util-to-markdown-cjk-friendly-gfm-strikethrough';
 import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
+import { stringifyMarkdown } from '../contracts/markdown';
 import { resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 
 const TwitterAuthorSchema = z.object({
@@ -183,10 +180,7 @@ function renderTwitterArticleBlock(block: TwitterArticleContent): string {
 		case 'unstyled':
 			if (block.text?.trim()) tree.children.push({ type: 'paragraph', children });
 	}
-	return toMarkdown(tree, {
-		emphasis: '_',
-		extensions: [gfmToMarkdown(), cjkFriendlyToMarkdown(), cjkFriendlyGfmStrikethroughToMarkdown()],
-	}).trimEnd();
+	return stringifyMarkdown(tree);
 }
 
 function renderTwitterArticleMarkdown(article: TwitterArticle): string {
