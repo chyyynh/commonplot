@@ -1,6 +1,7 @@
 import { extractFromJson, extractFromXml } from '@extractus/feed-extractor';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { DOMParser } from 'linkedom';
+import { fromHtml } from 'hast-util-from-html';
+import { toText } from 'hast-util-to-text';
 import pLimit from 'p-limit';
 import { resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { readBoundedResponseText } from '../services/response';
@@ -77,9 +78,6 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeed
 	await advanceSourceWatermark(db, feed.id, new Date());
 }
 
-const FEED_BLOCK_TAG_RE =
-	/<\/?(?:address|article|aside|blockquote|br|dd|div|dl|dt|figcaption|figure|footer|h[1-6]|header|hr|li|ol|p|pre|section|table|td|th|tr|ul)\b[^>]*>/gi;
-
 function feedFieldText(value: unknown): string {
 	if (typeof value === 'string') return value;
 	if (value && typeof value === 'object') {
@@ -92,16 +90,16 @@ function feedFieldText(value: unknown): string {
 
 /**
  * The extractor strips tags without a separator, gluing adjacent blocks
- * ("Thomas KwaConstellation"). Break at block boundaries before taking text.
+ * ("Thomas KwaConstellation"). innerText-style extraction separates blocks and skips scripts.
  */
 function feedEntryDescription(entry: Record<string, unknown>): string {
 	const html = [entry.description, entry.summary, entry['content:encoded'], entry.content, entry.content_text, entry.content_html]
 		.map(feedFieldText)
 		.find((value) => value.trim());
 	if (!html) return '';
-	const document = new DOMParser().parseFromString(`<html><body>${html.replace(FEED_BLOCK_TAG_RE, ' $&')}</body></html>`, 'text/html');
-	for (const node of document.querySelectorAll('script, style')) node.remove();
-	const text = (document.body?.textContent ?? '').replace(/\s+/g, ' ').trim();
+	const text = toText(fromHtml(html, { fragment: true }))
+		.replace(/\s+/g, ' ')
+		.trim();
 	if (text.length <= FEED_SUMMARY_MAX_CHARS) return text;
 	const cut = text.slice(0, FEED_SUMMARY_MAX_CHARS);
 	const wordEnd = cut.lastIndexOf(' ');
