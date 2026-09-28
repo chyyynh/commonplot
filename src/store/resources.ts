@@ -245,7 +245,9 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Host
 			`);
 		}
 		if (target.ownedBlobId) {
-			const owned = await tx.execute(sql`SELECT resource_id FROM user_files WHERE resource_id = ${target.ownedBlobId}::uuid FOR UPDATE`);
+			const owned = await tx.execute(
+				sql`SELECT object.id FROM stored_objects object JOIN resources resource ON resource.stored_object_id = object.id WHERE resource.id = ${target.ownedBlobId}::uuid AND object.user_resource_id IS NOT NULL FOR UPDATE OF object`,
+			);
 			if (!owned.rows.length) throw new NonRetryableError('Uploaded PDF ownership was deleted');
 		}
 		const candidates = await findResourceCandidates(tx, [
@@ -371,7 +373,7 @@ export async function loadStoredPdf(db: NodePgDatabase, resourceId: string): Pro
 		  AND resource.kind = 'file'
 		  AND resource.file_type = ${PDF_MIME}
 		  AND object.content_hash IS NOT NULL
-		  AND EXISTS (SELECT 1 FROM user_files file WHERE file.resource_id = resource.id)
+		  AND object.user_resource_id IS NOT NULL
 	`);
 	const row = result.rows[0];
 	if (!row) throw new NonRetryableError(`Failed to fetch stored PDF ${resourceId}: not found or not an owned private blob`);

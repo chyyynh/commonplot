@@ -32,11 +32,7 @@ const PRIVATE_UPLOADED_PDF_TRANSLATION_SQL = sql`(
 		WHERE object.id = resource.stored_object_id
 		  AND object.status = 'ready'
 		  AND object.store = 'r2'
-	)
-	AND EXISTS (
-		SELECT 1
-		FROM user_files file
-		WHERE file.resource_id = resource.id
+		  AND object.user_resource_id IS NOT NULL
 	)
 )`;
 
