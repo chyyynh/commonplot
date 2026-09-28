@@ -315,7 +315,7 @@ items enter the Workflow as immutable drafts; only successful processing creates
 or merges a canonical `resources` row. Core owns canonical source and subject
 relations in the same Drizzle transaction; Web applies an optional user-owned
 save/container/file target in the next durable step. App-owned uploads remain
-the explicit record-first exception and create `resources` plus `user_files`
+the explicit record-first exception and create `stored_objects` plus `resources`
 before Core reads the stored blob.
 
 Keep the axes separate: acquisition (generic web or a specialized adapter) is

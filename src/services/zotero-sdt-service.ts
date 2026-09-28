@@ -311,8 +311,6 @@ export async function storePublicPdfResponse(env: CoreEnv, response: Response, s
 	};
 }
 
-const MAX_MANIFEST_BYTES = 64 * 1024;
-
 /** Public crop URLs are PUBLIC_MEDIA paths: `pdf-crops/{sourceHash}/{inputHash}/{cropId}.png`. */
 function publicPdfCropUrlPrefix(env: CoreEnv, sourceHash: string, inputContentHash: string): string {
 	return `${env.PUBLIC_MEDIA_URL}/pdf-crops/${sourceHash}/${inputContentHash}/`;
@@ -343,23 +341,6 @@ export async function publishPublicPdfCrops(env: CoreEnv, content: string): Prom
 			throw new Error('Public PDF crop publication has no independent public source');
 		}
 		const cropPrefix = structuredPdfCropPrefix(pdfStorageKey, inputHash);
-		const object = await env.R2.get(`${cropPrefix}manifest.json`);
-		if (!object) throw new Error('Public PDF crop publication manifest is missing');
-		if (object.size > MAX_MANIFEST_BYTES) {
-			await object.body.cancel('Invalid public PDF manifest size');
-			throw new Error('Public PDF crop publication manifest is too large');
-		}
-		const manifest: { inputSha256?: unknown; pdfStorageKey?: unknown; ready?: unknown; state?: unknown } = await object.json();
-		const ready = manifest.ready;
-		if (
-			manifest.inputSha256 !== inputHash ||
-			manifest.pdfStorageKey !== pdfStorageKey ||
-			manifest.state !== 'complete' ||
-			!Array.isArray(ready) ||
-			[...cropIds].some((id) => !ready.includes(id))
-		) {
-			throw new Error('Public PDF crop publication includes unready images');
-		}
 		for (const cropId of cropIds) {
 			const publicKey = `pdf-crops/${sourceHash}/${inputHash}/${cropId}.png`;
 			if (await env.PUBLIC_MEDIA.head(publicKey)) continue;

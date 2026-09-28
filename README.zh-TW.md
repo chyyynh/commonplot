@@ -229,8 +229,8 @@ AI Search 沿用 `newsence-corpus-v6`。PostgreSQL 是 canonical source，Core
 
 擷取 adapter 集中在 `adapters/*.ts`，只放它真正需要的
 discovery / scrape / process 邏輯。App-owned saved URL 以 Workflow draft
-進入 Core，成功處理後才建立 canonical row；upload 則先寫入 `resources`
-與 `user_files`，再以 `resourceId` 啟動 Workflow。Core 在自己的
+進入 Core，成功處理後才建立 canonical row；upload 則先寫入 `stored_objects`
+與 `resources`，再以 `resourceId` 啟動 Workflow。Core 在自己的
 `store/resources.ts` transaction 寫入 canonical Resource、source 與 subject；
 使用者的 save／container／file target 則由下一個 durable step 交給 Web。
 Translation 的 SQL 放在 `store/translations.ts`，Workflow 在 `workflows/translation.ts`。
