@@ -8,11 +8,14 @@ import type {} from 'mdast-util-to-hast';
 import { toMarkdown } from 'mdast-util-to-markdown';
 import type {
 	ContentBlockNode,
-	PdfAnchor,
+	ListItemNode,
+	ParagraphNode,
 	OutlineItem as SdtOutlineItem,
 	RefPath as SdtRefPath,
 	TextNode as SdtTextNode,
 	StructuredDocumentText,
+	TableCellNode,
+	TableRowNode,
 } from 'structured-document-text/schema';
 import SDT_SCHEMA from 'structured-document-text/schema.json';
 import { getFulltextFromStructuredText } from 'structured-document-text/src/fulltext.js';
@@ -41,34 +44,11 @@ export const ZOTERO_SDT_ARTIFACT_VERSION = 'newsence-zotero-sdt-v2-02100446';
 
 type RefPath = readonly number[];
 
-type SdtBlockNode = Readonly<{
-	anchor?: PdfAnchor;
-	content: readonly SdtNode[];
-	flowClass?: 'auxiliary' | 'excluded';
-	nextPart?: RefPath;
-	previousPart?: RefPath;
-	reference?: boolean;
-	refs?: readonly RefPath[];
-	type: ContentBlockNode['type'] | 'listitem' | 'tablecell' | 'tablerow';
-	ordered?: boolean;
-	startIndex?: number;
-	header?: boolean;
-	axis?: 'row' | 'column';
-	colspan?: number;
-	rowspan?: number;
-}>;
+type SdtBlockNode = ContentBlockNode | ListItemNode | TableRowNode | TableCellNode;
 
 type SdtNode = SdtBlockNode | SdtTextNode;
 
-export type StructuredPdfDocument = Readonly<{
-	catalog: Readonly<Pick<StructuredDocumentText['catalog'], 'outline' | 'pages'>>;
-	content: readonly SdtBlockNode[];
-	metadata: Readonly<{
-		processor: Readonly<{ type: 'pdf'; version: number }>;
-		source: Readonly<Pick<StructuredDocumentText['metadata']['source'], 'properties'>>;
-	}>;
-	schemaVersion: string;
-}>;
+export type StructuredPdfDocument = StructuredDocumentText & { metadata: { processor: { type: 'pdf' } } };
 
 /**
  * Zotero's official schema, minus `additionalProperties: false`: its PDF processor emits fields the
@@ -131,9 +111,9 @@ function nodeText(node: SdtNode): string {
 	return 'text' in node ? node.text : node.content.map(nodeText).join('');
 }
 
-function mergeParagraphParts(chain: readonly { block: SdtBlockNode }[]): SdtBlockNode {
+function mergeParagraphParts(chain: readonly { block: ParagraphNode }[]): ParagraphNode {
 	const first = chain[0]!.block;
-	const content: SdtNode[] = [...first.content];
+	const content: SdtTextNode[] = [...first.content];
 	for (let index = 1; index < chain.length; index += 1) {
 		const previous = chain[index - 1]!.block;
 		const next = chain[index]!.block;
@@ -151,7 +131,7 @@ function mergeParagraphParts(chain: readonly { block: SdtBlockNode }[]): SdtBloc
 
 function walkNodes(nodes: readonly SdtNode[], parentPath: RefPath = []): Array<{ node: SdtNode; path: number[] }> {
 	return nodes.flatMap((node, index) => {
-		if ('content' in node && node.flowClass === 'excluded') return [];
+		if ('flowClass' in node && node.flowClass === 'excluded') return [];
 		const path = [...parentPath, index];
 		return [{ node, path }, ...('content' in node ? walkNodes(node.content, path) : [])];
 	});
@@ -450,12 +430,11 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 		)
 			missing.push({ figureId, reason: 'crop-budget-exceeded' });
 	}
-	return { crops, excludedAuthorTables: [...excludedAuthorTables], missing };
+	return { crops, excludedAuthorTables: excludedAuthorTables.size, missing };
 }
 
 function firstPageIdentifierText(document: StructuredPdfDocument): string | null {
-	const fulltextDocument = document as unknown as Parameters<typeof getFulltextFromStructuredText>[0];
-	const pageText = cleanText(getFulltextFromStructuredText(fulltextDocument, [0]));
+	const pageText = cleanText(getFulltextFromStructuredText(document, [0]));
 	const propertyText = Object.entries(document.metadata.source.properties ?? {})
 		.filter(([, value]) => typeof value === 'string')
 		.map(([key, value]) => `${key}: ${value}`)
@@ -468,12 +447,12 @@ export function normalizeStructuredPdf(
 	document: StructuredPdfDocument,
 	options: Readonly<{
 		cropUrlPrefix: string;
-		visualPlan?: ReturnType<typeof structuredPdfVisualPlan>;
+		visualPlan: ReturnType<typeof structuredPdfVisualPlan>;
 	}>,
 ) {
 	const entries = walkNodes(document.content);
 	const referenceEntries = entries.filter(
-		(entry): entry is { node: SdtBlockNode; path: number[] } => !('text' in entry.node) && entry.node.reference === true,
+		(entry): entry is { node: SdtBlockNode; path: number[] } => 'reference' in entry.node && entry.node.reference === true,
 	);
 	if (referenceEntries.length > MAX_REFERENCES) throw new Error(`Zotero SDT returned more than ${MAX_REFERENCES} references`);
 	const referenceKeyByPath = new Map<string, string>();
@@ -481,7 +460,7 @@ export function normalizeStructuredPdf(
 	const references: Array<{ key: string } & ReturnType<typeof referenceLabelAndText>> = [];
 	const referencePaths = new Set(referenceEntries.map(({ path }) => refKey(path)));
 	const includeReferencePart = (path: SdtRefPath, value: unknown) =>
-		referencePaths.has(refKey(path)) && !visitedReferencePaths.has(refKey(path)) && isLeafBlock(value as Partial<SdtBlockNode>);
+		referencePaths.has(refKey(path)) && !visitedReferencePaths.has(refKey(path)) && isLeafBlock(value);
 	for (const { node, path } of referenceEntries) {
 		if (visitedReferencePaths.has(refKey(path))) continue;
 		const candidate = getPartChain(document, path as SdtRefPath, { include: includeReferencePart });
@@ -508,7 +487,7 @@ export function normalizeStructuredPdf(
 		),
 	);
 	const linkedNotes = new Map<string, Set<string>>();
-	const visualPlan = options.visualPlan ?? structuredPdfVisualPlan(document);
+	const { visualPlan } = options;
 	const suppressedBlockPaths = new Set<string>();
 	const sourceCropsByBlock = new Map<string, Array<{ altText: string; placement: 'before' | 'replace'; url: string }>>();
 	for (const crop of visualPlan.crops) {
@@ -606,7 +585,7 @@ export function normalizeStructuredPdf(
 		return children;
 	}
 	function toBlock(node: SdtBlockNode, path: RefPath): BlockContent[] {
-		if (node.flowClass === 'excluded' || renderedPartPaths.has(refKey(path))) return [];
+		if (('flowClass' in node && node.flowClass === 'excluded') || renderedPartPaths.has(refKey(path))) return [];
 		if (linkedNotes.has(refKey(path))) return [];
 		const parentPath = path.slice(0, -1);
 		const parts = getPartChain(document, path as SdtRefPath, {
@@ -622,7 +601,7 @@ export function normalizeStructuredPdf(
 			},
 		});
 		if (parts.length >= 2 && sameRef(parts[0]!.ref, path)) {
-			node = mergeParagraphParts(parts as Array<{ block: SdtBlockNode }>);
+			node = mergeParagraphParts(parts as Array<{ block: ParagraphNode }>);
 			for (const part of parts.slice(1)) renderedPartPaths.add(refKey(part.ref));
 		}
 		renderedPartPaths.add(refKey(path));
@@ -658,32 +637,16 @@ export function normalizeStructuredPdf(
 					type: 'list',
 					ordered: node.ordered ?? false,
 					start: node.startIndex ?? 1,
-					children: node.content.flatMap((item, index) =>
-						'text' in item || item.flowClass === 'excluded'
-							? []
-							: [
-									{
-										type: 'listItem' as const,
-										children: blocks(item.content, [...path, index]),
-									},
-								],
-					),
+					children: node.content.map((item, index) => ({ type: 'listItem', children: blocks(item.content, [...path, index]) })),
 				},
 			];
 		}
 		if (node.type === 'table' && !isLeafBlock(node)) {
-			const rows: Array<Array<{ source: SdtBlockNode; content: BlockContent[] }>> = [];
-			for (const [rowIndex, row] of node.content.entries()) {
-				if ('text' in row || row.type !== 'tablerow' || row.flowClass === 'excluded') continue;
-				const cells: (typeof rows)[number] = [];
-				for (const [cellIndex, cell] of row.content.entries()) {
-					if ('text' in cell || cell.type !== 'tablecell' || cell.flowClass === 'excluded') continue;
-					const content = toBlock(cell, [...path, rowIndex, cellIndex]);
-					cells.push({ source: cell, content });
-				}
-				if (cells.length) rows.push(cells);
-			}
-			if (!rows.length) return blocks(node.content, path);
+			const rows = node.content.flatMap((row, rowIndex) =>
+				'text' in row
+					? []
+					: [row.content.map((cell, cellIndex) => ({ source: cell, content: toBlock(cell, [...path, rowIndex, cellIndex]) }))],
+			);
 			// SDT already describes headers, spans and cell blocks. Keep that structure
 			// instead of serializing HTML and asking a text parser to infer it again.
 			const simple = rows.every((cells, rowIndex) =>
@@ -789,18 +752,16 @@ export function normalizeStructuredPdf(
 	}).trimEnd();
 	const visual = {
 		planned: visualPlan.crops.length,
-		ready: visualPlan.crops.length,
 		missing: visualPlan.missing,
 		inferred: visualPlan.crops.filter(({ source }) => source === 'caption-region').length,
-		excludedAuthorTables: visualPlan.excludedAuthorTables.length,
+		excludedAuthorTables: visualPlan.excludedAuthorTables,
 	};
 	const fallbackReasons = new Set<string>();
 	if (visual.missing.length) fallbackReasons.add('incomplete-visuals');
 	if (visual.inferred) fallbackReasons.add('caption-region-inferred');
 	if (!markdown) fallbackReasons.add('empty-output');
 	if (document.catalog.pages.some(({ extractionDegraded }) => extractionDegraded === true)) fallbackReasons.add('degraded-page');
-	const fulltextDocument = document as unknown as Parameters<typeof getFulltextFromStructuredText>[0];
-	const fullPageImagePages = document.catalog.pages.filter((_, index) => !getFulltextFromStructuredText(fulltextDocument, [index])).length;
+	const fullPageImagePages = document.catalog.pages.filter((_, index) => !getFulltextFromStructuredText(document, [index])).length;
 	return {
 		markdown,
 		paperIdentifierText: firstPageIdentifierText(document),
