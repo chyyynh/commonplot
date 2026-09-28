@@ -4,7 +4,6 @@ import { stageResourceAcquisition } from '../adapters/acquire';
 import type { AcquisitionInput } from '../contracts/acquired-resource';
 import { normalizedResourceImageUrl, resourceImageSourceUrls } from '../contracts/image-mapping';
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
-import { shouldEnqueueResourceTranslation } from '../contracts/translation-policy';
 import { AI_STEP_RETRIES } from '../services/ai-model';
 import { stageResourceImages } from '../services/image-rehosting';
 import { summarizeResource } from '../services/summary';
@@ -157,17 +156,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					: undefined,
 				// Ordinary imports share a translation; a reacquisition that replaced the original forces a fresh run.
 				...persisted.map(({ translationStep, persistence: rendition }) =>
-					shouldEnqueueResourceTranslation(rendition)
-						? step.do(translationStep, STORAGE_STEP, () =>
-								enqueueResourceTranslation(
-									this.env,
-									rendition.id,
-									rendition.originalHash,
-									target.kind !== 'draft' && rendition.outcome === 'written',
-									task,
-								),
-							)
-						: undefined,
+					step.do(translationStep, STORAGE_STEP, () =>
+						enqueueResourceTranslation(this.env, rendition, target.kind !== 'draft' && rendition.outcome === 'written', task),
+					),
 				),
 				subjectUrl && outcome === 'written' && subjectResourceId === null
 					? step.do('enqueue-resolved-subject-child-v2', STORAGE_STEP, async () => {

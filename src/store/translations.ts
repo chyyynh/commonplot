@@ -119,8 +119,9 @@ export async function persistMachineZhHantTranslation(
  * qualify: completed attempts stay visible for the Workflow retention window, so a no-op attempt is not repeated.
  */
 export async function listMissingTranslations(db: NodePgDatabase, limit: number) {
-	const { rows } = await db.execute<{ id: string; originalHash: string }>(sql`
-		SELECT resource.id::text, resource.original_hash AS "originalHash"
+	const { rows } = await db.execute<ResourceTranslationCandidate & { id: string; originalHash: string }>(sql`
+		SELECT resource.id::text, resource.original_hash AS "originalHash", resource.kind, resource.scope, resource.url,
+		       resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform", resource.original_lang AS "originalLang"
 		FROM resources resource
 		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 		WHERE resource.scope = 'corpus'

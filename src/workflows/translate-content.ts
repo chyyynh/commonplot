@@ -3,7 +3,6 @@ import { generateText, NoObjectGeneratedError, Output } from 'ai';
 import type { WorkflowStep } from 'cloudflare:workers';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { shouldEnqueueResourceTranslation } from '../contracts/translation-policy';
 import { aiRetryDelay, coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../services/ai-model';
 import {
 	compileMarkdownTranslationArtifact,
@@ -26,12 +25,7 @@ function isBlank(value: string | null | undefined): boolean {
 }
 
 export function planZhHantTranslation(resource: ResourceTranslationInput, force: boolean): ZhHantTranslationPlan {
-	if (
-		!shouldEnqueueResourceTranslation(resource) ||
-		(resource.kind !== 'post' && isBlank(resource.title)) ||
-		isBlank(resource.content) ||
-		resource.translationSource === 'original'
-	) {
+	if ((resource.kind !== 'post' && isBlank(resource.title)) || isBlank(resource.content) || resource.translationSource === 'original') {
 		return { metadata: false, content: false };
 	}
 

@@ -2,6 +2,7 @@
 import { hash } from 'node:crypto';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { isTranslatable, type ResourceTranslationCandidate } from '../contracts/translation-policy';
 import { aiRetryDelay } from '../services/ai-model';
 import { MarkdownTranslationInvariantError } from '../services/markdown-translation';
 import { connectCoreDb } from '../store/db';
@@ -41,11 +42,12 @@ async function currentTranslationAttempt(env: CoreEnv, resourceId: string, origi
 // receives a fresh instance while retries of the same processing Workflow stay idempotent.
 export async function enqueueResourceTranslation(
 	env: CoreEnv,
-	resourceId: string,
-	originalHash: string,
+	resource: ResourceTranslationCandidate & Readonly<{ id: string; originalHash: string }>,
 	force: boolean,
 	parent: ResourceTaskContext,
-): Promise<string> {
+): Promise<string | null> {
+	if (!isTranslatable(resource)) return null;
+	const { id: resourceId, originalHash } = resource;
 	OriginalHashSchema.parse(originalHash);
 	const attempt = force
 		? { id: `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-force-${resourceId}-${hash('sha256', parent.taskId, 'hex').slice(0, 16)}` }
@@ -79,9 +81,7 @@ const TRANSLATION_SWEEP_BATCH = 25;
 export async function enqueueMissingTranslations(env: CoreEnv, db: NodePgDatabase): Promise<void> {
 	const rows = await listMissingTranslations(db, TRANSLATION_SWEEP_BATCH);
 	const results = await Promise.allSettled(
-		rows.map(({ id, originalHash }) =>
-			enqueueResourceTranslation(env, id, originalHash, false, { taskId: 'translation-sweep', required: false }),
-		),
+		rows.map((row) => enqueueResourceTranslation(env, row, false, { taskId: 'translation-sweep', required: false })),
 	);
 	const failed = results.filter((result) => result.status === 'rejected').length;
 	console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Missing translation sweep', admitted: rows.length - failed, failed });

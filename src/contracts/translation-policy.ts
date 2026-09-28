@@ -12,7 +12,8 @@ export type ResourceTranslationCandidate = Readonly<{
 	url: string | null;
 }>;
 
-export function shouldEnqueueResourceTranslation(candidate: ResourceTranslationCandidate): boolean {
+/** The one translation policy: enqueue checks it, and the missing-translation sweep only pre-filters by it. */
+export function isTranslatable(candidate: ResourceTranslationCandidate): boolean {
 	const privateUploadedPdf =
 		candidate.fileType === PDF_MIME &&
 		candidate.resourcePlatform === null &&
