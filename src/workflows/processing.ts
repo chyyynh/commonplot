@@ -16,7 +16,6 @@ import {
 	loadStoredPdf,
 	persistResolvedResource,
 	loadPublicPdfContent,
-	prepareResolvedResource,
 	type ResourcePersistenceTarget,
 } from '../store/resources';
 import { createResourceTask } from './progress';
@@ -91,14 +90,13 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					optionalPreview && !hostedImages.some((image) => image.sourceUrl === optionalPreview) ? null : resource.previewImageUrl,
 			};
 			await task.report('persisting', { stage: 'persisting', status: 'running' });
-			const preparedResource = prepareResolvedResource(summarized, hostedImages);
 			const renditions = [
 				...(privateFile && plan.privateRendition
 					? [
 							{
 								persistStep: 'persist-private-pdf-rendition-v4',
 								translationStep: 'enqueue-private-pdf-translation-v3',
-								resource: prepareResolvedResource({ ...privateFile, summary: privateFile.summary ?? summary }, hostedImages),
+								resource: { ...privateFile, summary: privateFile.summary ?? summary },
 								target: plan.privateRendition,
 							},
 						]
@@ -106,14 +104,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				{
 					persistStep: 'persist-resolved-resource-scope-v7',
 					translationStep: 'enqueue-resource-translation-v5',
-					resource: preparedResource,
+					resource: summarized,
 					target: plan.persistence,
 				},
 			];
 			const persisted = [];
 			for (const rendition of renditions) {
 				const persistence = await step.do(rendition.persistStep, STORAGE_STEP, async () =>
-					persistResolvedResource(await connectCoreDb(this.env), rendition.resource, rendition.target),
+					persistResolvedResource(await connectCoreDb(this.env), rendition.resource, hostedImages, rendition.target),
 				);
 				if (persistence.outcome === 'superseded') {
 					await task.report('persist-superseded', { stage: 'persisting', status: 'superseded' });
@@ -144,7 +142,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				scope === 'corpus' &&
 				persistence.kind === 'paper' &&
 				outcome === 'written' &&
-				preparedResource.references?.some(({ doi, arxivId }) => !doi && !arxivId)
+				summarized.references?.some(({ doi, arxivId }) => !doi && !arxivId)
 					? stageResourceReferences(this.env, step, persistedResourceId).catch((error: unknown) => {
 							console.error({ tag: 'WORKFLOW', msg: 'Reference enrichment failed', resource_id: persistedResourceId, error });
 						})

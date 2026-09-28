@@ -1,13 +1,9 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { fromMarkdown } from 'mdast-util-from-markdown';
-import { gfmFromMarkdown } from 'mdast-util-gfm';
-import { toString } from 'mdast-util-to-string';
-import { gfm } from 'micromark-extension-gfm';
-import type { AcquiredResource, AcquisitionInput, SourceHints } from '../contracts/acquired-resource';
+import type { AcquisitionInput } from '../contracts/acquired-resource';
+import { normalizeAcquiredResource } from '../contracts/normalize-resource';
 import type { PaidPdfFallbackGrant } from '../contracts/pdf-policy';
 import type { ResourceIdentifier } from '../contracts/resource';
-import { detectResourceLanguage, ResourceLanguageSchema } from '../contracts/resource-language';
 import { resolveResourceUrl } from '../contracts/resource-url';
 import { stageHackerNewsAcquisition } from './hackernews';
 import { stageLessWrongAcquisition } from './lesswrong';
@@ -16,17 +12,6 @@ import { stageStoredPdfAcquisition } from './pdf';
 import { stageTwitterAcquisition } from './twitter';
 import { stageWebAcquisition } from './web';
 import { stageYouTubeAcquisition } from './youtube';
-
-/** Remove a duplicate heading only after Core has resolved the resource title. */
-function withoutDuplicateResourceTitle(markdown: string, title: string): string {
-	const first = fromMarkdown(markdown, { extensions: [gfm()], mdastExtensions: gfmFromMarkdown() }).children[0];
-	const comparable = (value: string) => value.normalize('NFC').replace(/\s+/gu, ' ').trim();
-	if (first?.type !== 'heading' || comparable(toString(first, { includeImageAlt: false })) !== comparable(title)) return markdown;
-	const end = first.position?.end.offset;
-	if (end === undefined) return markdown;
-	const body = markdown.slice(end).trimStart();
-	return body || markdown;
-}
 
 /** A linked paper with neither full text nor an abstract is not acquired. */
 async function stageLinkedPaper(
@@ -86,11 +71,11 @@ export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep,
 	if (input.kind === 'storedPdf') {
 		const { file, paper } = await stageStoredPdfUpload(env, step, input, processingId);
 		return paper
-			? { resource: finishAcquisition(paper), privateFile: finishAcquisition(file) }
-			: { resource: finishAcquisition(file), privateFile: null };
+			? { resource: normalizeAcquiredResource(paper), privateFile: normalizeAcquiredResource(file) }
+			: { resource: normalizeAcquiredResource(file), privateFile: null };
 	}
 	const resource = await stageUrlAcquisition(env, step, { ...input, processingId });
-	return { resource: finishAcquisition(resource, input.sourceHints), privateFile: null };
+	return { resource: normalizeAcquiredResource(resource, input.sourceHints), privateFile: null };
 }
 
 /**
@@ -113,18 +98,4 @@ async function stageStoredPdfUpload(
 		creators: paper?.creators.length ? paper.creators : uploaded.creators,
 	};
 	return { file, paper };
-}
-
-function finishAcquisition(resource: AcquiredResource, source?: SourceHints) {
-	const language = ResourceLanguageSchema.safeParse(resource.originalLang).data;
-	const parsedDate = Date.parse(resource.publishedDate ?? '');
-	const publishedDate = Number.isNaN(parsedDate) ? (source?.publishedDate ?? null) : new Date(parsedDate).toISOString();
-	const content = resource.title ? withoutDuplicateResourceTitle(resource.content, resource.title) : resource.content;
-	return {
-		...resource,
-		content,
-		originalLang: detectResourceLanguage(content, language && language !== 'und' ? language : (source?.originalLang ?? 'und')),
-		publishedDate,
-		summary: resource.summary?.trim() || source?.summary?.trim() || null,
-	};
 }

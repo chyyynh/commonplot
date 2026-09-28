@@ -1,21 +1,13 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { AcquiredResource, StoredPdf } from '../contracts/acquired-resource';
+import type { StoredPdf } from '../contracts/acquired-resource';
 import { type HostedResourceImage, hostedResourceImageFields } from '../contracts/image-mapping';
-import { isPaperIdentifierScheme } from '../contracts/paper-identity';
+import type { NormalizedResource } from '../contracts/normalize-resource';
 import { PDF_MIME } from '../contracts/pdf-policy';
 import type { ResourceDraftRelation } from '../contracts/processing-target';
-import {
-	RESOURCE_KIND_METADATA,
-	RESOURCE_PLATFORMS,
-	ResourceCreatorsSchema,
-	type ResourceKind,
-	type ResourcePlatform,
-	ResourceIdentifiersSchema,
-} from '../contracts/resource';
-import { ResourceLanguageSchema } from '../contracts/resource-language';
-import { resolveResourceUrl, type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
+import { ResourceCreatorsSchema, type ResourceKind, type ResourcePlatform, ResourceIdentifiersSchema } from '../contracts/resource';
+import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 
 /**
  * A draft writes an original only where none is readable yet. An existing Resource is
@@ -51,8 +43,6 @@ type StoredResource = Readonly<{
 
 /** A write replaced the original, a degraded reacquisition kept the stored one, or a newer attempt had already committed. */
 type PersistOutcome = 'written' | 'kept' | 'superseded';
-
-type PreparedResource = ReturnType<typeof prepareResolvedResource>;
 
 /** Use the same candidates for admission, canonical persistence, and subject attachment. */
 async function findResourceCandidates(
@@ -91,65 +81,6 @@ export async function findResourcesByUrls(db: NodePgDatabase, urls: readonly Res
 	});
 }
 
-export function prepareResolvedResource(resource: AcquiredResource, hostedImages: readonly HostedResourceImage[]) {
-	const title = resource.title?.trim() || null;
-	const content = resource.content.trim();
-	const sourceName = resource.source.trim();
-	if (!content) throw new TypeError('Resolved Resource requires content');
-	if (resource.kind === 'post' ? title !== null || resource.summary !== null : !title) {
-		throw new TypeError('Posts have no title or summary; every other Resource requires a title');
-	}
-	if (!sourceName) throw new TypeError('Resolved Resource requires a source name');
-	const creators = ResourceCreatorsSchema.parse(resource.creators);
-	const kindMetadata = RESOURCE_KIND_METADATA[resource.kind].parse(resource.kindMetadata);
-	const media = hostedResourceImageFields({ creators, kindMetadata, ogImageUrl: resource.previewImageUrl }, hostedImages);
-	const identifiers = ResourceIdentifiersSchema.parse(resource.resourceIdentifiers);
-	if (
-		resource.resourcePlatform !== null
-			? !(RESOURCE_PLATFORMS[resource.resourcePlatform].kinds as readonly string[]).includes(resource.kind) ||
-				!identifiers.length ||
-				identifiers.some(({ scheme }) => scheme !== resource.resourcePlatform)
-			: resource.kind === 'paper'
-				? !identifiers.length || identifiers.some((identifier) => !isPaperIdentifierScheme(identifier.scheme))
-				: identifiers.length > 0
-	) {
-		throw new TypeError('Resource identifiers do not match its identity');
-	}
-	if (resource.resourcePlatform === 'youtube' ? !resource.youtube : resource.youtube !== undefined) {
-		throw new TypeError('YouTube data requires a YouTube video Resource');
-	}
-	const resolvedUrl = resolveResourceUrl(resource.url);
-	if (resource.url !== null && !resolvedUrl) throw new TypeError('Resource URL must be HTTP(S) without credentials');
-	let publishedDate = resource.publishedDate ? new Date(resource.publishedDate) : null;
-	if (publishedDate && Number.isNaN(publishedDate.getTime())) throw new TypeError('Resource publication date is invalid');
-	const today = new Date().toISOString().slice(0, 10);
-	if (publishedDate && publishedDate.toISOString().slice(0, 10) > today) publishedDate = new Date(today);
-	const subject = resolveResourceUrl(resource.subjectUrl);
-	if (resource.subjectUrl !== null && !subject) throw new TypeError('Subject URL must be HTTP(S) without credentials');
-	return {
-		kind: resource.kind,
-		resourcePlatform: resource.resourcePlatform,
-		content,
-		references: resource.references,
-		creators: media.creators,
-		fileType: resource.fileType ?? null,
-		identifiers,
-		kindMetadata: media.kindMetadata,
-		normalizedUrl: resolvedUrl?.normalizedUrl ?? null,
-		ogImageHeight: media.ogImageHeight,
-		ogImageUrl: media.ogImageUrl,
-		ogImageWidth: media.ogImageWidth,
-		originalLang: ResourceLanguageSchema.parse(resource.originalLang),
-		publishedDate,
-		sourceName,
-		subject,
-		summary: resource.summary?.trim() || null,
-		title,
-		url: resolvedUrl?.url ?? null,
-		youtube: resource.youtube ?? null,
-	};
-}
-
 async function lockResource(db: NodePgDatabase, resourceId: string): Promise<StoredResource> {
 	const result = await db.execute<StoredResource>(sql`
 		SELECT resource.id::text, resource.scope, resource.kind, resource.url,
@@ -172,21 +103,26 @@ async function lockResource(db: NodePgDatabase, resourceId: string): Promise<Sto
 async function writeCanonicalResource(
 	db: NodePgDatabase,
 	resourceId: string,
-	resource: PreparedResource,
+	resource: NormalizedResource,
+	hostedImages: readonly HostedResourceImage[],
 	existing: boolean,
 	subjectResourceId: string | null,
 	fence: number | null,
 ) {
+	const media = hostedResourceImageFields(
+		{ creators: resource.creators, kindMetadata: resource.kindMetadata, ogImageUrl: resource.previewImageUrl },
+		hostedImages,
+	);
 	const columns = sql`
 		kind, resource_platform, source_name, url, normalized_url, file_type, original_lang, published_date,
 		og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id, original_hash,
 		scraped_date, updated_at
 	`;
 	const values = sql`
-		${resource.kind}, ${resource.resourcePlatform}, ${resource.sourceName}, ${resource.url}, ${resource.normalizedUrl},
-		${resource.fileType}, ${resource.originalLang}, ${resource.publishedDate},
-		${resource.ogImageUrl}, ${resource.ogImageWidth}, ${resource.ogImageHeight}, ${JSON.stringify(resource.creators)}::jsonb,
-		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
+		${resource.kind}, ${resource.resourcePlatform}, ${resource.source}, ${resource.url}, ${resource.normalizedUrl},
+		${resource.fileType}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
+		${media.ogImageUrl}, ${media.ogImageWidth}, ${media.ogImageHeight}, ${JSON.stringify(media.creators)}::jsonb,
+		${media.kindMetadata === null ? null : JSON.stringify(media.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
 		(SELECT MD5(jsonb_build_array(lang, title, summary, content)::text) FROM incoming), NOW(), NOW()
 	`;
 	// The cleanup excludes the incoming language: no CTE deletes a row another CTE writes.
@@ -222,12 +158,12 @@ async function writeCanonicalResource(
 		SELECT 1 FROM written_resource JOIN written_original ON written_original.resource_id = written_resource.id
 	`);
 	if (!written.rows.length) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
-	if (resource.identifiers.length) {
+	if (resource.resourceIdentifiers.length) {
 		// Identifier replacement must follow its DELETE; both can target the same keys.
 		await db.execute(sql`
 			INSERT INTO resource_identifiers (resource_id, scheme, value, is_preferred)
 			SELECT ${resourceId}::uuid, scheme, value, preferred
-			FROM jsonb_to_recordset(${JSON.stringify(resource.identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
+			FROM jsonb_to_recordset(${JSON.stringify(resource.resourceIdentifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
 		`);
 	}
 	if (resource.references?.length) {
@@ -258,7 +194,7 @@ async function writeCanonicalResource(
 }
 
 /** Another version's identifiers join the paper that is already stored, so both find it next time. */
-async function mergePaperIdentifiers(db: NodePgDatabase, resourceId: string, identifiers: PreparedResource['identifiers']) {
+async function mergePaperIdentifiers(db: NodePgDatabase, resourceId: string, identifiers: NormalizedResource['resourceIdentifiers']) {
 	if (!identifiers.length) return;
 	await db.execute(sql`
 		INSERT INTO resource_identifiers (resource_id, scheme, value, is_preferred)
@@ -293,10 +229,15 @@ async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relati
 	if (attached.rowCount !== 1) throw new NonRetryableError('Subject parent was reacquired or is no longer eligible for attachment');
 }
 
-export async function persistResolvedResource(db: NodePgDatabase, resource: PreparedResource, target: ResourcePersistenceTarget) {
+export async function persistResolvedResource(
+	db: NodePgDatabase,
+	resource: NormalizedResource,
+	hostedImages: readonly HostedResourceImage[],
+	target: ResourcePersistenceTarget,
+) {
 	const lockKeys = [
 		...(resource.normalizedUrl ? [`url:${resource.normalizedUrl}`] : []),
-		...resource.identifiers.map(({ scheme, value }) => `id:${scheme}:${value}`),
+		...resource.resourceIdentifiers.map(({ scheme, value }) => `id:${scheme}:${value}`),
 		...(resource.subject
 			? [`url:${resource.subject.normalizedUrl}`, ...resource.subject.identifiers.map(({ scheme, value }) => `id:${scheme}:${value}`)]
 			: []),
@@ -315,7 +256,7 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 			if (!owned.rows.length) throw new NonRetryableError('Uploaded PDF ownership was deleted');
 		}
 		const candidates = await findResourceCandidates(tx, [
-			...(target.kind === 'draft' ? [resource] : []),
+			...(target.kind === 'draft' ? [{ normalizedUrl: resource.normalizedUrl, identifiers: resource.resourceIdentifiers }] : []),
 			...(resource.subject ? [resource.subject] : []),
 		]);
 		const rootCandidates = target.kind === 'draft' ? candidates.shift()! : [];
@@ -347,11 +288,11 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 			const subject = subjectCandidates.length === 1 && subjectCandidates[0]?.scope === 'corpus' ? subjectCandidates[0] : null;
 			const subjectResourceId =
 				subject && subject.id !== resourceId && (await lockResource(tx, subject.id)).hasOriginal ? subject.id : null;
-			await writeCanonicalResource(tx, resourceId, resource, root !== null, subjectResourceId, fence);
+			await writeCanonicalResource(tx, resourceId, resource, hostedImages, root !== null, subjectResourceId, fence);
 		} else {
 			if (target.kind === 'existing')
 				console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });
-			if (root?.kind === 'paper' && resource.kind === 'paper') await mergePaperIdentifiers(tx, resourceId, resource.identifiers);
+			if (root?.kind === 'paper' && resource.kind === 'paper') await mergePaperIdentifiers(tx, resourceId, resource.resourceIdentifiers);
 		}
 		if (target.kind === 'draft' && target.relation) await applyDraftRelation(tx, resourceId, target.relation);
 		// Follow-ups read the committed row, which can differ from this draft.
