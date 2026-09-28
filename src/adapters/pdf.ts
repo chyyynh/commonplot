@@ -17,7 +17,7 @@ type PdfBody = Pick<Awaited<ReturnType<typeof parseStoredPdfRepresentation>>, 'm
 async function stagePdfBody(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: Readonly<{ stepKey: string; pdfStorageKey: string; inputContentHash: string; sourceLabel: string; cropUrlPrefix?: string }>,
+	input: Readonly<{ stepKey: string; pdfStorageKey: string; inputContentHash: string; sourceLabel: string; cropUrlPrefix: string }>,
 ): Promise<PdfBody> {
 	const stream = await step.do(`parse-pdf-body-v1-${input.stepKey}`, PDF_PARSE_STEP, async () => {
 		const { markdown, references, paperIdentifierText } = await parseStoredPdfRepresentation(env, input);
@@ -73,6 +73,8 @@ export async function stageStoredPdfAcquisition(
 		pdfStorageKey: resource.storageKey,
 		inputContentHash: resource.contentHash,
 		sourceLabel: `Stored PDF ${target.resourceId}`,
+		// Web serves an owned PDF's crops through the PDF's own file URL.
+		cropUrlPrefix: `/api/media/files/${target.resourceId}?crop=`,
 	});
 	// The first page and the PDF's own properties are where a paper prints its DOI or arXiv id.
 	const printedIdentity = paperIdentityFromText(parsed.paperIdentifierText);

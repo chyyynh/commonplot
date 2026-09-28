@@ -170,6 +170,11 @@
 			"binding": "R2",
 			"bucket_name": "newsence",
 		},
+		{
+			// Public PDF crops, served directly from PUBLIC_MEDIA_URL.
+			"binding": "PUBLIC_MEDIA",
+			"bucket_name": "newsence-public",
+		},
 	],
 	"services": [
 		{
@@ -199,5 +204,6 @@
 	},
 	"vars": {
 		"AI_GATEWAY_ENVIRONMENT": "production",
+		"PUBLIC_MEDIA_URL": "https://media.newsence.app",
 	},
 }

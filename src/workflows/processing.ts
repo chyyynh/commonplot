@@ -110,12 +110,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const persistence = persisted.at(-1)!.persistence;
 			const { id: persistedResourceId, scope, subjectResourceId, originalHash, outcome } = persistence;
 			if (scope === 'corpus' && persistence.fileType === 'application/pdf') {
-				await step.do('publish-public-pdf-crops-v1', STORAGE_STEP, async () =>
-					publishPublicPdfCrops(
-						this.env,
-						persistedResourceId,
-						await withCoreDb(this.env, (db) => loadPublicPdfContent(db, persistedResourceId)),
-					),
+				await step.do('publish-public-pdf-crops-v2', STORAGE_STEP, async () =>
+					publishPublicPdfCrops(this.env, await withCoreDb(this.env, (db) => loadPublicPdfContent(db, persistedResourceId))),
 				);
 			}
 

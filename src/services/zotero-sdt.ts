@@ -491,7 +491,7 @@ export function normalizeStructuredPdf(
 	const suppressedBlockPaths = new Set<string>();
 	const sourceCropsByBlock = new Map<string, Array<{ altText: string; placement: 'before' | 'replace'; url: string }>>();
 	for (const crop of visualPlan.crops) {
-		const entry = { altText: crop.altText, placement: crop.placement, url: `${options.cropUrlPrefix}/${crop.id}.png` };
+		const entry = { altText: crop.altText, placement: crop.placement, url: `${options.cropUrlPrefix}${crop.id}.png` };
 		for (const path of crop.suppressedBlockPaths) suppressedBlockPaths.add(path);
 		const existing = sourceCropsByBlock.get(crop.blockPath);
 		if (existing) existing.push(entry);

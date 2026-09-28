@@ -1,5 +1,5 @@
 /**
- * R2 key layout for PDF derivatives. Web serves the same keys through
+ * R2 key layout for PDF derivatives. Web serves owned crops through
  * `web-tanstack/src/server/storage/keys.server.ts`; change both together.
  */
 export function structuredPdfDocumentKey(pdfStorageKey: string): string {
@@ -17,8 +17,4 @@ export function publicPdfPrefix(sourceHash: string, inputContentHash: string): s
 
 export function publicPdfSourceKey(sourceHash: string, inputContentHash: string): string {
 	return `${publicPdfPrefix(sourceHash, inputContentHash)}/source.pdf`;
-}
-
-export function publicPdfPublicationKey(sourceHash: string, inputContentHash: string): string {
-	return `${publicPdfPrefix(sourceHash, inputContentHash)}/publication.json`;
 }

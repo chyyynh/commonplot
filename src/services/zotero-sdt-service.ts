@@ -2,12 +2,7 @@ import { Buffer } from 'node:buffer';
 import { hash } from 'node:crypto';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { MAX_PDF_BYTES } from '../contracts/pdf-policy.ts';
-import {
-	publicPdfPublicationKey,
-	publicPdfSourceKey,
-	structuredPdfCropPrefix,
-	structuredPdfDocumentKey,
-} from '../contracts/storage-keys.ts';
+import { publicPdfSourceKey, structuredPdfCropPrefix, structuredPdfDocumentKey } from '../contracts/storage-keys.ts';
 import { limitByteStream, readBoundedResponseText } from './response.ts';
 import {
 	normalizeStructuredPdf,
@@ -247,7 +242,7 @@ async function readStructuredPdfArtifact(
 /** One acquisition path for owned uploads and independently fetched public PDFs. */
 export async function parseStoredPdfRepresentation(
 	env: CoreEnv,
-	input: Readonly<{ pdfStorageKey: string; inputContentHash: string; sourceLabel: string; cropUrlPrefix?: string }>,
+	input: Readonly<{ pdfStorageKey: string; inputContentHash: string; sourceLabel: string; cropUrlPrefix: string }>,
 ) {
 	let document = await readStructuredPdfArtifact(env, input.pdfStorageKey, input.inputContentHash);
 	if (!document) {
@@ -263,11 +258,7 @@ export async function parseStoredPdfRepresentation(
 		});
 	}
 	const visualPlan = structuredPdfVisualPlan(document);
-	const cropUrlPrefix = input.cropUrlPrefix ?? '/api/media/pdf-crops';
-	const normalized = normalizeStructuredPdf(document, {
-		visualPlan,
-		cropUrlPrefix: `${cropUrlPrefix}/${input.inputContentHash}`,
-	});
+	const normalized = normalizeStructuredPdf(document, { visualPlan, cropUrlPrefix: input.cropUrlPrefix });
 	// Stage the complete body once. It becomes readable only after every planned
 	// crop is stored and its quality is committed in the same completion manifest.
 	await ensureStructuredPdfSourceCrops(env, {
@@ -316,17 +307,26 @@ export async function storePublicPdfResponse(env: CoreEnv, response: Response, s
 		inputContentHash,
 		pdfStorageKey,
 		sourceLabel: `Public PDF ${sourceHash}`,
-		cropUrlPrefix: `/api/media/pdf-crops/public/${sourceHash}`,
+		cropUrlPrefix: publicPdfCropUrlPrefix(env, sourceHash, inputContentHash),
 	};
 }
 
-const PUBLIC_CROP_PATTERN = /\/api\/media\/pdf-crops\/public\/([a-f\d]{64})\/([a-f\d]{64})\/(\d+(?:\.\d+)*-p\d+-[a-f\d]{16})\.png/gu;
 const MAX_MANIFEST_BYTES = 64 * 1024;
 
-/** Publish only persisted references to crops produced from an independent public fetch. */
-export async function publishPublicPdfCrops(env: CoreEnv, resourceId: string, content: string): Promise<void> {
+/** Public crop URLs are PUBLIC_MEDIA paths: `pdf-crops/{sourceHash}/{inputHash}/{cropId}.png`. */
+function publicPdfCropUrlPrefix(env: CoreEnv, sourceHash: string, inputContentHash: string): string {
+	return `${env.PUBLIC_MEDIA_URL}/pdf-crops/${sourceHash}/${inputContentHash}/`;
+}
+
+/**
+ * Copies the crops that persisted corpus content references into the public
+ * media bucket. Only crops of an independently fetched public PDF qualify.
+ */
+export async function publishPublicPdfCrops(env: CoreEnv, content: string): Promise<void> {
 	const groups = new Map<string, { sourceHash: string; inputHash: string; cropIds: Set<string> }>();
-	for (const [, sourceHash, inputHash, cropId] of content.matchAll(PUBLIC_CROP_PATTERN)) {
+	const origin = env.PUBLIC_MEDIA_URL.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+	const pattern = new RegExp(`${origin}/pdf-crops/([a-f\\d]{64})/([a-f\\d]{64})/(\\d+(?:\\.\\d+)*-p\\d+-[a-f\\d]{16})\\.png`, 'gu');
+	for (const [, sourceHash, inputHash, cropId] of content.matchAll(pattern)) {
 		const groupKey = `${sourceHash}/${inputHash}`;
 		const group = groups.get(groupKey) ?? { sourceHash: sourceHash!, inputHash: inputHash!, cropIds: new Set<string>() };
 		group.cropIds.add(cropId!);
@@ -342,7 +342,8 @@ export async function publishPublicPdfCrops(env: CoreEnv, resourceId: string, co
 		) {
 			throw new Error('Public PDF crop publication has no independent public source');
 		}
-		const object = await env.R2.get(`${structuredPdfCropPrefix(pdfStorageKey, inputHash)}manifest.json`);
+		const cropPrefix = structuredPdfCropPrefix(pdfStorageKey, inputHash);
+		const object = await env.R2.get(`${cropPrefix}manifest.json`);
 		if (!object) throw new Error('Public PDF crop publication manifest is missing');
 		if (object.size > MAX_MANIFEST_BYTES) {
 			await object.body.cancel('Invalid public PDF manifest size');
@@ -359,8 +360,14 @@ export async function publishPublicPdfCrops(env: CoreEnv, resourceId: string, co
 		) {
 			throw new Error('Public PDF crop publication includes unready images');
 		}
-		await env.R2.put(publicPdfPublicationKey(sourceHash, inputHash), JSON.stringify({ resourceId, cropIds: [...cropIds] }), {
-			httpMetadata: { contentType: 'application/json' },
-		});
+		for (const cropId of cropIds) {
+			const publicKey = `pdf-crops/${sourceHash}/${inputHash}/${cropId}.png`;
+			if (await env.PUBLIC_MEDIA.head(publicKey)) continue;
+			const crop = await env.R2.get(`${cropPrefix}${cropId}.png`);
+			if (!crop) throw new Error('Public PDF crop is missing');
+			await env.PUBLIC_MEDIA.put(publicKey, crop.body, {
+				httpMetadata: { cacheControl: 'public, max-age=31536000, immutable', contentType: 'image/png' },
+			});
+		}
 	}
 }
