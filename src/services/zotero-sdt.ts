@@ -111,6 +111,14 @@ function nodeText(node: SdtNode): string {
 	return 'text' in node ? node.text : node.content.map(nodeText).join('');
 }
 
+function cropAltText(node: SdtNode): string {
+	return boundedText(cleanText(nodeText(node)), MAX_SOURCE_CROP_ALT_CHARS);
+}
+
+function noteFootnoteId(key: string): string {
+	return `sdt-note-${key.replaceAll(',', '-')}`;
+}
+
 function mergeParagraphParts(chain: readonly { block: ParagraphNode }[]): ParagraphNode {
 	const first = chain[0]!.block;
 	const content: SdtTextNode[] = [...first.content];
@@ -141,15 +149,9 @@ function referenceLabelAndText(value: string) {
 	const text = cleanText(value);
 	const match = /^(?:\[([^\]]{1,64})\]|(\d{1,6})[.)])\s*/u.exec(text);
 	const label = cleanText(match?.[1] ?? match?.[2] ?? '') || null;
-	const withoutLabel = match ? text.slice(match[0].length).trim() : text;
-	const { doi = null, arxivId = null } = paperIdentityFromText(withoutLabel || text) ?? {};
-	return {
-		doi,
-		arxivId,
-		label,
-		text: withoutLabel || text,
-		...parseReferenceCitation(withoutLabel || text),
-	};
+	const body = (match && text.slice(match[0].length).trim()) || text;
+	const { doi = null, arxivId = null } = paperIdentityFromText(body) ?? {};
+	return { doi, arxivId, label, text: body, ...parseReferenceCitation(body) };
 }
 
 function headingLevels(outline: readonly SdtOutlineItem[], depth = 2, levels = new Map<string, number>()): Map<string, number> {
@@ -328,7 +330,7 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 		if (!rectByPage.size) missing.push({ figureId: `block-${blockIndex}`, reason: 'graphic-geometry-unavailable' });
 		for (const [pageIndex, rect] of [...rectByPage].sort((left, right) => left[0] - right[0])) {
 			const added = addCrop({
-				altText: boundedText(cleanText(nodeText(block)), MAX_SOURCE_CROP_ALT_CHARS),
+				altText: cropAltText(block),
 				blockPath: String(blockIndex),
 				figureId: null,
 				pageIndex,
@@ -418,7 +420,7 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 		const rect: PdfRect = [left, bottom, right, upper].map((value) => Math.round(value * 100) / 100) as PdfRect;
 		if (
 			!addCrop({
-				altText: boundedText(cleanText(nodeText(node)), MAX_SOURCE_CROP_ALT_CHARS),
+				altText: cropAltText(node),
 				blockPath: String(index),
 				figureId,
 				pageIndex,
@@ -536,24 +538,24 @@ export function normalizeStructuredPdf(
 			const markerText = value.trim();
 			const noteKeys = [...new Set((node.refs ?? []).map(refKey).filter((key) => linkedNotes.has(key)))];
 			const targetKeys = ignoredReferences.has(node) ? [] : (node.refs ?? []).flatMap((path) => referenceKeyByPath.get(refKey(path)) ?? []);
-			if (markerText && noteKeys.length) {
-				flush();
-				if (value.startsWith(' ')) children.push({ type: 'text', value: ' ' });
-				for (const key of noteKeys) children.push({ type: 'footnoteReference', identifier: `sdt-note-${key.replaceAll(',', '-')}` });
-				if (value.endsWith(' ')) children.push({ type: 'text', value: ' ' });
-			} else if (
+			let identifiers: string[] = [];
+			if (markerText && noteKeys.length) identifiers = noteKeys.map(noteFootnoteId);
+			else if (
 				targetKeys.length &&
 				markerText &&
 				markerText.length <= MAX_CITATION_MARKER_CHARS &&
 				citationMarkers < MAX_CITATION_MARKERS
 			) {
+				citationMarkers++;
+				identifiers = [...new Set(targetKeys)].map((key) => {
+					citedKeys.add(key);
+					return `paper-${key}`;
+				});
+			}
+			if (identifiers.length) {
 				flush();
 				if (value.startsWith(' ')) children.push({ type: 'text', value: ' ' });
-				citationMarkers++;
-				for (const key of new Set(targetKeys)) {
-					citedKeys.add(key);
-					children.push({ type: 'footnoteReference', identifier: `paper-${key}` });
-				}
+				for (const identifier of identifiers) children.push({ type: 'footnoteReference', identifier });
 				if (value.endsWith(' ')) children.push({ type: 'text', value: ' ' });
 			} else if (value) {
 				const url = safeHttpUrl(node.target?.url);
@@ -730,7 +732,7 @@ export function normalizeStructuredPdf(
 				}
 			}
 		}
-		tree.children.push({ type: 'footnoteDefinition', identifier: `sdt-note-${key.replaceAll(',', '-')}`, children });
+		tree.children.push({ type: 'footnoteDefinition', identifier: noteFootnoteId(key), children });
 	}
 	// Citation identity is native Markdown, so removing images or translating prose
 	// never requires remapping character offsets. The printed bibliography stays intact.
