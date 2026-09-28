@@ -1,4 +1,4 @@
-import type { ProgressReport } from './ingest/progress';
+import type { ProgressReport } from './workflows/progress';
 
 declare global {
 	type CoreEnv = Omit<CoreBindings, 'APP'> & {

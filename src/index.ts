@@ -1,13 +1,11 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod';
+import { PaidPdfFallbackGrantSchema, type PaidPdfFallbackGrant } from './contracts/pdf-policy';
+import { ResourceImportDispatchSchema } from './contracts/processing-target';
+import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url';
 import type {} from './env';
-import { ResourceImportDispatchSchema } from './ingest/admission';
-import { PaidPdfFallbackGrantSchema, type PaidPdfFallbackGrant } from './ingest/platforms/pdf-policy';
-import { resolveResourceUrl, ResourceUrlSchema } from './ingest/platforms/resource-url';
-import { handleRSSCron } from './ingest/platforms/rss';
-import { handleTwitterCron } from './ingest/platforms/twitter';
-import { findResourcesByUrls } from './ingest/resource-persistence';
-import { enqueueMissingTranslations } from './ingest/translation-workflow';
+import { handleRSSCron } from './monitors/rss';
+import { handleTwitterCron } from './monitors/twitter';
 import {
 	loadCorpusDocuments,
 	type PublicResourceSearchInput,
@@ -15,15 +13,17 @@ import {
 	searchPublicResourceIds,
 	searchRelatedResourceIds,
 	syncCorpusItem,
-} from './search-index';
-import { connectCoreDb } from './shared/db';
+} from './search/search-index';
+import { connectCoreDb } from './store/db';
+import { findResourcesByUrls } from './store/resources';
+import { enqueueMissingTranslations } from './workflows/translation';
 
 export { ContainerProxy } from '@cloudflare/containers';
-export { ZoteroSdtContainer } from './ingest/pdf-containers';
-export { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
-export { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
-export { ResourceProcessingV2Workflow } from './ingest/workflow';
-export { YouTubeCaptionFetcher } from './ingest/platforms/youtube-captions';
+export { ZoteroSdtContainer } from './services/zotero-sdt-container';
+export { ResourceTranslationV2Workflow } from './workflows/translation';
+export { SearchIndexRebuildWorkflow } from './search/rebuild-workflow';
+export { ResourceProcessingV2Workflow } from './workflows/processing';
+export { YouTubeCaptionFetcher } from './services/youtube-captions';
 
 // Not strict: messages queued by earlier revisions also carried a progress task id.
 const ResourceSearchSyncMessageSchema = z.object({

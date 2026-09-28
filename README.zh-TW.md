@@ -46,7 +46,7 @@
 
 Web 與 PDF adapter 直接產出可讀的 Resource；paper resolution 在這份 Resource 上補齊書目 identity。
 修改平台行為從對應 adapter 開始，dispatcher 只負責路由。新增平台也要同步更新
-`src/shared/resource.ts` 的 identity 契約與資料庫 constraints。Debug 時先檢查 acquisition step
+`src/contracts/resource.ts` 的 identity 契約與資料庫 constraints。Debug 時先檢查 acquisition step
 輸出的 Resource，再追 analysis、canonical persistence，以及獨立的 app save／後續工作。
 
 ## 運作流程
@@ -252,13 +252,13 @@ AI Search 沿用 `newsence-corpus-v6`。PostgreSQL 是 canonical source，Core
 
 ## 新增擷取 adapter
 
-擷取 adapter 集中在 `ingest/platforms/*.ts`，只放它真正需要的
+擷取 adapter 集中在 `adapters/*.ts`，只放它真正需要的
 discovery / scrape / process 邏輯。App-owned saved URL 以 Workflow draft
 進入 Core，成功處理後才建立 canonical row；upload 則先寫入 `resources`
 與 `user_files`，再以 `resourceId` 啟動 Workflow。Core 在自己的
-`resource-persistence.ts` transaction 寫入 canonical Resource、source 與 subject；
+`store/resources.ts` transaction 寫入 canonical Resource、source 與 subject；
 使用者的 save／container／file target 則由下一個 durable step 交給 Web。
-Translation input query 與唯一 consumer 放在 `translation-workflow.ts`。
+Translation 的 SQL 放在 `store/translations.ts`，Workflow 在 `workflows/translation.ts`。
 
 各軸要分開：acquisition（generic web 或專用 adapter）不是 canonical
 `ResourcePlatform`（`youtube`、`twitter`、`hackernews`、`lesswrong` 或 null），也不是
@@ -270,7 +270,7 @@ paper enrichment 是 workflow stage，依 row 內容或 metadata
 
 新增一個來源最少要做：
 
-1. **Adapter file**（`ingest/platforms/foo.ts`）— discovery / scrape helpers 和可選自訂 processor。
+1. **Adapter file**（`adapters/foo.ts`）— 只負責擷取；需要輪詢的來源另加 `monitors/foo.ts`。
 2. **Canonical fields** — provider payload 在 Core 內正規化成 creators、kind metadata、identifiers 與 optional subject；不保存 provider JSON。
 3. **Monitor**（可選）— 如果來源可以輪詢，從 `src/index.ts` 接上 cron handler。
 4. **Workflow hook**（可選）— 只有在來源需要不同於預設 AI merge 的行為時才加。

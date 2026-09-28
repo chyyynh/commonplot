@@ -43,11 +43,11 @@ Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content
 `platforms/resource-url.ts` resolves platform and paper identities for app lookup, feeds, linked subjects, acquisition, and persistence. It preserves the fetch URL separately from the normalized identity key; redirects and response MIME still select the final adapter. Each adapter owns its source parsing and Resource output.
 Only the output contract and small source-hint rules are shared; there is no generic materializer.
 The Workflow passes those outputs to analysis, image hosting, and persistence.
-`admission.ts` owns processing inputs and monitor dispatch; adapters produce its source hints directly. `acquisition.ts` owns URL/upload/resync routing and the acquired-content contract. `workflow.ts` composes durable stages, while `index.ts` directly re-exports its class for Cloudflare.
+`src/` is layered so each file imports only lower layers: `contracts/` (schemas and the acquired-content contract) → `services/` (external systems) → `adapters/` (provider acquisition, no database) and `store/` (all canonical SQL) → `monitors/` → `workflows/` and `search/`. `adapters/acquire.ts` routes a resolved URL or upload to one adapter; `workflows/processing.ts` reads the stored side of a resync or upload, then composes the durable stages, and `index.ts` re-exports its class for Cloudflare.
 
 Web and PDF adapters produce readable Resources directly; paper resolution adds bibliographic identity to that Resource.
 For platform changes, start in its adapter and keep the dispatcher limited to routing. A new platform also needs its
-identity contract in `src/shared/resource.ts` and matching database constraints. Debug the acquisition step's Resource
+identity contract in `src/contracts/resource.ts` and matching database constraints. Debug the acquisition step's Resource
 output before checking analysis, canonical persistence, and the separate app-save/follow-up steps.
 
 ## How it works
@@ -336,7 +336,7 @@ its landing page.
 
 ## Adding an Ingest Adapter
 
-Ingest adapters live in `ingest/platforms/*.ts` with the
+Ingest adapters live in `adapters/*.ts` with the
 discovery/scrape/process pieces they actually need. New saved URLs and monitored
 items enter the Workflow as immutable drafts; only successful processing creates
 or merges a canonical `resources` row. Core owns canonical source and subject
@@ -359,7 +359,7 @@ resource detection selects LessWrong and YouTube adapters when applicable.
 
 Minimum to add a new ingest source:
 
-1. **Adapter file** (`ingest/platforms/foo.ts`) — discovery/scrape helpers and optional custom processor.
+1. **Adapter file** (`adapters/foo.ts`) — acquisition only; a monitored source adds `monitors/foo.ts`.
 2. **Canonical adapter output** — normalize provider data into common creators,
    versioned kind metadata, exact identifiers, and an optional immediate subject.
 3. **Identity contract** — add the exact locator and valid `(kind, platform)` pair.
