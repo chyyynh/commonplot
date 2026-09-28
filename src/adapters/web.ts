@@ -6,6 +6,7 @@ import { toHtml } from 'hast-util-to-html';
 import { defaultHandlers } from 'hast-util-to-mdast';
 import { DOMParser } from 'linkedom';
 import stripIndent from 'strip-indent';
+import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { normalizedResourceImageUrl } from '../contracts/image-mapping';
 import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
@@ -15,12 +16,42 @@ import { rehostInlineImages } from '../services/image-rehosting';
 import { limitByteStream } from '../services/response';
 import { storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 import { stagePublicPdfAcquisition } from './pdf';
-import { fetchSubstackPost, type SubstackPost } from './substack';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
+
+const SubstackPreloadsSchema = z.object({
+	post: z
+		.object({
+			title: z.string(),
+			subtitle: z.string().nullish(),
+			post_date: z.string().nullish(),
+			// `everyone` is the only audience whose body the public page carries in full.
+			audience: z.string(),
+			publishedBylines: z.array(z.object({ name: z.string().nullish() })).nullish(),
+		})
+		.nullish(),
+});
+
+/**
+ * Substack pages, custom domains included, embed their post record in `window._preloads`.
+ * Its `/api/v1` is Substack's own app API and rate-limits Cloudflare egress, so it is not used.
+ * Paid and subscriber-only posts carry only a preview, so they are not acquired.
+ */
+function substackPost(html: string) {
+	const literal = html.match(/window\._preloads\s*=\s*JSON\.parse\(("(?:[^"\\]|\\.)*")\)/)?.[1];
+	const post = literal ? SubstackPreloadsSchema.parse(JSON.parse(JSON.parse(literal))).post : null;
+	if (!post) return null;
+	if (post.audience !== 'everyone') throw new NonRetryableError(`Substack post is limited to ${post.audience} readers`);
+	return {
+		title: post.title.trim(),
+		subtitle: post.subtitle?.trim() || null,
+		publishedDate: post.post_date?.trim() || null,
+		authors: (post.publishedBylines ?? []).flatMap(({ name }) => (name?.trim() ? [name.trim()] : [])),
+	};
+}
 async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredResource & { kind: 'blog'; resourcePlatform: null }> {
 	// linkedom does not imply the <head>/<body> that HTML lets pages omit, and Readability
 	// needs <body>. Serialize the spec parser's tree so linkedom reads the implied structure.
@@ -63,10 +94,9 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 	// Substack/Pencraft uses this article-body hierarchy on custom domains too,
 	// so detect its source DOM instead of hard-coding substack.com hostnames.
 	const substackArticle = document.querySelector('.dt-post-body .available-content .body.markup');
-	let substackPost: SubstackPost | null = null;
+	// The preloaded post owns access, bylines, and dates; a paid post is refused before extraction.
+	const substack = substackArticle ? substackPost(html) : null;
 	if (substackArticle) {
-		// The post API owns access, bylines, and dates; a paid post is refused before extraction.
-		substackPost = await fetchSubstackPost(html, url);
 		// @mozilla/readability's `unlikelyCandidates` rule contains "header", so
 		// Substack's class would make it discard the otherwise semantic h2/h3.
 		for (const heading of substackArticle.querySelectorAll('.header-anchor-post')) {
@@ -96,11 +126,11 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 	}).parse();
 	if (!article?.content?.trim()) throw new NonRetryableError('No readable article content found');
 	const articleHtml = article.content.trim();
-	const title = substackPost?.title || article.title?.trim();
+	const title = substack?.title || article.title?.trim();
 	if (!title) throw new NonRetryableError('Extracted article has no title');
 	const siteName = article.siteName?.trim() || new URL(url).hostname;
 	const author = article.byline?.trim();
-	const authors = substackPost?.authors.length ? substackPost.authors : author ? [author] : [];
+	const authors = substack?.authors.length ? substack.authors : author ? [author] : [];
 
 	const content = stringifyMarkdown(
 		htmlToMdast(articleHtml, {
@@ -128,8 +158,8 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 		content,
 		source: siteName,
 		originalLang: article.lang || 'und',
-		publishedDate: substackPost?.publishedDate ?? (article.publishedTime?.trim() || null),
-		summary: substackPost?.subtitle ?? summary,
+		publishedDate: substack?.publishedDate ?? (article.publishedTime?.trim() || null),
+		summary: substack?.subtitle ?? summary,
 		creators: authors.map((literal) => ({ role: 'author', literal })),
 		kindMetadata: { siteName },
 		previewImageUrl: normalizedResourceImageUrl(image, url),
