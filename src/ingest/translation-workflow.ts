@@ -474,12 +474,7 @@ async function loadResourceTranslationInput(
 			zh_hant.content IS NOT NULL AS "hasTranslatedContent",
 			zh_hant.source AS "translationSource",
 			resource.url,
-			MD5(jsonb_build_array(
-				original.lang,
-				original.title,
-				original.summary,
-				original.content
-			)::text) AS "translationRevision"
+			resource.original_hash AS "translationRevision"
 		FROM resources resource
 		JOIN resource_translations original
 		  ON original.resource_id = resource.id
@@ -516,13 +511,7 @@ async function persistMachineZhHantTranslation(
 			FROM resources resource
 			WHERE resource.id = ${resourceId}::uuid
 			  AND (resource.scope = 'corpus' OR ${PRIVATE_UPLOADED_PDF_TRANSLATION_SQL})
-			  AND EXISTS (
-				SELECT 1
-				FROM resource_translations original
-				WHERE original.resource_id = resource.id
-				  AND original.lang = resource.original_lang
-				  AND MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) = ${translationRevision}
-			  )
+			  AND resource.original_hash = ${translationRevision}
 			FOR UPDATE OF resource
 		)
 		INSERT INTO resource_translations AS current_translation (
@@ -613,11 +602,11 @@ const TRANSLATION_SWEEP_BATCH = 25;
  */
 export async function enqueueMissingTranslations(env: CoreEnv, db: NodePgDatabase): Promise<void> {
 	const { rows } = await db.execute<{ id: string; translationRevision: string }>(sql`
-		SELECT resource.id::text,
-		       MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS "translationRevision"
+		SELECT resource.id::text, resource.original_hash AS "translationRevision"
 		FROM resources resource
 		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 		WHERE resource.scope = 'corpus'
+		  AND resource.original_hash IS NOT NULL
 		  AND resource.url IS NOT NULL
 		  AND resource.original_lang <> 'zh-Hant'
 		  AND resource.kind = ANY(${sql.param([...TRANSLATABLE_RESOURCE_KINDS])}::text[])

@@ -9,6 +9,7 @@ import { summarizeResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { createResourceTask } from './progress';
 import {
+	claimAcquisitionFence,
 	persistResolvedResource,
 	loadPublicPdfContent,
 	prepareResolvedResource,
@@ -40,6 +41,13 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			}
 			if (!(await task.start(target.kind === 'storedBlob' ? 'parsing' : 'acquiring')))
 				return target.kind === 'draft' ? {} : { resourceId: target.resourceId };
+			// Reacquiring an existing Resource commits only if no newer attempt has committed first.
+			const fence =
+				target.kind === 'draft'
+					? null
+					: await step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () =>
+							claimAcquisitionFence(await connectCoreDb(this.env), target.resourceId),
+						);
 			// Provider reconciliation belongs to this attempt, not the resource shared by later retries.
 			const processingId = event.instanceId;
 			// An uploaded PDF that names a paper publishes that paper, built without the upload's text,
@@ -52,7 +60,13 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					? { kind: 'draft', ...(target.relation ? { relation: target.relation } : {}) }
 					: uploadedPaper
 						? { kind: 'draft', ownedBlobId }
-						: { kind: 'existing', resourceId: target.resourceId, ...(ownedBlobId ? { ownedBlobId } : {}) };
+						: {
+								kind: 'existing',
+								resourceId: target.resourceId,
+								fence: fence!,
+								...(target.kind === 'reacquire' && target.force ? { force: true } : {}),
+								...(ownedBlobId ? { ownedBlobId } : {}),
+							};
 			const saveTarget =
 				target.kind === 'draft'
 					? (target.saveTarget ?? null)
@@ -105,12 +119,18 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					persistResolvedResource(await connectCoreDb(this.env), privateRendition, {
 						kind: 'existing',
 						resourceId: target.resourceId,
+						fence: fence!,
 						ownedBlobId,
 					}),
 				);
+				if (privatePersistence.superseded) {
+					await task.report('persist-superseded', { stage: 'persisting', status: 'superseded' });
+					return { resourceId: target.resourceId };
+				}
 				if (shouldEnqueueResourceTranslation(privatePersistence))
 					translationTargets.push({
-						...privatePersistence,
+						resourceId: privatePersistence.resourceId,
+						translationRevision: privatePersistence.originalHash,
 						forceRunKey: forceProcessingRunKey,
 						stepName: 'enqueue-private-pdf-translation-v2',
 					});
@@ -131,11 +151,15 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				});
 				return result;
 			});
-			const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision, acquisitionRevision } = persistence;
+			if (persistence.superseded) {
+				await task.report('persist-superseded', { stage: 'persisting', status: 'superseded' });
+				return { resourceId: persistence.resourceId };
+			}
+			const { resourceId: persistedResourceId, scope, subjectAttached, originalHash } = persistence;
 			if (shouldEnqueueResourceTranslation(persistence))
 				translationTargets.push({
 					resourceId: persistedResourceId,
-					translationRevision,
+					translationRevision: originalHash,
 					forceRunKey: persistence.originalWritten ? forceProcessingRunKey : undefined,
 					stepName: 'enqueue-resource-translation-v4',
 				});
@@ -183,7 +207,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					? step.do('enqueue-resolved-subject-child-v2', STORAGE_STEP, async () => {
 							const subjectTarget = ResourceDraftTargetSchema.parse({
 								kind: 'draft',
-								relation: { kind: 'subject', parentResourceId: persistedResourceId, parentAcquisitionRevision: acquisitionRevision },
+								relation: { kind: 'subject', parentResourceId: persistedResourceId, parentOriginalHash: originalHash },
 								// Carrier-resolved hints only; the subject page still wins when it states its own date.
 								...(resource.publishedDate ? { sourceHints: { publishedDate: resource.publishedDate } } : {}),
 								url: subjectUrl,

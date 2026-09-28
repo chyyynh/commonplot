@@ -9,7 +9,7 @@ import { findResourcesByUrls } from './resource-persistence';
 
 const ResourceDraftRelationSchema = z.discriminatedUnion('kind', [
 	z.strictObject({ kind: z.literal('source'), sourceId: z.uuid() }),
-	z.strictObject({ kind: z.literal('subject'), parentResourceId: z.uuid(), parentAcquisitionRevision: z.hash('md5') }),
+	z.strictObject({ kind: z.literal('subject'), parentResourceId: z.uuid(), parentOriginalHash: z.hash('md5') }),
 ]);
 
 export type ResourceDraftRelation = z.infer<typeof ResourceDraftRelationSchema>;
@@ -30,19 +30,31 @@ export const ResourceDraftTargetSchema = z.strictObject({
 		.optional(),
 });
 
-const StoredResourceTargetSchema = z.strictObject({
-	kind: z.enum(['storedBlob', 'reacquire']),
+const StoredBlobTargetSchema = z.strictObject({
+	kind: z.literal('storedBlob'),
 	paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
 	resourceId: z.uuid(),
 });
 
-export const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [StoredResourceTargetSchema, ResourceDraftTargetSchema]);
+const ReacquireTargetSchema = z.strictObject({
+	kind: z.literal('reacquire'),
+	/** Replace the stored original even when the new one is less complete or much shorter. */
+	force: z.boolean().optional(),
+	paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
+	resourceId: z.uuid(),
+});
+
+export const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
+	StoredBlobTargetSchema,
+	ReacquireTargetSchema,
+	ResourceDraftTargetSchema,
+]);
 
 export type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSchema>;
 
 export const ResourceImportDispatchSchema = z.strictObject({
 	workflowId: z.string().pipe(z.templateLiteral(['app-ingest-v1-', z.uuidv4()])),
-	payload: z.discriminatedUnion('kind', [ResourceDraftTargetSchema, StoredResourceTargetSchema.extend({ kind: z.literal('storedBlob') })]),
+	payload: z.discriminatedUnion('kind', [ResourceDraftTargetSchema, StoredBlobTargetSchema]),
 });
 
 const SourceResourceDraftSchema = ResourceDraftTargetSchema.pick({ url: true, sourceHints: true });

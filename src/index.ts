@@ -122,13 +122,17 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		]);
 	}
 
-	/** Reacquire a URL-backed resource through the enrichment workflow. */
-	async resyncResource(resourceId: string, paidPdfFallback?: PaidPdfFallbackGrant) {
+	/**
+	 * Reacquire a URL-backed resource through the enrichment workflow. A much shorter result keeps
+	 * the stored original unless `force` is set, e.g. when the source itself was cut down.
+	 */
+	async resyncResource(resourceId: string, paidPdfFallback?: PaidPdfFallbackGrant, force?: boolean) {
 		const id = z.uuid().parse(resourceId);
 		const grant = PaidPdfFallbackGrantSchema.optional().parse(paidPdfFallback);
+		const forced = z.boolean().optional().parse(force);
 		const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
 			id: `resource-resync-v3-${id}-${crypto.randomUUID()}`,
-			params: { kind: 'reacquire', ...(grant ? { paidPdfFallback: grant } : {}), resourceId: id },
+			params: { kind: 'reacquire', ...(grant ? { paidPdfFallback: grant } : {}), ...(forced ? { force: true } : {}), resourceId: id },
 		});
 		return instance.id;
 	}

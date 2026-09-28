@@ -17,17 +17,26 @@ import { resolveResourceUrl, type ResolvedResourceUrl } from './platforms/resour
 import type { YouTubeTranscript } from './platforms/youtube';
 import { ResourceLanguageSchema } from './resource-language';
 
+/**
+ * A draft writes an original only where none is readable yet. An existing Resource is
+ * reacquired under a fencing token from `claimAcquisitionFence`: only a token newer than the
+ * last committed one may replace its original, so an older attempt that finishes later loses.
+ */
 export type ResourcePersistenceTarget = { ownedBlobId?: string } & (
 	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation }>
-	| Readonly<{ kind: 'existing'; resourceId: string }>
+	| Readonly<{ kind: 'existing'; resourceId: string; fence: number; force?: boolean }>
 );
+
+/** A reacquired original this much shorter than the stored one is kept out unless forced (error or challenge pages). */
+const MIN_REACQUIRED_CONTENT_RATIO = 0.5;
 
 type LockedResource = Readonly<{
 	id: string;
 	hasOriginal: boolean;
+	originalChars: number;
+	committedSeq: number;
 	subjectResourceId: string | null;
-	translationRevision: string;
-	acquisitionRevision: string;
+	originalHash: string | null;
 	kind: ResourceKind;
 	fileType: string | null;
 	resourcePlatform: ResourcePlatform | null;
@@ -35,6 +44,8 @@ type LockedResource = Readonly<{
 	scope: 'corpus' | 'private';
 	url: string | null;
 }>;
+
+type AcceptedResource = Omit<LockedResource, 'hasOriginal' | 'originalChars' | 'committedSeq'>;
 
 type PreparedResource = ReturnType<typeof prepareResolvedResource>;
 
@@ -143,8 +154,9 @@ async function lockResource(db: NodePgDatabase, resourceId: string): Promise<Loc
 		       resource.original_lang AS "originalLang", resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform",
 		       resource.subject_resource_id::text AS "subjectResourceId",
 		       COALESCE((resource.kind = 'post' OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> '', false) AS "hasOriginal",
-		       MD5(jsonb_build_array(original.lang, original.title, original.summary, original.content)::text) AS "translationRevision",
-		       MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) AS "acquisitionRevision"
+		       COALESCE(CHAR_LENGTH(original.content), 0) AS "originalChars",
+		       resource.committed_seq AS "committedSeq",
+		       resource.original_hash AS "originalHash"
 		FROM resources resource
 		LEFT JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 		WHERE resource.id = ${resourceId}::uuid
@@ -161,6 +173,7 @@ async function writeCanonicalResource(
 	resource: PreparedResource,
 	existing: boolean,
 	subjectResourceId: string | null,
+	fence: number | null,
 ) {
 	const columns = sql`
 		kind, resource_platform, source_name, url, normalized_url, file_type, original_lang, published_date,
@@ -175,14 +188,14 @@ async function writeCanonicalResource(
 		NOW(), NOW()
 	`;
 	// The cleanup excludes the incoming language: no CTE deletes a row another CTE writes.
-	const written = await db.execute<{ revision: string; acquisition_revision: string }>(sql`
+	const written = await db.execute<{ revision: string }>(sql`
 		WITH written_resource AS (
 			${
 				!existing
 					? sql`INSERT INTO resources (id, scope, ${columns}) VALUES (${resourceId}::uuid, 'corpus', ${values})`
 					: sql`UPDATE resources SET (${columns}) = (${values}) WHERE id = ${resourceId}::uuid`
 			}
-			RETURNING id, MD5(EXTRACT(EPOCH FROM scraped_date)::text) AS acquisition_revision
+			RETURNING id
 		), cleared_identifiers AS (
 			DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid AND ${existing}
 		), cleared_references AS (
@@ -202,7 +215,14 @@ async function writeCanonicalResource(
 				(EXCLUDED.title, EXCLUDED.summary, EXCLUDED.content, EXCLUDED.source, NULL, EXCLUDED.updated_at)
 			RETURNING MD5(jsonb_build_array(lang, title, summary, content)::text) AS revision
 		)
-		SELECT revision, acquisition_revision FROM written_resource CROSS JOIN written_original
+		SELECT revision FROM written_resource CROSS JOIN written_original
+	`);
+	const original = written.rows[0];
+	if (!original) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
+	// The row was already written by the CTE above; record the accepted revision and token in a second statement.
+	await db.execute(sql`
+		UPDATE resources SET original_hash = ${original.revision}, committed_seq = COALESCE(${fence}::integer, committed_seq)
+		WHERE id = ${resourceId}::uuid
 	`);
 	if (resource.identifiers.length) {
 		// Identifier replacement must follow its DELETE; both can target the same keys.
@@ -237,9 +257,7 @@ async function writeCanonicalResource(
 		`);
 		if (!savedTranscript.rows.length) throw new NonRetryableError('YouTube reacquisition returned no captions for an existing transcript');
 	}
-	const original = written.rows[0];
-	if (!original) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
-	return { translationRevision: original.revision, acquisitionRevision: original.acquisition_revision };
+	return { originalHash: original.revision };
 }
 
 /** Another version's identifiers join the paper that is already stored, so both find it next time. */
@@ -275,7 +293,7 @@ async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relati
 		      AND BTRIM(COALESCE(original.content, '')) <> ''
 		  )
 		  AND id <> ${resourceId}::uuid
-		  AND MD5(EXTRACT(EPOCH FROM scraped_date)::text) = ${relation.parentAcquisitionRevision}
+		  AND original_hash = ${relation.parentOriginalHash}
 	`);
 	if (attached.rowCount !== 1) throw new NonRetryableError('Subject parent was reacquired or is no longer eligible for attachment');
 }
@@ -313,34 +331,66 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 		const existingId = target.kind === 'existing' ? target.resourceId : rootCandidates[0]?.id;
 		const root = existingId ? await lockResource(tx, existingId) : null;
 		const resourceId = root?.id ?? crypto.randomUUID();
-		const originalWritten = target.kind === 'existing' || !root?.hasOriginal;
+		const fence = target.kind === 'existing' ? target.fence : null;
+		if (root && fence !== null && root.committedSeq > fence) {
+			console.info({
+				tag: 'PERSIST',
+				msg: 'Superseded by a newer acquisition',
+				resource_id: resourceId,
+				fence,
+				committed: root.committedSeq,
+			});
+			return { ...acceptedResult(root), originalWritten: false, superseded: true };
+		}
+		// A retried step whose commit already landed replays it instead of writing again.
+		const replayed = root !== null && fence !== null && root.committedSeq === fence;
+		const originalWritten =
+			replayed || !root?.hasOriginal || (target.kind === 'existing' && (target.force || !isDegradedOriginal(resource.content, root)));
+		if (target.kind === 'existing' && !originalWritten)
+			console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });
 		let subjectResourceId = root?.subjectResourceId ?? null;
-		let accepted = root;
-		if (originalWritten) {
+		let accepted: AcceptedResource | null = root;
+		if (originalWritten && !replayed) {
 			const subject = subjectCandidates.length === 1 && subjectCandidates[0]?.scope === 'corpus' ? subjectCandidates[0] : null;
 			subjectResourceId = subject && subject.id !== resourceId && (await lockResource(tx, subject.id)).hasOriginal ? subject.id : null;
-			const written = await writeCanonicalResource(tx, resourceId, resource, root !== null, subjectResourceId);
-			accepted = { ...resource, ...written, id: resourceId, scope: root?.scope ?? 'corpus', hasOriginal: true, subjectResourceId };
+			const written = await writeCanonicalResource(tx, resourceId, resource, root !== null, subjectResourceId, fence);
+			accepted = { ...resource, ...written, id: resourceId, scope: root?.scope ?? 'corpus', subjectResourceId };
 		} else if (root?.kind === 'paper' && resource.kind === 'paper') {
 			await mergePaperIdentifiers(tx, resourceId, resource.identifiers);
 		}
 		if (target.kind === 'draft' && target.relation) await applyDraftRelation(tx, resourceId, target.relation);
 		// Follow-ups use the accepted original, which can differ from this draft.
-		const { scope, kind, fileType, resourcePlatform, originalLang, url, translationRevision, acquisitionRevision } = accepted!;
-		return {
-			resourceId,
-			scope,
-			kind,
-			fileType,
-			resourcePlatform,
-			originalLang,
-			url,
-			translationRevision,
-			acquisitionRevision,
-			originalWritten,
-			subjectAttached: subjectResourceId !== null,
-		};
+		return { ...acceptedResult({ ...accepted!, id: resourceId, subjectResourceId }), originalWritten, superseded: false };
 	});
+}
+
+function isDegradedOriginal(content: string, stored: LockedResource): boolean {
+	return stored.hasOriginal && content.length < stored.originalChars * MIN_REACQUIRED_CONTENT_RATIO;
+}
+
+function acceptedResult(accepted: AcceptedResource) {
+	const { id, scope, kind, fileType, resourcePlatform, originalLang, url, originalHash, subjectResourceId } = accepted;
+	if (!originalHash) throw new Error(`Resource ${id} has no recorded original revision`);
+	return {
+		resourceId: id,
+		scope,
+		kind,
+		fileType,
+		resourcePlatform,
+		originalLang,
+		url,
+		originalHash,
+		subjectAttached: subjectResourceId !== null,
+	};
+}
+
+/** Issue the next fencing token for reacquiring an existing Resource; call it inside the attempt's first durable step. */
+export async function claimAcquisitionFence(db: NodePgDatabase, resourceId: string): Promise<number> {
+	const { rows } = await db.execute<{ fence: number }>(sql`
+		UPDATE resources SET acquisition_seq = acquisition_seq + 1 WHERE id = ${resourceId}::uuid RETURNING acquisition_seq AS fence
+	`);
+	if (!rows[0]) throw new NonRetryableError(`Resource ${resourceId} was not found`);
+	return rows[0].fence;
 }
 
 /** Read the accepted corpus rendition, which may differ from the incoming private PDF. */
