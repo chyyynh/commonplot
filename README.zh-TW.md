@@ -136,8 +136,6 @@ AI 分析透過 Workers AI binding 與 AI Gateway 執行，不需要外部 LLM s
 wrangler secret put KAITO_API_KEY            # Twitter 監控
 wrangler secret put YOUTUBE_API_KEY          # YouTube 監控
 wrangler secret put OPENALEX_API_KEY          # 論文 metadata enrichment
-wrangler secret put LLAMA_CLOUD_API_KEY       # 付費 PDF fallback
-wrangler secret put LLAMA_CLOUD_PROJECT_ID    # 此 deployment 專用的 Llama Cloud project
 ```
 
 Zotero Structured Document Text 是主要 PDF parser。私人上傳只會串流到
@@ -146,15 +144,8 @@ Markdown、bibliography、citation links 與 PDF source coordinates，並把有�
 上限的 SDT JSON 存在原始 R2 object 旁，以來源 SHA-256 驗證。同一份 document 的
 第一頁與 PDF 屬性提供上傳檔的 DOI／arXiv id，Crossref 則補齊 bibliography metadata。
 
-LlamaParse 保留為 local-first OCR fallback。Web 負責產品 kill switch 與 Autumn
-資格，並在 authenticated URL 與新上傳 PDF workflow 附上單份文件的頁數
-grant。Core 只在 SDT extraction 為空、degraded 或大部分頁面只有圖片時執行
-已授權的 fallback，且獨立強制 100 頁與 25 MiB 安全上限。私人上傳使用暫時的
-Llama Cloud file，Core 會在 fallback 完成或中止時刪除；不明確的 provider
-mutation 會直接失敗，並留下穩定的 external ID 供 operator 清理。帶 OpenAlex
-key 的 content URL 仍只在本地處理。Provider adapter 固定使用美國 API、
-`cost_effective` tier 與具日期的 parser version。只有在明確授權 development
-smoke 並記錄實際 credits 後，才可開啟 Web grant。
+沒有文字層的 PDF 會以不可重試的「需要 OCR」錯誤結束，不再有 OCR fallback。
+帶 OpenAlex key 的 content URL 仍只在本地處理。
 
 ### 5. 部署
 
@@ -214,8 +205,6 @@ Secrets（透過 `wrangler secret put` 設定）：
 | `KAITO_API_KEY`                | 是   | 啟用 Twitter 監控             |
 | `YOUTUBE_API_KEY`              | 是   | 啟用 YouTube 頻道監控         |
 | `OPENALEX_API_KEY`             | 是   | 啟用精確論文 metadata enrichment |
-| `LLAMA_CLOUD_API_KEY`          | 是   | 此 deployment 的 LlamaParse API key |
-| `LLAMA_CLOUD_PROJECT_ID`       | 是   | 此 deployment 隔離使用的 Llama Cloud project |
 
 ## Canonical resource identity
 

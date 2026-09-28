@@ -186,21 +186,20 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 
 /** Read the stored side of a reacquisition or an upload here, so adapters never touch the database. */
 async function loadAcquisitionInput(env: CoreEnv, step: WorkflowStep, target: ResourceProcessingTarget): Promise<AcquisitionInput> {
-	const paidPdfFallback = target.paidPdfFallback ?? null;
 	switch (target.kind) {
 		case 'draft':
-			return { kind: 'url', url: target.url, paidPdfFallback, ...(target.sourceHints ? { sourceHints: target.sourceHints } : {}) };
+			return { kind: 'url', url: target.url, ...(target.sourceHints ? { sourceHints: target.sourceHints } : {}) };
 		case 'reacquire': {
 			const source = await step.do('load-resource-reacquisition-source-v3', STORAGE_STEP, async () =>
 				withCoreDb(env, (db) => loadReacquisitionSource(db, target.resourceId)),
 			);
-			return { kind: 'url', ...source, paidPdfFallback };
+			return { kind: 'url', ...source };
 		}
 		case 'storedBlob': {
 			const pdf = await step.do('load-stored-pdf-input-v1', STORAGE_STEP, async () =>
 				withCoreDb(env, (db) => loadStoredPdf(db, target.resourceId)),
 			);
-			return { kind: 'storedPdf', resourceId: target.resourceId, pdf, paidPdfFallback };
+			return { kind: 'storedPdf', resourceId: target.resourceId, pdf };
 		}
 	}
 }

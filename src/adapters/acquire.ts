@@ -2,7 +2,6 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { AcquisitionInput } from '../contracts/acquired-resource';
 import { normalizeAcquiredResource } from '../contracts/normalize-resource';
-import type { PaidPdfFallbackGrant } from '../contracts/pdf-policy';
 import type { ResourceIdentifier } from '../contracts/resource';
 import { resolveResourceUrl } from '../contracts/resource-url';
 import { stageHackerNewsAcquisition } from './hackernews';
@@ -28,7 +27,6 @@ async function stageUrlAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: {
-		paidPdfFallback: PaidPdfFallbackGrant | null;
 		processingId: string;
 		url: string;
 		identifiers?: ResourceIdentifier[];
@@ -88,7 +86,7 @@ async function stageStoredPdfUpload(
 	input: Extract<AcquisitionInput, { kind: 'storedPdf' }>,
 	processingId: string,
 ) {
-	const { titlePageText, resourceIdentifiers, ...uploaded } = await stageStoredPdfAcquisition(env, step, input, processingId);
+	const { titlePageText, resourceIdentifiers, ...uploaded } = await stageStoredPdfAcquisition(env, step, input);
 	const paper = await stagePaper(env, step, { identifiers: resourceIdentifiers, titlePageText, url: null, processingId });
 	// A file that is a paper carries the paper's title and authors instead of its file name.
 	const file = {

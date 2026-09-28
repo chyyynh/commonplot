@@ -175,7 +175,7 @@ async function stagePaperPdfContent(env: CoreEnv, step: WorkflowStep, input: { c
 				return storePublicPdfResponse(env, response, input.contentPdfUrl);
 			},
 		);
-		const resource = await stagePublicPdfAcquisition(env, step, { source, grant: null, processingId: input.processingId });
+		const resource = await stagePublicPdfAcquisition(env, step, source);
 		console.info({ tag: 'PAPER_CONTENT', event: 'pdf_acquired', processing_id: input.processingId, chars: resource.content.length });
 		return resource;
 	} catch (error) {

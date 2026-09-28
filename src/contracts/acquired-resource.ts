@@ -1,4 +1,3 @@
-import type { PaidPdfFallbackGrant } from './pdf-policy';
 import type { ReferenceCitation } from './reference-citation';
 import type { ResourceCreator, ResourceIdentifier, ResourceKind, ResourceKindMetadata, ResourcePlatform } from './resource';
 
@@ -62,8 +61,7 @@ export type AcquisitionInput = Readonly<
 			kind: 'url';
 			url: string;
 			identifiers?: ResourceIdentifier[];
-			paidPdfFallback: PaidPdfFallbackGrant | null;
 			sourceHints?: SourceHints;
 	  }
-	| { kind: 'storedPdf'; resourceId: string; pdf: StoredPdf; paidPdfFallback: PaidPdfFallbackGrant | null }
+	| { kind: 'storedPdf'; resourceId: string; pdf: StoredPdf }
 >;

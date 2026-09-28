@@ -187,8 +187,6 @@ AI analysis uses the Workers AI binding through AI Gateway, so no external LLM s
 wrangler secret put KAITO_API_KEY            # Twitter monitoring
 wrangler secret put YOUTUBE_API_KEY          # YouTube monitoring
 wrangler secret put OPENALEX_API_KEY          # Paper metadata enrichment
-wrangler secret put LLAMA_CLOUD_API_KEY       # Paid PDF fallback
-wrangler secret put LLAMA_CLOUD_PROJECT_ID    # Deployment-specific Llama Cloud project
 ```
 
 Zotero Structured Document Text is the primary PDF parser. A private upload is
@@ -201,17 +199,8 @@ supply an upload's DOI or arXiv id, and Crossref enriches the resulting bibliogr
 The Container RPCs return native HTTP responses. Core reads and validates them
 inside the acquisition Workflow.
 
-LlamaParse remains a local-first OCR fallback. Web owns the product kill switch
-and Autumn eligibility, then attaches a per-document page grant to authenticated
-URL and newly uploaded PDF workflows. Core executes only granted fallbacks when
-the SDT extraction is empty, degraded, or dominated by image-only pages, and
-independently enforces the 100-page and 25 MiB safety caps. Private uploads use a
-temporary Llama Cloud file that Core deletes when the fallback finishes or
-aborts; ambiguous provider mutations fail loudly with a stable external ID for
-operator cleanup. OpenAlex key-bearing content URLs remain local-only. The
-provider adapter is locked to the US API, the `cost_effective` tier, and a dated
-parser version. Enable Web grants only after an authorized development smoke
-records the observed credits.
+A PDF without a text layer fails with a non-retryable "OCR is required" error;
+there is no OCR fallback. OpenAlex key-bearing content URLs remain local-only.
 
 ### 5. Deploy
 
@@ -273,8 +262,6 @@ Secrets (via `wrangler secret put`):
 | `KAITO_API_KEY`                | Yes      | Enables Twitter monitoring               |
 | `YOUTUBE_API_KEY`              | Yes      | Enables YouTube channel monitoring       |
 | `OPENALEX_API_KEY`             | Yes      | Enables exact paper metadata enrichment  |
-| `LLAMA_CLOUD_API_KEY`          | Yes      | LlamaParse API key for this deployment   |
-| `LLAMA_CLOUD_PROJECT_ID`       | Yes      | Isolated Llama Cloud project for this deployment |
 
 ### Canonical AI Search v6
 

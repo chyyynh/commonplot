@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { PaidPdfFallbackGrantSchema } from './pdf-policy';
 import { ResourceLanguageSchema } from './resource-language';
 import { ResourceUrlSchema } from './resource-url';
 
@@ -12,7 +11,6 @@ export type ResourceDraftRelation = z.infer<typeof ResourceDraftRelationSchema>;
 
 export const ResourceDraftTargetSchema = z.strictObject({
 	kind: z.literal('draft'),
-	paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
 	relation: ResourceDraftRelationSchema.optional(),
 	saveTarget: z.record(z.string(), z.json()).optional(),
 	url: ResourceUrlSchema.max(2_048),
@@ -27,7 +25,6 @@ export const ResourceDraftTargetSchema = z.strictObject({
 
 const StoredBlobTargetSchema = z.strictObject({
 	kind: z.literal('storedBlob'),
-	paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
 	resourceId: z.uuid(),
 });
 
@@ -35,7 +32,6 @@ const ReacquireTargetSchema = z.strictObject({
 	kind: z.literal('reacquire'),
 	/** Replace the stored original even when the new one is less complete or much shorter. */
 	force: z.boolean().optional(),
-	paidPdfFallback: PaidPdfFallbackGrantSchema.optional(),
 	resourceId: z.uuid(),
 });
 

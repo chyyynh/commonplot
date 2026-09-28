@@ -20,17 +20,15 @@ const CROP_BATCH_SIZE = 8;
 const MAX_CROP_PNG_BYTES = 8 * 1024 * 1024;
 const MAX_CROP_ROW_BYTES = Math.ceil(MAX_CROP_PNG_BYTES / 3) * 4 + 4_096;
 
-function parseStructuredPdfFailure(status: number, body: string): { message: string; totalPages: number | null } {
-	let message = `Zotero SDT parse failed with ${status}`;
-	let totalPages: number | null = null;
+function structuredPdfFailureMessage(status: number, body: string): string {
+	const message = `Zotero SDT parse failed with ${status}`;
 	try {
-		const parsed = JSON.parse(body) as { error?: unknown; totalPages?: unknown };
-		if (typeof parsed.error === 'string' && parsed.error.trim()) message = `${message}: ${parsed.error.trim()}`;
-		if (Number.isInteger(parsed.totalPages) && Number(parsed.totalPages) > 0) totalPages = Number(parsed.totalPages);
+		const { error } = JSON.parse(body) as { error?: unknown };
+		if (typeof error === 'string' && error.trim()) return `${message}: ${error.trim()}`;
 	} catch {
-		// A malformed internal error response still fails safely without page-count admission.
+		// A malformed internal error response keeps the status-only message.
 	}
-	return { message, totalPages };
+	return message;
 }
 
 function cropFailure(error: unknown) {
@@ -198,21 +196,10 @@ async function parsePdfArtifactStream(env: CoreEnv, input: ReadableStream<Uint8A
 		const maxBytes = response.ok ? ZOTERO_SDT_MAX_RESPONSE_BYTES : MAX_ERROR_BODY_BYTES;
 		const body = await readBoundedResponseText(response, maxBytes, 'Zotero SDT response');
 		if (!response.ok) {
-			const failure = parseStructuredPdfFailure(response.status, body);
-			// Only a documented invalid/unreadable PDF is a permanent local parse
-			// outcome. Busy, startup, transport and malformed responses remain retryable.
-			if (response.status !== 400 && response.status !== 422) throw new Error(failure.message);
-			return {
-				references: [],
-				markdown: '',
-				paperIdentifierText: null,
-				parse: {
-					fallbackReasons: ['parse-failed'],
-					fullPageImagePages: 0,
-					parserVersion: ZOTERO_SDT_ARTIFACT_VERSION,
-					totalPages: failure.totalPages,
-				},
-			};
+			const message = structuredPdfFailureMessage(response.status, body);
+			// Only a documented invalid/unreadable PDF is a permanent parse outcome.
+			// Busy, startup, transport and malformed responses remain retryable.
+			throw response.status === 400 || response.status === 422 ? new NonRetryableError(message) : new Error(message);
 		}
 		return parseStructuredPdfDocumentJson(body);
 	} catch (error) {
@@ -264,9 +251,7 @@ export async function parseStoredPdfRepresentation(
 			await object.body.cancel('PDF source size is invalid');
 			throw new NonRetryableError(`PDF source object must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
-		const attempt = await parsePdfArtifactStream(env, object.body, object.size, input.sourceLabel);
-		if (!('schemaVersion' in attempt)) return attempt;
-		document = attempt;
+		document = await parsePdfArtifactStream(env, object.body, object.size, input.sourceLabel);
 		await putPdfDerivative(env, input.pdfStorageKey, `${input.pdfStorageKey}.structured-document.json`, JSON.stringify(document), {
 			customMetadata: { artifactVersion: ZOTERO_SDT_ARTIFACT_VERSION, inputSha256: input.inputContentHash },
 		});

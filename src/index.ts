@@ -1,6 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod';
-import { PaidPdfFallbackGrantSchema, type PaidPdfFallbackGrant } from './contracts/pdf-policy';
 import { ResourceImportDispatchSchema } from './contracts/processing-target';
 import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url';
 import type {} from './env';
@@ -77,13 +76,12 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	 * Reacquire a URL-backed resource through the enrichment workflow. A much shorter result keeps
 	 * the stored original unless `force` is set, e.g. when the source itself was cut down.
 	 */
-	async resyncResource(resourceId: string, paidPdfFallback?: PaidPdfFallbackGrant, force?: boolean) {
+	async resyncResource(resourceId: string, force?: boolean) {
 		const id = z.uuid().parse(resourceId);
-		const grant = PaidPdfFallbackGrantSchema.optional().parse(paidPdfFallback);
 		const forced = z.boolean().optional().parse(force);
 		const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
 			id: `resource-resync-v3-${id}-${crypto.randomUUID()}`,
-			params: { kind: 'reacquire', ...(grant ? { paidPdfFallback: grant } : {}), ...(forced ? { force: true } : {}), resourceId: id },
+			params: { kind: 'reacquire', ...(forced ? { force: true } : {}), resourceId: id },
 		});
 		return instance.id;
 	}

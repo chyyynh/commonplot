@@ -744,19 +744,11 @@ export function normalizeStructuredPdf(
 		inferred: visualPlan.crops.filter(({ source }) => source === 'caption-region').length,
 		excludedAuthorTables: visualPlan.excludedAuthorTables,
 	};
-	const fallbackReasons = new Set<string>();
-	if (visual.missing.length) fallbackReasons.add('incomplete-visuals');
-	if (visual.inferred) fallbackReasons.add('caption-region-inferred');
-	if (!markdown) fallbackReasons.add('empty-output');
-	if (document.catalog.pages.some(({ extractionDegraded }) => extractionDegraded === true)) fallbackReasons.add('degraded-page');
-	const fullPageImagePages = document.catalog.pages.filter((_, index) => !getFulltextFromStructuredText(document, [index])).length;
 	return {
 		markdown,
 		paperIdentifierText: firstPageIdentifierText(document),
 		parse: {
-			fallbackReasons: [...fallbackReasons].sort(),
 			visual,
-			fullPageImagePages,
 			parserVersion: `zotero-pdf-${document.metadata.processor.version}/sdt-${document.schemaVersion}`,
 			totalPages: document.catalog.pages.length,
 		},

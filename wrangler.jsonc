@@ -193,11 +193,9 @@
 	 * - KAITO_API_KEY enables Twitter ingestion enrichment.
 	 * - YOUTUBE_API_KEY enables YouTube transcript/channel enrichment.
 	 * - OPENALEX_API_KEY enables exact paper metadata enrichment.
-	 * - LLAMA_CLOUD_API_KEY and LLAMA_CLOUD_PROJECT_ID identify this
-	 *   deployment's Llama Cloud project; development uses separate values.
 	 */
 	"secrets": {
-		"required": ["KAITO_API_KEY", "YOUTUBE_API_KEY", "OPENALEX_API_KEY", "LLAMA_CLOUD_API_KEY", "LLAMA_CLOUD_PROJECT_ID"],
+		"required": ["KAITO_API_KEY", "YOUTUBE_API_KEY", "OPENALEX_API_KEY"],
 	},
 	"vars": {
 		"AI_GATEWAY_ENVIRONMENT": "production",

@@ -9,7 +9,7 @@ import stripIndent from 'strip-indent';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { normalizedResourceImageUrl } from '../contracts/image-mapping';
 import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
-import { PDF_MIME, type PaidPdfFallbackGrant } from '../contracts/pdf-policy';
+import { PDF_MIME } from '../contracts/pdf-policy';
 import { resolveResourceUrl, type ResolvedResourceUrl } from '../contracts/resource-url';
 import { rehostInlineImages } from '../services/image-rehosting';
 import { limitByteStream } from '../services/response';
@@ -234,11 +234,7 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 	return { ...article, content: await rehostInlineImages(env.IMAGES, article.content) };
 }
 
-export async function stageWebAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: { paidPdfFallback: PaidPdfFallbackGrant | null; processingId: string; url: string },
-) {
+export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { url: string }) {
 	const result = await step.do(
 		'acquire-web-v14',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
@@ -249,11 +245,5 @@ export async function stageWebAcquisition(
 	);
 	if ('platform' in result) return result;
 	const acquired = await new Response(result).json<Exclude<WebAcquisition, { platform: ResolvedResourceUrl }>>();
-	return 'pdfStorageKey' in acquired
-		? stagePublicPdfAcquisition(env, step, {
-				source: acquired,
-				grant: input.paidPdfFallback,
-				processingId: input.processingId,
-			})
-		: acquired;
+	return 'pdfStorageKey' in acquired ? stagePublicPdfAcquisition(env, step, acquired) : acquired;
 }
