@@ -1,6 +1,7 @@
 // The model work of one translation: title/summary metadata and durable, checkpointed Markdown batches.
 import { generateText, NoObjectGeneratedError, Output } from 'ai';
 import type { WorkflowStep } from 'cloudflare:workers';
+import pLimit from 'p-limit';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import { aiRetryDelay, coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../services/ai-model';
@@ -337,40 +338,43 @@ export async function translatePlannedContent(
 		total: markdownPlan.batches.length,
 		resourceId,
 	});
-	const translatedBatches: (readonly MarkdownSegmentTranslation[])[] = [];
-	let nextBatch = 0;
+	// The first failure stops queued batches; in-flight ones drain before it is reported or the task sealed.
+	const limit = pLimit({ concurrency: MARKDOWN_TRANSLATION_CONCURRENCY, rejectOnClear: true });
 	let completed = 0;
-	let failed = false;
 	let progress = Promise.resolve();
-	const workers = Array.from({ length: Math.min(MARKDOWN_TRANSLATION_CONCURRENCY, markdownPlan.batches.length) }, async () => {
-		while (!failed && nextBatch < markdownPlan.batches.length) {
-			const batchIndex = nextBatch++;
-			const batch = markdownPlan.batches[batchIndex]!;
-			try {
-				translatedBatches[batchIndex] = await translateDurableBatch(batch, document, env, resourceId, step);
-				const count = ++completed;
-				// Serialize progress delivery; completion order differs from source order and can change on replay.
-				progress = progress.then(() =>
-					task.report(`batches-${count}`, {
-						stage: 'translating',
-						status: 'running',
-						completed: count,
-						total: markdownPlan.batches.length,
-						resourceId,
-					}),
-				);
-				await progress;
-			} catch (error) {
-				failed = true;
-				throw error;
-			}
-		}
-	});
-	// Drain in-flight work before reporting failure or sealing the task.
-	const outcomes = await Promise.allSettled(workers);
-	const failure = outcomes.find((outcome) => outcome.status === 'rejected');
-	if (failure) throw failure.reason;
-	const translated = compileMarkdownTranslationArtifact(markdownPlan, translatedBatches.flat());
+	let failure: { error: unknown } | undefined;
+	const outcomes = await Promise.allSettled(
+		markdownPlan.batches.map((batch) =>
+			limit(async () => {
+				try {
+					const translated = await translateDurableBatch(batch, document, env, resourceId, step);
+					const count = ++completed;
+					// Serialize progress delivery; completion order differs from source order and can change on replay.
+					progress = progress.then(() =>
+						task.report(`batches-${count}`, {
+							stage: 'translating',
+							status: 'running',
+							completed: count,
+							total: markdownPlan.batches.length,
+							resourceId,
+						}),
+					);
+					await progress;
+					return translated;
+				} catch (error) {
+					// Clear before this slot frees, so no queued batch starts after a failure.
+					failure ??= { error };
+					limit.clearQueue();
+					throw error;
+				}
+			}),
+		),
+	);
+	if (failure) throw failure.error;
+	const translated = compileMarkdownTranslationArtifact(
+		markdownPlan,
+		outcomes.flatMap((outcome) => (outcome.status === 'fulfilled' ? outcome.value : [])),
+	);
 	console.info({
 		tag: 'RESOURCE_TRANSLATION',
 		event: 'markdown_translation_compiled',

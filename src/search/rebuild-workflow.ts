@@ -1,6 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import pLimit from 'p-limit';
 import { withCoreDb } from '../store/db';
 import { AI_SEARCH_ITEM_PREFIX, resourceIdFromAiSearchItemKey, SEARCHABLE_CORPUS_RESOURCE_SQL } from './search-index';
 
@@ -124,9 +125,7 @@ async function pruneSearchItemPage(instance: AiSearchInstance, db: NodePgDatabas
 		const resourceId = resourceIdFromAiSearchItemKey(item.key);
 		return resourceId === null || !eligibleIds.has(resourceId);
 	});
-	for (let offset = 0; offset < staleItems.length; offset += REINDEX_AI_SEARCH_CONCURRENCY) {
-		await Promise.all(staleItems.slice(offset, offset + REINDEX_AI_SEARCH_CONCURRENCY).map((item) => instance.items.delete(item.id)));
-	}
+	await pLimit(REINDEX_AI_SEARCH_CONCURRENCY).map(staleItems, (item) => instance.items.delete(item.id));
 	return staleItems.length;
 }
 
@@ -232,9 +231,7 @@ async function retryFailedSearchItems(instance: AiSearchInstance): Promise<numbe
 		status: 'error',
 	});
 	const items = listed.result.filter((item) => item.source_id === 'builtin' && resourceIdFromAiSearchItemKey(item.key) !== null);
-	for (let offset = 0; offset < items.length; offset += REINDEX_AI_SEARCH_CONCURRENCY) {
-		await Promise.all(items.slice(offset, offset + REINDEX_AI_SEARCH_CONCURRENCY).map((item) => instance.items.get(item.id).sync()));
-	}
+	await pLimit(REINDEX_AI_SEARCH_CONCURRENCY).map(items, (item) => instance.items.get(item.id).sync());
 	return items.length;
 }
 

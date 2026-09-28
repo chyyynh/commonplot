@@ -1,6 +1,7 @@
 import { extractFromJson, extractFromXml } from '@extractus/feed-extractor';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { DOMParser } from 'linkedom';
+import pLimit from 'p-limit';
 import { resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { readBoundedResponseText } from '../services/response';
 import { advanceSourceWatermark, listDueFeedSources, type MonitoredFeedSource } from '../store/sources';
@@ -111,20 +112,17 @@ export async function handleRSSCron(env: CoreEnv, db: NodePgDatabase): Promise<v
 	console.info({ tag: 'RSS', msg: 'start' });
 	const feeds = await listDueFeedSources(db);
 	const failures: unknown[] = [];
-	for (let index = 0; index < feeds.length; index += FEED_CONCURRENCY) {
-		const batch = feeds.slice(index, index + FEED_CONCURRENCY);
-		const results = await Promise.allSettled(batch.map((feed) => processFeed(env, db, feed)));
-		for (const [resultIndex, result] of results.entries()) {
-			if (result.status === 'fulfilled') continue;
-			const failedFeed = batch[resultIndex];
-			failures.push(result.reason);
-			console.error({
-				tag: 'RSS',
-				msg: 'Feed processing failed',
-				feed: failedFeed.name,
-				error: result.reason instanceof Error ? result.reason.message : String(result.reason),
-			});
-		}
+	const limit = pLimit(FEED_CONCURRENCY);
+	const results = await Promise.allSettled(feeds.map((feed) => limit(() => processFeed(env, db, feed))));
+	for (const [index, result] of results.entries()) {
+		if (result.status === 'fulfilled') continue;
+		failures.push(result.reason);
+		console.error({
+			tag: 'RSS',
+			msg: 'Feed processing failed',
+			feed: feeds[index]!.name,
+			error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+		});
 	}
 
 	console.info({ tag: 'RSS', msg: 'end', sources: feeds.length, failed_sources: failures.length });

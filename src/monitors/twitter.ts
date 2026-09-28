@@ -1,4 +1,5 @@
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import pLimit from 'p-limit';
 import { z } from 'zod';
 import type { SourceResourceDraft } from '../contracts/processing-target';
 import { withCoreDb } from '../store/db';
@@ -184,22 +185,15 @@ async function monitorTwitterSources(env: CoreEnv, db: NodePgDatabase, windowEnd
 		return;
 	}
 
-	const groups = Math.ceil(sources.length / TWITTER_SOURCE_CONCURRENCY);
-	console.info({ tag: 'TWITTER', msg: 'Fetching via Advanced Search', sources: sources.length, groups });
-	const systemFailures: unknown[] = [];
-	for (let offset = 0; offset < sources.length; offset += TWITTER_SOURCE_CONCURRENCY) {
-		const group = sources.slice(offset, offset + TWITTER_SOURCE_CONCURRENCY);
-		const results = await Promise.allSettled(group.map((source) => processTwitterSource(env, db, source, windowEnd)));
-		for (const result of results) {
-			if (result.status === 'rejected') systemFailures.push(result.reason);
-		}
-	}
+	console.info({ tag: 'TWITTER', msg: 'Fetching via Advanced Search', sources: sources.length });
+	const limit = pLimit(TWITTER_SOURCE_CONCURRENCY);
+	const results = await Promise.allSettled(sources.map((source) => limit(() => processTwitterSource(env, db, source, windowEnd))));
+	const systemFailures = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
 
 	console.info({
 		tag: 'TWITTER',
 		msg: 'end',
 		sources: sources.length,
-		groups,
 		failed_sources: systemFailures.length,
 	});
 	if (systemFailures.length) {

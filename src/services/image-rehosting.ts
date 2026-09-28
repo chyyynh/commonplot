@@ -5,6 +5,7 @@ import type { Image, Nodes } from 'mdast';
 import { fromMarkdown } from 'mdast-util-from-markdown';
 import { gfmFromMarkdown } from 'mdast-util-gfm';
 import { gfm } from 'micromark-extension-gfm';
+import pLimit from 'p-limit';
 import {
 	type HostedResourceImage,
 	hostedResourceImageUrl,
@@ -226,32 +227,26 @@ export async function stageResourceImages(
 	refreshKey?: string,
 ): Promise<HostedResourceImage[]> {
 	if (sourceUrls.length === 0) return [];
-	const images: (HostedResourceImage | null)[] = [];
-	for (let offset = 0; offset < sourceUrls.length; offset += 3) {
-		images.push(
-			...(await Promise.all(
-				sourceUrls.slice(offset, offset + 3).map((url, index) =>
-					step
-						.do(
-							`rehost-resource-image-v4-${offset + index}`,
-							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '10 minutes' },
-							() => rehostResourceImage(env.IMAGES, url, refreshKey),
-						)
-						.catch((error: unknown) => {
-							if (!optional.has(url)) throw error;
-							console.warn({
-								tag: 'RESOURCE_IMAGE',
-								event: 'optional_image_skipped',
-								processing_id: processingId,
-								source_host: new URL(url).hostname,
-								error: error instanceof Error ? error.message : String(error),
-							});
-							return null;
-						}),
-				),
-			)),
-		);
-	}
+	// Step names follow source order, so replay stays deterministic however the pool interleaves.
+	const images = await pLimit(3).map(sourceUrls, (url, index) =>
+		step
+			.do(
+				`rehost-resource-image-v4-${index}`,
+				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '10 minutes' },
+				() => rehostResourceImage(env.IMAGES, url, refreshKey),
+			)
+			.catch((error: unknown) => {
+				if (!optional.has(url)) throw error;
+				console.warn({
+					tag: 'RESOURCE_IMAGE',
+					event: 'optional_image_skipped',
+					processing_id: processingId,
+					source_host: new URL(url).hostname,
+					error: error instanceof Error ? error.message : String(error),
+				});
+				return null;
+			}),
+	);
 	const ready = images.filter((image) => image !== null);
 	console.info({ tag: 'RESOURCE_IMAGE', event: 'eager_rehost_completed', processing_id: processingId, ready: ready.length });
 	return ready;

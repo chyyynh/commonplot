@@ -6,6 +6,7 @@ import { toMdast } from 'hast-util-to-mdast';
 import { toText } from 'hast-util-to-text';
 import { gfmToMarkdown } from 'mdast-util-gfm';
 import { toMarkdown } from 'mdast-util-to-markdown';
+import pLimit from 'p-limit';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
@@ -54,14 +55,8 @@ async function fetchHnItem(itemId: number | string): Promise<HackerNewsItem | nu
 }
 
 async function fetchHnItems(itemIds: readonly number[]): Promise<Map<number, HackerNewsItem>> {
-	const items = new Map<number, HackerNewsItem>();
-	for (let offset = 0; offset < itemIds.length; offset += HN_FETCH_CONCURRENCY) {
-		const batch = await Promise.all(itemIds.slice(offset, offset + HN_FETCH_CONCURRENCY).map(fetchHnItem));
-		for (const item of batch) {
-			if (item) items.set(item.id, item);
-		}
-	}
-	return items;
+	const items = await pLimit(HN_FETCH_CONCURRENCY).map(itemIds, (itemId) => fetchHnItem(itemId));
+	return new Map(items.filter((item) => item !== null).map((item) => [item.id, item]));
 }
 
 function isReadableComment(item: HackerNewsItem | undefined): item is HackerNewsItem & { text: string } {
