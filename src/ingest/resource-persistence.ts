@@ -13,7 +13,6 @@ import {
 } from '../shared/resource';
 import type { AcquiredResource } from './acquisition';
 import type { ResourceDraftRelation } from './admission';
-import type { ResourceClassification } from './analysis';
 import { resolveResourceUrl, type ResolvedResourceUrl } from './platforms/resource-url';
 import type { YouTubeTranscript } from './platforms/youtube';
 import { ResourceLanguageSchema } from './resource-language';
@@ -38,29 +37,6 @@ type LockedResource = Readonly<{
 }>;
 
 type PreparedResource = ReturnType<typeof prepareResolvedResource>;
-
-/** Original writes advance scraped_date in the same transaction; classification belongs to that acquisition. */
-export async function persistResourceClassification(
-	db: NodePgDatabase,
-	targets: { resourceId: string; acquisitionRevision: string }[],
-	classification: ResourceClassification,
-): Promise<void> {
-	if (!targets.length) return;
-	await db.execute(sql`
-		WITH target AS (
-			SELECT resource.id
-			FROM jsonb_to_recordset(${JSON.stringify(targets)}::jsonb)
-			  AS expected("resourceId" uuid, "acquisitionRevision" text)
-			JOIN resources resource ON resource.id = expected."resourceId"
-			WHERE MD5(EXTRACT(EPOCH FROM resource.scraped_date)::text) = expected."acquisitionRevision"
-			ORDER BY resource.id
-			FOR UPDATE OF resource
-		)
-		UPDATE resources
-		SET tags = ${sql.param(classification.tags)}::text[], keywords = ${sql.param(classification.keywords)}::text[], updated_at = NOW()
-		FROM target WHERE resources.id = target.id
-	`);
-}
 
 /** Use the same candidates for admission, canonical persistence, and subject attachment. */
 async function findResourceCandidates(
@@ -188,12 +164,12 @@ async function writeCanonicalResource(
 ) {
 	const columns = sql`
 		kind, resource_platform, source_name, url, normalized_url, file_type, original_lang, published_date,
-		tags, keywords, og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id,
+		og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id,
 		scraped_date, updated_at
 	`;
 	const values = sql`
 		${resource.kind}, ${resource.resourcePlatform}, ${resource.sourceName}, ${resource.url}, ${resource.normalizedUrl},
-		${resource.fileType}, ${resource.originalLang}, ${resource.publishedDate}, ARRAY[]::text[], ARRAY[]::text[],
+		${resource.fileType}, ${resource.originalLang}, ${resource.publishedDate},
 		${resource.ogImageUrl}, ${resource.ogImageWidth}, ${resource.ogImageHeight}, ${JSON.stringify(resource.creators)}::jsonb,
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
 		NOW(), NOW()

@@ -5,12 +5,11 @@ import { normalizedResourceImageUrl, resourceImageSourceUrls } from '../shared/i
 import { stageResourceAcquisition } from './acquisition';
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from './admission';
 import { AI_STEP_RETRIES } from './ai-model';
-import { summarizeResource, classifyResource } from './analysis';
+import { summarizeResource } from './analysis';
 import { stageResourceImages } from './image-rehosting';
 import { createResourceTask } from './progress';
 import {
 	persistResolvedResource,
-	persistResourceClassification,
 	loadPublicPdfContent,
 	prepareResolvedResource,
 	type ResourcePersistenceTarget,
@@ -100,7 +99,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const translationTargets: { resourceId: string; translationRevision: string; forceRunKey?: string; stepName: string }[] = [];
 			// Ordinary imports share a translation; explicit reacquisition forces a fresh run.
 			const forceProcessingRunKey = target.kind === 'draft' ? undefined : hash('sha256', event.instanceId, 'hex').slice(0, 16);
-			const classificationTargets: Parameters<typeof persistResourceClassification>[1] = [];
 			if (privateFile && target.kind === 'storedBlob') {
 				const privateRendition = prepareResolvedResource({ ...privateFile, summary: privateFile.summary ?? summary }, hostedImages);
 				const privatePersistence = await step.do('persist-private-pdf-rendition-v3', STORAGE_STEP, async () =>
@@ -116,7 +114,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						forceRunKey: forceProcessingRunKey,
 						stepName: 'enqueue-private-pdf-translation-v2',
 					});
-				classificationTargets.push(privatePersistence);
 			}
 			const preparedResource = prepareResolvedResource(summarized, hostedImages);
 			const persistence = await step.do('persist-resolved-resource-scope-v6', STORAGE_STEP, async () => {
@@ -135,7 +132,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				return result;
 			});
 			const { resourceId: persistedResourceId, scope, subjectAttached, translationRevision, acquisitionRevision } = persistence;
-			if (persistence.originalWritten) classificationTargets.push(persistence);
 			if (shouldEnqueueResourceTranslation(persistence))
 				translationTargets.push({
 					resourceId: persistedResourceId,
@@ -175,25 +171,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					status: 'complete',
 					resourceId: persistedResourceId,
 				}),
-				(async () => {
-					if (classificationTargets.length) {
-						try {
-							const classification = await step.do('classify-published-resource-v1', AI_STEP, () =>
-								classifyResource(summarized, this.env, processingId),
-							);
-							await step.do('persist-resource-classification-v1', STORAGE_STEP, async () =>
-								persistResourceClassification(await connectCoreDb(this.env), classificationTargets, classification),
-							);
-						} catch (error) {
-							console.error({ tag: 'WORKFLOW', msg: 'Classification failed', resource_id: persistedResourceId, error });
-						}
-					}
-					// Classification is optional; handing the published body to search is required.
-					if (scope === 'corpus')
-						await step.do('enqueue-resolved-ai-search-sync-v2', STORAGE_STEP, async () => {
+				scope === 'corpus'
+					? step.do('enqueue-resolved-ai-search-sync-v2', STORAGE_STEP, async () => {
 							await this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId: persistedResourceId });
-						});
-				})(),
+						})
+					: undefined,
 				...translationTargets.map(({ stepName, resourceId, translationRevision, forceRunKey }) =>
 					step.do(stepName, STORAGE_STEP, () => enqueueResourceTranslation(this.env, resourceId, translationRevision, forceRunKey, task)),
 				),

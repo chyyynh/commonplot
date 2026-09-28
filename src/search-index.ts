@@ -74,8 +74,6 @@ type CorpusDocument = {
 	kind: SearchableResourceKind;
 	original_lang: string;
 	published_at: string | null;
-	tags: string[];
-	keywords: string[];
 	source: string | null;
 	translations: CorpusTranslationRow[];
 };
@@ -111,13 +109,7 @@ function serializeTranslation(translation: CorpusTranslationRow): string {
 function serializeDocument(row: CorpusDocument): string {
 	const original = row.translations.find((translation) => translation.lang === row.original_lang);
 	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
-	return [
-		documentHeading(row, original),
-		requiredDocumentText(row.source, 'source', row.id),
-		row.tags.length ? `Tags: ${row.tags.join(', ')}` : '',
-		row.keywords.length ? `Keywords: ${row.keywords.join(', ')}` : '',
-		...row.translations.map(serializeTranslation),
-	]
+	return [documentHeading(row, original), requiredDocumentText(row.source, 'source', row.id), ...row.translations.map(serializeTranslation)]
 		.filter(Boolean)
 		.join('\n\n');
 }
@@ -128,8 +120,6 @@ function serializeRelatedDocument(row: CorpusDocument): string {
 	return [
 		documentHeading(row, original),
 		`Source: ${requiredDocumentText(row.source, 'source', row.id)}`,
-		row.tags.length ? `Tags: ${row.tags.join(', ')}` : '',
-		row.keywords.length ? `Keywords: ${row.keywords.join(', ')}` : '',
 		...row.translations.flatMap((translation) => [
 			translation.lang === row.original_lang || !translation.title?.trim() ? '' : `${translation.lang} title: ${translation.title.trim()}`,
 			translation.summary?.trim() ? `${translation.lang} summary: ${translation.summary.trim().slice(0, RELATED_SUMMARY_MAX_CHARS)}` : '',
@@ -147,8 +137,6 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 		       r.kind,
 		       r.original_lang,
 		       r.published_date AS published_at,
-		       r.tags,
-		       r.keywords,
 		       COALESCE(r.source_name, 'File') AS source,
 		       COALESCE((
 		         SELECT jsonb_agg(
@@ -263,9 +251,9 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResourceSearchInput): Promise<string[]> {
 	const { resourceId, limit } = RelatedResourceSearchInputSchema.parse(input);
 	const db = await connectCoreDb(env);
-	// Recommendation queries need titles and classification, not indexed article bodies; a post's text is its title.
-	const { rows } = await db.execute<{ titles: (string | null)[]; tags: string[]; keywords: string[] }>(sql`
-		SELECT r.tags, r.keywords,
+	// Recommendation queries need titles and the original summary, not indexed article bodies; a post's text is its title.
+	const { rows } = await db.execute<{ titles: (string | null)[]; summary: string | null }>(sql`
+		SELECT (array_agg(translation.summary) FILTER (WHERE translation.lang = r.original_lang))[1] AS summary,
 		       array_agg(CASE WHEN r.kind = 'post' THEN LEFT(translation.content, ${POST_HEADING_MAX_CHARS}) ELSE translation.title END ORDER BY (translation.lang = r.original_lang) DESC, translation.lang) AS titles
 		FROM resources r
 		JOIN resource_translations translation ON translation.resource_id = r.id
@@ -279,9 +267,8 @@ export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResou
 	if (!document) return [];
 	const query = [
 		requiredDocumentText(document.titles[0] ?? null, 'title', resourceId),
-		document.tags.join(', '),
-		document.keywords.join(', '),
 		...document.titles.slice(1).map((title) => title?.trim()),
+		document.summary?.trim().slice(0, RELATED_SUMMARY_MAX_CHARS),
 	]
 		.filter(Boolean)
 		.join('\n')
