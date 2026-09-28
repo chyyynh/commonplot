@@ -2,13 +2,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { withCoreDb } from '../store/db';
-import {
-	AI_SEARCH_ITEM_PREFIX,
-	loadCorpusDocuments,
-	resourceIdFromAiSearchItemKey,
-	SEARCHABLE_CORPUS_RESOURCE_SQL,
-	upsertCorpusItem,
-} from './search-index';
+import { AI_SEARCH_ITEM_PREFIX, resourceIdFromAiSearchItemKey, SEARCHABLE_CORPUS_RESOURCE_SQL } from './search-index';
 
 // Cloudflare AI Search allows at most five custom metadata fields per instance.
 const CANONICAL_CUSTOM_METADATA = [
@@ -44,7 +38,6 @@ const CANONICAL_SEARCH_CONFIGS = {
 } as const satisfies Record<SearchIndexName, Partial<AiSearchConfig>>;
 
 type SearchIndexRebuildPayload = Record<string, never>;
-type SearchDeltaCursor = { id: string; updatedAt: string };
 type SearchIndexStats = {
 	completed: number;
 	error: number;
@@ -65,7 +58,6 @@ const REINDEX_READY_POLL_INTERVAL = '10 minutes';
 const STEP_RETRIES = { limit: 5, delay: '10 seconds', backoff: 'exponential' } as const;
 const SHORT_STEP_OPTIONS = { retries: STEP_RETRIES, timeout: '60 seconds' } as const;
 const BATCH_STEP_OPTIONS = { retries: STEP_RETRIES, timeout: '300 seconds' } as const;
-const UTC_TIMESTAMP_FORMAT = 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"';
 const CORPUS_FOLDER_FILTER = JSON.stringify({ folder: AI_SEARCH_ITEM_PREFIX });
 
 async function loadCorpusCount(db: NodePgDatabase): Promise<number> {
@@ -92,42 +84,6 @@ async function listCorpusIdsAfter(db: NodePgDatabase, cursor: string | null): Pr
 		LIMIT ${REINDEX_PAGE_SIZE}
 	`);
 	return result.rows.map((row) => row.id);
-}
-
-async function uploadCorpusIds(env: CoreEnv, db: NodePgDatabase, ids: readonly string[]): Promise<number> {
-	const documents = await loadCorpusDocuments(db, ids);
-	if (documents.length !== ids.length) {
-		throw new Error(`Corpus changed while rebuilding: loaded ${documents.length}/${ids.length} documents`);
-	}
-	for (let offset = 0; offset < documents.length; offset += REINDEX_AI_SEARCH_CONCURRENCY) {
-		await Promise.all(documents.slice(offset, offset + REINDEX_AI_SEARCH_CONCURRENCY).map((document) => upsertCorpusItem(env, document)));
-	}
-	return documents.length;
-}
-
-async function listCorpusDeltaAfter(db: NodePgDatabase, startedAt: string, cursor: SearchDeltaCursor | null): Promise<SearchDeltaCursor[]> {
-	const result = await db.execute<SearchDeltaCursor>(sql`
-		WITH changed_resources AS (
-		  SELECT r.id,
-		         GREATEST(r.updated_at, COALESCE(MAX(translation.updated_at), r.updated_at)) AS updated_at
-		  FROM resources r
-		  LEFT JOIN resource_translations translation ON translation.resource_id = r.id
-		  WHERE r.scope = 'corpus'
-		    AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
-		  GROUP BY r.id, r.updated_at
-		)
-		SELECT id::text, to_char(updated_at AT TIME ZONE 'UTC', ${UTC_TIMESTAMP_FORMAT}) AS "updatedAt"
-		FROM changed_resources
-		WHERE updated_at >= ${startedAt}::timestamptz
-		  AND (
-		    ${cursor?.updatedAt ?? null}::timestamptz IS NULL
-		    OR updated_at > ${cursor?.updatedAt ?? null}::timestamptz
-		    OR (updated_at = ${cursor?.updatedAt ?? null}::timestamptz AND id > ${cursor?.id ?? null}::uuid)
-		  )
-		ORDER BY "updatedAt", id
-		LIMIT ${REINDEX_PAGE_SIZE}
-	`);
-	return result.rows;
 }
 
 async function loadEligibleCorpusIds(db: NodePgDatabase, resourceIds: readonly string[]): Promise<Set<string>> {
@@ -319,47 +275,22 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 			corpus: await ensureCanonicalSearchInstanceConfig(this.env.AI_SEARCH, 'corpus'),
 			related: await ensureCanonicalSearchInstanceConfig(this.env.RELATED_SEARCH, 'related'),
 		}));
+		// The sync queue owns uploads: it reloads each Resource, retries, and wins any race with live writes.
 		let cursor: string | null = null;
-		let uploaded = 0;
+		let enqueued = 0;
 		let pages = 0;
 		while (true) {
-			const result = await step.do(`upload-corpus-page-${pages}`, BATCH_STEP_OPTIONS, () =>
+			const page = await step.do(`enqueue-corpus-page-${pages}`, BATCH_STEP_OPTIONS, () =>
 				withCoreDb(this.env, async (db) => {
 					const ids = await listCorpusIdsAfter(db, cursor);
-					if (!ids.length) return { cursor, done: true, uploaded: 0 };
-					return { cursor: ids.at(-1)!, done: false, uploaded: await uploadCorpusIds(this.env, db, ids) };
+					if (ids.length) await this.env.RESOURCE_SEARCH_SYNC_QUEUE.sendBatch(ids.map((resourceId) => ({ body: { resourceId } })));
+					return { cursor: ids.at(-1) ?? null, enqueued: ids.length };
 				}),
 			);
-			if (result.done) break;
-			if (!result.cursor) throw new Error(`AI Search rebuild page ${pages} did not return a cursor`);
-			cursor = result.cursor;
-			uploaded += result.uploaded;
+			if (!page.enqueued) break;
+			cursor = page.cursor;
+			enqueued += page.enqueued;
 			pages++;
-		}
-
-		let deltaCursor: SearchDeltaCursor | null = null;
-		let deltaUploaded = 0;
-		let deltaPages = 0;
-		while (true) {
-			const result = await step.do(`upload-delta-page-${deltaPages}`, BATCH_STEP_OPTIONS, () =>
-				withCoreDb(this.env, async (db) => {
-					const rows = await listCorpusDeltaAfter(db, startedAt, deltaCursor);
-					if (!rows.length) return { cursor: deltaCursor, done: true, uploaded: 0 };
-					return {
-						cursor: rows.at(-1)!,
-						done: false,
-						uploaded: await uploadCorpusIds(
-							this.env,
-							db,
-							rows.map((row) => row.id),
-						),
-					};
-				}),
-			);
-			if (result.done) break;
-			deltaCursor = result.cursor;
-			deltaUploaded += result.uploaded;
-			deltaPages++;
 		}
 
 		const reconciliation = {
@@ -374,10 +305,8 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 			mode: 'rebuild' as const,
 			startedAt,
 			instanceConfig,
-			uploaded,
+			enqueued,
 			pages,
-			deltaUploaded,
-			deltaPages,
 			reconciliation,
 			readiness,
 		};

@@ -43,12 +43,13 @@ cutover.
 One rebuild performs these durable operations:
 
 1. configure the AI Search instance;
-2. upload every currently eligible Resource in UUID order;
-3. upload a start-time delta using the newest Resource or translation revision;
-4. prune keyed items that no longer map to an eligible PostgreSQL row;
-5. poll native AI Search status until queued/running are zero, terminal counts
+2. enqueue every currently eligible Resource, in UUID order, on the search sync
+   queue, whose consumer uploads the current snapshot and absorbs races with
+   live writes;
+3. prune keyed items that no longer map to an eligible PostgreSQL row;
+4. poll native AI Search status until queued/running are zero, terminal counts
    are zero, and completed/keyed item counts match the live PostgreSQL count;
-6. return the counts and reconciliation summary as Workflow output.
+5. return the counts and reconciliation summary as Workflow output.
 
 AI Search owns indexing and item status. Workflow owns durable steps, retries,
 status, errors, and output. A terminal `error`, `skipped`, or `outdated` item
@@ -102,7 +103,7 @@ A completed instance has already returned a final observation with:
 - canonical instance configuration;
 - zero queued, running, outdated, error, and skipped items;
 - `completed === indexedItems === expectedItems`;
-- full upload, delta, and stale-prune summaries.
+- enqueue and stale-prune summaries.
 
 Each deployment creates a versioned Workflow graph, and an instance remains
 pinned to the version it started with. After an incompatible graph change,

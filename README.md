@@ -302,8 +302,9 @@ pnpm exec wrangler workflows instances describe \
 
 Wrangler's native instance description is the operator view of Workflow status,
 steps, retries, errors, and final output. The rebuild configures AI Search,
-uploads the full corpus and a start-time delta, prunes stale keyed items, then
-waits until native item status and the live PostgreSQL count converge. There is
+enqueues every corpus Resource on the search sync queue (whose consumer uploads
+the current snapshot), prunes stale keyed items, then waits until native item
+status and the live PostgreSQL count converge. There is
 no duplicate database readiness row or custom item-repair state machine.
 
 Each deployment creates a versioned Workflow graph and every instance remains

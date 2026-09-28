@@ -161,7 +161,7 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 	return result.rows;
 }
 
-export async function upsertCorpusItem(env: CoreEnv, document: CorpusDocument): Promise<void> {
+async function upsertCorpusItem(env: CoreEnv, document: CorpusDocument): Promise<void> {
 	const publishedAt = document.published_at === null ? null : new Date(document.published_at);
 	if (publishedAt && Number.isNaN(publishedAt.getTime())) {
 		throw new Error(`AI Search document ${document.id} has invalid publication date`);
