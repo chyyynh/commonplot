@@ -117,12 +117,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				);
 				if (persistence.outcome === 'superseded') {
 					await task.report('persist-superseded', { stage: 'persisting', status: 'superseded' });
-					return { resourceId: persistence.resourceId };
+					return { resourceId: persistence.id };
 				}
 				persisted.push({ translationStep: rendition.translationStep, persistence });
 			}
 			const persistence = persisted.at(-1)!.persistence;
-			const { resourceId: persistedResourceId, scope, subjectAttached, originalHash, outcome } = persistence;
+			const { id: persistedResourceId, scope, subjectResourceId, originalHash, outcome } = persistence;
 			if (scope === 'corpus' && persistence.fileType === 'application/pdf') {
 				await step.do('publish-public-pdf-crops-v1', STORAGE_STEP, async () =>
 					publishPublicPdfCrops(
@@ -163,7 +163,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						? step.do(translationStep, STORAGE_STEP, () =>
 								enqueueResourceTranslation(
 									this.env,
-									rendition.resourceId,
+									rendition.id,
 									rendition.originalHash,
 									target.kind !== 'draft' && rendition.outcome === 'written',
 									task,
@@ -171,7 +171,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 							)
 						: undefined,
 				),
-				subjectUrl && outcome === 'written' && !subjectAttached
+				subjectUrl && outcome === 'written' && subjectResourceId === null
 					? step.do('enqueue-resolved-subject-child-v2', STORAGE_STEP, async () => {
 							const subjectTarget = ResourceDraftTargetSchema.parse({
 								kind: 'draft',

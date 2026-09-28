@@ -33,7 +33,8 @@ const MIN_REACQUIRED_CONTENT_RATIO = 0.5;
 /** Whether a Resource has a readable original, over the `resource` and `original` aliases. Posts need no title. */
 export const READABLE_ORIGINAL_SQL = sql`COALESCE((resource.kind = 'post' OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> '', false)`;
 
-type LockedResource = Readonly<{
+/** A Resource row as its transaction sees it, locked; also what persistence hands its follow-ups. */
+type StoredResource = Readonly<{
 	id: string;
 	hasOriginal: boolean;
 	originalChars: number;
@@ -47,9 +48,6 @@ type LockedResource = Readonly<{
 	scope: 'corpus' | 'private';
 	url: string | null;
 }>;
-
-/** The accepted state that follow-ups read. */
-type AcceptedResource = Omit<LockedResource, 'hasOriginal' | 'originalChars' | 'committedSeq'>;
 
 /** A write replaced the original, a degraded reacquisition kept the stored one, or a newer attempt had already committed. */
 type PersistOutcome = 'written' | 'kept' | 'superseded';
@@ -152,8 +150,8 @@ export function prepareResolvedResource(resource: AcquiredResource, hostedImages
 	};
 }
 
-async function lockResource(db: NodePgDatabase, resourceId: string): Promise<LockedResource> {
-	const result = await db.execute<LockedResource>(sql`
+async function lockResource(db: NodePgDatabase, resourceId: string): Promise<StoredResource> {
+	const result = await db.execute<StoredResource>(sql`
 		SELECT resource.id::text, resource.scope, resource.kind, resource.url,
 		       resource.original_lang AS "originalLang", resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform",
 		       resource.subject_resource_id::text AS "subjectResourceId",
@@ -192,7 +190,7 @@ async function writeCanonicalResource(
 		(SELECT MD5(jsonb_build_array(lang, title, summary, content)::text) FROM incoming), NOW(), NOW()
 	`;
 	// The cleanup excludes the incoming language: no CTE deletes a row another CTE writes.
-	const written = await db.execute<{ originalHash: string }>(sql`
+	const written = await db.execute(sql`
 		WITH incoming AS (
 			SELECT ${resource.originalLang}::text AS lang, ${resource.title}::text AS title,
 			       ${resource.summary}::text AS summary, ${resource.content}::text AS content
@@ -203,7 +201,7 @@ async function writeCanonicalResource(
 					: sql`UPDATE resources SET (${columns}) = (${values}), committed_seq = COALESCE(${fence}::integer, committed_seq)
 					      WHERE id = ${resourceId}::uuid`
 			}
-			RETURNING id, original_hash
+			RETURNING id
 		), cleared_identifiers AS (
 			DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid AND ${existing}
 		), cleared_references AS (
@@ -221,10 +219,9 @@ async function writeCanonicalResource(
 				(EXCLUDED.title, EXCLUDED.summary, EXCLUDED.content, EXCLUDED.source, NULL, EXCLUDED.updated_at)
 			RETURNING resource_id
 		)
-		SELECT original_hash AS "originalHash" FROM written_resource JOIN written_original ON written_original.resource_id = written_resource.id
+		SELECT 1 FROM written_resource JOIN written_original ON written_original.resource_id = written_resource.id
 	`);
-	const originalHash = written.rows[0]?.originalHash;
-	if (!originalHash) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
+	if (!written.rows.length) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
 	if (resource.identifiers.length) {
 		// Identifier replacement must follow its DELETE; both can target the same keys.
 		await db.execute(sql`
@@ -258,7 +255,6 @@ async function writeCanonicalResource(
 		`);
 		if (!savedTranscript.rows.length) throw new NonRetryableError('YouTube reacquisition returned no captions for an existing transcript');
 	}
-	return originalHash;
 }
 
 /** Another version's identifiers join the paper that is already stored, so both find it next time. */
@@ -339,51 +335,37 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 				fence,
 				committed: root.committedSeq,
 			});
-			return persistedResult(root, 'superseded');
+			return committed(root, 'superseded');
 		}
 		// A retried step whose commit already landed replays it instead of writing again.
-		if (root && fence !== null && root.committedSeq === fence) return persistedResult(root, 'written');
+		if (root && fence !== null && root.committedSeq === fence) return committed(root, 'written');
 		const outcome: PersistOutcome =
 			!root?.hasOriginal || (target.kind === 'existing' && (target.force || !isDegradedOriginal(resource.content, root)))
 				? 'written'
 				: 'kept';
-		let accepted: AcceptedResource | null = root;
 		if (outcome === 'written') {
 			const subject = subjectCandidates.length === 1 && subjectCandidates[0]?.scope === 'corpus' ? subjectCandidates[0] : null;
 			const subjectResourceId =
 				subject && subject.id !== resourceId && (await lockResource(tx, subject.id)).hasOriginal ? subject.id : null;
-			const originalHash = await writeCanonicalResource(tx, resourceId, resource, root !== null, subjectResourceId, fence);
-			accepted = { ...resource, id: resourceId, scope: root?.scope ?? 'corpus', originalHash, subjectResourceId };
+			await writeCanonicalResource(tx, resourceId, resource, root !== null, subjectResourceId, fence);
 		} else {
 			if (target.kind === 'existing')
 				console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });
 			if (root?.kind === 'paper' && resource.kind === 'paper') await mergePaperIdentifiers(tx, resourceId, resource.identifiers);
 		}
 		if (target.kind === 'draft' && target.relation) await applyDraftRelation(tx, resourceId, target.relation);
-		// Follow-ups use the accepted original, which can differ from this draft.
-		return persistedResult(accepted!, outcome);
+		// Follow-ups read the committed row, which can differ from this draft.
+		return committed(await lockResource(tx, resourceId), outcome);
 	});
 }
 
-function isDegradedOriginal(content: string, stored: LockedResource): boolean {
+function isDegradedOriginal(content: string, stored: StoredResource): boolean {
 	return stored.hasOriginal && content.length < stored.originalChars * MIN_REACQUIRED_CONTENT_RATIO;
 }
 
-function persistedResult(accepted: AcceptedResource, outcome: PersistOutcome) {
-	const { id, scope, kind, fileType, resourcePlatform, originalLang, url, originalHash, subjectResourceId } = accepted;
-	if (!originalHash) throw new Error(`Resource ${id} has no recorded original revision`);
-	return {
-		resourceId: id,
-		scope,
-		kind,
-		fileType,
-		resourcePlatform,
-		originalLang,
-		url,
-		originalHash,
-		subjectAttached: subjectResourceId !== null,
-		outcome,
-	};
+function committed(stored: StoredResource, outcome: PersistOutcome) {
+	if (!stored.originalHash) throw new Error(`Resource ${stored.id} has no recorded original revision`);
+	return { ...stored, originalHash: stored.originalHash, outcome };
 }
 
 /** Issue the next fencing token for reacquiring an existing Resource; call it inside the attempt's first durable step. */
