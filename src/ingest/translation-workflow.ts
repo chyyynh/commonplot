@@ -49,7 +49,7 @@ export function shouldEnqueueResourceTranslation(candidate: ResourceTranslationC
 	);
 }
 
-type ResourceTranslationPayload = { force?: boolean; resourceId: string; translationRevision: string };
+type ResourceTranslationPayload = { force?: boolean; resourceId: string; originalHash: string };
 
 type ResourceTranslationInput = ResourceTranslationCandidate & {
 	id: string;
@@ -450,15 +450,14 @@ async function translatePlannedContent(
 }
 
 const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v33';
-const ResourceTranslationRevisionSchema = z.hash('md5').lowercase();
-const ForcedTranslationRunKeySchema = z.string().regex(/^[0-9a-f]{16}$/);
+const OriginalHashSchema = z.hash('md5').lowercase();
 
 async function loadResourceTranslationInput(
 	db: NodePgDatabase,
 	resourceId: string,
-): Promise<{ resource: ResourceTranslationInput; translationRevision: string } | null> {
+): Promise<{ resource: ResourceTranslationInput; originalHash: string } | null> {
 	// Machine fields are validated before persistence; planning needs their presence, not another copy of the translation.
-	const result = await db.execute<ResourceTranslationInput & { translationRevision: string }>(sql`
+	const result = await db.execute<ResourceTranslationInput & { originalHash: string }>(sql`
 		SELECT
 			resource.file_type AS "fileType",
 			resource.id::text AS id,
@@ -474,7 +473,7 @@ async function loadResourceTranslationInput(
 			zh_hant.content IS NOT NULL AS "hasTranslatedContent",
 			zh_hant.source AS "translationSource",
 			resource.url,
-			resource.original_hash AS "translationRevision"
+			resource.original_hash AS "originalHash"
 		FROM resources resource
 		JOIN resource_translations original
 		  ON original.resource_id = resource.id
@@ -491,17 +490,17 @@ async function loadResourceTranslationInput(
 	`);
 	const row = result.rows[0];
 	if (!row) return null;
-	const { translationRevision, ...resource } = row;
-	return { resource, translationRevision: ResourceTranslationRevisionSchema.parse(translationRevision) };
+	const { originalHash, ...resource } = row;
+	return { resource, originalHash: OriginalHashSchema.parse(originalHash) };
 }
 
 async function persistMachineZhHantTranslation(
 	db: NodePgDatabase,
 	resourceId: string,
-	translationRevision: string,
+	originalHash: string,
 	patch: Readonly<MachineZhHantTranslationPatch>,
 ): Promise<boolean> {
-	ResourceTranslationRevisionSchema.parse(translationRevision);
+	OriginalHashSchema.parse(originalHash);
 	if ((patch.content === undefined) !== (patch.alignment === undefined)) {
 		throw new TypeError('Machine translation content and alignment must be persisted together');
 	}
@@ -511,7 +510,7 @@ async function persistMachineZhHantTranslation(
 			FROM resources resource
 			WHERE resource.id = ${resourceId}::uuid
 			  AND (resource.scope = 'corpus' OR ${PRIVATE_UPLOADED_PDF_TRANSLATION_SQL})
-			  AND resource.original_hash = ${translationRevision}
+			  AND resource.original_hash = ${originalHash}
 			FOR UPDATE OF resource
 		)
 		INSERT INTO resource_translations AS current_translation (
@@ -535,8 +534,8 @@ async function persistMachineZhHantTranslation(
 }
 
 /** Follow one shared recovery chain, so concurrent imports cannot multiply paid work. */
-async function currentTranslationAttempt(env: CoreEnv, resourceId: string, translationRevision: string) {
-	let id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
+async function currentTranslationAttempt(env: CoreEnv, resourceId: string, originalHash: string) {
+	let id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${originalHash}`;
 	for (let attempt = 0; attempt < 16; attempt++) {
 		let snapshot: Awaited<ReturnType<WorkflowInstance['status']>>;
 		try {
@@ -553,27 +552,23 @@ async function currentTranslationAttempt(env: CoreEnv, resourceId: string, trans
 	throw new Error('Translation retry limit reached');
 }
 
-// Normal ingestion dedupes by source revision. Explicit reacquisition supplies a deterministic run key so every operator resync
-// receives a fresh instance while retries of the same processing Workflow remain idempotent.
+// Normal ingestion dedupes by original hash. A forced run keys on its parent task instead, so every operator resync
+// receives a fresh instance while retries of the same processing Workflow stay idempotent.
 export async function enqueueResourceTranslation(
 	env: CoreEnv,
 	resourceId: string,
-	translationRevision: string,
-	forceRunKey: string | undefined,
+	originalHash: string,
+	force: boolean,
 	parent: ResourceTaskContext,
 ): Promise<string> {
-	ResourceTranslationRevisionSchema.parse(translationRevision);
-	const validatedForceRunKey = forceRunKey === undefined ? null : ForcedTranslationRunKeySchema.parse(forceRunKey);
-	let id = validatedForceRunKey
-		? `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-force-${resourceId}-${validatedForceRunKey}`
-		: `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${resourceId}-${translationRevision}`;
-	if (!validatedForceRunKey) {
-		const attempt = await currentTranslationAttempt(env, resourceId, translationRevision);
-		id = attempt.id;
-		// Completed work already lives in ResourceTranslation. There is no new
-		// execution to subscribe to, and no second source of progress to project.
-		if (attempt.status === 'complete') return id;
-	}
+	OriginalHashSchema.parse(originalHash);
+	const attempt = force
+		? { id: `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-force-${resourceId}-${hash('sha256', parent.taskId, 'hex').slice(0, 16)}` }
+		: await currentTranslationAttempt(env, resourceId, originalHash);
+	const { id } = attempt;
+	// Completed work already lives in ResourceTranslation. There is no new
+	// execution to subscribe to, and no second source of progress to project.
+	if ('status' in attempt && attempt.status === 'complete') return id;
 	// Shared work owns a ledger from the beginning, including automatic work.
 	// A later user subscribes to the same durable reports instead of polling it.
 	const registered = await env.APP.registerResourceProgressTask({
@@ -586,7 +581,7 @@ export async function enqueueResourceTranslation(
 	await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([
 		{
 			id,
-			params: { ...(validatedForceRunKey ? { force: true } : {}), resourceId, translationRevision },
+			params: { ...(force ? { force: true } : {}), resourceId, originalHash },
 		},
 	]);
 	return id;
@@ -601,8 +596,8 @@ const TRANSLATION_SWEEP_BATCH = 25;
  * found nothing to translate is not repeated every tick.
  */
 export async function enqueueMissingTranslations(env: CoreEnv, db: NodePgDatabase): Promise<void> {
-	const { rows } = await db.execute<{ id: string; translationRevision: string }>(sql`
-		SELECT resource.id::text, resource.original_hash AS "translationRevision"
+	const { rows } = await db.execute<{ id: string; originalHash: string }>(sql`
+		SELECT resource.id::text, resource.original_hash AS "originalHash"
 		FROM resources resource
 		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 		WHERE resource.scope = 'corpus'
@@ -621,8 +616,8 @@ export async function enqueueMissingTranslations(env: CoreEnv, db: NodePgDatabas
 		LIMIT ${TRANSLATION_SWEEP_BATCH}
 	`);
 	const results = await Promise.allSettled(
-		rows.map(({ id, translationRevision }) =>
-			enqueueResourceTranslation(env, id, translationRevision, undefined, { taskId: 'translation-sweep', required: false }),
+		rows.map(({ id, originalHash }) =>
+			enqueueResourceTranslation(env, id, originalHash, false, { taskId: 'translation-sweep', required: false }),
 		),
 	);
 	const failed = results.filter((result) => result.status === 'rejected').length;
@@ -634,7 +629,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		event: WorkflowEvent<ResourceTranslationPayload>,
 		step: WorkflowStep,
 	): Promise<{ status: 'complete' | 'skipped' | 'superseded'; resourceId: string }> {
-		const { force = false, resourceId, translationRevision } = event.payload;
+		const { force = false, resourceId, originalHash } = event.payload;
 		const task = createResourceTask(this.env, step, event.instanceId);
 		let translationPublished = false;
 		let followupFailed = false;
@@ -657,8 +652,8 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				await task.report('missing', { stage: 'translating', status: 'skipped', resourceId });
 				return { status: 'skipped', resourceId };
 			}
-			if (input.translationRevision !== translationRevision) {
-				console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Translation revision was superseded; skipping', resource_id: resourceId });
+			if (input.originalHash !== originalHash) {
+				console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Original changed since enqueue; skipping', resource_id: resourceId });
 				await task.report('superseded', {
 					stage: 'translating',
 					status: 'superseded',
@@ -719,7 +714,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
 					timeout: '30 seconds',
 				},
-				async () => persistMachineZhHantTranslation(await connectCoreDb(this.env), resourceId, translationRevision, patch),
+				async () => persistMachineZhHantTranslation(await connectCoreDb(this.env), resourceId, originalHash, patch),
 			);
 			if (!persisted) {
 				await task.report('persist-superseded', {

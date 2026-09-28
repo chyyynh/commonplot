@@ -30,6 +30,9 @@ export type ResourcePersistenceTarget = { ownedBlobId?: string } & (
 /** A reacquired original this much shorter than the stored one is kept out unless forced (error or challenge pages). */
 const MIN_REACQUIRED_CONTENT_RATIO = 0.5;
 
+/** Whether a Resource has a readable original, over the `resource` and `original` aliases. Posts need no title. */
+export const READABLE_ORIGINAL_SQL = sql`COALESCE((resource.kind = 'post' OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> '', false)`;
+
 type LockedResource = Readonly<{
 	id: string;
 	hasOriginal: boolean;
@@ -45,7 +48,11 @@ type LockedResource = Readonly<{
 	url: string | null;
 }>;
 
+/** The accepted state that follow-ups read. */
 type AcceptedResource = Omit<LockedResource, 'hasOriginal' | 'originalChars' | 'committedSeq'>;
+
+/** A write replaced the original, a degraded reacquisition kept the stored one, or a newer attempt had already committed. */
+type PersistOutcome = 'written' | 'kept' | 'superseded';
 
 type PreparedResource = ReturnType<typeof prepareResolvedResource>;
 
@@ -60,7 +67,7 @@ async function findResourceCandidates(
 	}>(sql`
 		SELECT COALESCE(jsonb_agg(jsonb_build_object(
 		  'id', resource.id, 'sourceId', resource.source_id, 'scope', resource.scope,
-		  'hasOriginal', COALESCE((resource.kind = 'post' OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> '', false)))
+		  'hasOriginal', ${READABLE_ORIGINAL_SQL}))
 		  FILTER (WHERE resource.id IS NOT NULL), '[]'::jsonb) AS owners
 		FROM jsonb_array_elements(${JSON.stringify(identities.map(({ normalizedUrl, identifiers }) => ({ normalizedUrl, identifiers })))}::jsonb) WITH ORDINALITY AS input(value, ordinal)
 		LEFT JOIN LATERAL (
@@ -153,7 +160,7 @@ async function lockResource(db: NodePgDatabase, resourceId: string): Promise<Loc
 		SELECT resource.id::text, resource.scope, resource.kind, resource.url,
 		       resource.original_lang AS "originalLang", resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform",
 		       resource.subject_resource_id::text AS "subjectResourceId",
-		       COALESCE((resource.kind = 'post' OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> '', false) AS "hasOriginal",
+		       ${READABLE_ORIGINAL_SQL} AS "hasOriginal",
 		       COALESCE(CHAR_LENGTH(original.content), 0) AS "originalChars",
 		       resource.committed_seq AS "committedSeq",
 		       resource.original_hash AS "originalHash"
@@ -177,7 +184,7 @@ async function writeCanonicalResource(
 ) {
 	const columns = sql`
 		kind, resource_platform, source_name, url, normalized_url, file_type, original_lang, published_date,
-		og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id,
+		og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id, original_hash,
 		scraped_date, updated_at
 	`;
 	const values = sql`
@@ -185,17 +192,21 @@ async function writeCanonicalResource(
 		${resource.fileType}, ${resource.originalLang}, ${resource.publishedDate},
 		${resource.ogImageUrl}, ${resource.ogImageWidth}, ${resource.ogImageHeight}, ${JSON.stringify(resource.creators)}::jsonb,
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
-		NOW(), NOW()
+		(SELECT MD5(jsonb_build_array(lang, title, summary, content)::text) FROM incoming), NOW(), NOW()
 	`;
 	// The cleanup excludes the incoming language: no CTE deletes a row another CTE writes.
-	const written = await db.execute<{ revision: string }>(sql`
-		WITH written_resource AS (
+	const written = await db.execute<{ originalHash: string }>(sql`
+		WITH incoming AS (
+			SELECT ${resource.originalLang}::text AS lang, ${resource.title}::text AS title,
+			       ${resource.summary}::text AS summary, ${resource.content}::text AS content
+		), written_resource AS (
 			${
 				!existing
 					? sql`INSERT INTO resources (id, scope, ${columns}) VALUES (${resourceId}::uuid, 'corpus', ${values})`
-					: sql`UPDATE resources SET (${columns}) = (${values}) WHERE id = ${resourceId}::uuid`
+					: sql`UPDATE resources SET (${columns}) = (${values}), committed_seq = COALESCE(${fence}::integer, committed_seq)
+					      WHERE id = ${resourceId}::uuid`
 			}
-			RETURNING id
+			RETURNING id, original_hash
 		), cleared_identifiers AS (
 			DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid AND ${existing}
 		), cleared_references AS (
@@ -206,24 +217,17 @@ async function writeCanonicalResource(
 			  AND lang <> ${resource.originalLang}
 		), written_original AS (
 			INSERT INTO resource_translations (resource_id, lang, title, summary, content, source, updated_at)
-			SELECT id, ${resource.originalLang}, ${resource.title}, ${resource.summary}, ${resource.content},
-			       'original', NOW()
-			FROM written_resource
-			WHERE true
+			SELECT written_resource.id, incoming.lang, incoming.title, incoming.summary, incoming.content, 'original', NOW()
+			FROM written_resource CROSS JOIN incoming
 			ON CONFLICT (resource_id, lang) DO UPDATE SET
 				(title, summary, content, source, alignment, updated_at) =
 				(EXCLUDED.title, EXCLUDED.summary, EXCLUDED.content, EXCLUDED.source, NULL, EXCLUDED.updated_at)
-			RETURNING MD5(jsonb_build_array(lang, title, summary, content)::text) AS revision
+			RETURNING resource_id
 		)
-		SELECT revision FROM written_resource CROSS JOIN written_original
+		SELECT original_hash AS "originalHash" FROM written_resource JOIN written_original ON written_original.resource_id = written_resource.id
 	`);
-	const original = written.rows[0];
-	if (!original) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
-	// The row was already written by the CTE above; record the accepted revision and token in a second statement.
-	await db.execute(sql`
-		UPDATE resources SET original_hash = ${original.revision}, committed_seq = COALESCE(${fence}::integer, committed_seq)
-		WHERE id = ${resourceId}::uuid
-	`);
+	const originalHash = written.rows[0]?.originalHash;
+	if (!originalHash) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
 	if (resource.identifiers.length) {
 		// Identifier replacement must follow its DELETE; both can target the same keys.
 		await db.execute(sql`
@@ -257,7 +261,7 @@ async function writeCanonicalResource(
 		`);
 		if (!savedTranscript.rows.length) throw new NonRetryableError('YouTube reacquisition returned no captions for an existing transcript');
 	}
-	return { originalHash: original.revision };
+	return originalHash;
 }
 
 /** Another version's identifiers join the paper that is already stored, so both find it next time. */
@@ -284,16 +288,14 @@ async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relati
 		return;
 	}
 	const attached = await db.execute(sql`
-		UPDATE resources SET subject_resource_id = ${resourceId}::uuid, updated_at = NOW()
-		WHERE id = ${relation.parentResourceId}::uuid
-		  AND scope = 'corpus'
-		  AND EXISTS (
-		    SELECT 1 FROM resource_translations original
-		    WHERE original.resource_id = resources.id AND original.lang = resources.original_lang
-		      AND BTRIM(COALESCE(original.content, '')) <> ''
-		  )
-		  AND id <> ${resourceId}::uuid
-		  AND original_hash = ${relation.parentOriginalHash}
+		UPDATE resources resource SET subject_resource_id = ${resourceId}::uuid, updated_at = NOW()
+		FROM resource_translations original
+		WHERE resource.id = ${relation.parentResourceId}::uuid
+		  AND original.resource_id = resource.id AND original.lang = resource.original_lang
+		  AND resource.scope = 'corpus'
+		  AND ${READABLE_ORIGINAL_SQL}
+		  AND resource.id <> ${resourceId}::uuid
+		  AND resource.original_hash = ${relation.parentOriginalHash}
 	`);
 	if (attached.rowCount !== 1) throw new NonRetryableError('Subject parent was reacquired or is no longer eligible for attachment');
 }
@@ -340,27 +342,29 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Prep
 				fence,
 				committed: root.committedSeq,
 			});
-			return { ...acceptedResult(root), originalWritten: false, superseded: true };
+			return persistedResult(root, 'superseded');
 		}
 		// A retried step whose commit already landed replays it instead of writing again.
-		const replayed = root !== null && fence !== null && root.committedSeq === fence;
-		const originalWritten =
-			replayed || !root?.hasOriginal || (target.kind === 'existing' && (target.force || !isDegradedOriginal(resource.content, root)));
-		if (target.kind === 'existing' && !originalWritten)
-			console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });
-		let subjectResourceId = root?.subjectResourceId ?? null;
+		if (root && fence !== null && root.committedSeq === fence) return persistedResult(root, 'written');
+		const outcome: PersistOutcome =
+			!root?.hasOriginal || (target.kind === 'existing' && (target.force || !isDegradedOriginal(resource.content, root)))
+				? 'written'
+				: 'kept';
 		let accepted: AcceptedResource | null = root;
-		if (originalWritten && !replayed) {
+		if (outcome === 'written') {
 			const subject = subjectCandidates.length === 1 && subjectCandidates[0]?.scope === 'corpus' ? subjectCandidates[0] : null;
-			subjectResourceId = subject && subject.id !== resourceId && (await lockResource(tx, subject.id)).hasOriginal ? subject.id : null;
-			const written = await writeCanonicalResource(tx, resourceId, resource, root !== null, subjectResourceId, fence);
-			accepted = { ...resource, ...written, id: resourceId, scope: root?.scope ?? 'corpus', subjectResourceId };
-		} else if (root?.kind === 'paper' && resource.kind === 'paper') {
-			await mergePaperIdentifiers(tx, resourceId, resource.identifiers);
+			const subjectResourceId =
+				subject && subject.id !== resourceId && (await lockResource(tx, subject.id)).hasOriginal ? subject.id : null;
+			const originalHash = await writeCanonicalResource(tx, resourceId, resource, root !== null, subjectResourceId, fence);
+			accepted = { ...resource, id: resourceId, scope: root?.scope ?? 'corpus', originalHash, subjectResourceId };
+		} else {
+			if (target.kind === 'existing')
+				console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });
+			if (root?.kind === 'paper' && resource.kind === 'paper') await mergePaperIdentifiers(tx, resourceId, resource.identifiers);
 		}
 		if (target.kind === 'draft' && target.relation) await applyDraftRelation(tx, resourceId, target.relation);
 		// Follow-ups use the accepted original, which can differ from this draft.
-		return { ...acceptedResult({ ...accepted!, id: resourceId, subjectResourceId }), originalWritten, superseded: false };
+		return persistedResult(accepted!, outcome);
 	});
 }
 
@@ -368,7 +372,7 @@ function isDegradedOriginal(content: string, stored: LockedResource): boolean {
 	return stored.hasOriginal && content.length < stored.originalChars * MIN_REACQUIRED_CONTENT_RATIO;
 }
 
-function acceptedResult(accepted: AcceptedResource) {
+function persistedResult(accepted: AcceptedResource, outcome: PersistOutcome) {
 	const { id, scope, kind, fileType, resourcePlatform, originalLang, url, originalHash, subjectResourceId } = accepted;
 	if (!originalHash) throw new Error(`Resource ${id} has no recorded original revision`);
 	return {
@@ -381,6 +385,7 @@ function acceptedResult(accepted: AcceptedResource) {
 		url,
 		originalHash,
 		subjectAttached: subjectResourceId !== null,
+		outcome,
 	};
 }
 

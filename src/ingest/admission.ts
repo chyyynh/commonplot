@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { PaidPdfFallbackGrantSchema } from './platforms/pdf-policy';
 import { resolveResourceUrl, ResourceUrlSchema } from './platforms/resource-url';
 import { ResourceLanguageSchema } from './resource-language';
-import { findResourcesByUrls } from './resource-persistence';
+import { findResourcesByUrls, READABLE_ORIGINAL_SQL } from './resource-persistence';
 
 const ResourceDraftRelationSchema = z.discriminatedUnion('kind', [
 	z.strictObject({ kind: z.literal('source'), sourceId: z.uuid() }),
@@ -93,15 +93,12 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, sour
 	const attached = new Set<string>();
 	if (unassigned.length) {
 		const { rows } = await db.execute<{ id: string }>(sql`
-			UPDATE resources
+			UPDATE resources resource
 			SET source_id = ${sourceId}::uuid, updated_at = NOW()
-			WHERE id = ANY(${sql.param(unassigned)}::uuid[]) AND scope = 'corpus' AND source_id IS NULL
-			  AND EXISTS (
-			    SELECT 1 FROM resource_translations original
-			    WHERE original.resource_id = resources.id AND original.lang = resources.original_lang
-			      AND (resources.kind = 'post' OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> ''
-			  )
-			RETURNING id::text
+			FROM resource_translations original
+			WHERE resource.id = ANY(${sql.param(unassigned)}::uuid[]) AND resource.scope = 'corpus' AND resource.source_id IS NULL
+			  AND original.resource_id = resource.id AND original.lang = resource.original_lang AND ${READABLE_ORIGINAL_SQL}
+			RETURNING resource.id::text
 		`);
 		for (const { id } of rows) attached.add(id);
 	}
