@@ -353,15 +353,16 @@ type StoredPdfRow = {
 export async function loadStoredPdf(db: NodePgDatabase, resourceId: string): Promise<StoredPdf> {
 	const result = await db.execute<StoredPdfRow>(sql`
 		SELECT
-			resource.content_hash,
+			object.content_hash,
 			original.title,
 			original.summary,
 			resource.original_lang,
 			COALESCE(resource.source_name, 'File') AS source,
 			resource.published_date,
 			resource.creators,
-			resource.storage_key
+			object.key AS storage_key
 		FROM resources resource
+		JOIN stored_objects object ON object.id = resource.stored_object_id AND object.status = 'ready' AND object.store = 'r2'
 		JOIN resource_translations original
 		  ON original.resource_id = resource.id
 		 AND original.lang = resource.original_lang
@@ -369,7 +370,7 @@ export async function loadStoredPdf(db: NodePgDatabase, resourceId: string): Pro
 		  AND resource.scope = 'private'
 		  AND resource.kind = 'file'
 		  AND resource.file_type = ${PDF_MIME}
-		  AND resource.storage_key IS NOT NULL
+		  AND object.content_hash IS NOT NULL
 		  AND EXISTS (SELECT 1 FROM user_files file WHERE file.resource_id = resource.id)
 	`);
 	const row = result.rows[0];

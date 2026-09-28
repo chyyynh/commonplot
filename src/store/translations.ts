@@ -26,7 +26,13 @@ const PRIVATE_UPLOADED_PDF_TRANSLATION_SQL = sql`(
 	AND resource.kind = 'file'
 	AND resource.resource_platform IS NULL
 	AND resource.file_type = ${PDF_MIME}
-	AND resource.storage_key IS NOT NULL
+	AND EXISTS (
+		SELECT 1
+		FROM stored_objects object
+		WHERE object.id = resource.stored_object_id
+		  AND object.status = 'ready'
+		  AND object.store = 'r2'
+	)
 	AND EXISTS (
 		SELECT 1
 		FROM user_files file

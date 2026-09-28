@@ -2,6 +2,12 @@ import { Buffer } from 'node:buffer';
 import { hash } from 'node:crypto';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { MAX_PDF_BYTES } from '../contracts/pdf-policy.ts';
+import {
+	publicPdfPublicationKey,
+	publicPdfSourceKey,
+	structuredPdfCropPrefix,
+	structuredPdfDocumentKey,
+} from '../contracts/storage-keys.ts';
 import { limitByteStream, readBoundedResponseText } from './response.ts';
 import {
 	normalizeStructuredPdf,
@@ -105,7 +111,7 @@ async function ensureStructuredPdfSourceCrops(
 		sourceLabel: string;
 	}>,
 ): Promise<void> {
-	const prefix = `${input.pdfStorageKey}.structured-crops/${input.inputContentHash}/`;
+	const prefix = structuredPdfCropPrefix(input.pdfStorageKey, input.inputContentHash);
 	const plannedIds = new Set(input.crops.map(({ id }) => id));
 	if (plannedIds.size !== input.crops.length) throw new Error('Structured PDF crop IDs must be unique');
 	const readyCropIds = new Set<string>();
@@ -219,7 +225,7 @@ async function readStructuredPdfArtifact(
 	pdfStorageKey: string,
 	inputContentHash: string,
 ): Promise<StructuredPdfDocument | null> {
-	const object = await env.R2.get(`${pdfStorageKey}.structured-document.json`);
+	const object = await env.R2.get(structuredPdfDocumentKey(pdfStorageKey));
 	if (!object) return null;
 	if (object.customMetadata?.artifactVersion !== ZOTERO_SDT_ARTIFACT_VERSION || object.customMetadata?.inputSha256 !== inputContentHash) {
 		await object.body.cancel('Structured PDF artifact revision is stale');
@@ -252,7 +258,7 @@ export async function parseStoredPdfRepresentation(
 			throw new NonRetryableError(`PDF source object must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
 		document = await parsePdfArtifactStream(env, object.body, object.size, input.sourceLabel);
-		await putPdfDerivative(env, input.pdfStorageKey, `${input.pdfStorageKey}.structured-document.json`, JSON.stringify(document), {
+		await putPdfDerivative(env, input.pdfStorageKey, structuredPdfDocumentKey(input.pdfStorageKey), JSON.stringify(document), {
 			customMetadata: { artifactVersion: ZOTERO_SDT_ARTIFACT_VERSION, inputSha256: input.inputContentHash },
 		});
 	}
@@ -300,7 +306,7 @@ export async function storePublicPdfResponse(env: CoreEnv, response: Response, s
 		throw new NonRetryableError('Fetched PDF response has no PDF header');
 	}
 	const inputContentHash = hash('sha256', new Uint8Array(bytes), 'hex');
-	const pdfStorageKey = `public-pdf/${sourceHash}/${inputContentHash}/source.pdf`;
+	const pdfStorageKey = publicPdfSourceKey(sourceHash, inputContentHash);
 	await env.R2.put(pdfStorageKey, bytes, {
 		customMetadata: { scope: 'corpus', sourceSha256: sourceHash, inputSha256: inputContentHash },
 		httpMetadata: { contentType: 'application/pdf' },
@@ -327,8 +333,7 @@ export async function publishPublicPdfCrops(env: CoreEnv, resourceId: string, co
 		groups.set(groupKey, group);
 	}
 	for (const { sourceHash, inputHash, cropIds } of groups.values()) {
-		const prefix = `public-pdf/${sourceHash}/${inputHash}`;
-		const pdfStorageKey = `${prefix}/source.pdf`;
+		const pdfStorageKey = publicPdfSourceKey(sourceHash, inputHash);
 		const source = await env.R2.head(pdfStorageKey);
 		if (
 			source?.customMetadata?.scope !== 'corpus' ||
@@ -337,7 +342,7 @@ export async function publishPublicPdfCrops(env: CoreEnv, resourceId: string, co
 		) {
 			throw new Error('Public PDF crop publication has no independent public source');
 		}
-		const object = await env.R2.get(`${pdfStorageKey}.structured-crops/${inputHash}/manifest.json`);
+		const object = await env.R2.get(`${structuredPdfCropPrefix(pdfStorageKey, inputHash)}manifest.json`);
 		if (!object) throw new Error('Public PDF crop publication manifest is missing');
 		if (object.size > MAX_MANIFEST_BYTES) {
 			await object.body.cancel('Invalid public PDF manifest size');
@@ -354,7 +359,7 @@ export async function publishPublicPdfCrops(env: CoreEnv, resourceId: string, co
 		) {
 			throw new Error('Public PDF crop publication includes unready images');
 		}
-		await env.R2.put(`${prefix}/publication.json`, JSON.stringify({ resourceId, cropIds: [...cropIds] }), {
+		await env.R2.put(publicPdfPublicationKey(sourceHash, inputHash), JSON.stringify({ resourceId, cropIds: [...cropIds] }), {
 			httpMetadata: { contentType: 'application/json' },
 		});
 	}
