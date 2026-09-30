@@ -9,8 +9,9 @@
 	"workers_dev": false,
 	"compatibility_date": "2026-08-30",
 	/**
-	 * Rebuilding 500k resources uploads 1M items across both search indexes.
-	 * Reserve additional subrequests for deltas, reconciliation, and retries.
+	 * A rebuild of 500k resources enqueues 10k sync batches, then lists and
+	 * prunes 20k item pages in each search index; the sync queue does the
+	 * uploads. Workflows count subrequests per instance, so keep headroom.
 	 */
 	"limits": {
 		"cpu_ms": 180000,
@@ -121,7 +122,7 @@
 			"binding": "SEARCH_INDEX_REBUILD_WORKFLOW",
 			"name": "newsence-search-index-rebuild",
 			"class_name": "SearchIndexRebuildWorkflow",
-			/** 500k resources need 10k upload steps before deltas, pruning, and readiness checks. */
+			/** 500k resources need 10k enqueue steps before pruning and readiness checks. */
 			"limits": { "steps": 25000 },
 		},
 	],

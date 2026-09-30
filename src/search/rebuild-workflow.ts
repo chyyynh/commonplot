@@ -3,7 +3,7 @@ import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pLimit from 'p-limit';
 import { withCoreDb } from '../store/db';
-import { AI_SEARCH_ITEM_PREFIX, resourceIdFromAiSearchItemKey, SEARCHABLE_CORPUS_RESOURCE_SQL } from './search-index';
+import { AI_SEARCH_ITEM_PREFIX, RESULT_LIMIT_MAX, resourceIdFromAiSearchItemKey, SEARCHABLE_CORPUS_RESOURCE_SQL } from './search-index';
 
 // Cloudflare AI Search allows at most five custom metadata fields per instance.
 const CANONICAL_CUSTOM_METADATA = [
@@ -23,7 +23,7 @@ const CANONICAL_SEARCH_CONFIGS = {
 		fusion_method: 'rrf',
 		index_method: { keyword: true, vector: true },
 		indexing_options: { keyword_tokenizer: 'trigram' },
-		max_num_results: 50,
+		max_num_results: RESULT_LIMIT_MAX,
 		score_threshold: 0,
 	},
 	related: {
@@ -33,7 +33,7 @@ const CANONICAL_SEARCH_CONFIGS = {
 		chunk_size: 4_096,
 		embedding_model: '@cf/qwen/qwen3-embedding-0.6b',
 		index_method: { keyword: false, vector: true },
-		max_num_results: 50,
+		max_num_results: RESULT_LIMIT_MAX,
 		score_threshold: 0,
 	},
 } as const satisfies Record<SearchIndexName, Partial<AiSearchConfig>>;

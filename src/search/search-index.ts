@@ -14,7 +14,8 @@ const RELATED_SUMMARY_MAX_CHARS = 800;
 const RELATED_DOCUMENT_MAX_CHARS = 3_000;
 const RELATED_QUERY_MAX_CHARS = 1_000;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
-const RESULT_LIMIT_MAX = 50;
+/** The most results one AI Search query returns. */
+export const RESULT_LIMIT_MAX = 50;
 const SearchableResourceKindSchema = z.enum(Object.keys(RESOURCE_KIND_METADATA) as ResourceKind[]).exclude(['image']);
 
 export const SEARCHABLE_CORPUS_RESOURCE_SQL = sql`(
