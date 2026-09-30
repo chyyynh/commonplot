@@ -126,7 +126,7 @@ async function ensureStructuredPdfSourceCrops(
 		try {
 			const pdf = await env.R2.get(input.pdfStorageKey);
 			if (!pdf) throw new NonRetryableError('PDF source object is missing');
-			const response = await env.ZOTERO_SDT.getByName(ZOTERO_SDT_CONTAINER_NAME).renderPdfAreas(pdf.body, pdf.size, batch);
+			const response = await env.ZOTERO_PDF.getByName(ZOTERO_SDT_CONTAINER_NAME).renderPdfAreas(pdf.body, pdf.size, batch);
 			if (!response.ok) {
 				const body = await readBoundedResponseText(response, MAX_ERROR_BODY_BYTES, 'Zotero source crop error');
 				const ErrorType = [400, 413, 415, 422].includes(response.status) ? NonRetryableError : Error;
@@ -193,7 +193,7 @@ async function ensureStructuredPdfSourceCrops(
 
 async function parsePdfArtifactStream(env: CoreEnv, input: ReadableStream<Uint8Array>, byteLength: number, sourceLabel: string) {
 	try {
-		const response = await env.ZOTERO_SDT.getByName(ZOTERO_SDT_CONTAINER_NAME).processPdf(input, byteLength);
+		const response = await env.ZOTERO_PDF.getByName(ZOTERO_SDT_CONTAINER_NAME).processPdf(input, byteLength);
 		const maxBytes = response.ok ? ZOTERO_SDT_MAX_RESPONSE_BYTES : MAX_ERROR_BODY_BYTES;
 		const body = await readBoundedResponseText(response, maxBytes, 'Zotero SDT response');
 		if (!response.ok) {
