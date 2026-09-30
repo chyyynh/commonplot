@@ -16,8 +16,7 @@ import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
 import { enqueueMissingTranslations } from './workflows/translation';
 
-export { ContainerProxy } from '@cloudflare/containers';
-export { ZoteroSdtContainer } from './services/zotero-sdt-container';
+export { ZoteroSdt } from './services/zotero-sdt-container';
 export { ResourceTranslationV2Workflow } from './workflows/translation';
 export { SearchIndexRebuildWorkflow } from './search/rebuild-workflow';
 export { ResourceProcessingV2Workflow } from './workflows/processing';

@@ -20,17 +20,18 @@
 	/** PDF parsers stream uploaded PDFs from R2; their models and scratch disks are intentionally ephemeral. */
 	"containers": [
 		{
-			"class_name": "ZoteroSdtContainer",
-			"image": "./containers/zotero-sdt/Dockerfile",
-			"instance_type": "basic",
-			"max_instances": 1,
+			"class_name": "ZoteroSdt",
+			"scheduling_policy": "durable_object",
+			"images": {
+				"zotero-sdt": { "dockerfile": "./containers/zotero-sdt/Dockerfile" },
+			},
 		},
 	],
 	"durable_objects": {
 		"bindings": [
 			{
 				"name": "ZOTERO_SDT",
-				"class_name": "ZoteroSdtContainer",
+				"class_name": "ZoteroSdt",
 			},
 			{
 				"name": "YOUTUBE_CAPTIONS",
@@ -54,6 +55,11 @@
 		{
 			"tag": "grobid-removed-v1",
 			"deleted_classes": ["GrobidContainer"],
+		},
+		{
+			"tag": "zotero-sdt-durable-object-v1",
+			"new_sqlite_classes": ["ZoteroSdt"],
+			"deleted_classes": ["ZoteroSdtContainer"],
 		},
 	],
 	"observability": {
