@@ -8,7 +8,7 @@ import { toText } from 'hast-util-to-text';
 import { DOMParser } from 'linkedom';
 import stripIndent from 'strip-indent';
 import type { AcquiredResource } from '../contracts/acquired-resource';
-import { normalizedResourceImageUrl } from '../contracts/image-mapping';
+import { normalizedExternalMediaUrl, normalizedResourceImageUrl } from '../contracts/image-mapping';
 import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { PDF_MIME } from '../contracts/pdf-policy';
 import { resolveResourceUrl, type ResolvedResourceUrl } from '../contracts/resource-url';
@@ -21,6 +21,7 @@ const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
+const LOOP_VIDEO_PATH = /\.(?:mp4|webm|m4v|mov)$/i;
 async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredResource & { kind: 'blog'; resourcePlatform: null }> {
 	// linkedom does not imply the <head>/<body> that HTML lets pages omit, and Readability
 	// needs <body>. Serialize the spec parser's tree so linkedom reads the implied structure.
@@ -58,6 +59,36 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 			if (!image.getAttribute('alt')?.trim()) image.setAttribute('alt', label);
 			image.removeAttribute('aria-hidden');
 		}
+	}
+
+	// Readability drops <video>. Muted autoplay loops are a page's animated figures (what GIFs
+	// used to be), so each becomes a Markdown image of its light-theme file for the reader to
+	// loop. Lazy players keep the URL in data-src until their script runs; their <noscript>
+	// copy parses as a second player here.
+	for (const video of document.querySelectorAll('noscript video')) video.closest('noscript')?.remove();
+	for (const video of document.querySelectorAll('video[autoplay][loop][muted]')) {
+		const source = [video, ...video.querySelectorAll('source')].find(
+			(candidate) =>
+				candidate.getAttribute('data-theme') !== 'dark' &&
+				!/dark/.test(candidate.getAttribute('media') ?? '') &&
+				(candidate.getAttribute('src') || candidate.getAttribute('data-src')),
+		);
+		const src = URL.parse(normalizedExternalMediaUrl(source?.getAttribute('src') || source?.getAttribute('data-src'), url) ?? '');
+		if (!src || !LOOP_VIDEO_PATH.test(src.pathname)) continue;
+		src.hash = '';
+		const image = document.createElement('img', {});
+		image.setAttribute('src', src.toString());
+		image.setAttribute('alt', video.getAttribute('aria-label')?.trim() ?? '');
+		// The image replaces its player chrome (wrappers, posters) up to the first text or other media,
+		// since Readability's conditional cleaning discards media-classed wrappers around a lone image.
+		let player: typeof video | NonNullable<typeof video.parentElement> = video;
+		for (let parent = player.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
+			const media = parent.querySelectorAll('img:not([aria-hidden="true"]), picture, video, iframe, svg');
+			const text = parent.textContent?.replace(video.textContent ?? '', '').trim();
+			if (text || media.length > 1) break;
+			player = parent;
+		}
+		player.replaceWith(image);
 	}
 
 	// Keep the existing TechCrunch article boundary; author/affiliate cards share its parent.
