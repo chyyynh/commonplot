@@ -67,7 +67,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		// ownership and the latest attempt before provider execution, after any
 		// queueing delay; another callback here cannot replace that execution gate.
 		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
-			{ id: parsed.workflowId, params: parsed.payload, retention: { successRetention: '5 minutes', errorRetention: '7 days' } },
+			{ id: parsed.workflowId, params: parsed.payload, retention: { successRetention: '7 days', errorRetention: '7 days' } },
 		]);
 	}
 
