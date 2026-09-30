@@ -1,4 +1,4 @@
-# AI Search v6 operations
+# AI Search operations
 
 This runbook covers the active public Resource index. Historical rollout and
 one-shot repair procedures remain in Git history, not in the current operator
@@ -8,23 +8,25 @@ surface.
 
 | Role | Active resource |
 | --- | --- |
-| Serving binding | `AI_SEARCH → newsence-corpus-v6` |
+| Serving binding | `AI_SEARCH → newsence-corpus-v7` |
 | Rebuild binding | `SEARCH_INDEX_REBUILD_WORKFLOW` |
 | Physical Workflow | `newsence-search-index-rebuild` |
 | Entrypoint | `SearchIndexRebuildWorkflow` |
-| Current runner | `search-index-rebuild-v6-metadata-v2` |
+| Current runner | `search-index-rebuild-v7-v1` |
 | Observability | Native Workflow instance status/output and AI Search item status |
 
-The instance owns two custom metadata fields: `published_at` and `kind`, matching
-the supported search filters. Platform and monitored-source provenance stay in
+The instance embeds with `@cf/baai/bge-m3` and owns three custom metadata fields:
+`published_at` and `kind` for the search filters, and `subject_id` on carriers
+(HN threads, reposts) so results can collapse onto the Resource they discuss.
+Public search runs hybrid retrieval; related Resources query the same index
+vector-only with a Resource's titles and summary. Platform and monitored-source provenance stay in
 PostgreSQL. Corpus blogs, forums, posts, videos, papers, and PDF files with a
 readable original enter the index. Private Resources and images never enter it.
 PostgreSQL is the canonical corpus; AI Search is a keyed, eventually consistent
 secondary index. Web hydrates and authoritatively filters every returned Resource ID.
 
-This runner removes the unused custom `source_id` and `resource_platform` fields from both search
-instances. Updating the custom metadata schema triggers a full re-index;
-complete the rebuild before judging its readiness.
+Updating the embedding model needs a new instance; updating the custom metadata
+schema triggers a full re-index. Complete the rebuild before judging readiness.
 
 ## Runtime sync
 
@@ -61,11 +63,11 @@ Confirm the dedicated instance exists. Create it only in a fresh environment;
 never replace the production instance.
 
 ```sh
-pnpm -C workers/core-worker exec wrangler ai-search get newsence-corpus-v6
+pnpm -C workers/core-worker exec wrangler ai-search get newsence-corpus-v7
 
 # Fresh environments only:
 pnpm -C workers/core-worker exec wrangler ai-search create \
-  newsence-corpus-v6 \
+  newsence-corpus-v7 \
   --type builtin \
   --hybrid-search
 ```
@@ -85,7 +87,7 @@ runner ID:
 pnpm -C workers/core-worker exec wrangler workflows trigger \
   newsence-search-index-rebuild \
   '{}' \
-  --id search-index-rebuild-v6-metadata-v2
+  --id search-index-rebuild-v7-v1
 ```
 
 ## Verify
@@ -95,7 +97,7 @@ Inspect the same Workflow instance:
 ```sh
 pnpm -C workers/core-worker exec wrangler workflows instances describe \
   newsence-search-index-rebuild \
-  search-index-rebuild-v6-metadata-v2
+  search-index-rebuild-v7-v1
 ```
 
 A completed instance has already returned a final observation with:

@@ -10,8 +10,8 @@
 	"compatibility_date": "2026-08-30",
 	/**
 	 * A rebuild of 500k resources enqueues 10k sync batches, then lists and
-	 * prunes 20k item pages in each search index; the sync queue does the
-	 * uploads. Workflows count subrequests per instance, so keep headroom.
+	 * prunes 10k search item pages; the sync queue does the uploads.
+	 * Workflows count subrequests per instance, so keep headroom.
 	 */
 	"limits": {
 		"cpu_ms": 180000,
@@ -136,23 +136,7 @@
 	"ai_search": [
 		{
 			"binding": "AI_SEARCH",
-			"instance_name": "newsence-corpus-v6",
-			"remote": true,
-		},
-		{
-			"binding": "RELATED_SEARCH",
-			"instance_name": "newsence-related-v1",
-			"remote": true,
-		},
-		/** bge-m3 successors being loaded beside the live indexes (#336); they replace them after comparison. */
-		{
-			"binding": "AI_SEARCH_NEXT",
 			"instance_name": "newsence-corpus-v7",
-			"remote": true,
-		},
-		{
-			"binding": "RELATED_SEARCH_NEXT",
-			"instance_name": "newsence-related-v2",
 			"remote": true,
 		},
 	],

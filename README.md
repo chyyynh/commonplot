@@ -253,7 +253,7 @@ Bindings (in `wrangler.jsonc`):
 | `R2`               | App-owned uploaded PDF reads              |
 | `IMAGES`           | Stream remote resource images to Cloudflare Images |
 | `AI`               | Workers AI binding for AI Gateway text calls |
-| `AI_SEARCH`        | `newsence-corpus-v6` canonical public corpus |
+| `AI_SEARCH`        | `newsence-corpus-v7` canonical public corpus |
 
 Secrets (via `wrangler secret put`):
 
@@ -263,10 +263,11 @@ Secrets (via `wrangler secret put`):
 | `YOUTUBE_API_KEY`              | Yes      | Enables YouTube channel monitoring       |
 | `OPENALEX_API_KEY`             | Yes      | Enables exact paper metadata enrichment  |
 
-### Canonical AI Search v6
+### Canonical AI Search
 
-`AI_SEARCH` serves `newsence-corpus-v6`. Its two custom metadata fields are
-`published_at` and `kind`, matching the supported search filters. PostgreSQL
+`AI_SEARCH` serves `newsence-corpus-v7` (bge-m3). Its custom metadata fields are
+`published_at` and `kind` for the search filters, and `subject_id` for collapsing
+carriers onto their subject. Related Resources query the same index vector-only. PostgreSQL
 remains canonical; AI Search stores only keyed search documents and eventually
 consistent status. Platform and monitored-source provenance stay in PostgreSQL.
 
@@ -280,11 +281,11 @@ The runner ID carries the serving-index version:
 pnpm exec wrangler workflows trigger \
   newsence-search-index-rebuild \
   '{}' \
-  --id search-index-rebuild-v6-metadata-v2
+  --id search-index-rebuild-v7-v1
 
 pnpm exec wrangler workflows instances describe \
   newsence-search-index-rebuild \
-  search-index-rebuild-v6-metadata-v2
+  search-index-rebuild-v7-v1
 ```
 
 Wrangler's native instance description is the operator view of Workflow status,
@@ -297,7 +298,7 @@ no duplicate database readiness row or custom item-repair state machine.
 Each deployment creates a versioned Workflow graph and every instance remains
 pinned to its `version_id`. Use a new source-controlled runner ID after an
 incompatible graph change; do not add another binding or entrypoint. See
-`AI_SEARCH_V6_RUNBOOK.md` for the active procedure.
+`AI_SEARCH_RUNBOOK.md` for the active procedure.
 
 ### Paper enrichment
 

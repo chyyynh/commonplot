@@ -9,9 +9,8 @@ export const AI_SEARCH_ITEM_PREFIX = 'resources/';
 const AI_SEARCH_ITEM_SUFFIX = '.md';
 const ResourceIdSchema = z.uuid();
 const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
-// bge-m3 embeds at most 512 tokens, so a related document stays one chunk.
+// A related query is embedded whole, and bge-m3 reads at most 512 tokens.
 const RELATED_SUMMARY_MAX_CHARS = 500;
-const RELATED_DOCUMENT_MAX_CHARS = 1_500;
 const RELATED_QUERY_MAX_CHARS = 1_500;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 /** The most results one AI Search query returns. */
@@ -76,6 +75,7 @@ type CorpusDocument = {
 	original_lang: string;
 	published_at: string | null;
 	source: string | null;
+	subject_id: string | null;
 	translations: CorpusTranslationRow[];
 };
 
@@ -121,25 +121,6 @@ function serializeDocument(row: CorpusDocument): string {
 		.join('\n\n');
 }
 
-function serializeRelatedDocument(row: CorpusDocument): string {
-	const original = row.translations.find((translation) => translation.lang === row.original_lang);
-	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
-	return [
-		// A post has no title or summary; its own words stand in for both.
-		row.kind === 'post'
-			? requiredDocumentText(original.content, 'content', row.id).slice(0, RELATED_SUMMARY_MAX_CHARS)
-			: documentHeading(row, original),
-		`Source: ${requiredDocumentText(row.source, 'source', row.id)}`,
-		...row.translations.flatMap((translation) => [
-			translation.lang === row.original_lang || !translation.title?.trim() ? '' : `${translation.lang} title: ${translation.title.trim()}`,
-			translation.summary?.trim() ? `${translation.lang} summary: ${translation.summary.trim().slice(0, RELATED_SUMMARY_MAX_CHARS)}` : '',
-		]),
-	]
-		.filter(Boolean)
-		.join('\n\n')
-		.slice(0, RELATED_DOCUMENT_MAX_CHARS);
-}
-
 export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly string[]): Promise<CorpusDocument[]> {
 	if (!resourceIds.length) return [];
 	const result = await db.execute<CorpusDocument>(sql`
@@ -148,6 +129,7 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 		       r.original_lang,
 		       r.published_date AS published_at,
 		       COALESCE(r.source_name, 'File') AS source,
+		       r.subject_resource_id::text AS subject_id,
 		       COALESCE((
 		         SELECT jsonb_agg(
 		           jsonb_build_object(
@@ -180,71 +162,56 @@ async function upsertCorpusItem(env: CoreEnv, document: CorpusDocument): Promise
 		metadata: {
 			...(publishedAt ? { published_at: publishedAt.toISOString() } : {}),
 			kind: document.kind,
+			// Carriers such as HN threads and reposts name the Resource they discuss.
+			...(document.subject_id ? { subject_id: document.subject_id } : {}),
 		},
 	};
-	const key = aiSearchItemKey(document.id);
-	const corpus = serializeDocument(document);
-	const related = serializeRelatedDocument(document);
-	const uploads = await Promise.allSettled([
-		env.AI_SEARCH.items.upload(key, corpus, options),
-		env.RELATED_SEARCH.items.upload(key, related, options),
-		env.AI_SEARCH_NEXT.items.upload(key, corpus, options),
-		env.RELATED_SEARCH_NEXT.items.upload(key, related, options),
-	]);
-	for (const upload of uploads) {
-		if (upload.status === 'rejected') throw upload.reason;
-	}
+	await env.AI_SEARCH.items.upload(aiSearchItemKey(document.id), serializeDocument(document), options);
 }
 
-async function deleteCorpusItem(instance: AiSearchInstance, index: string, resourceId: string): Promise<void> {
+async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<void> {
 	const key = aiSearchItemKey(resourceId);
-	const listed = await instance.items.list({ key, source: 'builtin', per_page: 1 });
+	const listed = await env.AI_SEARCH.items.list({ key, source: 'builtin', per_page: 1 });
 	const item = listed.result.find((candidate) => candidate.key === key && candidate.source_id === 'builtin');
 	if (!item) return;
-	await instance.items.delete(item.id);
-	console.info({ tag: 'AI_SEARCH', msg: 'Corpus item deleted', index, resource_id: resourceId, item_id: item.id });
+	await env.AI_SEARCH.items.delete(item.id);
+	console.info({ tag: 'AI_SEARCH', msg: 'Corpus item deleted', resource_id: resourceId, item_id: item.id });
 }
 
 export async function syncCorpusItem(env: CoreEnv, resourceId: string, document: CorpusDocument | undefined): Promise<void> {
-	if (document) {
-		await upsertCorpusItem(env, document);
-	} else {
-		const deletions = await Promise.allSettled([
-			deleteCorpusItem(env.AI_SEARCH, 'corpus', resourceId),
-			deleteCorpusItem(env.RELATED_SEARCH, 'related', resourceId),
-			deleteCorpusItem(env.AI_SEARCH_NEXT, 'corpus-next', resourceId),
-			deleteCorpusItem(env.RELATED_SEARCH_NEXT, 'related-next', resourceId),
-		]);
-		for (const deletion of deletions) {
-			if (deletion.status === 'rejected') throw deletion.reason;
-		}
-	}
+	if (document) await upsertCorpusItem(env, document);
+	else await deleteCorpusItem(env, resourceId);
 }
 
-function resourceIdsFromSearchResponse(response: AiSearchSearchResponse): string[] {
-	const ids: string[] = [];
+type SearchHit = { id: string; subjectId: string | null };
+
+function hitsFromSearchResponse(response: AiSearchSearchResponse): SearchHit[] {
+	const hits: SearchHit[] = [];
 	const seen = new Set<string>();
 	for (const chunk of response.chunks) {
 		const id = resourceIdFromAiSearchItemKey(chunk.item.key);
 		if (!id || seen.has(id)) continue;
 		seen.add(id);
-		ids.push(id);
+		const subjectId = chunk.item.metadata?.subject_id;
+		hits.push({ id, subjectId: typeof subjectId === 'string' ? subjectId : null });
 	}
-	return ids;
+	return hits;
 }
 
 /**
- * Carriers such as HN threads and reposts give way to the Resource they discuss when it is itself
- * searchable and of an allowed kind, so each subject appears once, at its best-ranked position.
+ * Carriers give way to the Resource they discuss when it is itself searchable and of an allowed
+ * kind, so each subject appears once, at its best-ranked position.
  */
-async function collapseCarriers(env: CoreEnv, ids: string[], kinds?: readonly SearchableResourceKind[]): Promise<string[]> {
-	if (!ids.length) return ids;
+async function collapseCarriers(env: CoreEnv, hits: SearchHit[], kinds?: readonly SearchableResourceKind[]): Promise<string[]> {
+	const ids = hits.map((hit) => hit.id);
+	const carrierIds = hits.filter((hit) => hit.subjectId).map((hit) => hit.id);
+	if (!carrierIds.length) return ids;
 	const { rows } = await withCoreDb(env, (db) =>
 		db.execute<{ id: string; subject_id: string }>(sql`
 		SELECT carrier.id::text, r.id::text AS subject_id
 		FROM resources carrier
 		JOIN resources r ON r.id = carrier.subject_resource_id
-		WHERE ${inArray(sql`carrier.id`, ids)}
+		WHERE ${inArray(sql`carrier.id`, carrierIds)}
 		  AND r.scope = 'corpus'
 		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		  ${kinds ? sql`AND ${inArray(sql`r.kind`, kinds)}` : sql``}
@@ -284,10 +251,10 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 			},
 		},
 	});
-	return (await collapseCarriers(env, resourceIdsFromSearchResponse(response), kindFilter)).slice(0, limit);
+	return (await collapseCarriers(env, hitsFromSearchResponse(response), kindFilter)).slice(0, limit);
 }
 
-/** Search one-vector-per-resource documents so AI Search results map directly to resources. */
+/** Match a Resource's titles and summary against the corpus by meaning alone. */
 export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResourceSearchInput): Promise<string[]> {
 	const { resourceId, limit } = RelatedResourceSearchInputSchema.parse(input);
 	// Recommendation queries need titles and the original summary, not indexed article bodies; a post's text is its title.
@@ -315,9 +282,10 @@ export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResou
 		.filter(Boolean)
 		.join('\n')
 		.slice(0, RELATED_QUERY_MAX_CHARS);
-	const response = await env.RELATED_SEARCH.search({
+	const response = await env.AI_SEARCH.search({
 		query,
 		ai_search_options: {
+			cache: { enabled: false },
 			query_rewrite: { enabled: false },
 			reranking: { enabled: false },
 			retrieval: {
@@ -330,7 +298,7 @@ export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResou
 			},
 		},
 	});
-	return (await collapseCarriers(env, resourceIdsFromSearchResponse(response)))
+	return (await collapseCarriers(env, hitsFromSearchResponse(response)))
 		.filter((candidateId) => candidateId !== resourceId && candidateId !== document.subject_id)
 		.slice(0, limit);
 }
