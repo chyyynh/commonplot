@@ -237,14 +237,16 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 				fusion_method: 'rrf',
 				keyword_match_mode: 'or',
 				match_threshold: 0,
-				max_num_results: limit,
+				// Results are chunks, and one long resource can fill several; ask for
+				// the most AI Search returns so deduping still leaves `limit` resources.
+				max_num_results: RESULT_LIMIT_MAX,
 				metadata_only: true,
 				return_on_failure: true,
 				...(Object.keys(metadataFilters).length ? { filters: metadataFilters } : {}),
 			},
 		},
 	});
-	return resourceIdsFromSearchResponse(response);
+	return resourceIdsFromSearchResponse(response).slice(0, limit);
 }
 
 /** Search one-vector-per-resource documents so AI Search results map directly to resources. */
