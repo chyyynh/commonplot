@@ -150,7 +150,7 @@ function normalizedCustomMetadata(
 
 function canonicalSearchInstanceConfigMatches(info: AiSearchInstanceInfo): boolean {
 	const expected = CANONICAL_SEARCH_CONFIG;
-	return (
+	return !(
 		info.cache !== expected.cache ||
 		info.chunk !== expected.chunk ||
 		info.chunk_size !== expected.chunk_size ||

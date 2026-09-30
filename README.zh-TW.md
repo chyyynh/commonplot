@@ -223,7 +223,7 @@ AI Search 使用 `newsence-corpus-v7`（bge-m3），公開搜尋與相關 Resour
 只把 keyed search document 同步進 AI Search；rebuild 的 durable 狀態、重試、
 錯誤與 output 直接使用 Cloudflare Workflow。實體 Workflow 是
 `newsence-search-index-rebuild`，class 是 `SearchIndexRebuildWorkflow`；
-目前帶有 serving-index 版本的 runner 是 `search-index-rebuild-v7-v1`。
+目前帶有 serving-index 版本的 runner 是 `search-index-rebuild-v7-v2`。
 
 ## 新增擷取 adapter
 

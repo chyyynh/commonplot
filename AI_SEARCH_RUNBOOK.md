@@ -12,7 +12,7 @@ surface.
 | Rebuild binding | `SEARCH_INDEX_REBUILD_WORKFLOW` |
 | Physical Workflow | `newsence-search-index-rebuild` |
 | Entrypoint | `SearchIndexRebuildWorkflow` |
-| Current runner | `search-index-rebuild-v7-v1` |
+| Current runner | `search-index-rebuild-v7-v2` |
 | Observability | Native Workflow instance status/output and AI Search item status |
 
 The instance embeds with `@cf/baai/bge-m3` and owns three custom metadata fields:
@@ -87,7 +87,7 @@ runner ID:
 pnpm -C workers/core-worker exec wrangler workflows trigger \
   newsence-search-index-rebuild \
   '{}' \
-  --id search-index-rebuild-v7-v1
+  --id search-index-rebuild-v7-v2
 ```
 
 ## Verify
@@ -97,7 +97,7 @@ Inspect the same Workflow instance:
 ```sh
 pnpm -C workers/core-worker exec wrangler workflows instances describe \
   newsence-search-index-rebuild \
-  search-index-rebuild-v7-v1
+  search-index-rebuild-v7-v2
 ```
 
 A completed instance has already returned a final observation with:

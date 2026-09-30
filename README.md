@@ -281,11 +281,11 @@ The runner ID carries the serving-index version:
 pnpm exec wrangler workflows trigger \
   newsence-search-index-rebuild \
   '{}' \
-  --id search-index-rebuild-v7-v1
+  --id search-index-rebuild-v7-v2
 
 pnpm exec wrangler workflows instances describe \
   newsence-search-index-rebuild \
-  search-index-rebuild-v7-v1
+  search-index-rebuild-v7-v2
 ```
 
 Wrangler's native instance description is the operator view of Workflow status,
