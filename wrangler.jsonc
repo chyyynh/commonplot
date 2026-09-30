@@ -144,6 +144,17 @@
 			"instance_name": "newsence-related-v1",
 			"remote": true,
 		},
+		/** bge-m3 successors being loaded beside the live indexes (#336); they replace them after comparison. */
+		{
+			"binding": "AI_SEARCH_NEXT",
+			"instance_name": "newsence-corpus-v7",
+			"remote": true,
+		},
+		{
+			"binding": "RELATED_SEARCH_NEXT",
+			"instance_name": "newsence-related-v2",
+			"remote": true,
+		},
 	],
 	/**
 	 * Hyperdrive — PlanetScale PostgreSQL connection pooling

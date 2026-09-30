@@ -9,10 +9,10 @@ export const AI_SEARCH_ITEM_PREFIX = 'resources/';
 const AI_SEARCH_ITEM_SUFFIX = '.md';
 const ResourceIdSchema = z.uuid();
 const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
-const TRANSLATED_CONTENT_MAX_CHARS = 4_000;
-const RELATED_SUMMARY_MAX_CHARS = 800;
-const RELATED_DOCUMENT_MAX_CHARS = 3_000;
-const RELATED_QUERY_MAX_CHARS = 1_000;
+// bge-m3 embeds at most 512 tokens, so a related document stays one chunk.
+const RELATED_SUMMARY_MAX_CHARS = 500;
+const RELATED_DOCUMENT_MAX_CHARS = 1_500;
+const RELATED_QUERY_MAX_CHARS = 1_500;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 /** The most results one AI Search query returns. */
 export const RESULT_LIMIT_MAX = 50;
@@ -89,8 +89,6 @@ function requiredDocumentText(value: string | null, field: string, resourceId: s
 	return text;
 }
 
-const POST_HEADING_MAX_CHARS = 120;
-
 /** Posts have no title, so their document opens with the source line. */
 function documentHeading(row: CorpusDocument, original: CorpusTranslationRow): string {
 	return row.kind === 'post' ? '' : `# ${requiredDocumentText(original.title, 'title', row.id)}`;
@@ -101,16 +99,24 @@ function serializeTranslation(translation: CorpusTranslationRow): string {
 		`## ${translation.lang}`,
 		translation.title?.trim() ? `Title: ${translation.title.trim()}` : '',
 		markdownSection('Summary', translation.summary),
-		markdownSection('Content', translation.content),
 	]
 		.filter(Boolean)
 		.join('\n\n');
 }
 
+/**
+ * Every language's title and summary lead, so the first chunk carries them; only the original body
+ * follows, since the embedding model already matches queries across languages.
+ */
 function serializeDocument(row: CorpusDocument): string {
 	const original = row.translations.find((translation) => translation.lang === row.original_lang);
 	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
-	return [documentHeading(row, original), requiredDocumentText(row.source, 'source', row.id), ...row.translations.map(serializeTranslation)]
+	return [
+		documentHeading(row, original),
+		requiredDocumentText(row.source, 'source', row.id),
+		...row.translations.map(serializeTranslation),
+		markdownSection('Content', original.content),
+	]
 		.filter(Boolean)
 		.join('\n\n');
 }
@@ -119,7 +125,10 @@ function serializeRelatedDocument(row: CorpusDocument): string {
 	const original = row.translations.find((translation) => translation.lang === row.original_lang);
 	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
 	return [
-		documentHeading(row, original),
+		// A post has no title or summary; its own words stand in for both.
+		row.kind === 'post'
+			? requiredDocumentText(original.content, 'content', row.id).slice(0, RELATED_SUMMARY_MAX_CHARS)
+			: documentHeading(row, original),
 		`Source: ${requiredDocumentText(row.source, 'source', row.id)}`,
 		...row.translations.flatMap((translation) => [
 			translation.lang === row.original_lang || !translation.title?.trim() ? '' : `${translation.lang} title: ${translation.title.trim()}`,
@@ -145,8 +154,8 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 		             'lang', translation.lang,
 		             'title', translation.title,
 		             'summary', translation.summary,
-		             'content', LEFT(translation.content, CASE WHEN translation.lang = r.original_lang
-		               THEN ${ORIGINAL_CONTENT_MAX_CHARS}::integer ELSE ${TRANSLATED_CONTENT_MAX_CHARS}::integer END)
+		             'content', CASE WHEN translation.lang = r.original_lang
+		               THEN LEFT(translation.content, ${ORIGINAL_CONTENT_MAX_CHARS}::integer) END
 		           )
 		           ORDER BY (translation.lang = r.original_lang) DESC, translation.lang
 		         )
@@ -174,16 +183,20 @@ async function upsertCorpusItem(env: CoreEnv, document: CorpusDocument): Promise
 		},
 	};
 	const key = aiSearchItemKey(document.id);
+	const corpus = serializeDocument(document);
+	const related = serializeRelatedDocument(document);
 	const uploads = await Promise.allSettled([
-		env.AI_SEARCH.items.upload(key, serializeDocument(document), options),
-		env.RELATED_SEARCH.items.upload(key, serializeRelatedDocument(document), options),
+		env.AI_SEARCH.items.upload(key, corpus, options),
+		env.RELATED_SEARCH.items.upload(key, related, options),
+		env.AI_SEARCH_NEXT.items.upload(key, corpus, options),
+		env.RELATED_SEARCH_NEXT.items.upload(key, related, options),
 	]);
 	for (const upload of uploads) {
 		if (upload.status === 'rejected') throw upload.reason;
 	}
 }
 
-async function deleteCorpusItem(instance: AiSearchInstance, index: 'corpus' | 'related', resourceId: string): Promise<void> {
+async function deleteCorpusItem(instance: AiSearchInstance, index: string, resourceId: string): Promise<void> {
 	const key = aiSearchItemKey(resourceId);
 	const listed = await instance.items.list({ key, source: 'builtin', per_page: 1 });
 	const item = listed.result.find((candidate) => candidate.key === key && candidate.source_id === 'builtin');
@@ -199,6 +212,8 @@ export async function syncCorpusItem(env: CoreEnv, resourceId: string, document:
 		const deletions = await Promise.allSettled([
 			deleteCorpusItem(env.AI_SEARCH, 'corpus', resourceId),
 			deleteCorpusItem(env.RELATED_SEARCH, 'related', resourceId),
+			deleteCorpusItem(env.AI_SEARCH_NEXT, 'corpus-next', resourceId),
+			deleteCorpusItem(env.RELATED_SEARCH_NEXT, 'related-next', resourceId),
 		]);
 		for (const deletion of deletions) {
 			if (deletion.status === 'rejected') throw deletion.reason;
@@ -218,6 +233,27 @@ function resourceIdsFromSearchResponse(response: AiSearchSearchResponse): string
 	return ids;
 }
 
+/**
+ * Carriers such as HN threads and reposts give way to the Resource they discuss when it is itself
+ * searchable and of an allowed kind, so each subject appears once, at its best-ranked position.
+ */
+async function collapseCarriers(env: CoreEnv, ids: string[], kinds?: readonly SearchableResourceKind[]): Promise<string[]> {
+	if (!ids.length) return ids;
+	const { rows } = await withCoreDb(env, (db) =>
+		db.execute<{ id: string; subject_id: string }>(sql`
+		SELECT carrier.id::text, r.id::text AS subject_id
+		FROM resources carrier
+		JOIN resources r ON r.id = carrier.subject_resource_id
+		WHERE ${inArray(sql`carrier.id`, ids)}
+		  AND r.scope = 'corpus'
+		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
+		  ${kinds ? sql`AND ${inArray(sql`r.kind`, kinds)}` : sql``}
+	`),
+	);
+	const subjects = new Map(rows.map((row) => [row.id, row.subject_id]));
+	return [...new Set(ids.map((id) => subjects.get(id) ?? id))];
+}
+
 /** Return AI Search candidates only; Web authoritatively filters and hydrates them from Postgres. */
 export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourceSearchInput): Promise<string[]> {
 	const { query, limit, filters } = PublicResourceSearchInputSchema.parse(input);
@@ -225,7 +261,8 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 	// An explicit empty selection matches nothing; missing kinds match everything.
 	if (!query || kinds?.length === 0) return [];
 	const metadataFilters: VectorizeVectorMetadataFilter = {};
-	if (kinds && kinds.length < SearchableResourceKindSchema.options.length) metadataFilters.kind = { $in: kinds };
+	const kindFilter = kinds && kinds.length < SearchableResourceKindSchema.options.length ? kinds : undefined;
+	if (kindFilter) metadataFilters.kind = { $in: kindFilter };
 	if (filters?.publishedAfter) metadataFilters.published_at = { $gte: filters.publishedAfter.toISOString() };
 	const response = await env.AI_SEARCH.search({
 		query,
@@ -247,7 +284,7 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 			},
 		},
 	});
-	return resourceIdsFromSearchResponse(response).slice(0, limit);
+	return (await collapseCarriers(env, resourceIdsFromSearchResponse(response), kindFilter)).slice(0, limit);
 }
 
 /** Search one-vector-per-resource documents so AI Search results map directly to resources. */
@@ -255,9 +292,10 @@ export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResou
 	const { resourceId, limit } = RelatedResourceSearchInputSchema.parse(input);
 	// Recommendation queries need titles and the original summary, not indexed article bodies; a post's text is its title.
 	const { rows } = await withCoreDb(env, (db) =>
-		db.execute<{ titles: (string | null)[]; summary: string | null }>(sql`
-		SELECT (array_agg(translation.summary) FILTER (WHERE translation.lang = r.original_lang))[1] AS summary,
-		       array_agg(CASE WHEN r.kind = 'post' THEN LEFT(translation.content, ${POST_HEADING_MAX_CHARS}) ELSE translation.title END ORDER BY (translation.lang = r.original_lang) DESC, translation.lang) AS titles
+		db.execute<{ titles: (string | null)[]; summary: string | null; subject_id: string | null }>(sql`
+		SELECT r.subject_resource_id::text AS subject_id,
+		       (array_agg(translation.summary) FILTER (WHERE translation.lang = r.original_lang))[1] AS summary,
+		       array_agg(CASE WHEN r.kind = 'post' THEN LEFT(translation.content, ${RELATED_SUMMARY_MAX_CHARS}) ELSE translation.title END ORDER BY (translation.lang = r.original_lang) DESC, translation.lang) AS titles
 		FROM resources r
 		JOIN resource_translations translation ON translation.resource_id = r.id
 		  AND (translation.lang = r.original_lang OR ${inArray(sql`translation.lang`, INDEX_TRANSLATION_LANGS)})
@@ -285,13 +323,14 @@ export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResou
 			retrieval: {
 				retrieval_type: 'vector',
 				match_threshold: 0,
-				max_num_results: limit + 1,
+				// Collapsing carriers and dropping this Resource's own family both shrink the list.
+				max_num_results: RESULT_LIMIT_MAX,
 				metadata_only: true,
 				return_on_failure: false,
 			},
 		},
 	});
-	return resourceIdsFromSearchResponse(response)
-		.filter((candidateId) => candidateId !== resourceId)
+	return (await collapseCarriers(env, resourceIdsFromSearchResponse(response)))
+		.filter((candidateId) => candidateId !== resourceId && candidateId !== document.subject_id)
 		.slice(0, limit);
 }

@@ -17,9 +17,10 @@ const CANONICAL_SEARCH_CONFIGS = {
 	corpus: {
 		cache: false,
 		chunk: true,
-		chunk_overlap: 12,
-		chunk_size: 512,
-		embedding_model: '@cf/qwen/qwen3-embedding-0.6b',
+		// Percent of chunk_size; bge-m3 embeds at most 512 tokens, and AI Search counts CJK differently.
+		chunk_overlap: 10,
+		chunk_size: 400,
+		embedding_model: '@cf/baai/bge-m3',
 		fusion_method: 'rrf',
 		index_method: { keyword: true, vector: true },
 		indexing_options: { keyword_tokenizer: 'trigram' },
@@ -30,8 +31,8 @@ const CANONICAL_SEARCH_CONFIGS = {
 		cache: false,
 		chunk: true,
 		chunk_overlap: 0,
-		chunk_size: 4_096,
-		embedding_model: '@cf/qwen/qwen3-embedding-0.6b',
+		chunk_size: 480,
+		embedding_model: '@cf/baai/bge-m3',
 		index_method: { keyword: false, vector: true },
 		max_num_results: RESULT_LIMIT_MAX,
 		score_threshold: 0,
@@ -265,12 +266,13 @@ async function waitForSearchIndex(env: CoreEnv, instance: AiSearchInstance, inde
 	throw new Error(`${index} AI Search index did not converge: ${JSON.stringify(last)}`);
 }
 
+/** Loads the bge-m3 successor indexes (#336); the sync queue writes both generations meanwhile. */
 export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, SearchIndexRebuildPayload> {
 	async run(event: WorkflowEvent<SearchIndexRebuildPayload>, step: WorkflowStep) {
 		const startedAt = event.timestamp.toISOString();
 		const instanceConfig = await step.do('ensure-search-configs', SHORT_STEP_OPTIONS, async () => ({
-			corpus: await ensureCanonicalSearchInstanceConfig(this.env.AI_SEARCH, 'corpus'),
-			related: await ensureCanonicalSearchInstanceConfig(this.env.RELATED_SEARCH, 'related'),
+			corpus: await ensureCanonicalSearchInstanceConfig(this.env.AI_SEARCH_NEXT, 'corpus'),
+			related: await ensureCanonicalSearchInstanceConfig(this.env.RELATED_SEARCH_NEXT, 'related'),
 		}));
 		// The sync queue owns uploads: it reloads each Resource, retries, and wins any race with live writes.
 		let cursor: string | null = null;
@@ -291,12 +293,12 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 		}
 
 		const reconciliation = {
-			corpus: await reconcileSearchItems(this.env, this.env.AI_SEARCH, 'corpus', step),
-			related: await reconcileSearchItems(this.env, this.env.RELATED_SEARCH, 'related', step),
+			corpus: await reconcileSearchItems(this.env, this.env.AI_SEARCH_NEXT, 'corpus', step),
+			related: await reconcileSearchItems(this.env, this.env.RELATED_SEARCH_NEXT, 'related', step),
 		};
 		const readiness = {
-			corpus: await waitForSearchIndex(this.env, this.env.AI_SEARCH, 'corpus', step),
-			related: await waitForSearchIndex(this.env, this.env.RELATED_SEARCH, 'related', step),
+			corpus: await waitForSearchIndex(this.env, this.env.AI_SEARCH_NEXT, 'corpus', step),
+			related: await waitForSearchIndex(this.env, this.env.RELATED_SEARCH_NEXT, 'related', step),
 		};
 		return {
 			mode: 'rebuild' as const,
