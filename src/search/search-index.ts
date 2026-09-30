@@ -9,9 +9,10 @@ export const AI_SEARCH_ITEM_PREFIX = 'resources/';
 const AI_SEARCH_ITEM_SUFFIX = '.md';
 const ResourceIdSchema = z.uuid();
 const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
-// A related query is embedded whole, and bge-m3 reads at most 512 tokens.
-const RELATED_SUMMARY_MAX_CHARS = 500;
-const RELATED_QUERY_MAX_CHARS = 1_500;
+const TRANSLATED_CONTENT_MAX_CHARS = 4_000;
+const RELATED_SUMMARY_MAX_CHARS = 800;
+const RELATED_DOCUMENT_MAX_CHARS = 3_000;
+const RELATED_QUERY_MAX_CHARS = 1_000;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 /** The most results one AI Search query returns. */
 export const RESULT_LIMIT_MAX = 50;
@@ -75,7 +76,6 @@ type CorpusDocument = {
 	original_lang: string;
 	published_at: string | null;
 	source: string | null;
-	subject_id: string | null;
 	translations: CorpusTranslationRow[];
 };
 
@@ -89,6 +89,8 @@ function requiredDocumentText(value: string | null, field: string, resourceId: s
 	return text;
 }
 
+const POST_HEADING_MAX_CHARS = 120;
+
 /** Posts have no title, so their document opens with the source line. */
 function documentHeading(row: CorpusDocument, original: CorpusTranslationRow): string {
 	return row.kind === 'post' ? '' : `# ${requiredDocumentText(original.title, 'title', row.id)}`;
@@ -99,26 +101,34 @@ function serializeTranslation(translation: CorpusTranslationRow): string {
 		`## ${translation.lang}`,
 		translation.title?.trim() ? `Title: ${translation.title.trim()}` : '',
 		markdownSection('Summary', translation.summary),
+		markdownSection('Content', translation.content),
 	]
 		.filter(Boolean)
 		.join('\n\n');
 }
 
-/**
- * Every language's title and summary lead, so the first chunk carries them; only the original body
- * follows, since the embedding model already matches queries across languages.
- */
 function serializeDocument(row: CorpusDocument): string {
+	const original = row.translations.find((translation) => translation.lang === row.original_lang);
+	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
+	return [documentHeading(row, original), requiredDocumentText(row.source, 'source', row.id), ...row.translations.map(serializeTranslation)]
+		.filter(Boolean)
+		.join('\n\n');
+}
+
+function serializeRelatedDocument(row: CorpusDocument): string {
 	const original = row.translations.find((translation) => translation.lang === row.original_lang);
 	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
 	return [
 		documentHeading(row, original),
-		requiredDocumentText(row.source, 'source', row.id),
-		...row.translations.map(serializeTranslation),
-		markdownSection('Content', original.content),
+		`Source: ${requiredDocumentText(row.source, 'source', row.id)}`,
+		...row.translations.flatMap((translation) => [
+			translation.lang === row.original_lang || !translation.title?.trim() ? '' : `${translation.lang} title: ${translation.title.trim()}`,
+			translation.summary?.trim() ? `${translation.lang} summary: ${translation.summary.trim().slice(0, RELATED_SUMMARY_MAX_CHARS)}` : '',
+		]),
 	]
 		.filter(Boolean)
-		.join('\n\n');
+		.join('\n\n')
+		.slice(0, RELATED_DOCUMENT_MAX_CHARS);
 }
 
 export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: readonly string[]): Promise<CorpusDocument[]> {
@@ -129,15 +139,14 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 		       r.original_lang,
 		       r.published_date AS published_at,
 		       COALESCE(r.source_name, 'File') AS source,
-		       r.subject_resource_id::text AS subject_id,
 		       COALESCE((
 		         SELECT jsonb_agg(
 		           jsonb_build_object(
 		             'lang', translation.lang,
 		             'title', translation.title,
 		             'summary', translation.summary,
-		             'content', CASE WHEN translation.lang = r.original_lang
-		               THEN LEFT(translation.content, ${ORIGINAL_CONTENT_MAX_CHARS}::integer) END
+		             'content', LEFT(translation.content, CASE WHEN translation.lang = r.original_lang
+		               THEN ${ORIGINAL_CONTENT_MAX_CHARS}::integer ELSE ${TRANSLATED_CONTENT_MAX_CHARS}::integer END)
 		           )
 		           ORDER BY (translation.lang = r.original_lang) DESC, translation.lang
 		         )
@@ -162,63 +171,51 @@ async function upsertCorpusItem(env: CoreEnv, document: CorpusDocument): Promise
 		metadata: {
 			...(publishedAt ? { published_at: publishedAt.toISOString() } : {}),
 			kind: document.kind,
-			// Carriers such as HN threads and reposts name the Resource they discuss.
-			...(document.subject_id ? { subject_id: document.subject_id } : {}),
 		},
 	};
-	await env.AI_SEARCH.items.upload(aiSearchItemKey(document.id), serializeDocument(document), options);
+	const key = aiSearchItemKey(document.id);
+	const uploads = await Promise.allSettled([
+		env.AI_SEARCH.items.upload(key, serializeDocument(document), options),
+		env.RELATED_SEARCH.items.upload(key, serializeRelatedDocument(document), options),
+	]);
+	for (const upload of uploads) {
+		if (upload.status === 'rejected') throw upload.reason;
+	}
 }
 
-async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<void> {
+async function deleteCorpusItem(instance: AiSearchInstance, index: 'corpus' | 'related', resourceId: string): Promise<void> {
 	const key = aiSearchItemKey(resourceId);
-	const listed = await env.AI_SEARCH.items.list({ key, source: 'builtin', per_page: 1 });
+	const listed = await instance.items.list({ key, source: 'builtin', per_page: 1 });
 	const item = listed.result.find((candidate) => candidate.key === key && candidate.source_id === 'builtin');
 	if (!item) return;
-	await env.AI_SEARCH.items.delete(item.id);
-	console.info({ tag: 'AI_SEARCH', msg: 'Corpus item deleted', resource_id: resourceId, item_id: item.id });
+	await instance.items.delete(item.id);
+	console.info({ tag: 'AI_SEARCH', msg: 'Corpus item deleted', index, resource_id: resourceId, item_id: item.id });
 }
 
 export async function syncCorpusItem(env: CoreEnv, resourceId: string, document: CorpusDocument | undefined): Promise<void> {
-	if (document) await upsertCorpusItem(env, document);
-	else await deleteCorpusItem(env, resourceId);
+	if (document) {
+		await upsertCorpusItem(env, document);
+	} else {
+		const deletions = await Promise.allSettled([
+			deleteCorpusItem(env.AI_SEARCH, 'corpus', resourceId),
+			deleteCorpusItem(env.RELATED_SEARCH, 'related', resourceId),
+		]);
+		for (const deletion of deletions) {
+			if (deletion.status === 'rejected') throw deletion.reason;
+		}
+	}
 }
 
-type SearchHit = { id: string; subjectId: string | null };
-
-function hitsFromSearchResponse(response: AiSearchSearchResponse): SearchHit[] {
-	const hits: SearchHit[] = [];
+function resourceIdsFromSearchResponse(response: AiSearchSearchResponse): string[] {
+	const ids: string[] = [];
 	const seen = new Set<string>();
 	for (const chunk of response.chunks) {
 		const id = resourceIdFromAiSearchItemKey(chunk.item.key);
 		if (!id || seen.has(id)) continue;
 		seen.add(id);
-		const subjectId = chunk.item.metadata?.subject_id;
-		hits.push({ id, subjectId: typeof subjectId === 'string' ? subjectId : null });
+		ids.push(id);
 	}
-	return hits;
-}
-
-/**
- * Carriers give way to the Resource they discuss when it is itself searchable and of an allowed
- * kind, so each subject appears once, at its best-ranked position.
- */
-async function collapseCarriers(env: CoreEnv, hits: SearchHit[], kinds?: readonly SearchableResourceKind[]): Promise<string[]> {
-	const ids = hits.map((hit) => hit.id);
-	const carrierIds = hits.filter((hit) => hit.subjectId).map((hit) => hit.id);
-	if (!carrierIds.length) return ids;
-	const { rows } = await withCoreDb(env, (db) =>
-		db.execute<{ id: string; subject_id: string }>(sql`
-		SELECT carrier.id::text, r.id::text AS subject_id
-		FROM resources carrier
-		JOIN resources r ON r.id = carrier.subject_resource_id
-		WHERE ${inArray(sql`carrier.id`, carrierIds)}
-		  AND r.scope = 'corpus'
-		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
-		  ${kinds ? sql`AND ${inArray(sql`r.kind`, kinds)}` : sql``}
-	`),
-	);
-	const subjects = new Map(rows.map((row) => [row.id, row.subject_id]));
-	return [...new Set(ids.map((id) => subjects.get(id) ?? id))];
+	return ids;
 }
 
 /** Return AI Search candidates only; Web authoritatively filters and hydrates them from Postgres. */
@@ -228,8 +225,7 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 	// An explicit empty selection matches nothing; missing kinds match everything.
 	if (!query || kinds?.length === 0) return [];
 	const metadataFilters: VectorizeVectorMetadataFilter = {};
-	const kindFilter = kinds && kinds.length < SearchableResourceKindSchema.options.length ? kinds : undefined;
-	if (kindFilter) metadataFilters.kind = { $in: kindFilter };
+	if (kinds && kinds.length < SearchableResourceKindSchema.options.length) metadataFilters.kind = { $in: kinds };
 	if (filters?.publishedAfter) metadataFilters.published_at = { $gte: filters.publishedAfter.toISOString() };
 	const response = await env.AI_SEARCH.search({
 		query,
@@ -251,18 +247,17 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 			},
 		},
 	});
-	return (await collapseCarriers(env, hitsFromSearchResponse(response), kindFilter)).slice(0, limit);
+	return resourceIdsFromSearchResponse(response).slice(0, limit);
 }
 
-/** Match a Resource's titles and summary against the corpus by meaning alone. */
+/** Search one-vector-per-resource documents so AI Search results map directly to resources. */
 export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResourceSearchInput): Promise<string[]> {
 	const { resourceId, limit } = RelatedResourceSearchInputSchema.parse(input);
 	// Recommendation queries need titles and the original summary, not indexed article bodies; a post's text is its title.
 	const { rows } = await withCoreDb(env, (db) =>
-		db.execute<{ titles: (string | null)[]; summary: string | null; subject_id: string | null }>(sql`
-		SELECT r.subject_resource_id::text AS subject_id,
-		       (array_agg(translation.summary) FILTER (WHERE translation.lang = r.original_lang))[1] AS summary,
-		       array_agg(CASE WHEN r.kind = 'post' THEN LEFT(translation.content, ${RELATED_SUMMARY_MAX_CHARS}) ELSE translation.title END ORDER BY (translation.lang = r.original_lang) DESC, translation.lang) AS titles
+		db.execute<{ titles: (string | null)[]; summary: string | null }>(sql`
+		SELECT (array_agg(translation.summary) FILTER (WHERE translation.lang = r.original_lang))[1] AS summary,
+		       array_agg(CASE WHEN r.kind = 'post' THEN LEFT(translation.content, ${POST_HEADING_MAX_CHARS}) ELSE translation.title END ORDER BY (translation.lang = r.original_lang) DESC, translation.lang) AS titles
 		FROM resources r
 		JOIN resource_translations translation ON translation.resource_id = r.id
 		  AND (translation.lang = r.original_lang OR ${inArray(sql`translation.lang`, INDEX_TRANSLATION_LANGS)})
@@ -282,23 +277,21 @@ export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResou
 		.filter(Boolean)
 		.join('\n')
 		.slice(0, RELATED_QUERY_MAX_CHARS);
-	const response = await env.AI_SEARCH.search({
+	const response = await env.RELATED_SEARCH.search({
 		query,
 		ai_search_options: {
-			cache: { enabled: false },
 			query_rewrite: { enabled: false },
 			reranking: { enabled: false },
 			retrieval: {
 				retrieval_type: 'vector',
 				match_threshold: 0,
-				// Collapsing carriers and dropping this Resource's own family both shrink the list.
-				max_num_results: RESULT_LIMIT_MAX,
+				max_num_results: limit + 1,
 				metadata_only: true,
 				return_on_failure: false,
 			},
 		},
 	});
-	return (await collapseCarriers(env, hitsFromSearchResponse(response)))
-		.filter((candidateId) => candidateId !== resourceId && candidateId !== document.subject_id)
+	return resourceIdsFromSearchResponse(response)
+		.filter((candidateId) => candidateId !== resourceId)
 		.slice(0, limit);
 }
