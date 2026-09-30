@@ -13,25 +13,34 @@ export type ProgressReport = {
 const PROGRESS_STEP = { retries: { limit: 5, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 /** One execution policy, shared by the Workflow and every follow-up it admits. */
 export function createResourceTask(env: CoreEnv, step: WorkflowStep, taskId: string, required: boolean) {
+	// Deliveries leave in call order, so the Workflow can announce a stage without waiting on it.
+	let queue: Promise<unknown> = Promise.resolve();
+	const send = (name: string, deliver: () => Promise<boolean>) => {
+		const sent = queue.then(() => step.do(name, PROGRESS_STEP, deliver));
+		queue = sent.catch(() => {});
+		return sent;
+	};
 	return {
 		taskId,
 		required,
 		start(stage: NonNullable<ProgressReport['stage']>) {
 			if (!required) return Promise.resolve(true);
-			return step.do('start-resource-progress-v1', PROGRESS_STEP, () => env.APP.startResourceProgressTask(taskId, stage));
+			return send('start-resource-progress-v1', () => env.APP.startResourceProgressTask(taskId, stage));
 		},
+		/** A report only informs the reader, so an undeliverable one is logged instead of failing the import. */
 		report(key: string, report: Omit<ProgressReport, 'taskId'>) {
 			if (!required) return Promise.resolve();
 			// Delivery retries remain separate from paid provider work.
-			return step.do(`progress-${key}-v1`, PROGRESS_STEP, async () => {
-				await env.APP.reportResourceProgress({ ...report, taskId });
-			});
+			return send(`progress-${key}-v1`, () => env.APP.reportResourceProgress({ ...report, taskId })).then(
+				() => {},
+				(error: unknown) => {
+					console.error({ tag: 'WORKFLOW', msg: 'Progress report undelivered', task_id: taskId, report: key, error });
+				},
+			);
 		},
 		seal(errorCode?: string) {
 			if (!required) return Promise.resolve();
-			return step.do('seal-resource-progress-v1', PROGRESS_STEP, async () => {
-				await env.APP.sealResourceProgressTask(taskId, errorCode);
-			});
+			return send('seal-resource-progress-v1', () => env.APP.sealResourceProgressTask(taskId, errorCode)).then(() => {});
 		},
 	};
 }

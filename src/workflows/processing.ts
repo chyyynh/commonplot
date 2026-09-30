@@ -41,17 +41,16 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					return { resourceId: target.resourceId };
 				}
 			}
-			// Acquisition runs beside the start gate; a task that ended meanwhile discards what it fetched.
-			const [started, acquisition] = await Promise.allSettled([
-				task.start(target.kind === 'storedBlob' ? 'parsing' : 'acquiring'),
-				// An uploaded PDF that names a paper publishes that paper, built without the upload's text,
-				// and keeps the upload as its uploader's private file.
-				loadAcquisitionInput(this.env, step, target).then((input) => stageResourceAcquisition(this.env, step, input, event.instanceId)),
-			]);
-			if (started.status === 'rejected') throw started.reason;
-			if (!started.value) return target.kind === 'draft' ? {} : { resourceId: target.resourceId };
-			if (acquisition.status === 'rejected') throw acquisition.reason;
-			const { resource, privateFile } = acquisition.value;
+			// An uploaded PDF that names a paper publishes that paper, built without the upload's text,
+			// and keeps the upload as its uploader's private file.
+			const acquisition = loadAcquisitionInput(this.env, step, target).then((input) =>
+				stageResourceAcquisition(this.env, step, input, event.instanceId),
+			);
+			// Acquisition runs beside the start gate; a task that ended meanwhile discards its result and its failure.
+			acquisition.catch(() => {});
+			if (!(await task.start(target.kind === 'storedBlob' ? 'parsing' : 'acquiring')))
+				return target.kind === 'draft' ? {} : { resourceId: target.resourceId };
+			const { resource, privateFile } = await acquisition;
 			const plan = await planAttempt(target, privateFile !== null, event.instanceId, (resourceId) =>
 				step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () =>
 					withCoreDb(this.env, (db) => claimAcquisitionFence(db, resourceId)),
@@ -66,24 +65,23 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				processing_id: event.instanceId,
 				target_kind: target.kind,
 			});
-			const [summary, hostedImages] = await besideReport(
-				task.report('analysis', { stage: 'analyzing', status: 'running' }),
-				Promise.all([
-					// Posts are their text; a summary would only restate it.
-					resource.summary ??
-						(resource.kind === 'post'
-							? null
-							: step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, event.instanceId))),
-					stageResourceImages(
-						this.env,
-						step,
-						event.instanceId,
-						resourceImageSources(privateFile ? [resource, privateFile] : [resource]),
-						target.kind === 'reacquire' ? event.instanceId : undefined,
-					),
-				]),
-			);
+			void task.report('analysis', { stage: 'analyzing', status: 'running' });
+			const [summary, hostedImages] = await Promise.all([
+				// Posts are their text; a summary would only restate it.
+				resource.summary ??
+					(resource.kind === 'post'
+						? null
+						: step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, event.instanceId))),
+				stageResourceImages(
+					this.env,
+					step,
+					event.instanceId,
+					resourceImageSources(privateFile ? [resource, privateFile] : [resource]),
+					target.kind === 'reacquire' ? event.instanceId : undefined,
+				),
+			]);
 			const summarized = withHostedImages({ ...resource, summary }, hostedImages);
+			void task.report('persisting', { stage: 'persisting', status: 'running' });
 			const renditions = [
 				...(privateFile && plan.privateRendition
 					? [
@@ -102,23 +100,16 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					target: plan.persistence,
 				},
 			];
-			const { persisted, supersededId } = await besideReport(
-				task.report('persisting', { stage: 'persisting', status: 'running' }),
-				(async () => {
-					const persisted = [];
-					for (const rendition of renditions) {
-						const persistence = await step.do(rendition.persistStep, STORAGE_STEP, async () =>
-							withCoreDb(this.env, (db) => persistResolvedResource(db, rendition.resource, rendition.target)),
-						);
-						if (persistence.outcome === 'superseded') return { persisted, supersededId: persistence.id };
-						persisted.push({ translationStep: rendition.translationStep, persistence });
-					}
-					return { persisted, supersededId: undefined };
-				})(),
-			);
-			if (supersededId) {
-				await task.report('persist-superseded', { stage: 'persisting', status: 'superseded' });
-				return { resourceId: supersededId };
+			const persisted = [];
+			for (const rendition of renditions) {
+				const persistence = await step.do(rendition.persistStep, STORAGE_STEP, async () =>
+					withCoreDb(this.env, (db) => persistResolvedResource(db, rendition.resource, rendition.target)),
+				);
+				if (persistence.outcome === 'superseded') {
+					await task.report('persist-superseded', { stage: 'persisting', status: 'superseded' });
+					return { resourceId: persistence.id };
+				}
+				persisted.push({ translationStep: rendition.translationStep, persistence });
 			}
 			const persistence = persisted.at(-1)!.persistence;
 			const { id: persistedResourceId, scope, subjectResourceId, originalHash, outcome } = persistence;
@@ -251,15 +242,4 @@ async function planAttempt(
 			};
 		}
 	}
-}
-
-/**
- * Run work beside the progress report that announces it. Both settle before either outcome is used, so the next report
- * or an error report can never overtake this one and move the task backwards.
- */
-async function besideReport<T>(report: Promise<void>, work: Promise<T>): Promise<T> {
-	const [reported, result] = await Promise.allSettled([report, work]);
-	if (result.status === 'rejected') throw result.reason;
-	if (reported.status === 'rejected') throw reported.reason;
-	return result.value;
 }
