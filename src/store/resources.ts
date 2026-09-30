@@ -1,5 +1,5 @@
 import { NonRetryableError } from 'cloudflare:workflows';
-import { sql } from 'drizzle-orm';
+import { type SQL, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { StoredPdf } from '../contracts/acquired-resource';
 import type { HostedPreview } from '../contracts/image-mapping';
@@ -103,6 +103,45 @@ async function lockResource(db: NodePgDatabase, resourceId: string): Promise<Sto
 	return resource;
 }
 
+const NO_PREVIEW = { url: null, width: null, height: null } as const;
+const SITE_PREVIEW_KINDS: ReadonlySet<ResourceKind> = new Set(['blog', 'forum', 'paper']);
+/** Pages of one host sharing a preview before it counts as the site's card; fewer is a reused photo. */
+const SITE_DEFAULT_PREVIEW_PAGES = 5;
+const HOST_SQL = (url: SQL) => sql`lower(substring(${url} from '://([^/]+)'))`;
+
+/**
+ * An article's preview is its own picture, not the site's. Icons and avatars are dropped, and
+ * so is a share image enough other pages of the same host carry: that is the site's default
+ * card. It is recorded in `site_default_images` and cleared from the pages that had it.
+ */
+async function articlePreview(db: NodePgDatabase, resourceId: string, resource: HostedResource) {
+	const { previewImageUrl: url, previewImageWidth: width, previewImageHeight: height } = resource;
+	const preview = { url, width, height };
+	if (!url || !resource.url || !SITE_PREVIEW_KINDS.has(resource.kind)) return preview;
+	if (width !== null && height !== null && (width < 300 || height < 150)) return NO_PREVIEW;
+	const host = HOST_SQL(sql`${resource.url}::text`);
+	const known = await db.execute(sql`SELECT 1 FROM site_default_images WHERE host = ${host} AND image_url = ${url}`);
+	if (known.rows.length) return NO_PREVIEW;
+	const holders = sql`
+		SELECT id FROM resources
+		WHERE og_image_url = ${url} AND id <> ${resourceId}::uuid AND scope = 'corpus'
+		  AND kind IN ('blog', 'forum', 'paper') AND ${HOST_SQL(sql`url`)} = ${host}
+	`;
+	const recorded = await db.execute(sql`
+		WITH recorded AS (
+			INSERT INTO site_default_images (host, image_url)
+			SELECT ${host}, ${url} WHERE (SELECT count(*) FROM (${holders}) holder) >= ${SITE_DEFAULT_PREVIEW_PAGES - 1}
+			ON CONFLICT DO NOTHING
+			RETURNING host
+		), cleared AS (
+			UPDATE resources SET og_image_url = NULL, og_image_width = NULL, og_image_height = NULL
+			WHERE id IN (${holders}) AND EXISTS (SELECT 1 FROM recorded)
+		)
+		SELECT 1 FROM recorded
+	`);
+	return recorded.rows.length ? NO_PREVIEW : preview;
+}
+
 async function writeCanonicalResource(
 	db: NodePgDatabase,
 	resourceId: string,
@@ -116,10 +155,11 @@ async function writeCanonicalResource(
 		og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id, original_hash,
 		scraped_date, updated_at
 	`;
+	const preview = await articlePreview(db, resourceId, resource);
 	const values = sql`
 		${resource.kind}, ${resource.resourcePlatform}, ${resource.source}, ${resource.url}, ${resource.normalizedUrl},
 		${resource.fileType}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
-		${resource.previewImageUrl}, ${resource.previewImageWidth}, ${resource.previewImageHeight}, ${JSON.stringify(resource.creators)}::jsonb,
+		${preview.url}, ${preview.width}, ${preview.height}, ${JSON.stringify(resource.creators)}::jsonb,
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
 		(SELECT MD5(jsonb_build_array(lang, title, summary, content)::text) FROM incoming), NOW(), NOW()
 	`;
