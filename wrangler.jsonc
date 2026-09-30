@@ -22,6 +22,8 @@
 		{
 			"class_name": "ZoteroSdt",
 			"scheduling_policy": "durable_object",
+			/** Surfaces the document-worker's stdout/stderr (queue saturation, parser failures) in Workers Logs. */
+			"observability": { "logs": { "enabled": true } },
 			"images": {
 				"zotero-sdt": { "dockerfile": "./containers/zotero-sdt/Dockerfile" },
 			},

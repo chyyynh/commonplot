@@ -16,12 +16,14 @@ export class ZoteroSdt extends DurableObject<CoreEnv> {
 	}
 
 	async processPdf(input: ReadableStream<Uint8Array>, byteLength: number): Promise<Response> {
-		const port = await this.ensureReady(input);
-		return port.fetch('http://zotero-sdt/parse', {
-			body: input.pipeThrough(new FixedLengthStream(byteLength)),
-			headers: { 'content-type': 'application/pdf' },
-			method: 'POST',
-		});
+		const port = await this.ensureReady(input, 'parse', byteLength);
+		return timed('parse', byteLength, () =>
+			port.fetch('http://zotero-sdt/parse', {
+				body: input.pipeThrough(new FixedLengthStream(byteLength)),
+				headers: { 'content-type': 'application/pdf' },
+				method: 'POST',
+			}),
+		);
 	}
 
 	async renderPdfAreas(
@@ -33,34 +35,83 @@ export class ZoteroSdt extends DurableObject<CoreEnv> {
 			await input.cancel('PDF crop batches must contain 1–8 areas');
 			throw new Error('PDF crop batches must contain 1–8 areas');
 		}
-		const port = await this.ensureReady(input);
-		return port.fetch('http://zotero-sdt/render-areas', {
-			body: input.pipeThrough(new FixedLengthStream(byteLength)),
-			headers: {
-				'content-type': 'application/pdf',
-				'x-pdf-crops': JSON.stringify(crops.map(({ id, pageIndex, rect }) => ({ id, pageIndex, rect }))),
-			},
-			method: 'POST',
-		});
+		const port = await this.ensureReady(input, 'render-areas', byteLength);
+		return timed('render-areas', byteLength, () =>
+			port.fetch('http://zotero-sdt/render-areas', {
+				body: input.pipeThrough(new FixedLengthStream(byteLength)),
+				headers: {
+					'content-type': 'application/pdf',
+					'x-pdf-crops': JSON.stringify(crops.map(({ id, pageIndex, rect }) => ({ id, pageIndex, rect }))),
+				},
+				method: 'POST',
+			}),
+		);
 	}
 
-	private async ensureReady(input: ReadableStream<Uint8Array>): Promise<Fetcher> {
+	private async ensureReady(input: ReadableStream<Uint8Array>, operation: PdfOperation, byteLength: number): Promise<Fetcher> {
+		const startedAt = Date.now();
+		const coldStart = !this.ctx.container?.running;
 		try {
 			const container = this.ctx.container;
 			if (!container) throw new Error('ZoteroSdt has no attached container');
-			if (!container.running) {
+			if (coldStart) {
 				// `basic` is not a runtime instance size; `lite` (256 MiB) cannot hold PDF.js and canvas.
 				container.start({ enableInternet: false, image: container.images['zotero-sdt'], instance: 'standard-1' });
+				this.ctx.waitUntil(
+					container.monitor().then(
+						() => console.info({ tag: 'PDF_PARSE', event: 'zotero_sdt_container_exited' }),
+						(error: unknown) =>
+							console.error({
+								tag: 'PDF_PARSE',
+								event: 'zotero_sdt_container_crashed',
+								error: error instanceof Error ? error.message : String(error),
+								exit_code: (error as { exitCode?: number } | null)?.exitCode ?? null,
+							}),
+					),
+				);
 				await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
 			}
 			const port = container.getTcpPort(PORT);
 			await waitForPort(container, port);
+			console.info({
+				tag: 'PDF_PARSE',
+				event: 'zotero_sdt_container_ready',
+				operation,
+				cold_start: coldStart,
+				ready_ms: Date.now() - startedAt,
+				byte_length: byteLength,
+			});
 			return port;
 		} catch (error) {
+			console.error({
+				tag: 'PDF_PARSE',
+				event: 'zotero_sdt_container_not_ready',
+				operation,
+				cold_start: coldStart,
+				waited_ms: Date.now() - startedAt,
+				error: error instanceof Error ? error.message : String(error),
+			});
 			await input.cancel('PDF container failed to become ready');
 			throw error;
 		}
 	}
+}
+
+type PdfOperation = 'parse' | 'render-areas';
+
+/** Time to response headers; the server answers only after the whole document is processed. */
+async function timed(operation: PdfOperation, byteLength: number, request: () => Promise<Response>): Promise<Response> {
+	const startedAt = Date.now();
+	const response = await request();
+	console.info({
+		tag: 'PDF_PARSE',
+		event: 'zotero_sdt_request_completed',
+		operation,
+		status: response.status,
+		duration_ms: Date.now() - startedAt,
+		byte_length: byteLength,
+	});
+	return response;
 }
 
 /** `start()` returns before the server listens; any HTTP response (the server 404s pings) means it is ready. */
