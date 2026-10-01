@@ -4,6 +4,7 @@ import { stageResourceAcquisition } from '../adapters/acquire';
 import type { AcquisitionInput } from '../contracts/acquired-resource';
 import { resourceImageSources, withHostedImages } from '../contracts/image-mapping';
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
+import { blobKey } from '../contracts/storage-keys';
 import { AI_STEP_RETRIES } from '../services/ai-model';
 import { stageResourceImages } from '../services/image-rehosting';
 import { summarizeResource } from '../services/summary';
@@ -80,7 +81,14 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			const summarized = withHostedImages({ ...resource, summary }, hostedImages);
 			void task.report('persisting', { stage: 'persisting', status: 'running' });
 			const persistence = await step.do('persist-resolved-resource-scope-v8', STORAGE_STEP, async () =>
-				withCoreDb(this.env, (db) => persistResolvedResource(db, summarized, plan.persistence)),
+				withCoreDb(this.env, (db) =>
+					persistResolvedResource(
+						db,
+						summarized,
+						plan.persistence,
+						async (contentHash) => (await this.env.R2.head(blobKey(contentHash))) !== null,
+					),
+				),
 			);
 			if (persistence.outcome === 'superseded') {
 				await task.report('persist-superseded', { stage: 'persisting', status: 'superseded' });

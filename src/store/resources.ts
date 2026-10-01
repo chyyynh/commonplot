@@ -162,7 +162,7 @@ async function writeCanonicalResource(
 	const preview = await articlePreview(db, resourceId, resource);
 	const values = sql`
 		${resource.kind}, ${resource.resourcePlatform}, ${resource.source}, ${resource.url}, ${resource.normalizedUrl},
-		${resource.fileType}, ${resource.pdfHash ?? null}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
+		${resource.fileType}, ${existing ? sql`COALESCE(${resource.pdfHash ?? null}, pdf_hash)` : (resource.pdfHash ?? null)}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
 		${preview.url}, ${preview.width}, ${preview.height}, ${JSON.stringify(resource.creators)}::jsonb,
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
 		(SELECT MD5(jsonb_build_array(lang, title, summary, content)::text) FROM incoming), NOW(), NOW()
@@ -271,7 +271,13 @@ async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relati
 	if (attached.rowCount !== 1) throw new NonRetryableError('Subject parent was reacquired or is no longer eligible for attachment');
 }
 
-export async function persistResolvedResource(db: NodePgDatabase, resource: HostedResource, target: ResourcePersistenceTarget) {
+/** `blobExists` confirms, under the blob lock, that the PDF a Resource reads as was not purged since it was stored. */
+export async function persistResolvedResource(
+	db: NodePgDatabase,
+	resource: HostedResource,
+	target: ResourcePersistenceTarget,
+	blobExists: (contentHash: string) => Promise<boolean>,
+) {
 	const lockKeys = [
 		...(resource.normalizedUrl ? [`url:${resource.normalizedUrl}`] : []),
 		...resource.resourceIdentifiers.map(({ scheme, value }) => `id:${scheme}:${value}`),
@@ -291,6 +297,7 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Host
 		if (resource.pdfHash) {
 			// Web purges a blob only while holding this lock and finding no Resource that reads it.
 			await tx.execute(sql`SELECT pg_advisory_xact_lock(${STORED_BLOB_LOCK_NAMESPACE}, hashtext(${blobKey(resource.pdfHash)}))`);
+			if (!(await blobExists(resource.pdfHash))) throw new NonRetryableError('Stored PDF was purged before its Resource committed');
 		}
 		if (target.ownedBlobId) {
 			const owned = await tx.execute(
