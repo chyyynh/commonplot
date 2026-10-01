@@ -91,9 +91,7 @@ I save this week?" use `list_saves` and then `read_resource`.
 - `open_newsence` is a ChatGPT global entrypoint (`openai/ui.entrypoints`):
   the sidebar and the plugin's **Open plugin** button open
   `ui://newsence/app-v1.html` full screen. That view frames
-  `https://www.newsence.app` (`csp.frameDomains`); both views declare
-  `ui.domain`. The model can call it (hosts render views only for those), but
-  its result's `_meta`, which the model never sees, carries a
+  `https://www.newsence.app` (`csp.frameDomains`). The tool returns a
   one-time ticket (`verification` row, two minutes); `/api/auth/embed`
   consumes it and sets a session cookie with `SameSite=None; Partitioned`, so
   it exists only inside ChatGPT and the user's own newsence.app cookie is
