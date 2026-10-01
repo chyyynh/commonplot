@@ -196,6 +196,160 @@ function renderTwitterArticleMarkdown(article: TwitterArticle): string {
 	return markdown;
 }
 
+const FxVariantSchema = z.object({ url: z.string(), content_type: z.string(), bitrate: z.number().nonnegative().optional() });
+
+const FxMediaSchema = z.object({
+	type: z.enum(['photo', 'video', 'gif']),
+	url: z.string(),
+	thumbnail_url: z.string().optional(),
+	width: z.number().optional(),
+	height: z.number().optional(),
+	variants: z.array(FxVariantSchema).optional(),
+});
+
+const FxAuthorSchema = z.object({
+	screen_name: z.string(),
+	name: z.string(),
+	avatar_url: z.string().nullish(),
+	verification: z.object({ verified: z.boolean() }).nullish(),
+});
+
+const FxArticleMediaInfoSchema = z.object({
+	__typename: z.string(),
+	original_img_url: z.string().optional(),
+	preview_image: z.object({ original_img_url: z.string() }).optional(),
+	variants: z.array(z.object({ url: z.string() })).optional(),
+});
+
+/** X Articles arrive as Draft.js raw content: text blocks plus atomic blocks pointing into entityMap. */
+const FxArticleSchema = z.object({
+	title: z.string(),
+	created_at: z.string().nullish(),
+	cover_media: z.object({ media_info: FxArticleMediaInfoSchema.optional() }).nullish(),
+	content: z.object({
+		blocks: z.array(
+			z.object({
+				type: z.string(),
+				text: z.string(),
+				inlineStyleRanges: z.array(TwitterArticleInlineStyleSchema).optional(),
+				entityRanges: z.array(z.object({ key: z.int() })).optional(),
+			}),
+		),
+		entityMap: z.array(z.object({ key: z.string(), value: z.object({ type: z.string(), data: z.record(z.string(), z.unknown()) }) })),
+	}),
+	media_entities: z.array(z.object({ media_id: z.string(), media_info: FxArticleMediaInfoSchema.optional() })).nullish(),
+});
+
+const FxTweetSchema = z.object({
+	id: z.string().regex(/^\d+$/),
+	url: z.string().min(1),
+	created_at: z.string().min(1),
+	lang: z.string().max(35).nullish(),
+	// raw_text keeps the t.co tokens; its url facets map each one to its destination.
+	raw_text: z.object({
+		text: z.string(),
+		facets: z.array(z.object({ type: z.string(), original: z.string().optional(), replacement: z.string().optional() })),
+	}),
+	author: FxAuthorSchema,
+	media: z.object({ all: z.array(FxMediaSchema).optional() }).nullish(),
+	article: FxArticleSchema.nullish(),
+	get quote(): z.ZodCatch<z.ZodOptional<z.ZodNullable<typeof FxTweetSchema>>> {
+		return FxTweetSchema.nullish().catch(null);
+	},
+});
+
+type FxTweet = z.infer<typeof FxTweetSchema>;
+
+async function fetchFxTweet(tweetId: string): Promise<FxTweet | null> {
+	try {
+		const response = await fetch(`https://api.fxtwitter.com/i/status/${tweetId}`, { signal: AbortSignal.timeout(10_000) });
+		if (!response.ok) {
+			await response.body?.cancel();
+			throw new Error(`HTTP ${response.status}`);
+		}
+		const { tweet } = z.object({ tweet: FxTweetSchema }).parse(await response.json());
+		if (tweet.id !== tweetId) throw new Error(`returned tweet ${tweet.id}`);
+		return tweet;
+	} catch (error) {
+		console.warn({ tag: 'TWITTER', msg: 'FxTwitter request failed, falling back', tweetId, error: String(error) });
+		return null;
+	}
+}
+
+function tweetFromFx(fx: FxTweet): Tweet {
+	return {
+		id: fx.id,
+		url: fx.url,
+		createdAt: fx.created_at,
+		author: {
+			userName: fx.author.screen_name,
+			name: fx.author.name,
+			...(fx.author.avatar_url ? { profilePicture: fx.author.avatar_url } : {}),
+			...(fx.author.verification ? { isBlueVerified: fx.author.verification.verified } : {}),
+		},
+		text: fx.raw_text.text,
+		// Media t.co tokens stay unmapped, as with twitterapi.io, so expansion drops them.
+		entities: {
+			urls: fx.raw_text.facets.flatMap(({ type, original, replacement }) =>
+				type === 'url' && original && replacement ? [{ url: original, expanded_url: replacement }] : [],
+			),
+		},
+		extendedEntities: {
+			media: (fx.media?.all ?? []).map((media) => ({
+				// A video's media URL is its poster, as in Twitter's own entities.
+				media_url_https: media.type === 'photo' ? media.url : (media.thumbnail_url ?? ''),
+				type: media.type === 'gif' ? 'animated_gif' : media.type,
+				...(media.variants?.length ? { video_info: { variants: media.variants } } : {}),
+				...(media.width && media.height ? { sizes: { large: { w: media.width, h: media.height } } } : {}),
+			})),
+		},
+		...(fx.lang ? { lang: fx.lang } : {}),
+		quoted_tweet: fx.quote ? tweetFromFx(fx.quote) : null,
+	};
+}
+
+const DRAFT_TEXT_BLOCKS = [
+	'unstyled',
+	'header-one',
+	'header-two',
+	'header-three',
+	'unordered-list-item',
+	'ordered-list-item',
+] as const satisfies TwitterArticleContent['type'][];
+
+/** fx only attaches an Article to the tweet that publishes it, so its author is the tweet's. */
+function articleFromFx(article: NonNullable<FxTweet['article']>): TwitterArticle {
+	const entities = new Map(article.content.entityMap.map(({ key, value }) => [key, value]));
+	const media = new Map((article.media_entities ?? []).map(({ media_id, media_info }) => [media_id, media_info]));
+	const contents = article.content.blocks.flatMap((block): TwitterArticleContent[] => {
+		if (block.type !== 'atomic') {
+			// Other text blocks (quotes, code) keep their words as paragraphs.
+			const type = DRAFT_TEXT_BLOCKS.find((type) => type === block.type) ?? 'unstyled';
+			return [{ type, text: block.text, inlineStyleRanges: block.inlineStyleRanges ?? null }];
+		}
+		const entity = entities.get(String(block.entityRanges?.[0]?.key));
+		if (entity?.type === 'DIVIDER') return [{ type: 'divider' }];
+		if (entity?.type === 'MARKDOWN') {
+			const markdown = z.object({ markdown: z.string() }).safeParse(entity.data).data?.markdown;
+			return markdown ? [{ type: 'markdown', text: markdown }] : [];
+		}
+		if (entity?.type !== 'MEDIA') return [];
+		const mediaId = z.object({ mediaItems: z.array(z.object({ mediaId: z.string() })) }).safeParse(entity.data).data
+			?.mediaItems[0]?.mediaId;
+		const info = mediaId ? media.get(mediaId) : undefined;
+		if (info?.__typename === 'ApiImage' && info.original_img_url) return [{ type: 'image', url: info.original_img_url }];
+		const preview = info?.preview_image?.original_img_url;
+		if (info?.__typename === 'ApiGif') return [{ type: 'gif', previewUrl: preview ?? null, url: info.variants?.[0]?.url ?? null }];
+		return preview ? [{ type: 'image', url: preview }] : [];
+	});
+	return {
+		title: article.title,
+		cover_media_img_url: article.cover_media?.media_info?.original_img_url ?? null,
+		contents,
+		createdAt: article.created_at ?? null,
+	};
+}
+
 type TwitterAcquisitionInput = {
 	processingId: string;
 	tweetId: string;
@@ -298,10 +452,8 @@ function quotedTweetUrl(tweet: Tweet): string | undefined {
 	return identifier?.value === quote.id ? quote.url : undefined;
 }
 
-async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
-	const tweetId = tweet.id;
+async function fetchTwitterApiArticle(tweetId: string, apiKey: string): Promise<TwitterArticle> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching longform for tweet', tweetId });
-
 	const response = await fetch(`https://api.twitterapi.io/twitter/article?tweet_id=${tweetId}`, {
 		headers: { 'x-api-key': apiKey },
 		signal: AbortSignal.timeout(20_000),
@@ -318,8 +470,13 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
 	if (payload.status !== 'success') {
 		throw new Error(`Twitter article ${tweetId} failed: ${payload.message?.trim() || 'unknown provider error'}`);
 	}
-	const longform = payload.article;
-	if (!longform) throw new Error(`Twitter article ${tweetId} omitted article content`);
+	if (!payload.article) throw new Error(`Twitter article ${tweetId} omitted article content`);
+	return payload.article;
+}
+
+async function scrapeTwitterLongform(tweet: Tweet, loadArticle: () => Promise<TwitterArticle>) {
+	const tweetId = tweet.id;
+	const longform = await loadArticle();
 	const title = longform.title?.trim();
 	const contentText = expandKnownTweetUrls(renderTwitterArticleMarkdown(longform), tweet);
 	if (!title || !contentText) throw new Error(`Twitter longform ${tweetId} requires both title and renderable content`);
@@ -353,7 +510,7 @@ async function scrapeTwitterLongform(tweet: Tweet, apiKey: string) {
 	};
 }
 
-async function resolveTweetContent(tweet: Tweet, apiKey: string) {
+async function resolveTweetContent(tweet: Tweet, loadArticle: () => Promise<TwitterArticle>) {
 	const expandedUrls = (tweet.entities?.urls ?? []).flatMap((url) => {
 		const expandedUrl = url.expanded_url?.trim();
 		return expandedUrl ? [expandedUrl] : [];
@@ -368,7 +525,7 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 
 	if (longformUrl) {
 		console.info({ tag: 'TWITTER', msg: 'Detected Twitter longform', longformUrl });
-		const longform = await scrapeTwitterLongform(tweet, apiKey);
+		const longform = await scrapeTwitterLongform(tweet, loadArticle);
 		if (longform) return longform;
 	}
 
@@ -392,7 +549,7 @@ async function resolveTweetContent(tweet: Tweet, apiKey: string) {
 	};
 }
 
-async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string) {
+async function fetchTwitterApiTweet(tweetId: string, apiKey: string): Promise<Tweet> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
 	const response = await fetch(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, {
 		headers: { 'x-api-key': apiKey },
@@ -416,13 +573,16 @@ async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string)
 	if (!payload.tweets.length) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
 	const tweet = payload.tweets.find((tweet) => tweet.id === tweetId);
 	if (!tweet) throw new Error(`Twitter API returned no matching tweet for ${tweetId}`);
-	const { subjectUrl, ...content } = await resolveTweetContent(tweet, apiKey);
+	return tweet;
+}
 
+async function acquiredTweet(tweet: Tweet, loadArticle: () => Promise<TwitterArticle>) {
+	const { subjectUrl, ...content } = await resolveTweetContent(tweet, loadArticle);
 	return {
 		...content,
 		resourcePlatform: 'twitter',
-		resourceIdentifiers: [{ preferred: true, scheme: 'twitter', value: tweetId }],
-		url: `https://x.com/i/status/${tweetId}`,
+		resourceIdentifiers: [{ preferred: true, scheme: 'twitter', value: tweet.id }],
+		url: `https://x.com/i/status/${tweet.id}`,
 		source: 'Twitter',
 		originalLang: tweet.lang ?? 'und',
 		summary: null,
@@ -431,9 +591,25 @@ async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string)
 	} satisfies AcquiredResource;
 }
 
+/** FxTwitter is free and needs no key; twitterapi.io (paid) covers anything it cannot read or map. */
+async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string) {
+	const fx = await fetchFxTweet(tweetId);
+	if (fx) {
+		try {
+			const tweet = tweetFromFx(fx);
+			const article = fx.article;
+			return await acquiredTweet(tweet, async () => (article ? articleFromFx(article) : fetchTwitterApiArticle(tweetId, apiKey)));
+		} catch (error) {
+			console.warn({ tag: 'TWITTER', msg: 'FxTwitter tweet unusable, falling back', tweetId, error: String(error) });
+		}
+	}
+	const tweet = await fetchTwitterApiTweet(tweetId, apiKey);
+	return acquiredTweet(tweet, () => fetchTwitterApiArticle(tweetId, apiKey));
+}
+
 export async function stageTwitterAcquisition(env: CoreEnv, step: WorkflowStep, input: TwitterAcquisitionInput) {
 	const contentStream = await step.do(
-		'acquire-twitter-v3',
+		'acquire-twitter-v4',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		async (ctx) => {
 			console.info({
