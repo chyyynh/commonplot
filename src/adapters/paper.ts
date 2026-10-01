@@ -36,6 +36,7 @@ const OpenAlexLocationSchema = z.object({
 
 const OpenAlexWorkSchema = z.object({
 	id: z.string(),
+	type: z.string().nullish(),
 	doi: z.string().nullish(),
 	title: z.string().nullish(),
 	publication_year: z.int().nullish(),
@@ -148,6 +149,8 @@ async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: reado
 	const work = OpenAlexWorkSchema.parse(
 		JSON.parse(await readBoundedResponseText(response, MAX_OPENALEX_RESPONSE_BYTES, 'OpenAlex response')),
 	);
+	// Front matter or a whole proceedings volume, e.g. the DOI a repository cover page prints.
+	if (work.type === 'paratext') return null;
 	return normalizeOpenAlexWork(work, input.identifiers);
 }
 
@@ -204,7 +207,7 @@ async function stagePaperMetadata(
 	if (!input.identifiers.length) return null;
 	const startedAt = Date.now();
 	const stream = await step.do(
-		'resolve-paper-openalex-v6',
+		'resolve-paper-openalex-v7',
 		PAPER_METADATA_STEP,
 		async () => Response.json(await resolveOpenAlexPaper({ apiKey: env.OPENALEX_API_KEY, identifiers: input.identifiers })).body!,
 	);
