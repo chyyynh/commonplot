@@ -7,6 +7,23 @@ library and **public profile**, the same as saving a link in Newsence. The
 model never saves on its own. It can also list the user's saves and read them
 to answer from them.
 
+## Package
+
+This folder is one plugin package for both hosts:
+
+| File | Read by |
+| --- | --- |
+| `plugin.json`, `mcp.json` | ChatGPT (Agent Plugins format; `extensions.com.openai` holds the listing and starter prompts) |
+| `.claude-plugin/plugin.json`, `.mcp.json` | Claude |
+| `skills/show-reading`, `skills/my-saves` | Both: when to show cards, and how to answer from saves |
+| `assets/icon.png` | ChatGPT composer icon and logo |
+
+Zip the folder's contents for upload: ChatGPT at platform.openai.com/plugins,
+Claude at **Customize → Plugins → Add → Upload plugin**. Raise `version` in
+both manifests on every release. Run `claude plugin validate ./newsence` from
+`plugins/` before uploading. Tool and card changes need no new package: the
+host rescans the MCP server.
+
 ## Connect
 
 Add a remote MCP server with the URL `https://www.newsence.app/api/mcp`
@@ -23,8 +40,9 @@ a new conversation; old messages keep the old card.
 
 ## Use
 
-The model decides when to show cards, from the `show_reading` description and
-the server instructions (Claude reads them; ChatGPT's support is undocumented).
+The model decides when to show cards from the skills, the `show_reading`
+description and the server instructions (ChatGPT documents that it reads their
+first 512 characters).
 Hosts call apps sparingly, so a general question may still get a plain answer.
 For a dependable result, users can:
 

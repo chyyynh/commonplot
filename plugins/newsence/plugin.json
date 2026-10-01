@@ -1,0 +1,33 @@
+{
+	"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+	"name": "newsence",
+	"version": "1.0.0",
+	"description": "Save the articles, papers, posts and videos the assistant recommends to your Newsence library with one tap, and ask about what you saved.",
+	"author": { "name": "Newsence", "url": "https://www.newsence.app" },
+	"homepage": "https://www.newsence.app",
+	"license": "UNLICENSED",
+	"keywords": ["reading", "read-later", "bookmarks", "research"],
+	"extensions": {
+		"com.openai": {
+			"interface": {
+				"displayName": "Newsence",
+				"shortDescription": "Save reads and ask about your library",
+				"longDescription": "Newsence shows the articles, papers, posts and videos the assistant recommends as cards. Press Save on a card to keep it in your Newsence library and public profile; nothing is saved without your press. Ask what you saved this week, or ask about a saved item, and the assistant reads it from your library.",
+				"developerName": "Newsence",
+				"category": "Productivity",
+				"capabilities": ["Read", "Write"],
+				"websiteURL": "https://www.newsence.app",
+				"privacyPolicyURL": "https://www.newsence.app/privacy",
+				"termsOfServiceURL": "https://www.newsence.app/terms",
+				"defaultPrompt": [
+					"What did I save to Newsence this week?",
+					"Recommend five papers on agent evaluation to read",
+					"Summarize the latest thing I saved"
+				],
+				"brandColor": "#007693",
+				"composerIcon": "./assets/icon.png",
+				"logo": "./assets/icon.png"
+			}
+		}
+	}
+}

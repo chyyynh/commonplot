@@ -1,0 +1,9 @@
+{
+	"name": "newsence",
+	"displayName": "Newsence",
+	"version": "1.0.0",
+	"description": "Save the articles, papers, posts and videos Claude recommends to your Newsence library with one tap, and ask about what you saved.",
+	"author": { "name": "Newsence", "url": "https://www.newsence.app" },
+	"homepage": "https://www.newsence.app",
+	"license": "UNLICENSED"
+}

@@ -1,0 +1,8 @@
+{
+	"mcpServers": {
+		"newsence": {
+			"type": "http",
+			"url": "https://www.newsence.app/api/mcp"
+		}
+	}
+}
