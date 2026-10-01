@@ -262,7 +262,11 @@ type FxTweet = z.infer<typeof FxTweetSchema>;
 
 async function fetchFxTweet(tweetId: string): Promise<FxTweet | null> {
 	try {
-		const response = await fetch(`https://api.fxtwitter.com/i/status/${tweetId}`, { signal: AbortSignal.timeout(10_000) });
+		// FxTwitter rejects requests without an identifying User-Agent (HTTP 401).
+		const response = await fetch(`https://api.fxtwitter.com/i/status/${tweetId}`, {
+			headers: { 'user-agent': 'newsence/1.0 (+https://www.newsence.app)' },
+			signal: AbortSignal.timeout(10_000),
+		});
 		if (!response.ok) {
 			await response.body?.cancel();
 			throw new Error(`HTTP ${response.status}`);
