@@ -95,9 +95,9 @@ export async function stageStoredPdfAcquisition(
 		references: parsed.references,
 		source: resource.source,
 		originalLang: resource.originalLang,
-		publishedDate: resource.publishedDate,
-		summary: resource.summary,
-		creators: resource.creators,
+		publishedDate: null,
+		summary: null,
+		creators: [],
 		kindMetadata: null,
 	};
 }

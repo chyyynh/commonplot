@@ -48,12 +48,9 @@ export type SourceHints = Readonly<{ summary?: string; originalLang?: string; pu
 /** What the owner stored for an uploaded PDF; the Workflow reads it so adapters never touch the database. */
 export type StoredPdf = Readonly<{
 	contentHash: string;
-	creators: ResourceCreator[];
 	originalLang: string;
-	publishedDate: string | null;
 	source: string;
 	storageKey: string;
-	summary: string | null;
 	title: string;
 }>;
 

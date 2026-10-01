@@ -378,7 +378,6 @@ export async function claimAcquisitionFence(db: NodePgDatabase, resourceId: stri
 	return rows[0].fence;
 }
 
-/** Read the accepted corpus rendition, which may differ from the incoming private PDF. */
 /** The external URL and identifiers a reacquisition starts from. */
 export async function loadReacquisitionSource(db: NodePgDatabase, resourceId: string) {
 	const { rows } = await db.execute<{ url: string | null; identifiers: unknown }>(sql`
@@ -403,10 +402,7 @@ type StoredPdfRow = {
 	storage_key: string;
 };
 
-/**
- * An owned private PDF upload, as uploaded. Title, summary and authors restart from the upload itself,
- * so reprocessing does not carry over what an earlier attempt took from a paper it matched.
- */
+/** An owned private PDF upload, as uploaded: an unidentified result is titled by its file name again. */
 export async function loadStoredPdf(db: NodePgDatabase, resourceId: string): Promise<StoredPdf> {
 	const result = await db.execute<StoredPdfRow>(sql`
 		SELECT
@@ -430,12 +426,9 @@ export async function loadStoredPdf(db: NodePgDatabase, resourceId: string): Pro
 	const fileName = row.file_name?.trim() || 'PDF';
 	return {
 		contentHash: row.content_hash,
-		creators: [],
 		originalLang: row.original_lang,
-		publishedDate: null,
 		source: row.source,
 		storageKey: row.storage_key,
-		summary: null,
 		title: fileName.replace(/\.[a-z0-9]{1,8}$/i, '') || fileName,
 	};
 }

@@ -29,16 +29,16 @@ Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content
 ![X](https://img.shields.io/badge/X%2FTwitter-000000?logo=x&logoColor=white)
 ![Hacker News](https://img.shields.io/badge/Hacker%20News-F0652F?logo=ycombinator&logoColor=white)
 
-| Input | Acquisition flow |
-| --- | --- |
-| **Web URL** | Fetch/redirect detection → HTML article and source metadata → Markdown; PDF responses enter the PDF parser |
-| **Uploaded PDF** | Read owned R2 blob → Zotero text/figures and first-page identifiers → OpenAlex, accepted only when its title appears on the first page; the upload stays a private file and a recognized paper is published from licensed full text or its abstract |
-| **Paper** | Exact URL or PDF identity → OpenAlex for web sources / Crossref for PDFs → canonical identifiers and bibliography; OpenAlex content or licensed OA PDF |
-| **Twitter/X** | twitterapi.io → post or article Markdown, media and linked subject; monitoring uses cursor pagination every 6 hours |
-| **YouTube** | Video metadata → channel avatar and transcript in parallel → canonical transaction saves transcript and native chapters → optional AI highlights after publication, guarded by the acquisition revision |
-| **Hacker News** | Firebase story and ranked comments → Markdown discussion; an external article remains a separate subject |
-| **LessWrong** | GraphQL post → native Markdown and source metadata |
-| **RSS / Atom / JSON Feed** | Fetch → feed parser → normalized URL drafts → normal acquisition; every 5 minutes, with a 30-minute interval for YouTube feeds |
+| Input                      | Acquisition flow                                                                                                                                                                                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Web URL**                | Fetch/redirect detection → HTML article and source metadata → Markdown; PDF responses enter the PDF parser                                                                                                                                                    |
+| **Uploaded PDF**           | Read owned R2 blob → Zotero text/figures and first-page identifiers → OpenAlex, accepted only when its title appears on the first page; a recognized paper is published with the upload as its full text and PDF; an unidentified upload stays a private file |
+| **Paper**                  | Exact URL or PDF identity → OpenAlex for web sources / Crossref for PDFs → canonical identifiers and bibliography; OpenAlex content or licensed OA PDF                                                                                                        |
+| **Twitter/X**              | twitterapi.io → post or article Markdown, media and linked subject; monitoring uses cursor pagination every 6 hours                                                                                                                                           |
+| **YouTube**                | Video metadata → channel avatar and transcript in parallel → canonical transaction saves transcript and native chapters → optional AI highlights after publication, guarded by the acquisition revision                                                       |
+| **Hacker News**            | Firebase story and ranked comments → Markdown discussion; an external article remains a separate subject                                                                                                                                                      |
+| **LessWrong**              | GraphQL post → native Markdown and source metadata                                                                                                                                                                                                            |
+| **RSS / Atom / JSON Feed** | Fetch → feed parser → normalized URL drafts → normal acquisition; every 5 minutes, with a 30-minute interval for YouTube feeds                                                                                                                                |
 
 `platforms/resource-url.ts` resolves platform and paper identities for app lookup, feeds, linked subjects, acquisition, and persistence. It preserves the fetch URL separately from the normalized identity key; redirects and response MIME still select the final adapter. Each adapter owns its source parsing and Resource output.
 Only the output contract and small source-hint rules are shared; there is no generic materializer.
@@ -76,7 +76,7 @@ YouTube language is normalized once into `resources.original_lang`; the transcri
 
 ### PDF processing and recovery
 
-Core uses the pinned Zotero document-worker for structured text and source-region rendering. Uploaded and fetched PDFs share `parseStoredPdfRepresentation`; Web only projects persisted renditions and authorizes their media.
+Core uses the pinned Zotero document-worker for structured text and source-region rendering. Uploaded and fetched PDFs share `parseStoredPdfRepresentation`; Web only projects persisted content and authorizes its media.
 
 Printed bibliography entries retain their full text in both Markdown footnotes and `resource_references`. Only the outgoing Crossref search query is capped at 600 characters; candidate matching and stale-result checks use the complete entry. Apply Web migration `20260923090000_preserve_full_reference_text` before deploying this Core change. Existing truncated entries and footnotes need normal reacquisition; the migration preserves existing rows without inventing missing text.
 
@@ -106,13 +106,7 @@ When changing the document-worker build or crop algorithm, update the explicit a
 
 #### Source ownership
 
-Uploaded PDF content and translations stay on its private raw Resource. If paper identification also produces a corpus Resource, Core removes private crop image references from the shared body. The owner's reader and authorized Knowledge reads project the attached raw rendition; anonymous/public reads use corpus content. Deleting the upload removes that raw rendition and its crop family, so owner reads fall back to the independent corpus version. Private media authorization is unchanged.
-
-Shared-body image removal understands GFM footnotes and nested link definitions, resolves duplicate labels using Markdown's first-definition rule, and preserves code/math literals. It removes source ranges without reserializing the surrounding Markdown; public images and printed citation text remain intact.
-
-Public URL acquisition writes a separate `public-pdf/<sourceSha256>/<inputSha256>/` family. Matching bytes in a private upload never establish public provenance. Only after canonical persistence does Core validate the source and complete crop manifest and write `publication.json`. Public crop delivery requires that publication, an enriched corpus Resource, and the exact crop URL in its current original content. Raw public acquisition artifacts have no public download route. Public crop storage is independent of user upload deletion.
-
-Historical corpus bodies containing private crop images must be cleaned once before upgrading an older dataset: back up affected translations, remove only private image nodes, clear their alignment, and enqueue search sync for affected resources. Acquisition strips these images before publishing new shared renditions; persistence and reads do not repair existing bodies. Production cleanup completed on 2026-09-13 (5 resources, 10 translations).
+R2 holds each PDF once at `blobs/<sha256>`, with its crops under `blobs/<sha256>.structured-crops/`. Uploads and fetched PDFs share that key; `stored_objects` rows are ownership references to it, and `resources.pdf_hash` names the PDF a Resource reads as. An upload identified as a paper becomes that paper: its parse is the paper's full text, and a corpus Resource with that `pdf_hash` makes the PDF and its crops public. An unidentified upload stays a private file. Core takes Web's stored-blob advisory lock while committing a Resource with a `pdf_hash`, so Web purges bytes only when no ownership row or corpus Resource references them.
 
 #### Operator verification
 
@@ -120,18 +114,18 @@ Run `pnpm lint` and `pnpm run typecheck` from this workspace. Verify acquisition
 
 Deploy the Web media/reading changes and the Core Worker **with its updated Zotero container image** before admitting new processing. A Worker-only deployment with `--containers-rollout=none` cannot activate the new batch endpoint.
 
-After deployment, reprocess an uploaded PDF through Web's `DomainRpc.admitStoredBlobProcessing({ resourceId: <raw-file-resource-id>, retry: true })`; Web validates ownership and admits the Core job. Do not pass its canonical paper ID. Use Core's `resyncResource` for a resource with an external URL. Inspect Workflow status, the crop manifest and its quality summary, canonical/private translations, and owner/non-owner reads. A completed canonical row alone does not prove all follow-ups succeeded. No production backfill is implicit in a code deployment.
+After deployment, reprocess an uploaded PDF through Web's `DomainRpc.admitStoredBlobProcessing({ resourceId: <raw-file-resource-id>, retry: true })`; Web validates ownership and admits the Core job. Do not pass its canonical paper ID. Use Core's `resyncResource` for a resource with an external URL. Inspect Workflow status, the crop manifest and its quality summary, the persisted translations, and owner/non-owner reads. A completed canonical row alone does not prove all follow-ups succeeded. No production backfill is implicit in a code deployment.
 
 The Cocoa regression was checked against the user-supplied 23-page PDF: the new plan has 10 figures and 4 genuine tables; 19 affiliation crops are excluded. All 14 regions rendered with the pinned Zotero runtime, and all five recovered figures were visually inspected. The full copyrighted PDF is not committed as a fixture.
 
 ## AI Pipeline
 
-| Stage                   | Model             | What it does                                                                                      |
-| ----------------------- | ----------------- | ------------------------------------------------------------------------------------------------- |
-| **Summary**           | AI Gateway structured output | Generate only when the source has no summary; language is detected locally                        |
-| **Classification**    | AI Gateway structured output | Tags and keywords after the resource is readable                                                  |
-| **Translation**       | AI Gateway text models      | Admitted persisted Resources → zh-Hant title, summary, and content                                |
-| **Retrieval Index**   | Cloudflare AI Search  | Hybrid keyword and semantic retrieval over enriched corpus documents                              |
+| Stage               | Model                        | What it does                                                               |
+| ------------------- | ---------------------------- | -------------------------------------------------------------------------- |
+| **Summary**         | AI Gateway structured output | Generate only when the source has no summary; language is detected locally |
+| **Classification**  | AI Gateway structured output | Tags and keywords after the resource is readable                           |
+| **Translation**     | AI Gateway text models       | Admitted persisted Resources → zh-Hant title, summary, and content         |
+| **Retrieval Index** | Cloudflare AI Search         | Hybrid keyword and semantic retrieval over enriched corpus documents       |
 
 Summary generation and background classification are separate structured calls. Translation runs in its own Workflow, so localization failure cannot invalidate an already persisted canonical Resource.
 
@@ -139,14 +133,14 @@ Core preserves a nonblank source summary or abstract. When it is missing, the ex
 
 ## Stack
 
-| Layer         | Technology                                        |
-| ------------- | ------------------------------------------------- |
-| Runtime       | Cloudflare Workers (V8 isolates)                  |
-| Orchestration | Cloudflare Workflows                              |
-| Database      | PostgreSQL (via Cloudflare Hyperdrive)            |
-| LLM           | Cloudflare AI Gateway                             |
-| Search        | Cloudflare AI Search                              |
-| Twitter Data  | Kaito API (third-party)                           |
+| Layer         | Technology                             |
+| ------------- | -------------------------------------- |
+| Runtime       | Cloudflare Workers (V8 isolates)       |
+| Orchestration | Cloudflare Workflows                   |
+| Database      | PostgreSQL (via Cloudflare Hyperdrive) |
+| LLM           | Cloudflare AI Gateway                  |
+| Search        | Cloudflare AI Search                   |
+| Twitter Data  | Kaito API (third-party)                |
 
 ## Self-Hosting
 
@@ -243,25 +237,25 @@ src/
 
 Bindings (in `wrangler.jsonc`):
 
-| Binding            | Purpose                                      |
-| ------------------ | -------------------------------------------- |
-| `HYPERDRIVE`       | Hyperdrive connection to your Postgres       |
-| `RESOURCE_PROCESSING_V2_WORKFLOW` | Fetch, parse, classify, and persist a canonical resource |
-| `RESOURCE_TRANSLATION_V2_WORKFLOW` | Translate a persisted resource into zh-Hant |
-| `SEARCH_INDEX_REBUILD_WORKFLOW` | Rebuild and verify the canonical search index |
-| `RESOURCE_SEARCH_SYNC_QUEUE` | Durable AI Search sync after canonical PostgreSQL writes |
-| `R2`               | App-owned uploaded PDF reads              |
-| `IMAGES`           | Stream remote resource images to Cloudflare Images |
-| `AI`               | Workers AI binding for AI Gateway text calls |
-| `AI_SEARCH`        | `newsence-corpus-v6` canonical public corpus |
+| Binding                            | Purpose                                                  |
+| ---------------------------------- | -------------------------------------------------------- |
+| `HYPERDRIVE`                       | Hyperdrive connection to your Postgres                   |
+| `RESOURCE_PROCESSING_V2_WORKFLOW`  | Fetch, parse, classify, and persist a canonical resource |
+| `RESOURCE_TRANSLATION_V2_WORKFLOW` | Translate a persisted resource into zh-Hant              |
+| `SEARCH_INDEX_REBUILD_WORKFLOW`    | Rebuild and verify the canonical search index            |
+| `RESOURCE_SEARCH_SYNC_QUEUE`       | Durable AI Search sync after canonical PostgreSQL writes |
+| `R2`                               | App-owned uploaded PDF reads                             |
+| `IMAGES`                           | Stream remote resource images to Cloudflare Images       |
+| `AI`                               | Workers AI binding for AI Gateway text calls             |
+| `AI_SEARCH`                        | `newsence-corpus-v6` canonical public corpus             |
 
 Secrets (via `wrangler secret put`):
 
-| Variable                       | Required | Description                              |
-| ------------------------------ | -------- | ---------------------------------------- |
-| `KAITO_API_KEY`                | Yes      | Enables Twitter monitoring               |
-| `YOUTUBE_API_KEY`              | Yes      | Enables YouTube channel monitoring       |
-| `OPENALEX_API_KEY`             | Yes      | Enables exact paper metadata enrichment  |
+| Variable           | Required | Description                             |
+| ------------------ | -------- | --------------------------------------- |
+| `KAITO_API_KEY`    | Yes      | Enables Twitter monitoring              |
+| `YOUTUBE_API_KEY`  | Yes      | Enables YouTube channel monitoring      |
+| `OPENALEX_API_KEY` | Yes      | Enables exact paper metadata enrichment |
 
 ### Canonical AI Search v6
 
