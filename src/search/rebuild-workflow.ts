@@ -9,34 +9,22 @@ import { AI_SEARCH_ITEM_PREFIX, RESULT_LIMIT_MAX, resourceIdFromAiSearchItemKey,
 const CANONICAL_CUSTOM_METADATA = [
 	{ field_name: 'published_at', data_type: 'datetime' },
 	{ field_name: 'kind', data_type: 'text' },
+	{ field_name: 'subject_id', data_type: 'text' },
 ] as const satisfies NonNullable<AiSearchConfig['custom_metadata']>;
 
-type SearchIndexName = 'corpus' | 'related';
-
-const CANONICAL_SEARCH_CONFIGS = {
-	corpus: {
-		cache: false,
-		chunk: true,
-		chunk_overlap: 12,
-		chunk_size: 512,
-		embedding_model: '@cf/qwen/qwen3-embedding-0.6b',
-		fusion_method: 'rrf',
-		index_method: { keyword: true, vector: true },
-		indexing_options: { keyword_tokenizer: 'trigram' },
-		max_num_results: RESULT_LIMIT_MAX,
-		score_threshold: 0,
-	},
-	related: {
-		cache: false,
-		chunk: true,
-		chunk_overlap: 0,
-		chunk_size: 4_096,
-		embedding_model: '@cf/qwen/qwen3-embedding-0.6b',
-		index_method: { keyword: false, vector: true },
-		max_num_results: RESULT_LIMIT_MAX,
-		score_threshold: 0,
-	},
-} as const satisfies Record<SearchIndexName, Partial<AiSearchConfig>>;
+const CANONICAL_SEARCH_CONFIG = {
+	cache: false,
+	chunk: true,
+	// Percent of chunk_size; bge-m3 embeds at most 512 tokens, and AI Search counts CJK differently.
+	chunk_overlap: 10,
+	chunk_size: 400,
+	embedding_model: '@cf/baai/bge-m3',
+	fusion_method: 'rrf',
+	index_method: { keyword: true, vector: true },
+	indexing_options: { keyword_tokenizer: 'trigram' },
+	max_num_results: RESULT_LIMIT_MAX,
+	score_threshold: 0,
+} as const satisfies Partial<AiSearchConfig>;
 
 type SearchIndexRebuildPayload = Record<string, never>;
 type SearchIndexStats = {
@@ -129,16 +117,14 @@ async function pruneSearchItemPage(instance: AiSearchInstance, db: NodePgDatabas
 	return staleItems.length;
 }
 
-async function reconcileSearchItems(env: CoreEnv, instance: AiSearchInstance, index: SearchIndexName, step: WorkflowStep) {
+async function reconcileSearchItems(env: CoreEnv, instance: AiSearchInstance, step: WorkflowStep) {
 	let deleted = 0;
 	for (let pass = 0; pass < REINDEX_MAX_PRUNE_PASSES; pass++) {
-		const pageCount = await step.do(`count-${index}-search-item-pages-${pass}`, SHORT_STEP_OPTIONS, () =>
-			loadSearchItemPageCount(instance),
-		);
+		const pageCount = await step.do(`count-search-item-pages-${pass}`, SHORT_STEP_OPTIONS, () => loadSearchItemPageCount(instance));
 		let passDeleted = 0;
 		for (let lastPage = pageCount; lastPage >= 1; lastPage -= REINDEX_PRUNE_PAGES_PER_STEP) {
 			const firstPage = Math.max(1, lastPage - REINDEX_PRUNE_PAGES_PER_STEP + 1);
-			passDeleted += await step.do(`prune-${index}-search-items-${pass}-${firstPage}-${lastPage}`, BATCH_STEP_OPTIONS, () =>
+			passDeleted += await step.do(`prune-search-items-${pass}-${firstPage}-${lastPage}`, BATCH_STEP_OPTIONS, () =>
 				withCoreDb(env, async (db) => {
 					let deleted = 0;
 					for (let page = lastPage; page >= firstPage; page--) {
@@ -151,7 +137,7 @@ async function reconcileSearchItems(env: CoreEnv, instance: AiSearchInstance, in
 		deleted += passDeleted;
 		if (passDeleted === 0) return { deleted, passes: pass + 1 };
 	}
-	throw new Error(`${index} AI Search stale-item reconciliation did not converge after ${REINDEX_MAX_PRUNE_PASSES} passes`);
+	throw new Error(`AI Search stale-item reconciliation did not converge after ${REINDEX_MAX_PRUNE_PASSES} passes`);
 }
 
 function normalizedCustomMetadata(
@@ -162,9 +148,9 @@ function normalizedCustomMetadata(
 		.sort((left, right) => left.field_name.localeCompare(right.field_name));
 }
 
-function canonicalSearchInstanceConfigMatches(info: AiSearchInstanceInfo, index: SearchIndexName): boolean {
-	const expected = CANONICAL_SEARCH_CONFIGS[index];
-	if (
+function canonicalSearchInstanceConfigMatches(info: AiSearchInstanceInfo): boolean {
+	const expected = CANONICAL_SEARCH_CONFIG;
+	return !(
 		info.cache !== expected.cache ||
 		info.chunk !== expected.chunk ||
 		info.chunk_size !== expected.chunk_size ||
@@ -172,33 +158,24 @@ function canonicalSearchInstanceConfigMatches(info: AiSearchInstanceInfo, index:
 		info.embedding_model !== expected.embedding_model ||
 		info.index_method?.vector !== expected.index_method.vector ||
 		info.index_method?.keyword !== expected.index_method.keyword ||
+		info.fusion_method !== expected.fusion_method ||
+		info.indexing_options?.keyword_tokenizer !== expected.indexing_options.keyword_tokenizer ||
 		info.max_num_results !== expected.max_num_results ||
 		info.score_threshold !== expected.score_threshold ||
 		JSON.stringify(normalizedCustomMetadata(info.custom_metadata)) !== JSON.stringify(normalizedCustomMetadata(CANONICAL_CUSTOM_METADATA))
-	) {
-		return false;
-	}
-	const corpus = CANONICAL_SEARCH_CONFIGS.corpus;
-	return (
-		index === 'related' ||
-		(info.fusion_method === corpus.fusion_method && info.indexing_options?.keyword_tokenizer === corpus.indexing_options.keyword_tokenizer)
 	);
 }
 
-async function ensureCanonicalSearchInstanceConfig(instance: AiSearchInstance, index: SearchIndexName): Promise<'unchanged' | 'updated'> {
-	if (canonicalSearchInstanceConfigMatches(await instance.info(), index)) return 'unchanged';
+async function ensureCanonicalSearchInstanceConfig(instance: AiSearchInstance): Promise<'unchanged' | 'updated'> {
+	if (canonicalSearchInstanceConfigMatches(await instance.info())) return 'unchanged';
 	await instance.update({
-		...CANONICAL_SEARCH_CONFIGS[index],
+		...CANONICAL_SEARCH_CONFIG,
 		custom_metadata: [...CANONICAL_CUSTOM_METADATA],
 	});
 	return 'updated';
 }
 
-async function observeSearchIndex(
-	instance: AiSearchInstance,
-	index: SearchIndexName,
-	db: NodePgDatabase,
-): Promise<SearchIndexStats & { configReady: boolean }> {
+async function observeSearchIndex(instance: AiSearchInstance, db: NodePgDatabase): Promise<SearchIndexStats & { configReady: boolean }> {
 	const info = await instance.info();
 	const stats = await instance.stats();
 	const listed = await instance.items.list({
@@ -211,7 +188,7 @@ async function observeSearchIndex(
 	if (indexedItems === undefined) throw new Error('AI Search readiness listing did not return total_count');
 	return {
 		completed: stats.completed ?? 0,
-		configReady: canonicalSearchInstanceConfigMatches(info, index),
+		configReady: canonicalSearchInstanceConfigMatches(info),
 		error: stats.error ?? 0,
 		expectedItems: await loadCorpusCount(db),
 		indexedItems,
@@ -235,18 +212,18 @@ async function retryFailedSearchItems(instance: AiSearchInstance): Promise<numbe
 	return items.length;
 }
 
-async function waitForSearchIndex(env: CoreEnv, instance: AiSearchInstance, index: SearchIndexName, step: WorkflowStep) {
+async function waitForSearchIndex(env: CoreEnv, instance: AiSearchInstance, step: WorkflowStep) {
 	let last: (SearchIndexStats & { configReady: boolean }) | null = null;
 	for (let attempt = 0; attempt < REINDEX_READY_POLL_ATTEMPTS; attempt++) {
-		last = await step.do(`observe-${index}-search-index-${attempt}`, SHORT_STEP_OPTIONS, () =>
-			withCoreDb(env, (db) => observeSearchIndex(instance, index, db)),
+		last = await step.do(`observe-search-index-${attempt}`, SHORT_STEP_OPTIONS, () =>
+			withCoreDb(env, (db) => observeSearchIndex(instance, db)),
 		);
 		if (last.error > 0) {
-			const retried = await step.do(`retry-${index}-search-errors-${attempt}`, BATCH_STEP_OPTIONS, () => retryFailedSearchItems(instance));
-			if (retried === 0) throw new Error(`${index} AI Search reported errors without retryable Resource items: ${JSON.stringify(last)}`);
+			const retried = await step.do(`retry-search-errors-${attempt}`, BATCH_STEP_OPTIONS, () => retryFailedSearchItems(instance));
+			if (retried === 0) throw new Error(`AI Search reported errors without retryable Resource items: ${JSON.stringify(last)}`);
 		}
 		if (last.skipped > 0 || last.outdated > 0) {
-			throw new Error(`${index} AI Search finished with terminal items: ${JSON.stringify(last)}`);
+			throw new Error(`AI Search finished with terminal items: ${JSON.stringify(last)}`);
 		}
 		if (
 			last.configReady &&
@@ -259,19 +236,19 @@ async function waitForSearchIndex(env: CoreEnv, instance: AiSearchInstance, inde
 			return last;
 		}
 		if (attempt < REINDEX_READY_POLL_ATTEMPTS - 1) {
-			await step.sleep(`wait-${index}-search-index-${attempt}`, REINDEX_READY_POLL_INTERVAL);
+			await step.sleep(`wait-search-index-${attempt}`, REINDEX_READY_POLL_INTERVAL);
 		}
 	}
-	throw new Error(`${index} AI Search index did not converge: ${JSON.stringify(last)}`);
+	throw new Error(`AI Search index did not converge: ${JSON.stringify(last)}`);
 }
 
+/** Configures the corpus index, reloads every eligible Resource, prunes stale items and waits for convergence. */
 export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, SearchIndexRebuildPayload> {
 	async run(event: WorkflowEvent<SearchIndexRebuildPayload>, step: WorkflowStep) {
 		const startedAt = event.timestamp.toISOString();
-		const instanceConfig = await step.do('ensure-search-configs', SHORT_STEP_OPTIONS, async () => ({
-			corpus: await ensureCanonicalSearchInstanceConfig(this.env.AI_SEARCH, 'corpus'),
-			related: await ensureCanonicalSearchInstanceConfig(this.env.RELATED_SEARCH, 'related'),
-		}));
+		const instanceConfig = await step.do('ensure-search-config', SHORT_STEP_OPTIONS, () =>
+			ensureCanonicalSearchInstanceConfig(this.env.AI_SEARCH),
+		);
 		// The sync queue owns uploads: it reloads each Resource, retries, and wins any race with live writes.
 		let cursor: string | null = null;
 		let enqueued = 0;
@@ -290,14 +267,8 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 			pages++;
 		}
 
-		const reconciliation = {
-			corpus: await reconcileSearchItems(this.env, this.env.AI_SEARCH, 'corpus', step),
-			related: await reconcileSearchItems(this.env, this.env.RELATED_SEARCH, 'related', step),
-		};
-		const readiness = {
-			corpus: await waitForSearchIndex(this.env, this.env.AI_SEARCH, 'corpus', step),
-			related: await waitForSearchIndex(this.env, this.env.RELATED_SEARCH, 'related', step),
-		};
+		const reconciliation = await reconcileSearchItems(this.env, this.env.AI_SEARCH, step);
+		const readiness = await waitForSearchIndex(this.env, this.env.AI_SEARCH, step);
 		return {
 			mode: 'rebuild' as const,
 			startedAt,

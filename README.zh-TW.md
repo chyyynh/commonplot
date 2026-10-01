@@ -196,7 +196,7 @@ Bindings（在 `wrangler.jsonc` 裡設定）：
 | `R2`               | 讀取 app-owned uploaded blob，供 PDF extraction 使用 |
 | `IMAGES`           | 將遠端 resource 圖片串流上傳至 Cloudflare Images |
 | `AI`               | Workers AI binding（AI Gateway 文字呼叫）   |
-| `AI_SEARCH`        | `newsence-corpus-v6` canonical public corpus |
+| `AI_SEARCH`        | `newsence-corpus-v7` canonical public corpus |
 
 Secrets（透過 `wrangler secret put` 設定）：
 
@@ -219,11 +219,11 @@ Curated source 的 `Source.monitorKind` 只保存 `feed | twitter` 這個 cron
 路由；feed entry 進入正常 resource 偵測後，才選擇 LessWrong 或 YouTube
 adapter。
 
-AI Search 沿用 `newsence-corpus-v6`。PostgreSQL 是 canonical source，Core
+AI Search 使用 `newsence-corpus-v7`（bge-m3），公開搜尋與相關 Resource 共用同一個 index。PostgreSQL 是 canonical source，Core
 只把 keyed search document 同步進 AI Search；rebuild 的 durable 狀態、重試、
 錯誤與 output 直接使用 Cloudflare Workflow。實體 Workflow 是
 `newsence-search-index-rebuild`，class 是 `SearchIndexRebuildWorkflow`；
-目前帶有 serving-index 版本的 runner 是 `search-index-rebuild-v6-native-v1`。
+目前帶有 serving-index 版本的 runner 是 `search-index-rebuild-v7-v2`。
 
 ## 新增擷取 adapter
 
