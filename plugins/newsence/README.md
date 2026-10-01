@@ -4,8 +4,8 @@ An MCP host (ChatGPT, Claude, or any client with OAuth and MCP Apps support)
 connects to the user's Newsence library. It shows the reads it recommends as
 cards, and the user presses **Save** to keep one; saves land in the user's
 library and **public profile**, the same as saving a link in Newsence. The
-model never saves on its own. It can also search the library and read saved
-items to answer from them.
+model never saves on its own. It can also list the user's saves and read them
+to answer from them.
 
 ## Connect
 
@@ -35,13 +35,13 @@ For a dependable result, users can:
   "When you recommend articles or videos, show them with Newsence."
 
 Library questions such as "find the RAG evaluation paper I saved" or "what did
-I save this week?" use `search_library` and then `read_resource`.
+I save this week?" use `list_saves` and then `read_resource`.
 
 ## How it works
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/mcp` | `show_reading`, `search_library`, `read_resource`, `list_latest_resources` (model); `save_urls` and `get_save_status` (card only) |
+| `POST /api/mcp` | `show_reading`, `list_saves`, `read_resource`, `list_latest_resources` (model); `save_urls` and `get_save_status` (card only) |
 | `/.well-known/oauth-protected-resource/api/mcp` | Resource discovery |
 | `/.well-known/oauth-authorization-server/api/auth` | Authorization server discovery |
 | `/api/auth/oauth2/*` | Registration, authorization (PKCE S256), token, refresh |
@@ -49,8 +49,8 @@ I save this week?" use `search_library` and then `read_resource`.
 
 - `show_reading` takes 1–10 URLs with the model's title and one-line reason,
   and returns them with any earlier saves so those cards show as saved.
-- `search_library` searches or lists the user's library and shows the hits as
-  saved cards; `read_resource` reads a library item or public resource by id.
+- `list_saves` lists the user's profile saves in compact pages for the model;
+  `read_resource` reads a save or public resource by id.
   Tool schemas and limits are in the developer docs (`mcp.md`).
 - `save_urls` takes 1–10 HTTP(S) URLs and saves them for the token's user; it
   never accepts a user id. `ready` is saved and readable; `accepted` is received
