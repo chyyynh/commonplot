@@ -25,7 +25,7 @@ export const ResourceDraftTargetSchema = z.strictObject({
 
 const StoredBlobTargetSchema = z.strictObject({
 	kind: z.literal('storedBlob'),
-	resourceId: z.uuid(),
+	objectId: z.uuid(),
 });
 
 const ReacquireTargetSchema = z.strictObject({

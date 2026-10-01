@@ -33,11 +33,11 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		try {
 			if (target.kind === 'storedBlob') {
 				const current = await step.do('start-owned-pdf-attempt-v1', () =>
-					this.env.APP.verifyStoredBlobProcessing(target.resourceId, event.instanceId),
+					this.env.APP.verifyStoredBlobProcessing(target.objectId, event.instanceId),
 				);
 				if (!current) {
 					await task.report('superseded', { stage: 'acquiring', status: 'superseded' });
-					return { resourceId: target.resourceId };
+					return {};
 				}
 			}
 			// An uploaded PDF that names a paper publishes that paper, read from the upload.
@@ -47,7 +47,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			// Acquisition runs beside the start gate; a task that ended meanwhile discards its result and its failure.
 			acquisition.catch(() => {});
 			if (!(await task.start(target.kind === 'storedBlob' ? 'parsing' : 'acquiring')))
-				return target.kind === 'draft' ? {} : { resourceId: target.resourceId };
+				return target.kind === 'reacquire' ? { resourceId: target.resourceId } : {};
 			const { resource, uploadedPaper } = await acquisition;
 			const plan = await planAttempt(target, uploadedPaper, event.instanceId, (resourceId) =>
 				step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () =>
@@ -171,16 +171,17 @@ async function loadAcquisitionInput(env: CoreEnv, step: WorkflowStep, target: Re
 		}
 		case 'storedBlob': {
 			const pdf = await step.do('load-stored-pdf-input-v2', STORAGE_STEP, async () =>
-				withCoreDb(env, (db) => loadStoredPdf(db, target.resourceId)),
+				withCoreDb(env, (db) => loadStoredPdf(db, target.objectId)),
 			);
-			return { kind: 'storedPdf', resourceId: target.resourceId, pdf };
+			return { kind: 'storedPdf', objectId: target.objectId, pdf };
 		}
 	}
 }
 
 /**
  * Where this attempt writes and which save it completes. Reacquiring an existing Resource claims a fencing token, so it
- * commits only if no newer attempt has committed first; an uploaded paper is a draft of the public paper.
+ * commits only if no newer attempt has committed first. An upload runs one attempt at a time: an identified one is a draft
+ * of its public paper, and any other stays the uploader's private file.
  */
 async function planAttempt(
 	target: ResourceProcessingTarget,
@@ -204,14 +205,10 @@ async function planAttempt(
 				},
 				saveTarget: null,
 			};
-		case 'storedBlob': {
-			const ownedBlobId = target.resourceId;
+		case 'storedBlob':
 			return {
-				persistence: uploadedPaper
-					? { kind: 'draft', ownedBlobId }
-					: { kind: 'existing', resourceId: ownedBlobId, fence: await claimFence(ownedBlobId), ownedBlobId },
-				saveTarget: { kind: 'userFileResult', fileResourceId: ownedBlobId, workflowId: instanceId },
+				persistence: uploadedPaper ? { kind: 'draft', uploadId: target.objectId } : { kind: 'upload', objectId: target.objectId },
+				saveTarget: { kind: 'userFileResult', objectId: target.objectId, workflowId: instanceId },
 			};
-		}
 	}
 }

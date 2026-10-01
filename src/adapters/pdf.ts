@@ -74,12 +74,12 @@ export async function stageStoredPdfAcquisition(
 		stepKey: 'stored',
 		pdfStorageKey: resource.storageKey,
 		inputContentHash: resource.contentHash,
-		sourceLabel: `Stored PDF ${target.resourceId}`,
+		sourceLabel: `Stored PDF ${target.objectId}`,
 		cropUrlPrefix: storedPdfCropUrlPrefix(resource.contentHash),
 	});
 	// The first page and the PDF's own properties are where a paper prints its DOI or arXiv id.
 	const printedIdentity = paperIdentityFromText(parsed.paperIdentifierText);
-	if (!parsed.markdown) throw new NonRetryableError(`Stored PDF ${target.resourceId} has no usable text; OCR is required`);
+	if (!parsed.markdown) throw new NonRetryableError(`Stored PDF ${target.objectId} has no usable text; OCR is required`);
 	return {
 		kind: 'file',
 		resourceIdentifiers: printedIdentity ? paperIdentifiersFromIdentity(printedIdentity) : [],

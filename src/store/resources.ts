@@ -21,10 +21,12 @@ type HostedResource = NormalizedResource & HostedPreview;
  * reacquired under a fencing token from `claimAcquisitionFence`: only a token newer than the
  * last committed one may replace its original, so an older attempt that finishes later loses.
  */
-export type ResourcePersistenceTarget = { ownedBlobId?: string } & (
-	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation }>
+export type ResourcePersistenceTarget =
+	/** `uploadId` is the stored object of an upload that identified this draft. */
+	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation; uploadId?: string }>
 	| Readonly<{ kind: 'existing'; resourceId: string; fence: number; force?: boolean }>
-);
+	/** An unidentified upload's private file, which shares its stored object's id. */
+	| Readonly<{ kind: 'upload'; objectId: string }>;
 
 /** A reacquired original this much shorter than the stored one is kept out unless forced (error or challenge pages). */
 const MIN_REACQUIRED_CONTENT_RATIO = 0.5;
@@ -89,6 +91,12 @@ export async function findResourcesByUrls(db: NodePgDatabase, urls: readonly Res
 }
 
 async function lockResource(db: NodePgDatabase, resourceId: string): Promise<StoredResource> {
+	const resource = await lockResourceIfAny(db, resourceId);
+	if (!resource) throw new Error(`Resource ${resourceId} was not found`);
+	return resource;
+}
+
+async function lockResourceIfAny(db: NodePgDatabase, resourceId: string): Promise<StoredResource | null> {
 	const result = await db.execute<StoredResource>(sql`
 		SELECT resource.id::text, resource.scope, resource.kind, resource.url,
 		       resource.original_lang AS "originalLang", resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform",
@@ -102,9 +110,7 @@ async function lockResource(db: NodePgDatabase, resourceId: string): Promise<Sto
 		WHERE resource.id = ${resourceId}::uuid
 		FOR UPDATE OF resource
 	`);
-	const resource = result.rows[0];
-	if (!resource) throw new Error(`Resource ${resourceId} was not found`);
-	return resource;
+	return result.rows[0] ?? null;
 }
 
 const NO_PREVIEW = { url: null, width: null, height: null } as const;
@@ -153,6 +159,7 @@ async function writeCanonicalResource(
 	existing: boolean,
 	subjectResourceId: string | null,
 	fence: number | null,
+	privateObjectId: string | null,
 ) {
 	const columns = sql`
 		kind, resource_platform, source_name, url, normalized_url, file_type, pdf_hash, original_lang, published_date,
@@ -175,7 +182,8 @@ async function writeCanonicalResource(
 		), written_resource AS (
 			${
 				!existing
-					? sql`INSERT INTO resources (id, scope, ${columns}) VALUES (${resourceId}::uuid, 'corpus', ${values})`
+					? sql`INSERT INTO resources (id, scope, stored_object_id, ${columns})
+					      VALUES (${resourceId}::uuid, ${privateObjectId ? 'private' : 'corpus'}, ${privateObjectId}::uuid, ${values})`
 					: sql`UPDATE resources SET (${columns}) = (${values}), committed_seq = COALESCE(${fence}::integer, committed_seq)
 					      WHERE id = ${resourceId}::uuid`
 			}
@@ -299,9 +307,10 @@ export async function persistResolvedResource(
 			await tx.execute(sql`SELECT pg_advisory_xact_lock(${STORED_BLOB_LOCK_NAMESPACE}, hashtext(${blobKey(resource.pdfHash)}))`);
 			if (!(await blobExists(resource.pdfHash))) throw new NonRetryableError('Stored PDF was purged before its Resource committed');
 		}
-		if (target.ownedBlobId) {
+		const uploadId = target.kind === 'upload' ? target.objectId : target.kind === 'draft' ? target.uploadId : undefined;
+		if (uploadId) {
 			const owned = await tx.execute(
-				sql`SELECT object.id FROM stored_objects object JOIN resources resource ON resource.stored_object_id = object.id WHERE resource.id = ${target.ownedBlobId}::uuid AND object.user_resource_id IS NOT NULL FOR UPDATE OF object`,
+				sql`SELECT id FROM stored_objects WHERE id = ${uploadId}::uuid AND status = 'ready' AND user_resource_id IS NOT NULL FOR UPDATE`,
 			);
 			if (!owned.rows.length) throw new NonRetryableError('Uploaded PDF ownership was deleted');
 		}
@@ -314,9 +323,12 @@ export async function persistResolvedResource(
 		// Each candidate is already committed; another attempt finds the same ones.
 		if (target.kind === 'draft' && (rootCandidates.length > 1 || rootCandidates[0]?.scope === 'private'))
 			throw new NonRetryableError('Resolved identity is ambiguous or belongs to a private Resource');
-		const existingId = target.kind === 'existing' ? target.resourceId : rootCandidates[0]?.id;
-		const root = existingId ? await lockResource(tx, existingId) : null;
-		const resourceId = root?.id ?? crypto.randomUUID();
+		// A private file that an earlier attempt removed, when its upload became a paper, is written again.
+		const existingId = target.kind === 'existing' ? target.resourceId : target.kind === 'upload' ? target.objectId : rootCandidates[0]?.id;
+		const root = existingId ? await lockResourceIfAny(tx, existingId) : null;
+		if (target.kind === 'existing' && !root) throw new Error(`Resource ${target.resourceId} was not found`);
+		if (target.kind === 'upload' && root && root.scope !== 'private') throw new NonRetryableError('Uploaded file Resource is not private');
+		const resourceId = root?.id ?? existingId ?? crypto.randomUUID();
 		const fence = target.kind === 'existing' ? target.fence : null;
 		if (root && fence !== null && root.committedSeq > fence) {
 			console.info({
@@ -332,10 +344,11 @@ export async function persistResolvedResource(
 		if (root && fence !== null && root.committedSeq === fence) return committed(root, 'written');
 		// An uploaded copy of a paper also replaces a stored original it far outgrows, such as an abstract.
 		const outcome: PersistOutcome =
+			target.kind === 'upload' ||
 			!root?.hasOriginal ||
 			(target.kind === 'existing' && (target.force || !isDegradedOriginal(resource.content, root))) ||
 			(target.kind === 'draft' &&
-				target.ownedBlobId !== undefined &&
+				target.uploadId !== undefined &&
 				resource.content.length * MIN_REACQUIRED_CONTENT_RATIO > root.originalChars)
 				? 'written'
 				: 'kept';
@@ -343,7 +356,15 @@ export async function persistResolvedResource(
 			const subject = subjectCandidates.length === 1 && subjectCandidates[0]?.scope === 'corpus' ? subjectCandidates[0] : null;
 			const subjectResourceId =
 				subject && subject.id !== resourceId && (await lockResource(tx, subject.id)).hasOriginal ? subject.id : null;
-			await writeCanonicalResource(tx, resourceId, resource, root !== null, subjectResourceId, fence);
+			await writeCanonicalResource(
+				tx,
+				resourceId,
+				resource,
+				root !== null,
+				subjectResourceId,
+				fence,
+				target.kind === 'upload' ? target.objectId : null,
+			);
 		} else {
 			if (target.kind === 'existing')
 				console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });
@@ -397,37 +418,33 @@ export async function loadReacquisitionSource(db: NodePgDatabase, resourceId: st
 type StoredPdfRow = {
 	content_hash: string;
 	file_name: string | null;
-	original_lang: string;
-	source: string;
 	storage_key: string;
 };
 
-/** An owned private PDF upload, as uploaded: an unidentified result is titled by its file name again. */
-export async function loadStoredPdf(db: NodePgDatabase, resourceId: string): Promise<StoredPdf> {
+/**
+ * An owned PDF upload, as uploaded. It is read from its stored object alone: an upload that became its paper keeps no
+ * private file, and an unidentified result is titled by its file name again.
+ */
+export async function loadStoredPdf(db: NodePgDatabase, objectId: string): Promise<StoredPdf> {
 	const result = await db.execute<StoredPdfRow>(sql`
-		SELECT
-			object.content_hash,
-			object.file_name,
-			resource.original_lang,
-			COALESCE(resource.source_name, 'File') AS source,
-			object.key AS storage_key
-		FROM resources resource
-		JOIN stored_objects object ON object.id = resource.stored_object_id AND object.status = 'ready' AND object.store = 'r2'
-		WHERE resource.id = ${resourceId}::uuid
-		  AND resource.scope = 'private'
-		  AND resource.kind = 'file'
-		  AND resource.file_type = ${PDF_MIME}
+		SELECT object.content_hash, object.file_name, object.key AS storage_key
+		FROM stored_objects object
+		WHERE object.id = ${objectId}::uuid
+		  AND object.status = 'ready'
+		  AND object.store = 'r2'
+		  AND object.media_type = ${PDF_MIME}
 		  AND object.content_hash IS NOT NULL
 		  AND object.user_resource_id IS NOT NULL
 	`);
 	const row = result.rows[0];
-	if (!row) throw new NonRetryableError(`Failed to fetch stored PDF ${resourceId}: not found or not an owned private blob`);
+	if (!row) throw new NonRetryableError(`Failed to fetch stored PDF ${objectId}: not found or not an owned upload`);
 	// Web titles a new upload by its file name the same way.
 	const fileName = row.file_name?.trim() || 'PDF';
 	return {
 		contentHash: row.content_hash,
-		originalLang: row.original_lang,
-		source: row.source,
+		// Core analysis replaces this BCP-47 undetermined marker, as for a new upload.
+		originalLang: 'und',
+		source: 'File',
 		storageKey: row.storage_key,
 		title: fileName.replace(/\.[a-z0-9]{1,8}$/i, '') || fileName,
 	};

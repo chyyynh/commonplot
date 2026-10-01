@@ -62,5 +62,5 @@ export type AcquisitionInput = Readonly<
 			identifiers?: ResourceIdentifier[];
 			sourceHints?: SourceHints;
 	  }
-	| { kind: 'storedPdf'; resourceId: string; pdf: StoredPdf }
+	| { kind: 'storedPdf'; objectId: string; pdf: StoredPdf }
 >;

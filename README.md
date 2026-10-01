@@ -114,7 +114,7 @@ Run `pnpm lint` and `pnpm run typecheck` from this workspace. Verify acquisition
 
 Deploy the Web media/reading changes and the Core Worker **with its updated Zotero container image** before admitting new processing. A Worker-only deployment with `--containers-rollout=none` cannot activate the new batch endpoint.
 
-After deployment, reprocess an uploaded PDF through Web's `DomainRpc.admitStoredBlobProcessing({ resourceId: <raw-file-resource-id>, retry: true })`; Web validates ownership and admits the Core job. Do not pass its canonical paper ID. Use Core's `resyncResource` for a resource with an external URL. Inspect Workflow status, the crop manifest and its quality summary, the persisted translations, and owner/non-owner reads. A completed canonical row alone does not prove all follow-ups succeeded. No production backfill is implicit in a code deployment.
+After deployment, reprocess an uploaded PDF through Web's `DomainRpc.admitStoredBlobProcessing({ objectId: <stored-object-id>, retry: true })`; Web validates ownership and admits the Core job. Do not pass its canonical paper ID. Use Core's `resyncResource` for a resource with an external URL. Inspect Workflow status, the crop manifest and its quality summary, the persisted translations, and owner/non-owner reads. A completed canonical row alone does not prove all follow-ups succeeded. No production backfill is implicit in a code deployment.
 
 The Cocoa regression was checked against the user-supplied 23-page PDF: the new plan has 10 figures and 4 genuine tables; 19 affiliation crops are excluded. All 14 regions rendered with the pinned Zotero runtime, and all five recovered figures were visually inspected. The full copyrighted PDF is not committed as a fixture.
 
