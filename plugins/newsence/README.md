@@ -59,7 +59,7 @@ I save this week?" use `list_saves` and then `read_resource`.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/mcp` | `show_reading`, `list_saves`, `read_resource`, `list_latest_resources` (model); `save_urls` and `get_save_status` (card only) |
+| `POST /api/mcp` | `show_reading`, `list_saves`, `read_resource`, `list_latest_resources` (model); `save_urls`, `get_save_status` and `open_reader` (card only) |
 | `/.well-known/oauth-protected-resource/api/mcp` | Resource discovery |
 | `/.well-known/oauth-authorization-server/api/auth` | Authorization server discovery |
 | `/api/auth/oauth2/*` | Registration, authorization (PKCE S256), token, refresh |
@@ -73,12 +73,21 @@ I save this week?" use `list_saves` and then `read_resource`.
 - `save_urls` takes 1–10 HTTP(S) URLs and saves them for the token's user; it
   never accepts a user id. `ready` is saved and readable; `accepted` is received
   and prepared in the background by Core.
-- The card (`ui://newsence/reading-list-v4.html`) is a standard MCP Apps view:
+- The card (`ui://newsence/reading-list-v5.html`) is a standard MCP Apps view:
   React, `@modelcontextprotocol/ext-apps` and `@openai/apps-sdk-ui`, in
   `web-tanstack/src/server/plugin/widget/`. The `newsence-widget` plugin in
   `vite.config.ts` bundles it into the resource HTML. Its layout follows the
   chat source cards. It polls `get_save_status` a few times while saves are
   pending. Change its URI when the UI contract changes.
+- **Read** on a saved card opens a full-screen reader in hosts that allow it
+  (others open the Newsence page). `open_reader` returns the same resource
+  projection as `/p/{id}`, and the view renders it with the app's
+  `ResourceBody`; the widget build swaps the app's video player for a native
+  one. The reader tells the model which item is open, so "summarize this"
+  works. Images and math fonts from other origins stay blocked by the card's
+  CSP and are hidden.
+- Below the cards, **Summarize**, **Compare** and **Find related** send a
+  prepared message listing the cards, in hosts that accept view messages.
 - Every call requires OAuth, including `show_reading` and the public feed: hosts such as Claude
   decide whether to connect with OAuth from the first 401, so anonymous access
   would leave Save unusable there.
