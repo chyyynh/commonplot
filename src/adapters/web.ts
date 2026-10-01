@@ -6,7 +6,6 @@ import { toHtml } from 'hast-util-to-html';
 import { defaultHandlers } from 'hast-util-to-mdast';
 import { toText } from 'hast-util-to-text';
 import { DOMParser } from 'linkedom';
-import stripIndent from 'strip-indent';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { normalizedExternalMediaUrl, normalizedResourceImageUrl } from '../contracts/image-mapping';
 import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
@@ -40,12 +39,10 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 	// linkedom does not imply the <head>/<body> that HTML lets pages omit, and Defuddle
 	// needs <body>. Serialize the spec parser's tree so linkedom reads the implied structure.
 	const document = new DOMParser().parseFromString(toHtml(fromHtml(html)), 'text/html');
-	const summary = sourceHtmlSummary(document);
-	// Linkedom resolves baseURI from <base>; Defuddle uses it for relative links and images.
+	// Linkedom resolves baseURI from <base>; Defuddle resolves relative links and images against it.
 	const base = document.createElement('base', {});
 	base.setAttribute('href', url);
 	document.head.prepend(base);
-	const image = document.querySelector('meta[property="og:image"], meta[name="twitter:image"]')?.getAttribute('content');
 	// A <br> separates lines but leaves no text, so a byline like "by Name<br>Date" would read as one string.
 	for (const br of document.querySelectorAll('br')) if (!br.closest('pre')) br.before('\n');
 	// Defuddle reads language-*/brush-* classes and data-language, but not SyntaxHighlighter's "brush: js;".
@@ -111,11 +108,10 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 	const content = stringifyMarkdown(
 		htmlToMdast(articleHtml, {
 			handlers: {
-				// linkedom keeps the newline after <pre> that HTML parsing drops, and
-				// publisher templates indent whole blocks; neither is the author's code.
+				// linkedom keeps the newline after <pre> that HTML parsing drops.
 				pre(state, node) {
 					const code = defaultHandlers.pre(state, node);
-					code.value = stripIndent(code.value.replace(/^\n+/, ''));
+					code.value = code.value.replace(/^\n+/, '');
 					return code;
 				},
 				// Markdown has no caption, so a captioned figure stays an HTML block around
@@ -153,49 +149,13 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 		source: siteName,
 		originalLang: article.language.trim() || 'und',
 		publishedDate: article.published.trim() || null,
-		summary,
+		// Defuddle reads publisher metadata only, never a body excerpt.
+		summary: article.description.trim() || null,
 		creators: authors.map((literal) => ({ role: 'author', literal })),
 		kindMetadata: { siteName },
-		previewImageUrl: normalizedResourceImageUrl(image, url),
+		previewImageUrl: normalizedResourceImageUrl(article.image, url),
 		subjectUrl: null,
 	} satisfies AcquiredResource;
-}
-
-// The extractor's description may be a generated body excerpt. Only publisher
-// metadata counts as a source summary; otherwise feed hints or analysis supply it.
-function sourceHtmlSummary(document: ReturnType<DOMParser['parseFromString']>): string | null {
-	let metaSummary: string | null = null;
-	let schemaSummary: string | null = null;
-	function schemaDescription(value: unknown): string | null {
-		if (Array.isArray(value)) return value.map(schemaDescription).find(Boolean) ?? null;
-		if (!value || typeof value !== 'object') return null;
-		const entry = value as Record<string, unknown>;
-		const types = Array.isArray(entry['@type']) ? entry['@type'] : [entry['@type']];
-		if (types.some((type) => typeof type === 'string' && /(?:Article|BlogPosting|Report|Review|WebPage)$/.test(type))) {
-			if (typeof entry.description === 'string' && entry.description.trim()) return entry.description.trim();
-		}
-		return schemaDescription(entry['@graph']);
-	}
-	for (const node of document.querySelectorAll('meta, script[type="application/ld+json"]')) {
-		if (node.closest('template, noscript')) continue;
-		if (node.localName === 'meta') {
-			const names = ['name', 'property', 'itemprop'].map((name) => node.getAttribute(name));
-			if (
-				names.some(
-					(name) => typeof name === 'string' && /^(?:description|og:description|twitter:description|parsely-description)$/i.test(name),
-				)
-			) {
-				metaSummary ??= node.getAttribute('content')?.trim() || null;
-			}
-		} else {
-			try {
-				schemaSummary ??= schemaDescription(JSON.parse(node.textContent ?? ''));
-			} catch {
-				// Malformed optional metadata does not make the article unreadable.
-			}
-		}
-	}
-	return schemaSummary ?? metaSummary;
 }
 
 type WebAcquisition =
@@ -260,7 +220,7 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 
 export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { url: string }) {
 	const result = await step.do(
-		'acquire-web-v15',
+		'acquire-web-v16',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 		async () => {
 			const acquired = await acquireWebResource(env, input.url);

@@ -101,9 +101,6 @@ importers:
       pg:
         specifier: ^8.23.0
         version: 8.23.0
-      strip-indent:
-        specifier: 4.1.1
-        version: 4.1.1
       structured-document-text:
         specifier: github:zotero/structured-document-text#7963c11faac4595be3bbe86b7574704a22c67bed
         version: https://codeload.github.com/zotero/structured-document-text/tar.gz/7963c11faac4595be3bbe86b7574704a22c67bed
@@ -1645,10 +1642,6 @@ packages:
 
   stringify-entities@4.0.4:
     resolution: {integrity: sha512-IwfBptatlO+QCJUo19AqvrPNqlVMpW9YEL2LIVY+Rpv2qsjCGxaDLNRgeGsQWJhfItebuJhsGSLjaBbNSQ+ieg==}
-
-  strip-indent@4.1.1:
-    resolution: {integrity: sha512-SlyRoSkdh1dYP0PzclLE7r0M9sgbFKKMFXpFRUMNuKhQSbC6VQIGzq3E0qsfvGJaUFJPGv6Ws1NZ/haTAjfbMA==}
-    engines: {node: '>=12'}
 
   strnum@2.4.2:
     resolution: {integrity: sha512-rDG3Ah4TV0k1hWvLSzkZtMmLN9+eS+h3knq4MP6A42Y3Yh5qGNnOUs1jJkoSr8FG5dsL28c7KgkIBzSEykqtuw==}
@@ -3205,8 +3198,6 @@ snapshots:
     dependencies:
       character-entities-html4: 2.1.0
       character-entities-legacy: 3.0.0
-
-  strip-indent@4.1.1: {}
 
   strnum@2.4.2:
     dependencies:
