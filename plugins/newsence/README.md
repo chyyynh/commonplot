@@ -73,7 +73,7 @@ I save this week?" use `list_saves` and then `read_resource`.
 - `save_urls` takes 1–10 HTTP(S) URLs and saves them for the token's user; it
   never accepts a user id. `ready` is saved and readable; `accepted` is received
   and prepared in the background by Core.
-- The card (`ui://newsence/reading-list-v5.html`) is a standard MCP Apps view:
+- The card (`ui://newsence/reading-list-v6.html`) is a standard MCP Apps view:
   React, `@modelcontextprotocol/ext-apps` and `@openai/apps-sdk-ui`, in
   `web-tanstack/src/server/plugin/widget/`. The `newsence-widget` plugin in
   `vite.config.ts` bundles it into the resource HTML. Its layout follows the
