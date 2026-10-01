@@ -6,7 +6,7 @@ import type { HostedPreview } from '../contracts/image-mapping';
 import type { NormalizedResource } from '../contracts/normalize-resource';
 import { PDF_MIME } from '../contracts/pdf-policy';
 import type { ResourceDraftRelation } from '../contracts/processing-target';
-import { ResourceCreatorsSchema, type ResourceKind, type ResourcePlatform, ResourceIdentifiersSchema } from '../contracts/resource';
+import { type ResourceKind, type ResourcePlatform, ResourceIdentifiersSchema } from '../contracts/resource';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 
 /** A normalized resource whose images are already Hosted Images URLs. */
@@ -382,32 +382,26 @@ export async function loadReacquisitionSource(db: NodePgDatabase, resourceId: st
 
 type StoredPdfRow = {
 	content_hash: string;
-	creators: unknown;
+	file_name: string | null;
 	original_lang: string;
-	published_date: string | null;
 	source: string;
 	storage_key: string;
-	summary: string | null;
-	title: string | null;
 };
 
-/** An owned private PDF upload, as its owner stored it. */
+/**
+ * An owned private PDF upload, as uploaded. Title, summary and authors restart from the upload itself,
+ * so reprocessing does not carry over what an earlier attempt took from a paper it matched.
+ */
 export async function loadStoredPdf(db: NodePgDatabase, resourceId: string): Promise<StoredPdf> {
 	const result = await db.execute<StoredPdfRow>(sql`
 		SELECT
 			object.content_hash,
-			original.title,
-			original.summary,
+			object.file_name,
 			resource.original_lang,
 			COALESCE(resource.source_name, 'File') AS source,
-			resource.published_date,
-			resource.creators,
 			object.key AS storage_key
 		FROM resources resource
 		JOIN stored_objects object ON object.id = resource.stored_object_id AND object.status = 'ready' AND object.store = 'r2'
-		JOIN resource_translations original
-		  ON original.resource_id = resource.id
-		 AND original.lang = resource.original_lang
 		WHERE resource.id = ${resourceId}::uuid
 		  AND resource.scope = 'private'
 		  AND resource.kind = 'file'
@@ -417,21 +411,17 @@ export async function loadStoredPdf(db: NodePgDatabase, resourceId: string): Pro
 	`);
 	const row = result.rows[0];
 	if (!row) throw new NonRetryableError(`Failed to fetch stored PDF ${resourceId}: not found or not an owned private blob`);
-	const title = row.title?.trim();
-	if (!title) throw new NonRetryableError(`Stored PDF ${resourceId} has no title`);
-	const publishedDate = row.published_date === null ? null : new Date(row.published_date);
-	if (publishedDate && !Number.isFinite(publishedDate.getTime())) throw new NonRetryableError('Invalid published_date: expected date');
-	const creators = ResourceCreatorsSchema.safeParse(row.creators);
-	if (!creators.success) throw new NonRetryableError(`Invalid creators for ${resourceId}: ${creators.error.message}`);
+	// Web titles a new upload by its file name the same way.
+	const fileName = row.file_name?.trim() || 'PDF';
 	return {
 		contentHash: row.content_hash,
-		creators: creators.data,
+		creators: [],
 		originalLang: row.original_lang,
-		publishedDate: publishedDate?.toISOString() ?? null,
+		publishedDate: null,
 		source: row.source,
 		storageKey: row.storage_key,
-		summary: row.summary,
-		title,
+		summary: null,
+		title: fileName.replace(/\.[a-z0-9]{1,8}$/i, '') || fileName,
 	};
 }
 

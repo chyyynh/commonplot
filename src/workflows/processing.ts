@@ -196,7 +196,7 @@ async function loadAcquisitionInput(env: CoreEnv, step: WorkflowStep, target: Re
 			return { kind: 'url', ...source };
 		}
 		case 'storedBlob': {
-			const pdf = await step.do('load-stored-pdf-input-v1', STORAGE_STEP, async () =>
+			const pdf = await step.do('load-stored-pdf-input-v2', STORAGE_STEP, async () =>
 				withCoreDb(env, (db) => loadStoredPdf(db, target.resourceId)),
 			);
 			return { kind: 'storedPdf', resourceId: target.resourceId, pdf };
