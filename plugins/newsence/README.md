@@ -59,7 +59,7 @@ I save this week?" use `list_saves` and then `read_resource`.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/mcp` | `show_reading`, `list_saves`, `read_resource`, `list_latest_resources` (model); `save_urls`, `get_save_status` and `open_reader` (card only) |
+| `POST /api/mcp` | `show_reading`, `list_saves`, `read_resource`, `list_latest_resources` (model); `save_urls`, `get_save_status` and `open_reader` (card only); `open_newsence` (ChatGPT sidebar) |
 | `/.well-known/oauth-protected-resource/api/mcp` | Resource discovery |
 | `/.well-known/oauth-authorization-server/api/auth` | Authorization server discovery |
 | `/api/auth/oauth2/*` | Registration, authorization (PKCE S256), token, refresh |
@@ -88,6 +88,20 @@ I save this week?" use `list_saves` and then `read_resource`.
   CSP and are hidden.
 - Below the cards, **Summarize**, **Compare** and **Find related** send a
   prepared message listing the cards, in hosts that accept view messages.
+- `open_newsence` is a ChatGPT global entrypoint (`openai/ui.entrypoints`):
+  the sidebar and the plugin's **Open plugin** button open
+  `ui://newsence/app-v1.html` full screen. That view frames
+  `https://www.newsence.app` (`csp.frameDomains`). The tool returns a
+  one-time ticket (`verification` row, two minutes); `/api/auth/embed`
+  consumes it and sets a session cookie with `SameSite=None; Partitioned`, so
+  it exists only inside ChatGPT and the user's own newsence.app cookie is
+  never sent to the frame. A `newsence_embed` cookie switches the app to
+  embedded mode: no AI rail or chat, account menu, onboarding or upgrade
+  links. The reader posts the open resource to the view, which passes it to
+  the model with `updateModelContext`; host deep links
+  (`openai/deepLink`) navigate the frame. HTML responses allow framing only
+  by the app and ChatGPT (`frame-ancestors`). Submission must justify the
+  iframe: it embeds Newsence's own app for the signed-in user.
 - Every call requires OAuth, including `show_reading` and the public feed: hosts such as Claude
   decide whether to connect with OAuth from the first 401, so anonymous access
   would leave Save unusable there.

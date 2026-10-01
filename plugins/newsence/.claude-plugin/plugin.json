@@ -1,7 +1,7 @@
 {
 	"name": "newsence",
 	"displayName": "Newsence",
-	"version": "1.1.0",
+	"version": "1.2.0",
 	"description": "Save the articles, papers, posts and videos Claude recommends to your Newsence library with one tap, and ask about what you saved.",
 	"author": {
 		"name": "Newsence",
