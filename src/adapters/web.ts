@@ -1,6 +1,6 @@
-import { Readability } from '@mozilla/readability';
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
+import Defuddle from 'defuddle';
 import { fromHtml } from 'hast-util-from-html';
 import { toHtml } from 'hast-util-to-html';
 import { defaultHandlers } from 'hast-util-to-mdast';
@@ -22,35 +22,39 @@ const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
 const LOOP_VIDEO_PATH = /\.(?:mp4|webm|m4v|mov)$/i;
+// Defuddle strips a site name it knows; pages without one keep it on the <title>
+// ("Site: Headline", "Headline − example.org"). A page h1 that is most of that
+// title is the headline itself, and a trailing segment naming the host is the site.
+function articleTitle(extracted: string, h1: string, url: string): string {
+	const title = extracted.replace(/\s+/g, ' ').trim();
+	const heading = h1.replace(/\s+/g, ' ').trim();
+	if (heading && title !== heading && title.includes(heading) && heading.length >= title.length * 0.6) return heading;
+	const host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
+	const suffix = title.match(/\s+[-–—−|·:]\s+([^-–—−|·:]+)$/);
+	const name = suffix?.[1].trim().toLowerCase();
+	if (suffix && name && (name === host || name === host.split('.')[0])) return title.slice(0, suffix.index).trim();
+	return title;
+}
+
 async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredResource & { kind: 'blog'; resourcePlatform: null }> {
-	// linkedom does not imply the <head>/<body> that HTML lets pages omit, and Readability
+	// linkedom does not imply the <head>/<body> that HTML lets pages omit, and Defuddle
 	// needs <body>. Serialize the spec parser's tree so linkedom reads the implied structure.
 	const document = new DOMParser().parseFromString(toHtml(fromHtml(html)), 'text/html');
 	const summary = sourceHtmlSummary(document);
-	// Linkedom resolves baseURI from <base>; Readability uses it for relative links and images.
+	// Linkedom resolves baseURI from <base>; Defuddle uses it for relative links and images.
 	const base = document.createElement('base', {});
 	base.setAttribute('href', url);
 	document.head.prepend(base);
 	const image = document.querySelector('meta[property="og:image"], meta[name="twitter:image"]')?.getAttribute('content');
-	// Normalize explicit code-language metadata before Readability/conversion.
-	// SyntaxHighlighter's brush syntax is also used outside WordPress.
-	for (const pre of document.querySelectorAll('pre')) {
-		const code = pre.querySelector('code');
-		const classes = `${code?.getAttribute('class') ?? ''} ${pre.getAttribute('class') ?? ''}`;
-		const language =
-			classes.match(/(?:language-|lang-|brush:\s*)([\w+-]+)/i)?.[1] ??
-			code?.getAttribute('data-language') ??
-			pre.getAttribute('data-language');
-		if (!language || !/^[\w+-]+$/.test(language)) continue;
-		const target = code ?? document.createElement('code', {});
-		target.classList.add(`language-${language.toLowerCase()}`);
-		if (!code) {
-			while (pre.firstChild) target.appendChild(pre.firstChild);
-			pre.appendChild(target);
-		}
+	// A <br> separates lines but leaves no text, so a byline like "by Name<br>Date" would read as one string.
+	for (const br of document.querySelectorAll('br')) if (!br.closest('pre')) br.before('\n');
+	// Defuddle reads language-*/brush-* classes and data-language, but not SyntaxHighlighter's "brush: js;".
+	for (const pre of document.querySelectorAll('pre[class*="brush:"]')) {
+		const language = pre.getAttribute('class')?.match(/brush:\s*([\w+-]+)/i)?.[1];
+		if (language) pre.setAttribute('data-language', language.toLowerCase());
 	}
 
-	// Readability removes aria-hidden images. Preserve the narrow case where
+	// Defuddle removes aria-hidden images. Preserve the narrow case where
 	// the parent figure carries the image's accessible description instead.
 	for (const figure of document.querySelectorAll('figure[role="img"][aria-label]')) {
 		const label = figure.getAttribute('aria-label')?.trim();
@@ -61,7 +65,7 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 		}
 	}
 
-	// Readability drops <video>. Muted autoplay loops are a page's animated figures (what GIFs
+	// Markdown has no <video>. Muted autoplay loops are a page's animated figures (what GIFs
 	// used to be), so each becomes a Markdown image of its light-theme file for the reader to
 	// loop. Lazy players keep the URL in data-src until their script runs; their <noscript>
 	// copy parses as a second player here.
@@ -80,7 +84,7 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 		image.setAttribute('src', src.toString());
 		image.setAttribute('alt', video.getAttribute('aria-label')?.trim() ?? '');
 		// The image replaces its player chrome (wrappers, posters) up to the first text or other media,
-		// since Readability's conditional cleaning discards media-classed wrappers around a lone image.
+		// so no media-classed wrapper is left for the extractor to judge as page chrome.
 		let player: typeof video | NonNullable<typeof video.parentElement> = video;
 		for (let parent = player.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
 			const media = parent.querySelectorAll('img:not([aria-hidden="true"]), picture, video, iframe, svg');
@@ -91,23 +95,17 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 		player.replaceWith(image);
 	}
 
-	// Keep the existing TechCrunch article boundary; author/affiliate cards share its parent.
-	if (/^(?:www\.)?techcrunch\.com$/i.test(new URL(url).hostname)) {
-		const article = document.querySelector('.entry-content.wp-block-post-content');
-		if (article) document.body.replaceChildren(article.cloneNode(true));
-		for (const caption of document.querySelectorAll('figcaption')) caption.remove();
-	}
-	const article = new Readability(document as unknown as ConstructorParameters<typeof Readability>[0], {
-		nbTopCandidates: 4,
-		charThreshold: 400,
-		keepClasses: true,
-	}).parse();
-	if (!article?.content?.trim()) throw new NonRetryableError('No readable article content found');
-	const articleHtml = article.content.trim();
-	const title = article.title?.trim();
+	// Pull quotes repeat a sentence of the body as decoration.
+	for (const quote of document.querySelectorAll('.pullquote, .pull-quote')) quote.remove();
+	const article = new Defuddle(document as unknown as ConstructorParameters<typeof Defuddle>[0], { url }).parse();
+	// On table-laid-out pages the content root can be the layout cell itself, which
+	// Markdown conversion would read as a table cell and flatten into one line.
+	const articleHtml = article.content.trim().replace(/^<(td|th)\b[^>]*>([\s\S]*)<\/\1>$/, '<div>$2</div>');
+	if (!articleHtml) throw new NonRetryableError('No readable article content found');
+	const siteName = article.site.trim() || new URL(url).hostname;
+	const title = articleTitle(article.title, document.querySelector('h1')?.textContent ?? '', url);
 	if (!title) throw new NonRetryableError('Extracted article has no title');
-	const siteName = article.siteName?.trim() || new URL(url).hostname;
-	const author = article.byline?.trim();
+	const author = article.author.trim();
 	const authors = author ? [author] : [];
 
 	const content = stringifyMarkdown(
@@ -153,8 +151,8 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 		title,
 		content,
 		source: siteName,
-		originalLang: article.lang || 'und',
-		publishedDate: article.publishedTime?.trim() || null,
+		originalLang: article.language.trim() || 'und',
+		publishedDate: article.published.trim() || null,
 		summary,
 		creators: authors.map((literal) => ({ role: 'author', literal })),
 		kindMetadata: { siteName },
@@ -262,7 +260,7 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 
 export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { url: string }) {
 	const result = await step.do(
-		'acquire-web-v14',
+		'acquire-web-v15',
 		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 		async () => {
 			const acquired = await acquireWebResource(env, input.url);

@@ -14,3 +14,5 @@ minimumReleaseAgeExclude:
   - miniflare@5.20260820.0-alpha
   - wrangler@4.125.0
   - zod@4.5.4
+patchedDependencies:
+  defuddle@0.19.4: patches/defuddle@0.19.4.patch
