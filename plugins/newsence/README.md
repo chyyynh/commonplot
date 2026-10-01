@@ -1,14 +1,15 @@
 # Newsence MCP app
 
 An MCP host (ChatGPT, Claude, or any client with OAuth and MCP Apps support)
-shows the reads it recommends as cards, and the user presses **Save** to keep
-one in their own Newsence account. Saves land in the user's library and
-**public profile**, the same as saving a link in Newsence. The model never
-saves on its own.
+connects to the user's Newsence library. It shows the reads it recommends as
+cards, and the user presses **Save** to keep one; saves land in the user's
+library and **public profile**, the same as saving a link in Newsence. The
+model never saves on its own. It can also search the library and read saved
+items to answer from them.
 
 ## Connect
 
-Add a remote MCP server with the URL `https://www.newsence.app/api/plugin/mcp`
+Add a remote MCP server with the URL `https://www.newsence.app/api/mcp`
 and OAuth authentication. Discovery and dynamic client registration supply the
 OAuth settings. Sign in to Newsence and allow the connection; disconnect at
 `/auth/connections` (Settings → Account → Connected apps).
@@ -33,18 +34,24 @@ For a dependable result, users can:
 - add a standing rule to ChatGPT custom instructions or a Claude project:
   "When you recommend articles or videos, show them with Newsence."
 
+Library questions such as "find the RAG evaluation paper I saved" or "what did
+I save this week?" use `search_library` and then `read_resource`.
+
 ## How it works
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/plugin/mcp` | `show_reading` (model); `save_urls` and `get_save_status` (card only) |
-| `/.well-known/oauth-protected-resource/api/plugin/mcp` | Resource discovery |
+| `POST /api/mcp` | `show_reading`, `search_library`, `read_resource`, `list_latest_resources` (model); `save_urls` and `get_save_status` (card only) |
+| `/.well-known/oauth-protected-resource/api/mcp` | Resource discovery |
 | `/.well-known/oauth-authorization-server/api/auth` | Authorization server discovery |
 | `/api/auth/oauth2/*` | Registration, authorization (PKCE S256), token, refresh |
 | `/auth/consent` | Consent page |
 
 - `show_reading` takes 1–10 URLs with the model's title and one-line reason,
   and returns them with any earlier saves so those cards show as saved.
+- `search_library` searches or lists the user's library and shows the hits as
+  saved cards; `read_resource` reads a library item or public resource by id.
+  Tool schemas and limits are in the developer docs (`mcp.md`).
 - `save_urls` takes 1–10 HTTP(S) URLs and saves them for the token's user; it
   never accepts a user id. `ready` is saved and readable; `accepted` is received
   and prepared in the background by Core.
@@ -54,12 +61,12 @@ For a dependable result, users can:
   `vite.config.ts` bundles it into the resource HTML. Its layout follows the
   chat source cards. It polls `get_save_status` a few times while saves are
   pending. Change its URI when the UI contract changes.
-- Every call requires OAuth, including `show_reading`: hosts such as Claude
+- Every call requires OAuth, including `show_reading` and the public feed: hosts such as Claude
   decide whether to connect with OAuth from the first 401, so anonymous access
   would leave Save unusable there.
 - `openai/*` metadata keys are ChatGPT extensions; other hosts ignore them.
-- Access tokens are hour-long JWTs for the `newsence:save` scope and the MCP
-  URL audience; `offline_access` gives the host a refresh token. Every call also
+- Access tokens are hour-long JWTs for the `newsence:save` and `newsence:read`
+  scopes and the MCP URL audience; `offline_access` gives the host a refresh token. Every call also
   checks that the user's consent still exists, so disconnecting is immediate.
 - Requests are limited per user and log only `NEWSENCE_PLUGIN_TIMING` durations,
   never URLs, user ids or tokens.
