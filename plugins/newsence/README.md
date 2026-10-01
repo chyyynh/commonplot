@@ -58,7 +58,7 @@ For a dependable result, users can:
   decide whether to connect with OAuth from the first 401, so anonymous access
   would leave Save unusable there.
 - `openai/*` metadata keys are ChatGPT extensions; other hosts ignore them.
-- Access tokens are five-minute JWTs for the `newsence:save` scope and the MCP
+- Access tokens are hour-long JWTs for the `newsence:save` scope and the MCP
   URL audience; `offline_access` gives the host a refresh token. Every call also
   checks that the user's consent still exists, so disconnecting is immediate.
 - Requests are limited per user and log only `NEWSENCE_PLUGIN_TIMING` durations,
