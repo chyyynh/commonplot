@@ -38,6 +38,7 @@ const MAX_CITATION_MARKERS = 3_000;
 const MAX_SOURCE_CROP_ALT_CHARS = 500;
 const MAX_SOURCE_CROPS = 64;
 const MAX_REF_PATH_DEPTH = 16;
+const PRINTED_MARKER = /^(?:[[(]?[\d\s,;–-]+[\])]?|[*†‡§¶]+)$/u;
 export const ZOTERO_SDT_ARTIFACT_VERSION = 'newsence-zotero-sdt-v2-02100446';
 
 type RefPath = readonly number[];
@@ -560,19 +561,26 @@ export function normalizeStructuredPdf(
 					return `paper-${key}`;
 				});
 			}
+			const url = safeHttpUrl(node.target?.url);
+			const text = (part: string) => ({
+				text: part,
+				style: { bold: !!node.style?.bold, italic: !inheritedItalic && !!node.style?.italic },
+				...(url ? { target: { url } } : {}),
+			});
 			if (identifiers.length) {
-				flush();
-				if (value.startsWith(' ')) children.push({ type: 'text', value: ' ' });
+				// A printed marker ("[12]", "³", "*") only points at its note, so the footnote
+				// replaces it; an author-year citation ("Mattern (2020") is also prose and stays.
+				const printedMarker = !!node.style?.sup || PRINTED_MARKER.test(markerText);
+				if (printedMarker) {
+					flush();
+					if (value.startsWith(' ')) children.push({ type: 'text', value: ' ' });
+				} else {
+					plain.push(text(value.trimEnd()));
+					flush();
+				}
 				for (const identifier of identifiers) children.push({ type: 'footnoteReference', identifier });
 				if (value.endsWith(' ')) children.push({ type: 'text', value: ' ' });
-			} else if (value) {
-				const url = safeHttpUrl(node.target?.url);
-				plain.push({
-					text: value,
-					style: { bold: !!node.style?.bold, italic: !inheritedItalic && !!node.style?.italic },
-					...(url ? { target: { url } } : {}),
-				});
-			}
+			} else if (value) plain.push(text(value));
 		}
 		flush();
 		return children;
