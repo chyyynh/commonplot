@@ -20,6 +20,19 @@ OAuth settings. Sign in to Newsence and allow the connection; disconnect at
 After changing tools or the card, refresh the connection in the host and start
 a new conversation; old messages keep the old card.
 
+## Use
+
+The model decides when to show cards, from the `show_reading` description and
+the server instructions (Claude reads them; ChatGPT's support is undocumented).
+Hosts call apps sparingly, so a general question may still get a plain answer.
+For a dependable result, users can:
+
+- mention the app: `@Newsence recommend reading on MCP Apps`, or
+  `@Newsence save https://…`;
+- pick Newsence from the composer's tools before asking;
+- add a standing rule to ChatGPT custom instructions or a Claude project:
+  "When you recommend articles or videos, show them with Newsence."
+
 ## How it works
 
 | Endpoint | Purpose |
