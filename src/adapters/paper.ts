@@ -257,12 +257,19 @@ async function stagePaperFullText(
 /**
  * A paper reads as its full text, else its abstract; null when it has neither, or when
  * identifiers read from a PDF (`titlePageText` given) resolve to a work not named on it.
- * Without `url` the paper lives at its canonical identifier URL, not at the source it was read from.
+ * An uploaded copy (`upload`) is that full text. Without `url` the paper lives at its canonical
+ * identifier URL, not at the source it was read from.
  */
 export async function stagePaper(
 	env: CoreEnv,
 	step: WorkflowStep,
-	input: { identifiers: readonly ResourceIdentifier[]; titlePageText?: string | null; url: string | null; processingId: string },
+	input: {
+		identifiers: readonly ResourceIdentifier[];
+		titlePageText?: string | null;
+		upload?: AcquiredResource;
+		url: string | null;
+		processingId: string;
+	},
 ): Promise<(AcquiredResource & { kind: 'paper'; resourcePlatform: null }) | null> {
 	const identifiers = mergePaperIdentifiers(
 		input.identifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
@@ -270,17 +277,19 @@ export async function stagePaper(
 	const work = await stagePaperMetadata(env, step, { identifiers, titlePageText: input.titlePageText, processingId: input.processingId });
 	if (!work && input.titlePageText !== undefined) return null;
 	const resourceIdentifiers = work?.identifiers ?? identifiers;
-	const fullText = await stagePaperFullText(env, step, {
-		identifiers: resourceIdentifiers,
-		contentPdfUrl: work?.contentPdfUrl ?? null,
-		processingId: input.processingId,
-	});
-	const { abstract, authors, publicationDate, title, ...kindMetadata } = work?.metadata ?? {};
-	const content = fullText?.content ?? abstract?.trim();
-	if (!content) return null;
 	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
 	if (!identity) throw new TypeError('A paper requires a DOI, arXiv, or OpenAlex identifier');
 	const url = input.url ?? canonicalPaperUrl(identity);
+	const fullText =
+		input.upload ??
+		(await stagePaperFullText(env, step, {
+			identifiers: resourceIdentifiers,
+			contentPdfUrl: work?.contentPdfUrl ?? null,
+			processingId: input.processingId,
+		}));
+	const { abstract, authors, publicationDate, title, ...kindMetadata } = work?.metadata ?? {};
+	const content = fullText?.content ?? abstract?.trim();
+	if (!content) return null;
 	const publishedDate = publicationDate ? new Date(`${publicationDate}T00:00:00.000Z`) : null;
 	return {
 		kind: 'paper',
@@ -289,6 +298,7 @@ export async function stagePaper(
 		url,
 		source: new URL(url).hostname,
 		fileType: fullText?.fileType ?? null,
+		...(fullText?.pdfHash ? { pdfHash: fullText.pdfHash } : {}),
 		title: title?.trim() || fullText?.title || null,
 		summary: abstract?.trim() || null,
 		content,

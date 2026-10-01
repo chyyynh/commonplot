@@ -34,6 +34,8 @@ export type AcquiredResource = {
 	creators: ResourceCreator[];
 	kindMetadata: ResourceKindMetadata;
 	fileType: string | null;
+	/** The stored PDF a PDF representation was read from, by SHA-256. */
+	pdfHash?: string;
 	previewImageUrl: string | null;
 	subjectUrl: string | null;
 	/** Only YouTube videos carry a transcript. */

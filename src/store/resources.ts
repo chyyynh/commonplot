@@ -8,6 +8,10 @@ import { PDF_MIME } from '../contracts/pdf-policy';
 import type { ResourceDraftRelation } from '../contracts/processing-target';
 import { type ResourceKind, type ResourcePlatform, ResourceIdentifiersSchema } from '../contracts/resource';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
+import { blobKey } from '../contracts/storage-keys';
+
+/** Web's `storedBlobs` advisory lock namespace (`web-tanstack/src/server/prisma.server.ts`). */
+const STORED_BLOB_LOCK_NAMESPACE = 330571;
 
 /** A normalized resource whose images are already Hosted Images URLs. */
 type HostedResource = NormalizedResource & HostedPreview;
@@ -151,14 +155,14 @@ async function writeCanonicalResource(
 	fence: number | null,
 ) {
 	const columns = sql`
-		kind, resource_platform, source_name, url, normalized_url, file_type, original_lang, published_date,
+		kind, resource_platform, source_name, url, normalized_url, file_type, pdf_hash, original_lang, published_date,
 		og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id, original_hash,
 		scraped_date, updated_at
 	`;
 	const preview = await articlePreview(db, resourceId, resource);
 	const values = sql`
 		${resource.kind}, ${resource.resourcePlatform}, ${resource.source}, ${resource.url}, ${resource.normalizedUrl},
-		${resource.fileType}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
+		${resource.fileType}, ${resource.pdfHash ?? null}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
 		${preview.url}, ${preview.width}, ${preview.height}, ${JSON.stringify(resource.creators)}::jsonb,
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
 		(SELECT MD5(jsonb_build_array(lang, title, summary, content)::text) FROM incoming), NOW(), NOW()
@@ -284,6 +288,10 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Host
 				ORDER BY ordinal
 			`);
 		}
+		if (resource.pdfHash) {
+			// Web purges a blob only while holding this lock and finding no Resource that reads it.
+			await tx.execute(sql`SELECT pg_advisory_xact_lock(${STORED_BLOB_LOCK_NAMESPACE}, hashtext(${blobKey(resource.pdfHash)}))`);
+		}
 		if (target.ownedBlobId) {
 			const owned = await tx.execute(
 				sql`SELECT object.id FROM stored_objects object JOIN resources resource ON resource.stored_object_id = object.id WHERE resource.id = ${target.ownedBlobId}::uuid AND object.user_resource_id IS NOT NULL FOR UPDATE OF object`,
@@ -315,8 +323,13 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Host
 		}
 		// A retried step whose commit already landed replays it instead of writing again.
 		if (root && fence !== null && root.committedSeq === fence) return committed(root, 'written');
+		// An uploaded copy of a paper also replaces a stored original it far outgrows, such as an abstract.
 		const outcome: PersistOutcome =
-			!root?.hasOriginal || (target.kind === 'existing' && (target.force || !isDegradedOriginal(resource.content, root)))
+			!root?.hasOriginal ||
+			(target.kind === 'existing' && (target.force || !isDegradedOriginal(resource.content, root))) ||
+			(target.kind === 'draft' &&
+				target.ownedBlobId !== undefined &&
+				resource.content.length * MIN_REACQUIRED_CONTENT_RATIO > root.originalChars)
 				? 'written'
 				: 'kept';
 		if (outcome === 'written') {
@@ -327,7 +340,12 @@ export async function persistResolvedResource(db: NodePgDatabase, resource: Host
 		} else {
 			if (target.kind === 'existing')
 				console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });
-			if (root?.kind === 'paper' && resource.kind === 'paper') await mergePaperIdentifiers(tx, resourceId, resource.resourceIdentifiers);
+			if (root?.kind === 'paper' && resource.kind === 'paper') {
+				await mergePaperIdentifiers(tx, resourceId, resource.resourceIdentifiers);
+				// A kept full text without a PDF of its own, such as arXiv HTML, still gains the copy for the PDF view.
+				if (resource.pdfHash)
+					await tx.execute(sql`UPDATE resources SET pdf_hash = ${resource.pdfHash} WHERE id = ${resourceId}::uuid AND pdf_hash IS NULL`);
+			}
 		}
 		if (target.kind === 'draft' && target.relation) await applyDraftRelation(tx, resourceId, target.relation);
 		// Follow-ups read the committed row, which can differ from this draft.
@@ -354,16 +372,6 @@ export async function claimAcquisitionFence(db: NodePgDatabase, resourceId: stri
 }
 
 /** Read the accepted corpus rendition, which may differ from the incoming private PDF. */
-export async function loadPublicPdfContent(db: NodePgDatabase, resourceId: string): Promise<string> {
-	const result = await db.execute<{ content: string }>(sql`
-		SELECT original.content
-		FROM resources resource
-		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
-		WHERE resource.id = ${resourceId}::uuid AND resource.scope = 'corpus'
-	`);
-	return result.rows[0]?.content ?? '';
-}
-
 /** The external URL and identifiers a reacquisition starts from. */
 export async function loadReacquisitionSource(db: NodePgDatabase, resourceId: string) {
 	const { rows } = await db.execute<{ url: string | null; identifiers: unknown }>(sql`

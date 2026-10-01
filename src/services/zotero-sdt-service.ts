@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer';
 import { hash } from 'node:crypto';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { MAX_PDF_BYTES } from '../contracts/pdf-policy.ts';
-import { publicPdfSourceKey, structuredPdfCropPrefix, structuredPdfDocumentKey } from '../contracts/storage-keys.ts';
+import { blobKey, storedPdfCropUrlPrefix, structuredPdfCropPrefix, structuredPdfDocumentKey } from '../contracts/storage-keys.ts';
 import { limitByteStream, readBoundedResponseText } from './response.ts';
 import {
 	normalizeStructuredPdf,
@@ -270,7 +270,7 @@ export async function parseStoredPdfRepresentation(
 	return normalized;
 }
 
-/** Public source provenance is kept separate even if its bytes match a private upload. */
+/** A fetched public PDF is stored by its bytes, like any upload. */
 export async function storePublicPdfResponse(env: CoreEnv, response: Response, sourceUrl: string) {
 	const source = URL.parse(sourceUrl);
 	if (!source || !['https:', 'http:'].includes(source.protocol) || source.username || source.password) {
@@ -287,7 +287,6 @@ export async function storePublicPdfResponse(env: CoreEnv, response: Response, s
 		throw new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`);
 	}
 	// Checkpoint the bounded source before parsing; retries must not download it again.
-	const sourceHash = hash('sha256', source.toString(), 'hex');
 	const bytes = await new Response(
 		limitByteStream(response.body, MAX_PDF_BYTES, () => new NonRetryableError(`PDF exceeded ${MAX_PDF_BYTES} bytes`)),
 	).arrayBuffer();
@@ -297,58 +296,13 @@ export async function storePublicPdfResponse(env: CoreEnv, response: Response, s
 		throw new NonRetryableError('Fetched PDF response has no PDF header');
 	}
 	const inputContentHash = hash('sha256', new Uint8Array(bytes), 'hex');
-	const pdfStorageKey = publicPdfSourceKey(sourceHash, inputContentHash);
-	await env.R2.put(pdfStorageKey, bytes, {
-		customMetadata: { scope: 'corpus', sourceSha256: sourceHash, inputSha256: inputContentHash },
-		httpMetadata: { contentType: 'application/pdf' },
-	});
+	const pdfStorageKey = blobKey(inputContentHash);
+	await env.R2.put(pdfStorageKey, bytes, { httpMetadata: { contentType: 'application/pdf' } });
 	return {
 		url: source.toString(),
 		inputContentHash,
 		pdfStorageKey,
-		sourceLabel: `Public PDF ${sourceHash}`,
-		cropUrlPrefix: publicPdfCropUrlPrefix(env, sourceHash, inputContentHash),
+		sourceLabel: `Public PDF ${inputContentHash}`,
+		cropUrlPrefix: storedPdfCropUrlPrefix(inputContentHash),
 	};
-}
-
-/** Public crop URLs are PUBLIC_MEDIA paths: `pdf-crops/{sourceHash}/{inputHash}/{cropId}.png`. */
-function publicPdfCropUrlPrefix(env: CoreEnv, sourceHash: string, inputContentHash: string): string {
-	return `${env.PUBLIC_MEDIA_URL}/pdf-crops/${sourceHash}/${inputContentHash}/`;
-}
-
-/**
- * Copies the crops that persisted corpus content references into the public
- * media bucket. Only crops of an independently fetched public PDF qualify.
- */
-export async function publishPublicPdfCrops(env: CoreEnv, content: string): Promise<void> {
-	const groups = new Map<string, { sourceHash: string; inputHash: string; cropIds: Set<string> }>();
-	const origin = env.PUBLIC_MEDIA_URL.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
-	const pattern = new RegExp(`${origin}/pdf-crops/([a-f\\d]{64})/([a-f\\d]{64})/(\\d+(?:\\.\\d+)*-p\\d+-[a-f\\d]{16})\\.png`, 'gu');
-	for (const [, sourceHash, inputHash, cropId] of content.matchAll(pattern)) {
-		const groupKey = `${sourceHash}/${inputHash}`;
-		const group = groups.get(groupKey) ?? { sourceHash: sourceHash!, inputHash: inputHash!, cropIds: new Set<string>() };
-		group.cropIds.add(cropId!);
-		groups.set(groupKey, group);
-	}
-	for (const { sourceHash, inputHash, cropIds } of groups.values()) {
-		const pdfStorageKey = publicPdfSourceKey(sourceHash, inputHash);
-		const source = await env.R2.head(pdfStorageKey);
-		if (
-			source?.customMetadata?.scope !== 'corpus' ||
-			source.customMetadata.sourceSha256 !== sourceHash ||
-			source.customMetadata.inputSha256 !== inputHash
-		) {
-			throw new Error('Public PDF crop publication has no independent public source');
-		}
-		const cropPrefix = structuredPdfCropPrefix(pdfStorageKey, inputHash);
-		for (const cropId of cropIds) {
-			const publicKey = `pdf-crops/${sourceHash}/${inputHash}/${cropId}.png`;
-			if (await env.PUBLIC_MEDIA.head(publicKey)) continue;
-			const crop = await env.R2.get(`${cropPrefix}${cropId}.png`);
-			if (!crop) throw new Error('Public PDF crop is missing');
-			await env.PUBLIC_MEDIA.put(publicKey, crop.body, {
-				httpMetadata: { cacheControl: 'public, max-age=31536000, immutable', contentType: 'image/png' },
-			});
-		}
-	}
 }

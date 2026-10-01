@@ -7,14 +7,12 @@ import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type Resourc
 import { AI_STEP_RETRIES } from '../services/ai-model';
 import { stageResourceImages } from '../services/image-rehosting';
 import { summarizeResource } from '../services/summary';
-import { publishPublicPdfCrops } from '../services/zotero-sdt-service.ts';
 import { withCoreDb } from '../store/db';
 import {
 	claimAcquisitionFence,
 	loadReacquisitionSource,
 	loadStoredPdf,
 	persistResolvedResource,
-	loadPublicPdfContent,
 	type ResourcePersistenceTarget,
 } from '../store/resources';
 import { createResourceTask } from './progress';
@@ -41,8 +39,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					return { resourceId: target.resourceId };
 				}
 			}
-			// An uploaded PDF that names a paper publishes that paper, built without the upload's text,
-			// and keeps the upload as its uploader's private file.
+			// An uploaded PDF that names a paper publishes that paper, read from the upload.
 			const acquisition = loadAcquisitionInput(this.env, step, target).then((input) =>
 				stageResourceAcquisition(this.env, step, input, event.instanceId),
 			);
@@ -50,8 +47,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			acquisition.catch(() => {});
 			if (!(await task.start(target.kind === 'storedBlob' ? 'parsing' : 'acquiring')))
 				return target.kind === 'draft' ? {} : { resourceId: target.resourceId };
-			const { resource, privateFile } = await acquisition;
-			const plan = await planAttempt(target, privateFile !== null, event.instanceId, (resourceId) =>
+			const { resource, uploadedPaper } = await acquisition;
+			const plan = await planAttempt(target, uploadedPaper, event.instanceId, (resourceId) =>
 				step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () =>
 					withCoreDb(this.env, (db) => claimAcquisitionFence(db, resourceId)),
 				),
@@ -76,49 +73,20 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					this.env,
 					step,
 					event.instanceId,
-					resourceImageSources(privateFile ? [resource, privateFile] : [resource]),
+					resourceImageSources([resource]),
 					target.kind === 'reacquire' ? event.instanceId : undefined,
 				),
 			]);
 			const summarized = withHostedImages({ ...resource, summary }, hostedImages);
 			void task.report('persisting', { stage: 'persisting', status: 'running' });
-			const renditions = [
-				...(privateFile && plan.privateRendition
-					? [
-							{
-								persistStep: 'persist-private-pdf-rendition-v4',
-								translationStep: 'enqueue-private-pdf-translation-v3',
-								resource: withHostedImages({ ...privateFile, summary: privateFile.summary ?? summary }, hostedImages),
-								target: plan.privateRendition,
-							},
-						]
-					: []),
-				{
-					persistStep: 'persist-resolved-resource-scope-v7',
-					translationStep: 'enqueue-resource-translation-v5',
-					resource: summarized,
-					target: plan.persistence,
-				},
-			];
-			const persisted = [];
-			for (const rendition of renditions) {
-				const persistence = await step.do(rendition.persistStep, STORAGE_STEP, async () =>
-					withCoreDb(this.env, (db) => persistResolvedResource(db, rendition.resource, rendition.target)),
-				);
-				if (persistence.outcome === 'superseded') {
-					await task.report('persist-superseded', { stage: 'persisting', status: 'superseded' });
-					return { resourceId: persistence.id };
-				}
-				persisted.push({ translationStep: rendition.translationStep, persistence });
+			const persistence = await step.do('persist-resolved-resource-scope-v8', STORAGE_STEP, async () =>
+				withCoreDb(this.env, (db) => persistResolvedResource(db, summarized, plan.persistence)),
+			);
+			if (persistence.outcome === 'superseded') {
+				await task.report('persist-superseded', { stage: 'persisting', status: 'superseded' });
+				return { resourceId: persistence.id };
 			}
-			const persistence = persisted.at(-1)!.persistence;
 			const { id: persistedResourceId, scope, subjectResourceId, originalHash, outcome } = persistence;
-			if (scope === 'corpus' && persistence.fileType === 'application/pdf') {
-				await step.do('publish-public-pdf-crops-v2', STORAGE_STEP, async () =>
-					publishPublicPdfCrops(this.env, await withCoreDb(this.env, (db) => loadPublicPdfContent(db, persistedResourceId))),
-				);
-			}
-
 			const { saveTarget } = plan;
 			if (saveTarget)
 				await step.do('complete-resource-save-v2', STORAGE_STEP, () => this.env.APP.completeResourceSave(persistedResourceId, saveTarget));
@@ -144,10 +112,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						})
 					: undefined,
 				// Ordinary imports share a translation; a reacquisition that replaced the original forces a fresh run.
-				...persisted.map(({ translationStep, persistence: rendition }) =>
-					step.do(translationStep, STORAGE_STEP, () =>
-						enqueueResourceTranslation(this.env, rendition, target.kind !== 'draft' && rendition.outcome === 'written', task),
-					),
+				step.do('enqueue-resource-translation-v6', STORAGE_STEP, () =>
+					enqueueResourceTranslation(this.env, persistence, target.kind !== 'draft' && outcome === 'written', task),
 				),
 				subjectUrl && outcome === 'written' && subjectResourceId === null
 					? step.do('enqueue-resolved-subject-child-v2', STORAGE_STEP, async () => {
@@ -206,19 +172,18 @@ async function loadAcquisitionInput(env: CoreEnv, step: WorkflowStep, target: Re
 
 /**
  * Where this attempt writes and which save it completes. Reacquiring an existing Resource claims a fencing token, so it
- * commits only if no newer attempt has committed first; an uploaded paper is a new draft and keeps the upload private.
+ * commits only if no newer attempt has committed first; an uploaded paper is a draft of the public paper.
  */
 async function planAttempt(
 	target: ResourceProcessingTarget,
 	uploadedPaper: boolean,
 	instanceId: string,
 	claimFence: (resourceId: string) => Promise<number>,
-): Promise<{ persistence: ResourcePersistenceTarget; privateRendition: ResourcePersistenceTarget | null; saveTarget: unknown }> {
+): Promise<{ persistence: ResourcePersistenceTarget; saveTarget: unknown }> {
 	switch (target.kind) {
 		case 'draft':
 			return {
 				persistence: { kind: 'draft', ...(target.relation ? { relation: target.relation } : {}) },
-				privateRendition: null,
 				saveTarget: target.saveTarget ?? null,
 			};
 		case 'reacquire':
@@ -229,15 +194,14 @@ async function planAttempt(
 					fence: await claimFence(target.resourceId),
 					...(target.force ? { force: true } : {}),
 				},
-				privateRendition: null,
 				saveTarget: null,
 			};
 		case 'storedBlob': {
 			const ownedBlobId = target.resourceId;
-			const upload = { kind: 'existing', resourceId: ownedBlobId, fence: await claimFence(ownedBlobId), ownedBlobId } as const;
 			return {
-				persistence: uploadedPaper ? { kind: 'draft', ownedBlobId } : upload,
-				privateRendition: uploadedPaper ? upload : null,
+				persistence: uploadedPaper
+					? { kind: 'draft', ownedBlobId }
+					: { kind: 'existing', resourceId: ownedBlobId, fence: await claimFence(ownedBlobId), ownedBlobId },
 				saveTarget: { kind: 'userFileResult', fileResourceId: ownedBlobId, workflowId: instanceId },
 			};
 		}

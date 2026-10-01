@@ -3,6 +3,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import type { AcquiredResource, AcquisitionInput } from '../contracts/acquired-resource';
 import { paperIdentifiersFromIdentity, paperIdentityFromText } from '../contracts/paper-identity';
 import { PDF_MIME } from '../contracts/pdf-policy';
+import { storedPdfCropUrlPrefix } from '../contracts/storage-keys';
 import { parseStoredPdfRepresentation, type storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 
 type PdfAcquisition = Readonly<{
@@ -49,6 +50,7 @@ export async function stagePublicPdfAcquisition(
 		previewImageUrl: null,
 		resourcePlatform: null,
 		fileType: PDF_MIME,
+		pdfHash: source.inputContentHash,
 		url: source.url,
 		title,
 		content: parsed.markdown,
@@ -73,8 +75,7 @@ export async function stageStoredPdfAcquisition(
 		pdfStorageKey: resource.storageKey,
 		inputContentHash: resource.contentHash,
 		sourceLabel: `Stored PDF ${target.resourceId}`,
-		// Web serves an owned PDF's crops through the PDF's own file URL.
-		cropUrlPrefix: `/api/media/files/${target.resourceId}?crop=`,
+		cropUrlPrefix: storedPdfCropUrlPrefix(resource.contentHash),
 	});
 	// The first page and the PDF's own properties are where a paper prints its DOI or arXiv id.
 	const printedIdentity = paperIdentityFromText(parsed.paperIdentifierText);
@@ -87,6 +88,7 @@ export async function stageStoredPdfAcquisition(
 		previewImageUrl: null,
 		resourcePlatform: null,
 		fileType: PDF_MIME,
+		pdfHash: resource.contentHash,
 		url: null,
 		title: resource.title,
 		content: parsed.markdown,

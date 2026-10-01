@@ -67,33 +67,22 @@ async function stageUrlAcquisition(
 
 export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep, input: AcquisitionInput, processingId: string) {
 	if (input.kind === 'storedPdf') {
-		const { file, paper } = await stageStoredPdfUpload(env, step, input, processingId);
-		return paper
-			? { resource: normalizeAcquiredResource(paper), privateFile: normalizeAcquiredResource(file) }
-			: { resource: normalizeAcquiredResource(file), privateFile: null };
+		const resource = await stageStoredPdfUpload(env, step, input, processingId);
+		return { resource: normalizeAcquiredResource(resource), uploadedPaper: resource.kind === 'paper' };
 	}
 	const resource = await stageUrlAcquisition(env, step, { ...input, processingId });
-	return { resource: normalizeAcquiredResource(resource, input.sourceHints), privateFile: null };
+	return { resource: normalizeAcquiredResource(resource, input.sourceHints), uploadedPaper: false };
 }
 
-/**
- * An uploaded PDF always stays its uploader's private file. When its title page names a
- * paper, the public paper is built from licensed full text or the abstract, never the upload.
- */
+/** An uploaded PDF whose title page names a paper is published as that paper; any other stays its uploader's private file. */
 async function stageStoredPdfUpload(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: Extract<AcquisitionInput, { kind: 'storedPdf' }>,
 	processingId: string,
 ) {
-	const { titlePageText, resourceIdentifiers, ...uploaded } = await stageStoredPdfAcquisition(env, step, input);
-	const paper = await stagePaper(env, step, { identifiers: resourceIdentifiers, titlePageText, url: null, processingId });
-	// A file that is a paper carries the paper's title and authors instead of its file name.
-	const file = {
-		...uploaded,
-		resourceIdentifiers: [],
-		title: paper?.title ?? uploaded.title,
-		creators: paper?.creators.length ? paper.creators : uploaded.creators,
-	};
-	return { file, paper };
+	const { titlePageText, resourceIdentifiers, ...file } = await stageStoredPdfAcquisition(env, step, input);
+	const upload = { ...file, resourceIdentifiers: [] };
+	const paper = await stagePaper(env, step, { identifiers: resourceIdentifiers, titlePageText, upload, url: null, processingId });
+	return paper ?? upload;
 }
