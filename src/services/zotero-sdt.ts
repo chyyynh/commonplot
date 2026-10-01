@@ -276,10 +276,12 @@ function isChartLabels(node: SdtBlockNode, caption: PageRect): boolean {
 	if (value.length > 700 || !/\d/u.test(value) || /[.!?]\s+[A-Z]/u.test(value) || /[.!?]$/u.test(value)) return false;
 	const rects = blockRects(node);
 	const rect = rects.length === 1 ? rects[0] : null;
-	if (!rect || rect[0] !== caption[0] || rect[2] < caption[4] || rect[2] - caption[4] > 40 || rect[4] - rect[2] < 48) return false;
+	if (!rect || rect[0] !== caption[0] || rect[2] < caption[4] || rect[2] - caption[4] > 40) return false;
 	const area = (rect[3] - rect[1]) * (rect[4] - rect[2]);
 	const runs = textRects(node);
-	return value.length / area < 0.01 && runs.length >= 3 && new Set(runs.map((run) => Math.round(run[2] / 10))).size >= 3;
+	// Labels spread along an axis: down the side (y) or across the bottom (x).
+	const spread = (axis: 1 | 2) => new Set(runs.map((run) => Math.round(run[axis] / 10))).size;
+	return value.length / area < 0.01 && runs.length >= 3 && Math.max(spread(1), spread(2)) >= 3;
 }
 
 /** Plan semantic crops plus conservative caption-bounded recoveries; never infer an entire page. */
@@ -389,15 +391,18 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 			missing.push({ figureId, reason: 'page-geometry-unavailable' });
 			continue;
 		}
-		const previous = document.content[index - 1];
-		const chartPath = previous && isChartLabels(previous, caption) ? String(index - 1) : null;
+		// Axis labels extracted as a paragraph just above the caption belong to the figure.
+		// In multi-column layouts other blocks can come between them in reading order.
+		const chartPaths = new Set(
+			document.content.flatMap((other, otherIndex) => (otherIndex !== index && isChartLabels(other, caption) ? [String(otherIndex)] : [])),
+		);
 		const left = Math.max(view[0], x1 - 1),
 			right = Math.min(view[2], x2 + 1),
 			bottom = top + 6;
 		let upper = view[3] - 24;
 		let intersectsProse = false;
 		for (const [otherIndex, otherRects] of barriers.entries()) {
-			if (otherIndex === index || String(otherIndex) === chartPath) continue;
+			if (otherIndex === index || chartPaths.has(String(otherIndex))) continue;
 			// Image/table boxes are barriers. For paragraphs prefer actual glyph geometry.
 			for (const [page, rx1, ry1, rx2, ry2] of otherRects) {
 				if (
@@ -431,7 +436,7 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 				placement: 'before',
 				rect,
 				source: 'caption-region',
-				suppressedBlockPaths: chartPath ? [chartPath] : [],
+				suppressedBlockPaths: [...chartPaths],
 			})
 		)
 			missing.push({ figureId, reason: 'crop-budget-exceeded' });
