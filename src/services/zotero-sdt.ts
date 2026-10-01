@@ -49,20 +49,22 @@ type SdtNode = SdtBlockNode | SdtTextNode;
 export type StructuredPdfDocument = StructuredDocumentText & { metadata: { processor: { type: 'pdf' } } };
 
 /**
- * Zotero's official schema, minus `additionalProperties: false`: its PDF processor emits fields the
- * schema does not list yet (e.g. `rightMostWords` on math blocks), and those are harmless to ignore.
+ * Zotero's official schema, minus two checks its PDF processor does not meet:
+ * `additionalProperties: false` (it emits unlisted fields such as `rightMostWords` on math blocks)
+ * and `format: 'uri'` (link targets copy a PDF's own link, e.g. `www.example.com`). Unlisted fields
+ * are ignored and every link goes through `safeHttpUrl`.
  */
-function withoutClosedObjects(schema: unknown): unknown {
-	if (Array.isArray(schema)) return schema.map(withoutClosedObjects);
+function relaxedSchema(schema: unknown): unknown {
+	if (Array.isArray(schema)) return schema.map(relaxedSchema);
 	if (typeof schema !== 'object' || schema === null) return schema;
 	return Object.fromEntries(
 		Object.entries(schema)
-			.filter(([key, value]) => !(key === 'additionalProperties' && value === false))
-			.map(([key, value]) => [key, withoutClosedObjects(value)]),
+			.filter(([key, value]) => !(key === 'additionalProperties' && value === false) && !(key === 'format' && value === 'uri'))
+			.map(([key, value]) => [key, relaxedSchema(value)]),
 	);
 }
 
-const SDT_VALIDATOR = new Validator(withoutClosedObjects(SDT_SCHEMA) as Schema, '2020-12', false);
+const SDT_VALIDATOR = new Validator(relaxedSchema(SDT_SCHEMA) as Schema, '2020-12', false);
 
 /** The schema has no size limits; bound the tree before anything walks it recursively. */
 function assertBoundedContent(nodes: unknown, state: { characters: number; nodes: number }, depth = 1): void {
@@ -307,13 +309,8 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 		crops.push({ ...crop, id: `${crop.blockPath}-p${crop.pageIndex}-${digest}` });
 		return true;
 	}
-	for (const [blockIndex, block] of document.content.entries()) {
-		if (
-			block.flowClass === 'excluded' ||
-			excludedAuthorTables.has(String(blockIndex)) ||
-			(block.type !== 'image' && (block.type !== 'table' || !isLeafBlock(block)))
-		)
-			continue;
+	// Like Zotero's Reading Mode, show non-text blocks as rendered from the page.
+	function addSemanticCrops(block: SdtBlockNode, blockIndex: number) {
 		const rectByPage = new Map<number, PdfRect>();
 		for (const [pageIndex, x1, y1, x2, y2] of blockRects(block)) {
 			if (pageIndex < 0 || pageIndex >= document.catalog.pages.length) continue;
@@ -339,6 +336,14 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 			});
 			if (!added) missing.push({ figureId: `block-${blockIndex}-p${pageIndex}`, reason: 'crop-budget-exceeded' });
 		}
+	}
+	for (const [blockIndex, block] of document.content.entries()) {
+		if (
+			block.flowClass !== 'excluded' &&
+			!excludedAuthorTables.has(String(blockIndex)) &&
+			(block.type === 'image' || (block.type === 'table' && isLeafBlock(block)))
+		)
+			addSemanticCrops(block, blockIndex);
 	}
 	if (captions.length > MAX_SOURCE_CROPS)
 		missing.push({ figureId: `${captions.length - MAX_SOURCE_CROPS} additional figures`, reason: 'visual-analysis-budget-exceeded' });
@@ -429,6 +434,11 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 			})
 		)
 			missing.push({ figureId, reason: 'crop-budget-exceeded' });
+	}
+	// SDT math is extracted glyph text, not TeX. Equations come after figures so they
+	// cannot take a figure's crop budget or be matched to a figure caption.
+	for (const [blockIndex, block] of document.content.entries()) {
+		if (block.flowClass !== 'excluded' && block.type === 'math') addSemanticCrops(block, blockIndex);
 	}
 	return { crops, excludedAuthorTables: excludedAuthorTables.size, missing };
 }
@@ -707,7 +717,7 @@ export function normalizeStructuredPdf(
 		}
 		if (!isLeafBlock(node)) return blocks(node.content, path);
 		const children = inline(node.content, node.type === 'caption');
-		// SDT math contains extracted text, not guaranteed LaTeX; do not invent TeX.
+		// A math block without a crop keeps its extracted text; do not invent TeX.
 		return children.length ? [{ type: 'paragraph', children: node.type === 'caption' ? [{ type: 'emphasis', children }] : children }] : [];
 	}
 	const tree: Root = { type: 'root', children: blocks(document.content, []) };
