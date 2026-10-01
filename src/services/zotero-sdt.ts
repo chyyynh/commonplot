@@ -540,8 +540,12 @@ export function normalizeStructuredPdf(
 				if (node.style?.bold) child = { type: 'strong', children: [child] };
 				if (node.style?.italic) child = { type: 'emphasis', children: [child] };
 				if (node.target?.url && node.text.trim()) child = { type: 'link', url: node.target.url, children: [child] };
+				// Markdown has no super/subscript; keep SDT's like Zotero's reader (x_ij, R², an unlinked note marker).
+				const script = node.style?.sup ? 'sup' : node.style?.sub ? 'sub' : null;
 				const previous = children.at(-1);
-				if (child.type === 'emphasis' && previous?.type === 'emphasis') previous.children.push(...child.children);
+				if (script && node.text.trim())
+					children.push({ type: 'html', value: `<${script}>` }, child, { type: 'html', value: `</${script}>` });
+				else if (child.type === 'emphasis' && previous?.type === 'emphasis') previous.children.push(...child.children);
 				else children.push(child);
 			}
 			plain = [];
@@ -569,7 +573,12 @@ export function normalizeStructuredPdf(
 			const url = safeHttpUrl(node.target?.url);
 			const text = (part: string) => ({
 				text: part,
-				style: { bold: !!node.style?.bold, italic: !inheritedItalic && !!node.style?.italic },
+				style: {
+					bold: !!node.style?.bold,
+					italic: !inheritedItalic && !!node.style?.italic,
+					sup: !!node.style?.sup,
+					sub: !!node.style?.sub,
+				},
 				...(url ? { target: { url } } : {}),
 			});
 			if (identifiers.length) {
