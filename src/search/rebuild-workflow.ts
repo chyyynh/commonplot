@@ -26,7 +26,8 @@ const CANONICAL_SEARCH_CONFIG = {
 	score_threshold: 0,
 } as const satisfies Partial<AiSearchConfig>;
 
-type SearchIndexRebuildPayload = Record<string, never>;
+/** `since` reloads only Resources changed after that instant, to catch up an index loaded before it. */
+type SearchIndexRebuildPayload = { since?: string };
 type SearchIndexStats = {
 	completed: number;
 	error: number;
@@ -62,13 +63,21 @@ async function loadCorpusCount(db: NodePgDatabase): Promise<number> {
 	return count;
 }
 
-async function listCorpusIdsAfter(db: NodePgDatabase, cursor: string | null): Promise<string[]> {
+async function listCorpusIdsAfter(db: NodePgDatabase, cursor: string | null, since: string | null): Promise<string[]> {
+	// A document carries every translation's title and summary, so a changed translation changes it too.
 	const result = await db.execute<{ id: string }>(sql`
 		SELECT r.id::text
 		FROM resources r
 		WHERE r.scope = 'corpus'
 		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		  AND (${cursor}::uuid IS NULL OR r.id > ${cursor}::uuid)
+		  AND (
+		    ${since}::timestamptz IS NULL
+		    OR r.updated_at > ${since}::timestamptz
+		    OR EXISTS (
+		      SELECT 1 FROM resource_translations t WHERE t.resource_id = r.id AND t.updated_at > ${since}::timestamptz
+		    )
+		  )
 		ORDER BY r.id
 		LIMIT ${REINDEX_PAGE_SIZE}
 	`);
@@ -242,10 +251,12 @@ async function waitForSearchIndex(env: CoreEnv, instance: AiSearchInstance, step
 	throw new Error(`AI Search index did not converge: ${JSON.stringify(last)}`);
 }
 
-/** Configures the corpus index, reloads every eligible Resource, prunes stale items and waits for convergence. */
+/** Configures the corpus index, reloads eligible Resources, prunes stale items and waits for convergence. */
 export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, SearchIndexRebuildPayload> {
 	async run(event: WorkflowEvent<SearchIndexRebuildPayload>, step: WorkflowStep) {
 		const startedAt = event.timestamp.toISOString();
+		const since = event.payload.since ?? null;
+		if (since !== null && Number.isNaN(Date.parse(since))) throw new Error(`Invalid rebuild since: ${since}`);
 		const instanceConfig = await step.do('ensure-search-config', SHORT_STEP_OPTIONS, () =>
 			ensureCanonicalSearchInstanceConfig(this.env.AI_SEARCH),
 		);
@@ -256,7 +267,7 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 		while (true) {
 			const page = await step.do(`enqueue-corpus-page-${pages}`, BATCH_STEP_OPTIONS, () =>
 				withCoreDb(this.env, async (db) => {
-					const ids = await listCorpusIdsAfter(db, cursor);
+					const ids = await listCorpusIdsAfter(db, cursor, since);
 					if (ids.length) await this.env.RESOURCE_SEARCH_SYNC_QUEUE.sendBatch(ids.map((resourceId) => ({ body: { resourceId } })));
 					return { cursor: ids.at(-1) ?? null, enqueued: ids.length };
 				}),
@@ -272,6 +283,7 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 		return {
 			mode: 'rebuild' as const,
 			startedAt,
+			since,
 			instanceConfig,
 			enqueued,
 			pages,

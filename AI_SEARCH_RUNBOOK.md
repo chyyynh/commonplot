@@ -90,6 +90,17 @@ pnpm -C workers/core-worker exec wrangler workflows trigger \
   --id search-index-rebuild-v7-v2
 ```
 
+To catch up an index that finished loading after other writes went elsewhere,
+pass `since` (an ISO instant); only Resources or translations changed after it
+are reloaded, while pruning and error retries still cover the whole index:
+
+```sh
+pnpm -C workers/core-worker exec wrangler workflows trigger \
+  newsence-search-index-rebuild \
+  '{"since":"2026-09-30T09:00:00Z"}' \
+  --id search-index-catchup-v7-v1
+```
+
 ## Verify
 
 Inspect the same Workflow instance:
