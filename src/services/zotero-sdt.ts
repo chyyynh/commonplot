@@ -451,17 +451,11 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 
 function firstPageIdentifierText(document: StructuredPdfDocument): string | null {
 	const pageText = cleanText(getFulltextFromStructuredText(document, [0]));
-	// A repository cover page can print only the proceedings' DOI (10.1145/3772318);
-	// the paper's own DOI extends it (10.1145/3772318.3790749) on the next page.
-	const coverDoi = paperIdentityFromText(pageText)?.doi;
-	const nextPageText = coverDoi ? cleanText(getFulltextFromStructuredText(document, [1])) : '';
-	const extension = coverDoi ? nextPageText.toLowerCase().indexOf(`${coverDoi.toLowerCase()}.`) : -1;
-	const paperDoi = extension >= 0 ? paperIdentityFromText(nextPageText.slice(extension))?.doi : null;
 	const propertyText = Object.entries(document.metadata.source.properties ?? {})
 		.filter(([, value]) => typeof value === 'string')
 		.map(([key, value]) => `${key}: ${value}`)
 		.join('\n');
-	const combined = [paperDoi ? `DOI: ${paperDoi}` : '', propertyText, pageText].filter(Boolean).join('\n').slice(0, 20_000).trim();
+	const combined = [propertyText, pageText].filter(Boolean).join('\n').slice(0, 20_000).trim();
 	return combined || null;
 }
 

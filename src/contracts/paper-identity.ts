@@ -2,8 +2,9 @@
 const DOI_RE = /^10\.\d{4,9}\/[^\s\p{C}]+$/u;
 const MODERN_ARXIV_ID_RE = /^(\d{4}\.\d{4,5})(?:v\d+)?$/i;
 const LEGACY_ARXIV_ID_RE = /^([a-z][a-z0-9.-]*\/[0-9]{7})(?:v\d+)?$/i;
-// Typesetting can break a line right after the DOI prefix's slash.
-const DOI_IN_TEXT_RE = /\b(?:https?:\/\/(?:dx\.)?doi\.org\/)?10\.\d{4,9}\/[^\S\n]?(?:(?!\]\()\S)+/iu;
+// Typesetting can break a line right after the DOI prefix's slash, or after a dot inside
+// the suffix (ACM's "10.1145/3772318. 3791316"; the first part is the proceedings' DOI).
+const DOI_IN_TEXT_RE = /\b(?:https?:\/\/(?:dx\.)?doi\.org\/)?10\.\d{4,9}\/[^\S\n]?(?:(?!\]\()\S)+(?:(?<=\.)\s\d{5,}\b)?/iu;
 const ARXIV_IN_TEXT_RE = /\barxiv(?:\.org\/(?:abs|html|pdf)\/|[.:\s]+)((?:\d{4}\.\d{4,5}|[a-z][a-z0-9.-]*\/\d{7})(?:v\d+)?)\b/i;
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
 const OPENALEX_ID_RE = /^(?:https?:\/\/openalex\.org\/)?(?:works\/)?(W\d+)\/?$/i;
@@ -151,7 +152,7 @@ export function canonicalPaperUrl(identity: PaperIdentity): string {
 export function paperIdentityFromText(value: unknown): PaperIdentity | null {
 	if (typeof value !== 'string' || !value.trim()) return null;
 	const match = value.match(DOI_IN_TEXT_RE)?.[0];
-	const doi = match ? normalizeDoi(stripUnbalancedDoiPunctuation(match.replace(/\/\s+/u, '/'))) : null;
+	const doi = match ? normalizeDoi(stripUnbalancedDoiPunctuation(match.replace(/\/\s+/u, '/').replace(/\.\s+/u, '.'))) : null;
 	const arxivId = normalizeArxivId(value.match(ARXIV_IN_TEXT_RE)?.[1]) ?? normalizeArxivId(doi);
 	if (!doi && !arxivId) return null;
 	return {
