@@ -2,7 +2,7 @@ import { generateText, Output } from 'ai';
 import { createWorkersAI } from 'workers-ai-provider';
 import { openai } from 'workers-ai-provider/openai';
 import { z } from 'zod';
-import type { AcquiredResource } from '../contracts/acquired-resource';
+import type { AcquiredResource, EntitySource } from '../contracts/acquired-resource';
 import { ENTITY_SALIENCES, ENTITY_TYPES, entityKey, type ResourceEntity } from '../contracts/resource';
 import { coreGatewayOptions } from './ai-model';
 
@@ -14,7 +14,7 @@ function analysisModel(env: CoreEnv, processingId: string, feature: string) {
 	return createWorkersAI({ binding: env.AI, providers: [openai], gateway })(ANALYSIS_MODEL, { extraHeaders });
 }
 
-function analysisPrompt(resource: AcquiredResource) {
+function analysisPrompt(resource: EntitySource) {
 	return `文章資訊:
 ${resource.title ? `標題: ${resource.title}\n` : ''}來源: ${resource.source.trim()}
 資源種類: ${resource.kind}
@@ -63,7 +63,7 @@ Leave out the content's own publisher or site and its own author unless they are
 Write each name as it is most commonly written in English, keeping the original only when it has no English form, and in full ("Claude Opus 5", not "Opus").`;
 
 /** Every corpus original is related through what it is about; an extraction that names nothing is still an answer. */
-export async function extractResourceEntities(resource: AcquiredResource, env: CoreEnv, processingId: string): Promise<ResourceEntity[]> {
+export async function extractResourceEntities(resource: EntitySource, env: CoreEnv, processingId: string): Promise<ResourceEntity[]> {
 	const { finishReason, output } = await generateText({
 		model: analysisModel(env, processingId, 'resource-entities'),
 		prompt: analysisPrompt(resource),

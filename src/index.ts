@@ -20,6 +20,7 @@ export { ZoteroSdt } from './services/zotero-sdt-container';
 export { ResourceTranslationV2Workflow } from './workflows/translation';
 export { SearchIndexRebuildWorkflow } from './search/rebuild-workflow';
 export { ResourceProcessingV2Workflow } from './workflows/processing';
+export { ResourceEntityBackfillWorkflow } from './workflows/entities';
 export { YouTubeCaptionFetcher } from './services/youtube-captions';
 
 export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {

@@ -133,6 +133,13 @@
 			/** 500k resources need 10k enqueue steps before pruning and readiness checks. */
 			"limits": { "steps": 25000 },
 		},
+		{
+			"binding": "RESOURCE_ENTITY_BACKFILL_WORKFLOW",
+			"name": "newsence-resource-entity-backfill",
+			"class_name": "ResourceEntityBackfillWorkflow",
+			/** One extraction step per Resource; run a month or less per instance. */
+			"limits": { "steps": 10000 },
+		},
 	],
 	/**
 	 * Workers AI Binding

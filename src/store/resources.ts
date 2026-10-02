@@ -1,12 +1,12 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 import { type SQL, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { StoredPdf } from '../contracts/acquired-resource';
+import type { EntitySource, StoredPdf } from '../contracts/acquired-resource';
 import type { HostedPreview } from '../contracts/image-mapping';
 import type { NormalizedResource } from '../contracts/normalize-resource';
 import { PDF_MIME } from '../contracts/pdf-policy';
 import type { ResourceDraftRelation } from '../contracts/processing-target';
-import { entityKey, type ResourceKind, type ResourcePlatform, ResourceIdentifiersSchema } from '../contracts/resource';
+import { entityKey, type ResourceEntity, type ResourceKind, type ResourcePlatform, ResourceIdentifiersSchema } from '../contracts/resource';
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { blobKey } from '../contracts/storage-keys';
@@ -195,8 +195,6 @@ async function writeCanonicalResource(
 			DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid AND ${existing}
 		), cleared_links AS (
 			DELETE FROM resource_links WHERE source_resource_id = ${resourceId}::uuid AND ${existing}
-		), cleared_entities AS (
-			DELETE FROM resource_entities WHERE resource_id = ${resourceId}::uuid AND ${existing && resource.entities !== undefined}
 		), cleared_translations AS (
 			DELETE FROM resource_translations
 			WHERE resource_id = ${resourceId}::uuid AND ${existing}
@@ -247,28 +245,8 @@ async function writeCanonicalResource(
 			FROM jsonb_array_elements(${JSON.stringify(rows)}::jsonb) WITH ORDINALITY AS incoming(value, ordinal)
 		`);
 	}
-	// Only corpus originals relate through entities, like links.
-	const entities = privateObjectId
-		? []
-		: (resource.entities ?? []).map((entity, ordinal) => ({ ...entity, key: entityKey(entity.name), ordinal }));
-	if (entities.length) {
-		// Sorted keys lock entity rows in one order across concurrent writers.
-		const byKey = [...entities].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-		await db.execute(sql`
-			WITH incoming AS (
-				SELECT * FROM jsonb_to_recordset(${JSON.stringify(byKey)}::jsonb)
-				AS incoming(key text, name text, type text, salience text, ordinal integer)
-			), entity AS (
-				INSERT INTO entities (key, name, type)
-				SELECT key, name, type FROM incoming
-				ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key
-				RETURNING id, key
-			)
-			INSERT INTO resource_entities (resource_id, entity_id, salience, ordinal)
-			SELECT ${resourceId}::uuid, entity.id, incoming.salience, incoming.ordinal
-			FROM incoming JOIN entity USING (key)
-		`);
-	}
+	// Only corpus originals relate through entities, like links; a reacquisition without an extraction keeps them.
+	if (resource.entities !== undefined) await replaceResourceEntities(db, resourceId, privateObjectId ? [] : resource.entities);
 	if (resource.youtube) {
 		const transcript = resource.youtube;
 		const savedTranscript = await db.execute(sql`
@@ -285,6 +263,60 @@ async function writeCanonicalResource(
 }
 
 /** Links stored before this Resource existed, under any URL it is known by, now point to it. */
+/** Replaces what a Resource is about. Run inside the caller's transaction. */
+export async function replaceResourceEntities(db: NodePgDatabase, resourceId: string, entities: readonly ResourceEntity[]) {
+	await db.execute(sql`DELETE FROM resource_entities WHERE resource_id = ${resourceId}::uuid`);
+	if (!entities.length) return;
+	// Sorted keys lock entity rows in one order across concurrent writers.
+	const rows = entities
+		.map((entity, ordinal) => ({ ...entity, key: entityKey(entity.name), ordinal }))
+		.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+	await db.execute(sql`
+		WITH incoming AS (
+			SELECT * FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb)
+			AS incoming(key text, name text, type text, salience text, ordinal integer)
+		), entity AS (
+			INSERT INTO entities (key, name, type)
+			SELECT key, name, type FROM incoming
+			ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key
+			RETURNING id, key
+		)
+		INSERT INTO resource_entities (resource_id, entity_id, salience, ordinal)
+		SELECT ${resourceId}::uuid, entity.id, incoming.salience, incoming.ordinal
+		FROM incoming JOIN entity USING (key)
+	`);
+}
+
+/** Corpus Resources published in a window that have no entities yet, by id after `after`. */
+export async function listResourcesWithoutEntities(
+	db: NodePgDatabase,
+	{ since, until, after, limit }: { since: string; until: string | null; after: string | null; limit: number },
+) {
+	const result = await db.execute<{ id: string }>(sql`
+		SELECT r.id::text FROM resources r
+		WHERE r.scope = 'corpus' AND r.kind <> 'image'
+		  AND r.published_date >= ${since}::timestamptz
+		  AND (${until}::timestamptz IS NULL OR r.published_date < ${until}::timestamptz)
+		  AND (${after}::uuid IS NULL OR r.id > ${after}::uuid)
+		  AND NOT EXISTS (SELECT 1 FROM resource_entities re WHERE re.resource_id = r.id)
+		ORDER BY r.id
+		LIMIT ${limit}
+	`);
+	return result.rows.map(({ id }) => id);
+}
+
+/** A stored corpus original, as entity extraction reads it. */
+export async function loadEntitySource(db: NodePgDatabase, resourceId: string): Promise<EntitySource | null> {
+	const result = await db.execute<EntitySource>(sql`
+		SELECT r.kind, r.resource_platform AS "resourcePlatform", COALESCE(r.source_name, '') AS source,
+		       r.original_lang AS "originalLang", original.title, original.summary, COALESCE(original.content, '') AS content
+		FROM resources r
+		JOIN resource_translations original ON original.resource_id = r.id AND original.lang = r.original_lang
+		WHERE r.id = ${resourceId}::uuid AND r.scope = 'corpus'
+	`);
+	return result.rows[0] ?? null;
+}
+
 async function resolveLinksTo(db: NodePgDatabase, resourceId: string, resource: HostedResource) {
 	await db.execute(sql`
 		UPDATE resource_links SET target_resource_id = ${resourceId}::uuid
