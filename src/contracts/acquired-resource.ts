@@ -1,5 +1,5 @@
 import type { ReferenceCitation } from './reference-citation';
-import type { ResourceCreator, ResourceIdentifier, ResourceKind, ResourceKindMetadata, ResourcePlatform } from './resource';
+import type { ResourceCreator, ResourceEntity, ResourceIdentifier, ResourceKind, ResourceKindMetadata, ResourcePlatform } from './resource';
 
 /** One reader line: whole sentences from one speaker, timed from its first cue. */
 export type YouTubeTranscriptLine = Readonly<{ speakerTurn: boolean; startTime: number; text: string }>;
@@ -40,6 +40,8 @@ export type AcquiredResource = {
 	subjectUrl: string | null;
 	/** Only YouTube videos carry a transcript. */
 	youtube?: YouTubeTranscript;
+	/** What the original is about, extracted after acquisition; absent keeps what is stored. */
+	entities?: readonly ResourceEntity[];
 };
 
 /** Hints a source monitor or a subject carrier already resolved for a draft. */

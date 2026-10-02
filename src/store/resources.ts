@@ -6,7 +6,7 @@ import type { HostedPreview } from '../contracts/image-mapping';
 import type { NormalizedResource } from '../contracts/normalize-resource';
 import { PDF_MIME } from '../contracts/pdf-policy';
 import type { ResourceDraftRelation } from '../contracts/processing-target';
-import { type ResourceKind, type ResourcePlatform, ResourceIdentifiersSchema } from '../contracts/resource';
+import { entityKey, type ResourceKind, type ResourcePlatform, ResourceIdentifiersSchema } from '../contracts/resource';
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { blobKey } from '../contracts/storage-keys';
@@ -195,6 +195,8 @@ async function writeCanonicalResource(
 			DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid AND ${existing}
 		), cleared_links AS (
 			DELETE FROM resource_links WHERE source_resource_id = ${resourceId}::uuid AND ${existing}
+		), cleared_entities AS (
+			DELETE FROM resource_entities WHERE resource_id = ${resourceId}::uuid AND ${existing && resource.entities !== undefined}
 		), cleared_translations AS (
 			DELETE FROM resource_translations
 			WHERE resource_id = ${resourceId}::uuid AND ${existing}
@@ -243,6 +245,28 @@ async function writeCanonicalResource(
 			INSERT INTO resource_links (source_resource_id, ordinal, url, normalized_url, target_resource_id)
 			SELECT ${resourceId}::uuid, incoming.ordinal::integer, incoming.value->>'url', incoming.value->>'normalizedUrl', (incoming.value->>'target')::uuid
 			FROM jsonb_array_elements(${JSON.stringify(rows)}::jsonb) WITH ORDINALITY AS incoming(value, ordinal)
+		`);
+	}
+	// Only corpus originals relate through entities, like links.
+	const entities = privateObjectId
+		? []
+		: (resource.entities ?? []).map((entity, ordinal) => ({ ...entity, key: entityKey(entity.name), ordinal }));
+	if (entities.length) {
+		// Sorted keys lock entity rows in one order across concurrent writers.
+		const byKey = [...entities].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+		await db.execute(sql`
+			WITH incoming AS (
+				SELECT * FROM jsonb_to_recordset(${JSON.stringify(byKey)}::jsonb)
+				AS incoming(key text, name text, type text, salience text, ordinal integer)
+			), entity AS (
+				INSERT INTO entities (key, name, type)
+				SELECT key, name, type FROM incoming
+				ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key
+				RETURNING id, key
+			)
+			INSERT INTO resource_entities (resource_id, entity_id, salience, ordinal)
+			SELECT ${resourceId}::uuid, entity.id, incoming.salience, incoming.ordinal
+			FROM incoming JOIN entity USING (key)
 		`);
 	}
 	if (resource.youtube) {

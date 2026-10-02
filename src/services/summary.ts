@@ -3,6 +3,7 @@ import { createWorkersAI } from 'workers-ai-provider';
 import { openai } from 'workers-ai-provider/openai';
 import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
+import { ENTITY_SALIENCES, ENTITY_TYPES, entityKey, type ResourceEntity } from '../contracts/resource';
 import { coreGatewayOptions } from './ai-model';
 
 const ANALYSIS_CONTENT_MAX_LENGTH = 10_000;
@@ -48,4 +49,45 @@ export async function summarizeResource(resource: AcquiredResource, env: CoreEnv
 		output_tokens: usage.outputTokens,
 	});
 	return output.summary;
+}
+
+const MAX_ABOUT_ENTITIES = 4;
+const MAX_MENTIONED_ENTITIES = 8;
+
+const ENTITY_SYSTEM = `List the named entities this content is about, to relate it to other content about the same things.
+Types: person; organization; product (software, AI model, hardware, service); work (paper, book, film, dataset, benchmark, law, standard); event (named incident, conference, deal, launch); place; concept (only a specific named technique or theory such as "RLHF" or "k-server problem", never a field or generic topic such as "AI", "materials science", "large language model" or "security").
+Salience:
+- about: the content is substantially about it; someone following this entity would want this content. At most ${MAX_ABOUT_ENTITIES}, most central first.
+- mentions: named in passing, as an example, comparison or affiliation. At most ${MAX_MENTIONED_ENTITIES}, most specific first.
+Leave out the content's own publisher or site and its own author unless they are the subject, and dates and numbers.
+Write each name as it is most commonly written in English, keeping the original only when it has no English form, and in full ("Claude Opus 5", not "Opus").`;
+
+/** Every corpus original is related through what it is about; an extraction that names nothing is still an answer. */
+export async function extractResourceEntities(resource: AcquiredResource, env: CoreEnv, processingId: string): Promise<ResourceEntity[]> {
+	const { finishReason, output } = await generateText({
+		model: analysisModel(env, processingId, 'resource-entities'),
+		prompt: analysisPrompt(resource),
+		system: ENTITY_SYSTEM,
+		output: Output.object({
+			name: 'resource_entities',
+			schema: z.object({
+				entities: z.array(z.object({ name: z.string().trim(), type: z.enum(ENTITY_TYPES), salience: z.enum(ENTITY_SALIENCES) })),
+			}),
+		}),
+		maxOutputTokens: 1500,
+		temperature: 0,
+		maxRetries: 0,
+	});
+	if (finishReason === 'length') throw new Error('Resource entities hit their output token cap');
+	const seen = new Set<string>();
+	const distinct = output.entities.filter(({ name }) => {
+		const key = entityKey(name);
+		if (!key || seen.has(key)) return false;
+		seen.add(key);
+		return true;
+	});
+	return [
+		...distinct.filter(({ salience }) => salience === 'about').slice(0, MAX_ABOUT_ENTITIES),
+		...distinct.filter(({ salience }) => salience === 'mentions').slice(0, MAX_MENTIONED_ENTITIES),
+	];
 }

@@ -105,3 +105,20 @@ export const ResourceIdentifiersSchema = z.array(ResourceIdentifierSchema).refin
 }, 'Identifiers must be unique with exactly one preferred value per scheme');
 
 export type ResourceIdentifier = Readonly<z.infer<typeof ResourceIdentifierSchema>>;
+
+export const ENTITY_TYPES = ['person', 'organization', 'product', 'work', 'event', 'place', 'concept'] as const;
+export const ENTITY_SALIENCES = ['about', 'mentions'] as const;
+
+/** Case, width, spacing and punctuation never tell two entities apart. */
+export function entityKey(name: string): string {
+	return name
+		.normalize('NFKC')
+		.toLowerCase()
+		.replace(/[\s\-_.·・'’"]+/gu, '');
+}
+
+export type ResourceEntity = Readonly<{
+	name: string;
+	type: (typeof ENTITY_TYPES)[number];
+	salience: (typeof ENTITY_SALIENCES)[number];
+}>;

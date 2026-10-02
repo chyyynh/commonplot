@@ -7,7 +7,7 @@ import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type Resourc
 import { blobKey } from '../contracts/storage-keys';
 import { AI_STEP_RETRIES } from '../services/ai-model';
 import { stageResourceImages } from '../services/image-rehosting';
-import { summarizeResource } from '../services/summary';
+import { extractResourceEntities, summarizeResource } from '../services/summary';
 import { withCoreDb } from '../store/db';
 import {
 	claimAcquisitionFence,
@@ -64,12 +64,19 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				target_kind: target.kind,
 			});
 			void task.report('analysis', { stage: 'analyzing', status: 'running' });
-			const [summary, hostedImages] = await Promise.all([
+			const [summary, entities, hostedImages] = await Promise.all([
 				// Posts are their text; a summary would only restate it.
 				resource.summary ??
 					(resource.kind === 'post'
 						? null
 						: step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, event.instanceId))),
+				// Entities only relate Resources; an import never fails without them, and a reacquisition keeps the stored ones.
+				step
+					.do('extract-resource-entities-v1', AI_STEP, () => extractResourceEntities(resource, this.env, event.instanceId))
+					.catch((error: unknown) => {
+						console.error({ tag: 'WORKFLOW', msg: 'Entity extraction failed', processing_id: event.instanceId, error });
+						return undefined;
+					}),
 				stageResourceImages(
 					this.env,
 					step,
@@ -78,7 +85,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					target.kind === 'reacquire' ? event.instanceId : undefined,
 				),
 			]);
-			const summarized = withHostedImages({ ...resource, summary }, hostedImages);
+			const summarized = withHostedImages({ ...resource, summary, entities }, hostedImages);
 			void task.report('persisting', { stage: 'persisting', status: 'running' });
 			const persistence = await step.do('persist-resolved-resource-scope-v8', STORAGE_STEP, async () =>
 				withCoreDb(this.env, (db) =>
