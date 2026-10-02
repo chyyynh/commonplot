@@ -271,7 +271,7 @@ export async function replaceResourceEntities(db: NodePgDatabase, resourceId: st
 	const rows = entities
 		.map((entity, ordinal) => ({ ...entity, key: entityKey(entity.name), ordinal, unqualified: /^[^\s\d()]+$/u.test(entity.name.trim()) }))
 		.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-	// A one-word name extracted without its maker joins the only entity of that name that has one,
+	// A one-word name extracted without its maker joins the only entity of that name and type that has one,
 	// so "Dots" from a post that never names OpenAI is "Dots (OpenAI)".
 	await db.execute(sql`
 		WITH incoming AS (
@@ -281,7 +281,7 @@ export async function replaceResourceEntities(db: NodePgDatabase, resourceId: st
 			SELECT COALESCE(
 				CASE WHEN incoming.unqualified THEN (
 					SELECT min(sibling.key) FROM entities sibling
-					WHERE starts_with(sibling.key, incoming.key || '(')
+					WHERE starts_with(sibling.key, incoming.key || '(') AND sibling.type = incoming.type
 					  AND EXISTS (SELECT 1 FROM resource_entities used WHERE used.entity_id = sibling.id)
 					HAVING count(*) = 1
 				) END,
