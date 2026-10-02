@@ -26,7 +26,7 @@ const CANONICAL_SEARCH_CONFIG = {
 	score_threshold: 0,
 } as const satisfies Partial<AiSearchConfig>;
 
-/** `since` reloads only Resources changed after that instant, to catch up an index loaded before it. */
+/** Missing Resources always load; `since` also reloads those changed after that instant. */
 type SearchIndexRebuildPayload = { since?: string };
 type SearchIndexStats = {
 	completed: number;
@@ -63,25 +63,30 @@ async function loadCorpusCount(db: NodePgDatabase): Promise<number> {
 	return count;
 }
 
-async function listCorpusIdsAfter(db: NodePgDatabase, cursor: string | null, since: string | null): Promise<string[]> {
+async function listCorpusIdsAfter(
+	db: NodePgDatabase,
+	cursor: string | null,
+	since: string | null,
+): Promise<Array<{ id: string; changed: boolean }>> {
 	// A document carries every translation's title and summary, so a changed translation changes it too.
-	const result = await db.execute<{ id: string }>(sql`
-		SELECT r.id::text
+	const result = await db.execute<{ id: string; changed: boolean }>(sql`
+		SELECT r.id::text,
+		       (
+		         ${since}::timestamptz IS NOT NULL AND (
+		           r.updated_at > ${since}::timestamptz
+		           OR EXISTS (
+		             SELECT 1 FROM resource_translations t WHERE t.resource_id = r.id AND t.updated_at > ${since}::timestamptz
+		           )
+		         )
+		       ) AS changed
 		FROM resources r
 		WHERE r.scope = 'corpus'
 		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		  AND (${cursor}::uuid IS NULL OR r.id > ${cursor}::uuid)
-		  AND (
-		    ${since}::timestamptz IS NULL
-		    OR r.updated_at > ${since}::timestamptz
-		    OR EXISTS (
-		      SELECT 1 FROM resource_translations t WHERE t.resource_id = r.id AND t.updated_at > ${since}::timestamptz
-		    )
-		  )
 		ORDER BY r.id
 		LIMIT ${REINDEX_PAGE_SIZE}
 	`);
-	return result.rows.map((row) => row.id);
+	return result.rows;
 }
 
 async function loadEligibleCorpusIds(db: NodePgDatabase, resourceIds: readonly string[]): Promise<Set<string>> {
@@ -108,7 +113,12 @@ async function loadSearchItemPageCount(instance: AiSearchInstance): Promise<numb
 	return Math.ceil(total / REINDEX_PAGE_SIZE);
 }
 
-async function pruneSearchItemPage(instance: AiSearchInstance, db: NodePgDatabase, page: number): Promise<number> {
+/** Deletes a page's stale items and returns the Resources it still indexes. */
+async function pruneSearchItemPage(
+	instance: AiSearchInstance,
+	db: NodePgDatabase,
+	page: number,
+): Promise<{ deleted: number; kept: string[] }> {
 	const listed = await instance.items.list({
 		metadata_filter: CORPUS_FOLDER_FILTER,
 		page,
@@ -123,28 +133,35 @@ async function pruneSearchItemPage(instance: AiSearchInstance, db: NodePgDatabas
 		return resourceId === null || !eligibleIds.has(resourceId);
 	});
 	await pLimit(REINDEX_AI_SEARCH_CONCURRENCY).map(staleItems, (item) => instance.items.delete(item.id));
-	return staleItems.length;
+	return { deleted: staleItems.length, kept: [...eligibleIds] };
 }
 
+/** Prunes stale items until a pass deletes none; that clean pass lists every Resource the index holds. */
 async function reconcileSearchItems(env: CoreEnv, instance: AiSearchInstance, step: WorkflowStep) {
 	let deleted = 0;
 	for (let pass = 0; pass < REINDEX_MAX_PRUNE_PASSES; pass++) {
 		const pageCount = await step.do(`count-search-item-pages-${pass}`, SHORT_STEP_OPTIONS, () => loadSearchItemPageCount(instance));
 		let passDeleted = 0;
+		const indexed = new Set<string>();
+		// Walking backwards keeps deletions from shifting unvisited items past the cursor.
 		for (let lastPage = pageCount; lastPage >= 1; lastPage -= REINDEX_PRUNE_PAGES_PER_STEP) {
 			const firstPage = Math.max(1, lastPage - REINDEX_PRUNE_PAGES_PER_STEP + 1);
-			passDeleted += await step.do(`prune-search-items-${pass}-${firstPage}-${lastPage}`, BATCH_STEP_OPTIONS, () =>
+			const pruned = await step.do(`prune-search-items-${pass}-${firstPage}-${lastPage}`, BATCH_STEP_OPTIONS, () =>
 				withCoreDb(env, async (db) => {
-					let deleted = 0;
+					const result = { deleted: 0, kept: [] as string[] };
 					for (let page = lastPage; page >= firstPage; page--) {
-						deleted += await pruneSearchItemPage(instance, db, page);
+						const { deleted, kept } = await pruneSearchItemPage(instance, db, page);
+						result.deleted += deleted;
+						result.kept.push(...kept);
 					}
-					return deleted;
+					return result;
 				}),
 			);
+			passDeleted += pruned.deleted;
+			for (const id of pruned.kept) indexed.add(id);
 		}
 		deleted += passDeleted;
-		if (passDeleted === 0) return { deleted, passes: pass + 1 };
+		if (passDeleted === 0) return { deleted, passes: pass + 1, indexed };
 	}
 	throw new Error(`AI Search stale-item reconciliation did not converge after ${REINDEX_MAX_PRUNE_PASSES} passes`);
 }
@@ -251,7 +268,7 @@ async function waitForSearchIndex(env: CoreEnv, instance: AiSearchInstance, step
 	throw new Error(`AI Search index did not converge: ${JSON.stringify(last)}`);
 }
 
-/** Configures the corpus index, reloads eligible Resources, prunes stale items and waits for convergence. */
+/** Configures the corpus index, prunes stale items, loads missing or changed Resources and waits for convergence. */
 export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, SearchIndexRebuildPayload> {
 	async run(event: WorkflowEvent<SearchIndexRebuildPayload>, step: WorkflowStep) {
 		const startedAt = event.timestamp.toISOString();
@@ -260,6 +277,7 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 		const instanceConfig = await step.do('ensure-search-config', SHORT_STEP_OPTIONS, () =>
 			ensureCanonicalSearchInstanceConfig(this.env.AI_SEARCH),
 		);
+		const { indexed, ...reconciliation } = await reconcileSearchItems(this.env, this.env.AI_SEARCH, step);
 		// The sync queue owns uploads: it reloads each Resource, retries, and wins any race with live writes.
 		let cursor: string | null = null;
 		let enqueued = 0;
@@ -267,18 +285,18 @@ export class SearchIndexRebuildWorkflow extends WorkflowEntrypoint<CoreEnv, Sear
 		while (true) {
 			const page = await step.do(`enqueue-corpus-page-${pages}`, BATCH_STEP_OPTIONS, () =>
 				withCoreDb(this.env, async (db) => {
-					const ids = await listCorpusIdsAfter(db, cursor, since);
+					const rows = await listCorpusIdsAfter(db, cursor, since);
+					const ids = rows.filter((row) => row.changed || !indexed.has(row.id)).map((row) => row.id);
 					if (ids.length) await this.env.RESOURCE_SEARCH_SYNC_QUEUE.sendBatch(ids.map((resourceId) => ({ body: { resourceId } })));
-					return { cursor: ids.at(-1) ?? null, enqueued: ids.length };
+					return { cursor: rows.at(-1)?.id ?? null, enqueued: ids.length };
 				}),
 			);
-			if (!page.enqueued) break;
+			if (!page.cursor) break;
 			cursor = page.cursor;
 			enqueued += page.enqueued;
 			pages++;
 		}
 
-		const reconciliation = await reconcileSearchItems(this.env, this.env.AI_SEARCH, step);
 		const readiness = await waitForSearchIndex(this.env, this.env.AI_SEARCH, step);
 		return {
 			mode: 'rebuild' as const,

@@ -45,10 +45,12 @@ cutover.
 One rebuild performs these durable operations:
 
 1. configure the AI Search instance;
-2. enqueue every currently eligible Resource, in UUID order, on the search sync
-   queue, whose consumer uploads the current snapshot and absorbs races with
-   live writes;
-3. prune keyed items that no longer map to an eligible PostgreSQL row;
+2. prune keyed items that no longer map to an eligible PostgreSQL row, noting
+   which Resources the index still holds;
+3. enqueue, in UUID order, every eligible Resource the index lacks (all of them
+   for a fresh instance) plus, with `since`, every one changed after it, on the
+   search sync queue, whose consumer uploads the current snapshot and absorbs
+   races with live writes;
 4. poll native AI Search status until queued/running are zero, terminal counts
    are zero, and completed/keyed item counts match the live PostgreSQL count;
 5. return the counts and reconciliation summary as Workflow output.
@@ -90,9 +92,9 @@ pnpm -C workers/core-worker exec wrangler workflows trigger \
   --id search-index-rebuild-v7-v2
 ```
 
-To catch up an index that finished loading after other writes went elsewhere,
-pass `since` (an ISO instant); only Resources or translations changed after it
-are reloaded, while pruning and error retries still cover the whole index:
+A rerun on a loaded index only fills its gaps. To also refresh Resources whose
+document changed while writes went elsewhere, pass `since` (an ISO instant); a
+document-format change reloads everything with `"since":"1970-01-01T00:00:00Z"`:
 
 ```sh
 pnpm -C workers/core-worker exec wrangler workflows trigger \
