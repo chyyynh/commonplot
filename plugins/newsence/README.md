@@ -64,6 +64,7 @@ I save this week?" use `list_saves` and then `read_resource`.
 | `/.well-known/oauth-authorization-server/api/auth` | Authorization server discovery |
 | `/api/auth/oauth2/*` | Registration, authorization (PKCE S256), token, refresh |
 | `/auth/consent` | Consent page |
+| `/api/embed` | Open embedded website mode; creates no login session |
 
 - `show_reading` takes 1–10 URLs with the model's title and one-line reason,
   and returns them with any earlier saves so those cards show as saved.
@@ -73,12 +74,13 @@ I save this week?" use `list_saves` and then `read_resource`.
 - `save_urls` takes 1–10 HTTP(S) URLs and saves them for the token's user; it
   never accepts a user id. `ready` is saved and readable; `accepted` is received
   and prepared in the background by Core.
-- The card (`ui://newsence/reading-list-v6.html`) is a standard MCP Apps view:
+- The card (`ui://newsence/reading-list-v7.html`) is a standard MCP Apps view:
   React, `@modelcontextprotocol/ext-apps` and `@openai/apps-sdk-ui`, in
   `web-tanstack/src/server/plugin/widget/`. The `newsence-widget` plugin in
   `vite.config.ts` bundles it into the resource HTML. Its layout follows the
   chat source cards. It polls `get_save_status` a few times while saves are
-  pending. Change its URI when the UI contract changes.
+  pending. If those checks run out, **Check again** fetches the latest status
+  without submitting another save. Change its URI when the UI contract changes.
 - **Read** on a saved card opens a full-screen reader in hosts that allow it
   (others open the Newsence page). `open_reader` returns the same resource
   projection as `/p/{id}`, and the view renders it with the app's
@@ -90,14 +92,19 @@ I save this week?" use `list_saves` and then `read_resource`.
   prepared message listing the cards, in hosts that accept view messages.
 - `open_newsence` is a ChatGPT global entrypoint (`openai/ui.entrypoints`):
   the sidebar and the plugin's **Open plugin** button open
-  `ui://newsence/app-v1.html` full screen. That view frames
-  `https://www.newsence.app` (`csp.frameDomains`). The tool returns a
-  one-time ticket (`verification` row, two minutes); `/api/auth/embed`
-  consumes it and sets a session cookie with `SameSite=None; Partitioned`, so
-  it exists only inside ChatGPT and the user's own newsence.app cookie is
-  never sent to the frame. A `newsence_embed` cookie switches the app to
-  embedded mode: no AI rail or chat, account menu, onboarding or upgrade
-  links. The reader posts the open resource to the view, which passes it to
+  `ui://newsence/app-v2.html` full screen. That view frames
+  `https://www.newsence.app` (`csp.frameDomains`). The tool returns only the
+  public `/api/embed` entry URL, which sets a UI-mode cookie and redirects to
+  the app. It never exchanges OAuth access for a website login. The user signs
+  in independently with an email code inside the frame; Google sign-in is
+  available on the standalone website. Embedded auth uses the separate
+  `newsence-embedded` cookie prefix with `SameSite=None; Secure; HttpOnly;
+  Partitioned` on both session and session-cache cookies, including deletion.
+  The account menu shows the signed-in identity and provides sign-out.
+  Disconnecting the plugin revokes MCP access; this independently established
+  website login is ended with the website's **Sign out** action.
+  A `newsence_embed` cookie switches the app to embedded mode: no AI rail or
+  chat, onboarding or upgrade links. The reader posts the open resource to the view, which passes it to
   the model with `updateModelContext`; host deep links
   (`openai/deepLink`) navigate the frame. HTML responses allow framing only
   by the app and ChatGPT (`frame-ancestors`). Submission must justify the
@@ -112,9 +119,23 @@ I save this week?" use `list_saves` and then `read_resource`.
 - Requests are limited per user and log only `NEWSENCE_PLUGIN_TIMING` durations,
   never URLs, user ids or tokens.
 
-## Verify
+## Manual verification
 
-From `web-tanstack/`, `pnpm test:plugin-auth` runs the real OAuth provider
-in memory: registration, consent, separate accounts, audience/scope/signature
-rejection, refresh, disconnect and code replay. It does not cover a real host,
-the database or Core; check those against production with two accounts.
+Deploy the updated Web to the HTTPS environment configured in the plugin,
+refresh the host connection, and start a new conversation before checking:
+
+1. Connect with account A, ask for reading recommendations, and confirm nothing
+   is saved before pressing **Save**. Save one card and find it in A's library.
+2. Ask what you saved and summarize the saved item; compare with its stored text.
+3. Keep the standalone website signed in. With the embedded website signed out,
+   **Open plugin** must still require its own email-code sign-in. Sign in, open a
+   saved item, and confirm the account menu identifies the intended account.
+4. Sign out inside the frame and reopen it: private pages must require sign-in,
+   while the standalone website stays signed in.
+5. Sign in inside the frame again, then disconnect the plugin in Newsence's
+   **Connected apps**. A fresh library tool call must require authorization;
+   the independently signed-in website remains usable until signed out.
+6. Reconnect the plugin with account B. Fresh library calls must show B's saves,
+   without A's private data. The embedded website retains its own login.
+7. If processing outlasts automatic polling, press **Check again**. It must
+   update the status without saving again; **Read** must open the ready item.
