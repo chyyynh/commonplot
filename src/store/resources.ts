@@ -269,21 +269,35 @@ export async function replaceResourceEntities(db: NodePgDatabase, resourceId: st
 	if (!entities.length) return;
 	// Sorted keys lock entity rows in one order across concurrent writers.
 	const rows = entities
-		.map((entity, ordinal) => ({ ...entity, key: entityKey(entity.name), ordinal }))
+		.map((entity, ordinal) => ({ ...entity, key: entityKey(entity.name), ordinal, unqualified: /^[^\s\d()]+$/u.test(entity.name.trim()) }))
 		.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+	// A one-word name extracted without its maker joins the only entity of that name that has one,
+	// so "Dots" from a post that never names OpenAI is "Dots (OpenAI)".
 	await db.execute(sql`
 		WITH incoming AS (
 			SELECT * FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb)
-			AS incoming(key text, name text, type text, salience text, ordinal integer)
+			AS incoming(key text, name text, type text, salience text, ordinal integer, unqualified boolean)
+		), resolved AS (
+			SELECT COALESCE(
+				CASE WHEN incoming.unqualified THEN (
+					SELECT min(sibling.key) FROM entities sibling
+					WHERE starts_with(sibling.key, incoming.key || '(')
+					  AND EXISTS (SELECT 1 FROM resource_entities used WHERE used.entity_id = sibling.id)
+					HAVING count(*) = 1
+				) END,
+				incoming.key
+			) AS key, incoming.name, incoming.type, incoming.salience, incoming.ordinal
+			FROM incoming
 		), entity AS (
 			INSERT INTO entities (key, name, type)
-			SELECT key, name, type FROM incoming
+			SELECT DISTINCT ON (key) key, name, type FROM resolved ORDER BY key, ordinal
 			ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key
 			RETURNING id, key
 		)
 		INSERT INTO resource_entities (resource_id, entity_id, salience, ordinal)
-		SELECT ${resourceId}::uuid, entity.id, incoming.salience, incoming.ordinal
-		FROM incoming JOIN entity USING (key)
+		SELECT DISTINCT ON (entity.id) ${resourceId}::uuid, entity.id, resolved.salience, resolved.ordinal
+		FROM resolved JOIN entity USING (key)
+		ORDER BY entity.id, resolved.ordinal
 	`);
 }
 

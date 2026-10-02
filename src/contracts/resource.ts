@@ -110,9 +110,9 @@ export const ENTITY_TYPES = ['person', 'organization', 'product', 'work', 'event
 export const ENTITY_SALIENCES = ['about', 'mentions'] as const;
 
 /**
- * Case, width, spacing and punctuation never tell two entities apart. A parenthetical qualifier
- * does only for a single bare word ("Pi (coding agent)"); a longer or versioned name is already
- * specific, so "GPT-6 Astra (AI model)" is "GPT-6 Astra".
+ * Case, width, spacing and punctuation never tell two entities apart. A parenthetical qualifier,
+ * the maker, does only for a single bare word ("Pi (Inflection AI)"); a longer or versioned name is
+ * already specific, so "GPT-6 Astra (OpenAI)" is "GPT-6 Astra".
  */
 export function entityKey(name: string): string {
 	const normalized = name.normalize('NFKC').toLowerCase().trim();

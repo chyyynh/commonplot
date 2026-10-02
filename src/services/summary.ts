@@ -63,7 +63,18 @@ Leave out dates and numbers, the content's own publisher, site or author, and th
 Names:
 - Write each as it is most commonly written in English, keeping the original only when it has no English form.
 - Write the full specific name, completing a shortened one from the content: "Opus 5.5" is "Claude Opus 5.5", "Astra" is "GPT-6 Astra". Use a family name such as "Claude" or "Gemini" only when the content is about the whole family.
-- When a name is short or shared by unrelated things, add what it is in parentheses: "Pi (coding agent)", "Mercury (planet)".`;
+- Write the thing's own name without its maker or the product it ships in, and without parentheses: "Dots", not "OpenAI Dots", "ChatGPT Dots" or "Dots (AI agent)".
+Maker: for every product and work, the organization or person that makes it, by its common name ("OpenAI", "Meta", "Mario Zechner"); null for every other type.`;
+
+/**
+ * A one-word name is shared by unrelated things, and a free-form qualifier varies between extractions
+ * ("Dots (AI agent)", "Dots (OpenAI product)"), so it is told apart by its maker alone: "Dots (OpenAI)".
+ */
+function makerQualifiedName(name: string, maker: string | null) {
+	const bare = name.replace(/\s*\([^)]*\)\s*$/u, '');
+	if (!maker || /[\s\d]/u.test(bare) || entityKey(maker) === entityKey(bare)) return bare;
+	return `${bare} (${maker})`;
+}
 
 /** Every corpus original is related through what it is about; an extraction that names nothing is still an answer. */
 export async function extractResourceEntities(resource: EntitySource, env: CoreEnv, processingId: string): Promise<ResourceEntity[]> {
@@ -74,7 +85,14 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 		output: Output.object({
 			name: 'resource_entities',
 			schema: z.object({
-				entities: z.array(z.object({ name: z.string().trim(), type: z.enum(ENTITY_TYPES), salience: z.enum(ENTITY_SALIENCES) })),
+				entities: z.array(
+					z.object({
+						name: z.string().trim(),
+						maker: z.string().trim().nullable(),
+						type: z.enum(ENTITY_TYPES),
+						salience: z.enum(ENTITY_SALIENCES),
+					}),
+				),
 			}),
 		}),
 		maxOutputTokens: 1500,
@@ -83,12 +101,14 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 	});
 	if (finishReason === 'length') throw new Error('Resource entities hit their output token cap');
 	const seen = new Set<string>();
-	const distinct = output.entities.filter(({ name }) => {
-		const key = entityKey(name);
-		if (!key || seen.has(key)) return false;
-		seen.add(key);
-		return true;
-	});
+	const distinct = output.entities
+		.map(({ maker, ...entity }) => ({ ...entity, name: makerQualifiedName(entity.name, maker) }))
+		.filter(({ name }) => {
+			const key = entityKey(name);
+			if (!key || seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		});
 	return [
 		...distinct.filter(({ salience }) => salience === 'about').slice(0, MAX_ABOUT_ENTITIES),
 		...distinct.filter(({ salience }) => salience === 'mentions').slice(0, MAX_MENTIONED_ENTITIES),
