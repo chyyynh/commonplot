@@ -59,8 +59,11 @@ Types: person; organization; product (software, AI model, hardware, service); wo
 Salience:
 - about: the content is substantially about it; someone following this entity would want this content. At most ${MAX_ABOUT_ENTITIES}, most central first.
 - mentions: named in passing, as an example, comparison or affiliation. At most ${MAX_MENTIONED_ENTITIES}, most specific first.
-Leave out the content's own publisher or site and its own author unless they are the subject, and dates and numbers.
-Write each name as it is most commonly written in English, keeping the original only when it has no English form, and in full ("Claude Opus 5", not "Opus").`;
+Leave out dates and numbers, the content's own publisher, site or author, and the platform it was posted on (Hacker News, X, Reddit, YouTube, GitHub) unless the content is about that itself.
+Names:
+- Write each as it is most commonly written in English, keeping the original only when it has no English form.
+- Write the full specific name, completing a shortened one from the content: "Opus 5.5" is "Claude Opus 5.5", "Astra" is "GPT-6 Astra". Use a family name such as "Claude" or "Gemini" only when the content is about the whole family.
+- When a name is short or shared by unrelated things, add what it is in parentheses: "Pi (coding agent)", "Mercury (planet)".`;
 
 /** Every corpus original is related through what it is about; an extraction that names nothing is still an answer. */
 export async function extractResourceEntities(resource: EntitySource, env: CoreEnv, processingId: string): Promise<ResourceEntity[]> {

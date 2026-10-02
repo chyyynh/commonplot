@@ -287,10 +287,10 @@ export async function replaceResourceEntities(db: NodePgDatabase, resourceId: st
 	`);
 }
 
-/** Corpus Resources published in a window that have no entities yet, by id after `after`. */
-export async function listResourcesWithoutEntities(
+/** Corpus Resources published in a window, by id after `after`: those without entities, or all with `replace`. */
+export async function listEntityBackfillResources(
 	db: NodePgDatabase,
-	{ since, until, after, limit }: { since: string; until: string | null; after: string | null; limit: number },
+	{ since, until, after, limit, replace }: { since: string; until: string | null; after: string | null; limit: number; replace: boolean },
 ) {
 	const result = await db.execute<{ id: string }>(sql`
 		SELECT r.id::text FROM resources r
@@ -298,7 +298,7 @@ export async function listResourcesWithoutEntities(
 		  AND r.published_date >= ${since}::timestamptz
 		  AND (${until}::timestamptz IS NULL OR r.published_date < ${until}::timestamptz)
 		  AND (${after}::uuid IS NULL OR r.id > ${after}::uuid)
-		  AND NOT EXISTS (SELECT 1 FROM resource_entities re WHERE re.resource_id = r.id)
+		  AND (${replace} OR NOT EXISTS (SELECT 1 FROM resource_entities re WHERE re.resource_id = r.id))
 		ORDER BY r.id
 		LIMIT ${limit}
 	`);

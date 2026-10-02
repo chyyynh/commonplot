@@ -4,11 +4,13 @@ import { z } from 'zod';
 import { AI_STEP_RETRIES } from '../services/ai-model';
 import { extractResourceEntities } from '../services/summary';
 import { withCoreDb } from '../store/db';
-import { listResourcesWithoutEntities, loadEntitySource, replaceResourceEntities } from '../store/resources';
+import { listEntityBackfillResources, loadEntitySource, replaceResourceEntities } from '../store/resources';
 
 const EntityBackfillPayloadSchema = z.strictObject({
 	since: z.iso.datetime({ offset: true }),
 	until: z.iso.datetime({ offset: true }).optional(),
+	/** Re-extract Resources that already have entities, e.g. after the extraction prompt changed. */
+	replace: z.boolean().optional(),
 });
 type EntityBackfillPayload = z.infer<typeof EntityBackfillPayloadSchema>;
 
@@ -18,18 +20,21 @@ const STORAGE_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'expone
 const AI_STEP = { retries: AI_STEP_RETRIES, timeout: '600 seconds' } as const;
 
 /**
- * Extracts entities for stored corpus originals published in a window that have none, without
+ * Extracts entities for stored corpus originals published in a window that have none, or for all of
+ * them with `replace`, without
  * reacquiring them. A Resource whose extraction keeps failing is skipped; a later run retries it.
  */
 export class ResourceEntityBackfillWorkflow extends WorkflowEntrypoint<CoreEnv, EntityBackfillPayload> {
 	async run(event: WorkflowEvent<EntityBackfillPayload>, step: WorkflowStep) {
-		const { since, until } = EntityBackfillPayloadSchema.parse(event.payload);
+		const { since, until, replace } = EntityBackfillPayloadSchema.parse(event.payload);
 		let after: string | null = null;
 		let written = 0;
 		let failed = 0;
 		for (let page = 0; ; page++) {
 			const ids = await step.do(`list-resources-without-entities-${page}`, STORAGE_STEP, () =>
-				withCoreDb(this.env, (db) => listResourcesWithoutEntities(db, { since, until: until ?? null, after, limit: PAGE_SIZE })),
+				withCoreDb(this.env, (db) =>
+					listEntityBackfillResources(db, { since, until: until ?? null, after, limit: PAGE_SIZE, replace: replace ?? false }),
+				),
 			);
 			if (!ids.length) break;
 			const limit = pLimit(EXTRACTION_CONCURRENCY);
