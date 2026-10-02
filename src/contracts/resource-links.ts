@@ -51,16 +51,13 @@ export function resourceLinks(content: string, excluded: readonly (string | null
 	return links;
 }
 
+const PAPER_IDENTITY_KEYS = { doi: 'doi', arxiv: 'arxivId', openalex: 'openAlexId' } as const;
+
 /** Every normalized URL a link to this Resource is stored under: its own, and each paper identifier's canonical URL. */
 export function linkedResourceUrls(normalizedUrl: string | null, identifiers: readonly { scheme: string; value: string }[]): string[] {
-	const urls = identifiers.flatMap(({ scheme, value }) =>
-		scheme === 'doi'
-			? [canonicalPaperUrl({ doi: value })]
-			: scheme === 'arxiv'
-				? [canonicalPaperUrl({ arxivId: value })]
-				: scheme === 'openalex'
-					? [canonicalPaperUrl({ openAlexId: value })]
-					: [],
-	);
+	const urls = identifiers.flatMap(({ scheme, value }) => {
+		const key = PAPER_IDENTITY_KEYS[scheme as keyof typeof PAPER_IDENTITY_KEYS];
+		return key ? [canonicalPaperUrl({ [key]: value })] : [];
+	});
 	return [...new Set([...(normalizedUrl ? [normalizedUrl] : []), ...urls])];
 }

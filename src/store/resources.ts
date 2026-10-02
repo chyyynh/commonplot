@@ -193,6 +193,8 @@ async function writeCanonicalResource(
 			DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid AND ${existing}
 		), cleared_references AS (
 			DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid AND ${existing}
+		), cleared_links AS (
+			DELETE FROM resource_links WHERE source_resource_id = ${resourceId}::uuid AND ${existing}
 		), cleared_translations AS (
 			DELETE FROM resource_translations
 			WHERE resource_id = ${resourceId}::uuid AND ${existing}
@@ -229,6 +231,20 @@ async function writeCanonicalResource(
 			WITH ORDINALITY AS incoming(value, ordinal)
 		`);
 	}
+	// Only corpus originals link; a private file's links are its owner's alone.
+	const links = privateObjectId ? [] : resourceLinks(resource.content, [resource.normalizedUrl, resource.subject?.normalizedUrl ?? null]);
+	if (links.length) {
+		const candidates = await findResourceCandidates(db, links);
+		const rows = links.map(({ url, normalizedUrl }, index) => {
+			const owners = candidates[index]!.filter(({ scope }) => scope === 'corpus');
+			return { url, normalizedUrl, target: owners.length === 1 && owners[0]!.id !== resourceId ? owners[0]!.id : null };
+		});
+		await db.execute(sql`
+			INSERT INTO resource_links (source_resource_id, ordinal, url, normalized_url, target_resource_id)
+			SELECT ${resourceId}::uuid, incoming.ordinal::integer, incoming.value->>'url', incoming.value->>'normalizedUrl', (incoming.value->>'target')::uuid
+			FROM jsonb_array_elements(${JSON.stringify(rows)}::jsonb) WITH ORDINALITY AS incoming(value, ordinal)
+		`);
+	}
 	if (resource.youtube) {
 		const transcript = resource.youtube;
 		const savedTranscript = await db.execute(sql`
@@ -244,37 +260,12 @@ async function writeCanonicalResource(
 	}
 }
 
-/** Replace the links a corpus original makes; each points to the one corpus Resource it names, when there is one. */
-async function writeResourceLinks(db: NodePgDatabase, resourceId: string, resource: HostedResource) {
-	await db.execute(sql`DELETE FROM resource_links WHERE source_resource_id = ${resourceId}::uuid`);
-	const links = resourceLinks(resource.content, [resource.normalizedUrl, resource.subject?.normalizedUrl ?? null]);
-	if (!links.length) return;
-	const candidates = await findResourceCandidates(db, links);
-	const rows = links.map(({ url, normalizedUrl }, index) => {
-		const owners = candidates[index]!.filter(({ scope }) => scope === 'corpus');
-		const target = owners.length === 1 && owners[0]!.id !== resourceId ? owners[0]!.id : null;
-		return { url, normalizedUrl, target };
-	});
-	await db.execute(sql`
-		INSERT INTO resource_links (source_resource_id, ordinal, url, normalized_url, target_resource_id)
-		SELECT ${resourceId}::uuid, incoming.ordinal::integer, incoming.value->>'url', incoming.value->>'normalizedUrl', (incoming.value->>'target')::uuid
-		FROM jsonb_array_elements(${JSON.stringify(rows)}::jsonb) WITH ORDINALITY AS incoming(value, ordinal)
-	`);
-}
-
-/** Links stored before this corpus Resource existed, under any URL it is known by, now point to it. */
-async function resolveLinksTo(db: NodePgDatabase, resourceId: string) {
-	const { rows } = await db.execute<{ normalizedUrl: string | null; identifiers: { scheme: string; value: string }[] }>(sql`
-		SELECT resource.normalized_url AS "normalizedUrl", COALESCE((
-			SELECT jsonb_agg(jsonb_build_object('scheme', scheme, 'value', value)) FROM resource_identifiers WHERE resource_id = resource.id
-		), '[]'::jsonb) AS identifiers
-		FROM resources resource WHERE resource.id = ${resourceId}::uuid
-	`);
-	const urls = rows[0] ? linkedResourceUrls(rows[0].normalizedUrl, rows[0].identifiers) : [];
-	if (!urls.length) return;
+/** Links stored before this Resource existed, under any URL it is known by, now point to it. */
+async function resolveLinksTo(db: NodePgDatabase, resourceId: string, resource: HostedResource) {
 	await db.execute(sql`
 		UPDATE resource_links SET target_resource_id = ${resourceId}::uuid
-		WHERE normalized_url = ANY(${sql.param(urls)}::text[]) AND target_resource_id IS NULL AND source_resource_id <> ${resourceId}::uuid
+		WHERE normalized_url = ANY(${sql.param(linkedResourceUrls(resource.normalizedUrl, resource.resourceIdentifiers))}::text[])
+		  AND target_resource_id IS NULL AND source_resource_id <> ${resourceId}::uuid
 	`);
 }
 
@@ -400,7 +391,6 @@ export async function persistResolvedResource(
 				fence,
 				target.kind === 'upload' ? target.objectId : null,
 			);
-			if (root ? root.scope === 'corpus' : target.kind !== 'upload') await writeResourceLinks(tx, resourceId, resource);
 		} else {
 			if (target.kind === 'existing')
 				console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });
@@ -413,9 +403,8 @@ export async function persistResolvedResource(
 		}
 		if (target.kind === 'draft' && target.relation) await applyDraftRelation(tx, resourceId, target.relation);
 		// Follow-ups read the committed row, which can differ from this draft.
-		const stored = await lockResource(tx, resourceId);
-		if (stored.scope === 'corpus') await resolveLinksTo(tx, resourceId);
-		return committed(stored, outcome);
+		if (target.kind !== 'upload') await resolveLinksTo(tx, resourceId, resource);
+		return committed(await lockResource(tx, resourceId), outcome);
 	});
 }
 
