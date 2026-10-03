@@ -116,11 +116,15 @@ function textChunks(text: string) {
 	const chunks: string[] = [];
 	let current = '';
 	for (const sentence of text.split(/(?<=[.!?。！？\n])\s+/u)) {
-		if (current && current.length + sentence.length > NER_CHUNK_LENGTH) {
-			chunks.push(current);
-			current = '';
+		// Code or unpunctuated text forms one long sentence; cut it at the chunk length.
+		for (let start = 0; start < sentence.length; start += NER_CHUNK_LENGTH) {
+			const piece = sentence.slice(start, start + NER_CHUNK_LENGTH);
+			if (current && current.length + piece.length > NER_CHUNK_LENGTH) {
+				chunks.push(current);
+				current = '';
+			}
+			current += `${piece} `;
 		}
-		current += `${sentence} `;
 	}
 	return current.trim() ? [...chunks, current] : chunks;
 }
