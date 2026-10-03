@@ -109,7 +109,7 @@ export type ResourceIdentifier = Readonly<z.infer<typeof ResourceIdentifierSchem
 export const ENTITY_TYPES = ['person', 'organization', 'product', 'work', 'event', 'place', 'concept'] as const;
 
 /**
- * Case, width, spacing and punctuation never tell two entities apart. A parenthetical qualifier,
+ * Case, width, spacing, dashes and punctuation never tell two entities apart. A parenthetical qualifier,
  * the maker, does only for a single bare word ("Pi (Inflection AI)"); a longer or versioned name is
  * already specific, so "GPT-6 Astra (OpenAI)" is "GPT-6 Astra".
  */
@@ -117,7 +117,7 @@ export function entityKey(name: string): string {
 	const normalized = name.normalize('NFKC').toLowerCase().trim();
 	const bare = normalized.replace(/\s*\([^)]*\)\s*$/u, '');
 	const specific = bare !== normalized && (/\s/u.test(bare) || /\d/u.test(bare));
-	return (specific ? bare : normalized).replace(/[\s\-_.·・'’"]+/gu, '');
+	return (specific ? bare : normalized).replace(/[\s\p{Pd}_.·・'’"]+/gu, '');
 }
 
 export type EntityType = (typeof ENTITY_TYPES)[number];
