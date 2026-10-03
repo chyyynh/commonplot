@@ -357,8 +357,7 @@ export async function listEntityBackfillResources(
 /** A stored corpus original, as entity extraction reads it. */
 export async function loadEntitySource(db: NodePgDatabase, resourceId: string): Promise<EntitySource | null> {
 	const result = await db.execute<EntitySource>(sql`
-		SELECT r.kind, r.resource_platform AS "resourcePlatform", COALESCE(r.source_name, '') AS source,
-		       r.original_lang AS "originalLang", original.title, original.summary, COALESCE(original.content, '') AS content
+		SELECT original.title, COALESCE(original.content, '') AS content
 		FROM resources r
 		JOIN resource_translations original ON original.resource_id = r.id AND original.lang = r.original_lang
 		WHERE r.id = ${resourceId}::uuid AND r.scope = 'corpus'

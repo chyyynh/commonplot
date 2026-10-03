@@ -2,7 +2,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import pLimit from 'p-limit';
 import { z } from 'zod';
 import { AI_STEP_RETRIES } from '../services/ai-model';
-import { extractResourceEntities } from '../services/summary';
+import { extractResourceEntities } from '../services/entities';
 import { withCoreDb } from '../store/db';
 import { listEntityBackfillResources, loadEntitySource, replaceResourceEntities } from '../store/resources';
 

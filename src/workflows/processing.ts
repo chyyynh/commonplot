@@ -6,8 +6,9 @@ import { resourceImageSources, withHostedImages } from '../contracts/image-mappi
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { blobKey } from '../contracts/storage-keys';
 import { AI_STEP_RETRIES } from '../services/ai-model';
+import { extractResourceEntities } from '../services/entities';
 import { stageResourceImages } from '../services/image-rehosting';
-import { extractResourceEntities, summarizeResource } from '../services/summary';
+import { summarizeResource } from '../services/summary';
 import { withCoreDb } from '../store/db';
 import {
 	claimAcquisitionFence,

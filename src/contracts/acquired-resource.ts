@@ -45,10 +45,7 @@ export type AcquiredResource = {
 };
 
 /** What entity extraction reads: an acquired original, or a stored one. */
-export type EntitySource = Pick<
-	AcquiredResource,
-	'kind' | 'resourcePlatform' | 'title' | 'summary' | 'content' | 'source' | 'originalLang'
->;
+export type EntitySource = Pick<AcquiredResource, 'title' | 'content'>;
 
 /** Hints a source monitor or a subject carrier already resolved for a draft. */
 export type SourceHints = Readonly<{ summary?: string; originalLang?: string; publishedDate?: string }>;
