@@ -68,18 +68,20 @@ function lookupKeys(name: string) {
 	return [...new Set(keys.flatMap((key) => [key, key.endsWith('s') ? key.slice(0, -1) : `${key}s`]))];
 }
 
+const sentences = new Intl.Segmenter(undefined, { granularity: 'sentence' });
+
 function textChunks(text: string) {
 	const chunks: string[] = [];
 	let current = '';
-	for (const sentence of text.split(/(?<=[.!?。！？\n])\s+/u)) {
+	for (const { segment } of sentences.segment(text)) {
 		// Code or unpunctuated text forms one long sentence; cut it at the chunk length.
-		for (let start = 0; start < sentence.length; start += NER_CHUNK_LENGTH) {
-			const piece = sentence.slice(start, start + NER_CHUNK_LENGTH);
+		for (let start = 0; start < segment.length; start += NER_CHUNK_LENGTH) {
+			const piece = segment.slice(start, start + NER_CHUNK_LENGTH);
 			if (current && current.length + piece.length > NER_CHUNK_LENGTH) {
 				chunks.push(current);
 				current = '';
 			}
-			current += `${piece} `;
+			current += piece;
 		}
 	}
 	return [...chunks, current].filter((chunk) => chunk.trim());
