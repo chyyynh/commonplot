@@ -56,14 +56,14 @@ export async function summarizeResource(resource: AcquiredResource, env: CoreEnv
 
 const FASTINO_URL = 'https://api.fastino.ai/v1/chat/completions';
 const NER_MODEL = 'fastino/gliner2.5-multi-v1';
-const LINK_MODEL = '@cf/cloudflare/clef';
+const LINK_MODEL = 'typesafe/jev';
 const ENTITY_TEXT_MAX_LENGTH = 20_000;
 /** GLiNER reads 4,096 tokens at most; sentences are packed up to this many characters. */
 const NER_CHUNK_LENGTH = 1_500;
 const NER_CONCURRENCY = 4;
 const LEAD_LENGTH = 400;
 const MAX_CANDIDATES = 6;
-/** Clef answers at most 64 questions; one of them asks what the text is about. */
+/** Questions per Jev call; one of them asks what the text is about. */
 const MAX_LINK_QUESTIONS = 63;
 const MAX_SUBJECT_OPTIONS = 10;
 const MAX_ENTITIES = 16;
@@ -149,22 +149,24 @@ async function findNames(chunk: string, env: CoreEnv) {
 	return { found: NerEntitiesSchema.parse(JSON.parse(body.choices[0].message.content)).entities, tokens: body.usage.total_tokens };
 }
 
-const ClefQuestionSchema = z.union([
+const LinkAnswerSchema = z.union([
 	z.object({ choice: z.string(), probabilities: z.record(z.string(), z.number()) }),
 	z.object({ noul: z.number() }),
 ]);
-const ClefResultSchema = z.object({
-	answers: z.record(z.string(), ClefQuestionSchema),
-	usage: z.object({ input_tokens: z.number() }),
+const LinkResultSchema = z.object({
+	result: z.object({
+		answers: z.record(z.string(), LinkAnswerSchema),
+		usage: z.object({ input_tokens: z.number() }),
+	}),
 });
-type ClefQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> } | { type: 'noul'; instructions: string };
+type LinkQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> } | { type: 'noul'; instructions: string };
 
 const describeCandidate = (candidate: EntityCandidate) =>
 	`${candidate.name}, a ${candidate.type}${candidate.example ? `, as in "${candidate.example}"` : ''}`;
 
 /**
  * Relates corpus originals through the named things they share. GLiNER finds the names, stored entities
- * of the same name are the candidates, and one Clef call picks the candidate each ambiguous name is,
+ * of the same name are the candidates, and one Jev call picks the candidate each ambiguous name is,
  * tells a new name from a generic term, and weighs what the text is mainly about.
  */
 export async function extractResourceEntities(resource: EntitySource, env: CoreEnv, processingId: string): Promise<ResourceEntity[]> {
@@ -220,7 +222,7 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 	}
 
 	const ranked = [...spans.values()].sort((a, b) => Number(b.lead) - Number(a.lead) || b.count - a.count || b.confidence - a.confidence);
-	const questions: Record<string, ClefQuestion> = {};
+	const questions: Record<string, LinkQuestion> = {};
 	const asked: { id: string; span: Span }[] = [];
 	for (const span of ranked) {
 		if (asked.length >= MAX_LINK_QUESTIONS) break;
@@ -253,7 +255,9 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 	let tokens = 0;
 	if (Object.keys(questions).length) {
 		const { gateway } = coreGatewayOptions(env, { feature: 'resource-entities', processing_id: processingId });
-		const result = ClefResultSchema.parse(await env.AI.run(LINK_MODEL as keyof AiModels, { state: text, questions } as never, { gateway }));
+		const { result } = LinkResultSchema.parse(
+			await env.AI.run(LINK_MODEL as keyof AiModels, { state: text, questions } as never, { gateway }),
+		);
 		tokens = result.usage.input_tokens;
 		for (const { id, span } of asked) {
 			const answer = result.answers[id];
