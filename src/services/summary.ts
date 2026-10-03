@@ -246,11 +246,12 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 	for (const [key, alias] of Object.entries(ALIASES)) owners.set(key, alias);
 	for (const [key, span] of spans) {
 		if (span.candidates.length) continue;
-		// A short name that starts a longer one in the same text is that longer one: "SDF", "SDF Public Access UNIX System".
+		// A short name that starts a longer one written at least as often is that longer one: "SDF", "SDF Public
+		// Access UNIX System". A name written more often than its longer forms ("ChatGPT", "ChatGPT macOS") stands.
 		const longer = [...spans.keys()].filter((other) => other.startsWith(`${key} `));
-		if (longer.length === 1) {
-			const target = spans.get(longer[0]);
-			if (target) target.count += span.count;
+		const target = longer.length === 1 ? spans.get(longer[0]) : undefined;
+		if (target && target.count >= span.count) {
+			target.count += span.count;
 			spans.delete(key);
 			continue;
 		}
