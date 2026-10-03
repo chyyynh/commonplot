@@ -107,7 +107,6 @@ export const ResourceIdentifiersSchema = z.array(ResourceIdentifierSchema).refin
 export type ResourceIdentifier = Readonly<z.infer<typeof ResourceIdentifierSchema>>;
 
 export const ENTITY_TYPES = ['person', 'organization', 'product', 'work', 'event', 'place', 'concept'] as const;
-export const ENTITY_SALIENCES = ['about', 'mentions'] as const;
 
 /**
  * Case, width, spacing and punctuation never tell two entities apart. A parenthetical qualifier,
@@ -121,8 +120,11 @@ export function entityKey(name: string): string {
 	return (specific ? bare : normalized).replace(/[\s\-_.·・'’"]+/gu, '');
 }
 
+export type EntityType = (typeof ENTITY_TYPES)[number];
+
+/** `weight`: how much the Resource is about the entity, from 0 (named in passing) to 1 (its sole subject). */
 export type ResourceEntity = Readonly<{
 	name: string;
-	type: (typeof ENTITY_TYPES)[number];
-	salience: (typeof ENTITY_SALIENCES)[number];
+	type: EntityType;
+	weight: number;
 }>;

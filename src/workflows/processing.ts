@@ -72,7 +72,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						: step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, event.instanceId))),
 				// Entities only relate Resources; an import never fails without them, and a reacquisition keeps the stored ones.
 				step
-					.do('extract-resource-entities-v1', AI_STEP, () => extractResourceEntities(resource, this.env, event.instanceId))
+					.do('extract-resource-entities-v2', AI_STEP, () => extractResourceEntities(resource, this.env, event.instanceId))
 					.catch((error: unknown) => {
 						console.error({ tag: 'WORKFLOW', msg: 'Entity extraction failed', processing_id: event.instanceId, error });
 						return undefined;

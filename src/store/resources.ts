@@ -6,7 +6,14 @@ import type { HostedPreview } from '../contracts/image-mapping';
 import type { NormalizedResource } from '../contracts/normalize-resource';
 import { PDF_MIME } from '../contracts/pdf-policy';
 import type { ResourceDraftRelation } from '../contracts/processing-target';
-import { entityKey, type ResourceEntity, type ResourceKind, type ResourcePlatform, ResourceIdentifiersSchema } from '../contracts/resource';
+import {
+	type EntityType,
+	entityKey,
+	type ResourceEntity,
+	type ResourceKind,
+	type ResourcePlatform,
+	ResourceIdentifiersSchema,
+} from '../contracts/resource';
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { blobKey } from '../contracts/storage-keys';
@@ -269,54 +276,82 @@ export async function replaceResourceEntities(db: NodePgDatabase, resourceId: st
 	if (!entities.length) return;
 	// Sorted keys lock entity rows in one order across concurrent writers.
 	const rows = entities
-		.map((entity, ordinal) => ({ ...entity, key: entityKey(entity.name), ordinal, unqualified: /^[^\s\d()]+$/u.test(entity.name.trim()) }))
+		.map((entity) => ({ ...entity, key: entityKey(entity.name) }))
 		.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-	// A one-word name extracted without its maker joins the only entity of that name and type that has one,
-	// so "Dots" from a post that never names OpenAI is "Dots (OpenAI)".
 	await db.execute(sql`
 		WITH incoming AS (
 			SELECT * FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb)
-			AS incoming(key text, name text, type text, salience text, ordinal integer, unqualified boolean)
-		), resolved AS (
-			SELECT COALESCE(
-				CASE WHEN incoming.unqualified THEN (
-					SELECT min(sibling.key) FROM entities sibling
-					WHERE starts_with(sibling.key, incoming.key || '(') AND sibling.type = incoming.type
-					  AND EXISTS (SELECT 1 FROM resource_entities used WHERE used.entity_id = sibling.id)
-					HAVING count(*) = 1
-				) END,
-				incoming.key
-			) AS key, incoming.name, incoming.type, incoming.salience, incoming.ordinal
-			FROM incoming
+			AS incoming(key text, name text, type text, weight real)
 		), entity AS (
 			INSERT INTO entities (key, name, type)
-			SELECT DISTINCT ON (key) key, name, type FROM resolved ORDER BY key, ordinal
+			SELECT DISTINCT ON (key) key, name, type FROM incoming ORDER BY key, weight DESC
 			ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key
 			RETURNING id, key
 		)
-		INSERT INTO resource_entities (resource_id, entity_id, salience, ordinal)
-		SELECT DISTINCT ON (entity.id) ${resourceId}::uuid, entity.id, resolved.salience, resolved.ordinal
-		FROM resolved JOIN entity USING (key)
-		ORDER BY entity.id, resolved.ordinal
+		INSERT INTO resource_entities (resource_id, entity_id, weight)
+		SELECT DISTINCT ON (entity.id) ${resourceId}::uuid, entity.id, incoming.weight
+		FROM incoming JOIN entity USING (key)
+		ORDER BY entity.id, incoming.weight DESC
 	`);
 }
 
-/** Corpus Resources published in a window, by id after `after`: those without entities, or all with `replace`. */
+export type EntityCandidate = Readonly<{
+	/** The key without its maker qualifier, which a name in a text is looked up by. */
+	bare: string;
+	name: string;
+	type: EntityType;
+	/** How many Resources name it. */
+	uses: number;
+	/** The Resource most about it, so a reader can tell same-named entities apart. */
+	example: string | null;
+}>;
+
+/** Stored entities whose name, without a maker qualifier, has one of the keys. */
+export async function listEntityCandidates(db: NodePgDatabase, keys: readonly string[]): Promise<EntityCandidate[]> {
+	if (!keys.length) return [];
+	const result = await db.execute<EntityCandidate>(sql`
+		SELECT split_part(e.key, '(', 1) AS bare, e.name, e.type,
+		       (SELECT count(*)::int FROM resource_entities used WHERE used.entity_id = e.id) AS uses,
+		       (SELECT left(COALESCE(t.title, t.content), 120)
+		        FROM resource_entities top
+		        JOIN resources r ON r.id = top.resource_id
+		        JOIN resource_translations t ON t.resource_id = r.id AND t.lang = r.original_lang
+		        WHERE top.entity_id = e.id
+		        ORDER BY top.weight DESC LIMIT 1) AS example
+		FROM entities e
+		WHERE split_part(e.key, '(', 1) = ANY(${sql.param([...keys])}::text[])
+	`);
+	return result.rows;
+}
+
+type EntityBackfillCursor = { publishedDate: string; id: string };
+
+/**
+ * Corpus Resources published in a window, oldest first after `after`: those without entities, or all with
+ * `replace`. Oldest first lets each Resource link to the entities earlier ones introduced.
+ */
 export async function listEntityBackfillResources(
 	db: NodePgDatabase,
-	{ since, until, after, limit, replace }: { since: string; until: string | null; after: string | null; limit: number; replace: boolean },
+	{
+		since,
+		until,
+		after,
+		limit,
+		replace,
+	}: { since: string; until: string | null; after: EntityBackfillCursor | null; limit: number; replace: boolean },
 ) {
-	const result = await db.execute<{ id: string }>(sql`
-		SELECT r.id::text FROM resources r
+	const result = await db.execute<EntityBackfillCursor>(sql`
+		SELECT r.id::text AS id, to_json(r.published_date)#>>'{}' AS "publishedDate" FROM resources r
 		WHERE r.scope = 'corpus' AND r.kind <> 'image'
 		  AND r.published_date >= ${since}::timestamptz
 		  AND (${until}::timestamptz IS NULL OR r.published_date < ${until}::timestamptz)
-		  AND (${after}::uuid IS NULL OR r.id > ${after}::uuid)
+		  AND (${after?.publishedDate ?? null}::timestamptz IS NULL
+		       OR (r.published_date, r.id) > (${after?.publishedDate ?? null}::timestamptz, ${after?.id ?? null}::uuid))
 		  AND (${replace} OR NOT EXISTS (SELECT 1 FROM resource_entities re WHERE re.resource_id = r.id))
-		ORDER BY r.id
+		ORDER BY r.published_date, r.id
 		LIMIT ${limit}
 	`);
-	return result.rows.map(({ id }) => id);
+	return result.rows;
 }
 
 /** A stored corpus original, as entity extraction reads it. */

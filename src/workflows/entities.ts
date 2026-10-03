@@ -21,25 +21,24 @@ const AI_STEP = { retries: AI_STEP_RETRIES, timeout: '600 seconds' } as const;
 
 /**
  * Extracts entities for stored corpus originals published in a window that have none, or for all of
- * them with `replace`, without
- * reacquiring them. A Resource whose extraction keeps failing is skipped; a later run retries it.
+ * them with `replace`, oldest first, without reacquiring them. A Resource whose extraction keeps failing is skipped; a later run retries it.
  */
 export class ResourceEntityBackfillWorkflow extends WorkflowEntrypoint<CoreEnv, EntityBackfillPayload> {
 	async run(event: WorkflowEvent<EntityBackfillPayload>, step: WorkflowStep) {
 		const { since, until, replace } = EntityBackfillPayloadSchema.parse(event.payload);
-		let after: string | null = null;
+		let after: { publishedDate: string; id: string } | null = null;
 		let written = 0;
 		let failed = 0;
 		for (let page = 0; ; page++) {
-			const ids = await step.do(`list-resources-without-entities-${page}`, STORAGE_STEP, () =>
+			const rows = await step.do(`list-entity-backfill-resources-${page}`, STORAGE_STEP, () =>
 				withCoreDb(this.env, (db) =>
 					listEntityBackfillResources(db, { since, until: until ?? null, after, limit: PAGE_SIZE, replace: replace ?? false }),
 				),
 			);
-			if (!ids.length) break;
+			if (!rows.length) break;
 			const limit = pLimit(EXTRACTION_CONCURRENCY);
 			const results = await Promise.all(
-				ids.map((id) =>
+				rows.map(({ id }) =>
 					limit(() =>
 						step
 							.do(`extract-resource-entities-${id}`, AI_STEP, async () => {
@@ -61,7 +60,7 @@ export class ResourceEntityBackfillWorkflow extends WorkflowEntrypoint<CoreEnv, 
 			);
 			written += results.filter(Boolean).length;
 			failed += results.length - results.filter(Boolean).length;
-			after = ids.at(-1) ?? null;
+			after = rows.at(-1) ?? null;
 		}
 		console.info({ tag: 'WORKFLOW', msg: 'Entity backfill completed', since, until, written, failed });
 		return { written, failed };

@@ -204,9 +204,10 @@
 	 * - KAITO_API_KEY enables Twitter ingestion enrichment.
 	 * - YOUTUBE_API_KEY enables YouTube transcript/channel enrichment.
 	 * - OPENALEX_API_KEY enables exact paper metadata enrichment.
+	 * - FASTINO_API_KEY finds the named entities each original is about.
 	 */
 	"secrets": {
-		"required": ["KAITO_API_KEY", "YOUTUBE_API_KEY", "OPENALEX_API_KEY"],
+		"required": ["KAITO_API_KEY", "YOUTUBE_API_KEY", "OPENALEX_API_KEY", "FASTINO_API_KEY"],
 	},
 	"vars": {
 		"AI_GATEWAY_ENVIRONMENT": "production",
