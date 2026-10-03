@@ -277,6 +277,12 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 		span.direct = span.candidates.length === 1 && only.name === span.text && only.uses >= 2 ? only : null;
 	}
 
+	// An @handle names its account, not the account's own name: "@elonmusk" may link to a stored "Elon Musk" (the
+	// same key) but never becomes an entity of its own.
+	const handleOnly = (key: string) =>
+		!key.includes(' ') &&
+		new RegExp(`@${escapeRegExp(key)}`, 'u').test(lowered) &&
+		!new RegExp(`(?<![@\\p{L}\\p{N}_])${escapeRegExp(key)}`, 'u').test(lowered);
 	const ranked = [...spans.values()].sort((a, b) => Number(b.lead) - Number(a.lead) || b.count - a.count || b.confidence - a.confidence);
 	const questions: Record<string, ClefQuestion> = {};
 	const asked: { id: string; span: Span }[] = [];
@@ -289,7 +295,13 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 			);
 			criteria.none = `None of these, or "${span.text}" is not a specific named thing here`;
 			questions[id] = { type: 'choice', instructions: `Which of these does "${span.text}" in the text refer to?`, criteria };
-		} else if (!span.candidates.length && span.confidence >= NAMED_CONFIDENCE && span.type !== 'place' && (span.lead || span.count >= 2)) {
+		} else if (
+			!span.candidates.length &&
+			span.confidence >= NAMED_CONFIDENCE &&
+			span.type !== 'place' &&
+			(span.lead || span.count >= 2) &&
+			!handleOnly(spanKey(span.text))
+		) {
 			questions[id] = {
 				type: 'noul',
 				instructions: `Is "${span.text}" the proper name of one specific ${span.type}, rather than a generic term, role, feature or description?`,
