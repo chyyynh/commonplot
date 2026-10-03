@@ -126,7 +126,7 @@ function textChunks(text: string) {
 			current += `${piece} `;
 		}
 	}
-	return current.trim() ? [...chunks, current] : chunks;
+	return [...chunks, current].filter((chunk) => chunk.trim());
 }
 
 const NerResponseSchema = z.object({
