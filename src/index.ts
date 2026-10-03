@@ -9,7 +9,7 @@ import {
 	type PublicResourceSearchInput,
 	type RelatedResourceSearchInput,
 	searchPublicResourceIds,
-	searchRelatedResourceIds,
+	searchRelatedResources,
 } from './search/search-index';
 import { consumeSearchSyncBatch } from './search/sync-consumer';
 import { withCoreDb } from './store/db';
@@ -92,7 +92,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	/** Resource-level semantic neighbors; the app Worker authoritatively filters and hydrates them. */
-	searchRelatedResourceIds(input: RelatedResourceSearchInput) {
-		return searchRelatedResourceIds(this.env, input);
+	searchRelatedResources(input: RelatedResourceSearchInput) {
+		return searchRelatedResources(this.env, input);
 	}
 }

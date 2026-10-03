@@ -183,7 +183,7 @@ export async function syncCorpusItem(env: CoreEnv, resourceId: string, document:
 	else await deleteCorpusItem(env, resourceId);
 }
 
-type SearchHit = { id: string; subjectId: string | null };
+type SearchHit = { id: string; subjectId: string | null; score: number };
 
 function hitsFromSearchResponse(response: AiSearchSearchResponse): SearchHit[] {
 	const hits: SearchHit[] = [];
@@ -193,7 +193,7 @@ function hitsFromSearchResponse(response: AiSearchSearchResponse): SearchHit[] {
 		if (!id || seen.has(id)) continue;
 		seen.add(id);
 		const subjectId = chunk.item.metadata?.subject_id;
-		hits.push({ id, subjectId: typeof subjectId === 'string' ? subjectId : null });
+		hits.push({ id, subjectId: typeof subjectId === 'string' ? subjectId : null, score: chunk.score });
 	}
 	return hits;
 }
@@ -202,10 +202,13 @@ function hitsFromSearchResponse(response: AiSearchSearchResponse): SearchHit[] {
  * Carriers give way to the Resource they discuss when it is itself searchable and of an allowed
  * kind, so each subject appears once, at its best-ranked position.
  */
-async function collapseCarriers(env: CoreEnv, hits: SearchHit[], kinds?: readonly SearchableResourceKind[]): Promise<string[]> {
-	const ids = hits.map((hit) => hit.id);
+async function collapseCarriers(
+	env: CoreEnv,
+	hits: SearchHit[],
+	kinds?: readonly SearchableResourceKind[],
+): Promise<Array<{ id: string; score: number }>> {
 	const carrierIds = hits.filter((hit) => hit.subjectId).map((hit) => hit.id);
-	if (!carrierIds.length) return ids;
+	if (!carrierIds.length) return hits.map(({ id, score }) => ({ id, score }));
 	const { rows } = await withCoreDb(env, (db) =>
 		db.execute<{ id: string; subject_id: string }>(sql`
 		SELECT carrier.id::text, r.id::text AS subject_id
@@ -218,7 +221,12 @@ async function collapseCarriers(env: CoreEnv, hits: SearchHit[], kinds?: readonl
 	`),
 	);
 	const subjects = new Map(rows.map((row) => [row.id, row.subject_id]));
-	return [...new Set(ids.map((id) => subjects.get(id) ?? id))];
+	const collapsed = new Map<string, number>();
+	for (const hit of hits) {
+		const id = subjects.get(hit.id) ?? hit.id;
+		if (!collapsed.has(id)) collapsed.set(id, hit.score);
+	}
+	return [...collapsed].map(([id, score]) => ({ id, score }));
 }
 
 /** Return AI Search candidates only; Web authoritatively filters and hydrates them from Postgres. */
@@ -251,11 +259,14 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 			},
 		},
 	});
-	return (await collapseCarriers(env, hitsFromSearchResponse(response), kindFilter)).slice(0, limit);
+	return (await collapseCarriers(env, hitsFromSearchResponse(response), kindFilter)).slice(0, limit).map((hit) => hit.id);
 }
 
-/** Match a Resource's titles and summary against the corpus by meaning alone. */
-export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResourceSearchInput): Promise<string[]> {
+/** Match a Resource's titles and summary against the corpus by meaning alone, nearest first with each match's similarity. */
+export async function searchRelatedResources(
+	env: CoreEnv,
+	input: RelatedResourceSearchInput,
+): Promise<Array<{ id: string; score: number }>> {
 	const { resourceId, limit } = RelatedResourceSearchInputSchema.parse(input);
 	// Recommendation queries need titles and the original summary, not indexed article bodies; a post's text is its title.
 	const { rows } = await withCoreDb(env, (db) =>
@@ -299,6 +310,6 @@ export async function searchRelatedResourceIds(env: CoreEnv, input: RelatedResou
 		},
 	});
 	return (await collapseCarriers(env, hitsFromSearchResponse(response)))
-		.filter((candidateId) => candidateId !== resourceId && candidateId !== document.subject_id)
+		.filter((hit) => hit.id !== resourceId && hit.id !== document.subject_id)
 		.slice(0, limit);
 }
