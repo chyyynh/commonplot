@@ -122,10 +122,9 @@ async function pruneSearchItemPage(
 		per_page: REINDEX_PAGE_SIZE,
 		source: 'builtin',
 	});
-	const ownedItems = listed.result.filter((item) => item.source_id === 'builtin');
-	const resourceIds = ownedItems.map((item) => resourceIdFromAiSearchItemKey(item.key)).filter((id): id is string => id !== null);
+	const resourceIds = listed.result.map((item) => resourceIdFromAiSearchItemKey(item.key)).filter((id): id is string => id !== null);
 	const eligibleIds = await loadEligibleCorpusIds(db, resourceIds);
-	const staleItems = ownedItems.filter((item) => {
+	const staleItems = listed.result.filter((item) => {
 		const resourceId = resourceIdFromAiSearchItemKey(item.key);
 		return resourceId === null || !eligibleIds.has(resourceId);
 	});
@@ -171,21 +170,17 @@ function normalizedCustomMetadata(
 		.sort((left, right) => left.field_name.localeCompare(right.field_name));
 }
 
+/** Whether `actual` holds every value `expected` sets; objects compare field by field. */
+function holdsValues(actual: unknown, expected: unknown): boolean {
+	if (typeof expected !== 'object' || expected === null) return actual === expected;
+	if (typeof actual !== 'object' || actual === null) return false;
+	return Object.entries(expected).every(([key, value]) => holdsValues((actual as Record<string, unknown>)[key], value));
+}
+
 function canonicalSearchInstanceConfigMatches(info: AiSearchInstanceInfo): boolean {
-	const expected = CANONICAL_SEARCH_CONFIG;
-	return !(
-		info.cache !== expected.cache ||
-		info.chunk !== expected.chunk ||
-		info.chunk_size !== expected.chunk_size ||
-		info.chunk_overlap !== expected.chunk_overlap ||
-		info.embedding_model !== expected.embedding_model ||
-		info.index_method?.vector !== expected.index_method.vector ||
-		info.index_method?.keyword !== expected.index_method.keyword ||
-		info.fusion_method !== expected.fusion_method ||
-		info.indexing_options?.keyword_tokenizer !== expected.indexing_options.keyword_tokenizer ||
-		info.max_num_results !== expected.max_num_results ||
-		info.score_threshold !== expected.score_threshold ||
-		JSON.stringify(normalizedCustomMetadata(info.custom_metadata)) !== JSON.stringify(normalizedCustomMetadata(CANONICAL_CUSTOM_METADATA))
+	return (
+		holdsValues(info, CANONICAL_SEARCH_CONFIG) &&
+		JSON.stringify(normalizedCustomMetadata(info.custom_metadata)) === JSON.stringify(normalizedCustomMetadata(CANONICAL_CUSTOM_METADATA))
 	);
 }
 
@@ -230,7 +225,7 @@ async function retryFailedSearchItems(instance: AiSearchInstance): Promise<numbe
 		source: 'builtin',
 		status: 'error',
 	});
-	const items = listed.result.filter((item) => item.source_id === 'builtin' && resourceIdFromAiSearchItemKey(item.key) !== null);
+	const items = listed.result.filter((item) => resourceIdFromAiSearchItemKey(item.key) !== null);
 	await pLimit(REINDEX_AI_SEARCH_CONCURRENCY).map(items, (item) => instance.items.get(item.id).sync());
 	return items.length;
 }

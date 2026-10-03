@@ -144,7 +144,7 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 		             'lang', translation.lang,
 		             'title', translation.title,
 		             'summary', translation.summary,
-		             'content', CASE WHEN translation.lang = r.original_lang
+		             'content', CASE WHEN translation.lang = r.original_lang OR r.kind = 'post'
 		               THEN LEFT(translation.content, ${ORIGINAL_CONTENT_MAX_CHARS}::integer) END
 		           )
 		           ORDER BY (translation.lang = r.original_lang) DESC, translation.lang
@@ -179,7 +179,7 @@ async function upsertCorpusItem(env: CoreEnv, document: CorpusDocument): Promise
 async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<void> {
 	const key = aiSearchItemKey(resourceId);
 	const listed = await env.AI_SEARCH.items.list({ key, source: 'builtin', per_page: 1 });
-	const item = listed.result.find((candidate) => candidate.key === key && candidate.source_id === 'builtin');
+	const item = listed.result.find((candidate) => candidate.key === key);
 	if (!item) return;
 	await env.AI_SEARCH.items.delete(item.id);
 	console.info({ tag: 'AI_SEARCH', msg: 'Corpus item deleted', resource_id: resourceId, item_id: item.id });
@@ -272,26 +272,16 @@ export async function searchRelatedResources(
 	input: RelatedResourceSearchInput,
 ): Promise<Array<{ id: string; score: number }>> {
 	const { resourceId, limit } = RelatedResourceSearchInputSchema.parse(input);
-	// Recommendation queries need titles and the original summary, not indexed article bodies; a post's text is its title.
-	const { rows } = await withCoreDb(env, (db) =>
-		db.execute<{ titles: (string | null)[]; summary: string | null; subject_id: string | null }>(sql`
-		SELECT r.subject_resource_id::text AS subject_id,
-		       (array_agg(translation.summary) FILTER (WHERE translation.lang = r.original_lang))[1] AS summary,
-		       array_agg(CASE WHEN r.kind = 'post' THEN LEFT(translation.content, ${RELATED_SUMMARY_MAX_CHARS}) ELSE translation.title END ORDER BY (translation.lang = r.original_lang) DESC, translation.lang) AS titles
-		FROM resources r
-		JOIN resource_translations translation ON translation.resource_id = r.id
-		  AND (translation.lang = r.original_lang OR ${inArray(sql`translation.lang`, INDEX_TRANSLATION_LANGS)})
-		WHERE r.id = ${resourceId}::uuid
-		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
-		GROUP BY r.id
-	`),
-	);
-	const [document] = rows;
+	const [document] = await withCoreDb(env, (db) => loadCorpusDocuments(db, [resourceId]));
 	if (!document) return [];
+	// Recommendation queries need titles and the original summary, not indexed article bodies; a post's text is its title.
+	const [original, ...translations] = document.translations;
+	const heading = (translation: CorpusTranslationRow) =>
+		(document.kind === 'post' ? translation.content?.slice(0, RELATED_SUMMARY_MAX_CHARS) : translation.title)?.trim();
 	const query = [
-		requiredDocumentText(document.titles[0] ?? null, 'title', resourceId),
-		...document.titles.slice(1).map((title) => title?.trim()),
-		document.summary?.trim().slice(0, RELATED_SUMMARY_MAX_CHARS),
+		requiredDocumentText(original ? (heading(original) ?? null) : null, 'title', resourceId),
+		...translations.map(heading),
+		original?.summary?.trim().slice(0, RELATED_SUMMARY_MAX_CHARS),
 	]
 		.filter(Boolean)
 		.join('\n')
