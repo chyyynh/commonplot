@@ -90,9 +90,6 @@ const LINKABLE_TYPES: Record<NamedType, readonly EntityType[]> = {
 	place: ['place', 'organization', 'concept'],
 };
 
-/** Nicknames the corpus uses for entities. */
-const ALIASES: Record<string, string> = { oai: 'OpenAI', sama: 'Sam Altman' };
-
 type Span = {
 	text: string;
 	type: NamedType;
@@ -107,25 +104,11 @@ type Span = {
 
 const cleanName = (text: string) => text.replace(/’/gu, "'").replace(/'s$/u, '').replace(/^@/u, '').replace(/\s+/gu, ' ').trim();
 const spanKey = (text: string) => cleanName(text).toLowerCase();
-const bareName = (name: string) => name.replace(/\s*\([^)]*\)\s*$/u, '');
-const makerOf = (name: string) => /\(([^)]*)\)\s*$/u.exec(name)?.[1] ?? null;
-const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-
-/** Keys a name may be stored under: its alias, without a version, singular or plural. */
-function lookupKeys(text: string) {
-	const name = ALIASES[spanKey(text)] ?? text;
+/** Keys a name may be stored under: as written, without a version, singular or plural. */
+function lookupKeys(name: string) {
 	const names = [name, name.replace(/\s+v?\d+(?:\.\d+)*$/iu, '')];
 	const keys = names.map(entityKey).filter(Boolean);
 	return [...new Set(keys.flatMap((key) => [key, key.endsWith('s') ? key.slice(0, -1) : `${key}s`]))];
-}
-
-/** Shorter names inside a descriptive one, longest first: "Muse AI agent" holds "Muse AI" and "Muse". */
-function innerNames(key: string) {
-	const words = key.split(' ');
-	const names: string[] = [];
-	for (let size = words.length - 1; size > 0; size--)
-		for (let start = 0; start + size <= words.length; start++) names.push(words.slice(start, start + size).join(' '));
-	return names.filter((name) => name.length >= 2);
 }
 
 function textChunks(text: string) {
@@ -176,10 +159,8 @@ const ClefResultSchema = z.object({
 });
 type ClefQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> } | { type: 'noul'; instructions: string };
 
-function describeCandidate(candidate: EntityCandidate) {
-	const maker = makerOf(candidate.name);
-	return `${candidate.name}, a ${candidate.type}${maker ? ` made by ${maker}` : ''}${candidate.example ? `, as in "${candidate.example}"` : ''}`;
-}
+const describeCandidate = (candidate: EntityCandidate) =>
+	`${candidate.name}, a ${candidate.type}${candidate.example ? `, as in "${candidate.example}"` : ''}`;
 
 /**
  * Relates corpus originals through the named things they share. GLiNER finds the names, stored entities
@@ -225,64 +206,19 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 	}
 
 	const lead = text.slice(0, LEAD_LENGTH).toLowerCase();
-	const keysOf = new Map<string, string[]>();
-	for (const key of spans.keys()) for (const name of [key, ...innerNames(key)]) keysOf.set(name, lookupKeys(name));
-	const stored = await withCoreDb(env, (db) => listEntityCandidates(db, [...new Set([...keysOf.values()].flat())]));
-	const candidatesOf = (name: string, type: NamedType) => {
-		const keys = new Set(keysOf.get(name) ?? lookupKeys(name));
-		let found = stored.filter((candidate) => keys.has(candidate.bare) && LINKABLE_TYPES[type].includes(candidate.type));
+	const stored = await withCoreDb(env, (db) => listEntityCandidates(db, [...new Set([...spans.keys()].flatMap(lookupKeys))]));
+	for (const [key, span] of spans) {
+		const keys = new Set(lookupKeys(key));
+		let found = stored.filter((candidate) => keys.has(candidate.bare) && LINKABLE_TYPES[span.type].includes(candidate.type));
 		// Single-use variants are noise once a name has several candidates.
-		if (found.length > 1) found = found.filter(({ uses }) => uses >= 2).length ? found.filter(({ uses }) => uses >= 2) : found;
-		return found.sort((a, b) => b.uses - a.uses).slice(0, MAX_CANDIDATES);
-	};
-	for (const [key, span] of spans) {
+		if (found.filter(({ uses }) => uses >= 2).length) found = found.filter(({ uses }) => uses >= 2);
 		span.lead = lead.includes(key);
-		span.candidates = candidatesOf(key, span.type);
-	}
-
-	const owners = new Map(
-		[...spans].filter(([, span]) => span.type === 'organization').map(([key, span]) => [key, ALIASES[key] ?? span.text] as const),
-	);
-	for (const [key, alias] of Object.entries(ALIASES)) owners.set(key, alias);
-	for (const [key, span] of spans) {
-		if (span.candidates.length) continue;
-		// A short name that starts a longer one written at least as often is that longer one: "SDF", "SDF Public
-		// Access UNIX System". A name written more often than its longer forms ("ChatGPT", "ChatGPT macOS") stands.
-		const longer = [...spans.keys()].filter((other) => other.startsWith(`${key} `));
-		const target = longer.length === 1 ? spans.get(longer[0]) : undefined;
-		if (target && target.count >= span.count) {
-			target.count += span.count;
-			spans.delete(key);
-			continue;
-		}
-		// A stored name inside a descriptive one is that name: "Muse AI agent", "OpenAI dots".
-		const inner = innerNames(key).filter((name) => candidatesOf(name, span.type).length);
-		const named = inner.find((name) => !owners.has(name)) ?? inner[0];
-		if (named) span.candidates = candidatesOf(named, span.type);
-	}
-	const lowered = text.replace(/’/gu, "'").toLowerCase();
-	for (const [key, span] of spans) {
-		// A maker the text names ("OAI's Muse", "OpenAI dots") rules out candidates made by someone else.
-		const last = escapeRegExp(key.split(' ').at(-1) ?? key);
-		const named = [...owners]
-			.filter(([owner]) => owner !== key && new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(owner)}(?:'s)? ${last}`, 'u').test(lowered))
-			.map(([, owner]) => owner.toLowerCase());
-		if (named.length)
-			span.candidates = span.candidates.filter((candidate) => {
-				const maker = makerOf(candidate.name)?.toLowerCase();
-				return !maker || named.some((owner) => owner.includes(maker) || maker.includes(owner));
-			});
-		// One candidate spelled exactly as the text spells it, used before and carrying no maker to verify, needs no question.
+		span.candidates = found.sort((a, b) => b.uses - a.uses).slice(0, MAX_CANDIDATES);
+		// One candidate spelled exactly as the text spells it and used before needs no question.
 		const [only] = span.candidates;
 		span.direct = span.candidates.length === 1 && only.name === span.text && only.uses >= 2 ? only : null;
 	}
 
-	// An @handle names its account, not the account's own name: "@elonmusk" may link to a stored "Elon Musk" (the
-	// same key) but never becomes an entity of its own.
-	const handleOnly = (key: string) =>
-		!key.includes(' ') &&
-		new RegExp(`@${escapeRegExp(key)}`, 'u').test(lowered) &&
-		!new RegExp(`(?<![@\\p{L}\\p{N}_])${escapeRegExp(key)}`, 'u').test(lowered);
 	const ranked = [...spans.values()].sort((a, b) => Number(b.lead) - Number(a.lead) || b.count - a.count || b.confidence - a.confidence);
 	const questions: Record<string, ClefQuestion> = {};
 	const asked: { id: string; span: Span }[] = [];
@@ -295,13 +231,7 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 			);
 			criteria.none = `None of these, or "${span.text}" is not a specific named thing here`;
 			questions[id] = { type: 'choice', instructions: `Which of these does "${span.text}" in the text refer to?`, criteria };
-		} else if (
-			!span.candidates.length &&
-			span.confidence >= NAMED_CONFIDENCE &&
-			span.type !== 'place' &&
-			(span.lead || span.count >= 2) &&
-			!handleOnly(spanKey(span.text))
-		) {
+		} else if (!span.candidates.length && span.confidence >= NAMED_CONFIDENCE && span.type !== 'place' && (span.lead || span.count >= 2)) {
 			questions[id] = {
 				type: 'noul',
 				instructions: `Is "${span.text}" the proper name of one specific ${span.type}, rather than a generic term, role, feature or description?`,
@@ -329,15 +259,7 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 			const answer = result.answers[id];
 			if (answer && 'choice' in answer && answer.choice !== 'none') {
 				const picked = span.candidates[Number(answer.choice.slice(1))];
-				if (!picked) continue;
-				// Stored duplicates of one name split the probability; together they are the most used of them.
-				const same = span.candidates
-					.map((candidate, index) => ({ candidate, probability: answer.probabilities[`c${index}`] ?? 0 }))
-					.filter(({ candidate }) => entityKey(bareName(candidate.name)) === entityKey(bareName(picked.name)));
-				if (same.reduce((sum, { probability }) => sum + probability, 0) >= 0.5) {
-					const { candidate } = same.reduce((a, b) => (b.candidate.uses > a.candidate.uses ? b : a));
-					span.entity = { name: candidate.name, type: candidate.type };
-				}
+				if (picked && (answer.probabilities[answer.choice] ?? 0) >= 0.5) span.entity = { name: picked.name, type: picked.type };
 			} else if (answer && 'noul' in answer && answer.noul >= 0.5) span.entity = { name: span.text, type: span.type };
 		}
 		const subject = result.answers.subject;
