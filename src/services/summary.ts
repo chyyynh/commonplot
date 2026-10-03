@@ -68,6 +68,8 @@ const MAX_LINK_QUESTIONS = 63;
 const MAX_SUBJECT_OPTIONS = 10;
 const MAX_ENTITIES = 16;
 const NAMED_CONFIDENCE = 0.8;
+/** A name becomes a new entity only when Jev is this sure it is a proper name; later texts link to it. */
+const NEW_ENTITY_CONFIDENCE = 0.8;
 
 type NamedType = Exclude<EntityType, 'concept'>;
 
@@ -97,7 +99,6 @@ type Span = {
 	count: number;
 	lead: boolean;
 	candidates: EntityCandidate[];
-	direct: EntityCandidate | null;
 	entity?: { name: string; type: EntityType };
 	subject: number;
 };
@@ -189,7 +190,6 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 					count: 0,
 					lead: false,
 					candidates: [],
-					direct: null,
 					subject: 0,
 				};
 				span.count++;
@@ -216,9 +216,6 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 		if (found.filter(({ uses }) => uses >= 2).length) found = found.filter(({ uses }) => uses >= 2);
 		span.lead = lead.includes(key);
 		span.candidates = found.sort((a, b) => b.uses - a.uses).slice(0, MAX_CANDIDATES);
-		// One candidate spelled exactly as the text spells it and used before needs no question.
-		const [only] = span.candidates;
-		span.direct = span.candidates.length === 1 && only.name === span.text && only.uses >= 2 ? only : null;
 	}
 
 	const ranked = [...spans.values()].sort((a, b) => Number(b.lead) - Number(a.lead) || b.count - a.count || b.confidence - a.confidence);
@@ -227,7 +224,7 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 	for (const span of ranked) {
 		if (asked.length >= MAX_LINK_QUESTIONS) break;
 		const id = `q${asked.length}`;
-		if (span.candidates.length && !span.direct) {
+		if (span.candidates.length) {
 			const criteria: Record<string, string> = Object.fromEntries(
 				span.candidates.map((candidate, index) => [`c${index}`, describeCandidate(candidate)]),
 			);
@@ -264,12 +261,11 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 			if (answer && 'choice' in answer && answer.choice !== 'none') {
 				const picked = span.candidates[Number(answer.choice.slice(1))];
 				if (picked && (answer.probabilities[answer.choice] ?? 0) >= 0.5) span.entity = { name: picked.name, type: picked.type };
-			} else if (answer && 'noul' in answer && answer.noul >= 0.5) span.entity = { name: span.text, type: span.type };
+			} else if (answer && 'noul' in answer && answer.noul >= NEW_ENTITY_CONFIDENCE) span.entity = { name: span.text, type: span.type };
 		}
 		const subject = result.answers.subject;
 		if (subject && 'probabilities' in subject) options.forEach((span, index) => (span.subject = subject.probabilities[`s${index}`] ?? 0));
 	}
-	for (const span of spans.values()) if (span.direct) span.entity = { name: span.direct.name, type: span.direct.type };
 
 	const entities = new Map<string, { name: string; type: EntityType; weight: number }>();
 	for (const span of spans.values()) {

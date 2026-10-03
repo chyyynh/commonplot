@@ -14,8 +14,8 @@ const EntityBackfillPayloadSchema = z.strictObject({
 });
 type EntityBackfillPayload = z.infer<typeof EntityBackfillPayloadSchema>;
 
-const PAGE_SIZE = 50;
-const EXTRACTION_CONCURRENCY = 5;
+const PAGE_SIZE = 200;
+const EXTRACTION_CONCURRENCY = 25;
 const STORAGE_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 const AI_STEP = { retries: AI_STEP_RETRIES, timeout: '600 seconds' } as const;
 
