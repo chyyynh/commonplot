@@ -21,33 +21,41 @@ export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<u
 		pending.set(input.data.resourceId, messages);
 	}
 	if (!pending.size) return;
+	const retry = (resourceId: string, messages: Message<unknown>[], error: unknown) => {
+		console.error({
+			tag: 'AI_SEARCH',
+			msg: 'Resource sync failed',
+			resource_id: resourceId,
+			attempt: Math.max(...messages.map((message) => message.attempts)),
+			error,
+		});
+		for (const message of messages) message.retry();
+	};
 	try {
 		await withCoreDb(env, async (db) => {
-			const documents = await loadCorpusDocuments(db, [...pending.keys()]);
-			const documentsById = new Map(documents.map((document) => [document.id, document]));
+			const ids = [...pending.keys()];
+			const documents = new Map((await loadCorpusDocuments(db, ids)).map((document) => [document.id, document]));
+			const synced: string[] = [];
 			for (const [resourceId, messages] of pending) {
 				try {
-					const document = documentsById.get(resourceId);
-					await syncCorpusItem(env, resourceId, document);
-					// Another consumer may have uploaded a newer snapshot first. Retry from
-					// Postgres instead of acknowledging a stale upload or deletion.
-					const [current] = await loadCorpusDocuments(db, [resourceId]);
-					if (JSON.stringify(current) !== JSON.stringify(document)) throw new Error('Resource changed during search sync');
-					for (const message of messages) message.ack();
+					await syncCorpusItem(env, resourceId, documents.get(resourceId));
+					synced.push(resourceId);
 				} catch (error) {
-					console.error({
-						tag: 'AI_SEARCH',
-						msg: 'Resource sync failed',
-						resource_id: resourceId,
-						attempt: Math.max(...messages.map((message) => message.attempts)),
-						error,
-					});
-					for (const message of messages) message.retry();
+					retry(resourceId, messages, error);
 				}
+			}
+			// Another consumer may have uploaded a newer snapshot first. Retry from
+			// Postgres instead of acknowledging a stale upload or deletion.
+			const current = new Map((await loadCorpusDocuments(db, synced)).map((document) => [document.id, document]));
+			for (const resourceId of synced) {
+				const messages = pending.get(resourceId)!;
+				if (JSON.stringify(current.get(resourceId)) === JSON.stringify(documents.get(resourceId))) {
+					for (const message of messages) message.ack();
+				} else retry(resourceId, messages, new Error('Resource changed during search sync'));
 			}
 		});
 	} catch (error) {
-		// Only the batch load can throw here; each resource settles its own messages.
+		// Only the batch loads can throw here; a message already settled ignores a second ack or retry.
 		console.error({ tag: 'AI_SEARCH', msg: 'Resource sync batch could not be loaded', error });
 		for (const messages of pending.values()) {
 			for (const message of messages) message.retry();

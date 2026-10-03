@@ -13,12 +13,20 @@ const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
 const RELATED_SUMMARY_MAX_CHARS = 500;
 const RELATED_QUERY_MAX_CHARS = 1_500;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
+/** Queries go to the index as written and come back in index order, never cached. */
+const PLAIN_SEARCH_OPTIONS = {
+	cache: { enabled: false },
+	query_rewrite: { enabled: false },
+	reranking: { enabled: false },
+} as const;
 /** The most results one AI Search query returns. */
 export const RESULT_LIMIT_MAX = 50;
 const SearchableResourceKindSchema = z.enum(Object.keys(RESOURCE_KIND_METADATA) as ResourceKind[]).exclude(['image']);
 
+/** A corpus Resource `r` that has a searchable document. */
 export const SEARCHABLE_CORPUS_RESOURCE_SQL = sql`(
-	r.kind <> 'image'
+	r.scope = 'corpus'
+	AND r.kind <> 'image'
 	AND (r.kind <> 'file' OR r.file_type = 'application/pdf')
 	AND EXISTS (
 		SELECT 1 FROM resource_translations original
@@ -147,7 +155,6 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 		       ), '[]'::jsonb) AS translations
 		FROM resources r
 		WHERE ${inArray(sql`r.id`, resourceIds)}
-		  AND r.scope = 'corpus'
 		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		`);
 	return result.rows;
@@ -215,7 +222,6 @@ async function collapseCarriers(
 		FROM resources carrier
 		JOIN resources r ON r.id = carrier.subject_resource_id
 		WHERE ${inArray(sql`carrier.id`, carrierIds)}
-		  AND r.scope = 'corpus'
 		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		  ${kinds ? sql`AND ${inArray(sql`r.kind`, kinds)}` : sql``}
 	`),
@@ -242,9 +248,7 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 	const response = await env.AI_SEARCH.search({
 		query,
 		ai_search_options: {
-			cache: { enabled: false },
-			query_rewrite: { enabled: false },
-			reranking: { enabled: false },
+			...PLAIN_SEARCH_OPTIONS,
 			retrieval: {
 				retrieval_type: 'hybrid',
 				fusion_method: 'rrf',
@@ -278,7 +282,6 @@ export async function searchRelatedResources(
 		JOIN resource_translations translation ON translation.resource_id = r.id
 		  AND (translation.lang = r.original_lang OR ${inArray(sql`translation.lang`, INDEX_TRANSLATION_LANGS)})
 		WHERE r.id = ${resourceId}::uuid
-		  AND r.scope = 'corpus'
 		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		GROUP BY r.id
 	`),
@@ -296,9 +299,7 @@ export async function searchRelatedResources(
 	const response = await env.AI_SEARCH.search({
 		query,
 		ai_search_options: {
-			cache: { enabled: false },
-			query_rewrite: { enabled: false },
-			reranking: { enabled: false },
+			...PLAIN_SEARCH_OPTIONS,
 			retrieval: {
 				retrieval_type: 'vector',
 				match_threshold: 0,

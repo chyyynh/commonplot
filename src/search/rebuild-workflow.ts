@@ -54,8 +54,7 @@ async function loadCorpusCount(db: NodePgDatabase): Promise<number> {
 	const result = await db.execute<{ count: string }>(sql`
 		SELECT COUNT(*)::text AS count
 		FROM resources r
-		WHERE r.scope = 'corpus'
-		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
+		WHERE ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 	`);
 	const [row] = result.rows;
 	const count = Number(row?.count);
@@ -80,8 +79,7 @@ async function listCorpusIdsAfter(
 		         )
 		       ) AS changed
 		FROM resources r
-		WHERE r.scope = 'corpus'
-		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
+		WHERE ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 		  AND (${cursor}::uuid IS NULL OR r.id > ${cursor}::uuid)
 		ORDER BY r.id
 		LIMIT ${REINDEX_PAGE_SIZE}
@@ -95,7 +93,6 @@ async function loadEligibleCorpusIds(db: NodePgDatabase, resourceIds: readonly s
 		SELECT r.id::text
 		FROM resources r
 		WHERE ${inArray(sql`r.id`, resourceIds)}
-		  AND r.scope = 'corpus'
 		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 	`);
 	return new Set(result.rows.map((row) => row.id));
