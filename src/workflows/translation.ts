@@ -32,7 +32,9 @@ async function currentTranslationAttempt(env: CoreEnv, resourceId: string, origi
 			// createBatch recovers this exact ID, including a lost response.
 			return { id };
 		}
-		if (snapshot.status !== 'errored' && snapshot.status !== 'terminated') return { id, status: snapshot.status };
+		// A run that found its progress task superseded completed without translating.
+		const superseded = snapshot.status === 'complete' && (snapshot.output as { status?: string } | undefined)?.status === 'superseded';
+		if (snapshot.status !== 'errored' && snapshot.status !== 'terminated' && !superseded) return { id, status: snapshot.status };
 		if (attempt === 15) throw new Error('Translation retry limit reached');
 		id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-retry-${resourceId}-${hash('sha256', id, 'hex').slice(0, 16)}`;
 	}
