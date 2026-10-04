@@ -38,6 +38,15 @@ function articleTitle(extracted: string, h1: string, url: string): string {
 	return title;
 }
 
+/** The candidate with the largest width (or density) descriptor; a URL may itself contain commas. */
+function widestSrcsetCandidate(srcset: string): string | null {
+	let widest: { url: string; size: number } | null = null;
+	for (const [, url, size] of srcset.matchAll(/\s*(\S+?),?\s+(\d+(?:\.\d+)?)[wx](?:,|$)/g)) {
+		if (url && (!widest || Number(size) > widest.size)) widest = { url, size: Number(size) };
+	}
+	return widest?.url ?? null;
+}
+
 async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredResource & { kind: 'blog'; resourcePlatform: null }> {
 	// linkedom does not imply the <head>/<body> that HTML lets pages omit, and Defuddle
 	// needs <body>. Serialize the spec parser's tree so linkedom reads the implied structure.
@@ -93,6 +102,20 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 			player = parent;
 		}
 		player.replaceWith(image);
+	}
+
+	// Defuddle sets a <picture>'s image to the first candidate of its <source> srcset, which
+	// is usually the smallest. Each image instead keeps the widest candidate it offers.
+	for (const image of document.querySelectorAll('img')) {
+		const picture = image.closest('picture');
+		const sources = picture
+			? [...picture.querySelectorAll('source')].filter((source) => !/dark/.test(source.getAttribute('media') ?? ''))
+			: [];
+		const widest = widestSrcsetCandidate([image, ...sources].map((candidate) => candidate.getAttribute('srcset') ?? '').join(','));
+		if (widest) image.setAttribute('src', widest);
+		if (!image.getAttribute('src')) continue;
+		image.removeAttribute('srcset');
+		for (const source of picture?.querySelectorAll('source') ?? []) source.remove();
 	}
 
 	// Pull quotes repeat a sentence of the body as decoration.
