@@ -65,13 +65,12 @@ Confirm the dedicated instance exists. Create it only in a fresh environment;
 never replace the production instance.
 
 ```sh
-pnpm -C workers/core-worker exec wrangler ai-search get newsence-corpus-v7
+pnpm -C workers/core-worker exec cf ai-search get newsence-corpus-v7 --name default
 
 # Fresh environments only:
-pnpm -C workers/core-worker exec wrangler ai-search create \
-  newsence-corpus-v7 \
-  --type builtin \
-  --hybrid-search
+pnpm -C workers/core-worker exec cf ai-search create default newsence-corpus-v7 \
+  --index-method-keyword true \
+  --index-method-vector true
 ```
 
 Run the static gates and deploy the current Workflow version:
@@ -79,17 +78,16 @@ Run the static gates and deploy the current Workflow version:
 ```sh
 pnpm -C workers/core-worker run typecheck
 pnpm -C workers/core-worker run lint
-pnpm -C workers/core-worker run deploy
+pnpm -C workers/core-worker exec cf deploy
 ```
 
 Do not run two rebuilds concurrently. Trigger the current source-controlled
 runner ID:
 
 ```sh
-pnpm -C workers/core-worker exec wrangler workflows trigger \
-  newsence-search-index-rebuild \
-  '{}' \
-  --id search-index-rebuild-v7-v2
+pnpm -C workers/core-worker exec cf workflows instances create newsence-search-index-rebuild \
+  --params '{}' \
+  --instance-id search-index-rebuild-v7-v2
 ```
 
 A rerun on a loaded index only fills its gaps. To also refresh Resources whose
@@ -97,10 +95,9 @@ document changed while writes went elsewhere, pass `since` (an ISO instant); a
 document-format change reloads everything with `"since":"1970-01-01T00:00:00Z"`:
 
 ```sh
-pnpm -C workers/core-worker exec wrangler workflows trigger \
-  newsence-search-index-rebuild \
-  '{"since":"2026-09-30T09:00:00Z"}' \
-  --id search-index-catchup-v7-v1
+pnpm -C workers/core-worker exec cf workflows instances create newsence-search-index-rebuild \
+  --params '{"since":"2026-09-30T09:00:00Z"}' \
+  --instance-id search-index-catchup-v7-v1
 ```
 
 ## Verify
@@ -108,9 +105,8 @@ pnpm -C workers/core-worker exec wrangler workflows trigger \
 Inspect the same Workflow instance:
 
 ```sh
-pnpm -C workers/core-worker exec wrangler workflows instances describe \
-  newsence-search-index-rebuild \
-  search-index-rebuild-v7-v2
+pnpm -C workers/core-worker exec cf workflows instances get search-index-rebuild-v7-v2 \
+  --workflow-name newsence-search-index-rebuild
 ```
 
 A completed instance has already returned a final observation with:

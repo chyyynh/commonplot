@@ -157,8 +157,7 @@ The canonical app-owned schema lives in `web-tanstack/prisma/schema.prisma`, wit
 Create a Hyperdrive that points to your database:
 
 ```bash
-wrangler hyperdrive create newsence-db \
-  --connection-string="postgres://user:pass@host:5432/dbname"
+pnpm exec cf hyperdrive create --body '{"name":"newsence-db","origin":{"scheme":"postgres","host":"host","port":5432,"database":"dbname","user":"user","password":"pass"}}'
 ```
 
 Copy the returned ID into `cloudflare.config.ts` under `bindings.hyperdrive({ id })`.
@@ -175,12 +174,12 @@ Cloudflare's native Workflow status and Workers Logs.
 
 ### 4. Secrets
 
-AI analysis uses the Workers AI binding through AI Gateway, so no external LLM secret is required. Platform/API secrets are required by Wrangler config:
+AI analysis uses the Workers AI binding through AI Gateway, so no external LLM secret is required. Platform/API secrets are declared in `cloudflare.config.ts`:
 
 ```bash
-wrangler secret put KAITO_API_KEY --name newsence-core            # Twitter monitoring
-wrangler secret put YOUTUBE_API_KEY --name newsence-core          # YouTube monitoring
-wrangler secret put OPENALEX_API_KEY --name newsence-core          # Paper metadata enrichment
+pnpm exec cf workers secrets update KAITO_API_KEY --worker newsence-core --text <value>    # Twitter monitoring
+pnpm exec cf workers secrets update YOUTUBE_API_KEY --worker newsence-core --text <value>  # YouTube monitoring
+pnpm exec cf workers secrets update OPENALEX_API_KEY --worker newsence-core --text <value> # Paper metadata enrichment
 ```
 
 Zotero Structured Document Text is the primary PDF parser. A private upload is
@@ -246,7 +245,7 @@ Bindings (in `cloudflare.config.ts`):
 | `AI`                               | Workers AI binding for AI Gateway text calls             |
 | `AI_SEARCH`                        | `newsence-corpus-v7` canonical public corpus             |
 
-Secrets (via `wrangler secret put --name newsence-core`):
+Secrets (via `cf workers secrets update --worker newsence-core`):
 
 | Variable           | Required | Description                             |
 | ------------------ | -------- | --------------------------------------- |
@@ -265,21 +264,19 @@ consistent status. Platform and monitored-source provenance stay in PostgreSQL.
 Corpus blogs, forums, posts, videos, papers, and PDF files with a readable
 original enter the index. Private Resources and images never enter the public index.
 
-Run the static gates, then start and inspect the rebuild Workflow with Wrangler.
+Run the static gates, then start and inspect the rebuild Workflow with `cf`.
 The runner ID carries the serving-index version:
 
 ```sh
-pnpm exec wrangler workflows trigger \
-  newsence-search-index-rebuild \
-  '{}' \
-  --id search-index-rebuild-v7-v2
+pnpm exec cf workflows instances create newsence-search-index-rebuild \
+  --params '{}' \
+  --instance-id search-index-rebuild-v7-v2
 
-pnpm exec wrangler workflows instances describe \
-  newsence-search-index-rebuild \
-  search-index-rebuild-v7-v2
+pnpm exec cf workflows instances get search-index-rebuild-v7-v2 \
+  --workflow-name newsence-search-index-rebuild
 ```
 
-Wrangler's native instance description is the operator view of Workflow status,
+The native instance status is the operator view of Workflow status,
 steps, retries, errors, and final output. The rebuild configures AI Search,
 enqueues every corpus Resource on the search sync queue (whose consumer uploads
 the current snapshot), prunes stale keyed items, then waits until native item

@@ -113,8 +113,7 @@ App-owned canonical schema 位於 `web-tanstack/prisma/schema.prisma`，DB-only 
 建一個 Hyperdrive 指向你的資料庫：
 
 ```bash
-wrangler hyperdrive create newsence-db \
-  --connection-string="postgres://user:pass@host:5432/dbname"
+pnpm exec cf hyperdrive create --body '{"name":"newsence-db","origin":{"scheme":"postgres","host":"host","port":5432,"database":"dbname","user":"user","password":"pass"}}'
 ```
 
 把回傳的 ID 填進 `cloudflare.config.ts` 的 `bindings.hyperdrive({ id })`。
@@ -130,12 +129,12 @@ Workflow failures 直接透過 Cloudflare 原生 Workflow status 與 Workers Log
 
 ### 4. Secrets
 
-AI 分析透過 Workers AI binding 與 AI Gateway 執行，不需要外部 LLM secret。平台/API secrets 由 Wrangler config 設為必填：
+AI 分析透過 Workers AI binding 與 AI Gateway 執行，不需要外部 LLM secret。平台/API secrets 宣告在 `cloudflare.config.ts`：
 
 ```bash
-wrangler secret put KAITO_API_KEY --name newsence-core            # Twitter 監控
-wrangler secret put YOUTUBE_API_KEY --name newsence-core          # YouTube 監控
-wrangler secret put OPENALEX_API_KEY --name newsence-core          # 論文 metadata enrichment
+pnpm exec cf workers secrets update KAITO_API_KEY --worker newsence-core --text <value>    # Twitter 監控
+pnpm exec cf workers secrets update YOUTUBE_API_KEY --worker newsence-core --text <value>  # YouTube 監控
+pnpm exec cf workers secrets update OPENALEX_API_KEY --worker newsence-core --text <value> # 論文 metadata enrichment
 ```
 
 Zotero Structured Document Text 是主要 PDF parser。私人上傳只會串流到
@@ -195,7 +194,7 @@ Bindings（在 `cloudflare.config.ts` 裡設定）：
 | `AI`               | Workers AI binding（AI Gateway 文字呼叫）   |
 | `AI_SEARCH`        | `newsence-corpus-v7` canonical public corpus |
 
-Secrets（透過 `wrangler secret put --name newsence-core` 設定）：
+Secrets（透過 `cf workers secrets update --worker newsence-core` 設定）：
 
 | 變數                           | 必要 | 說明                          |
 | ------------------------------ | ---- | ----------------------------- |
