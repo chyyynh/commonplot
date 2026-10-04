@@ -6,6 +6,7 @@ import { toHtml } from 'hast-util-to-html';
 import { defaultHandlers } from 'hast-util-to-mdast';
 import { toText } from 'hast-util-to-text';
 import { DOMParser } from 'linkedom';
+import type { FootnoteDefinition } from 'mdast';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { normalizedExternalMediaUrl, normalizedResourceImageUrl } from '../contracts/image-mapping';
 import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
@@ -21,6 +22,8 @@ const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
 const LOOP_VIDEO_PATH = /\.(?:mp4|webm|m4v|mov)$/i;
+const FOOTNOTE_TARGET = /^#fn:(.+)$/;
+const FOOTNOTE_ID = /^fn:(.+)$/;
 // Defuddle strips a site name it knows; pages without one keep it on the <title>
 // ("Site: Headline", "Headline − example.org"). A page h1 that is most of that
 // title is the headline itself, and a trailing segment naming the host is the site.
@@ -131,6 +134,32 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 						{ type: 'html', value: '</figcaption>' },
 						{ type: 'html', value: '</figure>' },
 					];
+				},
+				// Defuddle rewrites every site's footnotes to one shape: <sup><a href="#fn:N"> markers and
+				// a <div id="footnotes"> list whose items end in a "↩" back-link. Markdown footnotes keep them notes.
+				sup(state, node) {
+					const [link, ...rest] = node.children;
+					const target = !rest.length && link?.type === 'element' && link.tagName === 'a' ? String(link.properties.href ?? '') : '';
+					const identifier = FOOTNOTE_TARGET.exec(target)?.[1];
+					return identifier ? { type: 'footnoteReference', identifier, label: identifier } : defaultHandlers.sup(state, node);
+				},
+				div(state, node) {
+					if (node.properties.id !== 'footnotes') return defaultHandlers.div(state, node);
+					return node.children.flatMap((list) =>
+						list.type === 'element' && list.tagName === 'ol'
+							? list.children.flatMap((item) => {
+									const identifier =
+										item.type === 'element' && item.tagName === 'li' ? FOOTNOTE_ID.exec(String(item.properties.id))?.[1] : undefined;
+									if (item.type !== 'element' || !identifier) return [];
+									const children = state.toFlow(state.all(item)) as FootnoteDefinition['children'];
+									return [{ type: 'footnoteDefinition' as const, identifier, label: identifier, children }];
+								})
+							: [],
+					);
+				},
+				a(state, node) {
+					const className = node.properties.className;
+					return Array.isArray(className) && className.includes('footnote-backref') ? undefined : defaultHandlers.a(state, node);
 				},
 			},
 		}),
