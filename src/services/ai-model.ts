@@ -2,9 +2,9 @@ import type { WorkflowDynamicDelayContext } from 'cloudflare:workers';
 
 export const CORE_TEXT_MODEL = '@cf/zai-org/glm-5.3-flash';
 
-export const CORE_STRUCTURED_MODEL_SETTINGS = {
-	chat_template_kwargs: { enable_thinking: false, clear_thinking: true },
-};
+// GLM on Workers AI ignores `reasoning_effort: null` and `enable_thinking: false`: unbounded thinking spends the whole
+// output budget and leaves no answer. Low effort keeps the thinking to a few sentences.
+export const CORE_TEXT_REASONING = 'low';
 
 export function coreGatewayOptions(env: Pick<CoreEnv, 'AI_GATEWAY_ENVIRONMENT'>, metadata: NonNullable<GatewayOptions['metadata']>) {
 	return {

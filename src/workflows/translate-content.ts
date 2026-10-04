@@ -4,7 +4,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import pLimit from 'p-limit';
 import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { aiRetryDelay, coreGatewayOptions, CORE_STRUCTURED_MODEL_SETTINGS, CORE_TEXT_MODEL } from '../services/ai-model';
+import { aiRetryDelay, coreGatewayOptions, CORE_TEXT_MODEL, CORE_TEXT_REASONING } from '../services/ai-model';
 import {
 	compileMarkdownTranslationArtifact,
 	type MarkdownSegmentTranslation,
@@ -174,9 +174,8 @@ async function translateMarkdownBatchToZhHant(
 ): Promise<readonly MarkdownSegmentTranslation[]> {
 	try {
 		const promptSegments = batch.segments.map(markdownTranslationModelInput);
-		const { finishReason, output } = await generateText({
+		const result = await generateText({
 			model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
-				...CORE_STRUCTURED_MODEL_SETTINGS,
 				...coreGatewayOptions(env, {
 					batch_id: batch.id,
 					feature: 'resource-content-translation',
@@ -201,11 +200,13 @@ async function translateMarkdownBatchToZhHant(
 			}),
 			maxOutputTokens: translationOutputTokenBudget(batch.segments),
 			temperature: 0.2,
-			reasoning: 'none',
+			reasoning: CORE_TEXT_REASONING,
 			maxRetries: 0,
 		});
-		if (finishReason === 'length')
+		// Check the cap first: `output` throws NoOutputGeneratedError when a capped response has no answer.
+		if (result.finishReason === 'length')
 			throw new MarkdownTranslationInvariantError('invalid-result', 'Markdown segment translation hit its output token cap');
+		const { output } = result;
 		return validateMarkdownBatchTranslations(
 			batch,
 			batch.segments.map(({ id }) => output.translations[id]!),
@@ -234,9 +235,8 @@ async function translateMarkdownBatchToZhHant(
 /** Translate persisted metadata only; missing summaries are resolved during original enrichment. */
 export async function translateResourceMetadata(resource: ResourceTranslationInput, env: CoreEnv) {
 	const summary = resource.summary?.trim();
-	const { finishReason, output } = await generateText({
+	const result = await generateText({
 		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
-			...CORE_STRUCTURED_MODEL_SETTINGS,
 			...coreGatewayOptions(env, { feature: 'resource-metadata-localization', resource_id: resource.id }),
 		}),
 		system: `Translate the supplied resource metadata into natural Taiwan Traditional Chinese (zh-Hant).
@@ -255,11 +255,11 @@ Title: ${resource.title}${summary ? `\nSummary: ${summary}` : ''}`,
 		}),
 		maxOutputTokens: summary ? 2400 : 500,
 		temperature: 0.3,
-		reasoning: 'none',
+		reasoning: CORE_TEXT_REASONING,
 		maxRetries: 0,
 	});
-	if (finishReason === 'length') throw new Error('Resource metadata localization hit its output token cap');
-	return output;
+	if (result.finishReason === 'length') throw new Error('Resource metadata localization hit its output token cap');
+	return result.output;
 }
 
 async function translateDurableBatch(

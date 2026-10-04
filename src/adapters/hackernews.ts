@@ -9,7 +9,7 @@ import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { ResourceUrlSchema } from '../contracts/resource-url';
-import { AI_STEP_RETRIES, coreGatewayOptions, CORE_TEXT_MODEL } from '../services/ai-model';
+import { AI_STEP_RETRIES, coreGatewayOptions, CORE_TEXT_MODEL, CORE_TEXT_REASONING } from '../services/ai-model';
 
 const HN_ITEM_API = 'https://hacker-news.firebaseio.com/v0/item';
 const HN_TOP_LEVEL_THREAD_LIMIT = 10;
@@ -204,7 +204,7 @@ Rules:
 - Output only the paragraphs, without a code block`,
 			system: HN_DISCUSSION_SYSTEM,
 			temperature: 0.3,
-			reasoning: 'none',
+			reasoning: CORE_TEXT_REASONING,
 			maxRetries: 0,
 		});
 		if (finishReason === 'length') throw new Error('Hacker News discussion digest hit its output token cap');
