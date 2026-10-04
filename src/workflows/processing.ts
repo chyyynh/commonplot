@@ -17,6 +17,7 @@ import {
 	persistResolvedResource,
 	type ResourcePersistenceTarget,
 } from '../store/resources';
+import { translatesContentAutomatically } from '../store/translations';
 import { createResourceTask } from './progress';
 import { stageResourceReferences } from './references';
 import { enqueueResourceTranslation } from './translation';
@@ -128,9 +129,17 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						})
 					: undefined,
 				// Ordinary imports share a translation; a reacquisition that replaced the original forces a fresh run.
-				step.do('enqueue-resource-translation-v6', STORAGE_STEP, () =>
-					enqueueResourceTranslation(this.env, persistence, target.kind !== 'draft' && outcome === 'written', task),
-				),
+				// Only monitor discoveries translate their content here; readers request the rest.
+				step.do('enqueue-resource-translation-v7', STORAGE_STEP, async () => {
+					const automatic = await withCoreDb(this.env, (db) => translatesContentAutomatically(db, persistedResourceId));
+					return enqueueResourceTranslation(
+						this.env,
+						persistence,
+						automatic ? 'full' : 'metadata',
+						target.kind !== 'draft' && outcome === 'written',
+						task,
+					);
+				}),
 				subjectUrl && outcome === 'written' && subjectResourceId === null
 					? step.do('enqueue-resolved-subject-child-v2', STORAGE_STEP, async () => {
 							const subjectTarget = ResourceDraftTargetSchema.parse({

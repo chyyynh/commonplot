@@ -7,6 +7,9 @@ import { TRANSLATABLE_RESOURCE_KINDS, type ResourceTranslationCandidate } from '
 
 export const OriginalHashSchema = z.hash('md5').lowercase();
 
+/** Longer automatic translations wait for a reader to request and pay for them. */
+const MAX_AUTOMATIC_CONTENT_CHARACTERS = 150_000;
+
 export type ResourceTranslationInput = {
 	id: string;
 	kind: ResourceKind;
@@ -118,15 +121,60 @@ export async function persistMachineZhHantTranslation(
 }
 
 /**
- * Corpus translations that never landed, usually after a burst hit the provider rate limit. Only recent acquisitions
- * qualify: completed attempts stay visible for the Workflow retention window, so a no-op attempt is not repeated.
+ * Monitor discoveries, and the subjects their carriers point at, translate in full at the operator's cost. Everything
+ * else translates its title and summary on admission and its content only when a reader asks for it.
  */
-export async function listMissingTranslations(db: NodePgDatabase, limit: number) {
-	const { rows } = await db.execute<ResourceTranslationCandidate & { id: string; originalHash: string }>(sql`
-		SELECT resource.id::text, resource.original_hash AS "originalHash", resource.kind, resource.scope, resource.url,
-		       resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform", resource.original_lang AS "originalLang"
+const AUTOMATIC_CONTENT_TRANSLATION_SQL = sql`(
+	(
+		resource.source_id IS NOT NULL
+		OR EXISTS (SELECT 1 FROM resources carrier WHERE carrier.subject_resource_id = resource.id AND carrier.source_id IS NOT NULL)
+	)
+	AND LENGTH(original.content) <= ${MAX_AUTOMATIC_CONTENT_CHARACTERS}
+)`;
+
+export async function translatesContentAutomatically(db: NodePgDatabase, resourceId: string): Promise<boolean> {
+	const result = await db.execute<{ automatic: boolean }>(sql`
+		SELECT ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS automatic
 		FROM resources resource
 		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+		WHERE resource.id = ${resourceId}::uuid
+	`);
+	return result.rows[0]?.automatic ?? false;
+}
+
+export type StoredTranslationCandidate = ResourceTranslationCandidate &
+	Readonly<{ id: string; originalHash: string; hasContent: boolean; hasTranslatedContent: boolean }>;
+
+/** A stored Resource as a requested content translation sees it; private files must be translatable uploads. */
+export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: string): Promise<StoredTranslationCandidate | null> {
+	const result = await db.execute<StoredTranslationCandidate>(sql`
+		SELECT resource.id::text, resource.original_hash AS "originalHash", resource.kind, resource.scope, resource.url,
+		       resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform", resource.original_lang AS "originalLang",
+		       BTRIM(COALESCE(original.content, '')) <> '' AS "hasContent",
+		       zh_hant.content IS NOT NULL AS "hasTranslatedContent"
+		FROM resources resource
+		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+		LEFT JOIN resource_translations zh_hant ON zh_hant.resource_id = resource.id AND zh_hant.lang = 'zh-Hant'
+		WHERE resource.id = ${resourceId}::uuid
+		  AND resource.original_hash IS NOT NULL
+		  AND (resource.scope = 'corpus' OR ${PRIVATE_UPLOADED_PDF_TRANSLATION_SQL})
+	`);
+	return result.rows[0] ?? null;
+}
+
+/**
+ * Corpus translations that never landed, usually after a burst hit the provider rate limit. Only recent acquisitions
+ * qualify: completed attempts stay visible for the Workflow retention window, so a no-op attempt is not repeated.
+ * Content counts as missing only where it translates automatically.
+ */
+export async function listMissingTranslations(db: NodePgDatabase, limit: number) {
+	const { rows } = await db.execute<ResourceTranslationCandidate & { id: string; originalHash: string; automaticContent: boolean }>(sql`
+		SELECT resource.id::text, resource.original_hash AS "originalHash", resource.kind, resource.scope, resource.url,
+		       resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform", resource.original_lang AS "originalLang",
+		       ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS "automaticContent"
+		FROM resources resource
+		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+		LEFT JOIN resource_translations zh_hant ON zh_hant.resource_id = resource.id AND zh_hant.lang = 'zh-Hant'
 		WHERE resource.scope = 'corpus'
 		  AND resource.original_hash IS NOT NULL
 		  AND resource.url IS NOT NULL
@@ -135,10 +183,7 @@ export async function listMissingTranslations(db: NodePgDatabase, limit: number)
 		  AND resource.scraped_date > now() - interval '6 days'
 		  AND resource.scraped_date < now() - interval '15 minutes'
 		  AND BTRIM(COALESCE(original.content, '')) <> ''
-		  AND NOT EXISTS (
-		    SELECT 1 FROM resource_translations translated
-		    WHERE translated.resource_id = resource.id AND translated.lang = 'zh-Hant'
-		  )
+		  AND (zh_hant.resource_id IS NULL OR (zh_hant.content IS NULL AND ${AUTOMATIC_CONTENT_TRANSLATION_SQL}))
 		ORDER BY resource.published_date DESC NULLS LAST
 		LIMIT ${limit}
 	`);

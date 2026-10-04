@@ -14,7 +14,7 @@ import {
 import { consumeSearchSyncBatch } from './search/sync-consumer';
 import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
-import { enqueueMissingTranslations } from './workflows/translation';
+import { contentTranslationStatus, enqueueMissingTranslations, requestContentTranslation } from './workflows/translation';
 
 export { ZoteroSdt } from './services/zotero-sdt-container';
 export { ResourceTranslationV2Workflow } from './workflows/translation';
@@ -84,6 +84,19 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 			params: { kind: 'reacquire', ...(forced ? { force: true } : {}), resourceId: id },
 		});
 		return instance.id;
+	}
+
+	/** A reader's full translation into `lang`. The app Worker checks entitlement and bills an admitted request. */
+	requestResourceTranslation(resourceId: string, lang: string) {
+		const id = z.uuid().parse(resourceId);
+		z.literal('zh-Hant').parse(lang);
+		return requestContentTranslation(this.env, id);
+	}
+
+	resourceTranslationStatus(resourceId: string, lang: string) {
+		const id = z.uuid().parse(resourceId);
+		z.literal('zh-Hant').parse(lang);
+		return contentTranslationStatus(this.env, id);
 	}
 
 	/** Ranked AI Search candidates; the app Worker authoritatively filters and hydrates them. */

@@ -19,13 +19,15 @@ import type { ResourceTask } from './progress';
 
 const MARKDOWN_TRANSLATION_CONCURRENCY = 15;
 type ZhHantTranslationPlan = { metadata: boolean; content: boolean };
+/** `metadata` translates the title and summary; `full` also translates the content. */
+export type TranslationScope = 'metadata' | 'full';
 const MetadataTranslationSchema = z.object({ title: z.string().trim().min(1), summary: z.string().trim().min(1) });
 
 function isBlank(value: string | null | undefined): boolean {
 	return !value?.trim();
 }
 
-export function planZhHantTranslation(resource: ResourceTranslationInput, force: boolean): ZhHantTranslationPlan {
+export function planZhHantTranslation(resource: ResourceTranslationInput, scope: TranslationScope, force: boolean): ZhHantTranslationPlan {
 	if ((resource.kind !== 'post' && isBlank(resource.title)) || isBlank(resource.content) || resource.translationSource === 'original') {
 		return { metadata: false, content: false };
 	}
@@ -34,7 +36,7 @@ export function planZhHantTranslation(resource: ResourceTranslationInput, force:
 		// Posts are their text alone, so only the content is translated.
 		metadata:
 			resource.kind !== 'post' && (force || !resource.hasTranslatedTitle || (!isBlank(resource.summary) && !resource.hasTranslatedSummary)),
-		content: force || !resource.hasTranslatedContent,
+		content: scope === 'full' && (force || !resource.hasTranslatedContent),
 	};
 }
 
