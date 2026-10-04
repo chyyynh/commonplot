@@ -151,7 +151,7 @@ Markdown、bibliography、citation links 與 PDF source coordinates，並把有�
 
 ```bash
 pnpm install
-pnpm run deploy
+pnpm exec cf deploy
 ```
 
 或本地跑 `pnpm dev`（用 `cf dev -- --test-scheduled`，可以 curl `/__scheduled?cron=*/5+*+*+*+*` 手動觸發 RSS cron）。

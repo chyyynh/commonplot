@@ -200,7 +200,7 @@ there is no OCR fallback. OpenAlex key-bearing content URLs remain local-only.
 
 ```bash
 pnpm install
-pnpm run deploy
+pnpm exec cf deploy
 ```
 
 Or run locally with `pnpm dev` (uses `cf dev -- --test-scheduled`, so you can curl `/__scheduled?cron=*/5+*+*+*+*` to trigger RSS manually).
