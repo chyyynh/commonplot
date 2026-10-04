@@ -190,12 +190,6 @@
 		},
 	],
 	/**
-	 * Smart Placement — run close to database
-	 */
-	"placement": {
-		"mode": "smart",
-	},
-	/**
 	 * `AI_GATEWAY_ENVIRONMENT` — trusted deployment label attached to Gateway logs.
 	 * System inference is pinned to the pre-created `core-ingest` Gateway at its
 	 * domain call sites; local scripts override this label to `development`.
