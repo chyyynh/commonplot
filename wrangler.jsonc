@@ -8,6 +8,8 @@
 	"main": "src/index.ts",
 	"workers_dev": false,
 	"compatibility_date": "2026-08-30",
+	/** Pending waitUntil, RPC, and container.monitor() work keeps a Durable Object alive after its caller leaves. */
+	"compatibility_flags": ["durable_object_io_tasks_prevent_eviction"],
 	/**
 	 * A rebuild of 500k resources enqueues 10k sync batches, then lists and
 	 * prunes 10k search item pages; the sync queue does the uploads.
