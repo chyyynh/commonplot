@@ -76,10 +76,17 @@ const GENERIC_IDENTITY_OPTIONS: Options = {
 };
 
 /**
+ * Share decorations that make a publisher serve an interstitial instead of the document
+ * (Substack's subscribe page). They leave the fetch URL as well as the identity.
+ */
+const INTERSTITIAL_QUERY_PARAMETERS = ['showWelcomeOnShare'];
+
+/**
  * Pure resource identity resolution. Keep the fetch URL intact, including PDF paths and signed queries. */
 export function resolveResourceUrl(value: string | null | undefined): ResolvedResourceUrl | null {
 	const parsed = value ? URL.parse(value) : null;
 	if (!parsed || !['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) return null;
+	for (const parameter of INTERSTITIAL_QUERY_PARAMETERS) if (parsed.searchParams.has(parameter)) parsed.searchParams.delete(parameter);
 	const url = parsed.toString();
 	const hostname = parsed.hostname.replace(/^www\d*\./, '');
 	const path = parsed.pathname;

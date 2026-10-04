@@ -37,7 +37,7 @@ async function stageUrlAcquisition(
 	if (!detected.resourcePlatform) {
 		const identifiers = [...(input.identifiers ?? []), ...detected.identifiers];
 		if (identifiers.length) return stageLinkedPaper(env, step, { ...input, identifiers });
-		const acquired = await stageWebAcquisition(env, step, input);
+		const acquired = await stageWebAcquisition(env, step, { url: detected.url });
 		if (!('platform' in acquired)) return acquired;
 		detected = acquired.platform;
 		if (!detected.resourcePlatform)
