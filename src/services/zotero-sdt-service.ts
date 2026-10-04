@@ -3,6 +3,7 @@ import { hash } from 'node:crypto';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { MAX_PDF_BYTES } from '../contracts/pdf-policy.ts';
 import { blobKey, storedPdfCropUrlPrefix, structuredPdfCropPrefix, structuredPdfDocumentKey } from '../contracts/storage-keys.ts';
+import { coreExports } from '../exports.ts';
 import { limitByteStream, readBoundedResponseText } from './response.ts';
 import {
 	normalizeStructuredPdf,
@@ -126,7 +127,7 @@ async function ensureStructuredPdfSourceCrops(
 		try {
 			const pdf = await env.R2.get(input.pdfStorageKey);
 			if (!pdf) throw new NonRetryableError('PDF source object is missing');
-			const response = await env.ZOTERO_PDF.getByName(ZOTERO_SDT_CONTAINER_NAME).renderPdfAreas(pdf.body, pdf.size, batch);
+			const response = await coreExports.ZoteroSdt.getByName(ZOTERO_SDT_CONTAINER_NAME).renderPdfAreas(pdf.body, pdf.size, batch);
 			if (!response.ok) {
 				const body = await readBoundedResponseText(response, MAX_ERROR_BODY_BYTES, 'Zotero source crop error');
 				const ErrorType = [400, 413, 415, 422].includes(response.status) ? NonRetryableError : Error;
@@ -191,9 +192,9 @@ async function ensureStructuredPdfSourceCrops(
 	}
 }
 
-async function parsePdfArtifactStream(env: CoreEnv, input: ReadableStream<Uint8Array>, byteLength: number, sourceLabel: string) {
+async function parsePdfArtifactStream(input: ReadableStream<Uint8Array>, byteLength: number, sourceLabel: string) {
 	try {
-		const response = await env.ZOTERO_PDF.getByName(ZOTERO_SDT_CONTAINER_NAME).processPdf(input, byteLength);
+		const response = await coreExports.ZoteroSdt.getByName(ZOTERO_SDT_CONTAINER_NAME).processPdf(input, byteLength);
 		const maxBytes = response.ok ? ZOTERO_SDT_MAX_RESPONSE_BYTES : MAX_ERROR_BODY_BYTES;
 		const body = await readBoundedResponseText(response, maxBytes, 'Zotero SDT response');
 		if (!response.ok) {
@@ -252,7 +253,7 @@ export async function parseStoredPdfRepresentation(
 			await object.body.cancel('PDF source size is invalid');
 			throw new NonRetryableError(`PDF source object must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
-		document = await parsePdfArtifactStream(env, object.body, object.size, input.sourceLabel);
+		document = await parsePdfArtifactStream(object.body, object.size, input.sourceLabel);
 		await putPdfDerivative(env, input.pdfStorageKey, structuredPdfDocumentKey(input.pdfStorageKey), JSON.stringify(document), {
 			customMetadata: { artifactVersion: ZOTERO_SDT_ARTIFACT_VERSION, inputSha256: input.inputContentHash },
 		});

@@ -3,6 +3,7 @@ import { hash } from 'node:crypto';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { isTranslatable, type ResourceTranslationCandidate } from '../contracts/translation-policy';
+import { coreExports } from '../exports.ts';
 import { aiRetryDelay } from '../services/ai-model';
 import { MarkdownTranslationInvariantError } from '../services/markdown-translation';
 import { withCoreDb } from '../store/db';
@@ -21,12 +22,12 @@ type ResourceTranslationPayload = { force?: boolean; resourceId: string; origina
 
 const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v34';
 /** Follow one shared recovery chain, so concurrent imports and requests cannot multiply paid work. */
-async function currentTranslationAttempt(env: CoreEnv, resourceId: string, originalHash: string, scope: TranslationScope) {
+async function currentTranslationAttempt(resourceId: string, originalHash: string, scope: TranslationScope) {
 	let id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${scope}-${resourceId}-${originalHash}`;
 	for (let attempt = 0; attempt < 16; attempt++) {
 		let snapshot: Awaited<ReturnType<WorkflowInstance['status']>>;
 		try {
-			snapshot = await (await env.RESOURCE_TRANSLATION_V2_WORKFLOW.get(id)).status();
+			snapshot = await (await coreExports.ResourceTranslationV2Workflow.get(id)).status();
 		} catch {
 			// An unavailable control plane cannot justify another physical task.
 			// createBatch recovers this exact ID, including a lost response.
@@ -58,7 +59,7 @@ export async function enqueueResourceTranslation(
 		? {
 				id: `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${scope}-force-${resourceId}-${hash('sha256', parent.taskId, 'hex').slice(0, 16)}`,
 			}
-		: await currentTranslationAttempt(env, resourceId, originalHash, scope);
+		: await currentTranslationAttempt(resourceId, originalHash, scope);
 	const { id } = attempt;
 	// Completed work already lives in ResourceTranslation. There is no new
 	// execution to subscribe to, and no second source of progress to project.
@@ -74,7 +75,7 @@ export async function enqueueResourceTranslation(
 		...(parent.required ? { parentTaskId: parent.taskId } : {}),
 	});
 	if (!registered) throw new Error('Translation progress registration was rejected');
-	await env.RESOURCE_TRANSLATION_V2_WORKFLOW.createBatch([
+	await coreExports.ResourceTranslationV2Workflow.createBatch([
 		{
 			id,
 			params: { ...(force ? { force: true } : {}), resourceId, originalHash, scope },
@@ -99,7 +100,7 @@ export async function requestContentTranslation(env: CoreEnv, resourceId: string
 export async function contentTranslationStatus(env: CoreEnv, resourceId: string): Promise<'running' | 'idle'> {
 	const candidate = await withCoreDb(env, (db) => loadTranslationCandidate(db, resourceId));
 	if (!candidate || candidate.hasTranslatedContent) return 'idle';
-	const attempt = await currentTranslationAttempt(env, resourceId, candidate.originalHash, 'full');
+	const attempt = await currentTranslationAttempt(resourceId, candidate.originalHash, 'full');
 	return 'status' in attempt && attempt.status !== 'complete' ? 'running' : 'idle';
 }
 

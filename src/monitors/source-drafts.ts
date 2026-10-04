@@ -3,10 +3,11 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { SourceResourceDraftSchema, type SourceResourceDraft } from '../contracts/processing-target';
 import { resolveResourceUrl } from '../contracts/resource-url';
+import { coreExports } from '../exports.ts';
 import { attachSourceToReadableResources, findResourcesByUrls } from '../store/resources';
 
 /** Crosses the discovery -> Resource Workflow boundary for every monitor. */
-export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, sourceId: string, drafts: SourceResourceDraft[]) {
+export async function enqueueSourceDrafts(db: NodePgDatabase, sourceId: string, drafts: SourceResourceDraft[]) {
 	const relation = { kind: 'source' as const, sourceId: z.uuid().parse(sourceId) };
 	const seen = new Set<string>();
 	let skipped = 0;
@@ -50,7 +51,7 @@ export async function enqueueSourceDrafts(env: CoreEnv, db: NodePgDatabase, sour
 		}));
 	let created = 0;
 	for (let offset = 0; offset < instances.length; offset += 100) {
-		created += (await env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch(instances.slice(offset, offset + 100))).length;
+		created += (await coreExports.ResourceProcessingV2Workflow.createBatch(instances.slice(offset, offset + 100))).length;
 	}
 	return { created, deduplicated: drafts.length - skipped - created, skipped };
 }

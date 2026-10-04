@@ -161,13 +161,13 @@ wrangler hyperdrive create newsence-db \
   --connection-string="postgres://user:pass@host:5432/dbname"
 ```
 
-Copy the returned ID into `wrangler.jsonc` under the `hyperdrive[].id` field.
+Copy the returned ID into `cloudflare.config.ts` under `bindings.hyperdrive({ id })`.
 
 ### 3. Cloudflare Workflows
 
-Workflows are provisioned automatically on first deploy via the `workflows` bindings in `wrangler.jsonc`.
+Workflows are provisioned automatically on first deploy from `exports` in `cloudflare.config.ts`; code reaches them through `coreExports` (`src/exports.ts`).
 
-The `resource-search-sync` Queue is provisioned from `wrangler.jsonc`. Resource
+The `resource-search-sync` Queue is provisioned from `cloudflare.config.ts`. Resource
 and translation Workflows durably enqueue a Resource ID after PostgreSQL commits;
 the Queue consumer updates the derived AI Search document with native per-message
 acknowledgement and bounded retries. Workflow failures remain visible through
@@ -178,9 +178,9 @@ Cloudflare's native Workflow status and Workers Logs.
 AI analysis uses the Workers AI binding through AI Gateway, so no external LLM secret is required. Platform/API secrets are required by Wrangler config:
 
 ```bash
-wrangler secret put KAITO_API_KEY            # Twitter monitoring
-wrangler secret put YOUTUBE_API_KEY          # YouTube monitoring
-wrangler secret put OPENALEX_API_KEY          # Paper metadata enrichment
+wrangler secret put KAITO_API_KEY --name newsence-core            # Twitter monitoring
+wrangler secret put YOUTUBE_API_KEY --name newsence-core          # YouTube monitoring
+wrangler secret put OPENALEX_API_KEY --name newsence-core          # Paper metadata enrichment
 ```
 
 Zotero Structured Document Text is the primary PDF parser. A private upload is
@@ -203,7 +203,7 @@ pnpm install
 pnpm run deploy
 ```
 
-Or run locally with `pnpm dev` (uses `wrangler dev --test-scheduled`, so you can curl `/__scheduled?cron=*/5+*+*+*+*` to trigger RSS manually).
+Or run locally with `pnpm dev` (uses `cf dev -- --test-scheduled`, so you can curl `/__scheduled?cron=*/5+*+*+*+*` to trigger RSS manually).
 
 ## API surface
 
@@ -235,21 +235,18 @@ src/
 
 ## Environment Variables & Bindings
 
-Bindings (in `wrangler.jsonc`):
+Bindings (in `cloudflare.config.ts`):
 
 | Binding                            | Purpose                                                  |
 | ---------------------------------- | -------------------------------------------------------- |
 | `HYPERDRIVE`                       | Hyperdrive connection to your Postgres                   |
-| `RESOURCE_PROCESSING_V2_WORKFLOW`  | Fetch, parse, classify, and persist a canonical resource |
-| `RESOURCE_TRANSLATION_V2_WORKFLOW` | Translate a persisted resource into zh-Hant              |
-| `SEARCH_INDEX_REBUILD_WORKFLOW`    | Rebuild and verify the canonical search index            |
 | `RESOURCE_SEARCH_SYNC_QUEUE`       | Durable AI Search sync after canonical PostgreSQL writes |
 | `R2`                               | App-owned uploaded PDF reads                             |
 | `IMAGES`                           | Stream remote resource images to Cloudflare Images       |
 | `AI`                               | Workers AI binding for AI Gateway text calls             |
 | `AI_SEARCH`                        | `newsence-corpus-v7` canonical public corpus             |
 
-Secrets (via `wrangler secret put`):
+Secrets (via `wrangler secret put --name newsence-core`):
 
 | Variable           | Required | Description                             |
 | ------------------ | -------- | --------------------------------------- |

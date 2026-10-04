@@ -1,5 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod';
+import { coreExports } from '../exports.ts';
 
 const CAPTION_FETCH_TIMEOUT_MS = 8_000;
 /**
@@ -156,7 +157,7 @@ export class YouTubeCaptionFetcher extends DurableObject<CoreEnv> {
  * Captions in the video's spoken language. Returns no cues when the video has
  * none, or when every attempt was withheld by YouTube's bot check.
  */
-export async function fetchYouTubeCaptions(env: CoreEnv, videoId: string, audioLanguage: string | null): Promise<YouTubeCaptions> {
+export async function fetchYouTubeCaptions(videoId: string, audioLanguage: string | null): Promise<YouTubeCaptions> {
 	const withheld: string[] = [];
 	for (let attempt = 0; attempt < CAPTION_FETCHER_ATTEMPTS; attempt++) {
 		const hint = CAPTION_FETCHER_HINTS[(attempt - 1) % CAPTION_FETCHER_HINTS.length];
@@ -164,7 +165,10 @@ export async function fetchYouTubeCaptions(env: CoreEnv, videoId: string, audioL
 		const result: CaptionAttempt = await (
 			attempt === 0 || !hint
 				? attemptCaptions(videoId, audioLanguage)
-				: env.YOUTUBE_CAPTIONS.get(env.YOUTUBE_CAPTIONS.newUniqueId(), { locationHint: hint }).attempt(videoId, audioLanguage)
+				: coreExports.YouTubeCaptionFetcher.get(coreExports.YouTubeCaptionFetcher.newUniqueId(), { locationHint: hint }).attempt(
+						videoId,
+						audioLanguage,
+					)
 		).catch((error: unknown) => ({ status: 'withheld', reason: error instanceof Error ? error.message : String(error) }));
 		if (result.status === 'fetched') {
 			console.info({ tag: 'YOUTUBE', msg: 'Captions fetched', videoId, attempt, count: result.cues.length, language: result.language });

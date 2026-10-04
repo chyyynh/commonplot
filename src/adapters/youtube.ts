@@ -201,7 +201,7 @@ export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, 
 			'acquire-youtube-captions-v2',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 			// Long videos exceed the step result limit as JSON values; stream them.
-			async () => Response.json(await fetchYouTubeCaptions(env, videoId, audioLanguage)).body!,
+			async () => Response.json(await fetchYouTubeCaptions(videoId, audioLanguage)).body!,
 		)
 		.then((body) => new Response(body).json<YouTubeCaptions>());
 	const lines = buildTranscriptLines(captions.cues);

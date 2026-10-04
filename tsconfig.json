@@ -10,7 +10,7 @@
 		"jsx": "react-jsx",
 
 		/* Specify what module code is generated. */
-		"module": "es2022",
+		"module": "esnext",
 		/* Specify how TypeScript looks up a file from a given module specifier. */
 		"moduleResolution": "Bundler",
 		"allowImportingTsExtensions": true,
@@ -39,7 +39,7 @@
 
 		/* Skip type checking all .d.ts files. */
 		"skipLibCheck": true,
-		"types": ["./worker-configuration.d.ts"]
+		"types": ["./.cloudflare/types/index.d.ts"]
 	},
-	"include": ["src/**/*.ts", "worker-configuration.d.ts"]
+	"include": ["src/**/*.ts", ".cloudflare/types", "cloudflare.config.ts"]
 }

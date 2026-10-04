@@ -14,7 +14,7 @@ const FEED_SUMMARY_MAX_CHARS = 500;
 const RSS_FETCH_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const FEED_CONCURRENCY = 4;
 
-async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeedSource): Promise<void> {
+async function processFeed(db: NodePgDatabase, feed: MonitoredFeedSource): Promise<void> {
 	const requestedUrl = ResourceUrlSchema.safeParse(feed.handle).data;
 	if (!requestedUrl) {
 		throw new Error('Enter a valid feed URL (http/https).');
@@ -66,7 +66,7 @@ async function processFeed(env: CoreEnv, db: NodePgDatabase, feed: MonitoredFeed
 			},
 		];
 	});
-	const admission = await enqueueSourceDrafts(env, db, feed.id, drafts);
+	const admission = await enqueueSourceDrafts(db, feed.id, drafts);
 	console.info({
 		tag: 'RSS',
 		msg: 'Feed processed',
@@ -106,12 +106,12 @@ function feedEntryDescription(entry: Record<string, unknown>): string {
 	return `${(wordEnd > FEED_SUMMARY_MAX_CHARS * 0.8 ? cut.slice(0, wordEnd) : cut).trimEnd()}…`;
 }
 
-export async function handleRSSCron(env: CoreEnv, db: NodePgDatabase): Promise<void> {
+export async function handleRSSCron(db: NodePgDatabase): Promise<void> {
 	console.info({ tag: 'RSS', msg: 'start' });
 	const feeds = await listDueFeedSources(db);
 	const failures: unknown[] = [];
 	const limit = pLimit(FEED_CONCURRENCY);
-	const results = await Promise.allSettled(feeds.map((feed) => limit(() => processFeed(env, db, feed))));
+	const results = await Promise.allSettled(feeds.map((feed) => limit(() => processFeed(db, feed))));
 	for (const [index, result] of results.entries()) {
 		if (result.status === 'fulfilled') continue;
 		failures.push(result.reason);

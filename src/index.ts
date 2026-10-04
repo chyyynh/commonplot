@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ResourceImportDispatchSchema } from './contracts/processing-target';
 import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url';
 import type {} from './env';
+import { coreExports } from './exports.ts';
 import { handleRSSCron } from './monitors/rss';
 import { handleTwitterCron } from './monitors/twitter';
 import {
@@ -34,9 +35,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		// YouTube channels ride the feed monitor through their Atom URLs; Core
 		// derives their slower polling cadence from the canonical feed URL.
 		if (event.cron === '*/5 * * * *') {
-			this.ctx.waitUntil(
-				withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(this.env, db), enqueueMissingTranslations(this.env, db)])),
-			);
+			this.ctx.waitUntil(withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(db), enqueueMissingTranslations(this.env, db)])));
 		} else if (event.cron === '0 */6 * * *') {
 			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
 		}
@@ -67,7 +66,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		// The admission DO waits for committed ownership. The Workflow rechecks
 		// ownership and the latest attempt before provider execution, after any
 		// queueing delay; another callback here cannot replace that execution gate.
-		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
+		await coreExports.ResourceProcessingV2Workflow.createBatch([
 			{ id: parsed.workflowId, params: parsed.payload, retention: { successRetention: '7 days', errorRetention: '7 days' } },
 		]);
 	}
@@ -79,7 +78,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	async resyncResource(resourceId: string, force?: boolean) {
 		const id = z.uuid().parse(resourceId);
 		const forced = z.boolean().optional().parse(force);
-		const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
+		const instance = await coreExports.ResourceProcessingV2Workflow.create({
 			id: `resource-resync-v3-${id}-${crypto.randomUUID()}`,
 			params: { kind: 'reacquire', ...(forced ? { force: true } : {}), resourceId: id },
 		});

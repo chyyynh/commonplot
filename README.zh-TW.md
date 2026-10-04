@@ -117,13 +117,13 @@ wrangler hyperdrive create newsence-db \
   --connection-string="postgres://user:pass@host:5432/dbname"
 ```
 
-把回傳的 ID 填進 `wrangler.jsonc` 的 `hyperdrive[].id` 欄位。
+把回傳的 ID 填進 `cloudflare.config.ts` 的 `bindings.hyperdrive({ id })`。
 
 ### 3. Cloudflare Workflows
 
-Workflows 會在第一次 deploy 時透過 `wrangler.jsonc` 裡的 `workflows` bindings 自動建立。
+Workflows 會在第一次 deploy 時依 `cloudflare.config.ts` 的 `exports` 自動建立；程式透過 `coreExports`（`src/exports.ts`）呼叫。
 
-`resource-search-sync` Queue 由 `wrangler.jsonc` 自動建立。Resource 與
+`resource-search-sync` Queue 由 `cloudflare.config.ts` 自動建立。Resource 與
 translation Workflows 只在 PostgreSQL commit 後 durable enqueue Resource ID；
 Queue consumer 再以原生逐訊息 ack 與有限 retry 更新衍生的 AI Search 文件。
 Workflow failures 直接透過 Cloudflare 原生 Workflow status 與 Workers Logs 查看。
@@ -133,9 +133,9 @@ Workflow failures 直接透過 Cloudflare 原生 Workflow status 與 Workers Log
 AI 分析透過 Workers AI binding 與 AI Gateway 執行，不需要外部 LLM secret。平台/API secrets 由 Wrangler config 設為必填：
 
 ```bash
-wrangler secret put KAITO_API_KEY            # Twitter 監控
-wrangler secret put YOUTUBE_API_KEY          # YouTube 監控
-wrangler secret put OPENALEX_API_KEY          # 論文 metadata enrichment
+wrangler secret put KAITO_API_KEY --name newsence-core            # Twitter 監控
+wrangler secret put YOUTUBE_API_KEY --name newsence-core          # YouTube 監控
+wrangler secret put OPENALEX_API_KEY --name newsence-core          # 論文 metadata enrichment
 ```
 
 Zotero Structured Document Text 是主要 PDF parser。私人上傳只會串流到
@@ -154,7 +154,7 @@ pnpm install
 pnpm run deploy
 ```
 
-或本地跑 `pnpm dev`（用 `wrangler dev --test-scheduled`，可以 curl `/__scheduled?cron=*/5+*+*+*+*` 手動觸發 RSS cron）。
+或本地跑 `pnpm dev`（用 `cf dev -- --test-scheduled`，可以 curl `/__scheduled?cron=*/5+*+*+*+*` 手動觸發 RSS cron）。
 
 ## API Surface
 
@@ -184,21 +184,18 @@ src/
 
 ## 環境變數與 Bindings
 
-Bindings（在 `wrangler.jsonc` 裡設定）：
+Bindings（在 `cloudflare.config.ts` 裡設定）：
 
 | Binding            | 用途                                        |
 | ------------------ | ------------------------------------------- |
 | `HYPERDRIVE`       | 連線到你的 Postgres                         |
-| `RESOURCE_PROCESSING_V2_WORKFLOW` | 抓取、解析、分類並寫回 canonical resource |
-| `RESOURCE_TRANSLATION_V2_WORKFLOW` | 將已持久化的 resource 翻譯成繁體中文 |
-| `SEARCH_INDEX_REBUILD_WORKFLOW` | 全量重建並驗證 canonical 搜尋索引 |
 | `RESOURCE_SEARCH_SYNC_QUEUE` | canonical PostgreSQL 寫入後 durable 同步 AI Search |
 | `R2`               | 讀取 app-owned uploaded blob，供 PDF extraction 使用 |
 | `IMAGES`           | 將遠端 resource 圖片串流上傳至 Cloudflare Images |
 | `AI`               | Workers AI binding（AI Gateway 文字呼叫）   |
 | `AI_SEARCH`        | `newsence-corpus-v7` canonical public corpus |
 
-Secrets（透過 `wrangler secret put` 設定）：
+Secrets（透過 `wrangler secret put --name newsence-core` 設定）：
 
 | 變數                           | 必要 | 說明                          |
 | ------------------------------ | ---- | ----------------------------- |

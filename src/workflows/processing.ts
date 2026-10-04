@@ -5,6 +5,7 @@ import type { AcquisitionInput } from '../contracts/acquired-resource';
 import { resourceImageSources, withHostedImages } from '../contracts/image-mapping';
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { blobKey } from '../contracts/storage-keys';
+import { coreExports } from '../exports.ts';
 import { AI_STEP_RETRIES } from '../services/ai-model';
 import { extractResourceEntities } from '../services/entities';
 import { stageResourceImages } from '../services/image-rehosting';
@@ -150,7 +151,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 								url: subjectUrl,
 							});
 							const id = `subject-draft-auto-v1-${hash('sha256', JSON.stringify(subjectTarget), 'hex')}`;
-							await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([{ id, params: subjectTarget }]);
+							await coreExports.ResourceProcessingV2Workflow.createBatch([{ id, params: subjectTarget }]);
 							return id;
 						})
 					: undefined,

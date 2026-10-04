@@ -99,7 +99,7 @@ async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime:
 	return { tweets: terminalTweets.values(), providerTweets, pages, skippedItems };
 }
 
-async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Iterable<DiscoveredTweet>, source: TwitterSource) {
+async function enqueueTweets(db: NodePgDatabase, tweets: Iterable<DiscoveredTweet>, source: TwitterSource) {
 	const drafts: SourceResourceDraft[] = [];
 	let skippedItems = 0;
 	for (const carrier of tweets) {
@@ -130,7 +130,7 @@ async function enqueueTweets(env: CoreEnv, db: NodePgDatabase, tweets: Iterable<
 			});
 		}
 	}
-	const admission = await enqueueSourceDrafts(env, db, source.id, drafts);
+	const admission = await enqueueSourceDrafts(db, source.id, drafts);
 	return {
 		created: admission.created,
 		deduplicated: admission.deduplicated,
@@ -143,7 +143,7 @@ async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: Tw
 	const untilTime = Math.floor(windowEnd.getTime() / 1000);
 	try {
 		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, sinceTime, untilTime);
-		const admission = await enqueueTweets(env, db, fetched.tweets, source);
+		const admission = await enqueueTweets(db, fetched.tweets, source);
 		const watermarkAdvanced = await advanceSourceWatermark(db, source.id, windowEnd);
 		console.info({
 			tag: 'TWITTER',
