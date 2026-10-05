@@ -4,8 +4,9 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { isTranslatable, type ResourceTranslationCandidate } from '../contracts/translation-policy';
 import { coreExports } from '../exports.ts';
-import { aiRetryDelay } from '../services/ai-model';
+import { AI_STEP_RETRIES } from '../services/ai-model';
 import { MarkdownTranslationInvariantError } from '../services/markdown-translation';
+import { STORAGE_STEP, stepJson } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import {
 	listMissingTranslations,
@@ -36,7 +37,6 @@ async function currentTranslationAttempt(resourceId: string, originalHash: strin
 		// A run that found its progress task superseded completed without translating.
 		const superseded = snapshot.status === 'complete' && (snapshot.output as { status?: string } | undefined)?.status === 'superseded';
 		if (snapshot.status !== 'errored' && snapshot.status !== 'terminated' && !superseded) return { id, status: snapshot.status };
-		if (attempt === 15) throw new Error('Translation retry limit reached');
 		id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-retry-${resourceId}-${hash('sha256', id, 'hex').slice(0, 16)}`;
 	}
 	throw new Error('Translation retry limit reached');
@@ -84,7 +84,7 @@ export async function enqueueResourceTranslation(
 	return { id, admitted };
 }
 
-export type ContentTranslationRequest = { status: 'unavailable' } | { status: 'complete' } | { status: 'running'; admitted: boolean };
+type ContentTranslationRequest = { status: 'unavailable' } | { status: 'complete' } | { status: 'running'; admitted: boolean };
 
 /** A reader's request for a stored Resource's full translation; the app Worker admits and bills it first. */
 export async function requestContentTranslation(env: CoreEnv, resourceId: string): Promise<ContentTranslationRequest> {
@@ -133,18 +133,9 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		let followupFailed = false;
 		try {
 			if (!(await task.start('translating'))) return { status: 'superseded', resourceId };
-			const inputStream = await step.do<ReadableStream<Uint8Array> | null>(
-				'load-resource-translation-input-stream-v5',
-				{
-					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
-					timeout: '30 seconds',
-				},
-				async () => {
-					const input = await withCoreDb(this.env, (db) => loadResourceTranslationInput(db, resourceId));
-					return input ? Response.json(input).body! : null;
-				},
+			const input = await stepJson(step, 'load-resource-translation-input-stream-v5', STORAGE_STEP, () =>
+				withCoreDb(this.env, (db) => loadResourceTranslationInput(db, resourceId)),
 			);
-			const input = inputStream ? await new Response(inputStream).json<Awaited<ReturnType<typeof loadResourceTranslationInput>>>() : null;
 			if (!input) {
 				console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Resource original is unavailable; skipping', resource_id: resourceId });
 				await task.report('missing', { stage: 'translating', status: 'skipped', resourceId });
@@ -169,10 +160,8 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 
 			const [metadata, content] = await Promise.allSettled([
 				translationPlan.metadata
-					? step.do(
-							'translate-zh-hant-title-summary-v3',
-							{ retries: { limit: 5, delay: aiRetryDelay, backoff: 'constant' }, timeout: '180 seconds' },
-							() => translateResourceMetadata(resource, this.env),
+					? step.do('translate-zh-hant-title-summary-v3', { retries: AI_STEP_RETRIES, timeout: '180 seconds' }, () =>
+							translateResourceMetadata(resource, this.env),
 						)
 					: undefined,
 				translationPlan.content
@@ -206,13 +195,8 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				return { status: 'skipped', resourceId };
 			}
 
-			const persisted = await step.do(
-				'persist-zh-hant-translation-v2',
-				{
-					retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' },
-					timeout: '30 seconds',
-				},
-				async () => withCoreDb(this.env, (db) => persistMachineZhHantTranslation(db, resourceId, originalHash, patch)),
+			const persisted = await step.do('persist-zh-hant-translation-v2', STORAGE_STEP, async () =>
+				withCoreDb(this.env, (db) => persistMachineZhHantTranslation(db, resourceId, originalHash, patch)),
 			);
 			if (!persisted) {
 				await task.report('persist-superseded', {
@@ -243,13 +227,9 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			const followups = await Promise.allSettled([
 				task.report('complete', { stage: 'translating', status: 'complete', resourceId }),
 				resource.scope === 'corpus'
-					? step.do(
-							'enqueue-translated-ai-search-sync-v1',
-							{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' },
-							async () => {
-								await this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId });
-							},
-						)
+					? step.do('enqueue-translated-ai-search-sync-v1', STORAGE_STEP, async () => {
+							await this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId });
+						})
 					: undefined,
 			]);
 			const failures = followups.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));

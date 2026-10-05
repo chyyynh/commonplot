@@ -14,7 +14,8 @@ import {
 	titlePageNamesTitle,
 } from '../contracts/paper-identity';
 import type { ResourceIdentifier } from '../contracts/resource';
-import { readBoundedResponseText } from '../services/response';
+import { readBoundedResponseText, responseError } from '../services/response';
+import { stepJson } from '../services/workflow-step';
 import { storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 import { stageArxivHtmlAcquisition } from './arxiv-html';
 import { stagePublicPdfAcquisition } from './pdf';
@@ -141,10 +142,13 @@ async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: reado
 	});
 	if (!response.ok) {
 		const retryAfter = response.headers.get('retry-after');
-		await response.body?.cancel();
+		const error = await responseError(
+			response,
+			[400, 401, 403, 410, 422],
+			`OpenAlex request failed with HTTP ${response.status}${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`,
+		);
 		if (response.status === 404) return null;
-		const ErrorType = [400, 401, 403, 410, 422].includes(response.status) ? NonRetryableError : Error;
-		throw new ErrorType(`OpenAlex request failed with HTTP ${response.status}${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`);
+		throw error;
 	}
 	const work = OpenAlexWorkSchema.parse(
 		JSON.parse(await readBoundedResponseText(response, MAX_OPENALEX_RESPONSE_BYTES, 'OpenAlex response')),
@@ -170,9 +174,7 @@ async function stagePaperPdfContent(env: CoreEnv, step: WorkflowStep, input: { c
 					signal: AbortSignal.timeout(CONTENT_REQUEST_TIMEOUT_MS),
 				});
 				if (!response.ok) {
-					await response.body?.cancel();
-					const ErrorType = [400, 401, 403, 404, 410, 422].includes(response.status) ? NonRetryableError : Error;
-					throw new ErrorType(`OpenAlex PDF request failed with HTTP ${response.status}`);
+					throw await responseError(response, [400, 401, 403, 404, 410, 422], `OpenAlex PDF request failed with HTTP ${response.status}`);
 				}
 				// The checkpoint keeps the key-free URL.
 				return storePublicPdfResponse(env, response, input.contentPdfUrl);
@@ -206,12 +208,9 @@ async function stagePaperMetadata(
 ): Promise<PaperMetadata | null> {
 	if (!input.identifiers.length) return null;
 	const startedAt = Date.now();
-	const stream = await step.do(
-		'resolve-paper-openalex-v7',
-		PAPER_METADATA_STEP,
-		async () => Response.json(await resolveOpenAlexPaper({ apiKey: env.OPENALEX_API_KEY, identifiers: input.identifiers })).body!,
+	const work = await stepJson(step, 'resolve-paper-openalex-v7', PAPER_METADATA_STEP, () =>
+		resolveOpenAlexPaper({ apiKey: env.OPENALEX_API_KEY, identifiers: input.identifiers }),
 	);
-	const work = await new Response(stream).json<PaperMetadata | null>();
 	const verified =
 		!work ||
 		input.titlePageText === undefined ||

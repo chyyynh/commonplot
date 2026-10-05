@@ -1,10 +1,10 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { fetchCrossrefDepositedReferences, matchDepositedReferences, resolveCrossrefReferenceDoi } from '../services/crossref';
+import { STORAGE_STEP, stepJson } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import { loadUnresolvedReferences, persistReferenceDois, type ReferenceDoi, type StoredReference } from '../store/references';
 
 const CROSSREF_BATCH_SIZE = 3;
-const REFERENCE_DB_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 const CROSSREF_STEP = { retries: { limit: 2, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 
 async function resolveReferenceDois(step: WorkflowStep, references: readonly StoredReference[]): Promise<ReferenceDoi[]> {
@@ -41,25 +41,16 @@ async function resolveReferenceDois(step: WorkflowStep, references: readonly Sto
  * reference list once; only without a deposited list (preprints, closed publishers) does each citation search Crossref.
  */
 export async function stageResourceReferences(env: CoreEnv, step: WorkflowStep, resourceId: string): Promise<void> {
-	const referenceStream = await step.do(
-		'load-unresolved-references-v3',
-		REFERENCE_DB_STEP,
-		async () => Response.json(await withCoreDb(env, (db) => loadUnresolvedReferences(db, resourceId))).body!,
+	const { doi, references } = await stepJson(step, 'load-unresolved-references-v3', STORAGE_STEP, () =>
+		withCoreDb(env, (db) => loadUnresolvedReferences(db, resourceId)),
 	);
-	const { doi, references } = await new Response(referenceStream).json<{ doi: string | null; references: StoredReference[] }>();
 	if (!references.length) return;
 	const deposited = doi
-		? await new Response(
-				await step.do(
-					'fetch-crossref-deposited-references-v1',
-					CROSSREF_STEP,
-					async () => Response.json(await fetchCrossrefDepositedReferences(doi)).body!,
-				),
-			).json<Awaited<ReturnType<typeof fetchCrossrefDepositedReferences>>>()
+		? await stepJson(step, 'fetch-crossref-deposited-references-v1', CROSSREF_STEP, () => fetchCrossrefDepositedReferences(doi))
 		: [];
 	const updates = deposited.length ? matchDepositedReferences(references, deposited) : await resolveReferenceDois(step, references);
 	const enrichedCount = updates.length
-		? await step.do('persist-crossref-reference-dois-v2', REFERENCE_DB_STEP, async () => {
+		? await step.do('persist-crossref-reference-dois-v2', STORAGE_STEP, async () => {
 				return withCoreDb(env, (db) => persistReferenceDois(db, resourceId, updates));
 			})
 		: 0;

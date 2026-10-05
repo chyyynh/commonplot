@@ -4,10 +4,11 @@ import type { Element as HastElement } from 'hast';
 import { DOMParser } from 'linkedom';
 import type { FootnoteDefinition, Root } from 'mdast';
 import type { AcquiredResource } from '../contracts/acquired-resource';
-import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
+import { cleanText, htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { paperIdentityFromText } from '../contracts/paper-identity';
 import { parseReferenceCitation } from '../contracts/reference-citation';
-import { limitByteStream } from '../services/response';
+import { limitByteStream, responseError } from '../services/response';
+import { stepJson } from '../services/workflow-step';
 
 const ARXIV_HTML_STEP = { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' } as const;
 const ARXIV_HTML_TIMEOUT_MS = 60_000;
@@ -36,12 +37,8 @@ const REMOVED_SELECTORS = [
 type Dom = ReturnType<DOMParser['parseFromString']>;
 type DomElement = NonNullable<ReturnType<Dom['querySelector']>>;
 
-function clean(value: string | null | undefined): string {
-	return (value ?? '').replace(/\s+/gu, ' ').trim();
-}
-
 function mathTex(math: DomElement): string {
-	return clean(math.getAttribute('alttext') ?? math.querySelector('annotation[encoding="application/x-tex"]')?.textContent);
+	return cleanText(math.getAttribute('alttext') ?? math.querySelector('annotation[encoding="application/x-tex"]')?.textContent);
 }
 
 /** An inline span the Markdown conversion turns into one math or footnote node; spans keep the spaces around them. */
@@ -59,8 +56,8 @@ function bibliography(document: Dom, baseUrl: string) {
 		.flatMap((item) => {
 			const id = item.getAttribute('id');
 			if (!id) return [];
-			const label = clean(item.querySelector('.ltx_tag_bibitem')?.textContent).replace(/^[[(](.*)[\])]$/u, '$1') || null;
-			const text = clean([...item.querySelectorAll('.ltx_bibblock')].map((block) => block.textContent).join(' '));
+			const label = cleanText(item.querySelector('.ltx_tag_bibitem')?.textContent).replace(/^[[(](.*)[\])]$/u, '$1') || null;
+			const text = cleanText([...item.querySelectorAll('.ltx_bibblock')].map((block) => block.textContent).join(' '));
 			if (!text) return [];
 			const links = [...item.querySelectorAll('a[href]')].map(
 				(link) => URL.parse(link.getAttribute('href') ?? '', baseUrl)?.toString() ?? '',
@@ -108,7 +105,7 @@ function readableText(element: DomElement | null | undefined): string {
 		if (tex) marked.textContent = tex;
 		else marked.remove();
 	}
-	return clean(copy.textContent);
+	return cleanText(copy.textContent);
 }
 
 /** Convert arXiv's LaTeXML rendering to the Markdown shape PDF parsing produces. */
@@ -116,7 +113,8 @@ function arxivHtmlDocument(html: string, url: string) {
 	const document = new DOMParser().parseFromString(html, 'text/html');
 	const article = document.querySelector('article.ltx_document');
 	if (!article) return null;
-	const title = clean(article.querySelector('h1.ltx_title_document')?.textContent) || clean(document.querySelector('title')?.textContent);
+	const title =
+		cleanText(article.querySelector('h1.ltx_title_document')?.textContent) || cleanText(document.querySelector('title')?.textContent);
 	// A person block runs name, affiliation, and address together; the name ends at the first line break.
 	const authors = [...article.querySelectorAll('.ltx_authors .ltx_personname')].flatMap((person) => {
 		let name = '';
@@ -126,7 +124,7 @@ function arxivHtmlDocument(html: string, url: string) {
 			if (['math', 'sup'].includes(node.nodeName.toLowerCase()) || (node as DomElement).classList?.contains('ltx_note')) continue;
 			name += node.textContent ?? '';
 		}
-		const author = clean(name)
+		const author = cleanText(name)
 			.replace(/[\d,*†‡§¶∗]+$/u, '')
 			.trim();
 		return author && author.length <= 80 ? [author] : [];
@@ -139,7 +137,7 @@ function arxivHtmlDocument(html: string, url: string) {
 	for (const element of article.querySelectorAll(REMOVED_SELECTORS)) element.remove();
 	for (const heading of article.querySelectorAll('h6.ltx_title_abstract')) {
 		const replacement = document.createElement('h2', {});
-		replacement.textContent = clean(heading.textContent) || 'Abstract';
+		replacement.textContent = cleanText(heading.textContent) || 'Abstract';
 		heading.replaceWith(replacement);
 	}
 	// Display equations are tables of cells; one TeX block per equation keeps its number as \tag.
@@ -147,7 +145,7 @@ function arxivHtmlDocument(html: string, url: string) {
 		const rows = [...table.querySelectorAll('tr')]
 			.map((row) => [...row.querySelectorAll('math')].map(mathTex).filter(Boolean).join(' '))
 			.filter(Boolean);
-		const tag = clean(table.querySelector('.ltx_tag_equation')?.textContent).replace(/^\((.*)\)$/u, '$1');
+		const tag = cleanText(table.querySelector('.ltx_tag_equation')?.textContent).replace(/^\((.*)\)$/u, '$1');
 		const tex = rows.length > 1 ? `\\begin{gathered}${rows.join(' \\\\ ')}\\end{gathered}` : (rows[0] ?? '');
 		if (tex) table.replaceWith(markerElement(document, { 'data-math': tag ? `${tex} \\tag{${tag}}` : tex, 'data-display': 'block' }));
 		else table.remove();
@@ -163,7 +161,7 @@ function arxivHtmlDocument(html: string, url: string) {
 		const keys = anchors.flatMap((anchor) => referenceKeys.get(anchor.getAttribute('href')!.slice(1)) ?? []);
 		if (!keys.length) continue;
 		for (const key of keys) citedKeys.add(key);
-		const words = clean(cite.textContent)
+		const words = cleanText(cite.textContent)
 			.replace(/[\d\s[\](),;–-]/gu, '')
 			.trim();
 		if (!words) {
@@ -180,7 +178,7 @@ function arxivHtmlDocument(html: string, url: string) {
 	for (const note of article.querySelectorAll('.ltx_note.ltx_role_footnote')) {
 		const content = note.querySelector('.ltx_note_content');
 		for (const mark of content?.querySelectorAll('.ltx_note_mark, .ltx_tag_note') ?? []) mark.remove();
-		const text = clean(content?.textContent);
+		const text = cleanText(content?.textContent);
 		if (!text) {
 			note.remove();
 			continue;
@@ -204,13 +202,13 @@ function arxivHtmlDocument(html: string, url: string) {
 			continue;
 		}
 		image.setAttribute('src', source.toString());
-		const alt = clean(image.getAttribute('alt'));
+		const alt = cleanText(image.getAttribute('alt'));
 		if (!alt || /^(?:Refer to caption|\[?Uncaptioned image\]?)$/u.test(alt))
 			image.setAttribute('alt', readableText(image.closest('figure')?.querySelector('figcaption')));
 	}
 	// Layout tables (author blocks, logos) carry no text of their own.
 	for (const table of article.querySelectorAll('table')) {
-		if (!clean(table.textContent) && !table.querySelector('img, span[data-math]')) table.remove();
+		if (!cleanText(table.textContent) && !table.querySelector('img, span[data-math]')) table.remove();
 	}
 
 	const tree = arxivMdast(article.innerHTML);
@@ -240,11 +238,10 @@ async function fetchArxivHtml(arxivId: string) {
 		signal: AbortSignal.timeout(ARXIV_HTML_TIMEOUT_MS),
 	});
 	if (!response.ok) {
-		await response.body?.cancel();
+		const error = await responseError(response, [400, 403, 410], `arXiv HTML request failed with HTTP ${response.status}`);
 		// arXiv has no HTML rendering for this paper.
 		if (response.status === 404) return null;
-		const ErrorType = [400, 403, 410].includes(response.status) ? NonRetryableError : Error;
-		throw new ErrorType(`arXiv HTML request failed with HTTP ${response.status}`);
+		throw error;
 	}
 	const body =
 		response.body &&
@@ -257,8 +254,7 @@ export async function stageArxivHtmlAcquisition(
 	step: WorkflowStep,
 	arxivId: string,
 ): Promise<(AcquiredResource & { kind: 'paper'; resourcePlatform: null }) | null> {
-	const stream = await step.do('acquire-arxiv-html-v3', ARXIV_HTML_STEP, async () => Response.json(await fetchArxivHtml(arxivId)).body!);
-	const document = await new Response(stream).json<Awaited<ReturnType<typeof fetchArxivHtml>>>();
+	const document = await stepJson(step, 'acquire-arxiv-html-v3', ARXIV_HTML_STEP, () => fetchArxivHtml(arxivId));
 	if (!document) return null;
 	return {
 		kind: 'paper',

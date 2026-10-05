@@ -1,6 +1,7 @@
 import pLimit from 'p-limit';
 import { z } from 'zod';
 import type { EntitySource } from '../contracts/acquired-resource';
+import { cleanText } from '../contracts/markdown';
 import { type EntityType, entityKey, type ResourceEntity } from '../contracts/resource';
 import { withCoreDb } from '../store/db';
 import { type EntityCandidate, listEntityCandidates } from '../store/resources';
@@ -59,7 +60,7 @@ type Span = {
 	subject: number;
 };
 
-const cleanName = (text: string) => text.replace(/’/gu, "'").replace(/'s$/u, '').replace(/^@/u, '').replace(/\s+/gu, ' ').trim();
+const cleanName = (text: string) => cleanText(text.replace(/’/gu, "'").replace(/'s$/u, '').replace(/^@/u, ''));
 const spanKey = (text: string) => cleanName(text).toLowerCase();
 /** Keys a name may be stored under: as written, without a version, singular or plural. */
 function lookupKeys(name: string) {

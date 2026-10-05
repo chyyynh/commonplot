@@ -1,7 +1,7 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
 import { normalizeBibliographicText, normalizeDoi } from '../contracts/paper-identity.ts';
-import { readBoundedResponseText } from './response.ts';
+import { readBoundedResponseText, responseError } from './response.ts';
 
 const CROSSREF_WORKS_URL = 'https://api.crossref.org/works';
 const CROSSREF_CONTACT = 'hello@newsence.app';
@@ -78,10 +78,13 @@ async function fetchCrossref(params: Readonly<Record<string, string>>, doi?: str
 	});
 	if (!response.ok) {
 		const retryAfter = response.headers.get('retry-after')?.slice(0, 100);
-		await response.body?.cancel();
+		const error = await responseError(
+			response,
+			[400, 401, 403, 404, 410, 422],
+			`Crossref request failed with HTTP ${response.status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`,
+		);
 		if (doi && response.status === 404) return null;
-		const ErrorType = [400, 401, 403, 404, 410, 422].includes(response.status) ? NonRetryableError : Error;
-		throw new ErrorType(`Crossref request failed with HTTP ${response.status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`);
+		throw error;
 	}
 	if (!response.body) throw new Error('Crossref response had no body');
 	return JSON.parse(

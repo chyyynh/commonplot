@@ -4,6 +4,7 @@ import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { normalizedResourceImageUrl } from '../contracts/image-mapping';
 import { readBoundedResponseText } from '../services/response';
+import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
 const MAX_LESSWRONG_RESPONSE_BYTES = 8 * 1024 * 1024;
@@ -92,10 +93,5 @@ async function scrapeLessWrong(postId: string) {
 }
 
 export async function stageLessWrongAcquisition(step: WorkflowStep, postId: string) {
-	const contentStream = await step.do(
-		'acquire-lesswrong-v3',
-		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await scrapeLessWrong(postId)).body!,
-	);
-	return new Response(contentStream).json<Awaited<ReturnType<typeof scrapeLessWrong>>>();
+	return stepJson(step, 'acquire-lesswrong-v3', { retries: FETCH_STEP_RETRIES, timeout: '120 seconds' }, () => scrapeLessWrong(postId));
 }

@@ -4,12 +4,12 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { fromHtml } from 'hast-util-from-html';
 import { toText } from 'hast-util-to-text';
 import pLimit from 'p-limit';
-import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { ResourceUrlSchema } from '../contracts/resource-url';
-import { AI_STEP_RETRIES, coreGatewayOptions, CORE_TEXT_MODEL, CORE_TEXT_REASONING } from '../services/ai-model';
+import { AI_STEP, CORE_TEXT_REASONING, coreTextModel } from '../services/ai-model';
+import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 
 const HN_ITEM_API = 'https://hacker-news.firebaseio.com/v0/item';
 const HN_TOP_LEVEL_THREAD_LIMIT = 10;
@@ -37,8 +37,6 @@ const HackerNewsItemSchema = z.object({
 });
 
 type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
-
-type HackerNewsAcquisition = Awaited<ReturnType<typeof scrapeHackerNews>>;
 
 async function fetchHnItem(itemId: number | string): Promise<HackerNewsItem | null> {
 	const response = await fetch(`${HN_ITEM_API}/${itemId}.json`, { signal: AbortSignal.timeout(15_000) });
@@ -165,14 +163,14 @@ async function scrapeHackerNews(itemId: string) {
 }
 
 export async function stageHackerNewsAcquisition(env: CoreEnv, step: WorkflowStep, input: { itemId: string; processingId: string }) {
-	const contentStream = await step.do(
+	const { resource, discussion } = await stepJson(
+		step,
 		'acquire-hackernews-ranked-v5',
-		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async () => Response.json(await scrapeHackerNews(input.itemId)).body!,
+		{ retries: FETCH_STEP_RETRIES, timeout: '120 seconds' },
+		() => scrapeHackerNews(input.itemId),
 	);
-	const { resource, discussion } = await new Response(contentStream).json<HackerNewsAcquisition>();
 	if (discussion.commentCount < 4 || discussion.threadCount < 2) return resource;
-	const digest = await step.do('build-hacker-news-annotation-ranked-v3', { retries: AI_STEP_RETRIES, timeout: '600 seconds' }, async () => {
+	const digest = await step.do('build-hacker-news-annotation-ranked-v3', AI_STEP, async () => {
 		const hnPostSection = discussion.hnText ? `HN post text:\n${discussion.hnText}\n\n` : '';
 		const digestFocus =
 			discussion.itemType === 'ask'
@@ -181,9 +179,7 @@ export async function stageHackerNewsAcquisition(env: CoreEnv, step: WorkflowSte
 					? 'Synthesize the community feedback, questions, use cases, and technical observations about the project.'
 					: 'Synthesize the arguments, context, reactions, and disagreements in the discussion.';
 		const { finishReason, text } = await generateText({
-			model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
-				...coreGatewayOptions(env, { feature: 'hn-discussion-digest-en', resource_id: input.processingId }),
-			}),
+			model: coreTextModel(env, { feature: 'hn-discussion-digest-en', resource_id: input.processingId }),
 			prompt: `Title: ${resource.title}
 ${hnPostSection}Ranked HN discussion sample (${discussion.commentCount} comments from ${discussion.threadCount} top-level threads):
 ${discussion.commentInput}

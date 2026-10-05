@@ -1,3 +1,5 @@
+import { cleanText } from './markdown';
+
 /** Display fields parsed from one bibliography entry; each field is null when the entry does not expose it reliably. */
 export type ReferenceCitation = {
 	title: string | null;
@@ -26,12 +28,8 @@ const PSEUDO_AUTHORS = new Set(['online', 'anonymous', 'n.d', 'unknown', 'websit
 const ORGANIZATION =
 	/\b(?:Corporation|Corp|Inc|Ltd|LLC|Team|Collaboration|Research|Institute|University|Foundation|Labs?|Group|Committee|Association|Organi[sz]ation|Council|Project|Systems|Agency|Department|Office|Commission|Consortium|Society|Network)\b/u;
 
-function clean(value: string): string {
-	return value.replace(/\s+/gu, ' ').trim();
-}
-
 function trimPunctuation(value: string): string {
-	return clean(value)
+	return cleanText(value)
 		.replace(/^[\s"“'‘,.;:]+|[\s"”'’,.;:]+$/gu, '')
 		.trim();
 }
@@ -59,10 +57,10 @@ function sentenceEnd(value: string): number {
 
 function authorSummary(authors: string, surnameFirst: boolean): Pick<ReferenceCitation, 'authors' | 'leadAuthor' | 'hasCoauthors'> {
 	const hasEtAl = /\bet\s+al\b/u.test(authors);
-	const body = clean(authors.replace(/,?\s*\bet\s+al\b\.?/gu, '')).replace(/[.,;]$/u, '');
+	const body = cleanText(authors.replace(/,?\s*\bet\s+al\b\.?/gu, '')).replace(/[.,;]$/u, '');
 	if (!body || PSEUDO_AUTHORS.has(body.toLowerCase())) return { authors: null, leadAuthor: null, hasCoauthors: false };
 	// The year split can take the final initial's period: `Cai, J. (2024)` → `Cai, J`.
-	const printed = clean(authors)
+	const printed = cleanText(authors)
 		.replace(/[,;:]$/u, '')
 		.replace(/(\p{Lu}\.[^]*\s\p{Lu})$/u, '$1.');
 	if (surnameFirst) {
@@ -93,7 +91,7 @@ function normalizeVenue(value: string): string | null {
 }
 
 function titleAndVenue(rest: string): Pick<ReferenceCitation, 'title' | 'venue'> {
-	const body = clean(rest.split(LOCATOR_CUT)[0] ?? '');
+	const body = cleanText(rest.split(LOCATOR_CUT)[0] ?? '');
 	const quoted = /^["“]([^"”]{3,})["”],?\s*/u.exec(body);
 	const end = quoted ? quoted[0].length - 1 : sentenceEnd(body);
 	const title = trimPunctuation(
@@ -137,7 +135,7 @@ function looksLikeAuthorList(value: string): boolean {
  * Unrecognized entries keep null fields; readers fall back to the raw reference text.
  */
 export function parseReferenceCitation(value: string): ReferenceCitation {
-	const text = clean(value);
+	const text = cleanText(value);
 	// IEEE: `Authors, “Title,” Venue, Year.`
 	const ieee = /^(.{2,600}?),\s*[“"]([^”"]{2,400}?)[,.]?[”"],?\s*(.*)$/u.exec(text);
 	if (ieee && looksLikeAuthorList(ieee[1]!)) {

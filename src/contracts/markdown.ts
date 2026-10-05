@@ -27,6 +27,11 @@ declare module 'mdast' {
 const FRONTMATTER_PRESETS: Array<'toml' | 'yaml'> = ['yaml', 'toml'];
 const CJK_MARKDOWN = cjkFriendlyToMarkdown();
 
+/** Collapse each whitespace run to one space and trim the ends. */
+export function cleanText(value: string | null | undefined): string {
+	return (value ?? '').replace(/\s+/gu, ' ').trim();
+}
+
 /** Parse Markdown; `extensions` may only narrow the dialect (e.g. disable raw HTML). */
 export function parseMarkdown(markdown: string, extensions: NonNullable<FromMarkdownOptions['extensions']> = []): Root {
 	return fromMarkdown(markdown, {

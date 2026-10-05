@@ -26,7 +26,7 @@ import {
 import { parseTextMap } from 'structured-document-text/src/pdf/decode.js';
 import { isLeafBlock, refKey, sameRef } from 'structured-document-text/src/range.js';
 import { mergeTextNodes } from 'structured-document-text/src/text.js';
-import { markdownHtmlContent, stringifyMarkdown } from '../contracts/markdown';
+import { cleanText, markdownHtmlContent, stringifyMarkdown } from '../contracts/markdown';
 import { paperIdentityFromText } from '../contracts/paper-identity';
 import { parseReferenceCitation } from '../contracts/reference-citation';
 
@@ -100,8 +100,8 @@ export function parseStructuredPdfDocumentJson(json: string): StructuredPdfDocum
 	return value as StructuredPdfDocument;
 }
 
-function cleanText(value: string): string {
-	return value.replaceAll('\0', '').replace(/\s+/gu, ' ').trim();
+function cleanPdfText(value: string): string {
+	return cleanText(value.replaceAll('\0', ''));
 }
 
 function boundedText(value: string, maxChars: number): string {
@@ -113,7 +113,7 @@ function nodeText(node: SdtNode): string {
 }
 
 function cropAltText(node: SdtNode): string {
-	return boundedText(cleanText(nodeText(node)), MAX_SOURCE_CROP_ALT_CHARS);
+	return boundedText(cleanPdfText(nodeText(node)), MAX_SOURCE_CROP_ALT_CHARS);
 }
 
 function noteFootnoteId(key: string): string {
@@ -147,9 +147,9 @@ function walkNodes(nodes: readonly SdtNode[], parentPath: RefPath = []): Array<{
 }
 
 function referenceLabelAndText(value: string) {
-	const text = cleanText(value);
+	const text = cleanPdfText(value);
 	const match = /^(?:\[([^\]]{1,64})\]|(\d{1,6})[.)])\s*/u.exec(text);
-	const label = cleanText(match?.[1] ?? match?.[2] ?? '') || null;
+	const label = cleanPdfText(match?.[1] ?? match?.[2] ?? '') || null;
 	const body = (match && text.slice(match[0].length).trim()) || text;
 	const { doi = null, arxivId = null } = paperIdentityFromText(body) ?? {};
 	return { doi, arxivId, label, text: body, ...parseReferenceCitation(body) };
@@ -238,14 +238,15 @@ function blockRects(node: SdtBlockNode): PageRect[] {
 
 function figureLabel(node: SdtBlockNode): string | null {
 	if (node.type !== 'caption' || node.flowClass === 'excluded') return null;
-	const match = /^(?:figure|fig\.?)\s+(\d+[a-z]?)(?=[\s:.,])/iu.exec(cleanText(nodeText(node)));
+	const match = /^(?:figure|fig\.?)\s+(\d+[a-z]?)(?=[\s:.,])/iu.exec(cleanPdfText(nodeText(node)));
 	return match ? `Figure ${match[1]}` : null;
 }
 
 function authorTablePaths(document: StructuredPdfDocument): Set<string> {
 	const firstBody = document.content.findIndex(
 		(node) =>
-			node.type === 'caption' || (node.type === 'heading' && /^(?:abstract|(?:1\.?\s+)?introduction)$/iu.test(cleanText(nodeText(node)))),
+			node.type === 'caption' ||
+			(node.type === 'heading' && /^(?:abstract|(?:1\.?\s+)?introduction)$/iu.test(cleanPdfText(nodeText(node)))),
 	);
 	if (firstBody < 1) return new Set();
 	const front = document.content.slice(0, firstBody);
@@ -257,7 +258,7 @@ function authorTablePaths(document: StructuredPdfDocument): Set<string> {
 			const rects = blockRects(node);
 			return node.type === 'table' &&
 				isLeafBlock(node) &&
-				cleanText(nodeText(node)).length <= 240 &&
+				cleanPdfText(nodeText(node)).length <= 240 &&
 				rects.length &&
 				rects.every(([page, , y1, , y2]) => page === 0 && y2 - y1 <= 50)
 				? [String(index)]
@@ -272,7 +273,7 @@ function horizontalOverlap(a: PdfRect, b: PdfRect): number {
 
 function isChartLabels(node: SdtBlockNode, caption: PageRect): boolean {
 	if (node.type !== 'paragraph') return false;
-	const value = cleanText(nodeText(node));
+	const value = cleanPdfText(nodeText(node));
 	if (value.length > 700 || !/\d/u.test(value) || /[.!?]\s+[A-Z]/u.test(value) || /[.!?]$/u.test(value)) return false;
 	const rects = blockRects(node);
 	const rect = rects.length === 1 ? rects[0] : null;
@@ -450,7 +451,7 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 }
 
 function firstPageIdentifierText(document: StructuredPdfDocument): string | null {
-	const pageText = cleanText(getFulltextFromStructuredText(document, [0]));
+	const pageText = cleanPdfText(getFulltextFromStructuredText(document, [0]));
 	const propertyText = Object.entries(document.metadata.source.properties ?? {})
 		.filter(([, value]) => typeof value === 'string')
 		.map(([key, value]) => `${key}: ${value}`)
@@ -495,7 +496,7 @@ export function normalizeStructuredPdf(
 	}
 	const headingLevelByPath = headingLevels(document.catalog.outline);
 	const properties = document.metadata.source.properties ?? {};
-	const author = typeof properties.Author === 'string' ? cleanText(properties.Author) : '';
+	const author = typeof properties.Author === 'string' ? cleanPdfText(properties.Author) : '';
 	const firstSection = Math.min(...[...headingLevelByPath.keys()].map((path) => Number(path.split(',')[0])));
 	const noteByPath = new Map(
 		entries.flatMap(({ node, path }) =>
@@ -521,7 +522,7 @@ export function normalizeStructuredPdf(
 			const key = refKey(path);
 			if (!noteByPath.has(key)) continue;
 			const markers = linkedNotes.get(key) ?? new Set<string>();
-			markers.add(cleanText(node.text));
+			markers.add(cleanPdfText(node.text));
 			linkedNotes.set(key, markers);
 		}
 	}
@@ -655,7 +656,7 @@ export function normalizeStructuredPdf(
 				Number.isFinite(firstSection) &&
 				path[0]! < firstSection &&
 				!headingLevelByPath.has(refKey(path)) &&
-				((author && cleanText(nodeText(node)) === author) ||
+				((author && cleanPdfText(nodeText(node)) === author) ||
 					node.content.some((child) => 'text' in child && safeHttpUrl(child.target?.url)?.startsWith('https://orcid.org/')))
 			)
 				return [{ type: 'paragraph', children: inline(node.content) }];

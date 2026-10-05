@@ -4,7 +4,10 @@ import type { PhrasingContent, Root } from 'mdast';
 import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { stringifyMarkdown } from '../contracts/markdown';
-import { resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
+import { isSocialLinkHost } from '../contracts/resource-links';
+import { isXHost, resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
+import { responseError } from '../services/response';
+import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 
 const TwitterAuthorSchema = z.object({
 	userName: z.string(),
@@ -366,11 +369,9 @@ function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {
 	return tweet.author;
 }
 
-const NON_RESOURCE_LINK_HOSTS = ['t.co', 'twitter.com', 'x.com', 'instagram.com', 'tiktok.com', 'facebook.com', 'threads.net'];
-
 function isNonResourceLinkUrl(url: string): boolean {
 	const hostname = URL.parse(url)?.hostname;
-	return !hostname || NON_RESOURCE_LINK_HOSTS.some((host) => hostname === host || hostname.endsWith(`.${host}`));
+	return !hostname || isXHost(hostname) || isSocialLinkHost(hostname);
 }
 
 function tweetAttachments(tweet: Tweet) {
@@ -404,6 +405,17 @@ function tweetAttachments(tweet: Tweet) {
 
 const TCO_TOKEN_RE = /https?:\/\/t\.co\/[A-Za-z0-9]+/g;
 
+/** Each t.co token the tweet's url entities map to an expanded URL. */
+function tcoExpansions(tweet: Tweet): Map<string, string> {
+	const expansions = new Map<string, string>();
+	for (const entity of tweet.entities?.urls ?? []) {
+		const token = entity.url?.trim();
+		const expanded = entity.expanded_url?.trim();
+		if (token && expanded) expansions.set(token, expanded);
+	}
+	return expansions;
+}
+
 /**
  * Rewrite tweet text the way Twitter renders it: each t.co token becomes its
  * expanded URL. Tokens are dropped when Twitter hides them — media links
@@ -413,10 +425,7 @@ const TCO_TOKEN_RE = /https?:\/\/t\.co\/[A-Za-z0-9]+/g;
  */
 function expandTweetUrls(text: string, tweet: Tweet): string {
 	const replacements = new Map<string, string>();
-	for (const entity of tweet.entities?.urls ?? []) {
-		const token = entity.url?.trim();
-		const expanded = entity.expanded_url?.trim();
-		if (!token || !expanded) continue;
+	for (const [token, expanded] of tcoExpansions(tweet)) {
 		const parsed = URL.parse(expanded);
 		const mediaLink =
 			parsed && resolveResourceUrl(expanded)?.resourcePlatform === 'twitter' && /\/status\/\d+\/(?:photo|video)\/\d+/.test(parsed.pathname);
@@ -439,12 +448,7 @@ function expandTweetUrls(text: string, tweet: Tweet): string {
 
 /** Expand mapped t.co tokens only — for longform bodies, where unmapped t.co are the article's own links. */
 function expandKnownTweetUrls(text: string, tweet: Tweet): string {
-	const replacements = new Map<string, string>();
-	for (const entity of tweet.entities?.urls ?? []) {
-		const token = entity.url?.trim();
-		const expanded = entity.expanded_url?.trim();
-		if (token && expanded) replacements.set(token, expanded);
-	}
+	const replacements = tcoExpansions(tweet);
 	return text.replace(TCO_TOKEN_RE, (token) => replacements.get(token) ?? token);
 }
 
@@ -456,21 +460,23 @@ function quotedTweetUrl(tweet: Tweet): string | undefined {
 	return identifier?.value === quote.id ? quote.url : undefined;
 }
 
-async function fetchTwitterApiArticle(tweetId: string, apiKey: string): Promise<TwitterArticle> {
-	console.info({ tag: 'TWITTER', msg: 'Fetching longform for tweet', tweetId });
-	const response = await fetch(`https://api.twitterapi.io/twitter/article?tweet_id=${tweetId}`, {
+/** A twitterapi.io JSON response; a client error other than a timeout or rate limit is permanent. */
+async function fetchTwitterApi(path: string, apiKey: string, failure: (response: Response) => string): Promise<unknown> {
+	const response = await fetch(`https://api.twitterapi.io/twitter/${path}`, {
 		headers: { 'x-api-key': apiKey },
 		signal: AbortSignal.timeout(20_000),
 	});
 	if (!response.ok) {
-		await response.body?.cancel();
-		const message = `Twitter longform request failed with HTTP ${response.status}`;
-		if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
-			throw new NonRetryableError(message);
-		}
-		throw new Error(message);
+		throw await responseError(response, (status) => status >= 400 && status < 500 && status !== 408 && status !== 429, failure(response));
 	}
-	const payload = TwitterArticleResponseSchema.parse(await response.json());
+	return response.json();
+}
+
+async function fetchTwitterApiArticle(tweetId: string, apiKey: string): Promise<TwitterArticle> {
+	console.info({ tag: 'TWITTER', msg: 'Fetching longform for tweet', tweetId });
+	const payload = TwitterArticleResponseSchema.parse(
+		await fetchTwitterApi(`article?tweet_id=${tweetId}`, apiKey, ({ status }) => `Twitter longform request failed with HTTP ${status}`),
+	);
 	if (payload.status !== 'success') {
 		throw new Error(`Twitter article ${tweetId} failed: ${payload.message?.trim() || 'unknown provider error'}`);
 	}
@@ -521,7 +527,7 @@ async function resolveTweetContent(tweet: Tweet, loadArticle: () => Promise<Twit
 	});
 	const longformUrl = [tweet.url, ...expandedUrls].find((url) => {
 		const parsed = URL.parse(url);
-		return parsed && /(^|\.)(twitter|x)\.com$/.test(parsed.hostname) && parsed.pathname.startsWith('/i/article/');
+		return parsed && isXHost(parsed.hostname) && parsed.pathname.startsWith('/i/article/');
 	});
 	const linkedContentUrl = expandedUrls.find((url) => !isNonResourceLinkUrl(url));
 	// X shows the quote box instead of a link card, so the quote wins.
@@ -555,22 +561,11 @@ async function resolveTweetContent(tweet: Tweet, loadArticle: () => Promise<Twit
 
 async function fetchTwitterApiTweet(tweetId: string, apiKey: string): Promise<Tweet> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
-	const response = await fetch(`https://api.twitterapi.io/twitter/tweets?tweet_ids=${tweetId}`, {
-		headers: { 'x-api-key': apiKey },
-		signal: AbortSignal.timeout(20_000),
-	});
-	if (!response.ok) {
-		await response.body?.cancel();
-		const message =
-			response.status === 404 || response.status === 410
-				? `Twitter API: Tweet ${tweetId} was not found`
-				: `HTTP ${response.status}: ${response.statusText}`;
-		if (response.status >= 400 && response.status < 500 && response.status !== 408 && response.status !== 429) {
-			throw new NonRetryableError(message);
-		}
-		throw new Error(message);
-	}
-	const payload = TwitterTweetsResponseSchema.parse(await response.json());
+	const payload = TwitterTweetsResponseSchema.parse(
+		await fetchTwitterApi(`tweets?tweet_ids=${tweetId}`, apiKey, ({ status, statusText }) =>
+			status === 404 || status === 410 ? `Twitter API: Tweet ${tweetId} was not found` : `HTTP ${status}: ${statusText}`,
+		),
+	);
 	if (payload.status?.toLowerCase() === 'error') {
 		throw new Error(`Twitter tweets request failed: ${(payload.message ?? payload.msg)?.trim() || 'unknown provider error'}`);
 	}
@@ -612,20 +607,15 @@ async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string)
 }
 
 export async function stageTwitterAcquisition(env: CoreEnv, step: WorkflowStep, input: TwitterAcquisitionInput) {
-	const contentStream = await step.do(
-		'acquire-twitter-v4',
-		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-		async (ctx) => {
-			console.info({
-				tag: 'TWITTER',
-				event: 'acquisition_attempt',
-				processing_id: input.processingId,
-				attempt: ctx.attempt,
-			});
-			return Response.json(await scrapeTweet(input, env.KAITO_API_KEY)).body!;
-		},
-	);
-	return new Response(contentStream).json<Awaited<ReturnType<typeof scrapeTweet>>>();
+	return stepJson(step, 'acquire-twitter-v4', { retries: FETCH_STEP_RETRIES, timeout: '120 seconds' }, async (ctx) => {
+		console.info({
+			tag: 'TWITTER',
+			event: 'acquisition_attempt',
+			processing_id: input.processingId,
+			attempt: ctx.attempt,
+		});
+		return scrapeTweet(input, env.KAITO_API_KEY);
+	});
 }
 
 function twitterCreator(author: NonNullable<Tweet['author']>) {

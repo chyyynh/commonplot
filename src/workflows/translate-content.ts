@@ -2,9 +2,8 @@
 import { generateText, NoObjectGeneratedError, Output } from 'ai';
 import type { WorkflowStep } from 'cloudflare:workers';
 import pLimit from 'p-limit';
-import { createWorkersAI } from 'workers-ai-provider';
 import { z } from 'zod';
-import { aiRetryDelay, coreGatewayOptions, CORE_TEXT_MODEL, CORE_TEXT_REASONING } from '../services/ai-model';
+import { aiRetryDelay, CORE_TEXT_REASONING, coreTextModel } from '../services/ai-model';
 import {
 	compileMarkdownTranslationArtifact,
 	type MarkdownSegmentTranslation,
@@ -175,13 +174,11 @@ async function translateMarkdownBatchToZhHant(
 	try {
 		const promptSegments = batch.segments.map(markdownTranslationModelInput);
 		const result = await generateText({
-			model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
-				...coreGatewayOptions(env, {
-					batch_id: batch.id,
-					feature: 'resource-content-translation',
-					recovery_strategy: batch.id.includes('-') ? 'split' : 'batch',
-					resource_id: resourceId,
-				}),
+			model: coreTextModel(env, {
+				batch_id: batch.id,
+				feature: 'resource-content-translation',
+				recovery_strategy: batch.id.includes('-') ? 'split' : 'batch',
+				resource_id: resourceId,
 			}),
 			prompt: `${JSON.stringify({
 				targetLocale: 'zh-Hant',
@@ -236,9 +233,7 @@ async function translateMarkdownBatchToZhHant(
 export async function translateResourceMetadata(resource: ResourceTranslationInput, env: CoreEnv) {
 	const summary = resource.summary?.trim();
 	const result = await generateText({
-		model: createWorkersAI({ binding: env.AI })(CORE_TEXT_MODEL, {
-			...coreGatewayOptions(env, { feature: 'resource-metadata-localization', resource_id: resource.id }),
-		}),
+		model: coreTextModel(env, { feature: 'resource-metadata-localization', resource_id: resource.id }),
 		system: `Translate the supplied resource metadata into natural Taiwan Traditional Chinese (zh-Hant).
 Translate the title faithfully.
 ${summary ? 'Translate the supplied summary in full. Preserve its length and meaning; do not summarize it again.' : 'Translate only the title. No source summary is available; do not create one.'}

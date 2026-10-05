@@ -4,6 +4,7 @@ import type { AcquiredResource, AcquisitionInput } from '../contracts/acquired-r
 import { paperIdentifiersFromIdentity, paperIdentityFromText } from '../contracts/paper-identity';
 import { PDF_MIME } from '../contracts/pdf-policy';
 import { storedPdfCropUrlPrefix } from '../contracts/storage-keys';
+import { stepJson } from '../services/workflow-step';
 import { parseStoredPdfRepresentation, type storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 
 type PdfAcquisition = Readonly<{
@@ -20,11 +21,28 @@ async function stagePdfBody(
 	step: WorkflowStep,
 	input: Readonly<{ stepKey: string; pdfStorageKey: string; inputContentHash: string; sourceLabel: string; cropUrlPrefix: string }>,
 ): Promise<PdfBody> {
-	const stream = await step.do(`parse-pdf-body-v1-${input.stepKey}`, PDF_PARSE_STEP, async () => {
+	return stepJson(step, `parse-pdf-body-v1-${input.stepKey}`, PDF_PARSE_STEP, async (): Promise<PdfBody> => {
 		const { markdown, references, paperIdentifierText } = await parseStoredPdfRepresentation(env, input);
-		return Response.json({ markdown, references, paperIdentifierText }).body!;
+		return { markdown, references, paperIdentifierText };
 	});
-	return new Response(stream).json<PdfBody>();
+}
+
+/** What every PDF file Resource shares: its parsed body, and no platform, subject, date or creators. */
+function pdfFileResource(pdfHash: string, body: PdfBody) {
+	return {
+		kind: 'file',
+		subjectUrl: null,
+		previewImageUrl: null,
+		resourcePlatform: null,
+		fileType: PDF_MIME,
+		pdfHash,
+		content: body.markdown,
+		references: body.references,
+		publishedDate: null,
+		summary: null,
+		creators: [],
+		kindMetadata: null,
+	} satisfies Partial<AcquiredResource>;
 }
 
 export async function stagePublicPdfAcquisition(
@@ -44,23 +62,12 @@ export async function stagePublicPdfAcquisition(
 	const parsed = await stagePdfBody(env, step, { ...source, stepKey: source.pdfStorageKey });
 	if (!parsed.markdown) throw new NonRetryableError('Fetched PDF has no usable text; OCR is required');
 	return {
-		kind: 'file',
+		...pdfFileResource(source.inputContentHash, parsed),
 		resourceIdentifiers: [],
-		subjectUrl: null,
-		previewImageUrl: null,
-		resourcePlatform: null,
-		fileType: PDF_MIME,
-		pdfHash: source.inputContentHash,
 		url: source.url,
 		title,
-		content: parsed.markdown,
-		references: parsed.references,
 		source: url.hostname.replace(/^www\./, ''),
 		originalLang: 'und',
-		publishedDate: null,
-		summary: null,
-		creators: [],
-		kindMetadata: null,
 	};
 }
 
@@ -81,23 +88,12 @@ export async function stageStoredPdfAcquisition(
 	const printedIdentity = paperIdentityFromText(parsed.paperIdentifierText);
 	if (!parsed.markdown) throw new NonRetryableError(`Stored PDF ${target.objectId} has no usable text; OCR is required`);
 	return {
-		kind: 'file',
+		...pdfFileResource(resource.contentHash, parsed),
 		resourceIdentifiers: printedIdentity ? paperIdentifiersFromIdentity(printedIdentity) : [],
 		titlePageText: parsed.paperIdentifierText,
-		subjectUrl: null,
-		previewImageUrl: null,
-		resourcePlatform: null,
-		fileType: PDF_MIME,
-		pdfHash: resource.contentHash,
 		url: null,
 		title: resource.title,
-		content: parsed.markdown,
-		references: parsed.references,
 		source: resource.source,
 		originalLang: resource.originalLang,
-		publishedDate: null,
-		summary: null,
-		creators: [],
-		kindMetadata: null,
 	};
 }

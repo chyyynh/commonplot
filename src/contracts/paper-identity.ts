@@ -1,3 +1,5 @@
+import { cleanText } from './markdown';
+
 // DOI suffixes are opaque printable Unicode, not an ASCII publisher-specific alphabet.
 const DOI_RE = /^10\.\d{4,9}\/[^\s\p{C}]+$/u;
 const MODERN_ARXIV_ID_RE = /^(\d{4}\.\d{4,5})(?:v\d+)?$/i;
@@ -163,13 +165,13 @@ export function paperIdentityFromText(value: unknown): PaperIdentity | null {
 
 /** Compare bibliographic text without case, accents, or punctuation. */
 export function normalizeBibliographicText(value: string): string {
-	return value
-		.normalize('NFKD')
-		.replace(/\p{Mark}/gu, '')
-		.toLocaleLowerCase('en-US')
-		.replace(/[^\p{Letter}\p{Number}]+/gu, ' ')
-		.replace(/\s+/g, ' ')
-		.trim();
+	return cleanText(
+		value
+			.normalize('NFKD')
+			.replace(/\p{Mark}/gu, '')
+			.toLocaleLowerCase('en-US')
+			.replace(/[^\p{Letter}\p{Number}]+/gu, ' '),
+	);
 }
 
 /** A PDF's title page names a work when the work's full title appears on it. */

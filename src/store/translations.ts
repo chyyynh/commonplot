@@ -142,7 +142,7 @@ export async function translatesContentAutomatically(db: NodePgDatabase, resourc
 	return result.rows[0]?.automatic ?? false;
 }
 
-export type StoredTranslationCandidate = ResourceTranslationCandidate &
+type StoredTranslationCandidate = ResourceTranslationCandidate &
 	Readonly<{ id: string; originalHash: string; hasContent: boolean; hasTranslatedContent: boolean }>;
 
 /** A stored Resource as a requested content translation sees it; private files must be translatable uploads. */

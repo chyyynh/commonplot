@@ -5,7 +5,7 @@ const HOSTED_RESOURCE_IMAGE_PATTERN = /^https:\/\/imagedelivery\.net\/[a-zA-Z0-9
 const PREVIEW_IMAGE_TARGET_WIDTH = 1200;
 const WORDPRESS_UPLOAD_PATH = /\/wp-content\/uploads\//i;
 
-export type ResourceImageFields = Readonly<{
+type ResourceImageFields = Readonly<{
 	creators: readonly ResourceCreator[];
 	kindMetadata: ResourceKindMetadata | null;
 	previewImageUrl: string | null;

@@ -4,7 +4,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { MAX_PDF_BYTES } from '../contracts/pdf-policy.ts';
 import { blobKey, storedPdfCropUrlPrefix, structuredPdfCropPrefix, structuredPdfDocumentKey } from '../contracts/storage-keys.ts';
 import { coreExports } from '../exports.ts';
-import { limitByteStream, readBoundedResponseText } from './response.ts';
+import { limitByteStream, readBoundedResponseText, statusError } from './response.ts';
 import {
 	normalizeStructuredPdf,
 	parseStructuredPdfDocumentJson,
@@ -130,8 +130,7 @@ async function ensureStructuredPdfSourceCrops(
 			const response = await coreExports.ZoteroSdt.getByName(ZOTERO_SDT_CONTAINER_NAME).renderPdfAreas(pdf.body, pdf.size, batch);
 			if (!response.ok) {
 				const body = await readBoundedResponseText(response, MAX_ERROR_BODY_BYTES, 'Zotero source crop error');
-				const ErrorType = [400, 413, 415, 422].includes(response.status) ? NonRetryableError : Error;
-				throw new ErrorType(`Zotero source crop failed with ${response.status}: ${body}`);
+				throw statusError(response.status, [400, 413, 415, 422], `Zotero source crop failed with ${response.status}: ${body}`);
 			}
 			const expected = new Set(batch.map(({ id }) => id));
 			for await (const value of cropResponseRows(response)) {
@@ -201,7 +200,7 @@ async function parsePdfArtifactStream(input: ReadableStream<Uint8Array>, byteLen
 			const message = structuredPdfFailureMessage(response.status, body);
 			// Only a documented invalid/unreadable PDF is a permanent parse outcome.
 			// Busy, startup, transport and malformed responses remain retryable.
-			throw response.status === 400 || response.status === 422 ? new NonRetryableError(message) : new Error(message);
+			throw statusError(response.status, [400, 422], message);
 		}
 		return parseStructuredPdfDocumentJson(body);
 	} catch (error) {

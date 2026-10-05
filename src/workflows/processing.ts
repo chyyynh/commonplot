@@ -6,10 +6,11 @@ import { resourceImageSources, withHostedImages } from '../contracts/image-mappi
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { blobKey } from '../contracts/storage-keys';
 import { coreExports } from '../exports.ts';
-import { AI_STEP_RETRIES } from '../services/ai-model';
+import { AI_STEP } from '../services/ai-model';
 import { extractResourceEntities } from '../services/entities';
 import { stageResourceImages } from '../services/image-rehosting';
 import { summarizeResource } from '../services/summary';
+import { STORAGE_STEP } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import {
 	claimAcquisitionFence,
@@ -22,9 +23,6 @@ import { translatesContentAutomatically } from '../store/translations';
 import { createResourceTask } from './progress';
 import { stageResourceReferences } from './references';
 import { enqueueResourceTranslation } from './translation';
-
-const STORAGE_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
-const AI_STEP = { retries: AI_STEP_RETRIES, timeout: '600 seconds' } as const;
 
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep) {

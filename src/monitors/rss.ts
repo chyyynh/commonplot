@@ -3,6 +3,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { fromHtml } from 'hast-util-from-html';
 import { toText } from 'hast-util-to-text';
 import pLimit from 'p-limit';
+import { cleanText } from '../contracts/markdown';
 import { resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { readBoundedResponseText } from '../services/response';
 import { advanceSourceWatermark, listDueFeedSources, type MonitoredFeedSource } from '../store/sources';
@@ -97,9 +98,7 @@ function feedEntryDescription(entry: Record<string, unknown>): string {
 		.map(feedFieldText)
 		.find((value) => value.trim());
 	if (!html) return '';
-	const text = toText(fromHtml(html, { fragment: true }))
-		.replace(/\s+/g, ' ')
-		.trim();
+	const text = cleanText(toText(fromHtml(html, { fragment: true })));
 	if (text.length <= FEED_SUMMARY_MAX_CHARS) return text;
 	const cut = text.slice(0, FEED_SUMMARY_MAX_CHARS);
 	const wordEnd = cut.lastIndexOf(' ');

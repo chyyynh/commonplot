@@ -1,7 +1,6 @@
 import normalizeUrl, { type Options } from 'normalize-url';
-import { z } from 'zod';
 import { canonicalPaperUrl, normalizeArxivId, normalizeDoi, normalizeOpenAlexId, paperIdentifiersFromIdentity } from './paper-identity';
-import { RESOURCE_PLATFORMS, type ResourceIdentifier, type ResourcePlatform } from './resource';
+import { httpUrlSchema, RESOURCE_PLATFORMS, type ResourceIdentifier, type ResourcePlatform } from './resource';
 
 export type ResolvedResourceUrl = {
 	url: string;
@@ -81,6 +80,11 @@ const GENERIC_IDENTITY_OPTIONS: Options = {
  */
 const INTERSTITIAL_QUERY_PARAMETERS = ['showWelcomeOnShare'];
 
+/** twitter.com, x.com, or one of their subdomains. */
+export function isXHost(hostname: string): boolean {
+	return /(^|\.)(twitter|x)\.com$/.test(hostname);
+}
+
 /**
  * Pure resource identity resolution. Keep the fetch URL intact, including PDF paths and signed queries. */
 export function resolveResourceUrl(value: string | null | undefined): ResolvedResourceUrl | null {
@@ -101,7 +105,7 @@ export function resolveResourceUrl(value: string | null | undefined): ResolvedRe
 		resourcePlatform = 'lesswrong';
 		id = path.match(/^\/posts\/([^/]+)(?:\/|$)/)?.[1];
 		platformUrl = `https://lesswrong.com/posts/${id}`;
-	} else if (/(^|\.)(twitter|x)\.com$/.test(hostname)) {
+	} else if (isXHost(hostname)) {
 		resourcePlatform = 'twitter';
 		id = path.match(/^\/[^/]+\/status\/(\d+)(?:\/|$)/)?.[1];
 		platformUrl = `https://x.com/i/status/${id}`;
@@ -133,7 +137,4 @@ export function resolveResourceUrl(value: string | null | undefined): ResolvedRe
 	return { url, normalizedUrl: normalizeUrl(parsed.toString(), GENERIC_IDENTITY_OPTIONS), resourcePlatform: null, identifiers: [] };
 }
 
-export const ResourceUrlSchema = z.url({ normalize: true, protocol: /^https?$/ }).refine((value) => {
-	const url = URL.parse(value);
-	return !!url && !url.username && !url.password;
-}, 'URL credentials are not allowed');
+export const ResourceUrlSchema = httpUrlSchema({ normalize: true });

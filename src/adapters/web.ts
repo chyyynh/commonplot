@@ -9,11 +9,12 @@ import { DOMParser } from 'linkedom';
 import type { FootnoteDefinition } from 'mdast';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { normalizedExternalMediaUrl, normalizedResourceImageUrl } from '../contracts/image-mapping';
-import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
+import { cleanText, htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { PDF_MIME } from '../contracts/pdf-policy';
 import { resolveResourceUrl, type ResolvedResourceUrl } from '../contracts/resource-url';
 import { rehostInlineImages } from '../services/image-rehosting';
-import { limitByteStream } from '../services/response';
+import { limitByteStream, responseError } from '../services/response';
+import { FETCH_STEP_RETRIES } from '../services/workflow-step';
 import { storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 import { stagePublicPdfAcquisition } from './pdf';
 
@@ -28,8 +29,8 @@ const FOOTNOTE_ID = /^fn:(.+)$/;
 // ("Site: Headline", "Headline − example.org"). A page h1 that is most of that
 // title is the headline itself, and a trailing segment naming the host is the site.
 function articleTitle(extracted: string, h1: string, url: string): string {
-	const title = extracted.replace(/\s+/g, ' ').trim();
-	const heading = h1.replace(/\s+/g, ' ').trim();
+	const title = cleanText(extracted);
+	const heading = cleanText(h1);
 	if (heading && title !== heading && title.includes(heading) && heading.length >= title.length * 0.6) return heading;
 	const host = new URL(url).hostname.replace(/^www\./, '').toLowerCase();
 	const suffix = title.match(/\s+[-–—−|·:]\s+([^-–—−|·:]+)$/);
@@ -225,11 +226,11 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 		signal: AbortSignal.timeout(GENERIC_FETCH_TIMEOUT_MS),
 	});
 	if (!response.ok) {
-		await response.body?.cancel();
-		if ([400, 401, 403, 404, 410, 422].includes(response.status)) {
-			throw new NonRetryableError(`Fetched resource returned HTTP ${response.status}`);
-		}
-		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+		throw await responseError(
+			response,
+			[400, 401, 403, 404, 410, 422],
+			`Fetched resource returned HTTP ${response.status}: ${response.statusText}`,
+		);
 	}
 	const resolved = resolveResourceUrl(response.url);
 	if (!resolved) {
@@ -271,14 +272,10 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 }
 
 export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { url: string }) {
-	const result = await step.do(
-		'acquire-web-v16',
-		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
-		async () => {
-			const acquired = await acquireWebResource(env, input.url);
-			return 'platform' in acquired ? acquired : Response.json(acquired).body!;
-		},
-	);
+	const result = await step.do('acquire-web-v16', { retries: FETCH_STEP_RETRIES, timeout: '300 seconds' }, async () => {
+		const acquired = await acquireWebResource(env, input.url);
+		return 'platform' in acquired ? acquired : Response.json(acquired).body!;
+	});
 	if ('platform' in result) return result;
 	const acquired = await new Response(result).json<Exclude<WebAcquisition, { platform: ResolvedResourceUrl }>>();
 	return 'pdfStorageKey' in acquired ? stagePublicPdfAcquisition(env, step, acquired) : acquired;

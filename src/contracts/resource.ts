@@ -8,10 +8,14 @@ import {
 } from './paper-identity.ts';
 
 const RESOURCE_CREATOR_ROLES = ['author', 'editor', 'submitter', 'channel'] as const;
-const optionalHttpUrl = z.url({ protocol: /^https?$/ }).refine((value) => {
-	const url = URL.parse(value);
-	return url !== null && !url.username && !url.password;
-});
+/** An http(s) URL without credentials. */
+export function httpUrlSchema(options: { normalize?: boolean } = {}) {
+	return z.url({ ...options, protocol: /^https?$/ }).refine((value) => {
+		const url = URL.parse(value);
+		return !!url && !url.username && !url.password;
+	}, 'URL credentials are not allowed');
+}
+const optionalHttpUrl = httpUrlSchema();
 const ResourceCreatorSchema = z
 	.strictObject({
 		role: z.enum(RESOURCE_CREATOR_ROLES),
@@ -106,7 +110,7 @@ export const ResourceIdentifiersSchema = z.array(ResourceIdentifierSchema).refin
 
 export type ResourceIdentifier = Readonly<z.infer<typeof ResourceIdentifierSchema>>;
 
-export const ENTITY_TYPES = ['person', 'organization', 'product', 'work', 'event', 'place', 'concept'] as const;
+const ENTITY_TYPES = ['person', 'organization', 'product', 'work', 'event', 'place', 'concept'] as const;
 
 /**
  * Case, width, spacing, dashes and punctuation never tell two entities apart. A parenthetical qualifier,

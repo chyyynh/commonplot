@@ -1,6 +1,6 @@
 import { toString } from 'mdast-util-to-string';
 import type { AcquiredResource, SourceHints } from './acquired-resource';
-import { parseMarkdown } from './markdown';
+import { cleanText, parseMarkdown } from './markdown';
 import { isPaperIdentifierScheme } from './paper-identity';
 import { RESOURCE_KIND_METADATA, RESOURCE_PLATFORMS, ResourceCreatorsSchema, ResourceIdentifiersSchema } from './resource';
 import { detectResourceLanguage, ResourceLanguageSchema } from './resource-language';
@@ -9,7 +9,7 @@ import { resolveResourceUrl } from './resource-url';
 /** Remove a duplicate heading only after Core has resolved the resource title. */
 function withoutDuplicateResourceTitle(markdown: string, title: string): string {
 	const first = parseMarkdown(markdown).children[0];
-	const comparable = (value: string) => value.normalize('NFC').replace(/\s+/gu, ' ').trim();
+	const comparable = (value: string) => cleanText(value.normalize('NFC'));
 	if (first?.type !== 'heading' || comparable(toString(first, { includeImageAlt: false })) !== comparable(title)) return markdown;
 	const end = first.position?.end.offset;
 	if (end === undefined) return markdown;

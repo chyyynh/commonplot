@@ -1,8 +1,9 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import pLimit from 'p-limit';
 import { z } from 'zod';
-import { AI_STEP_RETRIES } from '../services/ai-model';
+import { AI_STEP } from '../services/ai-model';
 import { extractResourceEntities } from '../services/entities';
+import { STORAGE_STEP } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import { listEntityBackfillResources, loadEntitySource, replaceResourceEntities } from '../store/resources';
 
@@ -16,8 +17,6 @@ type EntityBackfillPayload = z.infer<typeof EntityBackfillPayloadSchema>;
 
 const PAGE_SIZE = 200;
 const EXTRACTION_CONCURRENCY = 25;
-const STORAGE_STEP = { retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
-const AI_STEP = { retries: AI_STEP_RETRIES, timeout: '600 seconds' } as const;
 
 /**
  * Extracts entities for stored corpus originals published in a window that have none, or for all of
@@ -58,8 +57,9 @@ export class ResourceEntityBackfillWorkflow extends WorkflowEntrypoint<CoreEnv, 
 					),
 				),
 			);
-			written += results.filter(Boolean).length;
-			failed += results.length - results.filter(Boolean).length;
+			const succeeded = results.filter(Boolean).length;
+			written += succeeded;
+			failed += results.length - succeeded;
 			after = rows.at(-1) ?? null;
 		}
 		console.info({ tag: 'WORKFLOW', msg: 'Entity backfill completed', since, until, written, failed });

@@ -2,7 +2,8 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
 import type { AcquiredResource, YouTubeChapter, YouTubeTranscript } from '../contracts/acquired-resource';
-import { fetchYouTubeCaptions, type YouTubeCaptions } from '../services/youtube-captions';
+import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
+import { fetchYouTubeCaptions } from '../services/youtube-captions';
 import { buildTranscriptLines, transcriptMarkdown } from './youtube-transcript';
 
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
@@ -86,54 +87,41 @@ function isoDurationSeconds(duration: string): number | null {
 	return total > 0 ? total : null;
 }
 
+/** One YouTube Data API listing, as JSON. */
+async function fetchYouTubeApi(resource: 'videos' | 'channels', id: string, part: string, youtubeApiKey: string): Promise<unknown> {
+	const url = new URL(`https://www.googleapis.com/youtube/v3/${resource}`);
+	url.search = new URLSearchParams({ id, part, key: youtubeApiKey }).toString();
+	const response = await fetch(url, { signal: AbortSignal.timeout(YOUTUBE_API_TIMEOUT_MS) });
+	if (!response.ok) {
+		await response.body?.cancel();
+		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+	}
+	return response.json();
+}
+
+/** An error's message without the API key the request URL carries. */
+function redactedYouTubeError(error: unknown, youtubeApiKey: string): string {
+	const message = String(error);
+	return youtubeApiKey ? message.replaceAll(youtubeApiKey, '[redacted]') : message;
+}
+
 async function fetchYouTubeVideoData(videoId: string, youtubeApiKey: string) {
-	const url = new URL('https://www.googleapis.com/youtube/v3/videos');
-	url.searchParams.set('id', videoId);
-	url.searchParams.set('part', 'snippet,contentDetails');
-	url.searchParams.set('key', youtubeApiKey);
-
 	try {
-		const response = await fetch(url, { signal: AbortSignal.timeout(YOUTUBE_API_TIMEOUT_MS) });
-		if (!response.ok) {
-			await response.body?.cancel();
-			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-		}
-
-		return YouTubeVideosResponseSchema.parse(await response.json());
+		return YouTubeVideosResponseSchema.parse(await fetchYouTubeApi('videos', videoId, 'snippet,contentDetails', youtubeApiKey));
 	} catch (error) {
-		const message = String(error);
-		throw new Error(
-			`YouTube API request failed for ${videoId}: ${youtubeApiKey ? message.replaceAll(youtubeApiKey, '[redacted]') : message}`,
-		);
+		throw new Error(`YouTube API request failed for ${videoId}: ${redactedYouTubeError(error, youtubeApiKey)}`);
 	}
 }
 
 async function fetchChannelAvatar(youtubeApiKey: string, channelId: string): Promise<string | null> {
-	const url = new URL('https://www.googleapis.com/youtube/v3/channels');
-	url.searchParams.set('id', channelId);
-	url.searchParams.set('part', 'snippet');
-	url.searchParams.set('key', youtubeApiKey);
-
 	try {
 		if (!youtubeApiKey) throw new Error('YouTube channel lookup is not configured');
-		const response = await fetch(url, { signal: AbortSignal.timeout(YOUTUBE_API_TIMEOUT_MS) });
-		if (!response.ok) {
-			await response.body?.cancel();
-			throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-		}
-
-		const channelData = YouTubeChannelsResponseSchema.parse(await response.json());
+		const channelData = YouTubeChannelsResponseSchema.parse(await fetchYouTubeApi('channels', channelId, 'snippet', youtubeApiKey));
 		const channel = channelData.items?.find((item) => item.id === channelId);
 		if (channelData.items?.length && !channel) throw new Error('YouTube API returned no matching channel');
 		return channel ? bestThumbnailUrl(channel.snippet.thumbnails) : null;
 	} catch (error) {
-		const message = String(error);
-		console.warn({
-			tag: 'YOUTUBE',
-			msg: 'Channel avatar unavailable',
-			channelId,
-			error: youtubeApiKey ? message.replaceAll(youtubeApiKey, '[redacted]') : message,
-		});
+		console.warn({ tag: 'YOUTUBE', msg: 'Channel avatar unavailable', channelId, error: redactedYouTubeError(error, youtubeApiKey) });
 		return null;
 	}
 }
@@ -193,17 +181,16 @@ type YouTubeVideo = Awaited<ReturnType<typeof scrapeYouTubeVideo>>;
 export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, videoId: string) {
 	const { audioLanguage, chapters, ...video } = await step.do(
 		'acquire-youtube-video-v1',
-		{ retries: { limit: 3, delay: '10 seconds', backoff: 'exponential' }, timeout: '60 seconds' },
+		{ retries: FETCH_STEP_RETRIES, timeout: '60 seconds' },
 		async (): Promise<YouTubeVideo> => scrapeYouTubeVideo(videoId, env.YOUTUBE_API_KEY),
 	);
-	const captions = await step
-		.do(
-			'acquire-youtube-captions-v2',
-			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
-			// Long videos exceed the step result limit as JSON values; stream them.
-			async () => Response.json(await fetchYouTubeCaptions(videoId, audioLanguage)).body!,
-		)
-		.then((body) => new Response(body).json<YouTubeCaptions>());
+	// Long videos exceed the step result limit as JSON values.
+	const captions = await stepJson(
+		step,
+		'acquire-youtube-captions-v2',
+		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
+		() => fetchYouTubeCaptions(videoId, audioLanguage),
+	);
 	const lines = buildTranscriptLines(captions.cues);
 	return {
 		...video,
