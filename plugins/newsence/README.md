@@ -59,7 +59,7 @@ I save this week?" use `list_saves` and then `read_resource`.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/mcp` | `show_reading`, `list_saves`, `read_resource`, `list_latest_resources` (model); `save_urls`, `get_save_status` and `open_reader` (card only); `open_newsence` (ChatGPT sidebar) |
+| `POST /api/mcp` | `show_reading`, `list_saves`, `read_resource` (model); `save_urls`, `get_save_status` and `open_reader` (card only); `open_newsence` (ChatGPT sidebar) |
 | `/.well-known/oauth-protected-resource/api/mcp` | Resource discovery |
 | `/.well-known/oauth-authorization-server/api/auth` | Authorization server discovery |
 | `/api/auth/oauth2/*` | Registration, authorization (PKCE S256), token, refresh |
@@ -109,7 +109,7 @@ I save this week?" use `list_saves` and then `read_resource`.
   (`openai/deepLink`) navigate the frame. HTML responses allow framing only
   by the app and ChatGPT (`frame-ancestors`). Submission must justify the
   iframe: it embeds Newsence's own app for the signed-in user.
-- Every call requires OAuth, including `show_reading` and the public feed: hosts such as Claude
+- Every call requires OAuth, including `show_reading`: hosts such as Claude
   decide whether to connect with OAuth from the first 401, so anonymous access
   would leave Save unusable there.
 - `openai/*` metadata keys are ChatGPT extensions; other hosts ignore them.
