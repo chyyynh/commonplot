@@ -4,7 +4,8 @@ description: Show reads as Newsence cards the user can save. Use when recommendi
 ---
 
 The user keeps reads in Newsence; you find them on the web. Every link the
-user might want to read or keep goes in a card, never in a plain-text list.
+user might want to read or keep goes in a `show_reading` card, the only place
+they can save it; never show those links as your own link cards or a list.
 
 1. Gather the links first: search and browse the web, or call `list_saves`
    when the user asks about their own saves. Use only URLs you actually found;
