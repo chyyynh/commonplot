@@ -15,7 +15,7 @@ This folder is one plugin package for both hosts:
 | --- | --- |
 | `plugin.json`, `mcp.json` | ChatGPT (Agent Plugins format; `extensions.com.openai` holds the listing and starter prompts) |
 | `.claude-plugin/plugin.json`, `.mcp.json` | Claude |
-| `skills/show-reading`, `skills/my-saves` | Both: when to show cards, and how to answer from saves |
+| `skills/recommend-reads`, `skills/my-saves` | Both: when to show cards, and how to answer from saves |
 | `assets/icon.png` | ChatGPT composer icon and logo |
 
 Zip the folder's contents for upload: ChatGPT at platform.openai.com/plugins,
@@ -40,7 +40,7 @@ a new conversation; old messages keep the old card.
 
 ## Use
 
-The model decides when to show cards from the skills, the `show_reading`
+The model decides when to show cards from the skills, the `recommend_reads`
 description and the server instructions (ChatGPT documents that it reads their
 first 512 characters).
 Hosts call apps sparingly, so a general question may still get a plain answer.
@@ -53,23 +53,23 @@ For a dependable result, users can:
   "When you recommend articles or videos, show them with Newsence."
 
 Library questions such as "find the RAG evaluation paper I saved" or "what did
-I save this week?" use `list_saves` and then `read_resource`.
+I save this week?" use `list_my_saves` and then `read_my_save`.
 
 ## How it works
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/mcp` | `show_reading`, `list_saves`, `read_resource` (model); `save_urls`, `get_save_status` and `open_reader` (card only); `open_newsence` (ChatGPT sidebar) |
+| `POST /api/mcp` | `recommend_reads`, `list_my_saves`, `read_my_save` (model); `save_urls`, `get_save_status` and `open_reader` (card only); `open_newsence` (ChatGPT sidebar) |
 | `/.well-known/oauth-protected-resource/api/mcp` | Resource discovery |
 | `/.well-known/oauth-authorization-server/api/auth` | Authorization server discovery |
 | `/api/auth/oauth2/*` | Registration, authorization (PKCE S256), token, refresh |
 | `/auth/consent` | Consent page |
 | `/api/embed` | Open embedded website mode; creates no login session |
 
-- `show_reading` takes 1–10 URLs with the model's title and one-line reason,
+- `recommend_reads` takes 1–10 URLs with the model's title and one-line reason,
   and returns them with any earlier saves so those cards show as saved.
-- `list_saves` lists the user's profile saves in compact pages for the model;
-  `read_resource` reads a save or public resource by id.
+- `list_my_saves` lists the user's profile saves in compact pages for the model;
+  `read_my_save` reads a save or public resource by id.
   Tool schemas and limits are in the developer docs (`mcp.md`).
 - `save_urls` takes 1–10 HTTP(S) URLs and saves them for the token's user; it
   never accepts a user id. `ready` is saved and readable; `accepted` is received
@@ -109,7 +109,7 @@ I save this week?" use `list_saves` and then `read_resource`.
   (`openai/deepLink`) navigate the frame. HTML responses allow framing only
   by the app and ChatGPT (`frame-ancestors`). Submission must justify the
   iframe: it embeds Newsence's own app for the signed-in user.
-- Every call requires OAuth, including `show_reading`: hosts such as Claude
+- Every call requires OAuth, including `recommend_reads`: hosts such as Claude
   decide whether to connect with OAuth from the first 401, so anonymous access
   would leave Save unusable there.
 - `openai/*` metadata keys are ChatGPT extensions; other hosts ignore them.
