@@ -29,8 +29,8 @@ host rescans the MCP server.
 Add a remote MCP server with the URL `https://www.newsence.app/api/mcp`
 and OAuth authentication. ChatGPT and Claude identify themselves with a Client
 ID Metadata Document on their own domain; there is no dynamic client
-registration, so other hosts cannot connect. Sign in to Newsence and allow the connection; disconnect at
-`/auth/connections` (Settings → Account → Connected apps).
+registration, so other hosts cannot connect. Sign in to Newsence and allow the connection; disconnect in
+Settings → Account → Connected apps.
 
 - **ChatGPT:** enable **Settings → Security and login → Developer mode**, then
   add the URL as an app.
