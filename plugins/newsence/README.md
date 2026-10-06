@@ -27,8 +27,9 @@ host rescans the MCP server.
 ## Connect
 
 Add a remote MCP server with the URL `https://www.newsence.app/api/mcp`
-and OAuth authentication. Discovery and dynamic client registration supply the
-OAuth settings. Sign in to Newsence and allow the connection; disconnect at
+and OAuth authentication. ChatGPT and Claude identify themselves with a Client
+ID Metadata Document on their own domain; there is no dynamic client
+registration, so other hosts cannot connect. Sign in to Newsence and allow the connection; disconnect at
 `/auth/connections` (Settings → Account → Connected apps).
 
 - **ChatGPT:** enable **Settings → Security and login → Developer mode**, then
@@ -62,7 +63,7 @@ I save this week?" use `list_my_saves` and then `read_my_save`.
 | `POST /api/mcp` | `recommend_reads`, `list_my_saves`, `read_my_save` (model); `save_urls`, `get_save_status` and `open_reader` (card only); `open_newsence` (ChatGPT sidebar) |
 | `/.well-known/oauth-protected-resource/api/mcp` | Resource discovery |
 | `/.well-known/oauth-authorization-server/api/auth` | Authorization server discovery |
-| `/api/auth/oauth2/*` | Registration, authorization (PKCE S256), token, refresh |
+| `/api/auth/oauth2/*` | Authorization (PKCE S256), token, refresh |
 | `/auth/consent` | Consent page |
 | `/api/embed` | Open embedded website mode; creates no login session |
 
