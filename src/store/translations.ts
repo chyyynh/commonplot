@@ -2,19 +2,43 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { PDF_MIME } from '../contracts/pdf-policy';
-import type { ResourceKind } from '../contracts/resource';
-import { TRANSLATABLE_RESOURCE_KINDS, type ResourceTranslationCandidate } from '../contracts/translation-policy';
+import type { ResourceKind, ResourcePlatform } from '../contracts/resource';
 
 export const OriginalHashSchema = z.hash('md5').lowercase();
+
+const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper', 'video'] as const;
+
+export type ResourceTranslationCandidate = Readonly<{
+	fileType: string | null;
+	kind: ResourceKind;
+	originalLang: string;
+	resourcePlatform: ResourcePlatform | null;
+	scope: 'corpus' | 'private';
+	url: string | null;
+}>;
+
+/** The one translation policy. Queries only load rows; every caller decides with this. */
+export function isTranslatable(candidate: ResourceTranslationCandidate): boolean {
+	if (candidate.originalLang === 'zh-Hant') return false;
+	// A private file Resource exists only while its upload is in the owner's library: Web deletes it with the upload.
+	if (candidate.scope === 'private') {
+		return candidate.kind === 'file' && candidate.fileType === PDF_MIME && candidate.resourcePlatform === null && candidate.url === null;
+	}
+	return (
+		Boolean(candidate.url) &&
+		(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(candidate.kind) &&
+		(candidate.fileType !== PDF_MIME || (candidate.kind === 'paper' && candidate.resourcePlatform === null))
+	);
+}
+
+const CANDIDATE_COLUMNS = sql`resource.id::text, resource.original_hash AS "originalHash", resource.kind, resource.scope, resource.url,
+	resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform", resource.original_lang AS "originalLang"`;
 
 /** Longer automatic translations wait for a reader to request and pay for them. */
 const MAX_AUTOMATIC_CONTENT_CHARACTERS = 150_000;
 
-export type ResourceTranslationInput = {
+export type ResourceTranslationInput = ResourceTranslationCandidate & {
 	id: string;
-	kind: ResourceKind;
-	originalLang: string;
-	scope: 'corpus' | 'private';
 	title: string;
 	summary: string | null;
 	content: string;
@@ -23,14 +47,6 @@ export type ResourceTranslationInput = {
 	hasTranslatedContent: boolean;
 	translationSource: 'original' | 'machine' | null;
 };
-
-// A private file Resource exists only while its upload is in the owner's library: Web deletes it with the upload.
-const PRIVATE_UPLOADED_PDF_TRANSLATION_SQL = sql`(
-	resource.scope = 'private'
-	AND resource.kind = 'file'
-	AND resource.resource_platform IS NULL
-	AND resource.file_type = ${PDF_MIME}
-)`;
 
 /** Machine fields only; alignment is stored as the JSON the translation compiled. */
 export type MachineZhHantTranslationPatch = Readonly<{ title?: string; summary?: string; content?: string; alignment?: unknown }>;
@@ -42,18 +58,14 @@ export async function loadResourceTranslationInput(
 	// Machine fields are validated before persistence; planning needs their presence, not another copy of the translation.
 	const result = await db.execute<ResourceTranslationInput & { originalHash: string }>(sql`
 		SELECT
-			resource.id::text AS id,
-			resource.kind,
-			resource.original_lang AS "originalLang",
-			resource.scope,
+			${CANDIDATE_COLUMNS},
 			COALESCE(original.title, '') AS title,
 			original.summary AS summary,
 			COALESCE(original.content, '') AS content,
 			zh_hant.title IS NOT NULL AS "hasTranslatedTitle",
 			zh_hant.summary IS NOT NULL AS "hasTranslatedSummary",
 			zh_hant.content IS NOT NULL AS "hasTranslatedContent",
-			zh_hant.source AS "translationSource",
-			resource.original_hash AS "originalHash"
+			zh_hant.source AS "translationSource"
 		FROM resources resource
 		JOIN resource_translations original
 		  ON original.resource_id = resource.id
@@ -62,14 +74,9 @@ export async function loadResourceTranslationInput(
 		  ON zh_hant.resource_id = resource.id
 		 AND zh_hant.lang = 'zh-Hant'
 		WHERE resource.id = ${resourceId}::uuid
-		  AND (
-			resource.scope = 'corpus'
-			OR ${PRIVATE_UPLOADED_PDF_TRANSLATION_SQL}
-		  )
-		LIMIT 1
 	`);
 	const row = result.rows[0];
-	if (!row) return null;
+	if (!row?.originalHash || !isTranslatable(row)) return null;
 	const { originalHash, ...resource } = row;
 	return { resource, originalHash: OriginalHashSchema.parse(originalHash) };
 }
@@ -89,7 +96,6 @@ export async function persistMachineZhHantTranslation(
 			SELECT resource.id
 			FROM resources resource
 			WHERE resource.id = ${resourceId}::uuid
-			  AND (resource.scope = 'corpus' OR ${PRIVATE_UPLOADED_PDF_TRANSLATION_SQL})
 			  AND resource.original_hash = ${originalHash}
 			FOR UPDATE OF resource
 		)
@@ -138,11 +144,10 @@ export async function translatesContentAutomatically(db: NodePgDatabase, resourc
 type StoredTranslationCandidate = ResourceTranslationCandidate &
 	Readonly<{ id: string; originalHash: string; hasContent: boolean; hasTranslatedContent: boolean }>;
 
-/** A stored Resource as a requested content translation sees it; private files must be translatable uploads. */
+/** A stored, translatable Resource as a requested content translation sees it. */
 export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: string): Promise<StoredTranslationCandidate | null> {
 	const result = await db.execute<StoredTranslationCandidate>(sql`
-		SELECT resource.id::text, resource.original_hash AS "originalHash", resource.kind, resource.scope, resource.url,
-		       resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform", resource.original_lang AS "originalLang",
+		SELECT ${CANDIDATE_COLUMNS},
 		       BTRIM(COALESCE(original.content, '')) <> '' AS "hasContent",
 		       zh_hant.content IS NOT NULL AS "hasTranslatedContent"
 		FROM resources resource
@@ -150,9 +155,9 @@ export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: s
 		LEFT JOIN resource_translations zh_hant ON zh_hant.resource_id = resource.id AND zh_hant.lang = 'zh-Hant'
 		WHERE resource.id = ${resourceId}::uuid
 		  AND resource.original_hash IS NOT NULL
-		  AND (resource.scope = 'corpus' OR ${PRIVATE_UPLOADED_PDF_TRANSLATION_SQL})
 	`);
-	return result.rows[0] ?? null;
+	const row = result.rows[0];
+	return row && isTranslatable(row) ? row : null;
 }
 
 /**
@@ -162,8 +167,7 @@ export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: s
  */
 export async function listMissingTranslations(db: NodePgDatabase, limit: number) {
 	const { rows } = await db.execute<ResourceTranslationCandidate & { id: string; originalHash: string; automaticContent: boolean }>(sql`
-		SELECT resource.id::text, resource.original_hash AS "originalHash", resource.kind, resource.scope, resource.url,
-		       resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform", resource.original_lang AS "originalLang",
+		SELECT ${CANDIDATE_COLUMNS},
 		       ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS "automaticContent"
 		FROM resources resource
 		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
