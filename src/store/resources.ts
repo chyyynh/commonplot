@@ -440,7 +440,7 @@ export async function persistResolvedResource(
 		const uploadId = target.kind === 'upload' ? target.objectId : target.kind === 'draft' ? target.uploadId : undefined;
 		if (uploadId) {
 			const owned = await tx.execute(
-				sql`SELECT id FROM stored_objects WHERE id = ${uploadId}::uuid AND status = 'ready' AND user_resource_id IS NOT NULL FOR UPDATE`,
+				sql`SELECT id FROM stored_objects WHERE id = ${uploadId}::uuid AND status = 'ready' AND user_save_id IS NOT NULL FOR UPDATE`,
 			);
 			if (!owned.rows.length) throw new NonRetryableError('Uploaded PDF ownership was deleted');
 		}
@@ -565,7 +565,7 @@ export async function loadStoredPdf(db: NodePgDatabase, objectId: string): Promi
 		  AND object.store = 'r2'
 		  AND object.media_type = ${PDF_MIME}
 		  AND object.content_hash IS NOT NULL
-		  AND object.user_resource_id IS NOT NULL
+		  AND object.user_save_id IS NOT NULL
 	`);
 	const row = result.rows[0];
 	if (!row) throw new NonRetryableError(`Failed to fetch stored PDF ${objectId}: not found or not an owned upload`);
