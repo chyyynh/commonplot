@@ -31,18 +31,17 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const task = createResourceTask(this.env, step, event.instanceId, required);
 		let publishedResourceId: string | undefined;
 		try {
-			let upload: StoredPdf | undefined;
+			let upload: StoredPdf | null | undefined;
 			if (target.kind === 'storedBlob') {
 				// Web owns the upload: it confirms this attempt and describes the bytes, so Core never reads ownership.
-				const current = await step.do('start-owned-pdf-attempt-v2', async () => {
+				upload = await step.do('start-owned-pdf-attempt-v2', async () => {
 					const verified = await this.env.APP.verifyStoredBlobProcessing(target.objectId, event.instanceId);
-					return verified && { contentHash: verified.contentHash, fileName: verified.fileName, key: verified.key };
+					return verified && { contentHash: verified.contentHash, fileName: verified.fileName };
 				});
-				if (!current) {
+				if (!upload) {
 					await task.report('superseded', { stage: 'acquiring', status: 'superseded' });
 					return {};
 				}
-				upload = storedPdf(current);
 			}
 			// An uploaded PDF that names a paper publishes that paper, read from the upload.
 			const acquisition = loadAcquisitionInput(this.env, step, target, upload).then((input) =>
@@ -177,25 +176,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 	}
 }
 
-/** An owned PDF upload, as uploaded: an unidentified result is titled by its file name, as Web titles a new upload. */
-function storedPdf(upload: { contentHash: string; fileName: string | null; key: string }): StoredPdf {
-	const fileName = upload.fileName?.trim() || 'PDF';
-	return {
-		contentHash: upload.contentHash,
-		// Core analysis replaces this BCP-47 undetermined marker, as for a new upload.
-		originalLang: 'und',
-		source: 'File',
-		storageKey: upload.key,
-		title: fileName.replace(/\.[a-z0-9]{1,8}$/i, '') || fileName,
-	};
-}
-
 /** Read the stored side of a reacquisition here, so adapters never touch the database; Web described the upload. */
 async function loadAcquisitionInput(
 	env: CoreEnv,
 	step: WorkflowStep,
 	target: ResourceProcessingTarget,
-	upload: StoredPdf | undefined,
+	upload: StoredPdf | null | undefined,
 ): Promise<AcquisitionInput> {
 	switch (target.kind) {
 		case 'draft':

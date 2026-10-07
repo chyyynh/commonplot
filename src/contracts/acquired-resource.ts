@@ -50,14 +50,8 @@ export type EntitySource = Pick<AcquiredResource, 'title' | 'content'>;
 /** Hints a source monitor or a subject carrier already resolved for a draft. */
 export type SourceHints = Readonly<{ summary?: string; originalLang?: string; publishedDate?: string }>;
 
-/** What the owner stored for an uploaded PDF; the Workflow reads it so adapters never touch the database. */
-export type StoredPdf = Readonly<{
-	contentHash: string;
-	originalLang: string;
-	source: string;
-	storageKey: string;
-	title: string;
-}>;
+/** An owned PDF upload as Web describes it; its bytes live under `blobKey(contentHash)`. */
+export type StoredPdf = Readonly<{ contentHash: string; fileName: string | null }>;
 
 /** Everything acquisition needs, resolved before any adapter runs. */
 export type AcquisitionInput = Readonly<

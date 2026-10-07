@@ -3,7 +3,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import type { AcquiredResource, AcquisitionInput } from '../contracts/acquired-resource';
 import { paperIdentifiersFromIdentity, paperIdentityFromText } from '../contracts/paper-identity';
 import { PDF_MIME } from '../contracts/pdf-policy';
-import { storedPdfCropUrlPrefix } from '../contracts/storage-keys';
+import { blobKey, storedPdfCropUrlPrefix } from '../contracts/storage-keys';
 import { stepJson } from '../services/workflow-step';
 import { parseStoredPdfRepresentation, type storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 
@@ -76,24 +76,27 @@ export async function stageStoredPdfAcquisition(
 	step: WorkflowStep,
 	target: Extract<AcquisitionInput, { kind: 'storedPdf' }>,
 ): Promise<AcquiredResource & { kind: 'file'; resourcePlatform: null; titlePageText: string | null }> {
-	const resource = target.pdf;
+	const { contentHash, fileName } = target.pdf;
 	const parsed = await stagePdfBody(env, step, {
 		stepKey: 'stored',
-		pdfStorageKey: resource.storageKey,
-		inputContentHash: resource.contentHash,
+		pdfStorageKey: blobKey(contentHash),
+		inputContentHash: contentHash,
 		sourceLabel: `Stored PDF ${target.objectId}`,
-		cropUrlPrefix: storedPdfCropUrlPrefix(resource.contentHash),
+		cropUrlPrefix: storedPdfCropUrlPrefix(contentHash),
 	});
+	// An unidentified upload is titled by its file name, as Web titles a new upload.
+	const name = fileName?.trim() || 'PDF';
 	// The first page and the PDF's own properties are where a paper prints its DOI or arXiv id.
 	const printedIdentity = paperIdentityFromText(parsed.paperIdentifierText);
 	if (!parsed.markdown) throw new NonRetryableError(`Stored PDF ${target.objectId} has no usable text; OCR is required`);
 	return {
-		...pdfFileResource(resource.contentHash, parsed),
+		...pdfFileResource(contentHash, parsed),
 		resourceIdentifiers: printedIdentity ? paperIdentifiersFromIdentity(printedIdentity) : [],
 		titlePageText: parsed.paperIdentifierText,
 		url: null,
-		title: resource.title,
-		source: resource.source,
-		originalLang: resource.originalLang,
+		title: name.replace(/\.[a-z0-9]{1,8}$/i, '') || name,
+		source: 'File',
+		// Core analysis replaces this BCP-47 undetermined marker, as for a new upload.
+		originalLang: 'und',
 	};
 }

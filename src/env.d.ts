@@ -1,5 +1,6 @@
 import type { InferDurableNamespaces, InferEnv, InferMainModule, UnwrapConfig } from 'cf/config';
 import type { coreWorker } from '../cloudflare.config.ts';
+import type { StoredPdf } from './contracts/acquired-resource';
 import type { ProgressReport } from './workflows/progress';
 
 type CoreConfig = UnwrapConfig<typeof coreWorker>;
@@ -12,10 +13,7 @@ declare global {
 		APP: CoreBindings['APP'] &
 			Rpc.Provider<{
 				completeResourceSave(resourceId: string, saveTarget: unknown): Promise<void>;
-				verifyStoredBlobProcessing(
-					objectId: string,
-					workflowId: string,
-				): Promise<{ contentHash: string; fileName: string | null; key: string } | null>;
+				verifyStoredBlobProcessing(objectId: string, workflowId: string): Promise<StoredPdf | null>;
 				registerResourceProgressTask(input: {
 					taskId: string;
 					kind: 'processing' | 'translation';
