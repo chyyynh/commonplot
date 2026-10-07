@@ -12,7 +12,10 @@ declare global {
 		APP: CoreBindings['APP'] &
 			Rpc.Provider<{
 				completeResourceSave(resourceId: string, saveTarget: unknown): Promise<void>;
-				verifyStoredBlobProcessing(resourceId: string, workflowId: string): Promise<boolean>;
+				verifyStoredBlobProcessing(
+					objectId: string,
+					workflowId: string,
+				): Promise<{ contentHash: string; fileName: string | null; key: string } | null>;
 				registerResourceProgressTask(input: {
 					taskId: string;
 					kind: 'processing' | 'translation';

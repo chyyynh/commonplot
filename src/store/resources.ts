@@ -1,10 +1,9 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 import { type SQL, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { EntitySource, StoredPdf } from '../contracts/acquired-resource';
+import type { EntitySource } from '../contracts/acquired-resource';
 import type { HostedPreview } from '../contracts/image-mapping';
 import type { NormalizedResource } from '../contracts/normalize-resource';
-import { PDF_MIME } from '../contracts/pdf-policy';
 import type { ResourceDraftRelation } from '../contracts/processing-target';
 import {
 	type EntityType,
@@ -439,9 +438,9 @@ export async function persistResolvedResource(
 		}
 		const uploadId = target.kind === 'upload' ? target.objectId : target.kind === 'draft' ? target.uploadId : undefined;
 		if (uploadId) {
-			const owned = await tx.execute(
-				sql`SELECT id FROM stored_objects WHERE id = ${uploadId}::uuid AND status = 'ready' AND user_save_id IS NOT NULL FOR UPDATE`,
-			);
+			// Core's one read of Web's stored_objects: every Web path that ends ownership (file deletion, unsaving,
+			// account purge) marks the object `deleting` in the same transaction, so a ready, locked row is still owned.
+			const owned = await tx.execute(sql`SELECT id FROM stored_objects WHERE id = ${uploadId}::uuid AND status = 'ready' FOR UPDATE`);
 			if (!owned.rows.length) throw new NonRetryableError('Uploaded PDF ownership was deleted');
 		}
 		const candidates = await findResourceCandidates(tx, [
@@ -544,41 +543,6 @@ export async function loadReacquisitionSource(db: NodePgDatabase, resourceId: st
 	const url = ResourceUrlSchema.safeParse(rows[0].url).data;
 	if (!url) throw new NonRetryableError(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
 	return { url, identifiers: ResourceIdentifiersSchema.parse(rows[0].identifiers) };
-}
-
-type StoredPdfRow = {
-	content_hash: string;
-	file_name: string | null;
-	storage_key: string;
-};
-
-/**
- * An owned PDF upload, as uploaded. It is read from its stored object alone: an upload that became its paper keeps no
- * private file, and an unidentified result is titled by its file name again.
- */
-export async function loadStoredPdf(db: NodePgDatabase, objectId: string): Promise<StoredPdf> {
-	const result = await db.execute<StoredPdfRow>(sql`
-		SELECT object.content_hash, object.file_name, object.key AS storage_key
-		FROM stored_objects object
-		WHERE object.id = ${objectId}::uuid
-		  AND object.status = 'ready'
-		  AND object.store = 'r2'
-		  AND object.media_type = ${PDF_MIME}
-		  AND object.content_hash IS NOT NULL
-		  AND object.user_save_id IS NOT NULL
-	`);
-	const row = result.rows[0];
-	if (!row) throw new NonRetryableError(`Failed to fetch stored PDF ${objectId}: not found or not an owned upload`);
-	// Web titles a new upload by its file name the same way.
-	const fileName = row.file_name?.trim() || 'PDF';
-	return {
-		contentHash: row.content_hash,
-		// Core analysis replaces this BCP-47 undetermined marker, as for a new upload.
-		originalLang: 'und',
-		source: 'File',
-		storageKey: row.storage_key,
-		title: fileName.replace(/\.[a-z0-9]{1,8}$/i, '') || fileName,
-	};
 }
 
 /** Attach a discovery source to known Resources that already have a readable original; returns the attached ids. */

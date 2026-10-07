@@ -24,19 +24,12 @@ export type ResourceTranslationInput = {
 	translationSource: 'original' | 'machine' | null;
 };
 
+// A private file Resource exists only while its upload is in the owner's library: Web deletes it with the upload.
 const PRIVATE_UPLOADED_PDF_TRANSLATION_SQL = sql`(
 	resource.scope = 'private'
 	AND resource.kind = 'file'
 	AND resource.resource_platform IS NULL
 	AND resource.file_type = ${PDF_MIME}
-	AND EXISTS (
-		SELECT 1
-		FROM stored_objects object
-		WHERE object.id = resource.stored_object_id
-		  AND object.status = 'ready'
-		  AND object.store = 'r2'
-		  AND object.user_save_id IS NOT NULL
-	)
 )`;
 
 /** Machine fields only; alignment is stored as the JSON the translation compiled. */

@@ -1,7 +1,7 @@
 import { hash } from 'node:crypto';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { stageResourceAcquisition } from '../adapters/acquire';
-import type { AcquisitionInput } from '../contracts/acquired-resource';
+import type { AcquisitionInput, StoredPdf } from '../contracts/acquired-resource';
 import { resourceImageSources, withHostedImages } from '../contracts/image-mapping';
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { blobKey } from '../contracts/storage-keys';
@@ -15,7 +15,6 @@ import { withCoreDb } from '../store/db';
 import {
 	claimAcquisitionFence,
 	loadReacquisitionSource,
-	loadStoredPdf,
 	persistResolvedResource,
 	type ResourcePersistenceTarget,
 } from '../store/resources';
@@ -32,17 +31,21 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const task = createResourceTask(this.env, step, event.instanceId, required);
 		let publishedResourceId: string | undefined;
 		try {
+			let upload: StoredPdf | undefined;
 			if (target.kind === 'storedBlob') {
-				const current = await step.do('start-owned-pdf-attempt-v1', () =>
-					this.env.APP.verifyStoredBlobProcessing(target.objectId, event.instanceId),
-				);
+				// Web owns the upload: it confirms this attempt and describes the bytes, so Core never reads ownership.
+				const current = await step.do('start-owned-pdf-attempt-v2', async () => {
+					const verified = await this.env.APP.verifyStoredBlobProcessing(target.objectId, event.instanceId);
+					return verified && { contentHash: verified.contentHash, fileName: verified.fileName, key: verified.key };
+				});
 				if (!current) {
 					await task.report('superseded', { stage: 'acquiring', status: 'superseded' });
 					return {};
 				}
+				upload = storedPdf(current);
 			}
 			// An uploaded PDF that names a paper publishes that paper, read from the upload.
-			const acquisition = loadAcquisitionInput(this.env, step, target).then((input) =>
+			const acquisition = loadAcquisitionInput(this.env, step, target, upload).then((input) =>
 				stageResourceAcquisition(this.env, step, input, event.instanceId),
 			);
 			// Acquisition runs beside the start gate; a task that ended meanwhile discards its result and its failure.
@@ -174,8 +177,26 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 	}
 }
 
-/** Read the stored side of a reacquisition or an upload here, so adapters never touch the database. */
-async function loadAcquisitionInput(env: CoreEnv, step: WorkflowStep, target: ResourceProcessingTarget): Promise<AcquisitionInput> {
+/** An owned PDF upload, as uploaded: an unidentified result is titled by its file name, as Web titles a new upload. */
+function storedPdf(upload: { contentHash: string; fileName: string | null; key: string }): StoredPdf {
+	const fileName = upload.fileName?.trim() || 'PDF';
+	return {
+		contentHash: upload.contentHash,
+		// Core analysis replaces this BCP-47 undetermined marker, as for a new upload.
+		originalLang: 'und',
+		source: 'File',
+		storageKey: upload.key,
+		title: fileName.replace(/\.[a-z0-9]{1,8}$/i, '') || fileName,
+	};
+}
+
+/** Read the stored side of a reacquisition here, so adapters never touch the database; Web described the upload. */
+async function loadAcquisitionInput(
+	env: CoreEnv,
+	step: WorkflowStep,
+	target: ResourceProcessingTarget,
+	upload: StoredPdf | undefined,
+): Promise<AcquisitionInput> {
 	switch (target.kind) {
 		case 'draft':
 			return { kind: 'url', url: target.url, ...(target.sourceHints ? { sourceHints: target.sourceHints } : {}) };
@@ -185,12 +206,9 @@ async function loadAcquisitionInput(env: CoreEnv, step: WorkflowStep, target: Re
 			);
 			return { kind: 'url', ...source };
 		}
-		case 'storedBlob': {
-			const pdf = await step.do('load-stored-pdf-input-v2', STORAGE_STEP, async () =>
-				withCoreDb(env, (db) => loadStoredPdf(db, target.objectId)),
-			);
-			return { kind: 'storedPdf', objectId: target.objectId, pdf };
-		}
+		case 'storedBlob':
+			if (!upload) throw new Error('A stored PDF attempt starts with its verified upload');
+			return { kind: 'storedPdf', objectId: target.objectId, pdf: upload };
 	}
 }
 
