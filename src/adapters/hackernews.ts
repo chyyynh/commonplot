@@ -5,7 +5,7 @@ import { fromHtml } from 'hast-util-from-html';
 import { toText } from 'hast-util-to-text';
 import pLimit from 'p-limit';
 import { z } from 'zod';
-import type { AcquiredResource } from '../contracts/acquired-resource';
+import type { AcquiredResource, ResourceUrlPreview } from '../contracts/acquired-resource';
 import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { ResourceUrlSchema } from '../contracts/resource-url';
 import { AI_STEP, CORE_TEXT_REASONING, coreTextModel } from '../services/ai-model';
@@ -48,6 +48,12 @@ async function fetchHnItem(itemId: number | string): Promise<HackerNewsItem | nu
 	const item = HackerNewsItemSchema.nullable().parse(await response.json());
 	if (item && String(item.id) !== String(itemId)) throw new Error(`Hacker News API returned no matching item for ${itemId}`);
 	return item;
+}
+
+export async function previewHackerNewsItem(itemId: string): Promise<ResourceUrlPreview | null> {
+	const item = await fetchHnItem(itemId);
+	if (!item || item.dead || item.deleted) return null;
+	return { kind: 'forum', title: item.title?.trim() || null, source: 'Hacker News', imageUrl: null, durationSeconds: null };
 }
 
 async function fetchHnItems(itemIds: readonly number[]): Promise<Map<number, HackerNewsItem>> {

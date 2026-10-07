@@ -7,7 +7,7 @@ import { defaultHandlers } from 'hast-util-to-mdast';
 import { toText } from 'hast-util-to-text';
 import { DOMParser } from 'linkedom';
 import type { FootnoteDefinition } from 'mdast';
-import type { AcquiredResource } from '../contracts/acquired-resource';
+import type { AcquiredResource, ResourceUrlPreview } from '../contracts/acquired-resource';
 import { normalizedExternalMediaUrl, normalizedResourceImageUrl } from '../contracts/image-mapping';
 import { cleanText, htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { PDF_MIME } from '../contracts/pdf-policy';
@@ -20,6 +20,7 @@ import { stagePublicPdfAcquisition } from './pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
+const PREVIEW_HEAD_MAX_BYTES = 512 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
 const LOOP_VIDEO_PATH = /\.(?:mp4|webm|m4v|mov)$/i;
@@ -269,6 +270,89 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 	const html = await new Response(body).text();
 	const article = await acquireHtmlArticle(html, finalUrl);
 	return { ...article, content: await rehostInlineImages(env.IMAGES, article.content) };
+}
+
+/** The page's <head> up to its end tag, read from the stream without fetching the body. */
+async function readHtmlHead(body: ReadableStream<Uint8Array>): Promise<string> {
+	const reader = body.getReader();
+	const decoder = new TextDecoder();
+	let head = '';
+	try {
+		while (head.length < PREVIEW_HEAD_MAX_BYTES) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			head += decoder.decode(value, { stream: true });
+			if (/<\/head\s*>|<body[\s>]/i.test(head)) break;
+		}
+	} finally {
+		await reader.cancel();
+	}
+	return head;
+}
+
+/**
+ * Open Graph and <title> metadata for a page. A redirect to a platform or a paper hands the
+ * caller its resolved URL, as acquisition does, unless `followPlatforms` is off.
+ */
+export async function previewWebPage(
+	url: string,
+	followPlatforms = true,
+): Promise<ResourceUrlPreview | { platform: ResolvedResourceUrl } | null> {
+	const response = await fetch(url, {
+		headers: {
+			'User-Agent': GENERIC_WEB_USER_AGENT,
+			Accept: 'text/html,application/xhtml+xml,application/pdf;q=0.8,*/*;q=0.5',
+			'Accept-Language': 'en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7',
+		},
+		signal: AbortSignal.timeout(GENERIC_FETCH_TIMEOUT_MS),
+	});
+	const resolved = response.ok ? resolveResourceUrl(response.url) : null;
+	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
+	if (!resolved || !response.body) {
+		await response.body?.cancel();
+		return null;
+	}
+	if (followPlatforms && (resolved.resourcePlatform || resolved.identifiers.length)) {
+		await response.body.cancel();
+		return { platform: resolved };
+	}
+	const pathname = new URL(resolved.url).pathname;
+	if (contentType.includes(PDF_MIME) || pathname.toLowerCase().endsWith('.pdf')) {
+		await response.body.cancel();
+		const name = decodeURIComponent(pathname.split('/').pop() ?? '').trim();
+		return { kind: 'file', title: name || null, source: null, imageUrl: null, durationSeconds: null };
+	}
+	if (contentType && !contentType.includes('html') && !contentType.includes('xml')) {
+		await response.body.cancel();
+		return null;
+	}
+
+	const meta = new Map<string, string>();
+	let documentTitle = '';
+	await new HTMLRewriter()
+		.on('meta', {
+			element(element) {
+				const key = (element.getAttribute('property') ?? element.getAttribute('name'))?.toLowerCase();
+				const content = element.getAttribute('content')?.trim();
+				if (key && content && !meta.has(key)) meta.set(key, content);
+			},
+		})
+		.on('title', {
+			text(chunk) {
+				documentTitle += chunk.text;
+			},
+		})
+		.transform(new Response(await readHtmlHead(response.body)))
+		.text();
+	const decode = (value: string | undefined) => (value ? cleanText(toText(fromHtml(value, { fragment: true }))) : '');
+	const title = decode(meta.get('og:title') ?? meta.get('twitter:title')) || articleTitle(decode(documentTitle), '', resolved.url);
+	return {
+		kind: 'blog',
+		title: title || null,
+		source: decode(meta.get('og:site_name')) || null,
+		imageUrl: normalizedResourceImageUrl(meta.get('og:image') ?? meta.get('og:image:url') ?? meta.get('twitter:image'), resolved.url),
+		durationSeconds: null,
+	};
 }
 
 export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { url: string }) {

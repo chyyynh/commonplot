@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
-import type { AcquiredResource, YouTubeChapter, YouTubeTranscript } from '../contracts/acquired-resource';
+import type { AcquiredResource, ResourceUrlPreview, YouTubeChapter, YouTubeTranscript } from '../contracts/acquired-resource';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 import { fetchYouTubeCaptions } from '../services/youtube-captions';
 import { buildTranscriptLines, transcriptMarkdown } from './youtube-transcript';
@@ -177,6 +177,19 @@ async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
 }
 
 type YouTubeVideo = Awaited<ReturnType<typeof scrapeYouTubeVideo>>;
+
+/** One videos call; the channel avatar and captions wait for acquisition. */
+export async function previewYouTubeVideo(videoId: string, youtubeApiKey: string): Promise<ResourceUrlPreview | null> {
+	const video = (await fetchYouTubeVideoData(videoId, youtubeApiKey)).items?.find((item) => item.id === videoId);
+	if (!video) return null;
+	return {
+		kind: 'video',
+		title: video.snippet.title.trim() || null,
+		source: video.snippet.channelTitle.trim() || 'YouTube',
+		imageUrl: bestThumbnailUrl(video.snippet.thumbnails),
+		durationSeconds: isoDurationSeconds(video.contentDetails.duration),
+	};
+}
 
 export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, videoId: string) {
 	const { audioLanguage, chapters, ...video } = await step.do(

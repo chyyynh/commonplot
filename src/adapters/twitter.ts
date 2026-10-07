@@ -2,7 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { PhrasingContent, Root } from 'mdast';
 import { z } from 'zod';
-import type { AcquiredResource } from '../contracts/acquired-resource';
+import type { AcquiredResource, ResourceUrlPreview } from '../contracts/acquired-resource';
 import { stringifyMarkdown } from '../contracts/markdown';
 import { isSocialLinkHost } from '../contracts/resource-links';
 import { isXHost, resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
@@ -604,6 +604,30 @@ async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string)
 	}
 	const tweet = await fetchTwitterApiTweet(tweetId, apiKey);
 	return acquiredTweet(tweet, () => fetchTwitterApiArticle(tweetId, apiKey));
+}
+
+/** FxTwitter only: a preview never spends the paid API, so an unreadable tweet shows its link. */
+export async function previewTweet(tweetId: string): Promise<ResourceUrlPreview | null> {
+	const fx = await fetchFxTweet(tweetId);
+	if (!fx) return null;
+	const media = fx.media?.all?.[0];
+	const cover = fx.article?.cover_media?.media_info;
+	const text = fx.raw_text.text
+		.replace(/https:\/\/t\.co\/\S+/g, '')
+		.replace(/\s+/g, ' ')
+		.trim();
+	return {
+		kind: fx.article ? 'blog' : 'post',
+		title: fx.article?.title.trim() || text.slice(0, 280) || null,
+		source: `@${fx.author.screen_name}`,
+		imageUrl:
+			(media && (media.type === 'photo' ? media.url : media.thumbnail_url)) ||
+			cover?.original_img_url ||
+			cover?.preview_image?.original_img_url ||
+			fx.author.avatar_url ||
+			null,
+		durationSeconds: null,
+	};
 }
 
 export async function stageTwitterAcquisition(env: CoreEnv, step: WorkflowStep, input: TwitterAcquisitionInput) {
