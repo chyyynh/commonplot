@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod';
-import { previewResourceUrl } from './adapters/acquire';
+import { resourceUrlTitle } from './adapters/acquire';
 import { ResourceImportDispatchSchema } from './contracts/processing-target';
 import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url';
 import type {} from './env';
@@ -64,18 +64,18 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	/**
-	 * Card metadata for a link before anyone saves it: read-only, nothing is persisted.
+	 * A link's title before anyone saves it: read-only, nothing is persisted.
 	 * A slow or blocked site yields null and the caller shows the bare link.
 	 */
-	async previewResourceUrl(url: string) {
+	async previewResourceTitle(url: string): Promise<string | null> {
 		const parsed = ResourceUrlSchema.max(2_048).parse(url);
 		try {
 			return await Promise.race([
-				previewResourceUrl(this.env, parsed),
+				resourceUrlTitle(this.env, parsed),
 				new Promise<null>((resolve) => setTimeout(resolve, PREVIEW_TIMEOUT_MS, null)),
 			]);
 		} catch (error) {
-			console.warn({ tag: 'PREVIEW', msg: 'Link preview unavailable', url: parsed, error: String(error) });
+			console.warn({ tag: 'PREVIEW', msg: 'Link title unavailable', url: parsed, error: String(error) });
 			return null;
 		}
 	}

@@ -7,7 +7,7 @@ import { defaultHandlers } from 'hast-util-to-mdast';
 import { toText } from 'hast-util-to-text';
 import { DOMParser } from 'linkedom';
 import type { FootnoteDefinition } from 'mdast';
-import type { AcquiredResource, ResourceUrlPreview } from '../contracts/acquired-resource';
+import type { AcquiredResource } from '../contracts/acquired-resource';
 import { normalizedExternalMediaUrl, normalizedResourceImageUrl } from '../contracts/image-mapping';
 import { cleanText, htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { PDF_MIME } from '../contracts/pdf-policy';
@@ -291,13 +291,10 @@ async function readHtmlHead(body: ReadableStream<Uint8Array>): Promise<string> {
 }
 
 /**
- * Open Graph and <title> metadata for a page. A redirect to a platform or a paper hands the
+ * A page's Open Graph or <title> title. A redirect to a platform or a paper hands the
  * caller its resolved URL, as acquisition does, unless `followPlatforms` is off.
  */
-export async function previewWebPage(
-	url: string,
-	followPlatforms = true,
-): Promise<ResourceUrlPreview | { platform: ResolvedResourceUrl } | null> {
+export async function webPageTitle(url: string, followPlatforms = true): Promise<string | { platform: ResolvedResourceUrl } | null> {
 	const response = await fetch(url, {
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
@@ -319,8 +316,7 @@ export async function previewWebPage(
 	const pathname = new URL(resolved.url).pathname;
 	if (contentType.includes(PDF_MIME) || pathname.toLowerCase().endsWith('.pdf')) {
 		await response.body.cancel();
-		const name = decodeURIComponent(pathname.split('/').pop() ?? '').trim();
-		return { kind: 'file', title: name || null, source: null, imageUrl: null, durationSeconds: null };
+		return decodeURIComponent(pathname.split('/').pop() ?? '').trim() || null;
 	}
 	if (contentType && !contentType.includes('html') && !contentType.includes('xml')) {
 		await response.body.cancel();
@@ -345,14 +341,7 @@ export async function previewWebPage(
 		.transform(new Response(await readHtmlHead(response.body)))
 		.text();
 	const decode = (value: string | undefined) => (value ? cleanText(toText(fromHtml(value, { fragment: true }))) : '');
-	const title = decode(meta.get('og:title') ?? meta.get('twitter:title')) || articleTitle(decode(documentTitle), '', resolved.url);
-	return {
-		kind: 'blog',
-		title: title || null,
-		source: decode(meta.get('og:site_name')) || null,
-		imageUrl: normalizedResourceImageUrl(meta.get('og:image') ?? meta.get('og:image:url') ?? meta.get('twitter:image'), resolved.url),
-		durationSeconds: null,
-	};
+	return decode(meta.get('og:title') ?? meta.get('twitter:title')) || articleTitle(decode(documentTitle), '', resolved.url) || null;
 }
 
 export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { url: string }) {

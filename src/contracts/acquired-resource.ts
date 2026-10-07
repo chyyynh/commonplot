@@ -11,15 +11,6 @@ export type YouTubeTranscript = Readonly<{
 	chapters: YouTubeChapter[];
 }>;
 
-/** What the add dialog shows for a link before it is saved: read-only metadata, never persisted. */
-export type ResourceUrlPreview = {
-	kind: ResourceKind;
-	title: string | null;
-	source: string | null;
-	imageUrl: string | null;
-	durationSeconds: number | null;
-};
-
 // Adapters share an output contract; each adapter owns its mapping and identity.
 export type AcquiredResource = {
 	references?: readonly ({

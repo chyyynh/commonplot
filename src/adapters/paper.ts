@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
-import type { AcquiredResource, ResourceUrlPreview } from '../contracts/acquired-resource';
+import type { AcquiredResource } from '../contracts/acquired-resource';
 import {
 	canonicalPaperUrl,
 	isPaperIdentifierScheme,
@@ -160,22 +160,12 @@ async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: reado
 
 /** OpenAlex's hosted copy of a licensed PDF; publisher servers often refuse automated downloads. */
 /** The OpenAlex work alone; full text and PDFs wait for acquisition. */
-export async function previewPaper(
-	apiKey: string | undefined,
-	identifiers: readonly ResourceIdentifier[],
-): Promise<ResourceUrlPreview | null> {
+export async function paperTitle(apiKey: string | undefined, identifiers: readonly ResourceIdentifier[]): Promise<string | null> {
 	const work = await resolveOpenAlexPaper({
 		apiKey,
 		identifiers: identifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
 	});
-	if (!work?.metadata.title) return null;
-	return {
-		kind: 'paper',
-		title: work.metadata.title.trim(),
-		source: [work.metadata.venue, work.metadata.year].filter(Boolean).join(' · ') || null,
-		imageUrl: null,
-		durationSeconds: null,
-	};
+	return work?.metadata.title?.trim() || null;
 }
 
 async function stagePaperPdfContent(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
