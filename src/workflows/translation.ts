@@ -1,6 +1,5 @@
 // Translation into zh-Hant: admission (imports, reader requests, the missing-translation sweep), the durable Workflow,
 // and its model work. Markdown structure lives in services/markdown-translation, which never calls out.
-import { hash } from 'node:crypto';
 import { generateText, NoObjectGeneratedError, Output } from 'ai';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -47,29 +46,30 @@ function failureReason(error: unknown): string {
 
 // Admission
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v34';
-/** Follow one shared recovery chain, so concurrent imports and requests cannot multiply paid work. */
-async function currentTranslationAttempt(resourceId: string, originalHash: string, scope: TranslationScope) {
-	let id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${scope}-${resourceId}-${originalHash}`;
-	for (let attempt = 0; attempt < 16; attempt++) {
-		let snapshot: Awaited<ReturnType<WorkflowInstance['status']>>;
-		try {
-			snapshot = await (await coreExports.ResourceTranslationV2Workflow.get(id)).status();
-		} catch {
-			// An unavailable control plane cannot justify another physical task.
-			// createBatch recovers this exact ID, including a lost response.
-			return { id };
-		}
-		// A run that found its progress task superseded completed without translating.
-		const superseded = snapshot.status === 'complete' && (snapshot.output as { status?: string } | undefined)?.status === 'superseded';
-		if (snapshot.status !== 'errored' && snapshot.status !== 'terminated' && !superseded) return { id, status: snapshot.status };
-		id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-retry-${resourceId}-${hash('sha256', id, 'hex').slice(0, 16)}`;
-	}
-	throw new Error('Translation retry limit reached');
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v35';
+
+// One execution per original and scope: concurrent imports, requests and the sweep all meet on this ID, so paid work
+// is never doubled, and a changed original gets a new one.
+function translationInstanceId(resourceId: string, originalHash: string, scope: TranslationScope): string {
+	return `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${scope}-${resourceId}-${originalHash}`;
 }
 
-// Normal ingestion dedupes by original hash. A forced run keys on its parent task instead, so every operator resync
-// receives a fresh instance while retries of the same processing Workflow stay idempotent.
+type TranslationExecution = 'absent' | 'live' | 'done' | 'rerun';
+
+async function translationExecution(id: string): Promise<TranslationExecution> {
+	let snapshot: Awaited<ReturnType<WorkflowInstance['status']>>;
+	try {
+		snapshot = await (await coreExports.ResourceTranslationV2Workflow.get(id)).status();
+	} catch {
+		// Missing, expired, or an unavailable control plane: createBatch recovers this exact ID either way.
+		return 'absent';
+	}
+	if (snapshot.status === 'errored' || snapshot.status === 'terminated') return 'rerun';
+	if (snapshot.status !== 'complete') return 'live';
+	// A run whose progress task was already closed completed without translating.
+	return (snapshot.output as { status?: string } | undefined)?.status === 'superseded' ? 'rerun' : 'done';
+}
+
 // `admitted` is false when the same work was already queued, running or complete.
 export async function enqueueResourceTranslation(
 	env: CoreEnv,
@@ -81,33 +81,28 @@ export async function enqueueResourceTranslation(
 	if (!isTranslatable(resource)) return null;
 	const { id: resourceId, originalHash } = resource;
 	OriginalHashSchema.parse(originalHash);
-	const attempt = force
-		? {
-				id: `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${scope}-force-${resourceId}-${hash('sha256', parent.taskId, 'hex').slice(0, 16)}`,
-			}
-		: await currentTranslationAttempt(resourceId, originalHash, scope);
-	const { id } = attempt;
+	const id = translationInstanceId(resourceId, originalHash, scope);
+	const execution = await translationExecution(id);
 	// Completed work already lives in ResourceTranslation. There is no new
 	// execution to subscribe to, and no second source of progress to project.
-	if ('status' in attempt && attempt.status === 'complete') return { id, admitted: false };
-	// Live work gains this caller's parent and stays one execution.
-	const admitted = !('status' in attempt);
-	// Shared work owns a ledger from the beginning, including automatic work.
-	// A later user subscribes to the same durable reports instead of polling it.
+	if (execution === 'done') return { id, admitted: false };
+	// Shared work owns a ledger from the beginning, including automatic work. Live work gains this caller's parent and
+	// stays one execution; a failed one reopens its ledger and runs again under the same ID.
 	const registered = await env.APP.registerResourceProgressTask({
 		taskId: id,
 		kind: 'translation',
 		resourceId,
 		...(parent.required ? { parentTaskId: parent.taskId } : {}),
+		...(execution === 'rerun' ? { restart: true as const } : {}),
 	});
 	if (!registered) throw new Error('Translation progress registration was rejected');
-	await coreExports.ResourceTranslationV2Workflow.createBatch([
-		{
-			id,
-			params: { ...(force ? { force: true } : {}), resourceId, originalHash, scope },
-		},
-	]);
-	return { id, admitted };
+	if (execution === 'rerun') await (await coreExports.ResourceTranslationV2Workflow.get(id)).restart();
+	if (execution === 'absent') {
+		await coreExports.ResourceTranslationV2Workflow.createBatch([
+			{ id, params: { ...(force ? { force: true } : {}), resourceId, originalHash, scope } },
+		]);
+	}
+	return { id, admitted: execution !== 'live' };
 }
 
 type ContentTranslationRequest = { status: 'unavailable' } | { status: 'complete' } | { status: 'running'; admitted: boolean };
@@ -126,8 +121,7 @@ export async function requestContentTranslation(env: CoreEnv, resourceId: string
 export async function contentTranslationStatus(env: CoreEnv, resourceId: string): Promise<'running' | 'idle'> {
 	const candidate = await withCoreDb(env, (db) => loadTranslationCandidate(db, resourceId));
 	if (!candidate || candidate.hasTranslatedContent) return 'idle';
-	const attempt = await currentTranslationAttempt(resourceId, candidate.originalHash, 'full');
-	return 'status' in attempt && attempt.status !== 'complete' ? 'running' : 'idle';
+	return (await translationExecution(translationInstanceId(resourceId, candidate.originalHash, 'full'))) === 'live' ? 'running' : 'idle';
 }
 
 // Kept small so recovery never crowds new imports out of the provider's per-minute window.

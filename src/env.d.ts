@@ -19,6 +19,7 @@ declare global {
 					kind: 'processing' | 'translation';
 					resourceId?: string;
 					parentTaskId?: string;
+					restart?: true;
 				}): Promise<boolean>;
 				reportResourceProgress(input: ProgressReport): Promise<boolean>;
 				startResourceProgressTask(taskId: string, stage: NonNullable<ProgressReport['stage']>): Promise<boolean>;
