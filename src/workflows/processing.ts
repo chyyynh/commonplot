@@ -19,160 +19,158 @@ import {
 	type ResourcePersistenceTarget,
 } from '../store/resources';
 import { translatesContentAutomatically } from '../store/translations';
-import { createResourceTask } from './progress';
 import { stageResourceReferences } from './references';
-import { enqueueResourceTranslation } from './translation';
+import { enqueueResourceTranslation, translationProgress } from './translation';
+
+/** What an import reads back: the published Resource and the translation it waits for, or a run a newer attempt replaced. */
+type ResourceProcessingOutput = { outcome: 'ready'; resourceId: string; translationId?: string } | { outcome: 'superseded' };
+
+export type ResourceImportExecution =
+	| { state: 'absent' | 'queued' | 'running' | 'failed' }
+	| { state: 'ready'; resourceId: string; translation?: 'running' | 'failed' };
+
+/** An import's progress, read from its Workflow and the translation that Workflow admitted. */
+export async function resourceImportExecution(id: string): Promise<ResourceImportExecution> {
+	let snapshot: Awaited<ReturnType<WorkflowInstance['status']>>;
+	try {
+		snapshot = await (await coreExports.ResourceProcessingV2Workflow.get(id)).status();
+	} catch {
+		return { state: 'absent' };
+	}
+	switch (snapshot.status) {
+		case 'queued':
+			return { state: 'queued' };
+		case 'errored':
+		case 'terminated':
+			return { state: 'failed' };
+		case 'complete': {
+			const output = snapshot.output as Partial<ResourceProcessingOutput> & { resourceId?: string; translationId?: string };
+			if (output.outcome === 'superseded' || !output.resourceId) return { state: 'failed' };
+			const translation = output.translationId ? await translationProgress(output.translationId) : undefined;
+			return { state: 'ready', resourceId: output.resourceId, ...(translation ? { translation } : {}) };
+		}
+		default:
+			return { state: 'running' };
+	}
+}
 
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
-	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep) {
+	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep): Promise<ResourceProcessingOutput> {
 		const target = ResourceProcessingTargetSchema.parse(event.payload);
-		// Only Web admissions report progress: monitor discoveries, subject children and resyncs are background work.
-		const required = target.kind === 'storedBlob' || (target.kind === 'draft' && !target.relation);
-		const task = createResourceTask(this.env, step, event.instanceId, required);
-		let publishedResourceId: string | undefined;
-		try {
-			let upload: StoredPdf | null | undefined;
-			if (target.kind === 'storedBlob') {
-				// Web owns the upload: it confirms this attempt and describes the bytes, so Core never reads ownership.
-				upload = await step.do('start-owned-pdf-attempt-v2', async () => {
-					const verified = await this.env.APP.verifyStoredBlobProcessing(target.objectId, event.instanceId);
-					return verified && { contentHash: verified.contentHash, fileName: verified.fileName };
-				});
-				if (!upload) {
-					await task.report('superseded', { stage: 'acquiring', status: 'superseded' });
-					return {};
-				}
-			}
-			// An uploaded PDF that names a paper publishes that paper, read from the upload.
-			const acquisition = loadAcquisitionInput(this.env, step, target, upload).then((input) =>
-				stageResourceAcquisition(this.env, step, input, event.instanceId),
-			);
-			// Acquisition runs beside the start gate; a task that ended meanwhile discards its result and its failure.
-			acquisition.catch(() => {});
-			if (!(await task.start(target.kind === 'storedBlob' ? 'parsing' : 'acquiring')))
-				return target.kind === 'reacquire' ? { resourceId: target.resourceId } : {};
-			const { resource, uploadedPaper } = await acquisition;
-			const plan = await planAttempt(target, uploadedPaper, event.instanceId, (resourceId) =>
-				step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () =>
-					withCoreDb(this.env, (db) => claimAcquisitionFence(db, resourceId)),
-				),
-			);
-
-			console.info({
-				tag: 'WORKFLOW',
-				msg: 'Starting',
-				resourceKind: resource.kind,
-				resourcePlatform: resource.resourcePlatform,
-				processing_id: event.instanceId,
-				target_kind: target.kind,
+		let upload: StoredPdf | null | undefined;
+		if (target.kind === 'storedBlob') {
+			// Web owns the upload: it confirms this attempt and describes the bytes, so Core never reads ownership.
+			upload = await step.do('start-owned-pdf-attempt-v2', async () => {
+				const verified = await this.env.APP.verifyStoredBlobProcessing(target.objectId, event.instanceId);
+				return verified && { contentHash: verified.contentHash, fileName: verified.fileName };
 			});
-			void task.report('analysis', { stage: 'analyzing', status: 'running' });
-			const [summary, entities, hostedImages] = await Promise.all([
-				// Posts are their text; a summary would only restate it.
-				resource.summary ??
-					(resource.kind === 'post'
-						? null
-						: step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, event.instanceId))),
-				// Entities only relate Resources; an import never fails without them, and a reacquisition keeps the stored ones.
-				step
-					.do('extract-resource-entities-v2', AI_STEP, () => extractResourceEntities(resource, this.env, event.instanceId))
-					.catch((error: unknown) => {
-						console.error({ tag: 'WORKFLOW', msg: 'Entity extraction failed', processing_id: event.instanceId, error });
-						return undefined;
-					}),
-				stageResourceImages(
-					this.env,
-					step,
-					event.instanceId,
-					resourceImageSources([resource]),
-					target.kind === 'reacquire' ? event.instanceId : undefined,
-				),
-			]);
-			const summarized = withHostedImages({ ...resource, summary, entities }, hostedImages);
-			void task.report('persisting', { stage: 'persisting', status: 'running' });
-			const persistence = await step.do('persist-resolved-resource-scope-v8', STORAGE_STEP, async () =>
-				withCoreDb(this.env, (db) =>
-					persistResolvedResource(
-						db,
-						summarized,
-						plan.persistence,
-						async (contentHash) => (await this.env.R2.head(blobKey(contentHash))) !== null,
-					),
-				),
-			);
-			if (persistence.outcome === 'superseded') {
-				await task.report('persist-superseded', { stage: 'persisting', status: 'superseded' });
-				return { resourceId: persistence.id };
-			}
-			const { id: persistedResourceId, scope, subjectResourceId, originalHash, outcome } = persistence;
-			const { saveTarget } = plan;
-			if (saveTarget)
-				await step.do('complete-resource-save-v2', STORAGE_STEP, () => this.env.APP.completeResourceSave(persistedResourceId, saveTarget));
-			publishedResourceId = persistedResourceId;
-
-			const subjectUrl = resource.subjectUrl;
-			// Crossref enrichment is background work that no import waits on.
-			const references =
-				scope === 'corpus' &&
-				persistence.kind === 'paper' &&
-				outcome === 'written' &&
-				summarized.references?.some(({ doi, arxivId }) => !doi && !arxivId)
-					? stageResourceReferences(this.env, step, persistedResourceId).catch((error: unknown) => {
-							console.error({ tag: 'WORKFLOW', msg: 'Reference enrichment failed', resource_id: persistedResourceId, error });
-						})
-					: undefined;
-			// Every handoff runs to completion even when an independent one fails.
-			const followups = await Promise.allSettled([
-				task.report('ready', { stage: 'persisting', status: 'complete', resourceId: persistedResourceId }),
-				scope === 'corpus'
-					? step.do('enqueue-resolved-ai-search-sync-v2', STORAGE_STEP, async () => {
-							await this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId: persistedResourceId });
-						})
-					: undefined,
-				// Ordinary imports share a translation; a reacquisition that replaced the original forces a fresh run.
-				// Only monitor discoveries translate their content here; readers request the rest.
-				step.do('enqueue-resource-translation-v7', STORAGE_STEP, async () => {
-					const automatic = await withCoreDb(this.env, (db) => translatesContentAutomatically(db, persistedResourceId));
-					return enqueueResourceTranslation(
-						this.env,
-						persistence,
-						automatic ? 'full' : 'metadata',
-						target.kind !== 'draft' && outcome === 'written',
-						task,
-					);
-				}),
-				subjectUrl && outcome === 'written' && subjectResourceId === null
-					? step.do('enqueue-resolved-subject-child-v2', STORAGE_STEP, async () => {
-							const subjectTarget = ResourceDraftTargetSchema.parse({
-								kind: 'draft',
-								relation: { kind: 'subject', parentResourceId: persistedResourceId, parentOriginalHash: originalHash },
-								// Carrier-resolved hints only; the subject page still wins when it states its own date.
-								...(resource.publishedDate ? { sourceHints: { publishedDate: resource.publishedDate } } : {}),
-								url: subjectUrl,
-							});
-							const id = `subject-draft-auto-v1-${hash('sha256', JSON.stringify(subjectTarget), 'hex')}`;
-							await coreExports.ResourceProcessingV2Workflow.createBatch([{ id, params: subjectTarget }]);
-							return id;
-						})
-					: undefined,
-			]);
-			const failures = followups.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
-			await task.seal(failures.length ? 'followup_dispatch_failed' : undefined);
-			await references;
-			if (failures.length) throw new AggregateError(failures, 'Resource persisted, but one or more follow-ups failed');
-
-			console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: persistedResourceId, target_kind: target.kind });
-			return { resourceId: persistedResourceId };
-		} catch (error) {
-			await Promise.allSettled([
-				task.report('outcome-after-error', {
-					status: publishedResourceId ? 'complete' : 'failed',
-					...(publishedResourceId ? { resourceId: publishedResourceId } : { errorCode: 'processing_failed' }),
-				}),
-				publishedResourceId ? task.seal('followup_dispatch_failed') : undefined,
-			]);
-			throw error;
+			if (!upload) return { outcome: 'superseded' };
 		}
+		// An uploaded PDF that names a paper publishes that paper, read from the upload.
+		const { resource, uploadedPaper } = await stageResourceAcquisition(
+			this.env,
+			step,
+			await loadAcquisitionInput(this.env, step, target, upload),
+			event.instanceId,
+		);
+		const plan = await planAttempt(target, uploadedPaper, event.instanceId, (resourceId) =>
+			step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () => withCoreDb(this.env, (db) => claimAcquisitionFence(db, resourceId))),
+		);
+
+		console.info({
+			tag: 'WORKFLOW',
+			msg: 'Starting',
+			resourceKind: resource.kind,
+			resourcePlatform: resource.resourcePlatform,
+			processing_id: event.instanceId,
+			target_kind: target.kind,
+		});
+		const [summary, entities, hostedImages] = await Promise.all([
+			// Posts are their text; a summary would only restate it.
+			resource.summary ??
+				(resource.kind === 'post'
+					? null
+					: step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, event.instanceId))),
+			// Entities only relate Resources; an import never fails without them, and a reacquisition keeps the stored ones.
+			step
+				.do('extract-resource-entities-v2', AI_STEP, () => extractResourceEntities(resource, this.env, event.instanceId))
+				.catch((error: unknown) => {
+					console.error({ tag: 'WORKFLOW', msg: 'Entity extraction failed', processing_id: event.instanceId, error });
+					return undefined;
+				}),
+			stageResourceImages(
+				this.env,
+				step,
+				event.instanceId,
+				resourceImageSources([resource]),
+				target.kind === 'reacquire' ? event.instanceId : undefined,
+			),
+		]);
+		const summarized = withHostedImages({ ...resource, summary, entities }, hostedImages);
+		const persistence = await step.do('persist-resolved-resource-scope-v8', STORAGE_STEP, async () =>
+			withCoreDb(this.env, (db) =>
+				persistResolvedResource(
+					db,
+					summarized,
+					plan.persistence,
+					async (contentHash) => (await this.env.R2.head(blobKey(contentHash))) !== null,
+				),
+			),
+		);
+		if (persistence.outcome === 'superseded') return { outcome: 'superseded' };
+		const { id: resourceId, scope, subjectResourceId, originalHash, outcome } = persistence;
+		const { saveTarget } = plan;
+		if (saveTarget)
+			await step.do('complete-resource-save-v2', STORAGE_STEP, () => this.env.APP.completeResourceSave(resourceId, saveTarget));
+
+		const subjectUrl = resource.subjectUrl;
+		// Crossref enrichment is background work that no import waits on.
+		const references =
+			scope === 'corpus' &&
+			persistence.kind === 'paper' &&
+			outcome === 'written' &&
+			summarized.references?.some(({ doi, arxivId }) => !doi && !arxivId)
+				? stageResourceReferences(this.env, step, resourceId).catch((error: unknown) => {
+						console.error({ tag: 'WORKFLOW', msg: 'Reference enrichment failed', resource_id: resourceId, error });
+					})
+				: undefined;
+		// Every handoff runs to completion even when an independent one fails.
+		const followups = await Promise.allSettled([
+			scope === 'corpus'
+				? step.do('enqueue-resolved-ai-search-sync-v2', STORAGE_STEP, async () => {
+						await this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId });
+					})
+				: undefined,
+			// Ordinary imports share a translation; a reacquisition that replaced the original forces a fresh run.
+			// Only monitor discoveries translate their content here; readers request the rest.
+			step.do('enqueue-resource-translation-v7', STORAGE_STEP, async () => {
+				const automatic = await withCoreDb(this.env, (db) => translatesContentAutomatically(db, resourceId));
+				return enqueueResourceTranslation(persistence, automatic ? 'full' : 'metadata', target.kind !== 'draft' && outcome === 'written');
+			}),
+			subjectUrl && outcome === 'written' && subjectResourceId === null
+				? step.do('enqueue-resolved-subject-child-v2', STORAGE_STEP, async () => {
+						const subjectTarget = ResourceDraftTargetSchema.parse({
+							kind: 'draft',
+							relation: { kind: 'subject', parentResourceId: resourceId, parentOriginalHash: originalHash },
+							// Carrier-resolved hints only; the subject page still wins when it states its own date.
+							...(resource.publishedDate ? { sourceHints: { publishedDate: resource.publishedDate } } : {}),
+							url: subjectUrl,
+						});
+						const id = `subject-draft-auto-v1-${hash('sha256', JSON.stringify(subjectTarget), 'hex')}`;
+						await coreExports.ResourceProcessingV2Workflow.createBatch([{ id, params: subjectTarget }]);
+						return id;
+					})
+				: undefined,
+		]);
+		await references;
+		// The Resource is published, so a lost handoff is logged rather than failing the import that already landed.
+		const failures = followups.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
+		if (failures.length) console.error({ tag: 'WORKFLOW', msg: 'Follow-up dispatch failed', resource_id: resourceId, errors: failures });
+
+		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: resourceId, target_kind: target.kind });
+		const translation = followups[1];
+		const translationId = translation.status === 'fulfilled' ? translation.value?.id : undefined;
+		return { outcome: 'ready', resourceId, ...(translationId ? { translationId } : {}) };
 	}
 }
 

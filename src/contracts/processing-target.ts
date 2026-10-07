@@ -45,7 +45,7 @@ export type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSc
 
 export const ResourceImportDispatchSchema = z.strictObject({
 	workflowId: z.string().pipe(z.templateLiteral(['app-ingest-v1-', z.uuidv4()])),
-	// Relations belong to Core's own background drafts; a Web admission always reports progress.
+	// Relations belong to Core's own background drafts.
 	payload: z.discriminatedUnion('kind', [ResourceDraftTargetSchema.omit({ relation: true }), StoredBlobTargetSchema]),
 });
 

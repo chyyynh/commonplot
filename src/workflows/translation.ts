@@ -30,7 +30,6 @@ import {
 	type ResourceTranslationCandidate,
 	type ResourceTranslationInput,
 } from '../store/translations';
-import { createResourceTask, type ResourceTask, type ResourceTaskContext } from './progress';
 
 /** `metadata` translates the title and summary; `full` also translates the content. */
 export type TranslationScope = 'metadata' | 'full';
@@ -65,18 +64,21 @@ async function translationExecution(id: string): Promise<TranslationExecution> {
 		return 'absent';
 	}
 	if (snapshot.status === 'errored' || snapshot.status === 'terminated') return 'rerun';
-	if (snapshot.status !== 'complete') return 'live';
-	// A run whose progress task was already closed completed without translating.
-	return (snapshot.output as { status?: string } | undefined)?.status === 'superseded' ? 'rerun' : 'done';
+	return snapshot.status === 'complete' ? 'done' : 'live';
+}
+
+/** What an import shows for its translation: nothing once it ended without failing. */
+export async function translationProgress(id: string): Promise<'running' | 'failed' | undefined> {
+	const execution = await translationExecution(id);
+	// An unreadable execution counts as running, so the import asks again rather than settling early.
+	return execution === 'done' ? undefined : execution === 'rerun' ? 'failed' : 'running';
 }
 
 // `admitted` is false when the same work was already queued, running or complete.
 export async function enqueueResourceTranslation(
-	env: CoreEnv,
 	resource: ResourceTranslationCandidate & Readonly<{ id: string; originalHash: string }>,
 	scope: TranslationScope,
 	force: boolean,
-	parent: ResourceTaskContext,
 ): Promise<{ id: string; admitted: boolean } | null> {
 	if (!isTranslatable(resource)) return null;
 	const { id: resourceId, originalHash } = resource;
@@ -86,16 +88,7 @@ export async function enqueueResourceTranslation(
 	// Completed work already lives in ResourceTranslation. There is no new
 	// execution to subscribe to, and no second source of progress to project.
 	if (execution === 'done') return { id, admitted: false };
-	// Shared work owns a ledger from the beginning, including automatic work. Live work gains this caller's parent and
-	// stays one execution; a failed one reopens its ledger and runs again under the same ID.
-	const registered = await env.APP.registerResourceProgressTask({
-		taskId: id,
-		kind: 'translation',
-		resourceId,
-		...(parent.required ? { parentTaskId: parent.taskId } : {}),
-		...(execution === 'rerun' ? { restart: true as const } : {}),
-	});
-	if (!registered) throw new Error('Translation progress registration was rejected');
+	// Concurrent callers share one execution; a failed one runs again under the same ID.
 	if (execution === 'rerun') await (await coreExports.ResourceTranslationV2Workflow.get(id)).restart();
 	if (execution === 'absent') {
 		await coreExports.ResourceTranslationV2Workflow.createBatch([
@@ -112,7 +105,7 @@ export async function requestContentTranslation(env: CoreEnv, resourceId: string
 	const candidate = await withCoreDb(env, (db) => loadTranslationCandidate(db, resourceId));
 	if (!candidate?.hasContent) return { status: 'unavailable' };
 	if (candidate.hasTranslatedContent) return { status: 'complete' };
-	const enqueued = await enqueueResourceTranslation(env, candidate, 'full', false, { taskId: 'reader-request', required: false });
+	const enqueued = await enqueueResourceTranslation(candidate, 'full', false);
 	if (!enqueued) return { status: 'unavailable' };
 	return { status: 'running', admitted: enqueued.admitted };
 }
@@ -128,15 +121,10 @@ export async function contentTranslationStatus(env: CoreEnv, resourceId: string)
 const TRANSLATION_SWEEP_BATCH = 25;
 
 /** Re-admit recent corpus translations that never landed. */
-export async function enqueueMissingTranslations(env: CoreEnv, db: NodePgDatabase): Promise<void> {
+export async function enqueueMissingTranslations(db: NodePgDatabase): Promise<void> {
 	const rows = await listMissingTranslations(db, TRANSLATION_SWEEP_BATCH);
 	const results = await Promise.allSettled(
-		rows.map((row) =>
-			enqueueResourceTranslation(env, row, row.automaticContent ? 'full' : 'metadata', false, {
-				taskId: 'translation-sweep',
-				required: false,
-			}),
-		),
+		rows.map((row) => enqueueResourceTranslation(row, row.automaticContent ? 'full' : 'metadata', false)),
 	);
 	const failed = results.filter((result) => result.status === 'rejected').length;
 	console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Missing translation sweep', admitted: rows.length - failed, failed });
@@ -150,25 +138,21 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		step: WorkflowStep,
 	): Promise<{ status: 'complete' | 'skipped' | 'superseded'; resourceId: string }> {
 		const { force = false, resourceId, originalHash, scope } = event.payload;
-		const task = createResourceTask(this.env, step, event.instanceId, true);
-		// Every run that publishes nothing ends here; `reason` also names its progress report.
-		const end = async (status: 'skipped' | 'superseded', reason: string) => {
+		// Every run that publishes nothing ends here.
+		const end = (status: 'skipped' | 'superseded', reason: string) => {
 			console.info({ tag: 'RESOURCE_TRANSLATION', event: 'translation_outcome', outcome: status, reason, resource_id: resourceId });
-			await task.report(reason, { stage: 'translating', status, resourceId });
 			return { status, resourceId };
 		};
-		let translationPublished = false;
-		let followupFailed = false;
+		let corpus: boolean;
 		try {
-			if (!(await task.start('translating'))) return { status: 'superseded', resourceId };
 			const input = await stepJson(step, 'load-resource-translation-input-stream-v5', STORAGE_STEP, () =>
 				withCoreDb(this.env, (db) => loadResourceTranslationInput(db, resourceId)),
 			);
-			if (!input) return await end('skipped', 'missing');
-			if (input.originalHash !== originalHash) return await end('superseded', 'superseded');
+			if (!input) return end('skipped', 'missing');
+			if (input.originalHash !== originalHash) return end('superseded', 'superseded');
 			const resource = input.resource;
 			const plan = planZhHantTranslation(resource, scope, force);
-			if (!plan.metadata && !plan.content) return await end('skipped', 'unneeded');
+			if (!plan.metadata && !plan.content) return end('skipped', 'unneeded');
 
 			// Both halves settle before either failure is raised, so no step is left running.
 			const [metadata, content] = await Promise.allSettled([
@@ -177,18 +161,17 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 							translateResourceMetadata(resource, this.env),
 						)
 					: undefined,
-				plan.content ? translatePlannedContent(resource, this.env, step, task) : undefined,
+				plan.content ? translatePlannedContent(resource, this.env, step) : undefined,
 			]);
 			if (metadata.status === 'rejected') throw metadata.reason;
 			if (content.status === 'rejected') throw content.reason;
 			const patch: MachineZhHantTranslationPatch = { ...metadata.value, ...content.value };
-			if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) return await end('skipped', 'empty');
+			if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) return end('skipped', 'empty');
 
 			const persisted = await step.do('persist-zh-hant-translation-v2', STORAGE_STEP, async () =>
 				withCoreDb(this.env, (db) => persistMachineZhHantTranslation(db, resourceId, originalHash, patch)),
 			);
-			if (!persisted) return await end('superseded', 'persist-superseded');
-			translationPublished = true;
+			if (!persisted) return end('superseded', 'persist-superseded');
 			console.info({
 				tag: 'RESOURCE_TRANSLATION',
 				event: 'translation_outcome',
@@ -197,36 +180,28 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				scope,
 				translated_characters: patch.content?.length,
 			});
-			const followups = await Promise.allSettled([
-				task.report('complete', { stage: 'translating', status: 'complete', resourceId }),
-				resource.scope === 'corpus'
-					? step.do('enqueue-translated-ai-search-sync-v1', STORAGE_STEP, async () => {
-							await this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId });
-						})
-					: undefined,
-			]);
-			const failures = followups.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
-			if (failures.length) throw new AggregateError(failures, 'Translation persisted, but follow-ups failed');
-			return { status: 'complete', resourceId };
+			corpus = resource.scope === 'corpus';
 		} catch (error) {
-			followupFailed = translationPublished;
 			console.error({
 				tag: 'RESOURCE_TRANSLATION',
-				...(translationPublished
-					? { event: 'followup_dispatch_failed' }
-					: { event: 'translation_outcome', outcome: 'failed', reason: failureReason(error) }),
+				event: 'translation_outcome',
+				outcome: 'failed',
+				reason: failureReason(error),
 				error: error instanceof Error ? error.message : String(error),
 				resource_id: resourceId,
 			});
-			await task.report('outcome-after-error', {
-				status: translationPublished ? 'complete' : 'failed',
-				resourceId,
-				...(translationPublished ? {} : { errorCode: 'translation_failed' }),
-			});
 			throw error;
-		} finally {
-			await task.seal(followupFailed ? 'followup_dispatch_failed' : undefined);
 		}
+		// The translation is published, so a lost index handoff is logged rather than failing the run readers follow.
+		if (corpus)
+			await step
+				.do('enqueue-translated-ai-search-sync-v1', STORAGE_STEP, async () => {
+					await this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId });
+				})
+				.catch((error: unknown) => {
+					console.error({ tag: 'RESOURCE_TRANSLATION', event: 'followup_dispatch_failed', error, resource_id: resourceId });
+				});
+		return { status: 'complete', resourceId };
 	}
 }
 
@@ -496,7 +471,7 @@ async function translateDurableBatch(
 	return translations;
 }
 
-async function translatePlannedContent(resource: ResourceTranslationInput, env: CoreEnv, step: WorkflowStep, task: ResourceTask) {
+async function translatePlannedContent(resource: ResourceTranslationInput, env: CoreEnv, step: WorkflowStep) {
 	const { content, id: resourceId } = resource;
 	const document: TranslationDocument = { title: resource.title, summary: resource.summary };
 	const markdownPlan = planMarkdownTranslation(content);
@@ -509,36 +484,14 @@ async function translatePlannedContent(resource: ResourceTranslationInput, env: 
 		source_characters: content.length,
 	});
 	if (!markdownPlan.segments.length) return undefined;
-	await task.report('batches-start', {
-		stage: 'translating',
-		status: 'running',
-		completed: 0,
-		total: markdownPlan.batches.length,
-		resourceId,
-	});
-	// The first failure stops queued batches; in-flight ones drain before it is reported or the task sealed.
+	// The first failure stops queued batches; in-flight ones drain before it is raised.
 	const limit = pLimit({ concurrency: MARKDOWN_TRANSLATION_CONCURRENCY, rejectOnClear: true });
-	let completed = 0;
-	let progress = Promise.resolve();
 	let failure: { error: unknown } | undefined;
 	const outcomes = await Promise.allSettled(
 		markdownPlan.batches.map((batch) =>
 			limit(async () => {
 				try {
-					const translated = await translateDurableBatch(batch, document, env, resourceId, step);
-					const count = ++completed;
-					// Serialize progress delivery; completion order differs from source order and can change on replay.
-					progress = progress.then(() =>
-						task.report(`batches-${count}`, {
-							stage: 'translating',
-							status: 'running',
-							completed: count,
-							total: markdownPlan.batches.length,
-							resourceId,
-						}),
-					);
-					await progress;
-					return translated;
+					return await translateDurableBatch(batch, document, env, resourceId, step);
 				} catch (error) {
 					// Clear before this slot frees, so no queued batch starts after a failure.
 					failure ??= { error };

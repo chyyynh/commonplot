@@ -16,6 +16,7 @@ import {
 import { consumeSearchSyncBatch } from './search/sync-consumer';
 import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
+import { resourceImportExecution } from './workflows/processing';
 import { contentTranslationStatus, enqueueMissingTranslations, requestContentTranslation } from './workflows/translation';
 
 export { ZoteroSdt } from './services/zotero-sdt-container';
@@ -38,7 +39,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		// YouTube channels ride the feed monitor through their Atom URLs; Core
 		// derives their slower polling cadence from the canonical feed URL.
 		if (event.cron === '*/5 * * * *') {
-			this.ctx.waitUntil(withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(db), enqueueMissingTranslations(this.env, db)])));
+			this.ctx.waitUntil(withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(db), enqueueMissingTranslations(db)])));
 		} else if (event.cron === '0 */6 * * *') {
 			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
 		}
@@ -89,6 +90,12 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		await coreExports.ResourceProcessingV2Workflow.createBatch([
 			{ id: parsed.workflowId, params: parsed.payload, retention: { successRetention: '7 days', errorRetention: '7 days' } },
 		]);
+	}
+
+	/** Each Web import's progress, read from its own Workflow; Web asks only while one is unsettled. */
+	async resourceImportStatus(workflowIds: string[]) {
+		const ids = z.array(ResourceImportDispatchSchema.shape.workflowId).max(50).parse(workflowIds);
+		return Object.fromEntries(await Promise.all(ids.map(async (id) => [id, await resourceImportExecution(id)] as const)));
 	}
 
 	/**
