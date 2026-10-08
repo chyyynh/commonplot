@@ -67,11 +67,25 @@ async function translationExecution(id: string): Promise<TranslationExecution> {
 	return snapshot.status === 'complete' ? 'done' : 'live';
 }
 
-/** What an import shows for its translation: nothing once it ended without failing. */
-export async function translationProgress(id: string): Promise<'running' | 'failed' | undefined> {
-	const execution = await translationExecution(id);
-	// An unreadable execution counts as running, so the import asks again rather than settling early.
-	return execution === 'done' ? undefined : execution === 'rerun' ? 'failed' : 'running';
+/**
+ * What an import shows for its translations: the one its processing admitted, plus a full one that a Pro save or a
+ * reader added for the same original. Nothing once they ended without failing.
+ */
+export async function importTranslationProgress(
+	resourceId: string,
+	originalHash: string,
+	admittedId: string,
+): Promise<'running' | 'failed' | undefined> {
+	const fullId = translationInstanceId(resourceId, originalHash, 'full');
+	const [admitted, full] = await Promise.all([
+		translationExecution(admittedId),
+		fullId === admittedId ? undefined : translationExecution(fullId),
+	]);
+	// The admitted one exists, so an unreadable execution counts as running rather than settling early; a full one
+	// nobody requested is absent.
+	if (admitted === 'live' || admitted === 'absent' || full === 'live') return 'running';
+	if (admitted === 'rerun' || full === 'rerun') return 'failed';
+	return undefined;
 }
 
 // `admitted` is false when the same work was already queued, running or complete.

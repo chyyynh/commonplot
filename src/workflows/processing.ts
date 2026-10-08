@@ -20,10 +20,12 @@ import {
 } from '../store/resources';
 import { translatesContentAutomatically } from '../store/translations';
 import { stageResourceReferences } from './references';
-import { enqueueResourceTranslation, translationProgress } from './translation';
+import { enqueueResourceTranslation, importTranslationProgress } from './translation';
 
 /** What an import reads back: the published Resource and the translation it waits for, or a run a newer attempt replaced. */
-type ResourceProcessingOutput = { outcome: 'ready'; resourceId: string; translationId?: string } | { outcome: 'superseded' };
+type ResourceProcessingOutput =
+	| { outcome: 'ready'; resourceId: string; originalHash: string; translationId?: string }
+	| { outcome: 'superseded' };
 
 export type ResourceImportExecution =
 	| { state: 'absent' | 'queued' | 'running' | 'failed' }
@@ -44,9 +46,13 @@ export async function resourceImportExecution(id: string): Promise<ResourceImpor
 		case 'terminated':
 			return { state: 'failed' };
 		case 'complete': {
-			const output = snapshot.output as Partial<ResourceProcessingOutput> & { resourceId?: string; translationId?: string };
+			// Runs from before this output shape carry only some fields.
+			const output = snapshot.output as { outcome?: string; resourceId?: string; originalHash?: string; translationId?: string };
 			if (output.outcome === 'superseded' || !output.resourceId) return { state: 'failed' };
-			const translation = output.translationId ? await translationProgress(output.translationId) : undefined;
+			const translation =
+				output.translationId && output.originalHash
+					? await importTranslationProgress(output.resourceId, output.originalHash, output.translationId)
+					: undefined;
 			return { state: 'ready', resourceId: output.resourceId, ...(translation ? { translation } : {}) };
 		}
 		default:
@@ -170,7 +176,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: resourceId, target_kind: target.kind });
 		const translation = followups[1];
 		const translationId = translation.status === 'fulfilled' ? translation.value?.id : undefined;
-		return { outcome: 'ready', resourceId, ...(translationId ? { translationId } : {}) };
+		return { outcome: 'ready', resourceId, originalHash, ...(translationId ? { translationId } : {}) };
 	}
 }
 
