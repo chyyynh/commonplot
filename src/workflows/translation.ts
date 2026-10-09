@@ -488,7 +488,16 @@ async function translateDurableBatch(
 async function translatePlannedContent(resource: ResourceTranslationInput, env: CoreEnv, step: WorkflowStep) {
 	const { content, id: resourceId } = resource;
 	const document: TranslationDocument = { title: resource.title, summary: resource.summary };
-	const markdownPlan = planMarkdownTranslation(content);
+	let markdownPlan: ReturnType<typeof planMarkdownTranslation>;
+	try {
+		markdownPlan = planMarkdownTranslation(content);
+	} catch (error) {
+		// A source the serializer cannot round-trip never will, so the run completes with its metadata alone. Failing it
+		// would have the missing-translation sweep restart it every five minutes.
+		if (!(error instanceof MarkdownTranslationInvariantError && error.code === 'source-not-roundtrippable')) throw error;
+		console.warn({ tag: 'RESOURCE_TRANSLATION', event: 'content_untranslatable', reason: error.code, resource_id: resourceId });
+		return undefined;
+	}
 	console.info({
 		tag: 'RESOURCE_TRANSLATION',
 		event: 'markdown_translation_planned',
