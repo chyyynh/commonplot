@@ -81,9 +81,30 @@ export function paragraphsMarkdown(texts: readonly string[]): string {
 	});
 }
 
+/**
+ * Unwrap bold inside bold and italics inside italics. Editors leave such runs (`<strong><strong>…`), Markdown cannot
+ * express them, and the alternating markers they serialize to do not parse back to the same tree.
+ */
+function collapseNestedAttention(node: Parents, open: ReadonlySet<'strong' | 'emphasis'>): void {
+	node.children = (node.children as Nodes[]).flatMap((child): Nodes[] => {
+		if (child.type === 'strong' || child.type === 'emphasis') {
+			const nested = open.has(child.type);
+			collapseNestedAttention(child, nested ? open : new Set([...open, child.type]));
+			return nested ? child.children : [child];
+		}
+		if ('children' in child) collapseNestedAttention(child, open);
+		return [child];
+	}) as typeof node.children;
+}
+
 /** An HTML fragment as mdast. HTML comments are invisible implementation metadata, never content. */
 export function htmlToMdast(html: string, options: ToMdastOptions = {}): Root {
-	return toMdast(fromHtml(html, { fragment: true }), { ...options, nodeHandlers: { comment() {}, ...options.nodeHandlers } }) as Root;
+	const tree = toMdast(fromHtml(html, { fragment: true }), {
+		...options,
+		nodeHandlers: { comment() {}, ...options.nodeHandlers },
+	}) as Root;
+	collapseNestedAttention(tree, new Set());
+	return tree;
 }
 
 /** Markdown blocks inside an HTML element (e.g. a merged table cell); blank lines let Markdown resume. */
