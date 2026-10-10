@@ -1,14 +1,16 @@
 ---
 name: my-saves
-description: Answer from what the user saved to Newsence. Use when the user mentions something they saved, read or bookmarked, asks what they saved recently, or wants a summary, comparison or quote from their saves.
+description: Answer from what the user saved or wrote in Newsence. Use when the user mentions something they saved, read or bookmarked, asks what they saved recently, asks about a notebook or document of theirs, or wants a summary, comparison or quote from them.
 ---
 
-1. Call `list_my_saves`. Pass `days` for a time window ("this week" is 7). It
-   returns 50 saves per page, newest first; pick the matching items by title,
-   source and kind yourself. Pass `nextCursor` back as `cursor` only when the
-   item is not on the page and older saves could hold it.
-2. Call `read_my_save` with each chosen item's `id`. Long text comes in
-   chunks: repeat with the returned `continuation` until it is null.
+1. Call `list` with `target: "library"` for saves; pass `days` for a time
+   window ("this week" is 7). For a notebook or document, call `list` with
+   `target: "notebooks"`, then `target: "notebook"` and its `notebookId`. Each
+   page holds 50 entries; pick the matching ones by title, source and kind
+   yourself. Pass `nextCursor` back as `cursor` only when the item is not on the
+   page and later pages could hold it.
+2. Call `read` with each chosen entry's `sourceType` and `sourceId`. Long text
+   comes in chunks: repeat with the returned `continuation` until it is null.
 3. Answer from the text you read and name the item it came from. If
    `contentAvailable` is false, say the text is not stored; do not invent it.
 4. To show saves to the user, pass their URLs to `recommend_reads`; the cards

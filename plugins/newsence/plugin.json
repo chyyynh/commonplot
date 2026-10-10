@@ -1,8 +1,8 @@
 {
 	"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
 	"name": "newsence",
-	"version": "1.2.0",
-	"description": "Save the articles, papers, posts and videos the assistant recommends to your Newsence library with one tap, and ask about what you saved.",
+	"version": "1.3.0",
+	"description": "Save the articles, papers, posts and videos the assistant recommends to your Newsence library with one tap, and ask about what you saved, your notebooks and your documents.",
 	"author": {
 		"name": "Newsence",
 		"url": "https://www.newsence.app"
@@ -20,7 +20,7 @@
 			"interface": {
 				"displayName": "Newsence",
 				"shortDescription": "Save reads, ask your library",
-				"longDescription": "Newsence shows the articles, papers, posts and videos the assistant recommends as cards. Press Save on a card to keep it in your Newsence library and public profile; nothing is saved without your press. Ask what you saved this week, or ask about a saved item, and the assistant reads it from your library.",
+				"longDescription": "Newsence shows the articles, papers, posts and videos the assistant recommends as cards. Press Save on a card to keep it in your Newsence library and public profile; nothing is saved without your press. Ask what you saved this week, or about a saved item, a notebook or a document you wrote, and the assistant reads it from your Newsence.",
 				"developerName": "Newsence",
 				"category": "Productivity",
 				"capabilities": [

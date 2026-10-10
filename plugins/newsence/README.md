@@ -54,13 +54,15 @@ For a dependable result, users can:
   "When you recommend articles or videos, show them with Newsence."
 
 Library questions such as "find the RAG evaluation paper I saved" or "what did
-I save this week?" use `list_my_saves` and then `read_my_save`.
+I save this week?" use `list` (target `library`) and then `read`. Notebook and
+document questions use `list` (target `notebooks` or `notebook`) and `read`,
+which first ask the user for the `newsence:documents` scope.
 
 ## How it works
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/mcp` | `recommend_reads`, `list_my_saves`, `read_my_save` (model); `save_urls`, `get_save_status` and `open_reader` (card only); `open_newsence` (ChatGPT sidebar) |
+| `POST /api/mcp` | `recommend_reads`, `search`, `list`, `read` (model); `save_urls`, `get_save_status` and `open_reader` (card only); `open_newsence` (ChatGPT sidebar) |
 | `/.well-known/oauth-protected-resource/api/mcp` | Resource discovery |
 | `/.well-known/oauth-authorization-server/api/auth` | Authorization server discovery |
 | `/api/auth/oauth2/*` | Authorization (PKCE S256), token, refresh |
@@ -69,8 +71,10 @@ I save this week?" use `list_my_saves` and then `read_my_save`.
 
 - `recommend_reads` takes 1–10 URLs with the model's title and one-line reason,
   and returns them with any earlier saves so those cards show as saved.
-- `list_my_saves` lists the user's profile saves in compact pages for the model;
-  `read_my_save` reads a save or public resource by id.
+- `search` searches the curated public corpus. `list` pages through the
+  user's library, notebooks or one notebook; `read` reads a resource or one of
+  the user's documents by `sourceType` and `sourceId`. Think calls the same
+  tools through Domain RPC.
   Tool schemas and limits are in the developer docs (`mcp.md`).
 - `save_urls` takes 1–10 HTTP(S) URLs and saves them for the token's user; it
   never accepts a user id. `ready` is saved and readable; `accepted` is received
@@ -115,7 +119,8 @@ I save this week?" use `list_my_saves` and then `read_my_save`.
   would leave Save unusable there.
 - `openai/*` metadata keys are ChatGPT extensions; other hosts ignore them.
 - Access tokens are hour-long JWTs for the `newsence:save` and `newsence:read`
-  scopes and the MCP URL audience; `offline_access` gives the host a refresh token. Every call also
+  scopes (plus `newsence:documents` once the user allows notebooks and
+  documents) and the MCP URL audience; `offline_access` gives the host a refresh token. Every call also
   checks that the user's consent still exists, so disconnecting is immediate.
 - Requests are limited per user and log only `NEWSENCE_PLUGIN_TIMING` durations,
   never URLs, user ids or tokens.
