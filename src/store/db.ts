@@ -6,7 +6,7 @@ export async function withCoreDb<T>(env: CoreEnv, work: (db: NodePgDatabase) => 
 	const client = new Client({ connectionString: env.HYPERDRIVE.connectionString });
 	await client.connect();
 	try {
-		return await work(drizzle(client));
+		return await work(drizzle({ client }));
 	} finally {
 		await client.end().catch(() => undefined);
 	}

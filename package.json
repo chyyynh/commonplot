@@ -17,7 +17,7 @@
 		"@extractus/feed-extractor": "8.0.3",
 		"ai": "7.0.137",
 		"defuddle": "0.19.4",
-		"drizzle-orm": "0.45.4",
+		"drizzle-orm": "1.0.0-rc.4",
 		"franc-min": "6.2.0",
 		"hast-util-from-html": "2.0.3",
 		"hast-util-to-html": "9.0.5",
