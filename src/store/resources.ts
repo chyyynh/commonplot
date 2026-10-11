@@ -17,7 +17,7 @@ import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { blobKey } from '../contracts/storage-keys';
 
-/** Web's `storedBlobs` advisory lock namespace (`web-tanstack/src/server/prisma.server.ts`). */
+/** Web's `storedBlobs` advisory lock namespace (`web-tanstack/src/server/db/locks.server.ts`). */
 const STORED_BLOB_LOCK_NAMESPACE = 330571;
 
 /** A normalized resource whose images are already Hosted Images URLs. */

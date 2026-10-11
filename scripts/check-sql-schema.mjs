@@ -156,7 +156,10 @@ function merge(left, right) {
 const plain = (text) => [{ text, choices: new Map() }];
 
 function renderExpression(expression, scope) {
-	const text = expression.trim().replace(/^\(([\s\S]*)\)$/, '$1').trim();
+	const text = expression
+		.trim()
+		.replace(/^\(([\s\S]*)\)$/, '$1')
+		.trim();
 	if (scope.bindings.has(text)) return scope.bindings.get(text);
 	if (text.startsWith('sql`')) return render(readTemplate(text, 4), scope);
 	const inArray = text.match(/^inArray\(sql`([^`]*)`/);
@@ -195,7 +198,7 @@ function lookup(name, scope) {
 /** `a ? b : c` at the top level of an expression, as its condition and branches. */
 function conditionalBranches(text) {
 	let question = -1;
-	for (let at = 0; at < text.length; ) {
+	for (let at = 0; at < text.length;) {
 		const char = text[at];
 		if (char === '?' && text[at + 1] !== '?' && text[at + 1] !== '.' && text[at - 1] !== '?') {
 			if (question < 0) question = at;
