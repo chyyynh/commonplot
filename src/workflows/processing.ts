@@ -65,7 +65,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const target = ResourceProcessingTargetSchema.parse(event.payload);
 		let upload: StoredPdf | null | undefined;
 		if (target.kind === 'storedBlob') {
-			// Web owns the upload: it confirms this attempt and describes the bytes, so Core never reads ownership.
+			// Web owns the upload: it confirms this attempt and describes the bytes. Core only rechecks, when it commits, that the object is still ready.
 			upload = await step.do('start-owned-pdf-attempt-v2', async () => {
 				const verified = await this.env.APP.verifyStoredBlobProcessing(target.objectId, event.instanceId);
 				return verified && { contentHash: verified.contentHash, fileName: verified.fileName };
