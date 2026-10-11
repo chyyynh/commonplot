@@ -77,7 +77,7 @@ which first ask the user for the `newsence:documents` scope.
   `{ id, title, text, url, metadata }`. `list` pages through the user's library
   or notebooks. Think calls the same
   tools through Domain RPC.
-  Tool schemas and limits are in the developer docs (`mcp.md`).
+  Tool schemas and limits are in `web-tanstack/src/server/mcp/`.
 - `save_urls` takes 1–10 HTTP(S) URLs and saves them for the token's user; it
   never accepts a user id. `ready` is saved and readable; `accepted` is received
   and prepared in the background by Core.
