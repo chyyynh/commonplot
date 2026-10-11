@@ -54,15 +54,15 @@ For a dependable result, users can:
   "When you recommend articles or videos, show them with Newsence."
 
 Library questions such as "find the RAG evaluation paper I saved" or "what did
-I save this week?" use `list` (target `library`) and then `read`. Notebook and
-document questions use `list` (target `notebooks` or `notebook`) and `read`,
+I save this week?" use `list` (target `library`) and then `fetch`. Notebook and
+document questions use `list` (target `notebooks`) and `fetch` on a notebook or document id,
 which first ask the user for the `newsence:documents` scope.
 
 ## How it works
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/mcp` | `recommend_reads`, `search`, `list`, `read` (model); `save_urls`, `get_save_status` and `open_reader` (card only); `open_newsence` (ChatGPT sidebar) |
+| `POST /api/mcp` | `recommend_reads`, `search`, `fetch`, `list` (model); `save_urls`, `get_save_status` and `open_reader` (card only); `open_newsence` (ChatGPT sidebar) |
 | `/.well-known/oauth-protected-resource/api/mcp` | Resource discovery |
 | `/.well-known/oauth-authorization-server/api/auth` | Authorization server discovery |
 | `/api/auth/oauth2/*` | Authorization (PKCE S256), token, refresh |
@@ -71,9 +71,11 @@ which first ask the user for the `newsence:documents` scope.
 
 - `recommend_reads` takes 1–10 URLs with the model's title and one-line reason,
   and returns them with any earlier saves so those cards show as saved.
-- `search` searches the curated public corpus. `list` pages through the
-  user's library, notebooks or one notebook; `read` reads a resource or one of
-  the user's documents by `sourceType` and `sourceId`. Think calls the same
+- `search` and `fetch` follow OpenAI's search/fetch contract: `search`
+  searches the curated public corpus, and `fetch` takes one id
+  (`resource:`, `document:` or `notebook:<uuid>`) and returns
+  `{ id, title, text, url, metadata }`. `list` pages through the user's library
+  or notebooks. Think calls the same
   tools through Domain RPC.
   Tool schemas and limits are in the developer docs (`mcp.md`).
 - `save_urls` takes 1–10 HTTP(S) URLs and saves them for the token's user; it
