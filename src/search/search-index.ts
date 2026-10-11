@@ -190,19 +190,30 @@ export async function syncCorpusItem(env: CoreEnv, resourceId: string, document:
 	else await deleteCorpusItem(env, resourceId);
 }
 
-type SearchHit = { id: string; subjectId: string | null; score: number };
+/** A matched chunk of a Resource's indexed text, trimmed for a model to judge relevance. */
+export type SearchPassage = { text: string; score: number };
+const PASSAGES_PER_RESULT = 3;
+const PASSAGE_MAX_CHARS = 500;
 
+type SearchHit = { id: string; subjectId: string | null; score: number; passages: SearchPassage[] };
+
+/** One hit per Resource at its best chunk's rank; later chunks of it add passages. */
 function hitsFromSearchResponse(response: AiSearchSearchResponse): SearchHit[] {
-	const hits: SearchHit[] = [];
-	const seen = new Set<string>();
+	const hits = new Map<string, SearchHit>();
 	for (const chunk of response.chunks) {
 		const id = resourceIdFromAiSearchItemKey(chunk.item.key);
-		if (!id || seen.has(id)) continue;
-		seen.add(id);
-		const subjectId = chunk.item.metadata?.subject_id;
-		hits.push({ id, subjectId: typeof subjectId === 'string' ? subjectId : null, score: chunk.score });
+		if (!id) continue;
+		let hit = hits.get(id);
+		if (!hit) {
+			const subjectId = chunk.item.metadata?.subject_id;
+			hit = { id, subjectId: typeof subjectId === 'string' ? subjectId : null, score: chunk.score, passages: [] };
+			hits.set(id, hit);
+		}
+		const text = chunk.text?.replace(/\s+/g, ' ').trim();
+		if (text && hit.passages.length < PASSAGES_PER_RESULT)
+			hit.passages.push({ text: text.slice(0, PASSAGE_MAX_CHARS), score: chunk.score });
 	}
-	return hits;
+	return [...hits.values()];
 }
 
 /**
@@ -213,9 +224,9 @@ async function collapseCarriers(
 	env: CoreEnv,
 	hits: SearchHit[],
 	kinds?: readonly SearchableResourceKind[],
-): Promise<Array<{ id: string; score: number }>> {
+): Promise<Array<{ id: string; score: number; passages: SearchPassage[] }>> {
 	const carrierIds = hits.filter((hit) => hit.subjectId).map((hit) => hit.id);
-	if (!carrierIds.length) return hits.map(({ id, score }) => ({ id, score }));
+	if (!carrierIds.length) return hits.map(({ id, score, passages }) => ({ id, score, passages }));
 	const { rows } = await withCoreDb(env, (db) =>
 		db.execute<{ id: string; subject_id: string }>(sql`
 		SELECT carrier.id::text, r.id::text AS subject_id
@@ -227,16 +238,20 @@ async function collapseCarriers(
 	`),
 	);
 	const subjects = new Map(rows.map((row) => [row.id, row.subject_id]));
-	const collapsed = new Map<string, number>();
+	const collapsed = new Map<string, { id: string; score: number; passages: SearchPassage[] }>();
 	for (const hit of hits) {
 		const id = subjects.get(hit.id) ?? hit.id;
-		if (!collapsed.has(id)) collapsed.set(id, hit.score);
+		// A carrier's chunks quote the carrier, not its subject, so only the subject's own text counts.
+		const own = id === hit.id ? hit.passages : [];
+		const existing = collapsed.get(id);
+		if (!existing) collapsed.set(id, { id, score: hit.score, passages: own });
+		else if (own.length) existing.passages = [...existing.passages, ...own].slice(0, PASSAGES_PER_RESULT);
 	}
-	return [...collapsed].map(([id, score]) => ({ id, score }));
+	return [...collapsed.values()];
 }
 
-/** Return AI Search candidates only; Web authoritatively filters and hydrates them from Postgres. */
-export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourceSearchInput): Promise<string[]> {
+/** Ranked corpus hits; with passages, AI Search returns chunk text too, a larger response. */
+async function searchCorpus(env: CoreEnv, input: PublicResourceSearchInput, withPassages: boolean) {
 	const { query, limit, filters } = PublicResourceSearchInputSchema.parse(input);
 	const kinds = filters?.kinds && [...new Set(filters.kinds)];
 	// An explicit empty selection matches nothing; missing kinds match everything.
@@ -257,13 +272,26 @@ export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourc
 				// Results are chunks, and one long resource can fill several; ask for
 				// the most AI Search returns so deduping still leaves `limit` resources.
 				max_num_results: RESULT_LIMIT_MAX,
-				metadata_only: true,
+				metadata_only: !withPassages,
 				return_on_failure: true,
 				...(Object.keys(metadataFilters).length ? { filters: metadataFilters } : {}),
 			},
 		},
 	});
-	return (await collapseCarriers(env, hitsFromSearchResponse(response), kindFilter)).slice(0, limit).map((hit) => hit.id);
+	return (await collapseCarriers(env, hitsFromSearchResponse(response), kindFilter)).slice(0, limit);
+}
+
+/** Return AI Search candidates only; Web authoritatively filters and hydrates them from Postgres. */
+export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourceSearchInput): Promise<string[]> {
+	return (await searchCorpus(env, input, false)).map((hit) => hit.id);
+}
+
+/** Candidates with up to three matched passages each, for a model to judge relevance before reading. */
+export async function searchPublicResourcePassages(
+	env: CoreEnv,
+	input: PublicResourceSearchInput,
+): Promise<Array<{ id: string; passages: SearchPassage[] }>> {
+	return (await searchCorpus(env, input, true)).map(({ id, passages }) => ({ id, passages }));
 }
 
 /** Match a Resource's titles and summary against the corpus by meaning alone, nearest first with each match's similarity. */

@@ -11,6 +11,7 @@ import {
 	type PublicResourceSearchInput,
 	type RelatedResourceSearchInput,
 	searchPublicResourceIds,
+	searchPublicResourcePassages,
 	searchRelatedResources,
 } from './search/search-index';
 import { consumeSearchSyncBatch } from './search/sync-consumer';
@@ -128,6 +129,11 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	/** Ranked AI Search candidates; the app Worker authoritatively filters and hydrates them. */
 	searchPublicResourceIds(input: PublicResourceSearchInput) {
 		return searchPublicResourceIds(this.env, input);
+	}
+
+	/** Ranked candidates with matched passages; the app Worker filters and hydrates them. */
+	searchPublicResourcePassages(input: PublicResourceSearchInput) {
+		return searchPublicResourcePassages(this.env, input);
 	}
 
 	/** Resource-level semantic neighbors; the app Worker authoritatively filters and hydrates them. */
