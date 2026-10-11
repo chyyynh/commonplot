@@ -150,7 +150,7 @@ The one-click Deploy button above handles Worker + Workflows, but **Queues, Hype
 
 You need a PostgreSQL instance. Production currently runs on PlanetScale Postgres through Cloudflare Hyperdrive.
 
-The canonical app-owned schema lives in `web-tanstack/prisma/schema.prisma`, with DB-only constraints and indexes versioned in `web-tanstack/prisma/migrations/`. Core uses Drizzle's parameterized SQL over Hyperdrive without maintaining a second table schema. Schema changes require Web migration replay and `pnpm db:drift-check` against disposable databases.
+The canonical app-owned schema lives in `web-tanstack/src/server/db/schema.ts`, with its migrations (including DB-only functions and triggers) in `web-tanstack/drizzle/`. Core uses Drizzle's parameterized SQL over Hyperdrive without maintaining a second table schema. Schema changes require Web migration replay (`pnpm db:migrate`) and `pnpm db:drift-check` against a disposable database.
 
 ### 2. Hyperdrive binding
 

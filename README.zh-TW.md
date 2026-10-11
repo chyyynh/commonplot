@@ -106,7 +106,7 @@ Core 優先保留非空白的來源摘要或論文 abstract；缺少時由既有
 
 需要一個 PostgreSQL。正式環境目前透過 Cloudflare Hyperdrive 連到 PlanetScale Postgres。
 
-App-owned canonical schema 位於 `web-tanstack/prisma/schema.prisma`，DB-only constraints 與 indexes 則以 SQL 版本化於 `web-tanstack/prisma/migrations/`。Core 透過 Hyperdrive 使用 Drizzle 的參數化 SQL，不再維護第二份 table schema。Schema 變更需在可丟棄的資料庫執行 Web migration replay 與 `pnpm db:drift-check`。
+App-owned canonical schema 位於 `web-tanstack/src/server/db/schema.ts`，migrations（含 DB-only functions 與 triggers）位於 `web-tanstack/drizzle/`。Core 透過 Hyperdrive 使用 Drizzle 的參數化 SQL，不再維護第二份 table schema。Schema 變更需在可丟棄的資料庫執行 Web migration replay（`pnpm db:migrate`）與 `pnpm db:drift-check`。
 
 ### 2. Hyperdrive binding
 
