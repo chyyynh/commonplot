@@ -1,4 +1,3 @@
-import { generateText } from 'ai';
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { fromHtml } from 'hast-util-from-html';
@@ -8,7 +7,7 @@ import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { ResourceUrlSchema } from '../contracts/resource-url';
-import { AI_STEP, CORE_TEXT_REASONING, coreTextModel } from '../services/ai-model';
+import { AI_STEP, CORE_TEXT_MODEL, CORE_TEXT_REASONING, generateText } from '../services/ai-model';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 
 const HN_ITEM_API = 'https://hacker-news.firebaseio.com/v0/item';
@@ -184,9 +183,12 @@ export async function stageHackerNewsAcquisition(env: CoreEnv, step: WorkflowSte
 				: discussion.itemType === 'show'
 					? 'Synthesize the community feedback, questions, use cases, and technical observations about the project.'
 					: 'Synthesize the arguments, context, reactions, and disagreements in the discussion.';
-		const { finishReason, text } = await generateText({
-			model: coreTextModel(env, { feature: 'hn-discussion-digest-en', resource_id: input.processingId }),
-			prompt: `Title: ${resource.title}
+		const { finishReason, text } = await generateText(
+			env,
+			CORE_TEXT_MODEL,
+			{ feature: 'hn-discussion-digest-en', resource_id: input.processingId },
+			{
+				prompt: `Title: ${resource.title}
 ${hnPostSection}Ranked HN discussion sample (${discussion.commentCount} comments from ${discussion.threadCount} top-level threads):
 ${discussion.commentInput}
 
@@ -204,11 +206,11 @@ Rules:
 - Present commenter claims as community perspectives, not established facts
 - Maintain a neutral, objective tone
 - Output only the paragraphs, without a code block`,
-			system: HN_DISCUSSION_SYSTEM,
-			temperature: 0.3,
-			reasoning: CORE_TEXT_REASONING,
-			maxRetries: 0,
-		});
+				system: HN_DISCUSSION_SYSTEM,
+				temperature: 0.3,
+				reasoning: CORE_TEXT_REASONING,
+			},
+		);
 		if (finishReason === 'length') throw new Error('Hacker News discussion digest hit its output token cap');
 		const generatedDigest = text.trim();
 		if (!generatedDigest) throw new Error('Hacker News discussion digest returned no text');

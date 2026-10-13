@@ -11,11 +11,8 @@
 		"lint:fix": "oxlint . --fix && oxfmt --write \"**/*.{js,cjs,mjs,ts,tsx,json,jsonc}\""
 	},
 	"dependencies": {
-		"@ai-sdk/openai": "4.0.91",
-		"@ai-sdk/provider": "4.0.26",
 		"@cfworker/json-schema": "4.1.1",
 		"@extractus/feed-extractor": "8.0.3",
-		"ai": "7.0.137",
 		"defuddle": "0.19.4",
 		"drizzle-orm": "1.0.0-rc.4",
 		"franc-min": "6.2.0",
@@ -43,7 +40,6 @@
 		"p-limit": "7.3.3",
 		"pg": "8.23.1",
 		"structured-document-text": "github:zotero/structured-document-text#7963c11faac4595be3bbe86b7574704a22c67bed",
-		"workers-ai-provider": "4.0.0",
 		"zod": "4.6.5"
 	},
 	"devDependencies": {

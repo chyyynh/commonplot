@@ -1,12 +1,11 @@
 // Translation into zh-Hant: admission (imports, reader requests, the missing-translation sweep), the durable Workflow,
 // and its model work. Markdown structure lives in services/markdown-translation, which never calls out.
-import { generateText, NoObjectGeneratedError, Output } from 'ai';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pLimit from 'p-limit';
 import { z } from 'zod';
 import { coreExports } from '../exports.ts';
-import { AI_STEP_RETRIES, aiRetryDelay, CORE_TEXT_REASONING, coreTextModel } from '../services/ai-model';
+import { AI_STEP_RETRIES, AiOutputError, aiRetryDelay, CORE_TEXT_MODEL, CORE_TEXT_REASONING, generateObject } from '../services/ai-model';
 import {
 	compileMarkdownTranslationArtifact,
 	type MarkdownSegmentTranslations,
@@ -241,29 +240,31 @@ function planZhHantTranslation(resource: ResourceTranslationInput, scope: Transl
 /** Translate persisted metadata only; missing summaries are resolved during original enrichment. */
 async function translateResourceMetadata(resource: ResourceTranslationInput, env: CoreEnv) {
 	const summary = resource.summary?.trim();
-	const result = await generateText({
-		model: coreTextModel(env, { feature: 'resource-metadata-localization', resource_id: resource.id }),
-		system: `Translate the supplied resource metadata into natural Taiwan Traditional Chinese (zh-Hant).
+	const { output } = await generateObject(
+		env,
+		CORE_TEXT_MODEL,
+		{ feature: 'resource-metadata-localization', resource_id: resource.id },
+		{
+			system: `Translate the supplied resource metadata into natural Taiwan Traditional Chinese (zh-Hant).
 Translate the title faithfully.
 ${summary ? 'Translate the supplied summary in full. Preserve its length and meaning; do not summarize it again.' : 'Translate only the title. No source summary is available; do not create one.'}
 Preserve attribution, tone, technical terminology, qualifications, and uncertainty. Do not add information.
 For papers, preserve the academic claims and limitations of the supplied abstract or summary.
 Use Taiwan vocabulary and punctuation. Return only the requested schema fields as plain text without Markdown.`,
-		prompt: `Original language: ${resource.originalLang}
+			prompt: `Original language: ${resource.originalLang}
 Resource kind: ${resource.kind}
 Title: ${resource.title}${summary ? `\nSummary: ${summary}` : ''}`,
-		output: Output.object({
-			name: 'resource_translation_metadata',
-			description: 'Faithful Taiwan Traditional Chinese localization of the supplied resource metadata.',
-			schema: summary ? MetadataTranslationSchema : MetadataTranslationSchema.pick({ title: true }),
-		}),
-		maxOutputTokens: summary ? 2400 : 500,
-		temperature: 0.3,
-		reasoning: CORE_TEXT_REASONING,
-		maxRetries: 0,
-	});
-	if (result.finishReason === 'length') throw new Error('Resource metadata localization hit its output token cap');
-	return result.output;
+			output: {
+				name: 'resource_translation_metadata',
+				description: 'Faithful Taiwan Traditional Chinese localization of the supplied resource metadata.',
+				schema: summary ? MetadataTranslationSchema : MetadataTranslationSchema.pick({ title: true }),
+			},
+			maxTokens: summary ? 2400 : 500,
+			temperature: 0.3,
+			reasoning: CORE_TEXT_REASONING,
+		},
+	);
+	return output;
 }
 
 // Content: checkpointed Markdown batches
@@ -350,7 +351,7 @@ function splitSegmentsInHalf(segments: readonly MarkdownTranslationSegment[]): r
 
 /** Only malformed model output should split; transport/capacity failures retry the same durable group. */
 function isMarkdownTranslationFormatError(error: unknown): boolean {
-	return NoObjectGeneratedError.isInstance(error) || (error instanceof MarkdownTranslationInvariantError && error.code !== 'invalid-plan');
+	return error instanceof AiOutputError || (error instanceof MarkdownTranslationInvariantError && error.code !== 'invalid-plan');
 }
 
 /** Each segment's verified translation, or null where the model broke its tags; the rest of the batch still lands. */
@@ -364,37 +365,37 @@ async function translateMarkdownBatchToZhHant(
 ): Promise<BatchTranslations> {
 	try {
 		const promptSegments = batch.segments.map(markdownTranslationModelInput);
-		const result = await generateText({
-			model: coreTextModel(env, {
+		// A capped or malformed reply throws AiOutputError, which splits the batch.
+		const { output } = await generateObject(
+			env,
+			CORE_TEXT_MODEL,
+			{
 				batch_id: batch.id,
 				feature: 'resource-content-translation',
 				recovery_strategy: batch.id.includes('-') ? 'split' : 'batch',
 				resource_id: resourceId,
-			}),
-			prompt: `${JSON.stringify({
-				targetLocale: 'zh-Hant',
-				editorialVariant: 'zh-TW',
-				document: {
-					title: document.title,
-					summary: document.summary?.slice(0, DOCUMENT_SUMMARY_CONTEXT_CHARACTERS) || null,
+			},
+			{
+				prompt: `${JSON.stringify({
+					targetLocale: 'zh-Hant',
+					editorialVariant: 'zh-TW',
+					document: {
+						title: document.title,
+						summary: document.summary?.slice(0, DOCUMENT_SUMMARY_CONTEXT_CHARACTERS) || null,
+					},
+					segments: promptSegments,
+				})}`,
+				system: ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT,
+				output: {
+					name: 'translation_batch',
+					description: 'Complete, faithful, naturally edited Taiwan Traditional Chinese prose blocks keyed by exact input segment IDs.',
+					schema: zhHantMarkdownTranslationsSchema(batch.segments),
 				},
-				segments: promptSegments,
-			})}`,
-			system: ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT,
-			output: Output.object({
-				name: 'translation_batch',
-				description: 'Complete, faithful, naturally edited Taiwan Traditional Chinese prose blocks keyed by exact input segment IDs.',
-				schema: zhHantMarkdownTranslationsSchema(batch.segments),
-			}),
-			maxOutputTokens: translationOutputTokenBudget(batch.segments),
-			temperature: 0.2,
-			reasoning: CORE_TEXT_REASONING,
-			maxRetries: 0,
-		});
-		// Check the cap first: `output` throws NoOutputGeneratedError when a capped response has no answer.
-		if (result.finishReason === 'length')
-			throw new MarkdownTranslationInvariantError('invalid-result', 'Markdown segment translation hit its output token cap');
-		const { output } = result;
+				maxTokens: translationOutputTokenBudget(batch.segments),
+				temperature: 0.2,
+				reasoning: CORE_TEXT_REASONING,
+			},
+		);
 		return Object.fromEntries(
 			batch.segments.map((segment) => {
 				try {
@@ -421,12 +422,11 @@ async function translateMarkdownBatchToZhHant(
 			message: error instanceof Error ? error.message : String(error),
 			reason: failureReason(error),
 			resource_id: resourceId,
-			...(NoObjectGeneratedError.isInstance(error)
+			...(error instanceof AiOutputError
 				? {
 						cause: error.cause instanceof Error ? error.cause.name : undefined,
 						finish_reason: error.finishReason,
-						generated_text_characters: error.text?.length,
-						response_id: error.response?.id,
+						generated_text_characters: error.text.length,
 					}
 				: {}),
 		});
