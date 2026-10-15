@@ -1,9 +1,10 @@
-// Translation into zh-Hant: admission (imports, reader requests, the missing-translation sweep), the durable Workflow,
-// and its model work. Markdown structure lives in services/markdown-translation, which never calls out.
+// Translation into zh-Hant, plus an English title and summary for recommendation vectors: admission (imports, reader
+// requests, the missing-translation sweep), the durable Workflow, and its model work. Markdown structure lives in services/markdown-translation, which never calls out.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pLimit from 'p-limit';
 import { z } from 'zod';
+import { needsEnglishMetadata } from '../contracts/resource-language';
 import { coreExports } from '../exports.ts';
 import { AI_STEP_RETRIES, AiOutputError, aiRetryDelay, CORE_TEXT_MODEL, CORE_TEXT_REASONING, generateObject } from '../services/ai-model';
 import {
@@ -23,9 +24,10 @@ import {
 	listMissingTranslations,
 	loadResourceTranslationInput,
 	loadTranslationCandidate,
+	type MachineEnglishTranslationPatch,
 	type MachineZhHantTranslationPatch,
 	OriginalHashSchema,
-	persistMachineZhHantTranslation,
+	persistMachineTranslation,
 	type ResourceTranslationCandidate,
 	type ResourceTranslationInput,
 } from '../store/translations';
@@ -35,7 +37,7 @@ export type TranslationScope = 'metadata' | 'full';
 type ResourceTranslationPayload = { force?: boolean; resourceId: string; originalHash: string; scope: TranslationScope };
 
 const MARKDOWN_TRANSLATION_CONCURRENCY = 15;
-type ZhHantTranslationPlan = { metadata: boolean; content: boolean };
+type TranslationPlan = { metadata: boolean; content: boolean; english: boolean };
 const MetadataTranslationSchema = z.object({ title: z.string().trim().min(1), summary: z.string().trim().min(1) });
 
 function failureReason(error: unknown): string {
@@ -44,7 +46,7 @@ function failureReason(error: unknown): string {
 
 // Admission
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v35';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v36';
 
 // One execution per original and scope: concurrent imports, requests and the sweep all meet on this ID, so paid work
 // is never doubled, and a changed original gets a new one.
@@ -164,27 +166,44 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			if (!input) return end('skipped', 'missing');
 			if (input.originalHash !== originalHash) return end('superseded', 'superseded');
 			const resource = input.resource;
-			const plan = planZhHantTranslation(resource, scope, force);
-			if (!plan.metadata && !plan.content) return end('skipped', 'unneeded');
+			const plan = planTranslation(resource, scope, force);
+			if (!plan.metadata && !plan.content && !plan.english) return end('skipped', 'unneeded');
 
-			// Both halves settle before either failure is raised, so no step is left running.
-			const [metadata, content] = await Promise.allSettled([
+			// Every part settles before any failure is raised, so no step is left running.
+			const [metadata, content, english] = await Promise.allSettled([
 				plan.metadata
 					? step.do('translate-zh-hant-title-summary-v3', { retries: AI_STEP_RETRIES, timeout: '180 seconds' }, () =>
-							translateResourceMetadata(resource, this.env),
+							translateResourceMetadata(resource, 'zh-Hant', this.env),
 						)
 					: undefined,
 				plan.content ? translatePlannedContent(resource, this.env, step) : undefined,
+				plan.english
+					? step.do('translate-en-title-summary-v1', { retries: AI_STEP_RETRIES, timeout: '180 seconds' }, () =>
+							translateResourceMetadata(resource, 'en', this.env),
+						)
+					: undefined,
 			]);
 			if (metadata.status === 'rejected') throw metadata.reason;
 			if (content.status === 'rejected') throw content.reason;
+			if (english.status === 'rejected') throw english.reason;
 			const patch: MachineZhHantTranslationPatch = { ...metadata.value, ...content.value };
-			if (patch.title === undefined && patch.summary === undefined && patch.content === undefined) return end('skipped', 'empty');
+			const englishPatch: MachineEnglishTranslationPatch = english.value ?? {};
+			const hasPatch = patch.title !== undefined || patch.summary !== undefined || patch.content !== undefined;
+			const hasEnglishPatch = englishPatch.title !== undefined || englishPatch.summary !== undefined;
+			if (!hasPatch && !hasEnglishPatch) return end('skipped', 'empty');
 
-			const persisted = await step.do('persist-zh-hant-translation-v2', STORAGE_STEP, async () =>
-				withCoreDb(this.env, (db) => persistMachineZhHantTranslation(db, resourceId, originalHash, patch)),
-			);
-			if (!persisted) return end('superseded', 'persist-superseded');
+			if (hasPatch) {
+				const persisted = await step.do('persist-zh-hant-translation-v2', STORAGE_STEP, async () =>
+					withCoreDb(this.env, (db) => persistMachineTranslation(db, resourceId, originalHash, 'zh-Hant', patch)),
+				);
+				if (!persisted) return end('superseded', 'persist-superseded');
+			}
+			if (hasEnglishPatch) {
+				const persisted = await step.do('persist-en-translation-v1', STORAGE_STEP, async () =>
+					withCoreDb(this.env, (db) => persistMachineTranslation(db, resourceId, originalHash, 'en', englishPatch)),
+				);
+				if (!persisted) return end('superseded', 'persist-superseded');
+			}
 			console.info({
 				tag: 'RESOURCE_TRANSLATION',
 				event: 'translation_outcome',
@@ -224,39 +243,59 @@ function isBlank(value: string | null | undefined): boolean {
 	return !value?.trim();
 }
 
-function planZhHantTranslation(resource: ResourceTranslationInput, scope: TranslationScope, force: boolean): ZhHantTranslationPlan {
-	if ((resource.kind !== 'post' && isBlank(resource.title)) || isBlank(resource.content) || resource.translationSource === 'original') {
-		return { metadata: false, content: false };
+function planTranslation(resource: ResourceTranslationInput, scope: TranslationScope, force: boolean): TranslationPlan {
+	if ((resource.kind !== 'post' && isBlank(resource.title)) || isBlank(resource.content)) {
+		return { metadata: false, content: false, english: false };
 	}
+	// Posts are their text alone, so only their content is translated, and never into English.
+	const english =
+		resource.kind !== 'post' &&
+		needsEnglishMetadata(resource.originalLang) &&
+		(force || !resource.hasEnglishTitle || (!isBlank(resource.summary) && !resource.hasEnglishSummary));
+	if (resource.translationSource === 'original') return { metadata: false, content: false, english };
 
 	return {
-		// Posts are their text alone, so only the content is translated.
 		metadata:
 			resource.kind !== 'post' && (force || !resource.hasTranslatedTitle || (!isBlank(resource.summary) && !resource.hasTranslatedSummary)),
 		content: scope === 'full' && (force || !resource.hasTranslatedContent),
+		english,
 	};
 }
 
+const METADATA_TARGETS = {
+	'zh-Hant': {
+		language: 'natural Taiwan Traditional Chinese (zh-Hant)',
+		style: 'Use Taiwan vocabulary and punctuation.',
+		description: 'Faithful Taiwan Traditional Chinese localization of the supplied resource metadata.',
+	},
+	en: {
+		language: 'natural English',
+		style: 'Keep established English names of people, organizations and products.',
+		description: 'Faithful English translation of the supplied resource metadata.',
+	},
+} as const;
+
 /** Translate persisted metadata only; missing summaries are resolved during original enrichment. */
-async function translateResourceMetadata(resource: ResourceTranslationInput, env: CoreEnv) {
+async function translateResourceMetadata(resource: ResourceTranslationInput, lang: keyof typeof METADATA_TARGETS, env: CoreEnv) {
+	const target = METADATA_TARGETS[lang];
 	const summary = resource.summary?.trim();
 	const { output } = await generateObject(
 		env,
 		CORE_TEXT_MODEL,
-		{ feature: 'resource-metadata-localization', resource_id: resource.id },
+		{ feature: 'resource-metadata-localization', resource_id: resource.id, target_lang: lang },
 		{
-			system: `Translate the supplied resource metadata into natural Taiwan Traditional Chinese (zh-Hant).
+			system: `Translate the supplied resource metadata into ${target.language}.
 Translate the title faithfully.
 ${summary ? 'Translate the supplied summary in full. Preserve its length and meaning; do not summarize it again.' : 'Translate only the title. No source summary is available; do not create one.'}
 Preserve attribution, tone, technical terminology, qualifications, and uncertainty. Do not add information.
 For papers, preserve the academic claims and limitations of the supplied abstract or summary.
-Use Taiwan vocabulary and punctuation. Return only the requested schema fields as plain text without Markdown.`,
+${target.style} Return only the requested schema fields as plain text without Markdown.`,
 			prompt: `Original language: ${resource.originalLang}
 Resource kind: ${resource.kind}
 Title: ${resource.title}${summary ? `\nSummary: ${summary}` : ''}`,
 			output: {
 				name: 'resource_translation_metadata',
-				description: 'Faithful Taiwan Traditional Chinese localization of the supplied resource metadata.',
+				description: target.description,
 				schema: summary ? MetadataTranslationSchema : MetadataTranslationSchema.pick({ title: true }),
 			},
 			maxTokens: summary ? 2400 : 500,

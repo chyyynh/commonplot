@@ -46,3 +46,18 @@ export function detectResourceLanguage(content: string, knownLanguage = 'und'): 
 	const traditional = difference(chineseConverters.toSimplified(text));
 	return traditional > simplified ? 'zh-Hant' : simplified > traditional ? 'zh-Hans' : 'zh';
 }
+
+/**
+ * English, or a code for no linguistic content, undetermined or private-use text: an English title and summary would
+ * add nothing. A POSIX pattern, so SQL applies the same rule to `original_lang` with `~*`.
+ */
+export const WITHOUT_ENGLISH_METADATA_LANG_PATTERN = '^(en|zxx|und|mis|mul|art|q[a-t][a-z])(-|$)';
+
+export function isEnglishLanguage(lang: string): boolean {
+	return /^en(-|$)/i.test(lang);
+}
+
+/** Recommendation vectors read English, so every other named language gets an English title and summary. */
+export function needsEnglishMetadata(lang: string): boolean {
+	return !new RegExp(WITHOUT_ENGLISH_METADATA_LANG_PATTERN, 'i').test(lang);
+}

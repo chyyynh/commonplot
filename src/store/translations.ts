@@ -3,6 +3,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { PDF_MIME } from '../contracts/pdf-policy';
 import type { ResourceKind, ResourcePlatform } from '../contracts/resource';
+import { WITHOUT_ENGLISH_METADATA_LANG_PATTERN } from '../contracts/resource-language';
 
 export const OriginalHashSchema = z.hash('md5').lowercase();
 
@@ -46,10 +47,17 @@ export type ResourceTranslationInput = ResourceTranslationCandidate & {
 	hasTranslatedSummary: boolean;
 	hasTranslatedContent: boolean;
 	translationSource: 'original' | 'machine' | null;
+	hasEnglishTitle: boolean;
+	hasEnglishSummary: boolean;
 };
 
 /** Machine fields only; alignment is stored as the JSON the translation compiled. */
 export type MachineZhHantTranslationPatch = Readonly<{ title?: string; summary?: string; content?: string; alignment?: unknown }>;
+/** English is only ever a title and summary: recommendation vectors read them, and content stays in its original. */
+export type MachineEnglishTranslationPatch = Readonly<{ title?: string; summary?: string }>;
+
+/** A non-post whose original is in another named language, so its English title and summary come from translation. */
+const ENGLISH_METADATA_SQL = sql`(resource.kind <> 'post' AND resource.original_lang !~* ${WITHOUT_ENGLISH_METADATA_LANG_PATTERN})`;
 
 export async function loadResourceTranslationInput(
 	db: NodePgDatabase,
@@ -65,7 +73,9 @@ export async function loadResourceTranslationInput(
 			zh_hant.title IS NOT NULL AS "hasTranslatedTitle",
 			zh_hant.summary IS NOT NULL AS "hasTranslatedSummary",
 			zh_hant.content IS NOT NULL AS "hasTranslatedContent",
-			zh_hant.source AS "translationSource"
+			zh_hant.source AS "translationSource",
+			en.title IS NOT NULL AS "hasEnglishTitle",
+			en.summary IS NOT NULL AS "hasEnglishSummary"
 		FROM resources resource
 		JOIN resource_translations original
 		  ON original.resource_id = resource.id
@@ -73,6 +83,9 @@ export async function loadResourceTranslationInput(
 		LEFT JOIN resource_translations zh_hant
 		  ON zh_hant.resource_id = resource.id
 		 AND zh_hant.lang = 'zh-Hant'
+		LEFT JOIN resource_translations en
+		  ON en.resource_id = resource.id
+		 AND en.lang = 'en'
 		WHERE resource.id = ${resourceId}::uuid
 	`);
 	const row = result.rows[0];
@@ -81,14 +94,17 @@ export async function loadResourceTranslationInput(
 	return { resource, originalHash: OriginalHashSchema.parse(originalHash) };
 }
 
-export async function persistMachineZhHantTranslation(
+/** Writes over machine fields only; a row the source supplied in that language is never replaced. */
+export async function persistMachineTranslation(
 	db: NodePgDatabase,
 	resourceId: string,
 	originalHash: string,
-	patch: Readonly<MachineZhHantTranslationPatch>,
+	...[lang, patch]: ['zh-Hant', MachineZhHantTranslationPatch] | ['en', MachineEnglishTranslationPatch]
 ): Promise<boolean> {
 	OriginalHashSchema.parse(originalHash);
-	if ((patch.content === undefined) !== (patch.alignment === undefined)) {
+	const content = 'content' in patch ? patch.content : undefined;
+	const alignment = 'alignment' in patch ? patch.alignment : undefined;
+	if ((content === undefined) !== (alignment === undefined)) {
 		throw new TypeError('Machine translation content and alignment must be persisted together');
 	}
 	const result = await db.execute<{ resource_id: string }>(sql`
@@ -103,8 +119,8 @@ export async function persistMachineZhHantTranslation(
 			resource_id, lang, title, summary, content, alignment, source, updated_at
 		)
 		SELECT
-			target_resource.id, 'zh-Hant', ${patch.title ?? null}, ${patch.summary ?? null}, ${patch.content ?? null},
-			${patch.alignment === undefined ? null : JSON.stringify(patch.alignment)}::jsonb,
+			target_resource.id, ${lang}, ${patch.title ?? null}, ${patch.summary ?? null}, ${content ?? null},
+			${alignment === undefined ? null : JSON.stringify(alignment)}::jsonb,
 			'machine', NOW()
 		FROM target_resource
 		ON CONFLICT (resource_id, lang) DO UPDATE SET
@@ -118,6 +134,16 @@ export async function persistMachineZhHantTranslation(
 	`);
 	return result.rows.length > 0;
 }
+
+/** A stored corpus original in a language other than zh-Hant that the translation Workflow accepts. */
+const TRANSLATABLE_CORPUS_SQL = sql`(
+	resource.scope = 'corpus'
+	AND resource.original_hash IS NOT NULL
+	AND resource.url IS NOT NULL
+	AND resource.original_lang <> 'zh-Hant'
+	AND resource.kind = ANY(${sql.param([...TRANSLATABLE_RESOURCE_KINDS])}::text[])
+	AND BTRIM(COALESCE(original.content, '')) <> ''
+)`;
 
 /**
  * Monitor discoveries, and the subjects their carriers point at, translate in full at the operator's cost. Everything
@@ -163,7 +189,7 @@ export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: s
 /**
  * Corpus translations that never landed, usually after a burst hit the provider rate limit. Only recent acquisitions
  * qualify: completed attempts stay visible for the Workflow retention window, so a no-op attempt is not repeated.
- * Content counts as missing only where it translates automatically.
+ * Content counts as missing only where it translates automatically; English is only ever a title and summary.
  */
 export async function listMissingTranslations(db: NodePgDatabase, limit: number) {
 	const { rows } = await db.execute<ResourceTranslationCandidate & { id: string; originalHash: string; automaticContent: boolean }>(sql`
@@ -172,16 +198,33 @@ export async function listMissingTranslations(db: NodePgDatabase, limit: number)
 		FROM resources resource
 		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 		LEFT JOIN resource_translations zh_hant ON zh_hant.resource_id = resource.id AND zh_hant.lang = 'zh-Hant'
-		WHERE resource.scope = 'corpus'
-		  AND resource.original_hash IS NOT NULL
-		  AND resource.url IS NOT NULL
-		  AND resource.original_lang <> 'zh-Hant'
-		  AND resource.kind = ANY(${sql.param([...TRANSLATABLE_RESOURCE_KINDS])}::text[])
+		LEFT JOIN resource_translations en ON en.resource_id = resource.id AND en.lang = 'en'
+		WHERE ${TRANSLATABLE_CORPUS_SQL}
 		  AND resource.scraped_date > now() - interval '6 days'
 		  AND resource.scraped_date < now() - interval '15 minutes'
-		  AND BTRIM(COALESCE(original.content, '')) <> ''
-		  AND (zh_hant.resource_id IS NULL OR (zh_hant.content IS NULL AND ${AUTOMATIC_CONTENT_TRANSLATION_SQL}))
+		  AND (
+		    zh_hant.resource_id IS NULL
+		    OR (zh_hant.content IS NULL AND ${AUTOMATIC_CONTENT_TRANSLATION_SQL})
+		    OR (en.resource_id IS NULL AND ${ENGLISH_METADATA_SQL})
+		  )
 		ORDER BY resource.published_date DESC NULLS LAST
+		LIMIT ${limit}
+	`);
+	return rows;
+}
+
+/** Corpus Resources after `cursor`, in ID order, that still lack the English title and summary they need. */
+export async function listMissingEnglishMetadata(db: NodePgDatabase, cursor: string | null, limit: number) {
+	const { rows } = await db.execute<ResourceTranslationCandidate & { id: string; originalHash: string }>(sql`
+		SELECT ${CANDIDATE_COLUMNS}
+		FROM resources resource
+		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+		WHERE ${TRANSLATABLE_CORPUS_SQL}
+		  AND ${ENGLISH_METADATA_SQL}
+		  AND BTRIM(COALESCE(original.title, '')) <> ''
+		  AND NOT EXISTS (SELECT 1 FROM resource_translations en WHERE en.resource_id = resource.id AND en.lang = 'en')
+		  AND (${cursor}::uuid IS NULL OR resource.id > ${cursor}::uuid)
+		ORDER BY resource.id
 		LIMIT ${limit}
 	`);
 	return rows;
