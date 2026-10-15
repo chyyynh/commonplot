@@ -9,9 +9,6 @@ export const AI_SEARCH_ITEM_PREFIX = 'resources/';
 const AI_SEARCH_ITEM_SUFFIX = '.md';
 const ResourceIdSchema = z.uuid();
 const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
-// A related query is embedded whole, and bge-m3 reads at most 512 tokens.
-const RELATED_SUMMARY_MAX_CHARS = 500;
-const RELATED_QUERY_MAX_CHARS = 1_500;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 /** Queries go to the index as written and come back in index order, never cached. */
 const PLAIN_SEARCH_OPTIONS = {
@@ -294,41 +291,26 @@ export async function searchPublicResourcePassages(
 	return (await searchCorpus(env, input, true)).map(({ id, passages }) => ({ id, passages }));
 }
 
-/** Match a Resource's titles and summary against the corpus by meaning alone, nearest first with each match's similarity. */
+/** The corpus nearest a Resource in meaning, by its own recommendation vector, nearest first with each one's similarity. */
 export async function searchRelatedResources(
 	env: CoreEnv,
 	input: RelatedResourceSearchInput,
 ): Promise<Array<{ id: string; score: number }>> {
 	const { resourceId, limit } = RelatedResourceSearchInputSchema.parse(input);
-	const [document] = await withCoreDb(env, (db) => loadCorpusDocuments(db, [resourceId]));
-	if (!document) return [];
-	// Recommendation queries need titles and the original summary, not indexed article bodies; a post's text is its title.
-	const [original, ...translations] = document.translations;
-	const heading = (translation: CorpusTranslationRow) =>
-		(document.kind === 'post' ? translation.content?.slice(0, RELATED_SUMMARY_MAX_CHARS) : translation.title)?.trim();
-	const query = [
-		requiredDocumentText(original ? (heading(original) ?? null) : null, 'title', resourceId),
-		...translations.map(heading),
-		original?.summary?.trim().slice(0, RELATED_SUMMARY_MAX_CHARS),
-	]
-		.filter(Boolean)
-		.join('\n')
-		.slice(0, RELATED_QUERY_MAX_CHARS);
-	const response = await env.AI_SEARCH.search({
-		query,
-		ai_search_options: {
-			...PLAIN_SEARCH_OPTIONS,
-			retrieval: {
-				retrieval_type: 'vector',
-				match_threshold: 0,
-				// Collapsing carriers and dropping this Resource's own family both shrink the list.
-				max_num_results: RESULT_LIMIT_MAX,
-				metadata_only: true,
-				return_on_failure: false,
-			},
-		},
-	});
-	return (await collapseCarriers(env, hitsFromSearchResponse(response)))
-		.filter((hit) => hit.id !== resourceId && hit.id !== document.subject_id)
-		.slice(0, limit);
+	// With all metadata Vectorize returns at most 50 matches, the Resource itself among them.
+	const { matches } = await env.RESOURCE_VECTORS.queryById(resourceId, { topK: RESULT_LIMIT_MAX, returnMetadata: 'all' });
+	const self = matches.find((match) => match.id === resourceId);
+	// A Resource without a vector yet has no neighbours to offer.
+	if (!self) return [];
+	const subjectIdOf = (match: VectorizeMatch) => (typeof match.metadata?.subject_id === 'string' ? match.metadata.subject_id : null);
+	const subjectId = subjectIdOf(self);
+	// Vectorize scores quantized vectors, which reads every similarity low by about the same factor, its own score
+	// included; dividing by that restores cosine similarity to within about 0.02.
+	const hits = matches
+		.filter((match) => match !== self)
+		.map((match) => ({ id: match.id, subjectId: subjectIdOf(match), score: Math.min(1, match.score / self.score), passages: [] }));
+	return (await collapseCarriers(env, hits))
+		.filter((hit) => hit.id !== resourceId && hit.id !== subjectId)
+		.slice(0, limit)
+		.map(({ id, score }) => ({ id, score }));
 }
