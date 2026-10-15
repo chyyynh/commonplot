@@ -52,7 +52,12 @@ export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<u
 					ids.filter((id) => !documents.has(id)),
 				);
 			} catch (error) {
-				console.error({ tag: 'RESOURCE_VECTORS', msg: 'Resource vector sync failed', resource_count: ids.length, error });
+				console.error({
+					tag: 'RESOURCE_VECTORS',
+					msg: 'Resource vector sync failed',
+					resource_count: ids.length,
+					error: error instanceof Error ? error.message : String(error),
+				});
 				for (const { messages } of pending.values()) {
 					for (const message of messages) message.retry();
 				}

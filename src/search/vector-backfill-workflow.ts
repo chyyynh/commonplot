@@ -7,7 +7,7 @@ import { SEARCHABLE_CORPUS_RESOURCE_SQL } from './search-index';
 
 /**
  * `translate` admits an English title and summary for every corpus Resource that lacks one; run it first, so `embed`
- * then queues every searchable Resource for its vector once, already in English.
+ * then queues every searchable Resource without a vector once, already in English. A rerun only fills the gaps.
  */
 type ResourceVectorBackfillPayload = { phase: 'translate' | 'embed' };
 
@@ -16,6 +16,10 @@ type ResourceVectorBackfillPayload = { phase: 'translate' | 'embed' };
 const TRANSLATE_PAGE_SIZE = 25;
 const TRANSLATE_PAGE_INTERVAL = '1 minute';
 const EMBED_PAGE_SIZE = 100;
+// Vectorize returns at most 20 vectors per getByIds call.
+const VECTOR_LOOKUP_SIZE = 20;
+// About sixty embedding calls a minute: the queue consumes in parallel, and a faster burst hits Workers AI rate limits.
+const EMBED_PAGE_INTERVAL = '10 seconds';
 const STEP_OPTIONS = { retries: { limit: 5, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' } as const;
 
 export class ResourceVectorBackfillWorkflow extends WorkflowEntrypoint<CoreEnv, ResourceVectorBackfillPayload> {
@@ -65,14 +69,25 @@ export class ResourceVectorBackfillWorkflow extends WorkflowEntrypoint<CoreEnv, 
 						ORDER BY r.id
 						LIMIT ${EMBED_PAGE_SIZE}
 					`);
-					if (rows.length)
-						await this.env.RESOURCE_SEARCH_SYNC_QUEUE.sendBatch(rows.map(({ id }) => ({ body: { resourceId: id, only: 'vectors' } })));
-					return { cursor: rows.at(-1)?.id ?? null, enqueued: rows.length };
+					const missing = await this.missingVectorIds(rows.map(({ id }) => id));
+					if (missing.length)
+						await this.env.RESOURCE_SEARCH_SYNC_QUEUE.sendBatch(missing.map((id) => ({ body: { resourceId: id, only: 'vectors' } })));
+					return { cursor: rows.at(-1)?.id ?? null, enqueued: missing.length };
 				}),
 			);
 			enqueued += result.enqueued;
 			if (!result.cursor) return { enqueued, pages: page + 1 };
 			cursor = result.cursor;
+			if (result.enqueued) await step.sleep(`wait-vector-page-${page}`, EMBED_PAGE_INTERVAL);
 		}
+	}
+
+	private async missingVectorIds(ids: readonly string[]): Promise<string[]> {
+		const present = new Set<string>();
+		for (let index = 0; index < ids.length; index += VECTOR_LOOKUP_SIZE) {
+			const vectors = await this.env.RESOURCE_VECTORS.getByIds(ids.slice(index, index + VECTOR_LOOKUP_SIZE));
+			for (const vector of vectors) present.add(vector.id);
+		}
+		return ids.filter((id) => !present.has(id));
 	}
 }

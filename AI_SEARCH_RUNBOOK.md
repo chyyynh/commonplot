@@ -152,7 +152,9 @@ embedding call before it touches AI Search. Messages with `only: "vectors"`
 leave the AI Search item alone.
 
 Backfill after deploying, translations first. Wait for `translate` to complete
-(about a minute per 25 Resources) before starting `embed`. Pass the payload in
+(about a minute per 25 Resources) before starting `embed`. `embed` queues only
+Resources without a vector, 100 every ten seconds to stay under the Workers AI
+rate limit, so a rerun under a new instance ID fills whatever failed. Pass the payload in
 `--body`: `--params` sends it as a JSON string, so the Workflow sees no `phase`.
 
 ```sh
