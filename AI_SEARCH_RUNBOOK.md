@@ -135,3 +135,31 @@ If a rebuild fails:
 Historical generation-3/generation-4, shadow-rollout, and one-shot repair
 resources are not active bindings and must not be triggered. Retiring remote
 history is a separate destructive operation requiring an explicit audit.
+
+## Recommendation vectors
+
+`RESOURCE_VECTORS → newsence-resources-v1` (Vectorize, 1024 dimensions, cosine)
+holds one `@cf/baai/bge-m3` vector per searchable corpus Resource, keyed by
+Resource ID. The text is the English title and summary (a post's opening text),
+falling back to the original where no English exists; non-English originals get
+a machine English title and summary from the translation Workflow. Metadata is
+`kind`, `published_at` (Unix seconds) and, on carriers, `subject_id`. The
+`kind` and `published_at` metadata indexes were created before any vector was
+written; a new metadata index needs every vector upserted again.
+
+The `resource-search-sync` consumer writes vectors for the whole batch with one
+embedding call before it touches AI Search. Messages with `only: "vectors"`
+leave the AI Search item alone.
+
+Backfill after deploying, translations first. Wait for `translate` to complete
+(about a minute per 25 Resources) before starting `embed`:
+
+```sh
+pnpm -C workers/core-worker exec cf workflows instances create newsence-resource-vector-backfill \
+  --params '{"phase":"translate"}' \
+  --instance-id resource-vector-backfill-translate-v1
+pnpm -C workers/core-worker exec cf workflows instances create newsence-resource-vector-backfill \
+  --params '{"phase":"embed"}' \
+  --instance-id resource-vector-backfill-embed-v1
+pnpm -C workers/core-worker exec cf vectorize info newsence-resources-v1
+```

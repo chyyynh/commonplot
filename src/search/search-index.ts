@@ -77,7 +77,7 @@ type CorpusTranslationRow = {
 	content: string | null;
 };
 
-type CorpusDocument = {
+export type CorpusDocument = {
 	id: string;
 	kind: SearchableResourceKind;
 	original_lang: string;

@@ -91,6 +91,8 @@ export const coreWorker = defineWorker({
 		 */
 		R2: bindings.r2({ name: 'newsence' }),
 		RESOURCE_SEARCH_SYNC_QUEUE: bindings.queue({ name: 'resource-search-sync' }),
+		/** One bge-m3 vector per searchable corpus Resource, written by the search sync queue, for recommendations. */
+		RESOURCE_VECTORS: bindings.vectorize({ name: 'newsence-resources-v1' }),
 		APP: bindings.worker({
 			worker: 'newsence-web-tanstack',
 			exportName: 'DomainRpc',
@@ -111,6 +113,10 @@ export const coreWorker = defineWorker({
 		SearchIndexRebuildWorkflow: exports.workflow({
 			name: 'newsence-search-index-rebuild',
 			limits: { steps: 25000 },
+		}),
+		/** Admits English titles and summaries, then queues every searchable Resource for its vector. */
+		ResourceVectorBackfillWorkflow: exports.workflow({
+			name: 'newsence-resource-vector-backfill',
 		}),
 		/** One extraction step per Resource; run a month or less per instance. */
 		ResourceEntityBackfillWorkflow: exports.workflow({
