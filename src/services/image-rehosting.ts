@@ -88,15 +88,14 @@ function storedDimension(value: unknown): number | null {
 	return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
 }
 
-/** Dimensions are kept in the image's metadata; an image stored before that is probed once and updated. */
+/**
+ * Dimensions are kept in the image's metadata at upload. An image stored before that is probed instead:
+ * metadata is never updated after upload, since an update can corrupt a Hosted Image's original.
+ */
 async function hostedDimensions(images: ImagesBinding, image: ImageMetadata, sourceUrl: string): Promise<ImageDimensions> {
 	const meta = image.meta ?? {};
 	if ('width' in meta && 'height' in meta) return { height: storedDimension(meta.height), width: storedDimension(meta.width) };
-	const handle = images.hosted.image(image.id);
-	const dimensions = await probeImageDimensions(images, handle.bytes(), image.id, sourceUrl);
-	// Only saves a later probe; the dimensions are already in hand.
-	await handle.update({ metadata: { ...meta, ...dimensions } }).catch(() => undefined);
-	return dimensions;
+	return probeImageDimensions(images, images.hosted.image(image.id).bytes(), image.id, sourceUrl);
 }
 
 async function hostedImage(images: ImagesBinding, imageId: string): Promise<ImageMetadata | null> {
