@@ -114,15 +114,6 @@ export const coreWorker = defineWorker({
 			name: 'newsence-search-index-rebuild',
 			limits: { steps: 25000 },
 		}),
-		/** Admits English titles and summaries, then queues every searchable Resource for its vector. */
-		ResourceVectorBackfillWorkflow: exports.workflow({
-			name: 'newsence-resource-vector-backfill',
-		}),
-		/** One extraction step per Resource; run a month or less per instance. */
-		ResourceEntityBackfillWorkflow: exports.workflow({
-			name: 'newsence-resource-entity-backfill',
-			limits: { steps: 10000 },
-		}),
 	},
 });
 

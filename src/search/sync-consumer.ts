@@ -3,20 +3,14 @@ import { withCoreDb } from '../store/db';
 import { syncResourceVectors } from './resource-vectors';
 import { loadCorpusDocuments, syncCorpusItem } from './search-index';
 
-const ResourceSearchSyncMessageSchema = z.strictObject({
-	resourceId: z.uuid().toLowerCase(),
-	/** A vector backfill leaves the AI Search item alone. */
-	only: z.literal('vectors').optional(),
-});
-
-type PendingSync = { messages: Message<unknown>[]; aiSearch: boolean };
+const ResourceSearchSyncMessageSchema = z.object({ resourceId: z.uuid().toLowerCase() });
 
 /**
  * Upload or delete each queued corpus Resource's search document and recommendation vector, acknowledging only a
  * snapshot that is still current.
  */
 export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<unknown>): Promise<void> {
-	const pending = new Map<string, PendingSync>();
+	const pending = new Map<string, Message<unknown>[]>();
 	for (const message of batch.messages) {
 		const input = ResourceSearchSyncMessageSchema.safeParse(message.body);
 		if (!input.success) {
@@ -24,10 +18,9 @@ export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<u
 			message.ack();
 			continue;
 		}
-		const sync = pending.get(input.data.resourceId) ?? { messages: [], aiSearch: false };
-		sync.messages.push(message);
-		sync.aiSearch ||= input.data.only === undefined;
-		pending.set(input.data.resourceId, sync);
+		const messages = pending.get(input.data.resourceId) ?? [];
+		messages.push(message);
+		pending.set(input.data.resourceId, messages);
 	}
 	if (!pending.size) return;
 	const retry = (resourceId: string, messages: Message<unknown>[], error: unknown) => {
@@ -39,6 +32,11 @@ export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<u
 			error,
 		});
 		for (const message of messages) message.retry();
+	};
+	const retryAll = () => {
+		for (const messages of pending.values()) {
+			for (const message of messages) message.retry();
+		}
 	};
 	try {
 		await withCoreDb(env, async (db) => {
@@ -58,15 +56,13 @@ export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<u
 					resource_count: ids.length,
 					error: error instanceof Error ? error.message : String(error),
 				});
-				for (const { messages } of pending.values()) {
-					for (const message of messages) message.retry();
-				}
+				retryAll();
 				return;
 			}
 			const synced: string[] = [];
-			for (const [resourceId, { messages, aiSearch }] of pending) {
+			for (const [resourceId, messages] of pending) {
 				try {
-					if (aiSearch) await syncCorpusItem(env, resourceId, documents.get(resourceId));
+					await syncCorpusItem(env, resourceId, documents.get(resourceId));
 					synced.push(resourceId);
 				} catch (error) {
 					retry(resourceId, messages, error);
@@ -76,7 +72,7 @@ export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<u
 			// Postgres instead of acknowledging a stale upload or deletion.
 			const current = new Map((await loadCorpusDocuments(db, synced)).map((document) => [document.id, document]));
 			for (const resourceId of synced) {
-				const { messages } = pending.get(resourceId)!;
+				const messages = pending.get(resourceId)!;
 				if (JSON.stringify(current.get(resourceId)) === JSON.stringify(documents.get(resourceId))) {
 					for (const message of messages) message.ack();
 				} else retry(resourceId, messages, new Error('Resource changed during search sync'));
@@ -85,8 +81,6 @@ export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<u
 	} catch (error) {
 		// Only the batch loads can throw here; a message already settled ignores a second ack or retry.
 		console.error({ tag: 'AI_SEARCH', msg: 'Resource sync batch could not be loaded', error });
-		for (const { messages } of pending.values()) {
-			for (const message of messages) message.retry();
-		}
+		retryAll();
 	}
 }

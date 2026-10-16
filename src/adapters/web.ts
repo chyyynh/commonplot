@@ -49,7 +49,7 @@ function widestSrcsetCandidate(srcset: string): string | null {
 	return widest?.url ?? null;
 }
 
-async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredResource & { kind: 'blog'; resourcePlatform: null }> {
+function htmlDocument(html: string, url: string) {
 	// linkedom does not imply the <head>/<body> that HTML lets pages omit, and Defuddle
 	// needs <body>. Serialize the spec parser's tree so linkedom reads the implied structure.
 	const document = new DOMParser().parseFromString(toHtml(fromHtml(html)), 'text/html');
@@ -57,6 +57,15 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 	const base = document.createElement('base', {});
 	base.setAttribute('href', url);
 	document.head.prepend(base);
+	return document;
+}
+
+function parseDocument(document: ReturnType<typeof htmlDocument>, url: string) {
+	return new Defuddle(document as unknown as ConstructorParameters<typeof Defuddle>[0], { url }).parse();
+}
+
+async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredResource & { kind: 'blog'; resourcePlatform: null }> {
+	const document = htmlDocument(html, url);
 	// A <br> separates lines but leaves no text, so a byline like "by Name<br>Date" would read as one string.
 	for (const br of document.querySelectorAll('br')) if (!br.closest('pre')) br.before('\n');
 	// Defuddle reads language-*/brush-* classes and data-language, but not SyntaxHighlighter's "brush: js;".
@@ -122,7 +131,7 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 
 	// Pull quotes repeat a sentence of the body as decoration.
 	for (const quote of document.querySelectorAll('.pullquote, .pull-quote')) quote.remove();
-	const article = new Defuddle(document as unknown as ConstructorParameters<typeof Defuddle>[0], { url }).parse();
+	const article = parseDocument(document, url);
 	// On table-laid-out pages the content root can be the layout cell itself, which
 	// Markdown conversion would read as a table cell and flatten into one line.
 	const articleHtml = article.content.trim().replace(/^<(td|th)\b[^>]*>([\s\S]*)<\/\1>$/, '<div>$2</div>');
@@ -212,12 +221,13 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 	} satisfies AcquiredResource;
 }
 
-type WebAcquisition =
-	| { platform: ResolvedResourceUrl }
-	| Awaited<ReturnType<typeof acquireHtmlArticle>>
-	| Awaited<ReturnType<typeof storePublicPdfResponse>>;
+type WebPage = { platform: ResolvedResourceUrl } | { pdf: Response; url: string } | { html: ReadableStream<Uint8Array>; url: string };
 
-async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisition> {
+/**
+ * Fetches a page and sorts what came back. A redirect to a platform or a paper hands back its resolved URL
+ * unless `followPlatforms` is off; a PDF keeps its response; an HTML or XML page keeps its unread body.
+ */
+async function fetchWebPage(url: string, followPlatforms = true): Promise<WebPage> {
 	const response = await fetch(url, {
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
@@ -238,16 +248,13 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 		await response.body?.cancel();
 		throw new Error('Fetch response has no valid final URL');
 	}
-	// A redirect to a platform or a paper re-enters acquisition at its own adapter.
-	if (resolved.resourcePlatform || resolved.identifiers.length) {
+	if (followPlatforms && (resolved.resourcePlatform || resolved.identifiers.length)) {
 		await response.body?.cancel();
 		return { platform: resolved };
 	}
-	const finalUrl = resolved.url;
-
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
-	if (contentType.includes(PDF_MIME) || new URL(finalUrl).pathname.toLowerCase().endsWith('.pdf')) {
-		return storePublicPdfResponse(env, response, finalUrl);
+	if (contentType.includes(PDF_MIME) || new URL(resolved.url).pathname.toLowerCase().endsWith('.pdf')) {
+		return { pdf: response, url: resolved.url };
 	}
 	if (
 		contentType &&
@@ -259,16 +266,26 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 		await response.body?.cancel();
 		throw new NonRetryableError(`Unsupported response content type: ${contentType}`);
 	}
+	if (!response.body) throw new NonRetryableError('Fetched page has no body');
+	return { html: response.body, url: resolved.url };
+}
 
-	const body =
-		response.body &&
-		limitByteStream(
-			response.body,
-			GENERIC_HTML_MAX_BYTES,
-			() => new NonRetryableError(`HTML response exceeded ${GENERIC_HTML_MAX_BYTES} bytes`),
-		);
-	const html = await new Response(body).text();
-	const article = await acquireHtmlArticle(html, finalUrl);
+type WebAcquisition =
+	| { platform: ResolvedResourceUrl }
+	| Awaited<ReturnType<typeof acquireHtmlArticle>>
+	| Awaited<ReturnType<typeof storePublicPdfResponse>>;
+
+/** A redirect to a platform or a paper re-enters acquisition at its own adapter. */
+async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisition> {
+	const page = await fetchWebPage(url);
+	if ('platform' in page) return page;
+	if ('pdf' in page) return storePublicPdfResponse(env, page.pdf, page.url);
+	const body = limitByteStream(
+		page.html,
+		GENERIC_HTML_MAX_BYTES,
+		() => new NonRetryableError(`HTML response exceeded ${GENERIC_HTML_MAX_BYTES} bytes`),
+	);
+	const article = await acquireHtmlArticle(await new Response(body).text(), page.url);
 	return { ...article, content: await rehostInlineImages(env.IMAGES, article.content) };
 }
 
@@ -291,57 +308,18 @@ async function readHtmlHead(body: ReadableStream<Uint8Array>): Promise<string> {
 }
 
 /**
- * A page's Open Graph or <title> title. A redirect to a platform or a paper hands the
- * caller its resolved URL, as acquisition does, unless `followPlatforms` is off.
+ * The title acquisition would give a page, read by Defuddle from its <head> alone. A redirect to a platform
+ * or a paper hands the caller its resolved URL, as acquisition does, unless `followPlatforms` is off.
  */
 export async function webPageTitle(url: string, followPlatforms = true): Promise<string | { platform: ResolvedResourceUrl } | null> {
-	const response = await fetch(url, {
-		headers: {
-			'User-Agent': GENERIC_WEB_USER_AGENT,
-			Accept: 'text/html,application/xhtml+xml,application/pdf;q=0.8,*/*;q=0.5',
-			'Accept-Language': 'en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7',
-		},
-		signal: AbortSignal.timeout(GENERIC_FETCH_TIMEOUT_MS),
-	});
-	const resolved = response.ok ? resolveResourceUrl(response.url) : null;
-	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
-	if (!resolved || !response.body) {
-		await response.body?.cancel();
-		return null;
+	const page = await fetchWebPage(url, followPlatforms);
+	if ('platform' in page) return page;
+	if ('pdf' in page) {
+		await page.pdf.body?.cancel();
+		return decodeURIComponent(new URL(page.url).pathname.split('/').pop() ?? '').trim() || null;
 	}
-	if (followPlatforms && (resolved.resourcePlatform || resolved.identifiers.length)) {
-		await response.body.cancel();
-		return { platform: resolved };
-	}
-	const pathname = new URL(resolved.url).pathname;
-	if (contentType.includes(PDF_MIME) || pathname.toLowerCase().endsWith('.pdf')) {
-		await response.body.cancel();
-		return decodeURIComponent(pathname.split('/').pop() ?? '').trim() || null;
-	}
-	if (contentType && !contentType.includes('html') && !contentType.includes('xml')) {
-		await response.body.cancel();
-		return null;
-	}
-
-	const meta = new Map<string, string>();
-	let documentTitle = '';
-	await new HTMLRewriter()
-		.on('meta', {
-			element(element) {
-				const key = (element.getAttribute('property') ?? element.getAttribute('name'))?.toLowerCase();
-				const content = element.getAttribute('content')?.trim();
-				if (key && content && !meta.has(key)) meta.set(key, content);
-			},
-		})
-		.on('title', {
-			text(chunk) {
-				documentTitle += chunk.text;
-			},
-		})
-		.transform(new Response(await readHtmlHead(response.body)))
-		.text();
-	const decode = (value: string | undefined) => (value ? cleanText(toText(fromHtml(value, { fragment: true }))) : '');
-	return decode(meta.get('og:title') ?? meta.get('twitter:title')) || articleTitle(decode(documentTitle), '', resolved.url) || null;
+	const head = await readHtmlHead(page.html);
+	return articleTitle(parseDocument(htmlDocument(head, page.url), page.url).title, '', page.url) || null;
 }
 
 export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { url: string }) {

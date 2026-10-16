@@ -212,20 +212,3 @@ export async function listMissingTranslations(db: NodePgDatabase, limit: number)
 	`);
 	return rows;
 }
-
-/** Corpus Resources after `cursor`, in ID order, that still lack the English title and summary they need. */
-export async function listMissingEnglishMetadata(db: NodePgDatabase, cursor: string | null, limit: number) {
-	const { rows } = await db.execute<ResourceTranslationCandidate & { id: string; originalHash: string }>(sql`
-		SELECT ${CANDIDATE_COLUMNS}
-		FROM resources resource
-		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
-		WHERE ${TRANSLATABLE_CORPUS_SQL}
-		  AND ${ENGLISH_METADATA_SQL}
-		  AND BTRIM(COALESCE(original.title, '')) <> ''
-		  AND NOT EXISTS (SELECT 1 FROM resource_translations en WHERE en.resource_id = resource.id AND en.lang = 'en')
-		  AND (${cursor}::uuid IS NULL OR resource.id > ${cursor}::uuid)
-		ORDER BY resource.id
-		LIMIT ${limit}
-	`);
-	return rows;
-}

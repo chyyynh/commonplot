@@ -164,19 +164,13 @@ a machine English title and summary from the translation Workflow. Metadata is
 written; a new metadata index needs every vector upserted again.
 
 The `resource-search-sync` consumer writes vectors for the whole batch with one
-embedding call before it touches AI Search. Messages with `only: "vectors"`
-leave the AI Search item alone.
+embedding call before it touches AI Search.
 
-Backfill after deploying, translations first. Wait for `translate` to complete
-(about a minute per 25 Resources) before starting `embed`. `embed` queues only
-Resources without a vector, 100 every ten seconds to stay under the Workers AI
-rate limit, so a rerun under a new instance ID fills whatever failed. Pass the payload in
-`--body`: `--params` sends it as a JSON string, so the Workflow sees no `phase`.
+The one-off backfill that filled the index (English metadata first, then every
+missing vector) ran to completion on 2026-10-15 and was removed. To upsert every
+vector again, for example after adding a metadata index, restore
+`ResourceVectorBackfillWorkflow` from commit `58e3c30bd` and its runbook section.
 
 ```sh
-pnpm -C workers/core-worker exec cf workflows instances create newsence-resource-vector-backfill \
-  --body '{"instance_id":"resource-vector-backfill-translate-v2","params":{"phase":"translate"}}'
-pnpm -C workers/core-worker exec cf workflows instances create newsence-resource-vector-backfill \
-  --body '{"instance_id":"resource-vector-backfill-embed-v1","params":{"phase":"embed"}}'
 pnpm -C workers/core-worker exec cf vectorize info newsence-resources-v1
 ```

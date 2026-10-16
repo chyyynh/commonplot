@@ -17,9 +17,7 @@ import { contentTranslationStatus, enqueueMissingTranslations, requestContentTra
 export { ZoteroSdt } from './services/zotero-sdt-container';
 export { ResourceTranslationV2Workflow } from './workflows/translation';
 export { SearchIndexRebuildWorkflow } from './search/rebuild-workflow';
-export { ResourceVectorBackfillWorkflow } from './search/vector-backfill-workflow';
 export { ResourceProcessingV2Workflow } from './workflows/processing';
-export { ResourceEntityBackfillWorkflow } from './workflows/entities';
 export { YouTubeCaptionFetcher } from './services/youtube-captions';
 
 const PREVIEW_TIMEOUT_MS = 6_000;

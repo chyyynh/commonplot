@@ -1,7 +1,6 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 import { type SQL, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { EntitySource } from '../contracts/acquired-resource';
 import type { HostedPreview } from '../contracts/image-mapping';
 import type { NormalizedResource } from '../contracts/normalize-resource';
 import type { ResourceDraftRelation } from '../contracts/processing-target';
@@ -268,7 +267,6 @@ async function writeCanonicalResource(
 	}
 }
 
-/** Links stored before this Resource existed, under any URL it is known by, now point to it. */
 /** Replaces what a Resource is about. Run inside the caller's transaction. */
 export async function replaceResourceEntities(db: NodePgDatabase, resourceId: string, entities: readonly ResourceEntity[]) {
 	await db.execute(sql`DELETE FROM resource_entities WHERE resource_id = ${resourceId}::uuid`);
@@ -323,47 +321,7 @@ export async function listEntityCandidates(db: NodePgDatabase, keys: readonly st
 	return result.rows;
 }
 
-type EntityBackfillCursor = { publishedDate: string; id: string };
-
-/**
- * Corpus Resources published in a window, oldest first after `after`: those without entities, or all with
- * `replace`. Oldest first lets each Resource link to the entities earlier ones introduced.
- */
-export async function listEntityBackfillResources(
-	db: NodePgDatabase,
-	{
-		since,
-		until,
-		after,
-		limit,
-		replace,
-	}: { since: string; until: string | null; after: EntityBackfillCursor | null; limit: number; replace: boolean },
-) {
-	const result = await db.execute<EntityBackfillCursor>(sql`
-		SELECT r.id::text AS id, to_json(r.published_date)#>>'{}' AS "publishedDate" FROM resources r
-		WHERE r.scope = 'corpus' AND r.kind <> 'image'
-		  AND r.published_date >= ${since}::timestamptz
-		  AND (${until}::timestamptz IS NULL OR r.published_date < ${until}::timestamptz)
-		  AND (${after?.publishedDate ?? null}::timestamptz IS NULL
-		       OR (r.published_date, r.id) > (${after?.publishedDate ?? null}::timestamptz, ${after?.id ?? null}::uuid))
-		  AND (${replace} OR NOT EXISTS (SELECT 1 FROM resource_entities re WHERE re.resource_id = r.id))
-		ORDER BY r.published_date, r.id
-		LIMIT ${limit}
-	`);
-	return result.rows;
-}
-
-/** A stored corpus original, as entity extraction reads it. */
-export async function loadEntitySource(db: NodePgDatabase, resourceId: string): Promise<EntitySource | null> {
-	const result = await db.execute<EntitySource>(sql`
-		SELECT original.title, COALESCE(original.content, '') AS content
-		FROM resources r
-		JOIN resource_translations original ON original.resource_id = r.id AND original.lang = r.original_lang
-		WHERE r.id = ${resourceId}::uuid AND r.scope = 'corpus'
-	`);
-	return result.rows[0] ?? null;
-}
-
+/** Links stored before this Resource existed, under any URL it is known by, now point to it. */
 async function resolveLinksTo(db: NodePgDatabase, resourceId: string, resource: HostedResource) {
 	await db.execute(sql`
 		UPDATE resource_links SET target_resource_id = ${resourceId}::uuid

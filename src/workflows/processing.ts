@@ -46,13 +46,11 @@ export async function resourceImportExecution(id: string): Promise<ResourceImpor
 		case 'terminated':
 			return { state: 'failed' };
 		case 'complete': {
-			// Runs from before this output shape carry only some fields.
-			const output = snapshot.output as { outcome?: string; resourceId?: string; originalHash?: string; translationId?: string };
-			if (output.outcome === 'superseded' || !output.resourceId) return { state: 'failed' };
-			const translation =
-				output.translationId && output.originalHash
-					? await importTranslationProgress(output.resourceId, output.originalHash, output.translationId)
-					: undefined;
+			const output = snapshot.output as ResourceProcessingOutput;
+			if (output.outcome === 'superseded') return { state: 'failed' };
+			const translation = output.translationId
+				? await importTranslationProgress(output.resourceId, output.originalHash, output.translationId)
+				: undefined;
 			return { state: 'ready', resourceId: output.resourceId, ...(translation ? { translation } : {}) };
 		}
 		default:
