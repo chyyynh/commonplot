@@ -7,13 +7,7 @@ import type {} from './env';
 import { coreExports } from './exports.ts';
 import { handleRSSCron } from './monitors/rss';
 import { handleTwitterCron } from './monitors/twitter';
-import {
-	type PublicResourceSearchInput,
-	type RelatedResourceSearchInput,
-	searchPublicResourceIds,
-	searchPublicResourcePassages,
-	searchRelatedResources,
-} from './search/search-index';
+import { type PublicResourceSearchInput, searchPublicResourceIds, searchPublicResourcePassages } from './search/search-index';
 import { consumeSearchSyncBatch } from './search/sync-consumer';
 import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
@@ -135,10 +129,5 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	/** Ranked candidates with matched passages; the app Worker filters and hydrates them. */
 	searchPublicResourcePassages(input: PublicResourceSearchInput) {
 		return searchPublicResourcePassages(this.env, input);
-	}
-
-	/** Resource-level semantic neighbors; the app Worker authoritatively filters and hydrates them. */
-	searchRelatedResources(input: RelatedResourceSearchInput) {
-		return searchRelatedResources(this.env, input);
 	}
 }

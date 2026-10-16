@@ -18,7 +18,7 @@ surface.
 The instance embeds with `@cf/baai/bge-m3` and owns three custom metadata fields:
 `published_at` and `kind` for the search filters, and `subject_id` on carriers
 (HN threads, reposts) so results can collapse onto the Resource they discuss.
-Public search runs hybrid retrieval; related Resources query `RESOURCE_VECTORS`
+Public search runs hybrid retrieval; related Resources (web) query `RESOURCE_VECTORS`
 by Resource ID instead (see Recommendation vectors). Platform and monitored-source provenance stay in
 PostgreSQL. Corpus blogs, forums, posts, videos, papers, and PDF files with a
 readable original enter the index. Private Resources and images never enter it.

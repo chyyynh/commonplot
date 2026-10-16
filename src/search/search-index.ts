@@ -46,16 +46,7 @@ const PublicResourceSearchInputSchema = z.strictObject({
 		.optional(),
 });
 
-const RelatedResourceSearchInputSchema = z.strictObject({
-	resourceId: ResourceIdSchema.toLowerCase(),
-	limit: z
-		.int()
-		.min(1)
-		.max(RESULT_LIMIT_MAX - 1),
-});
-
 export type PublicResourceSearchInput = z.input<typeof PublicResourceSearchInputSchema>;
-export type RelatedResourceSearchInput = z.input<typeof RelatedResourceSearchInputSchema>;
 
 function aiSearchItemKey(resourceId: string): string {
 	return `${AI_SEARCH_ITEM_PREFIX}${resourceId}${AI_SEARCH_ITEM_SUFFIX}`;
@@ -289,28 +280,4 @@ export async function searchPublicResourcePassages(
 	input: PublicResourceSearchInput,
 ): Promise<Array<{ id: string; passages: SearchPassage[] }>> {
 	return (await searchCorpus(env, input, true)).map(({ id, passages }) => ({ id, passages }));
-}
-
-/** The corpus nearest a Resource in meaning, by its own recommendation vector, nearest first with each one's similarity. */
-export async function searchRelatedResources(
-	env: CoreEnv,
-	input: RelatedResourceSearchInput,
-): Promise<Array<{ id: string; score: number }>> {
-	const { resourceId, limit } = RelatedResourceSearchInputSchema.parse(input);
-	// With all metadata Vectorize returns at most 50 matches, the Resource itself among them.
-	const { matches } = await env.RESOURCE_VECTORS.queryById(resourceId, { topK: RESULT_LIMIT_MAX, returnMetadata: 'all' });
-	const self = matches.find((match) => match.id === resourceId);
-	// A Resource without a vector yet has no neighbours to offer.
-	if (!self) return [];
-	const subjectIdOf = (match: VectorizeMatch) => (typeof match.metadata?.subject_id === 'string' ? match.metadata.subject_id : null);
-	const subjectId = subjectIdOf(self);
-	// Vectorize scores quantized vectors, which reads every similarity low by about the same factor, its own score
-	// included; dividing by that restores cosine similarity to within about 0.02.
-	const hits = matches
-		.filter((match) => match !== self)
-		.map((match) => ({ id: match.id, subjectId: subjectIdOf(match), score: Math.min(1, match.score / self.score), passages: [] }));
-	return (await collapseCarriers(env, hits))
-		.filter((hit) => hit.id !== resourceId && hit.id !== subjectId)
-		.slice(0, limit)
-		.map(({ id, score }) => ({ id, score }));
 }
