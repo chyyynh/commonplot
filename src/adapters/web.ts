@@ -20,7 +20,6 @@ import { stagePublicPdfAcquisition } from './pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
-const PREVIEW_HEAD_MAX_BYTES = 512 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
 const LOOP_VIDEO_PATH = /\.(?:mp4|webm|m4v|mov)$/i;
@@ -224,10 +223,10 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 type WebPage = { platform: ResolvedResourceUrl } | { pdf: Response; url: string } | { html: ReadableStream<Uint8Array>; url: string };
 
 /**
- * Fetches a page and sorts what came back. A redirect to a platform or a paper hands back its resolved URL
- * unless `followPlatforms` is off; a PDF keeps its response; an HTML or XML page keeps its unread body.
+ * Fetches a page and sorts what came back. A redirect to a platform or a paper hands back its resolved URL;
+ * a PDF keeps its response; an HTML or XML page keeps its unread body.
  */
-async function fetchWebPage(url: string, followPlatforms = true): Promise<WebPage> {
+async function fetchWebPage(url: string): Promise<WebPage> {
 	const response = await fetch(url, {
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
@@ -248,7 +247,7 @@ async function fetchWebPage(url: string, followPlatforms = true): Promise<WebPag
 		await response.body?.cancel();
 		throw new Error('Fetch response has no valid final URL');
 	}
-	if (followPlatforms && (resolved.resourcePlatform || resolved.identifiers.length)) {
+	if (resolved.resourcePlatform || resolved.identifiers.length) {
 		await response.body?.cancel();
 		return { platform: resolved };
 	}
@@ -287,39 +286,6 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 	);
 	const article = await acquireHtmlArticle(await new Response(body).text(), page.url);
 	return { ...article, content: await rehostInlineImages(env.IMAGES, article.content) };
-}
-
-/** The page's <head> up to its end tag, read from the stream without fetching the body. */
-async function readHtmlHead(body: ReadableStream<Uint8Array>): Promise<string> {
-	const reader = body.getReader();
-	const decoder = new TextDecoder();
-	let head = '';
-	try {
-		while (head.length < PREVIEW_HEAD_MAX_BYTES) {
-			const { done, value } = await reader.read();
-			if (done) break;
-			head += decoder.decode(value, { stream: true });
-			if (/<\/head\s*>|<body[\s>]/i.test(head)) break;
-		}
-	} finally {
-		await reader.cancel();
-	}
-	return head;
-}
-
-/**
- * The title acquisition would give a page, read by Defuddle from its <head> alone. A redirect to a platform
- * or a paper hands the caller its resolved URL, as acquisition does, unless `followPlatforms` is off.
- */
-export async function webPageTitle(url: string, followPlatforms = true): Promise<string | { platform: ResolvedResourceUrl } | null> {
-	const page = await fetchWebPage(url, followPlatforms);
-	if ('platform' in page) return page;
-	if ('pdf' in page) {
-		await page.pdf.body?.cancel();
-		return decodeURIComponent(new URL(page.url).pathname.split('/').pop() ?? '').trim() || null;
-	}
-	const head = await readHtmlHead(page.html);
-	return articleTitle(parseDocument(htmlDocument(head, page.url), page.url).title, '', page.url) || null;
 }
 
 export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { url: string }) {

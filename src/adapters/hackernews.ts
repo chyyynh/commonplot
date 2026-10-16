@@ -49,12 +49,6 @@ async function fetchHnItem(itemId: number | string): Promise<HackerNewsItem | nu
 	return item;
 }
 
-export async function hackerNewsTitle(itemId: string): Promise<string | null> {
-	const item = await fetchHnItem(itemId);
-	if (!item || item.dead || item.deleted) return null;
-	return item.title?.trim() || null;
-}
-
 async function fetchHnItems(itemIds: readonly number[]): Promise<Map<number, HackerNewsItem>> {
 	const items = await pLimit(HN_FETCH_CONCURRENCY).map(itemIds, (itemId) => fetchHnItem(itemId));
 	return new Map(items.filter((item) => item !== null).map((item) => [item.id, item]));

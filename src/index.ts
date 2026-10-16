@@ -1,6 +1,5 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod';
-import { resourceUrlTitle } from './adapters/acquire';
 import { ResourceImportDispatchSchema } from './contracts/processing-target';
 import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url';
 import type {} from './env';
@@ -19,8 +18,6 @@ export { ResourceTranslationV2Workflow } from './workflows/translation';
 export { SearchIndexRebuildWorkflow } from './search/rebuild-workflow';
 export { ResourceProcessingV2Workflow } from './workflows/processing';
 export { YouTubeCaptionFetcher } from './services/youtube-captions';
-
-const PREVIEW_TIMEOUT_MS = 6_000;
 
 export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	override fetch(_request: Request): Response {
@@ -56,23 +53,6 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 				parsed.map((url) => resolveResourceUrl(url)!),
 			),
 		);
-	}
-
-	/**
-	 * A link's title before anyone saves it: read-only, nothing is persisted.
-	 * A slow or blocked site yields null and the caller shows the bare link.
-	 */
-	async previewResourceTitle(url: string): Promise<string | null> {
-		const parsed = ResourceUrlSchema.max(2_048).parse(url);
-		try {
-			return await Promise.race([
-				resourceUrlTitle(this.env, parsed),
-				new Promise<null>((resolve) => setTimeout(resolve, PREVIEW_TIMEOUT_MS, null)),
-			]);
-		} catch (error) {
-			console.warn({ tag: 'PREVIEW', msg: 'Link title unavailable', url: parsed, error: String(error) });
-			return null;
-		}
 	}
 
 	/** Durable admission outbox: the caller persists this immutable ID and payload first. */

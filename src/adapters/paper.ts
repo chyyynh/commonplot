@@ -158,15 +158,6 @@ async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: reado
 	return normalizeOpenAlexWork(work, input.identifiers);
 }
 
-/** The OpenAlex work alone; full text and PDFs wait for acquisition. */
-export async function paperTitle(apiKey: string | undefined, identifiers: readonly ResourceIdentifier[]): Promise<string | null> {
-	const work = await resolveOpenAlexPaper({
-		apiKey,
-		identifiers: identifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
-	});
-	return work?.metadata.title?.trim() || null;
-}
-
 /** OpenAlex's hosted copy of a licensed PDF; publisher servers often refuse automated downloads. */
 async function stagePaperPdfContent(env: CoreEnv, step: WorkflowStep, input: { contentPdfUrl: string; processingId: string }) {
 	try {

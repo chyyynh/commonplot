@@ -179,12 +179,6 @@ async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
 
 type YouTubeVideo = Awaited<ReturnType<typeof scrapeYouTubeVideo>>;
 
-/** One videos call; captions wait for acquisition. */
-export async function youTubeTitle(videoId: string, youtubeApiKey: string): Promise<string | null> {
-	const video = (await fetchYouTubeVideoData(videoId, youtubeApiKey)).items?.find((item) => item.id === videoId);
-	return video?.snippet.title.trim() || null;
-}
-
 export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, videoId: string) {
 	const { audioLanguage, chapters, ...video } = await step.do(
 		'acquire-youtube-video-v1',

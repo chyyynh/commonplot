@@ -4,13 +4,13 @@ import type { AcquisitionInput } from '../contracts/acquired-resource';
 import { normalizeAcquiredResource } from '../contracts/normalize-resource';
 import type { ResourceIdentifier } from '../contracts/resource';
 import { resolveResourceUrl } from '../contracts/resource-url';
-import { hackerNewsTitle, stageHackerNewsAcquisition } from './hackernews';
+import { stageHackerNewsAcquisition } from './hackernews';
 import { stageLessWrongAcquisition } from './lesswrong';
-import { paperTitle, stagePaper } from './paper';
+import { stagePaper } from './paper';
 import { stageStoredPdfAcquisition } from './pdf';
-import { stageTwitterAcquisition, tweetTitle } from './twitter';
-import { stageWebAcquisition, webPageTitle } from './web';
-import { stageYouTubeAcquisition, youTubeTitle } from './youtube';
+import { stageTwitterAcquisition } from './twitter';
+import { stageWebAcquisition } from './web';
+import { stageYouTubeAcquisition } from './youtube';
 
 /** A linked paper with neither full text nor an abstract is not acquired. */
 async function stageLinkedPaper(
@@ -62,35 +62,6 @@ async function stageUrlAcquisition(
 			return stageYouTubeAcquisition(env, step, platformId);
 		default:
 			throw new NonRetryableError('Redirected resource has no supported platform');
-	}
-}
-
-/** The same detection as acquisition, reading only the title a link chip shows. */
-export async function resourceUrlTitle(env: CoreEnv, url: string): Promise<string | null> {
-	let detected = resolveResourceUrl(url);
-	if (!detected) return null;
-	if (!detected.resourcePlatform && !detected.identifiers.length) {
-		const page = await webPageTitle(detected.url);
-		if (typeof page !== 'object' || !page) return page;
-		detected = page.platform;
-	}
-	const platformId = detected.identifiers[0]!.value;
-	const landingPageTitle = async (pageUrl: string) => {
-		const page = await webPageTitle(pageUrl, false);
-		return typeof page === 'string' ? page : null;
-	};
-	switch (detected.resourcePlatform) {
-		case null:
-			// OpenAlex misses many arXiv DOIs; the landing page still names the paper.
-			return (await paperTitle(env.OPENALEX_API_KEY, detected.identifiers)) ?? landingPageTitle(detected.url);
-		case 'hackernews':
-			return hackerNewsTitle(platformId);
-		case 'twitter':
-			return tweetTitle(platformId);
-		case 'youtube':
-			return youTubeTitle(platformId, env.YOUTUBE_API_KEY);
-		case 'lesswrong':
-			return landingPageTitle(detected.url);
 	}
 }
 

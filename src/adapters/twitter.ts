@@ -607,17 +607,6 @@ async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string)
 	return acquiredTweet(tweet, () => fetchTwitterApiArticle(tweetId, apiKey));
 }
 
-/** FxTwitter only: a title never spends the paid API, so an unreadable tweet shows its link. */
-export async function tweetTitle(tweetId: string): Promise<string | null> {
-	const fx = await fetchFxTweet(tweetId);
-	if (!fx) return null;
-	const text = fx.raw_text.text
-		.replace(/https:\/\/t\.co\/\S+/g, '')
-		.replace(/\s+/g, ' ')
-		.trim();
-	return fx.article?.title.trim() || text.slice(0, 280) || null;
-}
-
 export async function stageTwitterAcquisition(env: CoreEnv, step: WorkflowStep, input: TwitterAcquisitionInput) {
 	return stepJson(step, 'acquire-twitter-v4', { retries: FETCH_STEP_RETRIES, timeout: '120 seconds' }, async (ctx) => {
 		console.info({
