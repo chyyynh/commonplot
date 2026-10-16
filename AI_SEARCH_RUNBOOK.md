@@ -18,8 +18,8 @@ surface.
 The instance embeds with `@cf/baai/bge-m3` and owns three custom metadata fields:
 `published_at` and `kind` for the search filters, and `subject_id` on carriers
 (HN threads, reposts) so results can collapse onto the Resource they discuss.
-Public search runs hybrid retrieval; related Resources query the same index
-vector-only with a Resource's titles and summary. Platform and monitored-source provenance stay in
+Public search runs hybrid retrieval; related Resources query `RESOURCE_VECTORS`
+by Resource ID instead (see Recommendation vectors). Platform and monitored-source provenance stay in
 PostgreSQL. Corpus blogs, forums, posts, videos, papers, and PDF files with a
 readable original enter the index. Private Resources and images never enter it.
 PostgreSQL is the canonical corpus; AI Search is a keyed, eventually consistent
@@ -86,18 +86,17 @@ runner ID:
 
 ```sh
 pnpm -C workers/core-worker exec cf workflows instances create newsence-search-index-rebuild \
-  --params '{}' \
-  --instance-id search-index-rebuild-v7-v2
+  --body '{"instance_id":"search-index-rebuild-v7-v2","params":{}}'
 ```
 
 A rerun on a loaded index only fills its gaps. To also refresh Resources whose
 document changed while writes went elsewhere, pass `since` (an ISO instant); a
-document-format change reloads everything with `"since":"1970-01-01T00:00:00Z"`:
+document-format change reloads everything with `"since":"1970-01-01T00:00:00Z"`.
+Pass it in `--body`: `--params` sends a JSON string, so the Workflow sees no `since`.
 
 ```sh
 pnpm -C workers/core-worker exec cf workflows instances create newsence-search-index-rebuild \
-  --params '{"since":"2026-09-30T09:00:00Z"}' \
-  --instance-id search-index-catchup-v7-v1
+  --body '{"instance_id":"search-index-catchup-v7-v2","params":{"since":"2026-09-30T09:00:00Z"}}'
 ```
 
 ## Verify
@@ -131,6 +130,23 @@ If a rebuild fails:
 4. restart the same runner only for a transient, source-compatible failure;
 5. after a graph change, deploy and trigger a new runner ID;
 6. require a completed Workflow output before considering the rebuild healthy.
+
+Items in `error` (Workers AI timeouts, lost connections) or `outdated` stay that
+way through item-level retries, and fail the rebuild's readiness check. Upload
+them again through the sync queue: list them with
+`cf ai-search items list --instance-id newsence-corpus-v7 --namespace default --status error --per-page 50 --page N`
+(and `--status outdated`), write one `{"body":{"resourceId":"<id>"},"content_type":"json"}`
+per key into a JSON array, and push it (at most 100 per call):
+
+```sh
+pnpm -C workers/core-worker exec cf queues messages bulk-push --queue-id a5a871cdeb01446399c7361f2456e91c \
+  --messages @messages.json
+pnpm -C workers/core-worker exec cf ai-search stats newsence-corpus-v7 --namespace default
+```
+
+A key the consumer finds ineligible is deleted instead. An item that errors
+again with `file_content_empty` has no text to index; fix its document rather
+than retrying.
 
 Historical generation-3/generation-4, shadow-rollout, and one-shot repair
 resources are not active bindings and must not be triggered. Retiring remote
