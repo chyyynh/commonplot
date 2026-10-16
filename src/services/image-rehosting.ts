@@ -55,7 +55,6 @@ function deliveryUrl(image: ImageMetadata): string {
 async function probeImageDimensions(
 	images: ImagesBinding,
 	body: ReadableStream<Uint8Array> | Promise<ReadableStream<Uint8Array> | null>,
-	imageId: string,
 	sourceUrl: string,
 ): Promise<ImageDimensions> {
 	try {
@@ -76,7 +75,6 @@ async function probeImageDimensions(
 		console.warn({
 			tag: 'RESOURCE_IMAGE',
 			event: 'dimensions_unavailable',
-			image_id: imageId,
 			source_host: new URL(sourceUrl).hostname,
 			error: error instanceof Error ? error.message : String(error),
 		});
@@ -95,7 +93,7 @@ function storedDimension(value: unknown): number | null {
 async function hostedDimensions(images: ImagesBinding, image: ImageMetadata, sourceUrl: string): Promise<ImageDimensions> {
 	const meta = image.meta ?? {};
 	if ('width' in meta && 'height' in meta) return { height: storedDimension(meta.height), width: storedDimension(meta.width) };
-	return probeImageDimensions(images, images.hosted.image(image.id).bytes(), image.id, sourceUrl);
+	return probeImageDimensions(images, images.hosted.image(image.id).bytes(), sourceUrl);
 }
 
 async function hostedImage(images: ImagesBinding, imageId: string): Promise<ImageMetadata | null> {
@@ -106,42 +104,41 @@ async function hostedImage(images: ImagesBinding, imageId: string): Promise<Imag
 	}
 }
 
+type ImageUpload = Readonly<{ bytes: ArrayBuffer; filename: string; metadata?: Record<string, unknown> }>;
+
+/** The image stored under `imageId`, uploaded from `load` only when it is missing. */
+async function storedImage(images: ImagesBinding, imageId: string, load: () => Promise<ImageUpload>): Promise<ImageMetadata> {
+	const existing = await hostedImage(images, imageId);
+	if (existing) return existing;
+	const startedAt = performance.now();
+	const { bytes, filename, metadata } = await load();
+	try {
+		const image = await images.hosted.upload(bytes, { id: imageId, filename, metadata, requireSignedURLs: false });
+		console.info({
+			tag: 'RESOURCE_IMAGE',
+			event: 'original_ready',
+			duration_ms: Math.round(performance.now() - startedAt),
+			image_id: imageId,
+		});
+		return image;
+	} catch (error) {
+		// Another Workflow may have stored the same image first.
+		const raced = await hostedImage(images, imageId).catch(() => null);
+		if (raced) return raced;
+		throw new Error(`images_write_error: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
 /** One stored copy per source URL, so acquiring a Resource again reuses its images. */
 async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Promise<HostedResourceImage> {
 	if (normalizedResourceImageUrl(sourceUrl) !== sourceUrl) throw new TypeError('Resource image source URL is invalid');
-	const alreadyHosted = hostedResourceImageUrl(sourceUrl);
-	const imageId = alreadyHosted ? new URL(alreadyHosted).pathname.split('/').at(-2) : `resource-${hash('sha256', sourceUrl, 'hex')}`;
-	if (!imageId) throw new Error('images_read_error: hosted image ID missing');
-	const existing = await hostedImage(images, imageId);
-	if (existing) return { deliveryUrl: deliveryUrl(existing), sourceUrl, ...(await hostedDimensions(images, existing, sourceUrl)) };
-	if (alreadyHosted) return { deliveryUrl: alreadyHosted, sourceUrl, ...NULL_IMAGE_DIMENSIONS };
-
-	const startedAt = performance.now();
-	const bytes = await fetchImageSource(sourceUrl);
-	const dimensions = await probeImageDimensions(images, new Blob([bytes]).stream(), imageId, sourceUrl);
-	const filename = new URL(sourceUrl).pathname.split('/').filter(Boolean).at(-1)?.slice(0, 180) || 'resource-image';
-	let image: ImageMetadata;
-	try {
-		image = await images.hosted.upload(bytes, {
-			id: imageId,
-			filename,
-			metadata: { sourceUrl, ...dimensions },
-			requireSignedURLs: false,
-		});
-	} catch (error) {
-		// Another Workflow may have stored the same source first.
-		const raced = await hostedImage(images, imageId).catch(() => null);
-		if (!raced) throw new Error(`images_write_error: ${error instanceof Error ? error.message : String(error)}`);
-		image = raced;
-	}
-	console.info({
-		tag: 'RESOURCE_IMAGE',
-		event: 'original_ready',
-		duration_ms: Math.round(performance.now() - startedAt),
-		image_id: image.id,
-		source_host: new URL(sourceUrl).hostname,
+	const image = await storedImage(images, `resource-${hash('sha256', sourceUrl, 'hex')}`, async () => {
+		const bytes = await fetchImageSource(sourceUrl);
+		const dimensions = await probeImageDimensions(images, new Blob([bytes]).stream(), sourceUrl);
+		const filename = new URL(sourceUrl).pathname.split('/').filter(Boolean).at(-1)?.slice(0, 180) || 'resource-image';
+		return { bytes, filename, metadata: { sourceUrl, ...dimensions } };
 	});
-	return { deliveryUrl: deliveryUrl(image), sourceUrl, ...dimensions };
+	return { deliveryUrl: deliveryUrl(image), sourceUrl, ...(await hostedDimensions(images, image, sourceUrl)) };
 }
 
 function markdownImages(node: Nodes, found: Image[] = []): Image[] {
@@ -153,18 +150,7 @@ function markdownImages(node: Nodes, found: Image[] = []): Image[] {
 /** Content-addressed, so the same embedded image is stored once however often it is acquired. */
 async function hostInlineImage(images: ImagesBinding, bytes: Uint8Array<ArrayBuffer>): Promise<string> {
 	const imageId = `resource-${hash('sha256', bytes, 'hex')}`;
-	const stored = () => images.hosted.image(imageId).details();
-	const existing = await stored();
-	if (existing) return deliveryUrl(existing);
-	try {
-		return deliveryUrl(
-			await images.hosted.upload(new Blob([bytes]).stream(), { id: imageId, filename: 'inline-image', requireSignedURLs: false }),
-		);
-	} catch (error) {
-		const raced = await stored().catch(() => null);
-		if (!raced) throw new Error(`images_write_error: ${error instanceof Error ? error.message : String(error)}`);
-		return deliveryUrl(raced);
-	}
+	return deliveryUrl(await storedImage(images, imageId, async () => ({ bytes: bytes.buffer, filename: 'inline-image' })));
 }
 
 /**
