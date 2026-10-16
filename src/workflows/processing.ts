@@ -104,13 +104,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					console.error({ tag: 'WORKFLOW', msg: 'Entity extraction failed', processing_id: event.instanceId, error });
 					return undefined;
 				}),
-			stageResourceImages(
-				this.env,
-				step,
-				event.instanceId,
-				resourceImageSources([resource]),
-				target.kind === 'reacquire' ? event.instanceId : undefined,
-			),
+			stageResourceImages(this.env, step, event.instanceId, resourceImageSources([resource])),
 		]);
 		const summarized = withHostedImages({ ...resource, summary, entities }, hostedImages);
 		const persistence = await step.do('persist-resolved-resource-scope-v8', STORAGE_STEP, async () =>

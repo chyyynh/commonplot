@@ -7,14 +7,15 @@ import {
 	type HostedResourceImage,
 	hostedResourceImageUrl,
 	type ResourceImageSources,
-	normalizedExternalMediaUrl,
 	normalizedResourceImageUrl,
 } from '../contracts/image-mapping';
 import { parseMarkdown } from '../contracts/markdown';
 import { crawlerUserAgent } from './crawler-identity';
+import { limitByteStream } from './response';
 
 const REHOST_TIMEOUT_MS = 8_000;
-const MAX_SOURCE_REDIRECTS = 3;
+// Hosted Images rejects larger uploads.
+const MAX_SOURCE_IMAGE_BYTES = 10 * 1024 * 1024;
 const SOURCE_USER_AGENT = crawlerUserAgent('commonplot-media-rehost');
 const NULL_IMAGE_DIMENSIONS = { height: null, width: null } as const;
 const MAX_INLINE_IMAGES = 20;
@@ -23,39 +24,23 @@ const INLINE_RASTER_IMAGE = /^data:image\/(?:png|jpeg|gif|webp|avif);base64,([a-
 
 type ImageDimensions = Readonly<Pick<HostedResourceImage, 'height' | 'width'>>;
 
-async function fetchImageSource(sourceUrl: string): Promise<ReadableStream<Uint8Array>> {
-	let currentUrl = sourceUrl;
-	const signal = AbortSignal.timeout(REHOST_TIMEOUT_MS);
-
-	for (let redirects = 0; ; redirects += 1) {
-		let response: Response;
-		try {
-			response = await fetch(currentUrl, {
-				headers: { Accept: 'image/*', 'User-Agent': SOURCE_USER_AGENT },
-				redirect: 'manual',
-				signal,
-			});
-		} catch (error) {
-			throw new Error(`fetch_error: ${error instanceof Error ? error.message : String(error)}`);
-		}
-
-		if ([301, 302, 303, 307, 308].includes(response.status)) {
-			const location = response.headers.get('location');
-			await response.body?.cancel().catch(() => undefined);
-			if (redirects >= MAX_SOURCE_REDIRECTS) throw new Error('redirect_limit');
-			if (!location) throw new Error('unsafe_redirect: missing Location header');
-			const nextUrl = normalizedExternalMediaUrl(location, currentUrl);
-			if (!nextUrl) throw new Error('unsafe_redirect: invalid Location header');
-			currentUrl = nextUrl;
-			continue;
-		}
-		if (!response.ok) {
-			await response.body?.cancel().catch(() => undefined);
-			throw new Error(`upstream_status: HTTP ${response.status}`);
-		}
-		if (!response.body) throw new Error('missing_body');
-		return response.body;
+async function fetchImageSource(sourceUrl: string): Promise<ArrayBuffer> {
+	let response: Response;
+	try {
+		response = await fetch(sourceUrl, {
+			headers: { Accept: 'image/*', 'User-Agent': SOURCE_USER_AGENT },
+			signal: AbortSignal.timeout(REHOST_TIMEOUT_MS),
+		});
+	} catch (error) {
+		throw new Error(`fetch_error: ${error instanceof Error ? error.message : String(error)}`);
 	}
+	if (!response.ok) {
+		await response.body?.cancel().catch(() => undefined);
+		throw new Error(`upstream_status: HTTP ${response.status}`);
+	}
+	if (!response.body) throw new Error('missing_body');
+	const body = limitByteStream(response.body, MAX_SOURCE_IMAGE_BYTES, () => new Error('too_large'));
+	return new Response(body).arrayBuffer();
 }
 
 function deliveryUrl(image: ImageMetadata): string {
@@ -99,57 +84,56 @@ async function probeImageDimensions(
 	}
 }
 
-async function rehostResourceImage(images: ImagesBinding, sourceUrl: string, refreshKey?: string): Promise<HostedResourceImage> {
-	if (normalizedResourceImageUrl(sourceUrl) !== sourceUrl) throw new TypeError('Resource image source URL is invalid');
-	const alreadyHosted = hostedResourceImageUrl(sourceUrl);
-	if (alreadyHosted) {
-		const imageId = new URL(alreadyHosted).pathname.split('/').at(-2);
-		if (!imageId) throw new Error('images_read_error: hosted image ID missing');
-		return {
-			deliveryUrl: alreadyHosted,
-			sourceUrl,
-			...(await probeImageDimensions(images, images.hosted.image(imageId).bytes(), imageId, sourceUrl)),
-		};
-	}
-	const imageId = `resource-${hash('sha256', refreshKey ? `${sourceUrl}:${refreshKey}` : sourceUrl, 'hex')}`;
-	let existing: ImageMetadata | null;
+function storedDimension(value: unknown): number | null {
+	return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+/** Dimensions are kept in the image's metadata; an image stored before that is probed once and updated. */
+async function hostedDimensions(images: ImagesBinding, image: ImageMetadata, sourceUrl: string): Promise<ImageDimensions> {
+	const meta = image.meta ?? {};
+	if ('width' in meta && 'height' in meta) return { height: storedDimension(meta.height), width: storedDimension(meta.width) };
+	const handle = images.hosted.image(image.id);
+	const dimensions = await probeImageDimensions(images, handle.bytes(), image.id, sourceUrl);
+	// Only saves a later probe; the dimensions are already in hand.
+	await handle.update({ metadata: { ...meta, ...dimensions } }).catch(() => undefined);
+	return dimensions;
+}
+
+async function hostedImage(images: ImagesBinding, imageId: string): Promise<ImageMetadata | null> {
 	try {
-		existing = await images.hosted.image(imageId).details();
+		return await images.hosted.image(imageId).details();
 	} catch (error) {
 		throw new Error(`images_read_error: ${error instanceof Error ? error.message : String(error)}`);
 	}
-	if (existing) {
-		return {
-			deliveryUrl: deliveryUrl(existing),
-			sourceUrl,
-			...(await probeImageDimensions(images, images.hosted.image(existing.id).bytes(), existing.id, sourceUrl)),
-		};
-	}
+}
+
+/** One stored copy per source URL, so acquiring a Resource again reuses its images. */
+async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Promise<HostedResourceImage> {
+	if (normalizedResourceImageUrl(sourceUrl) !== sourceUrl) throw new TypeError('Resource image source URL is invalid');
+	const alreadyHosted = hostedResourceImageUrl(sourceUrl);
+	const imageId = alreadyHosted ? new URL(alreadyHosted).pathname.split('/').at(-2) : `resource-${hash('sha256', sourceUrl, 'hex')}`;
+	if (!imageId) throw new Error('images_read_error: hosted image ID missing');
+	const existing = await hostedImage(images, imageId);
+	if (existing) return { deliveryUrl: deliveryUrl(existing), sourceUrl, ...(await hostedDimensions(images, existing, sourceUrl)) };
+	if (alreadyHosted) return { deliveryUrl: alreadyHosted, sourceUrl, ...NULL_IMAGE_DIMENSIONS };
 
 	const startedAt = performance.now();
-	let dimensions: ImageDimensions;
+	const bytes = await fetchImageSource(sourceUrl);
+	const dimensions = await probeImageDimensions(images, new Blob([bytes]).stream(), imageId, sourceUrl);
+	const filename = new URL(sourceUrl).pathname.split('/').filter(Boolean).at(-1)?.slice(0, 180) || 'resource-image';
 	let image: ImageMetadata;
 	try {
-		const [infoBody, uploadBody] = (await fetchImageSource(sourceUrl)).tee();
-		const filename = new URL(sourceUrl).pathname.split('/').filter(Boolean).at(-1)?.slice(0, 180) || 'resource-image';
-		const [info, upload] = await Promise.allSettled([
-			probeImageDimensions(images, infoBody, imageId, sourceUrl),
-			images.hosted.upload(uploadBody, { id: imageId, filename, metadata: { sourceUrl }, requireSignedURLs: false }),
-		]);
-		if (info.status === 'rejected') throw info.reason;
-		if (upload.status === 'rejected') {
-			throw new Error(`images_write_error: ${upload.reason instanceof Error ? upload.reason.message : String(upload.reason)}`);
-		}
-		dimensions = info.value;
-		image = upload.value;
+		image = await images.hosted.upload(bytes, {
+			id: imageId,
+			filename,
+			metadata: { sourceUrl, ...dimensions },
+			requireSignedURLs: false,
+		});
 	} catch (error) {
-		const raced = await images.hosted
-			.image(imageId)
-			.details()
-			.catch(() => null);
-		if (!raced) throw error;
+		// Another Workflow may have stored the same source first.
+		const raced = await hostedImage(images, imageId).catch(() => null);
+		if (!raced) throw new Error(`images_write_error: ${error instanceof Error ? error.message : String(error)}`);
 		image = raced;
-		dimensions = await probeImageDimensions(images, images.hosted.image(image.id).bytes(), image.id, sourceUrl);
 	}
 	console.info({
 		tag: 'RESOURCE_IMAGE',
@@ -221,7 +205,6 @@ export async function stageResourceImages(
 	step: WorkflowStep,
 	processingId: string,
 	{ urls: sourceUrls, optional }: ResourceImageSources,
-	refreshKey?: string,
 ): Promise<HostedResourceImage[]> {
 	if (sourceUrls.length === 0) return [];
 	// Step names follow source order, so replay stays deterministic however the pool interleaves.
@@ -230,7 +213,7 @@ export async function stageResourceImages(
 			.do(
 				`rehost-resource-image-v4-${index}`,
 				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '10 minutes' },
-				() => rehostResourceImage(env.IMAGES, url, refreshKey),
+				() => rehostResourceImage(env.IMAGES, url),
 			)
 			.catch((error: unknown) => {
 				if (!optional.has(url)) throw error;

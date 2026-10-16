@@ -54,28 +54,28 @@ export function normalizedResourceImageUrl(rawUrl: string | null | undefined, ba
 export type ResourceImageSources = Readonly<{ urls: readonly string[]; optional: ReadonlySet<string> }>;
 
 /**
- * Every image the resources reference, in a stable order. A preview that nothing else uses is optional:
- * it is decoration, so a dead one is dropped instead of failing the resource.
+ * Every image the resources reference, in a stable order. A preview or avatar that nothing else uses is
+ * optional: it is decoration, so a dead one is dropped instead of failing the resource.
  */
 export function resourceImageSources(resources: readonly ResourceImageFields[]): ResourceImageSources {
 	const urls = new Set<string>();
 	const required = new Set<string>();
-	const previews = new Set<string>();
-	const add = (candidate: string | null | undefined, preview = false) => {
+	const decorative = new Set<string>();
+	const add = (candidate: string | null | undefined, optional = false) => {
 		if (candidate === null || candidate === undefined) return;
 		const url = normalizedResourceImageUrl(candidate);
 		if (!url) throw new TypeError('Resource image source URL is invalid');
 		urls.add(url);
-		(preview ? previews : required).add(url);
+		(optional ? decorative : required).add(url);
 	};
 	for (const resource of resources) {
 		const attachments = attachmentUrls(resource.kindMetadata);
 		add(attachments[0]);
 		add(resource.previewImageUrl, true);
 		for (const url of attachments.slice(1)) add(url);
-		for (const creator of resource.creators) add(creator.avatarUrl);
+		for (const creator of resource.creators) add(creator.avatarUrl, true);
 	}
-	return { urls: [...urls], optional: new Set([...previews].filter((url) => !required.has(url))) };
+	return { urls: [...urls], optional: new Set([...decorative].filter((url) => !required.has(url))) };
 }
 
 function attachmentUrls(metadata: ResourceKindMetadata | null): string[] {
@@ -84,7 +84,7 @@ function attachmentUrls(metadata: ResourceKindMetadata | null): string[] {
 
 export type HostedPreview = Readonly<{ previewImageWidth: number | null; previewImageHeight: number | null }>;
 
-/** Substitute Hosted Images URLs for every source; a preview that could not be hosted is dropped. */
+/** Substitute Hosted Images URLs for every source; a preview or avatar that could not be hosted is dropped. */
 export function withHostedImages<T extends ResourceImageFields>(resource: T, images: readonly HostedResourceImage[]): T & HostedPreview {
 	const bySource = new Map(images.map((image) => [image.sourceUrl, image]));
 	const hosted = (rawUrl: string) => bySource.get(normalizedResourceImageUrl(rawUrl) ?? '');
@@ -97,9 +97,10 @@ export function withHostedImages<T extends ResourceImageFields>(resource: T, ima
 	const preview = resource.previewImageUrl === null ? undefined : hosted(resource.previewImageUrl);
 	return {
 		...resource,
-		creators: resource.creators.map(({ avatarUrl, ...creator }) =>
-			avatarUrl === undefined ? creator : { ...creator, avatarUrl: required(avatarUrl) },
-		),
+		creators: resource.creators.map(({ avatarUrl, ...creator }) => {
+			const avatar = avatarUrl === undefined ? undefined : hosted(avatarUrl);
+			return avatar ? { ...creator, avatarUrl: avatar.deliveryUrl } : creator;
+		}),
 		kindMetadata:
 			metadata && 'attachments' in metadata
 				? { ...metadata, attachments: metadata.attachments.map((attachment) => ({ ...attachment, url: required(attachment.url) })) }
