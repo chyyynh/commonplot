@@ -76,7 +76,6 @@ async function processFeed(db: NodePgDatabase, feed: MonitoredFeedSource): Promi
 		skipped: items.length - drafts.length + admission.skipped,
 		totalCount: items.length,
 	});
-	await advanceSourceWatermark(db, feed.id, new Date());
 }
 
 function feedFieldText(value: unknown): string {
@@ -110,7 +109,10 @@ export async function handleRSSCron(db: NodePgDatabase): Promise<void> {
 	const feeds = await listDueFeedSources(db);
 	const failures: unknown[] = [];
 	const limit = pLimit(FEED_CONCURRENCY);
-	const results = await Promise.allSettled(feeds.map((feed) => limit(() => processFeed(db, feed))));
+	// A failed poll still advances the watermark, so a flaky YouTube channel feed waits its 30-minute cadence.
+	const results = await Promise.allSettled(
+		feeds.map((feed) => limit(() => processFeed(db, feed).finally(() => advanceSourceWatermark(db, feed.id, new Date())))),
+	);
 	for (const [index, result] of results.entries()) {
 		if (result.status === 'fulfilled') continue;
 		failures.push(result.reason);

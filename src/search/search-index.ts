@@ -179,7 +179,7 @@ export async function syncCorpusItem(env: CoreEnv, resourceId: string, document:
 }
 
 /** A matched chunk of a Resource's indexed text, trimmed for a model to judge relevance. */
-export type SearchPassage = { text: string; score: number };
+type SearchPassage = { text: string; score: number };
 const PASSAGES_PER_RESULT = 3;
 const PASSAGE_MAX_CHARS = 500;
 

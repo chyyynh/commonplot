@@ -122,7 +122,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			await step.do('complete-resource-save-v2', STORAGE_STEP, () => this.env.APP.completeResourceSave(resourceId, saveTarget));
 
 		const subjectUrl = resource.subjectUrl;
-		// Crossref enrichment is background work that no import waits on.
+		// Crossref enrichment runs beside the handoffs; the import settles only after it, since the Workflow returns last.
 		const references =
 			scope === 'corpus' &&
 			persistence.kind === 'paper' &&

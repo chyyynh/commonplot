@@ -203,7 +203,8 @@ export async function listMissingTranslations(db: NodePgDatabase, limit: number)
 		  AND resource.scraped_date > now() - interval '6 days'
 		  AND resource.scraped_date < now() - interval '15 minutes'
 		  AND (
-		    zh_hant.resource_id IS NULL
+		    -- A post outside automatic scope has no metadata to translate, so it never gets a zh-Hant row.
+		    (zh_hant.resource_id IS NULL AND (resource.kind <> 'post' OR ${AUTOMATIC_CONTENT_TRANSLATION_SQL}))
 		    OR (zh_hant.content IS NULL AND ${AUTOMATIC_CONTENT_TRANSLATION_SQL})
 		    OR (en.resource_id IS NULL AND ${ENGLISH_METADATA_SQL})
 		  )

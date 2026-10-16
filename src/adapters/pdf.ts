@@ -7,10 +7,6 @@ import { blobKey, storedPdfCropUrlPrefix } from '../contracts/storage-keys';
 import { stepJson } from '../services/workflow-step';
 import { parseStoredPdfRepresentation, type storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 
-type PdfAcquisition = Readonly<{
-	resource: AcquiredResource & { kind: 'file'; resourcePlatform: null; url: string };
-}>;
-
 const PDF_PARSE_STEP = { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' } as const;
 
 type PdfBody = Pick<Awaited<ReturnType<typeof parseStoredPdfRepresentation>>, 'markdown' | 'references' | 'paperIdentifierText'>;
@@ -49,7 +45,7 @@ export async function stagePublicPdfAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	source: Awaited<ReturnType<typeof storePublicPdfResponse>>,
-): Promise<PdfAcquisition['resource']> {
+): Promise<AcquiredResource & { kind: 'file'; resourcePlatform: null; url: string }> {
 	const url = new URL(source.url);
 	let fileName = url.pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';
 	try {

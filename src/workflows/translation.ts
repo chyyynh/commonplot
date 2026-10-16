@@ -33,7 +33,7 @@ import {
 } from '../store/translations';
 
 /** `metadata` translates the title and summary; `full` also translates the content. */
-export type TranslationScope = 'metadata' | 'full';
+type TranslationScope = 'metadata' | 'full';
 type ResourceTranslationPayload = { force?: boolean; resourceId: string; originalHash: string; scope: TranslationScope };
 
 const MARKDOWN_TRANSLATION_CONCURRENCY = 15;

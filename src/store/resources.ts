@@ -268,7 +268,7 @@ async function writeCanonicalResource(
 }
 
 /** Replaces what a Resource is about. Run inside the caller's transaction. */
-export async function replaceResourceEntities(db: NodePgDatabase, resourceId: string, entities: readonly ResourceEntity[]) {
+async function replaceResourceEntities(db: NodePgDatabase, resourceId: string, entities: readonly ResourceEntity[]) {
 	await db.execute(sql`DELETE FROM resource_entities WHERE resource_id = ${resourceId}::uuid`);
 	if (!entities.length) return;
 	// Sorted keys lock entity rows in one order across concurrent writers.

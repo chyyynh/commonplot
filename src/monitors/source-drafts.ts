@@ -47,7 +47,8 @@ export async function enqueueSourceDrafts(db: NodePgDatabase, sourceId: string, 
 		.map(({ target, normalizedUrl }) => ({
 			id: `source-draft-v7-${hash('sha256', `${sourceId}:${normalizedUrl}`, 'hex')}`,
 			params: target,
-			retention: { successRetention: '5 minutes', errorRetention: '1 hour' } as const,
+			// A failed instance holds its ID, so a URL a feed keeps listing is retried daily rather than every hour.
+			retention: { successRetention: '5 minutes', errorRetention: '1 day' } as const,
 		}));
 	let created = 0;
 	for (let offset = 0; offset < instances.length; offset += 100) {
