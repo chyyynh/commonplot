@@ -1,8 +1,8 @@
 {
 	"name": "newsence",
 	"displayName": "commonplot",
-	"version": "1.2.0",
-	"description": "Save the articles, papers, posts and videos Claude recommends to your commonplot library with one tap, and ask about what you saved.",
+	"version": "1.5.0",
+	"description": "Save the articles, papers, posts and videos Claude recommends to your commonplot library with one tap, search and ask about what you saved, and put notes into a notebook when you ask.",
 	"author": {
 		"name": "commonplot",
 		"url": "https://www.newsence.app"

@@ -15,7 +15,7 @@ This folder is one plugin package for both hosts:
 | --- | --- |
 | `plugin.json`, `mcp.json` | ChatGPT (Agent Plugins format; `extensions.com.openai` holds the listing and starter prompts) |
 | `.claude-plugin/plugin.json`, `.mcp.json` | Claude |
-| `skills/recommend-reads`, `skills/my-saves` | Both: when to show cards, and how to answer from saves |
+| `skills/recommend-reads`, `skills/my-saves`, `skills/write-to-notebook` | Both: when to show cards, how to answer from saves, and when to write |
 | `assets/icon.png` | ChatGPT composer icon and logo |
 
 Zip the folder's contents for upload: ChatGPT at platform.openai.com/plugins,
@@ -53,8 +53,10 @@ For a dependable result, users can:
 - add a standing rule to ChatGPT custom instructions or a Claude project:
   "When you recommend articles or videos, show them with commonplot."
 
-Library questions such as "find the RAG evaluation paper I saved" or "what did
-I save this week?" use `list` (target `library`) and then `fetch`. Notebook and
+Library questions such as "find the RAG evaluation paper I saved" use `search`
+with `scope: "saves"`; "what did I save this week?" uses `list` (target
+`library`); both then `fetch`. "Put these notes in my thesis notebook" uses
+`create_document`, which first asks for the `newsence:write` scope. Notebook and
 document questions use `list` (target `notebooks`) and `fetch` on a notebook or document id,
 which first ask the user for the `newsence:documents` scope.
 
@@ -62,7 +64,7 @@ which first ask the user for the `newsence:documents` scope.
 
 | Endpoint | Purpose |
 | --- | --- |
-| `POST /api/mcp` | `recommend_reads`, `search`, `fetch`, `list` (model); `save_urls`, `get_save_status` and `open_reader` (card only); `open_newsence` (ChatGPT sidebar) |
+| `POST /api/mcp` | `recommend_reads`, `search`, `fetch`, `list`, `create_document`, `add_to_notebook` (model); `save_urls`, `get_save_status` and `open_reader` (card only); `open_newsence` (ChatGPT sidebar) |
 | `/.well-known/oauth-protected-resource/api/mcp` | Resource discovery |
 | `/.well-known/oauth-authorization-server/api/auth` | Authorization server discovery |
 | `/api/auth/oauth2/*` | Authorization (PKCE S256), token, refresh |
@@ -74,10 +76,18 @@ which first ask the user for the `newsence:documents` scope.
 - `search` and `fetch` follow OpenAI's search/fetch contract: `search`
   searches the curated public corpus, and `fetch` takes one id
   (`resource:`, `document:` or `notebook:<uuid>`) and returns
-  `{ id, title, text, url, metadata }`. `list` pages through the user's library
-  or notebooks. Think calls the same
+  `{ id, title, text, url, metadata }`. With `scope: "saves"`, `search` matches
+  the user's saves word by word in Postgres instead (the public index holds only
+  the corpus). A resource's first `fetch` chunk adds `savedBy` and up to ten
+  `connections` from the stored citation and link graph. `list` pages through
+  the user's library or notebooks. Think calls the same
   tools through Domain RPC.
   Tool schemas and limits are in `web-tanstack/src/server/mcp/`.
+- `create_document` and `add_to_notebook` (hosts only; Think has its own
+  document tools) write into a notebook the user owns: a new document from
+  Markdown, or resources filed as sources (and saved if they were not). Neither
+  edits or removes anything. Both ask for `newsence:documents` and
+  `newsence:write` the first time.
 - `save_urls` takes 1–10 HTTP(S) URLs and saves them for the token's user; it
   never accepts a user id. `ready` is saved and readable; `accepted` is received
   and prepared in the background by Core.
@@ -122,7 +132,7 @@ which first ask the user for the `newsence:documents` scope.
 - `openai/*` metadata keys are ChatGPT extensions; other hosts ignore them.
 - Access tokens are hour-long JWTs for the `newsence:save` and `newsence:read`
   scopes (plus `newsence:documents` once the user allows notebooks and
-  documents) and the MCP URL audience; `offline_access` gives the host a refresh token. Every call also
+  documents, and `newsence:write` once they allow adding to notebooks) and the MCP URL audience; `offline_access` gives the host a refresh token. Every call also
   checks that the user's consent still exists, so disconnecting is immediate.
 - Requests are limited per user and log only `NEWSENCE_PLUGIN_TIMING` durations,
   never URLs, user ids or tokens.
@@ -145,5 +155,8 @@ refresh the host connection, and start a new conversation before checking:
    the independently signed-in website remains usable until signed out.
 6. Reconnect the plugin with account B. Fresh library calls must show B's saves,
    without A's private data. The embedded website retains its own login.
-7. If processing outlasts automatic polling, press **Check again**. It must
+7. Ask to put a summary in a named notebook. Consent must list **Add to your
+   notebooks**; the document must appear in that notebook, and nothing else in
+   it may change.
+8. If processing outlasts automatic polling, press **Check again**. It must
    update the status without saving again; **Read** must open the ready item.
