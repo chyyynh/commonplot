@@ -93,8 +93,9 @@ async function fetchYouTubeApi(resource: 'videos' | 'channels', id: string, part
 	url.search = new URLSearchParams({ id, part, key: youtubeApiKey }).toString();
 	const response = await fetch(url, { signal: AbortSignal.timeout(YOUTUBE_API_TIMEOUT_MS) });
 	if (!response.ok) {
-		await response.body?.cancel();
-		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+		// Google names the cause (keyInvalid, quotaExceeded, …) only in the body.
+		const body = await response.text().catch(() => '');
+		throw new Error(`HTTP ${response.status}: ${body.slice(0, 300) || response.statusText}`);
 	}
 	return response.json();
 }
