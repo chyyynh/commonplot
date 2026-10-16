@@ -11,10 +11,11 @@ import {
 	normalizedResourceImageUrl,
 } from '../contracts/image-mapping';
 import { parseMarkdown } from '../contracts/markdown';
+import { crawlerUserAgent } from './crawler-identity';
 
 const REHOST_TIMEOUT_MS = 8_000;
 const MAX_SOURCE_REDIRECTS = 3;
-const SOURCE_USER_AGENT = 'Newsence-Media-Rehost/1.0 (+https://newsence.app)';
+const SOURCE_USER_AGENT = crawlerUserAgent('commonplot-media-rehost');
 const NULL_IMAGE_DIMENSIONS = { height: null, width: null } as const;
 const MAX_INLINE_IMAGES = 20;
 const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;

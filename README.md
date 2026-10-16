@@ -1,6 +1,6 @@
 <div align="center">
 
-# newsence
+# commonplot
 
 **A content discovery engine that helps LLMs understand your world**
 
@@ -18,7 +18,7 @@
 
 ---
 
-## What is newsence?
+## What is commonplot?
 
 Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content from RSS / Twitter/X / YouTube / Hacker News / web URLs / uploaded files, runs structured AI analysis and zh-Hant localization, and stores searchable resources with resource-local entity annotations. Each enriched corpus resource is synchronized to Cloudflare AI Search for retrieval.
 
@@ -212,7 +212,7 @@ URL/platform acquisition and app-owned R2 PDF reads each produce one canonical p
 
 ## Hosted MCP
 
-The newsence app exposes an anonymous, read-only hosted
+The commonplot app exposes an anonymous, read-only hosted
 [MCP](https://modelcontextprotocol.io) endpoint at
 `https://www.newsence.app/api/mcp`. It supports public corpus search and
 bounded resource reads. The retired local CLI/MCP package is not part of this

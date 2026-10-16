@@ -2,9 +2,9 @@
 	"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
 	"name": "newsence",
 	"version": "1.4.0",
-	"description": "Save the articles, papers, posts and videos the assistant recommends to your Newsence library with one tap, and ask about what you saved, your notebooks and your documents.",
+	"description": "Save the articles, papers, posts and videos the assistant recommends to your commonplot library with one tap, and ask about what you saved, your notebooks and your documents.",
 	"author": {
-		"name": "Newsence",
+		"name": "commonplot",
 		"url": "https://www.newsence.app"
 	},
 	"homepage": "https://www.newsence.app",
@@ -18,10 +18,10 @@
 	"extensions": {
 		"com.openai": {
 			"interface": {
-				"displayName": "Newsence",
+				"displayName": "commonplot",
 				"shortDescription": "Save reads, ask your library",
-				"longDescription": "Newsence shows the articles, papers, posts and videos the assistant recommends as cards. Press Save on a card to keep it in your Newsence library and public profile; nothing is saved without your press. Ask what you saved this week, or about a saved item, a notebook or a document you wrote, and the assistant reads it from your Newsence.",
-				"developerName": "Newsence",
+				"longDescription": "commonplot shows the articles, papers, posts and videos the assistant recommends as cards. Press Save on a card to keep it in your commonplot library and public profile; nothing is saved without your press. Ask what you saved this week, or about a saved item, a notebook or a document you wrote, and the assistant reads it from your commonplot.",
+				"developerName": "commonplot",
 				"category": "Productivity",
 				"capabilities": [
 					"Read",
@@ -32,7 +32,7 @@
 				"privacyPolicyURL": "https://www.newsence.app/privacy",
 				"termsOfServiceURL": "https://www.newsence.app/terms",
 				"defaultPrompt": [
-					"What did I save to Newsence this week?",
+					"What did I save to commonplot this week?",
 					"Recommend five papers on agent evaluation to read",
 					"Summarize the latest thing I saved"
 				],

@@ -1,9 +1,9 @@
 ---
 name: recommend-reads
-description: Recommend articles, papers, blog posts or videos as Newsence cards the user can save. Use when the user asks what to read or watch, wants recommendations or sources on a topic, shares links to read later, or asks to bookmark or save a link.
+description: Recommend articles, papers, blog posts or videos as commonplot cards the user can save. Use when the user asks what to read or watch, wants recommendations or sources on a topic, shares links to read later, or asks to bookmark or save a link.
 ---
 
-The user keeps reads in Newsence; you find them on the web. Every link the
+The user keeps reads in commonplot; you find them on the web. Every link the
 user might want to read or keep goes in a `recommend_reads` card, the only place
 they can save it; never show those links as your own link cards or a list.
 

@@ -1,6 +1,6 @@
 ---
 name: my-saves
-description: Answer from what the user saved or wrote in Newsence. Use when the user mentions something they saved, read or bookmarked, asks what they saved recently, asks about a notebook or document of theirs, or wants a summary, comparison or quote from them.
+description: Answer from what the user saved or wrote in commonplot. Use when the user mentions something they saved, read or bookmarked, asks what they saved recently, asks about a notebook or document of theirs, or wants a summary, comparison or quote from them.
 ---
 
 1. Call `list` with `target: "library"` for saves; pass `days` for a time

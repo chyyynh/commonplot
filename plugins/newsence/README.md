@@ -1,9 +1,9 @@
-# Newsence MCP app
+# commonplot MCP app
 
 An MCP host (ChatGPT, Claude, or any client with OAuth and MCP Apps support)
-connects to the user's Newsence library. It shows the reads it recommends as
+connects to the user's commonplot library. It shows the reads it recommends as
 cards, and the user presses **Save** to keep one; saves land in the user's
-library and **public profile**, the same as saving a link in Newsence. The
+library and **public profile**, the same as saving a link in commonplot. The
 model never saves on its own. It can also list the user's saves and read them
 to answer from them.
 
@@ -29,7 +29,7 @@ host rescans the MCP server.
 Add a remote MCP server with the URL `https://www.newsence.app/api/mcp`
 and OAuth authentication. ChatGPT and Claude identify themselves with a Client
 ID Metadata Document on their own domain; there is no dynamic client
-registration, so other hosts cannot connect. Sign in to Newsence and allow the connection; disconnect in
+registration, so other hosts cannot connect. Sign in to commonplot and allow the connection; disconnect in
 Settings → Account → Connected apps.
 
 - **ChatGPT:** enable **Settings → Security and login → Developer mode**, then
@@ -47,11 +47,11 @@ first 512 characters).
 Hosts call apps sparingly, so a general question may still get a plain answer.
 For a dependable result, users can:
 
-- mention the app: `@Newsence recommend reading on MCP Apps`, or
-  `@Newsence save https://…`;
-- pick Newsence from the composer's tools before asking;
+- mention the app: `@commonplot recommend reading on MCP Apps`, or
+  `@commonplot save https://…`;
+- pick commonplot from the composer's tools before asking;
 - add a standing rule to ChatGPT custom instructions or a Claude project:
-  "When you recommend articles or videos, show them with Newsence."
+  "When you recommend articles or videos, show them with commonplot."
 
 Library questions such as "find the RAG evaluation paper I saved" or "what did
 I save this week?" use `list` (target `library`) and then `fetch`. Notebook and
@@ -89,7 +89,7 @@ which first ask the user for the `newsence:documents` scope.
   pending. If those checks run out, **Check again** fetches the latest status
   without submitting another save. Change its URI when the UI contract changes.
 - **Read** on a saved card opens a full-screen reader in hosts that allow it
-  (others open the Newsence page). `open_reader` returns the same resource
+  (others open the commonplot page). `open_reader` returns the same resource
   projection as `/p/{id}`, and the view renders it with the app's
   `ResourceBody`; the widget build swaps the app's video player for a native
   one. The reader tells the model which item is open, so "summarize this"
@@ -115,7 +115,7 @@ which first ask the user for the `newsence:documents` scope.
   the model with `updateModelContext`; host deep links
   (`openai/deepLink`) navigate the frame. HTML responses allow framing only
   by the app and ChatGPT (`frame-ancestors`). Submission must justify the
-  iframe: it embeds Newsence's own app for the signed-in user.
+  iframe: it embeds commonplot's own app for the signed-in user.
 - Every call requires OAuth, including `recommend_reads`: hosts such as Claude
   decide whether to connect with OAuth from the first 401, so anonymous access
   would leave Save unusable there.
@@ -140,7 +140,7 @@ refresh the host connection, and start a new conversation before checking:
    saved item, and confirm the account menu identifies the intended account.
 4. Sign out inside the frame and reopen it: private pages must require sign-in,
    while the standalone website stays signed in.
-5. Sign in inside the frame again, then disconnect the plugin in Newsence's
+5. Sign in inside the frame again, then disconnect the plugin in commonplot's
    **Connected apps**. A fresh library tool call must require authorization;
    the independently signed-in website remains usable until signed out.
 6. Reconnect the plugin with account B. Fresh library calls must show B's saves,

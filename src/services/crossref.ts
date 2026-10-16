@@ -1,11 +1,11 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
 import { normalizeBibliographicText, normalizeDoi } from '../contracts/paper-identity.ts';
+import { CRAWLER_CONTACT, crawlerUserAgent } from './crawler-identity.ts';
 import { readBoundedResponseText, responseError } from './response.ts';
 
 const CROSSREF_WORKS_URL = 'https://api.crossref.org/works';
-const CROSSREF_CONTACT = 'hello@newsence.app';
-const CROSSREF_USER_AGENT = `Newsence/1.0 (https://www.newsence.app; mailto:${CROSSREF_CONTACT})`;
+const CROSSREF_USER_AGENT = crawlerUserAgent();
 const CROSSREF_TIMEOUT_MS = 12_000;
 const MAX_CITATION_QUERY_CHARS = 600;
 const MAX_CROSSREF_SEARCH_BYTES = 256 * 1024;
@@ -71,7 +71,7 @@ function workMatchesCitation(citation: string, work: CrossrefWork): boolean {
 
 async function fetchCrossref(params: Readonly<Record<string, string>>, doi?: string): Promise<unknown> {
 	const url = new URL(doi ? `${CROSSREF_WORKS_URL}/${encodeURIComponent(doi)}` : CROSSREF_WORKS_URL);
-	url.search = new URLSearchParams({ mailto: CROSSREF_CONTACT, ...params }).toString();
+	url.search = new URLSearchParams({ mailto: CRAWLER_CONTACT, ...params }).toString();
 	const response = await fetch(url, {
 		headers: { Accept: 'application/json', 'User-Agent': CROSSREF_USER_AGENT },
 		signal: AbortSignal.timeout(CROSSREF_TIMEOUT_MS),

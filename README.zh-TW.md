@@ -1,6 +1,6 @@
 <div align="center">
 
-# newsence
+# commonplot
 
 **幫助 LLM 理解你的世界的內容發現引擎**
 
@@ -18,7 +18,7 @@
 
 ---
 
-## newsence 是什麼？
+## commonplot 是什麼？
 
 [**newsence.app**](https://www.newsence.app) 的引擎。支援 RSS、Twitter/X、YouTube、Hacker News、一般網頁與上傳檔案，自動進行結構化 AI 分析與繁中翻譯並保留每筆 resource 的實體註記，再將完成 enrichment 的 corpus resource 同步到 Cloudflare AI Search。
 
@@ -163,7 +163,7 @@ URL／platform acquisition 與 app-owned R2 PDF 讀取各自產生一個 canonic
 
 ## Hosted MCP
 
-newsence app 在 `https://www.newsence.app/api/mcp` 提供匿名、唯讀的 hosted
+commonplot app 在 `https://www.newsence.app/api/mcp` 提供匿名、唯讀的 hosted
 [MCP](https://modelcontextprotocol.io) endpoint，支援公開 corpus 搜尋與有限長度的
 resource 讀取。已退役的本機 CLI／MCP 套件不屬於這個 Worker。
 

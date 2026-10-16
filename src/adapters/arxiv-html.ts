@@ -7,13 +7,14 @@ import type { AcquiredResource } from '../contracts/acquired-resource';
 import { cleanText, htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { paperIdentityFromText } from '../contracts/paper-identity';
 import { parseReferenceCitation } from '../contracts/reference-citation';
+import { crawlerUserAgent } from '../services/crawler-identity';
 import { limitByteStream, responseError } from '../services/response';
 import { stepJson } from '../services/workflow-step';
 
 const ARXIV_HTML_STEP = { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' } as const;
 const ARXIV_HTML_TIMEOUT_MS = 60_000;
 const ARXIV_HTML_MAX_BYTES = 40 * 1024 * 1024;
-const ARXIV_USER_AGENT = 'Newsence/1.0 (https://www.newsence.app; mailto:hello@newsence.app)';
+const ARXIV_USER_AGENT = crawlerUserAgent();
 const MIN_ARXIV_BODY_CHARS = 2_000;
 const MAX_REFERENCES = 1_000;
 /** Front matter the paper's metadata already describes, and LaTeXML conversion residue. */

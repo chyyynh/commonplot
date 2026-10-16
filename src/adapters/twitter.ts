@@ -6,6 +6,7 @@ import type { AcquiredResource } from '../contracts/acquired-resource';
 import { stringifyMarkdown } from '../contracts/markdown';
 import { isSocialLinkHost } from '../contracts/resource-links';
 import { isXHost, resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
+import { crawlerUserAgent } from '../services/crawler-identity';
 import { responseError } from '../services/response';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 
@@ -267,7 +268,7 @@ async function fetchFxTweet(tweetId: string): Promise<FxTweet | null> {
 	try {
 		// FxTwitter rejects requests without an identifying User-Agent (HTTP 401).
 		const response = await fetch(`https://api.fxtwitter.com/i/status/${tweetId}`, {
-			headers: { 'user-agent': 'newsence/1.0 (+https://www.newsence.app)' },
+			headers: { 'user-agent': crawlerUserAgent() },
 			signal: AbortSignal.timeout(10_000),
 		});
 		if (!response.ok) {
