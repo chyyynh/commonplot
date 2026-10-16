@@ -132,11 +132,16 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						console.error({ tag: 'WORKFLOW', msg: 'Reference enrichment failed', resource_id: resourceId, error });
 					})
 				: undefined;
+		// Attaching a subject rewrote its carrier's search document, so the carrier syncs too.
+		const searchSyncIds = [
+			...(scope === 'corpus' ? [resourceId] : []),
+			...(target.kind === 'draft' && target.relation?.kind === 'subject' ? [target.relation.parentResourceId] : []),
+		];
 		// Every handoff runs to completion even when an independent one fails.
 		const followups = await Promise.allSettled([
-			scope === 'corpus'
-				? step.do('enqueue-resolved-ai-search-sync-v2', STORAGE_STEP, async () => {
-						await this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId });
+			searchSyncIds.length
+				? step.do('enqueue-resolved-ai-search-sync-v3', STORAGE_STEP, async () => {
+						await this.env.RESOURCE_SEARCH_SYNC_QUEUE.sendBatch(searchSyncIds.map((id) => ({ body: { resourceId: id } })));
 					})
 				: undefined,
 			// Ordinary imports share a translation; a reacquisition that replaced the original forces a fresh run.
