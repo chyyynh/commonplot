@@ -1,7 +1,9 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 
-export type MonitoredFeedSource = { id: string; name: string; handle: string };
+/** What a feed last answered with, sent back so an unchanged feed answers 304. */
+export type FeedValidators = { etag: string | null; lastModified: string | null };
+export type MonitoredFeedSource = { id: string; name: string; handle: string } & FeedValidators;
 export type TwitterSource = { id: string; handle: string; scrapedAt: string | null; createdAt: string };
 
 /**
@@ -10,7 +12,7 @@ export type TwitterSource = { id: string; handle: string; scrapedAt: string | nu
  */
 export async function listDueFeedSources(db: NodePgDatabase) {
 	const { rows } = await db.execute<MonitoredFeedSource>(sql`
-		SELECT id::text AS id, name, handle
+		SELECT id::text AS id, name, handle, etag, last_modified AS "lastModified"
 		FROM sources
 		WHERE enabled = true
 		  AND monitor_kind = 'feed'
@@ -30,11 +32,17 @@ export async function listTwitterSources(db: NodePgDatabase) {
 	return rows;
 }
 
-/** Move a source's watermark forward only; returns whether it moved. */
-export async function advanceSourceWatermark(db: NodePgDatabase, sourceId: string, scrapedAt: Date): Promise<boolean> {
+/** Move a source's watermark forward only; returns whether it moved. A feed read in full also records its new `validators`. */
+export async function advanceSourceWatermark(
+	db: NodePgDatabase,
+	sourceId: string,
+	scrapedAt: Date,
+	validators?: FeedValidators,
+): Promise<boolean> {
 	const { rows } = await db.execute(sql`
 		UPDATE sources
 		SET scraped_at = ${scrapedAt}, updated_at = NOW()
+		    ${validators ? sql`, etag = ${validators.etag}, last_modified = ${validators.lastModified}` : sql``}
 		WHERE id = ${sourceId}::uuid
 		  AND (scraped_at IS NULL OR scraped_at <= ${scrapedAt})
 		RETURNING id

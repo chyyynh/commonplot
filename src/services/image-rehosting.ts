@@ -1,6 +1,7 @@
 import { hash } from 'node:crypto';
 // Shared media rehosting for every Resource platform; this is not the image Resource kind adapter.
 import type { WorkflowStep } from 'cloudflare:workers';
+import { NonRetryableError } from 'cloudflare:workflows';
 import type { Image, Nodes } from 'mdast';
 import pLimit from 'p-limit';
 import {
@@ -11,7 +12,7 @@ import {
 } from '../contracts/image-mapping';
 import { parseMarkdown } from '../contracts/markdown';
 import { crawlerUserAgent } from './crawler-identity';
-import { limitByteStream } from './response';
+import { limitByteStream, responseError } from './response';
 
 const REHOST_TIMEOUT_MS = 8_000;
 // Hosted Images rejects larger uploads.
@@ -20,6 +21,7 @@ const SOURCE_USER_AGENT = crawlerUserAgent('commonplot-media-rehost');
 const NULL_IMAGE_DIMENSIONS = { height: null, width: null } as const;
 const MAX_INLINE_IMAGES = 20;
 const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
+const IMAGE_UPLOAD_CONCURRENCY = 4;
 const INLINE_RASTER_IMAGE = /^data:image\/(?:png|jpeg|gif|webp|avif);base64,([a-z0-9+/=]+)$/i;
 
 type ImageDimensions = Readonly<Pick<HostedResourceImage, 'height' | 'width'>>;
@@ -34,9 +36,18 @@ async function fetchImageSource(sourceUrl: string): Promise<ArrayBuffer> {
 	} catch (error) {
 		throw new Error(`fetch_error: ${error instanceof Error ? error.message : String(error)}`);
 	}
+	// A gone or refused image stays gone; only a timeout or rate limit is worth another try.
 	if (!response.ok) {
-		await response.body?.cancel().catch(() => undefined);
-		throw new Error(`upstream_status: HTTP ${response.status}`);
+		throw await responseError(
+			response,
+			(status) => status >= 400 && status < 500 && status !== 408 && status !== 429,
+			`upstream_status: HTTP ${response.status}`,
+		);
+	}
+	const contentType = response.headers.get('content-type')?.toLowerCase();
+	if (contentType && !contentType.startsWith('image/')) {
+		await response.body?.cancel();
+		throw new NonRetryableError(`not_an_image: ${contentType}`);
 	}
 	if (!response.body) throw new Error('missing_body');
 	const body = limitByteStream(response.body, MAX_SOURCE_IMAGE_BYTES, () => new Error('too_large'));
@@ -158,9 +169,37 @@ async function hostInlineImage(images: ImagesBinding, bytes: Uint8Array<ArrayBuf
  * the first bounded set of raster images; the rest are dropped instead of stored as Markdown.
  */
 export async function rehostInlineImages(images: ImagesBinding, markdown: string): Promise<string> {
+	// Most pages embed none, and parsing a long page only to find that is the slow part.
+	if (!markdown.includes('data:image/')) return markdown;
 	const inline = markdownImages(parseMarkdown(markdown)).filter((image) => image.url.startsWith('data:'));
 	if (!inline.length) return markdown;
-	const hosted = new Map<string, string>();
+	const kept = [
+		...new Set(
+			inline.flatMap((image) => {
+				const base64 = INLINE_RASTER_IMAGE.exec(image.url)?.[1];
+				return base64 && Buffer.byteLength(base64, 'base64') <= MAX_INLINE_IMAGE_BYTES ? [image.url] : [];
+			}),
+		),
+	].slice(0, MAX_INLINE_IMAGES);
+	const limit = pLimit(IMAGE_UPLOAD_CONCURRENCY);
+	const uploads = await Promise.all(
+		kept.map((dataUrl) =>
+			limit(async () => {
+				const bytes = new Uint8Array(Buffer.from(INLINE_RASTER_IMAGE.exec(dataUrl)![1]!, 'base64'));
+				// An image Images cannot read or store is dropped alone; the page still reads.
+				const url = await hostInlineImage(images, bytes).catch((error: unknown) => {
+					console.warn({
+						tag: 'RESOURCE_IMAGE',
+						event: 'inline_image_failed',
+						error: error instanceof Error ? error.message : String(error),
+					});
+					return null;
+				});
+				return url ? [[dataUrl, url] as const] : [];
+			}),
+		),
+	);
+	const hosted = new Map(uploads.flat());
 	let content = markdown;
 	let dropped = 0;
 	// Replace from the end so earlier offsets stay valid.
@@ -168,23 +207,7 @@ export async function rehostInlineImages(images: ImagesBinding, markdown: string
 		const start = image.position?.start.offset;
 		const end = image.position?.end.offset;
 		if (start === undefined || end === undefined) continue;
-		let url = hosted.get(image.url);
-		const base64 = INLINE_RASTER_IMAGE.exec(image.url)?.[1];
-		if (!url && base64 && hosted.size < MAX_INLINE_IMAGES) {
-			const bytes = new Uint8Array(Buffer.from(base64, 'base64'));
-			if (bytes.length <= MAX_INLINE_IMAGE_BYTES) {
-				// An image Images cannot read or store is dropped alone; the page still reads.
-				url = await hostInlineImage(images, bytes).catch((error: unknown) => {
-					console.warn({
-						tag: 'RESOURCE_IMAGE',
-						event: 'inline_image_failed',
-						error: error instanceof Error ? error.message : String(error),
-					});
-					return undefined;
-				});
-				if (url) hosted.set(image.url, url);
-			}
-		}
+		const url = hosted.get(image.url);
 		if (!url) dropped += 1;
 		const source = content.slice(start, end);
 		content = content.slice(0, start) + (url ? source.replace(image.url, url) : '') + content.slice(end);
@@ -205,7 +228,8 @@ export async function stageResourceImages(
 		step
 			.do(
 				`rehost-resource-image-v4-${index}`,
-				{ retries: { limit: 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '10 minutes' },
+				// An optional image (a preview or avatar) is tried once; nothing waits on it.
+				{ retries: { limit: optional.has(url) ? 0 : 3, delay: '5 seconds', backoff: 'exponential' }, timeout: '10 minutes' },
 				() => rehostResourceImage(env.IMAGES, url),
 			)
 			.catch((error: unknown) => {

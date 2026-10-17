@@ -9,6 +9,8 @@ const CAPTION_FETCH_TIMEOUT_MS = 8_000;
  * 2026-09-26, independent of region), so retry on new instances, not in place.
  */
 const CAPTION_FETCHER_ATTEMPTS = 8;
+/** Attempts run in waves this wide: with 40% passing, three machines at once usually include one that passes. */
+const CAPTION_ATTEMPT_WAVE = 3;
 /** No new attempt starts after this, so the last one still ends inside the captions step's timeout. */
 const CAPTION_DEADLINE_MS = 90_000;
 const CAPTION_FETCHER_HINTS: readonly DurableObjectLocationHint[] = ['wnam', 'enam', 'weur', 'apac', 'oc', 'eeur', 'sam', 'me'];
@@ -174,26 +176,43 @@ export class YouTubeCaptionFetcher extends DurableObject<CoreEnv> {
 export async function fetchYouTubeCaptions(videoId: string, audioLanguage: string | null): Promise<YouTubeCaptions | null> {
 	const withheld: string[] = [];
 	const deadline = Date.now() + CAPTION_DEADLINE_MS;
-	for (let attempt = 0; attempt < CAPTION_FETCHER_ATTEMPTS && Date.now() < deadline; attempt++) {
+	const run = (attempt: number) => {
 		const hint = CAPTION_FETCHER_HINTS[(attempt - 1) % CAPTION_FETCHER_HINTS.length];
 		// A failed timedtext fetch or instance is just another lost draw.
-		const result: CaptionAttempt = await (
+		return (
 			attempt === 0 || !hint
 				? attemptCaptions(videoId, audioLanguage)
 				: coreExports.YouTubeCaptionFetcher.get(coreExports.YouTubeCaptionFetcher.newUniqueId(), { locationHint: hint }).attempt(
 						videoId,
 						audioLanguage,
 					)
-		).catch((error: unknown) => ({ status: 'withheld', reason: error instanceof Error ? error.message : String(error) }));
-		if (result.status === 'fetched') {
-			console.info({ tag: 'YOUTUBE', msg: 'Captions fetched', videoId, attempt, count: result.cues.length, language: result.language });
-			return { cues: result.cues, language: result.language };
+		)
+			.catch((error: unknown): CaptionAttempt => ({ status: 'withheld', reason: error instanceof Error ? error.message : String(error) }))
+			.then((result) => ({ attempt, where: hint ?? 'workflow', result }));
+	};
+	for (let first = 0; first < CAPTION_FETCHER_ATTEMPTS && Date.now() < deadline; first += CAPTION_ATTEMPT_WAVE) {
+		const wave = Array.from({ length: Math.min(CAPTION_ATTEMPT_WAVE, CAPTION_FETCHER_ATTEMPTS - first) }, (_, index) => run(first + index));
+		// The first attempt that decides wins; the wave's others are left to finish unread.
+		const decided = await new Promise<Awaited<ReturnType<typeof run>> | null>((resolve) => {
+			let pending = wave.length;
+			for (const attempt of wave)
+				void attempt.then((outcome) => {
+					if (outcome.result.status !== 'withheld') resolve(outcome);
+					else {
+						withheld.push(`${outcome.where}: ${outcome.result.reason}`);
+						if (--pending === 0) resolve(null);
+					}
+				});
+		});
+		if (decided?.result.status === 'fetched') {
+			const { cues, language } = decided.result;
+			console.info({ tag: 'YOUTUBE', msg: 'Captions fetched', videoId, attempt: decided.attempt, count: cues.length, language });
+			return { cues, language };
 		}
-		if (result.status === 'unavailable') {
-			console.info({ tag: 'YOUTUBE', msg: 'Video unplayable; using video description', videoId, reason: result.reason });
+		if (decided?.result.status === 'unavailable') {
+			console.info({ tag: 'YOUTUBE', msg: 'Video unplayable; using video description', videoId, reason: decided.result.reason });
 			return { cues: [], language: null };
 		}
-		withheld.push(`${hint ?? 'workflow'}: ${result.reason}`);
 	}
 	console.warn({ tag: 'YOUTUBE', msg: 'Captions withheld on every attempt; using video description', videoId, withheld });
 	return null;

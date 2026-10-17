@@ -88,33 +88,45 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		if (persistence.outcome === 'superseded') return { outcome: 'superseded' };
 		const { id: resourceId, scope, subjectResourceId, textHash, outcome, requests } = persistence;
 		// Each user who asked saves the Resource; one save failing fails only that user's request.
-		const saved = (
-			await Promise.all(
-				requests.users.map(async (request) => {
-					try {
-						await step.do(`complete-request-save-v1-${request.id}`, STORAGE_STEP, () =>
-							this.env.APP.completeResourceSave(resourceId, requestSaveTarget(request)),
-						);
-						return [request.id];
-					} catch (error) {
-						const message = error instanceof Error ? error.message : String(error);
-						await step.do(`fail-request-save-v1-${request.id}`, STORAGE_STEP, () =>
-							withCoreDb(this.env, (db) => failRequests(db, request.id, `Save failed: ${message}`, true)),
-						);
-						return [];
-					}
-				}),
-			)
-		).flat();
+		const saved = Promise.all(
+			requests.users.map(async (request) => {
+				try {
+					await step.do(`complete-request-save-v1-${request.id}`, STORAGE_STEP, () =>
+						this.env.APP.completeResourceSave(resourceId, requestSaveTarget(request)),
+					);
+					return [request.id];
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					await step.do(`fail-request-save-v1-${request.id}`, STORAGE_STEP, () =>
+						withCoreDb(this.env, (db) => failRequests(db, request.id, `Save failed: ${message}`, true)),
+					);
+					return [];
+				}
+			}),
+		).then((ids) => ids.flat());
 
-		// The Resource is published; its summary and entities are derived from what was written, before the handoffs read them.
-		await Promise.all(
-			persistence.derivations.map((derivation) =>
-				derivation.kind === 'translation'
-					? undefined
-					: deriveResource(this.env, step, resourceId, textHash, { ...hosted, description: hosted.summary }, derivation, instanceId),
-			),
+		// The Resource is published; its summary and entities are derived from what was written, and each handoff waits
+		// only for the derivations it reads.
+		const derivations = persistence.derivations.flatMap((derivation) =>
+			derivation.kind === 'translation'
+				? []
+				: [
+						{
+							derivation,
+							done: deriveResource(
+								this.env,
+								step,
+								resourceId,
+								textHash,
+								{ ...hosted, description: hosted.summary },
+								derivation,
+								instanceId,
+							),
+						},
+					],
 		);
+		const summaries = Promise.all(derivations.flatMap(({ derivation, done }) => (derivation.kind === 'summary' ? [done] : [])));
+		const englishSummary = derivations.find(({ derivation }) => derivation.kind === 'summary' && derivation.lang === 'en')?.done;
 		const subjectUrl = resource.subjectUrl;
 		// Crossref enrichment runs beside the handoffs; the import settles only after it, since the Workflow returns last.
 		const references =
@@ -130,17 +142,26 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const searchSyncIds = [...(scope === 'corpus' ? [resourceId] : []), ...requests.carriers];
 		// Every handoff runs to completion even when an independent one fails.
 		const followups = await Promise.allSettled([
+			// Search documents lead with the summaries.
 			searchSyncIds.length
-				? step.do('enqueue-resolved-ai-search-sync-v3', STORAGE_STEP, async () => {
-						await this.env.RESOURCE_SEARCH_SYNC_QUEUE.sendBatch(searchSyncIds.map((id) => ({ body: { resourceId: id } })));
-					})
+				? summaries.then(() =>
+						step.do('enqueue-resolved-ai-search-sync-v3', STORAGE_STEP, async () => {
+							await this.env.RESOURCE_SEARCH_SYNC_QUEUE.sendBatch(searchSyncIds.map((id) => ({ body: { resourceId: id } })));
+						}),
+					)
 				: undefined,
 			// Ordinary imports share a translation; a reacquisition that replaced the original forces a fresh run.
-			// Only monitor discoveries translate their content here; readers request the rest.
-			step.do('enqueue-resource-translation-v7', STORAGE_STEP, async () => {
-				const automatic = await withCoreDb(this.env, (db) => translatesContentAutomatically(db, resourceId));
-				return enqueueResourceTranslation(persistence, automatic ? 'full' : 'metadata', target.kind !== 'draft' && outcome === 'written');
-			}),
+			// Only monitor discoveries translate their content here; readers request the rest. A content translation reads
+			// the English summary as context; a title translation starts at once.
+			(async () => {
+				const automatic = await step.do('load-translation-scope-v1', STORAGE_STEP, () =>
+					withCoreDb(this.env, (db) => translatesContentAutomatically(db, resourceId)),
+				);
+				if (automatic) await englishSummary;
+				return step.do('enqueue-resource-translation-v8', STORAGE_STEP, () =>
+					enqueueResourceTranslation(persistence, automatic ? 'full' : 'metadata', target.kind !== 'draft' && outcome === 'written'),
+				);
+			})(),
 			subjectUrl && outcome === 'written' && subjectResourceId === null
 				? step.do('request-subject-v1', STORAGE_STEP, async () => {
 						const leads = await withCoreDb(this.env, (db) =>
@@ -162,13 +183,15 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					})
 				: undefined,
 		]);
+		await Promise.all(derivations.map(({ done }) => done));
 		await references;
 		// The Resource is published, so a lost handoff is logged rather than failing the import that already landed.
 		const failures = followups.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
 		if (failures.length) console.error({ tag: 'WORKFLOW', msg: 'Follow-up dispatch failed', resource_id: resourceId, errors: failures });
 
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: resourceId, target_kind: target.kind });
-		await step.do('complete-user-requests-v1', STORAGE_STEP, () => withCoreDb(this.env, (db) => completeUserRequests(db, saved)));
+		const savedIds = await saved;
+		await step.do('complete-user-requests-v1', STORAGE_STEP, () => withCoreDb(this.env, (db) => completeUserRequests(db, savedIds)));
 		return { outcome: 'ready', resourceId, textHash };
 	}
 }

@@ -482,7 +482,7 @@ async function translateDurableBatch(
 	depth = 0,
 ): Promise<MarkdownSegmentTranslations> {
 	const result = await step.do(
-		`translate-zh-hant-markdown-${batch.id}-v19`,
+		`translate-zh-hant-markdown-${batch.id}-v20`,
 		{ retries: { limit: 3, delay: aiRetryDelay, backoff: 'constant' }, timeout: '300 seconds' },
 		async (): Promise<BatchTranslations> => {
 			try {

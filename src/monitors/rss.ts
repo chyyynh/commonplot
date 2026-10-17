@@ -6,7 +6,7 @@ import pLimit from 'p-limit';
 import { cleanText } from '../contracts/markdown';
 import { resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { readBoundedResponseText } from '../services/response';
-import { advanceSourceWatermark, listDueFeedSources, type MonitoredFeedSource } from '../store/sources';
+import { advanceSourceWatermark, type FeedValidators, listDueFeedSources, type MonitoredFeedSource } from '../store/sources';
 import { enqueueSourceDrafts } from './source-drafts';
 
 const MAX_FEED_BYTES = 8 * 1024 * 1024;
@@ -15,7 +15,8 @@ const FEED_SUMMARY_MAX_CHARS = 500;
 const RSS_FETCH_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const FEED_CONCURRENCY = 4;
 
-async function processFeed(db: NodePgDatabase, feed: MonitoredFeedSource): Promise<void> {
+/** The feed's new validators once its entries are admitted; undefined when it answered 304 and has nothing new. */
+async function processFeed(db: NodePgDatabase, feed: MonitoredFeedSource): Promise<FeedValidators | undefined> {
 	const requestedUrl = ResourceUrlSchema.safeParse(feed.handle).data;
 	if (!requestedUrl) {
 		throw new Error('Enter a valid feed URL (http/https).');
@@ -24,9 +25,16 @@ async function processFeed(db: NodePgDatabase, feed: MonitoredFeedSource): Promi
 		headers: {
 			'User-Agent': RSS_FETCH_USER_AGENT,
 			Accept: 'application/rss+xml, application/atom+xml, application/feed+json, application/json, application/xml, text/xml, */*',
+			...(feed.etag ? { 'If-None-Match': feed.etag } : {}),
+			...(feed.lastModified ? { 'If-Modified-Since': feed.lastModified } : {}),
 		},
 		signal: AbortSignal.timeout(15_000),
 	});
+	if (response.status === 304) {
+		await response.body?.cancel();
+		console.info({ tag: 'RSS', msg: 'Feed unchanged', feed: feed.name });
+		return undefined;
+	}
 	if (!response.ok) {
 		const status = response.status;
 		await response.body?.cancel();
@@ -76,6 +84,7 @@ async function processFeed(db: NodePgDatabase, feed: MonitoredFeedSource): Promi
 		skipped: items.length - drafts.length + admission.skipped,
 		totalCount: items.length,
 	});
+	return { etag: response.headers.get('etag'), lastModified: response.headers.get('last-modified') };
 }
 
 function feedFieldText(value: unknown): string {
@@ -109,9 +118,19 @@ export async function handleRSSCron(db: NodePgDatabase): Promise<void> {
 	const feeds = await listDueFeedSources(db);
 	const failures: unknown[] = [];
 	const limit = pLimit(FEED_CONCURRENCY);
-	// A failed poll still advances the watermark, so a flaky YouTube channel feed waits its 30-minute cadence.
+	// A failed poll still advances the watermark, so a flaky YouTube channel feed waits its 30-minute cadence; it keeps its
+	// old validators, so the next poll reads the feed in full.
 	const results = await Promise.allSettled(
-		feeds.map((feed) => limit(() => processFeed(db, feed).finally(() => advanceSourceWatermark(db, feed.id, new Date())))),
+		feeds.map((feed) =>
+			limit(async () => {
+				let validators: FeedValidators | undefined;
+				try {
+					validators = await processFeed(db, feed);
+				} finally {
+					await advanceSourceWatermark(db, feed.id, new Date(), validators);
+				}
+			}),
+		),
 	);
 	for (const [index, result] of results.entries()) {
 		if (result.status === 'fulfilled') continue;

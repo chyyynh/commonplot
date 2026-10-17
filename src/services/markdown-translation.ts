@@ -3,8 +3,9 @@ import type { Heading, Nodes, Paragraph, Parents, PhrasingContent, Root, RootCon
 import { parseMarkdown as parseDialect, stringifyMarkdown } from '../contracts/markdown';
 
 // Batches are sized by source length (about 1k source tokens) so a response, reasoning included, stays far below its cap.
-const MAX_BATCH_CHARACTERS = 4_000;
-const MAX_BATCH_SEGMENTS = 24;
+// Fewer, larger calls: the output budget for a full batch still fits the model's cap.
+const MAX_BATCH_CHARACTERS = 7_000;
+const MAX_BATCH_SEGMENTS = 40;
 const MAX_CONTEXT_CHARACTERS = 800;
 const MAX_SEGMENT_CHARACTERS = 3_000;
 const MAX_ATOM_HINT_CHARACTERS = 120;
