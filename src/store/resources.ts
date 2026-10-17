@@ -249,8 +249,7 @@ async function writeCanonicalResource(
 	// The cleanup excludes the incoming language: no CTE deletes a row another CTE writes.
 	const written = await db.execute(sql`
 		WITH incoming AS (
-			SELECT ${resource.originalLang}::text AS lang, ${resource.title}::text AS title,
-			       ${resource.summary}::text AS summary, ${resource.content}::text AS content
+			SELECT ${resource.originalLang}::text AS lang, ${resource.title}::text AS title, ${resource.content}::text AS content
 		), written_resource AS (
 			${
 				!existing
@@ -264,25 +263,6 @@ async function writeCanonicalResource(
 			DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid AND ${existing}
 		), cleared_links AS (
 			DELETE FROM resource_links WHERE source_resource_id = ${resourceId}::uuid AND ${existing}
-		), cleared_translations AS (
-			-- Translations follow the text: a reacquisition that leaves it as it was keeps them, since their Workflow won't rerun.
-			DELETE FROM resource_translations
-			WHERE resource_id = ${resourceId}::uuid AND ${existing}
-			  AND lang <> ${resource.originalLang}
-			  AND (SELECT text_hash FROM resources WHERE id = ${resourceId}::uuid)
-			      IS DISTINCT FROM (SELECT MD5(jsonb_build_array(lang, title, content)::text) FROM incoming)
-		), written_original AS (
-			INSERT INTO resource_translations (resource_id, lang, title, summary, content, source, updated_at)
-			SELECT written_resource.id, incoming.lang, incoming.title, incoming.summary, incoming.content, 'original', NOW()
-			FROM written_resource CROSS JOIN incoming
-			ON CONFLICT (resource_id, lang) DO UPDATE SET
-				(title, summary, content, source, alignment, updated_at) =
-				(EXCLUDED.title, COALESCE(EXCLUDED.summary, CASE
-					-- A derived summary outlives a reacquisition that left the text as it was.
-					WHEN jsonb_build_array(resource_translations.title, resource_translations.content) = jsonb_build_array(EXCLUDED.title, EXCLUDED.content)
-					THEN resource_translations.summary END),
-				 EXCLUDED.content, EXCLUDED.source, NULL, EXCLUDED.updated_at)
-			RETURNING resource_id
 		), written_content AS (
 			INSERT INTO resource_content (resource_id, markdown)
 			SELECT written_resource.id, incoming.content FROM written_resource CROSS JOIN incoming WHERE incoming.content <> ''
@@ -290,9 +270,9 @@ async function writeCanonicalResource(
 		), cleared_content AS (
 			DELETE FROM resource_content WHERE resource_id = ${resourceId}::uuid AND ${existing} AND (SELECT content FROM incoming) = ''
 		)
-		SELECT 1 FROM written_resource JOIN written_original ON written_original.resource_id = written_resource.id
+		SELECT 1 FROM written_resource
 	`);
-	if (!written.rows.length) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
+	if (!written.rows.length) throw new Error(`Resource ${resourceId} was not written`);
 	await writeResourceKeys(db, resourceId, privateObjectId ? null : resource.normalizedUrl, resource.resourceIdentifiers, existing);
 	await writeResourceCreators(db, resourceId, resource.creators, existing);
 	if (resource.references?.length) {
@@ -325,16 +305,11 @@ async function writeCanonicalResource(
 	if (privateObjectId) await replaceResourceEntities(db, resourceId, []);
 	if (resource.youtube) {
 		const transcript = resource.youtube;
-		const savedTranscript = await db.execute(sql`
-			INSERT INTO youtube_transcripts (resource_id, transcript, chapters)
-			VALUES (${resourceId}::uuid, ${JSON.stringify(transcript.lines)}::jsonb, ${JSON.stringify(transcript.chapters)}::jsonb)
-			ON CONFLICT (resource_id) DO UPDATE SET
-				transcript = EXCLUDED.transcript,
-				chapters = EXCLUDED.chapters
-			WHERE youtube_transcripts.transcript = '[]'::jsonb OR EXCLUDED.transcript <> '[]'::jsonb
-			RETURNING resource_id
+		const lostTranscript = await db.execute(sql`
+			SELECT 1 FROM resource_content
+			WHERE resource_id = ${resourceId}::uuid AND transcript <> '[]'::jsonb AND ${JSON.stringify(transcript.lines)}::jsonb = '[]'::jsonb
 		`);
-		if (!savedTranscript.rows.length) throw new NonRetryableError('YouTube reacquisition returned no captions for an existing transcript');
+		if (lostTranscript.rows.length) throw new NonRetryableError('YouTube reacquisition returned no captions for an existing transcript');
 		await db.execute(sql`
 			UPDATE resource_content SET transcript = ${JSON.stringify(transcript.lines)}::jsonb, chapters = ${JSON.stringify(transcript.chapters)}::jsonb
 			WHERE resource_id = ${resourceId}::uuid

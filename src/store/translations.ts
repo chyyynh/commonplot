@@ -88,7 +88,7 @@ export async function loadResourceTranslationInput(
 	return { resource, textHash: TextHashSchema.parse(textHash) };
 }
 
-/** Writes over machine fields only; a row the source supplied in that language is never replaced. */
+/** Writes a machine translation of the text `textHash` names; false once that text is gone. */
 export async function persistMachineTranslation(
 	db: NodePgDatabase,
 	resourceId: string,
@@ -101,44 +101,23 @@ export async function persistMachineTranslation(
 	if ((content === undefined) !== (alignment === undefined)) {
 		throw new TypeError('Machine translation content and alignment must be persisted together');
 	}
+	// Only onto the text it translated, and never into the original's own language; fields merge, a new text starts over.
 	const result = await db.execute<{ resource_id: string }>(sql`
-		WITH target_resource AS (
-			SELECT resource.id
-			FROM resources resource
-			WHERE resource.id = ${resourceId}::uuid
-			  AND resource.text_hash = ${textHash}
-			FOR UPDATE OF resource
-		)
-		INSERT INTO resource_translations AS current_translation (
-			resource_id, lang, title, summary, content, alignment, source, updated_at
-		)
-		SELECT
-			target_resource.id, ${lang}, ${patch.title ?? null}, NULL, ${content ?? null},
-			${alignment === undefined ? null : JSON.stringify(alignment)}::jsonb,
-			'machine', NOW()
-		FROM target_resource
-		ON CONFLICT (resource_id, lang) DO UPDATE SET
-			title = COALESCE(EXCLUDED.title, current_translation.title),
-			content = COALESCE(EXCLUDED.content, current_translation.content),
-			alignment = COALESCE(EXCLUDED.alignment, current_translation.alignment),
-			updated_at = NOW()
-		WHERE current_translation.source = 'machine'
-		RETURNING resource_id::text
-	`);
-	if (!result.rows.length) return false;
-	// The same fields as a translation derivation, which replaces resource_translations; a new text starts it over.
-	await db.execute(sql`
 		INSERT INTO resource_derivations AS current (resource_id, kind, lang, input_hash, status, attempts, output, updated_at)
-		VALUES (${resourceId}::uuid, 'translation', ${lang}, ${textHash}, 'done', 0, jsonb_strip_nulls(jsonb_build_object(
+		SELECT resource.id, 'translation', ${lang}, ${textHash}, 'done', 0, jsonb_strip_nulls(jsonb_build_object(
 			'title', ${patch.title ?? null}::text, 'content', ${content ?? null}::text,
 			'alignment', ${alignment === undefined ? null : JSON.stringify(alignment)}::jsonb
-		)), NOW())
+		)), NOW()
+		FROM resources resource
+		WHERE resource.id = ${resourceId}::uuid AND resource.text_hash = ${textHash} AND resource.original_lang <> ${lang}
+		FOR UPDATE OF resource
 		ON CONFLICT (resource_id, kind, lang) DO UPDATE SET
 			output = CASE WHEN current.input_hash = EXCLUDED.input_hash THEN COALESCE(current.output, '{}'::jsonb) || EXCLUDED.output
 			              ELSE EXCLUDED.output END,
 			input_hash = EXCLUDED.input_hash, status = 'done', retry_at = NULL, error = NULL, updated_at = NOW()
+		RETURNING resource_id::text
 	`);
-	return true;
+	return result.rows.length > 0;
 }
 
 /** A stored corpus original in a language other than zh-Hant that the translation Workflow accepts. */
