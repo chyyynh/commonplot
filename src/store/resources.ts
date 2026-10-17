@@ -364,8 +364,9 @@ export async function persistResolvedResource(
 		const derivations = await writeOriginal(tx, resource, target, claim);
 		if (resource.hackerNewsId && target.kind !== 'upload')
 			await tx.execute(sql`
-				INSERT INTO resource_keys (resource_id, scheme, value) VALUES (${claim.resourceId}::uuid, 'hackernews', ${resource.hackerNewsId})
-				ON CONFLICT (scheme, value) DO NOTHING
+				INSERT INTO resource_keys AS stored (resource_id, scheme, value) VALUES (${claim.resourceId}::uuid, 'hackernews', ${resource.hackerNewsId})
+				-- A thread Resource reacquired as its linked page no longer has the thread as its own id.
+				ON CONFLICT (scheme, value) DO UPDATE SET preferred = false WHERE stored.resource_id = EXCLUDED.resource_id
 			`);
 		// Follow-ups read the committed row, which can differ from this draft; links stored before it existed now point to it.
 		if (target.kind !== 'upload') await resolveLinksTo(tx, claim.resourceId, resource);
