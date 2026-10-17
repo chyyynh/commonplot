@@ -220,7 +220,44 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 	} satisfies AcquiredResource;
 }
 
-type WebPage = { platform: ResolvedResourceUrl } | { pdf: Response; url: string } | { html: ReadableStream<Uint8Array>; url: string };
+type WebPage =
+	| { platform: ResolvedResourceUrl }
+	| { pdf: Response; url: string }
+	| { html: ReadableStream<Uint8Array>; url: string; contentType: string };
+
+function decoderFor(label: string | undefined) {
+	try {
+		return label ? new TextDecoder(label) : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Decodes a page the way a browser picks its encoding: a byte order mark, then the header's charset, then a meta
+ * charset in the first 1024 bytes. A page that declares none is UTF-8 when it decodes as UTF-8, and windows-1252
+ * otherwise, as older sites written on Windows are.
+ */
+function decodeHtml(bytes: Uint8Array, contentType: string): string {
+	const bom = [
+		[[0xef, 0xbb, 0xbf], 'utf-8'],
+		[[0xff, 0xfe], 'utf-16le'],
+		[[0xfe, 0xff], 'utf-16be'],
+	] as const;
+	const marked = bom.find(([mark]) => mark.every((byte, index) => bytes[index] === byte))?.[1];
+	if (marked) return new TextDecoder(marked).decode(bytes);
+	const header = decoderFor(/charset\s*=\s*["']?([\w.:-]+)/i.exec(contentType)?.[1]);
+	if (header) return header.decode(bytes);
+	const head = new TextDecoder('windows-1252').decode(bytes.subarray(0, 1024));
+	const meta = decoderFor(/<meta[^>]+charset\s*=\s*["']?\s*([\w.:-]+)/i.exec(head)?.[1]);
+	// A meta tag read as ASCII cannot be declaring UTF-16; browsers read such a page as UTF-8.
+	if (meta) return (meta.encoding.startsWith('utf-16') ? new TextDecoder() : meta).decode(bytes);
+	try {
+		return new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes);
+	} catch {
+		return new TextDecoder('windows-1252').decode(bytes);
+	}
+}
 
 /**
  * Fetches a page and sorts what came back. A redirect to a platform or a paper hands back its resolved URL;
@@ -266,7 +303,7 @@ async function fetchWebPage(url: string): Promise<WebPage> {
 		throw new NonRetryableError(`Unsupported response content type: ${contentType}`);
 	}
 	if (!response.body) throw new NonRetryableError('Fetched page has no body');
-	return { html: response.body, url: resolved.url };
+	return { html: response.body, url: resolved.url, contentType };
 }
 
 type WebAcquisition =
@@ -284,7 +321,8 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 		GENERIC_HTML_MAX_BYTES,
 		() => new NonRetryableError(`HTML response exceeded ${GENERIC_HTML_MAX_BYTES} bytes`),
 	);
-	const article = await acquireHtmlArticle(await new Response(body).text(), page.url);
+	const html = decodeHtml(new Uint8Array(await new Response(body).arrayBuffer()), page.contentType);
+	const article = await acquireHtmlArticle(html, page.url);
 	return { ...article, content: await rehostInlineImages(env.IMAGES, article.content) };
 }
 

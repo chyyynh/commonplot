@@ -73,6 +73,7 @@ export async function reconcileRequests(env: CoreEnv, db: NodePgDatabase) {
 			await completeUserRequests(db, [request.id]);
 		} catch (error) {
 			console.error({ tag: 'REQUEST', msg: 'Recovered save failed', request_id: request.id, error });
+			await failRequests(db, request.id, `Save failed: ${error instanceof Error ? error.message : String(error)}`, true);
 		}
 	}
 	if (stale.length || promoted.length || unsaved.length)

@@ -132,9 +132,26 @@ function looksLikeAuthorList(value: string): boolean {
 
 /**
  * Parse the common bibliography styles (ACM, NeurIPS/ICML, Nature, APA, Sage) into display fields.
- * Unrecognized entries keep null fields; readers fall back to the raw reference text.
+ * Unrecognized entries keep null fields; readers fall back to the raw reference text. Fields the source marked up
+ * itself, such as LaTeXML's author and title spans and the year in its entry tag, win over parsing.
  */
-export function parseReferenceCitation(value: string): ReferenceCitation {
+export function parseReferenceCitation(
+	value: string,
+	marked: Partial<Record<'authors' | 'title' | 'year', string>> = {},
+): ReferenceCitation {
+	const parsed = parsePrintedCitation(value);
+	const authors = cleanText(marked.authors);
+	const title = trimPunctuation(marked.title ?? '');
+	const year = marked.year === undefined ? null : citationYear(cleanText(marked.year));
+	return {
+		...parsed,
+		...(authors ? authorSummary(authors, SURNAME_FIRST_START.test(authors)) : {}),
+		...(title ? { title } : {}),
+		...(year ? { year } : {}),
+	};
+}
+
+function parsePrintedCitation(value: string): ReferenceCitation {
 	const text = cleanText(value);
 	// IEEE: `Authors, “Title,” Venue, Year.`
 	const ieee = /^(.{2,600}?),\s*[“"]([^”"]{2,400}?)[,.]?[”"],?\s*(.*)$/u.exec(text);

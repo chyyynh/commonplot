@@ -35,6 +35,8 @@ export type RequestLead = Readonly<{ id: string; workflowId: string; params: Res
 const SOURCE_RETRY = sql`interval '1 day'`;
 /** A lead whose workflow is quiet this long is checked; a waiting request this long without a lead takes over. */
 const STALE_REQUEST = sql`interval '10 minutes'`;
+/** A user's save of a written Resource is retried this many times in all before its request fails. */
+const SAVE_ATTEMPTS = 3;
 
 const REQUEST_COLUMNS = sql`id::text, target_key AS "targetKey", requester, url, stored_object_id::text AS "storedObjectId",
 	resource_id::text AS "resourceId", hints, workflow_id AS "workflowId", status`;
@@ -273,12 +275,17 @@ export async function completeUserRequests(db: NodePgDatabase, ids: readonly str
 
 /**
  * Fails the lead and every request waiting on its key, or only the lead when `alone`. A request whose Resource is
- * already written is fulfilled instead. A source request retries after a doubling wait; any other gives up.
+ * already written is fulfilled instead, except a user's: its save is still owed, so it waits without a workflow for the
+ * sweep to retry, up to its attempts. A source request retries after a doubling wait; any other gives up.
  */
 export async function failRequests(db: NodePgDatabase, requestId: string, error: string, alone = false) {
 	await db.execute(sql`
 		UPDATE resource_requests SET
-			status = CASE WHEN resource_id IS NOT NULL AND requester <> 'resync' THEN 'fulfilled' ELSE 'failed' END,
+			status = CASE WHEN resource_id IS NULL OR requester = 'resync' THEN 'failed'
+			              WHEN requester <> 'user' THEN 'fulfilled'
+			              WHEN user_id IS NOT NULL AND attempts + 1 < ${SAVE_ATTEMPTS} THEN 'pending'
+			              ELSE 'failed' END,
+			workflow_id = CASE WHEN requester = 'user' AND resource_id IS NOT NULL THEN NULL ELSE workflow_id END,
 			attempts = attempts + 1, error = LEFT(${error}, 500), updated_at = NOW(),
 			retry_after = CASE WHEN requester = 'source' THEN NOW() + ${SOURCE_RETRY} * LEAST(power(2, attempts), 30) END
 		WHERE status = 'pending'

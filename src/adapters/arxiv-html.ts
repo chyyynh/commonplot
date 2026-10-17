@@ -51,19 +51,27 @@ function markerElement(document: Dom, attributes: Record<string, string>) {
 	return element;
 }
 
-function bibliography(document: Dom, baseUrl: string) {
+function bibliography(document: Dom) {
 	const items = [...document.querySelectorAll('.ltx_bibliography li.ltx_bibitem')].slice(0, MAX_REFERENCES);
 	return items
 		.flatMap((item) => {
 			const id = item.getAttribute('id');
 			if (!id) return [];
-			const label = cleanText(item.querySelector('.ltx_tag_bibitem')?.textContent).replace(/^[[(](.*)[\])]$/u, '$1') || null;
-			const text = cleanText([...item.querySelectorAll('.ltx_bibblock')].map((block) => block.textContent).join(' '));
-			if (!text) return [];
-			const links = [...item.querySelectorAll('a[href]')].map(
-				(link) => URL.parse(link.getAttribute('href') ?? '', baseUrl)?.toString() ?? '',
+			const tag = cleanText(item.querySelector('.ltx_tag_bibitem')?.textContent);
+			const label = tag.replace(/^[[(](.*)[\])]$/u, '$1') || null;
+			// The entry itself; LaTeXML appends "External Links:" and back-links to the citing sections ("Cited by: §1").
+			const blocks = [...item.querySelectorAll('.ltx_bibblock')].filter(
+				(block) => !block.classList.contains('ltx_bib_cited') && !block.querySelector('.ltx_bib_links'),
 			);
+			const text = cleanText(blocks.map((block) => block.textContent).join(' '));
+			if (!text) return [];
+			// Only absolute links identify the cited work; a back-link resolves to this paper itself.
+			const links = [...item.querySelectorAll('a[href]')].flatMap((link) => {
+				const url = link.closest('.ltx_bib_cited') ? null : URL.parse(link.getAttribute('href') ?? '');
+				return url && /^https?:$/u.test(url.protocol) ? [url.toString()] : [];
+			});
 			const identity = paperIdentityFromText([text, ...links].join(' '));
+			const marked = (selector: string) => cleanText(item.querySelector(selector)?.textContent) || undefined;
 			return [
 				{
 					id,
@@ -71,7 +79,7 @@ function bibliography(document: Dom, baseUrl: string) {
 					text,
 					doi: identity?.doi ?? null,
 					arxivId: identity?.arxivId ?? null,
-					...parseReferenceCitation(text),
+					...parseReferenceCitation(text, { authors: marked('.ltx_bib_author'), title: marked('.ltx_bib_title'), year: tag }),
 				},
 			];
 		})
@@ -130,7 +138,7 @@ function arxivHtmlDocument(html: string, url: string) {
 			.trim();
 		return author && author.length <= 80 ? [author] : [];
 	});
-	const references = bibliography(document, url);
+	const references = bibliography(document);
 	const referenceKeys = new Map(references.map(({ id, key }) => [id, key]));
 	const citedKeys = new Set<string>();
 	const notes: { id: string; html: string }[] = [];

@@ -8,7 +8,8 @@ export type YouTubeTranscriptLine = Readonly<{ speakerTurn: boolean; startTime: 
 export type YouTubeChapter = { title: string; startTime: number; endTime?: number };
 
 export type YouTubeTranscript = Readonly<{
-	lines: YouTubeTranscriptLine[];
+	/** Null when YouTube's bot check withheld the captions: whether the video has any is unknown, so a later run may fetch them. */
+	lines: YouTubeTranscriptLine[] | null;
 	chapters: YouTubeChapter[];
 }>;
 

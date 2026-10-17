@@ -66,12 +66,18 @@ function parseChaptersFromDescription(description: string): YouTubeChapter[] {
 		chapters.push({ title: title.replace(/^[\s\u2022\u00b7*\u2013\u2014-]+/, '').trim() || title, startTime });
 	}
 
-	for (let i = 0; i < chapters.length - 1; i++) {
-		if (chapters[i].startTime >= chapters[i + 1].startTime) return [];
-		chapters[i].endTime = chapters[i + 1].startTime;
+	// YouTube's own rule: chapters start at 0:00, ascend, and number at least three. A later list in the description,
+	// such as a tracklist or a guest's timestamps, ends the run instead of discarding it.
+	const start = chapters.findIndex(({ startTime }) => startTime === 0);
+	if (start < 0) return [];
+	const run = [chapters[start]];
+	for (const chapter of chapters.slice(start + 1)) {
+		const previous = run[run.length - 1];
+		if (chapter.startTime <= previous.startTime) break;
+		previous.endTime = chapter.startTime;
+		run.push(chapter);
 	}
-
-	return chapters.length >= 2 ? chapters : [];
+	return run.length >= 3 ? run : [];
 }
 
 /**
@@ -195,11 +201,11 @@ export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, 
 		{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' },
 		() => fetchYouTubeCaptions(videoId, audioLanguage),
 	);
-	const lines = buildTranscriptLines(captions.cues);
+	const lines = captions && buildTranscriptLines(captions.cues);
 	return {
 		...video,
-		content: lines.length ? transcriptMarkdown(lines) : video.summary.trim(),
-		originalLang: captions.language ?? audioLanguage ?? 'und',
+		content: lines?.length ? transcriptMarkdown(lines) : video.summary.trim(),
+		originalLang: captions?.language ?? audioLanguage ?? 'und',
 		youtube: { lines, chapters },
 	} satisfies AcquiredResource & { youtube: YouTubeTranscript };
 }

@@ -132,7 +132,6 @@ export type DerivationSource = Readonly<{
 	kind: ResourceKind;
 	resourcePlatform: ResourcePlatform | null;
 	source: string;
-	originalLang: string;
 	title: string | null;
 	/** What the source said about itself; a hint for a summary, never one. */
 	description: string | null;
@@ -143,7 +142,7 @@ export type DerivationSource = Readonly<{
 export async function loadDerivationSource(db: NodePgDatabase, resourceId: string, inputHash: string) {
 	const { rows } = await db.execute<DerivationSource>(sql`
 		SELECT resource.kind, resource.resource_platform AS "resourcePlatform", COALESCE(resource.source_name, '') AS source,
-		       resource.original_lang AS "originalLang", resource.title, resource.description, COALESCE(body.markdown, '') AS content
+		       resource.title, resource.description, COALESCE(body.markdown, '') AS content
 		FROM resources resource
 		LEFT JOIN resource_content body ON body.resource_id = resource.id
 		WHERE resource.id = ${resourceId}::uuid AND resource.text_hash = ${inputHash}

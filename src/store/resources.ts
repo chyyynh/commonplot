@@ -239,13 +239,15 @@ async function writeCanonicalResource(
 	if (privateObjectId) await replaceResourceEntities(db, resourceId, []);
 	if (resource.youtube) {
 		const transcript = resource.youtube;
+		// SQL NULL records captions YouTube withheld.
+		const lines = transcript.lines && JSON.stringify(transcript.lines);
 		const lostTranscript = await db.execute(sql`
 			SELECT 1 FROM resource_content
-			WHERE resource_id = ${resourceId}::uuid AND transcript <> '[]'::jsonb AND ${JSON.stringify(transcript.lines)}::jsonb = '[]'::jsonb
+			WHERE resource_id = ${resourceId}::uuid AND transcript <> '[]'::jsonb AND COALESCE(${lines}::jsonb, '[]'::jsonb) = '[]'::jsonb
 		`);
 		if (lostTranscript.rows.length) throw new NonRetryableError('YouTube reacquisition returned no captions for an existing transcript');
 		await db.execute(sql`
-			UPDATE resource_content SET transcript = ${JSON.stringify(transcript.lines)}::jsonb, chapters = ${JSON.stringify(transcript.chapters)}::jsonb
+			UPDATE resource_content SET transcript = ${lines}::jsonb, chapters = ${JSON.stringify(transcript.chapters)}::jsonb
 			WHERE resource_id = ${resourceId}::uuid
 		`);
 	}

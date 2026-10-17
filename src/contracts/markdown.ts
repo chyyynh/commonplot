@@ -59,7 +59,14 @@ function serializeAttention(node: Strong | Emphasis, parent: Parents | undefined
 serializeAttention.peek = (node: Strong | Emphasis, _parent: Parents | undefined, state: State): string =>
 	attentionMarker(state, node.type);
 
+const GFM_TRANSFORMS = gfmFromMarkdown().flatMap((extension) => extension.transforms ?? []);
+
+/**
+ * Serializes `tree`, first turning bare URLs in its text into links in place, as GFM reads them from Markdown; left as
+ * text, the serializer escapes them to `https\://` and they stop being links.
+ */
 export function stringifyMarkdown(tree: Nodes): string {
+	for (const transform of GFM_TRANSFORMS) transform(tree as Root);
 	return toMarkdown(tree, {
 		bullet: '-',
 		extensions: [

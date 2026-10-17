@@ -9,6 +9,8 @@ const CAPTION_FETCH_TIMEOUT_MS = 8_000;
  * 2026-09-26, independent of region), so retry on new instances, not in place.
  */
 const CAPTION_FETCHER_ATTEMPTS = 8;
+/** No new attempt starts after this, so the last one still ends inside the captions step's timeout. */
+const CAPTION_DEADLINE_MS = 90_000;
 const CAPTION_FETCHER_HINTS: readonly DurableObjectLocationHint[] = ['wnam', 'enam', 'weur', 'apac', 'oc', 'eeur', 'sam', 'me'];
 const INNERTUBE_PLAYER_URL = 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false';
 const ANDROID_CLIENT_VERSION = '20.10.38';
@@ -18,7 +20,7 @@ const WEB_USER_AGENT =
 
 export type YouTubeCaptionCue = Readonly<{ startTime: number; endTime: number; text: string }>;
 export type YouTubeCaptions = { cues: YouTubeCaptionCue[]; language: string | null };
-type CaptionAttempt = ({ status: 'fetched' } & YouTubeCaptions) | { status: 'withheld'; reason: string };
+type CaptionAttempt = ({ status: 'fetched' } & YouTubeCaptions) | { status: 'withheld' | 'unavailable'; reason: string };
 
 const CaptionTrackSchema = z.object({
 	baseUrl: z.string().min(1),
@@ -126,11 +128,23 @@ async function fetchCaptionCues(videoId: string, track: CaptionTrack): Promise<Y
 	});
 }
 
-/** One attempt from the current machine; a withheld player is a result, not an error. */
+/**
+ * A video no machine can play: removed, private, members-only, age-gated or a stream not live. A sign-in demand that
+ * asks to prove the caller is not a bot is the bot check instead.
+ */
+function unplayable(status: PlayerResponse['playabilityStatus']) {
+	if (!status) return false;
+	if (status.status === 'LOGIN_REQUIRED') return !/\bbot\b/i.test(status.reason ?? '');
+	return ['ERROR', 'UNPLAYABLE', 'LIVE_STREAM_OFFLINE'].includes(status.status);
+}
+
+/** One attempt from the current machine; a withheld or unplayable player is a result, not an error. */
 async function attemptCaptions(videoId: string, audioLanguage: string | null): Promise<CaptionAttempt> {
 	const withheld: string[] = [];
 	for (const load of [innerTubePlayer, watchPagePlayer]) {
 		const player = await load(videoId).catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
+		if (typeof player !== 'string' && unplayable(player.playabilityStatus))
+			return { status: 'unavailable', reason: `${player.playabilityStatus?.status}: ${player.playabilityStatus?.reason ?? 'no reason'}` };
 		if (typeof player === 'string' || player.playabilityStatus?.status !== 'OK') {
 			withheld.push(
 				typeof player === 'string'
@@ -154,12 +168,13 @@ export class YouTubeCaptionFetcher extends DurableObject<CoreEnv> {
 }
 
 /**
- * Captions in the video's spoken language. Returns no cues when the video has
- * none, or when every attempt was withheld by YouTube's bot check.
+ * Captions in the video's spoken language. Returns no cues when the video has none or cannot be played, and null when
+ * YouTube's bot check withheld them on every attempt, so whether it has any is unknown.
  */
-export async function fetchYouTubeCaptions(videoId: string, audioLanguage: string | null): Promise<YouTubeCaptions> {
+export async function fetchYouTubeCaptions(videoId: string, audioLanguage: string | null): Promise<YouTubeCaptions | null> {
 	const withheld: string[] = [];
-	for (let attempt = 0; attempt < CAPTION_FETCHER_ATTEMPTS; attempt++) {
+	const deadline = Date.now() + CAPTION_DEADLINE_MS;
+	for (let attempt = 0; attempt < CAPTION_FETCHER_ATTEMPTS && Date.now() < deadline; attempt++) {
 		const hint = CAPTION_FETCHER_HINTS[(attempt - 1) % CAPTION_FETCHER_HINTS.length];
 		// A failed timedtext fetch or instance is just another lost draw.
 		const result: CaptionAttempt = await (
@@ -174,8 +189,12 @@ export async function fetchYouTubeCaptions(videoId: string, audioLanguage: strin
 			console.info({ tag: 'YOUTUBE', msg: 'Captions fetched', videoId, attempt, count: result.cues.length, language: result.language });
 			return { cues: result.cues, language: result.language };
 		}
+		if (result.status === 'unavailable') {
+			console.info({ tag: 'YOUTUBE', msg: 'Video unplayable; using video description', videoId, reason: result.reason });
+			return { cues: [], language: null };
+		}
 		withheld.push(`${hint ?? 'workflow'}: ${result.reason}`);
 	}
 	console.warn({ tag: 'YOUTUBE', msg: 'Captions withheld on every attempt; using video description', videoId, withheld });
-	return { cues: [], language: null };
+	return null;
 }

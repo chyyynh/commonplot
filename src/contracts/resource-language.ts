@@ -31,17 +31,36 @@ function chineseConverters() {
 	});
 }
 
-/** Local detection only; uncertain text stays und instead of incurring an AI request. */
+/**
+ * The language a text's script shows when Han, kana or Hangul is over 30% of its letters. franc misreads such text
+ * mixed with English words (Chinese posts naming products come back as French), and a site may tag it `en`.
+ */
+function cjkLanguage(text: string): 'ko' | 'ja' | 'zh' | null {
+	const letters = text.match(/\p{L}/gu)?.length ?? 0;
+	const han = text.match(/\p{Script=Han}/gu)?.length ?? 0;
+	const kana = text.match(/[\p{Script=Hiragana}\p{Script=Katakana}]/gu)?.length ?? 0;
+	const hangul = text.match(/\p{Script=Hangul}/gu)?.length ?? 0;
+	if (!letters || (han + kana + hangul) / letters <= 0.3) return null;
+	if (hangul >= han + kana) return 'ko';
+	return kana > (han + kana) * 0.1 ? 'ja' : 'zh';
+}
+
+/**
+ * Local detection only; uncertain text stays und instead of incurring an AI request. A declared language is trusted
+ * unless it is written in Latin script and the text is mostly CJK.
+ */
 export function detectResourceLanguage(content: string, knownLanguage = 'und'): string {
 	const known = ResourceLanguageSchema.parse(knownLanguage);
-	if (known !== 'und' && known !== 'zh') return known;
 	const text = content
 		.replace(/```[^]*?```|~~~[^]*?~~~/g, ' ')
 		.replace(/`[^`\n]*`|https?:\/\/\S+|<[^>]+>/g, ' ')
 		.trim()
 		.slice(0, 20_000);
+	const cjk = cjkLanguage(text);
+	const contradicted = cjk !== null && known !== 'und' && new Intl.Locale(known).maximize().script === 'Latn';
+	if (known !== 'und' && known !== 'zh' && !contradicted) return known;
 	if ((text.match(/\p{L}/gu)?.length ?? 0) < 20) return known;
-	const detected = ResourceLanguageSchema.parse(franc(text, { minLength: 20 }));
+	const detected = cjk ?? ResourceLanguageSchema.parse(franc(text, { minLength: 20 }));
 	if (detected === 'und') return known;
 	if (detected !== 'zh') return detected;
 	const chars = [...text];
@@ -54,7 +73,7 @@ export function detectResourceLanguage(content: string, knownLanguage = 'und'): 
 
 /**
  * Whether generated prose reads as `lang`: Taiwan Traditional Chinese with no Simplified forms, or English with no
- * CJK script. Names in other scripts may appear; the prose around them may not.
+ * Han characters. Neither may contain kana or Hangul, not even in a name; Latin names may appear in Chinese prose.
  */
 // Forms Taiwan writes every day that OpenCC still turns into another variant (台 → 臺, 干擾 → 幹擾).
 const TAIWAN_COMMON_FORMS = new Set('台干里污范雇占准岩游');

@@ -10,11 +10,14 @@ const DESCRIPTION_MAX_LENGTH = 1_500;
 const SUMMARY_TARGETS = {
 	'zh-Hant': {
 		language: 'Taiwan Traditional Chinese (繁體中文, zh-Hant)',
-		style: 'Use Taiwan vocabulary and full-width punctuation; never Simplified Chinese, and never Japanese kana.',
+		style: `Use Taiwan vocabulary and full-width punctuation. Write only in Traditional Chinese characters or Latin script: never Simplified Chinese, Japanese kana or Korean Hangul.
+Give Korean and Japanese names of people, companies, places and products their established Taiwan Chinese form (두산 → 斗山, SK하이닉스 → SK海力士, 삼성전자 → 三星電子), or Latin script when there is none; translate terms too (D램 → DRAM, 나노 → 奈米, ペルソナ → 人物設定).`,
+		last: 'Translate every Korean and Japanese word: the summary holds no Hangul or kana.',
 	},
 	en: {
 		language: 'English',
 		style: 'Keep established English names of people, organizations and products.',
+		last: '',
 	},
 } as const;
 
@@ -23,7 +26,6 @@ function analysisPrompt(resource: DerivationSource) {
 	return `${resource.title ? `Title: ${resource.title}\n` : ''}Source: ${resource.source.trim()}
 Kind: ${resource.kind}
 Platform: ${resource.resourcePlatform ?? 'none'}
-Original language: ${resource.originalLang}
 ${description ? `Source's own description (may be boilerplate or link lists; use only what the content supports): ${description}\n` : ''}Content:
 ${resource.content.trim().substring(0, ANALYSIS_CONTENT_MAX_LENGTH)}`;
 }
@@ -37,7 +39,7 @@ export async function summarizeResource(resource: DerivationSource, lang: Summar
 		{ feature: 'resource-summary', processing_id: processingId, target_lang: lang },
 		{
 			// The language comes last too: a model summarizing a Japanese original otherwise drifts into Japanese.
-			prompt: `${analysisPrompt(resource)}\n\nWrite the summary in ${SUMMARY_TARGETS[lang].language}.`,
+			prompt: `${analysisPrompt(resource)}\n\nWrite the summary in ${SUMMARY_TARGETS[lang].language}. ${SUMMARY_TARGETS[lang].last}`.trim(),
 			system: `Write a 1–2 sentence summary in ${SUMMARY_TARGETS[lang].language}, whatever the original language.
 ${SUMMARY_TARGETS[lang].style}
 Preserve attribution, tone, limitations and uncertainty; add nothing the content does not say.
