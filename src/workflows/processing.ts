@@ -22,8 +22,7 @@ import { enqueueResourceTranslation, importTranslationProgress } from './transla
 
 /** What an import reads back: the published Resource and the translation it waits for, or a run a newer attempt replaced. */
 type ResourceProcessingOutput =
-	// Runs completed before text_hash return `originalHash`; drop it after their 7-day retention.
-	| ({ outcome: 'ready'; resourceId: string; translationId?: string } & ({ textHash: string } | { originalHash: string }))
+	| { outcome: 'ready'; resourceId: string; textHash: string; translationId?: string }
 	| { outcome: 'superseded' };
 
 export type ResourceImportExecution =
@@ -48,11 +47,7 @@ export async function resourceImportExecution(id: string): Promise<ResourceImpor
 			const output = snapshot.output as ResourceProcessingOutput;
 			if (output.outcome === 'superseded') return { state: 'failed' };
 			const translation = output.translationId
-				? await importTranslationProgress(
-						output.resourceId,
-						'textHash' in output ? output.textHash : output.originalHash,
-						output.translationId,
-					)
+				? await importTranslationProgress(output.resourceId, output.textHash, output.translationId)
 				: undefined;
 			return { state: 'ready', resourceId: output.resourceId, ...(translation ? { translation } : {}) };
 		}

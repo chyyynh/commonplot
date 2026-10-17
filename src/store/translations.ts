@@ -61,12 +61,11 @@ const ENGLISH_METADATA_SQL = sql`(${kindWhere(sql`resource.kind`, 'titled')} AND
 export async function loadResourceTranslationInput(
 	db: NodePgDatabase,
 	resourceId: string,
-): Promise<{ resource: ResourceTranslationInput; textHash: string; legacyHash: string | null } | null> {
+): Promise<{ resource: ResourceTranslationInput; textHash: string } | null> {
 	// Machine fields are validated before persistence; planning needs their presence, not another copy of the translation.
-	const result = await db.execute<ResourceTranslationInput & { textHash: string; legacyHash: string | null }>(sql`
+	const result = await db.execute<ResourceTranslationInput & { textHash: string }>(sql`
 		SELECT
 			${CANDIDATE_COLUMNS},
-			resource.original_hash AS "legacyHash",
 			COALESCE(original.title, '') AS title,
 			original.summary AS summary,
 			COALESCE(original.content, '') AS content,
@@ -90,8 +89,8 @@ export async function loadResourceTranslationInput(
 	`);
 	const row = result.rows[0];
 	if (!row?.textHash || !isTranslatable(row)) return null;
-	const { textHash, legacyHash, ...resource } = row;
-	return { resource, textHash: TextHashSchema.parse(textHash), legacyHash };
+	const { textHash, ...resource } = row;
+	return { resource, textHash: TextHashSchema.parse(textHash) };
 }
 
 /** Writes over machine fields only; a row the source supplied in that language is never replaced. */
@@ -112,8 +111,7 @@ export async function persistMachineTranslation(
 			SELECT resource.id
 			FROM resources resource
 			WHERE resource.id = ${resourceId}::uuid
-			  -- A run admitted before text_hash carries the former original_hash; drop it with that column.
-			  AND ${textHash} IN (resource.text_hash, resource.original_hash)
+			  AND resource.text_hash = ${textHash}
 			FOR UPDATE OF resource
 		)
 		INSERT INTO resource_translations AS current_translation (

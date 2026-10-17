@@ -169,8 +169,8 @@ async function writeCanonicalResource(
 ) {
 	const columns = sql`
 		kind, resource_platform, source_name, url, normalized_url, file_type, pdf_hash, original_lang, published_date,
-		og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id, original_hash,
-		text_hash, scraped_date, updated_at
+		og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id, text_hash,
+		scraped_date, updated_at
 	`;
 	const preview = await articlePreview(db, resourceId, resource);
 	const values = sql`
@@ -178,7 +178,6 @@ async function writeCanonicalResource(
 		${resource.fileType}, ${existing ? sql`COALESCE(${resource.pdfHash ?? null}, pdf_hash)` : (resource.pdfHash ?? null)}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
 		${preview.url}, ${preview.width}, ${preview.height}, ${JSON.stringify(resource.creators)}::jsonb,
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
-		(SELECT MD5(jsonb_build_array(lang, title, summary, content)::text) FROM incoming),
 		(SELECT MD5(jsonb_build_array(lang, title, content)::text) FROM incoming), NOW(), NOW()
 	`;
 	// The cleanup excludes the incoming language: no CTE deletes a row another CTE writes.
@@ -346,8 +345,7 @@ async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relati
 		  AND resource.scope = 'corpus'
 		  AND ${READABLE_ORIGINAL_SQL}
 		  AND resource.id <> ${resourceId}::uuid
-		  -- A subject draft queued before text_hash carries the former original_hash; drop it with that column.
-		  AND ${relation.parentTextHash} IN (resource.text_hash, resource.original_hash)
+		  AND resource.text_hash = ${relation.parentTextHash}
 	`);
 	if (attached.rowCount !== 1) throw new NonRetryableError('Subject parent was reacquired or is no longer eligible for attachment');
 }

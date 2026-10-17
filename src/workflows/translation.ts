@@ -35,11 +35,7 @@ import {
 
 /** `metadata` translates the title and summary; `full` also translates the content. */
 type TranslationScope = 'metadata' | 'full';
-/** `originalHash` is how runs admitted before text_hash name their original; drop it with that column. */
-type ResourceTranslationPayload = { force?: boolean; resourceId: string; scope: TranslationScope } & (
-	| { textHash: string }
-	| { originalHash: string }
-);
+type ResourceTranslationPayload = { force?: boolean; resourceId: string; textHash: string; scope: TranslationScope };
 
 const MARKDOWN_TRANSLATION_CONCURRENCY = 15;
 type TranslationPlan = { metadata: boolean; content: boolean; english: boolean };
@@ -171,8 +167,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		event: WorkflowEvent<ResourceTranslationPayload>,
 		step: WorkflowStep,
 	): Promise<{ status: 'complete' | 'skipped' | 'superseded'; resourceId: string }> {
-		const { force = false, resourceId, scope } = event.payload;
-		const textHash = 'textHash' in event.payload ? event.payload.textHash : event.payload.originalHash;
+		const { force = false, resourceId, textHash, scope } = event.payload;
 		// Every run that publishes nothing ends here.
 		const end = (status: 'skipped' | 'superseded', reason: string) => {
 			console.info({ tag: 'RESOURCE_TRANSLATION', event: 'translation_outcome', outcome: status, reason, resource_id: resourceId });
@@ -184,7 +179,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				withCoreDb(this.env, (db) => loadResourceTranslationInput(db, resourceId)),
 			);
 			if (!input) return end('skipped', 'missing');
-			if (textHash !== input.textHash && textHash !== input.legacyHash) return end('superseded', 'superseded');
+			if (input.textHash !== textHash) return end('superseded', 'superseded');
 			const resource = input.resource;
 			const plan = planTranslation(resource, scope, force);
 			if (!plan.metadata && !plan.content && !plan.english) return end('skipped', 'unneeded');
