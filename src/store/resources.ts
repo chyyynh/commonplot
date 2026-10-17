@@ -193,13 +193,13 @@ async function writeCanonicalResource(
 	privateObjectId: string | null,
 ) {
 	const columns = sql`
-		kind, resource_platform, source_name, url, normalized_url, file_type, pdf_hash, original_lang, published_date,
+		kind, resource_platform, source_name, url, file_type, pdf_hash, original_lang, published_date,
 		og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id, text_hash,
 		scraped_date, updated_at
 	`;
 	const preview = await articlePreview(db, resourceId, resource);
 	const values = sql`
-		${resource.kind}, ${resource.resourcePlatform}, ${resource.source}, ${resource.url}, ${resource.normalizedUrl},
+		${resource.kind}, ${resource.resourcePlatform}, ${resource.source}, ${resource.url},
 		${resource.fileType}, ${existing ? sql`COALESCE(${resource.pdfHash ?? null}, pdf_hash)` : (resource.pdfHash ?? null)}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
 		${preview.url}, ${preview.width}, ${preview.height}, ${JSON.stringify(resource.creators)}::jsonb,
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
@@ -219,8 +219,6 @@ async function writeCanonicalResource(
 					      WHERE id = ${resourceId}::uuid`
 			}
 			RETURNING id
-		), cleared_identifiers AS (
-			DELETE FROM resource_identifiers WHERE resource_id = ${resourceId}::uuid AND ${existing}
 		), cleared_references AS (
 			DELETE FROM resource_references WHERE resource_id = ${resourceId}::uuid AND ${existing}
 		), cleared_links AS (
@@ -245,14 +243,6 @@ async function writeCanonicalResource(
 		SELECT 1 FROM written_resource JOIN written_original ON written_original.resource_id = written_resource.id
 	`);
 	if (!written.rows.length) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
-	if (resource.resourceIdentifiers.length) {
-		// Identifier replacement must follow its DELETE; both can target the same keys.
-		await db.execute(sql`
-			INSERT INTO resource_identifiers (resource_id, scheme, value, is_preferred)
-			SELECT ${resourceId}::uuid, scheme, value, preferred
-			FROM jsonb_to_recordset(${JSON.stringify(resource.resourceIdentifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
-		`);
-	}
 	await writeResourceKeys(db, resourceId, privateObjectId ? null : resource.normalizedUrl, resource.resourceIdentifiers, existing);
 	if (resource.references?.length) {
 		// These references describe exactly the original written in this transaction.
@@ -343,14 +333,6 @@ async function resolveLinksTo(db: NodePgDatabase, resourceId: string, resource: 
 /** Another version's identifiers join the paper that is already stored, so both find it next time. */
 async function mergePaperIdentifiers(db: NodePgDatabase, resourceId: string, identifiers: NormalizedResource['resourceIdentifiers']) {
 	if (!identifiers.length) return;
-	await db.execute(sql`
-		INSERT INTO resource_identifiers (resource_id, scheme, value, is_preferred)
-		SELECT ${resourceId}::uuid, incoming.scheme, incoming.value, incoming.preferred AND NOT EXISTS (
-			SELECT 1 FROM resource_identifiers stored WHERE stored.resource_id = ${resourceId}::uuid AND stored.scheme = incoming.scheme
-		)
-		FROM jsonb_to_recordset(${JSON.stringify(identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
-		ON CONFLICT (scheme, value) DO NOTHING
-	`);
 	await db.execute(sql`
 		INSERT INTO resource_keys (resource_id, scheme, value, preferred)
 		SELECT ${resourceId}::uuid, incoming.scheme, incoming.value, incoming.preferred AND NOT EXISTS (
