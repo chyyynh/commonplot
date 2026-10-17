@@ -69,20 +69,19 @@ export async function loadResourceTranslationInput(
 			(SELECT output->>'summary' FROM resource_derivations
 			 WHERE resource_id = resource.id AND kind = 'summary' AND lang = 'en' AND status = 'done') AS summary,
 			COALESCE(original.content, '') AS content,
-			zh_hant.title IS NOT NULL AS "hasTranslatedTitle",
-			zh_hant.content IS NOT NULL AS "hasTranslatedContent",
-			zh_hant.source AS "translationSource",
-			en.title IS NOT NULL AS "hasEnglishTitle"
+			zh_hant.output->>'title' IS NOT NULL AS "hasTranslatedTitle",
+			zh_hant.output->>'content' IS NOT NULL AS "hasTranslatedContent",
+			CASE WHEN resource.original_lang = 'zh-Hant' THEN 'original' WHEN zh_hant.resource_id IS NOT NULL THEN 'machine' END
+				AS "translationSource",
+			en.output->>'title' IS NOT NULL AS "hasEnglishTitle"
 		FROM resources resource
 		JOIN resource_translations original
 		  ON original.resource_id = resource.id
 		 AND original.lang = resource.original_lang
-		LEFT JOIN resource_translations zh_hant
-		  ON zh_hant.resource_id = resource.id
-		 AND zh_hant.lang = 'zh-Hant'
-		LEFT JOIN resource_translations en
-		  ON en.resource_id = resource.id
-		 AND en.lang = 'en'
+		LEFT JOIN resource_derivations zh_hant
+		  ON zh_hant.resource_id = resource.id AND zh_hant.kind = 'translation' AND zh_hant.lang = 'zh-Hant' AND zh_hant.status = 'done'
+		LEFT JOIN resource_derivations en
+		  ON en.resource_id = resource.id AND en.kind = 'translation' AND en.lang = 'en' AND en.status = 'done'
 		WHERE resource.id = ${resourceId}::uuid
 	`);
 	const row = result.rows[0];
@@ -128,7 +127,20 @@ export async function persistMachineTranslation(
 		WHERE current_translation.source = 'machine'
 		RETURNING resource_id::text
 	`);
-	return result.rows.length > 0;
+	if (!result.rows.length) return false;
+	// The same fields as a translation derivation, which replaces resource_translations; a new text starts it over.
+	await db.execute(sql`
+		INSERT INTO resource_derivations AS current (resource_id, kind, lang, input_hash, status, attempts, output, updated_at)
+		VALUES (${resourceId}::uuid, 'translation', ${lang}, ${textHash}, 'done', 0, jsonb_strip_nulls(jsonb_build_object(
+			'title', ${patch.title ?? null}::text, 'content', ${content ?? null}::text,
+			'alignment', ${alignment === undefined ? null : JSON.stringify(alignment)}::jsonb
+		)), NOW())
+		ON CONFLICT (resource_id, kind, lang) DO UPDATE SET
+			output = CASE WHEN current.input_hash = EXCLUDED.input_hash THEN COALESCE(current.output, '{}'::jsonb) || EXCLUDED.output
+			              ELSE EXCLUDED.output END,
+			input_hash = EXCLUDED.input_hash, status = 'done', retry_at = NULL, error = NULL, updated_at = NOW()
+	`);
+	return true;
 }
 
 /** A stored corpus original in a language other than zh-Hant that the translation Workflow accepts. */
@@ -171,10 +183,11 @@ export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: s
 	const result = await db.execute<StoredTranslationCandidate>(sql`
 		SELECT ${CANDIDATE_COLUMNS},
 		       BTRIM(COALESCE(original.content, '')) <> '' AS "hasContent",
-		       zh_hant.content IS NOT NULL AS "hasTranslatedContent"
+		       zh_hant.output->>'content' IS NOT NULL AS "hasTranslatedContent"
 		FROM resources resource
 		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
-		LEFT JOIN resource_translations zh_hant ON zh_hant.resource_id = resource.id AND zh_hant.lang = 'zh-Hant'
+		LEFT JOIN resource_derivations zh_hant
+		  ON zh_hant.resource_id = resource.id AND zh_hant.kind = 'translation' AND zh_hant.lang = 'zh-Hant' AND zh_hant.status = 'done'
 		WHERE resource.id = ${resourceId}::uuid
 		  AND resource.text_hash IS NOT NULL
 	`);
@@ -193,15 +206,17 @@ export async function listMissingTranslations(db: NodePgDatabase, limit: number)
 		       ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS "automaticContent"
 		FROM resources resource
 		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
-		LEFT JOIN resource_translations zh_hant ON zh_hant.resource_id = resource.id AND zh_hant.lang = 'zh-Hant'
-		LEFT JOIN resource_translations en ON en.resource_id = resource.id AND en.lang = 'en'
+		LEFT JOIN resource_derivations zh_hant
+		  ON zh_hant.resource_id = resource.id AND zh_hant.kind = 'translation' AND zh_hant.lang = 'zh-Hant' AND zh_hant.status = 'done'
+		LEFT JOIN resource_derivations en
+		  ON en.resource_id = resource.id AND en.kind = 'translation' AND en.lang = 'en' AND en.status = 'done'
 		WHERE ${TRANSLATABLE_CORPUS_SQL}
 		  AND resource.scraped_date > now() - interval '6 days'
 		  AND resource.scraped_date < now() - interval '15 minutes'
 		  AND (
 		    -- An untitled Resource outside automatic scope has no metadata to translate, so it never gets a zh-Hant row.
 		    (zh_hant.resource_id IS NULL AND (${kindWhere(sql`resource.kind`, 'titled')} OR ${AUTOMATIC_CONTENT_TRANSLATION_SQL}))
-		    OR (zh_hant.content IS NULL AND ${AUTOMATIC_CONTENT_TRANSLATION_SQL})
+		    OR (zh_hant.output->>'content' IS NULL AND ${AUTOMATIC_CONTENT_TRANSLATION_SQL})
 		    OR (en.resource_id IS NULL AND ${ENGLISH_METADATA_SQL})
 		  )
 		ORDER BY resource.published_date DESC NULLS LAST

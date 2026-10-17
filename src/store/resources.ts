@@ -266,9 +266,12 @@ async function writeCanonicalResource(
 		), cleared_links AS (
 			DELETE FROM resource_links WHERE source_resource_id = ${resourceId}::uuid AND ${existing}
 		), cleared_translations AS (
+			-- Translations follow the text: a reacquisition that leaves it as it was keeps them, since their Workflow won't rerun.
 			DELETE FROM resource_translations
 			WHERE resource_id = ${resourceId}::uuid AND ${existing}
 			  AND lang <> ${resource.originalLang}
+			  AND (SELECT text_hash FROM resources WHERE id = ${resourceId}::uuid)
+			      IS DISTINCT FROM (SELECT MD5(jsonb_build_array(lang, title, content)::text) FROM incoming)
 		), written_original AS (
 			INSERT INTO resource_translations (resource_id, lang, title, summary, content, source, updated_at)
 			SELECT written_resource.id, incoming.lang, incoming.title, incoming.summary, incoming.content, 'original', NOW()

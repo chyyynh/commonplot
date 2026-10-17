@@ -27,6 +27,8 @@ export async function requireDerivations(tx: NodePgDatabase, resourceId: string,
 		DELETE FROM resource_derivations
 		WHERE resource_id = ${resourceId}::uuid
 		  AND (kind, lang) NOT IN (SELECT * FROM unnest(${sql.param(kinds)}::text[], ${sql.param(langs)}::text[]))
+		  -- Translations are written by their own Workflow, which won't rerun for an unchanged text.
+		  AND NOT (kind = 'translation' AND input_hash = (SELECT text_hash FROM resources WHERE id = ${resourceId}::uuid))
 	`);
 	if (!required.length) return [];
 	const { rows } = await tx.execute<Derivation>(sql`
