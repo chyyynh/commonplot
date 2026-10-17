@@ -83,7 +83,8 @@ async function scrapeHackerNews(itemId: string): Promise<AcquiredResource | { li
 		originalLang: 'und',
 		publishedDate: item.time ? new Date(item.time * 1000).toISOString() : null,
 		summary: null,
-		creators: submitter ? [{ role: 'submitter', literal: submitter }] : [],
+		// Hacker News usernames are never reassigned.
+		creators: submitter ? [{ role: 'submitter', literal: submitter, account: { platform: 'hackernews', id: submitter } }] : [],
 		kindMetadata: {},
 		fileType: null,
 		previewImageUrl: null,

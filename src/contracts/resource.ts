@@ -26,6 +26,10 @@ const ResourceCreatorSchema = z
 		avatarUrl: optionalHttpUrl.optional(),
 		profileUrl: optionalHttpUrl.optional(),
 		verified: z.boolean().optional(),
+		/** The platform account behind the byline, by the id the platform never reassigns. */
+		get account() {
+			return z.strictObject({ platform: z.enum(RESOURCE_PLATFORM_NAMES), id: z.string().trim().min(1) }).optional();
+		},
 	})
 	.refine((creator) => creator.given || creator.family || creator.literal, 'Creator must have a name');
 

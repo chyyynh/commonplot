@@ -165,7 +165,10 @@ async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
 						literal: channelTitle,
 						...(channelAvatar?.trim() ? { avatarUrl: channelAvatar.trim() } : {}),
 						...(snippet.channelId.trim()
-							? { profileUrl: `https://www.youtube.com/channel/${encodeURIComponent(snippet.channelId.trim())}` }
+							? {
+									profileUrl: `https://www.youtube.com/channel/${encodeURIComponent(snippet.channelId.trim())}`,
+									account: { platform: 'youtube' as const, id: snippet.channelId.trim() },
+								}
 							: {}),
 					},
 				]

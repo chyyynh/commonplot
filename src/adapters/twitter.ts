@@ -12,6 +12,7 @@ import { responseError } from '../services/response';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 
 const TwitterAuthorSchema = z.object({
+	id: z.string().regex(/^\d+$/).optional(),
 	userName: z.string(),
 	name: z.string(),
 	profilePicture: z.string().optional(),
@@ -213,6 +214,7 @@ const FxMediaSchema = z.object({
 });
 
 const FxAuthorSchema = z.object({
+	id: z.string().regex(/^\d+$/).optional(),
 	screen_name: z.string(),
 	name: z.string(),
 	avatar_url: z.string().nullish(),
@@ -291,6 +293,7 @@ function tweetFromFx(fx: FxTweet): Tweet {
 		url: fx.url,
 		createdAt: fx.created_at,
 		author: {
+			...(fx.author.id ? { id: fx.author.id } : {}),
 			userName: fx.author.screen_name,
 			name: fx.author.name,
 			...(fx.author.avatar_url ? { profilePicture: fx.author.avatar_url } : {}),
@@ -630,5 +633,6 @@ function twitterCreator(author: NonNullable<Tweet['author']>) {
 		...(author.profilePicture?.trim() ? { avatarUrl: author.profilePicture.trim() } : {}),
 		...(profileUrl ? { profileUrl } : {}),
 		...(author.isBlueVerified === undefined ? {} : { verified: author.isBlueVerified }),
+		...(author.id ? { account: { platform: 'twitter' as const, id: author.id } } : {}),
 	};
 }

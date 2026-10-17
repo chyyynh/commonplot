@@ -16,7 +16,7 @@ const POST_QUERY = `query PostForIngest($id: String!) {
       title
       postedAt
       contents { markdown }
-      user { displayName username }
+      user { _id displayName username }
       socialPreviewImageUrl
       socialPreviewImageAutoUrl
     }
@@ -31,7 +31,7 @@ const LessWrongDataSchema = z.object({
 				title: z.string(),
 				postedAt: z.string(),
 				contents: z.object({ markdown: z.string().nullable() }).nullable(),
-				user: z.object({ displayName: z.string(), username: z.string().nullable() }).nullable(),
+				user: z.object({ _id: z.string(), displayName: z.string(), username: z.string().nullable() }).nullable(),
 				socialPreviewImageUrl: z.string().nullable(),
 				socialPreviewImageAutoUrl: z.string().nullable(),
 			})
@@ -86,7 +86,7 @@ async function scrapeLessWrong(postId: string) {
 		originalLang: 'und',
 		publishedDate: post.postedAt.trim() || null,
 		summary: null,
-		creators: author ? [{ role: 'author', literal: author }] : [],
+		creators: post.user && author ? [{ role: 'author', literal: author, account: { platform: 'lesswrong', id: post.user._id } }] : [],
 		kindMetadata: null,
 		subjectUrl: null,
 	} satisfies AcquiredResource;

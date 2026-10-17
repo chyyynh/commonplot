@@ -184,6 +184,47 @@ async function writeResourceKeys(
 	`);
 }
 
+/**
+ * Replaces a Resource's byline. Each platform account it names is upserted by the id the platform never reassigns, so
+ * its handle, name and avatar follow this latest acquisition.
+ */
+async function writeResourceCreators(db: NodePgDatabase, resourceId: string, creators: NormalizedResource['creators'], existing: boolean) {
+	if (existing) await db.execute(sql`DELETE FROM resource_creators WHERE resource_id = ${resourceId}::uuid`);
+	if (!creators.length) return;
+	const rows = creators.map((creator, position) => ({
+		position,
+		role: creator.role,
+		name: creator.literal ?? [creator.given, creator.family].filter(Boolean).join(' '),
+		platform: creator.account?.platform ?? null,
+		platform_id: creator.account?.id ?? null,
+		handle: creator.handle ?? null,
+		avatar_url: creator.avatarUrl ?? null,
+		profile_url: creator.profileUrl ?? null,
+		verified: creator.verified ?? null,
+	}));
+	await db.execute(sql`
+		WITH incoming AS (
+			SELECT * FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS creator(
+				position integer, role text, name text, platform text, platform_id text,
+				handle text, avatar_url text, profile_url text, verified boolean
+			)
+		), accounts AS (
+			INSERT INTO creator_accounts AS stored (platform, platform_id, handle, name, avatar_url, profile_url, verified)
+			SELECT DISTINCT ON (platform, platform_id) platform, platform_id, handle, name, avatar_url, profile_url, verified
+			FROM incoming WHERE platform IS NOT NULL
+			ORDER BY platform, platform_id, position
+			ON CONFLICT (platform, platform_id) DO UPDATE SET
+				(handle, name, avatar_url, profile_url, verified, updated_at) =
+				(EXCLUDED.handle, EXCLUDED.name, COALESCE(EXCLUDED.avatar_url, stored.avatar_url), EXCLUDED.profile_url,
+				 COALESCE(EXCLUDED.verified, stored.verified), NOW())
+			RETURNING id, platform, platform_id
+		)
+		INSERT INTO resource_creators (resource_id, position, role, name, account_id)
+		SELECT ${resourceId}::uuid, incoming.position, incoming.role, incoming.name, accounts.id
+		FROM incoming LEFT JOIN accounts USING (platform, platform_id)
+	`);
+}
+
 async function writeCanonicalResource(
 	db: NodePgDatabase,
 	resourceId: string,
@@ -245,6 +286,7 @@ async function writeCanonicalResource(
 	`);
 	if (!written.rows.length) throw new Error(`Resource ${resourceId} has no authoritative original translation`);
 	await writeResourceKeys(db, resourceId, privateObjectId ? null : resource.normalizedUrl, resource.resourceIdentifiers, existing);
+	await writeResourceCreators(db, resourceId, resource.creators, existing);
 	if (resource.references?.length) {
 		// These references describe exactly the original written in this transaction.
 		await db.execute(sql`
