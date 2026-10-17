@@ -1,9 +1,8 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod';
-import { ResourceImportDispatchSchema } from './contracts/processing-target';
+import { ImportWorkflowIdSchema, ResourceImportDispatchSchema } from './contracts/processing-target';
 import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url';
 import type {} from './env';
-import { coreExports } from './exports.ts';
 import { handleRSSCron } from './monitors/rss';
 import { handleTwitterCron } from './monitors/twitter';
 import { type PublicResourceSearchInput, searchPublicResourceIds, searchPublicResourcePassages } from './search/search-index';
@@ -11,7 +10,7 @@ import { consumeSearchSyncBatch } from './search/sync-consumer';
 import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
 import { enqueueDueDerivations } from './workflows/derivation';
-import { resourceImportExecution } from './workflows/processing';
+import { admitRequests, reconcileRequests, resourceImportExecutions } from './workflows/requests';
 import { contentTranslationStatus, enqueueMissingTranslations, requestContentTranslation } from './workflows/translation';
 
 export { ZoteroSdt } from './services/zotero-sdt-container';
@@ -33,7 +32,14 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		// derives their slower polling cadence from the canonical feed URL.
 		if (event.cron === '*/5 * * * *') {
 			this.ctx.waitUntil(
-				withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(db), enqueueMissingTranslations(db), enqueueDueDerivations(db)])),
+				withCoreDb(this.env, (db) =>
+					Promise.allSettled([
+						handleRSSCron(db),
+						enqueueMissingTranslations(db),
+						enqueueDueDerivations(db),
+						reconcileRequests(this.env, db),
+					]),
+				),
 			);
 		} else if (event.cron === '0 */6 * * *') {
 			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
@@ -59,35 +65,48 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		);
 	}
 
-	/** Durable admission outbox: the caller persists this immutable ID and payload first. */
+	/**
+	 * Durable admission outbox: the caller persists this immutable handle and payload first, and its UUID becomes the
+	 * request's id, so dispatching it again records nothing new. An upload's owner is read from its stored object.
+	 */
 	async dispatchResourceImport(input: z.input<typeof ResourceImportDispatchSchema>): Promise<void> {
-		const parsed = ResourceImportDispatchSchema.parse(input);
-		// The admission DO waits for committed ownership. The Workflow rechecks
-		// ownership and the latest attempt before provider execution, after any
-		// queueing delay; another callback here cannot replace that execution gate.
-		await coreExports.ResourceProcessingV2Workflow.createBatch([
-			{ id: parsed.workflowId, params: parsed.payload, retention: { successRetention: '7 days', errorRetention: '7 days' } },
-		]);
+		const { workflowId, payload } = ResourceImportDispatchSchema.parse(input);
+		const id = workflowId.slice('app-ingest-v1-'.length);
+		// The admission DO waits for committed ownership. The Workflow rechecks ownership and the latest attempt
+		// before provider execution, after any queueing delay.
+		await withCoreDb(this.env, (db) =>
+			admitRequests(db, [
+				payload.kind === 'draft'
+					? {
+							requester: 'user',
+							id,
+							userId: payload.saveTarget.userId,
+							notebookId: payload.saveTarget.notebookId,
+							target: { kind: 'draft', url: payload.url },
+						}
+					: { requester: 'user', id, userId: null, notebookId: null, target: payload },
+			]),
+		);
 	}
 
-	/** Each Web import's progress, read from its own Workflow; Web asks only while one is unsettled. */
+	/** Each Web import's progress, read from its request; Web asks only while one is unsettled. */
 	async resourceImportStatus(workflowIds: string[]) {
-		const ids = z.array(ResourceImportDispatchSchema.shape.workflowId).max(50).parse(workflowIds);
-		return Object.fromEntries(await Promise.all(ids.map(async (id) => [id, await resourceImportExecution(id)] as const)));
+		const ids = z.array(ImportWorkflowIdSchema).max(50).parse(workflowIds);
+		return withCoreDb(this.env, (db) => resourceImportExecutions(db, ids));
 	}
 
 	/**
 	 * Reacquire a URL-backed resource through the enrichment workflow. A much shorter result keeps
-	 * the stored original unless `force` is set, e.g. when the source itself was cut down.
+	 * the stored original unless `force` is set, e.g. when the source itself was cut down. A resync
+	 * already in flight for the Resource is joined rather than repeated.
 	 */
 	async resyncResource(resourceId: string, force?: boolean) {
 		const id = z.uuid().parse(resourceId);
 		const forced = z.boolean().optional().parse(force);
-		const instance = await coreExports.ResourceProcessingV2Workflow.create({
-			id: `resource-resync-v3-${id}-${crypto.randomUUID()}`,
-			params: { kind: 'reacquire', ...(forced ? { force: true } : {}), resourceId: id },
-		});
-		return instance.id;
+		const leads = await withCoreDb(this.env, (db) =>
+			admitRequests(db, [{ requester: 'resync', target: { kind: 'reacquire', resourceId: id, ...(forced ? { force: true } : {}) } }]),
+		);
+		return leads[0]?.workflowId ?? null;
 	}
 
 	/** A reader's full translation into `lang`. The app Worker checks entitlement and bills an admitted request. */

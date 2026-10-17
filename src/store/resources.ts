@@ -3,7 +3,6 @@ import { type SQL, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { HostedPreview } from '../contracts/image-mapping';
 import type { NormalizedResource } from '../contracts/normalize-resource';
-import type { ResourceDraftRelation } from '../contracts/processing-target';
 import {
 	type EntityType,
 	type ResourceKind,
@@ -15,7 +14,8 @@ import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { blobKey } from '../contracts/storage-keys';
 import { type DerivationKind, replaceResourceEntities, requireDerivations } from './derivations';
-import { kindWhere } from './kind-sql';
+import { kindWhere, READABLE_ORIGINAL_SQL } from './kind-sql';
+import { fulfillRequests } from './requests';
 
 /** Web's `storedBlobs` advisory lock namespace (`web-tanstack/src/server/db/locks.server.ts`). */
 const STORED_BLOB_LOCK_NAMESPACE = 330571;
@@ -30,16 +30,13 @@ type HostedResource = NormalizedResource & HostedPreview;
  */
 export type ResourcePersistenceTarget =
 	/** `uploadId` is the stored object of an upload that identified this draft. */
-	| Readonly<{ kind: 'draft'; relation?: ResourceDraftRelation; uploadId?: string }>
+	| Readonly<{ kind: 'draft'; uploadId?: string }>
 	| Readonly<{ kind: 'existing'; resourceId: string; fence: number; force?: boolean }>
 	/** An unidentified upload's private file, which shares its stored object's id. */
 	| Readonly<{ kind: 'upload'; objectId: string }>;
 
 /** A reacquired original this much shorter than the stored one is kept out unless forced (error or challenge pages). */
 const MIN_REACQUIRED_CONTENT_RATIO = 0.5;
-
-/** Whether a Resource has a readable original, over the `resource` and `original` aliases. An untitled kind needs no title. */
-const READABLE_ORIGINAL_SQL = sql`COALESCE((${kindWhere(sql`resource.kind`, 'titled', false)} OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> '', false)`;
 
 /** A Resource row as its transaction sees it, locked; also what persistence hands its follow-ups. */
 type StoredResource = Readonly<{
@@ -327,46 +324,28 @@ async function mergePaperIdentifiers(db: NodePgDatabase, resourceId: string, ide
 	`);
 }
 
-async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relation: ResourceDraftRelation) {
-	if (relation.kind === 'source') {
-		const source = await db.execute<{ id: string }>(sql`SELECT id::text FROM sources WHERE id = ${relation.sourceId}::uuid`);
-		if (!source.rows[0]) throw new Error('Resource source was not found');
-		await db.execute(sql`
-			UPDATE resources SET source_id = ${relation.sourceId}::uuid, updated_at = NOW()
-			WHERE id = ${resourceId}::uuid AND source_id IS NULL
-		`);
-		return;
-	}
-	const attached = await db.execute(sql`
-		UPDATE resources resource SET subject_resource_id = ${resourceId}::uuid, updated_at = NOW()
-		FROM resource_translations original
-		WHERE resource.id = ${relation.parentResourceId}::uuid
-		  AND original.resource_id = resource.id AND original.lang = resource.original_lang
-		  AND resource.scope = 'corpus'
-		  AND ${READABLE_ORIGINAL_SQL}
-		  AND resource.id <> ${resourceId}::uuid
-		  AND resource.text_hash = ${relation.parentTextHash}
-	`);
-	if (attached.rowCount !== 1) throw new NonRetryableError('Subject parent was reacquired or is no longer eligible for attachment');
-}
-
 /**
  * Writes an acquired Resource in one transaction, in three parts: `claimRow` decides which row it is and whether its
- * original is replaced, `writeOriginal` writes or keeps that original, and `applyRequester` records who asked for it.
- * `blobExists` confirms, under the blob lock, that the PDF a Resource reads as was not purged since it was stored.
+ * original is replaced, `writeOriginal` writes or keeps that original, and `fulfillRequests` settles every request waiting
+ * on the one `requestId` leads. `blobExists` confirms, under the blob lock, that the PDF a Resource reads as was not purged
+ * since it was stored.
  */
 export async function persistResolvedResource(
 	db: NodePgDatabase,
 	resource: HostedResource,
 	target: ResourcePersistenceTarget,
+	requestId: string,
 	blobExists: (contentHash: string) => Promise<boolean>,
 ) {
 	return db.transaction(async (tx) => {
 		const claim = await claimRow(tx, resource, target, blobExists);
-		if (claim.settled) return { ...claim.settled, derivations: [] };
+		// A newer attempt that already committed did what these requests asked.
+		if (claim.settled) return { ...claim.settled, derivations: [], requests: await fulfillRequests(tx, requestId, claim.resourceId) };
 		const derivations = await writeOriginal(tx, resource, target, claim);
-		await applyRequester(tx, claim.resourceId, resource, target);
-		return { ...committed(await lockResource(tx, claim.resourceId), claim.outcome), derivations };
+		// Follow-ups read the committed row, which can differ from this draft; links stored before it existed now point to it.
+		if (target.kind !== 'upload') await resolveLinksTo(tx, claim.resourceId, resource);
+		const requests = await fulfillRequests(tx, requestId, claim.resourceId);
+		return { ...committed(await lockResource(tx, claim.resourceId), claim.outcome), derivations, requests };
 	});
 }
 
@@ -488,13 +467,6 @@ async function writeOriginal(
 			await tx.execute(sql`UPDATE resources SET pdf_hash = ${resource.pdfHash} WHERE id = ${resourceId}::uuid AND pdf_hash IS NULL`);
 	}
 	return [];
-}
-
-/** Records who asked for the Resource, and points links stored before it existed at it. */
-async function applyRequester(tx: NodePgDatabase, resourceId: string, resource: HostedResource, target: ResourcePersistenceTarget) {
-	if (target.kind === 'draft' && target.relation) await applyDraftRelation(tx, resourceId, target.relation);
-	// Follow-ups read the committed row, which can differ from this draft.
-	if (target.kind !== 'upload') await resolveLinksTo(tx, resourceId, resource);
 }
 
 function isDegradedOriginal(content: string, stored: StoredResource): boolean {

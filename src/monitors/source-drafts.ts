@@ -1,14 +1,18 @@
-import { hash } from 'node:crypto';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { SourceResourceDraftSchema, type SourceResourceDraft } from '../contracts/processing-target';
 import { resolveResourceUrl } from '../contracts/resource-url';
-import { coreExports } from '../exports.ts';
+import { recordFulfilledSourceRequests, settledSourceRequestKeys } from '../store/requests';
 import { attachSourceToReadableResources, findResourcesByUrls } from '../store/resources';
+import { admitRequests } from '../workflows/requests';
 
-/** Crosses the discovery -> Resource Workflow boundary for every monitor. */
+/**
+ * Crosses the discovery -> Resource boundary for every monitor. A source asks for each URL once: a URL it already asked
+ * for is skipped, even one that redirects to a stored Resource under another URL, and a failed one is asked again only
+ * after its wait.
+ */
 export async function enqueueSourceDrafts(db: NodePgDatabase, sourceId: string, drafts: SourceResourceDraft[]) {
-	const relation = { kind: 'source' as const, sourceId: z.uuid().parse(sourceId) };
+	z.uuid().parse(sourceId);
 	const seen = new Set<string>();
 	let skipped = 0;
 	const targets = drafts.flatMap((draft, index) => {
@@ -16,9 +20,10 @@ export async function enqueueSourceDrafts(db: NodePgDatabase, sourceId: string, 
 		if (parsed.success) {
 			// Invalid drafts must not claim an identity and hide a valid duplicate.
 			const url = resolveResourceUrl(parsed.data.url)!;
-			if (seen.has(url.normalizedUrl)) return [];
-			seen.add(url.normalizedUrl);
-			return [{ url, target: { ...parsed.data, kind: 'draft' as const, relation } }];
+			const key = `url:${url.normalizedUrl}`;
+			if (seen.has(key)) return [];
+			seen.add(key);
+			return [{ url, key, target: { ...parsed.data, kind: 'draft' as const } }];
 		}
 		skipped++;
 		console.warn({
@@ -30,30 +35,34 @@ export async function enqueueSourceDrafts(db: NodePgDatabase, sourceId: string, 
 		});
 		return [];
 	});
+	const asked = await settledSourceRequestKeys(
+		db,
+		sourceId,
+		targets.map(({ key }) => key),
+	);
+	const fresh = targets.filter(({ key }) => !asked.has(key));
 	const known = await findResourcesByUrls(
 		db,
-		targets.map(({ url }) => url),
+		fresh.map(({ url }) => url),
 	);
 	// A readable original only needs its discovery source attached.
-	const attached = await attachSourceToReadableResources(
+	await attachSourceToReadableResources(
 		db,
 		sourceId,
 		known.flatMap(({ resourceId, sourceId }) => (resourceId && !sourceId ? [resourceId] : [])),
 	);
-	const instances = known
-		.flatMap(({ resourceId, sourceId: existingSourceId, normalizedUrl }, index) =>
-			resourceId && (existingSourceId || attached.has(resourceId)) ? [] : [{ target: targets[index]!.target, normalizedUrl }],
-		)
-		.map(({ target, normalizedUrl }) => ({
-			id: `source-draft-v7-${hash('sha256', `${sourceId}:${normalizedUrl}`, 'hex')}`,
-			params: target,
-			// The ID is held while a feed keeps listing the URL: a feed link that redirects never matches the
-			// stored URL, so a short success retention re-processed it every poll. Failures retry daily.
-			retention: { successRetention: '7 days', errorRetention: '1 day' } as const,
-		}));
-	let created = 0;
-	for (let offset = 0; offset < instances.length; offset += 100) {
-		created += (await coreExports.ResourceProcessingV2Workflow.createBatch(instances.slice(offset, offset + 100))).length;
-	}
-	return { created, deduplicated: drafts.length - skipped - created, skipped };
+	await recordFulfilledSourceRequests(
+		db,
+		sourceId,
+		fresh.flatMap(({ key, url }, index) => {
+			const { resourceId } = known[index]!;
+			return resourceId ? [{ key, url: url.url, resourceId }] : [];
+		}),
+	);
+	const leads = await admitRequests(
+		db,
+		fresh.flatMap(({ target }, index) => (known[index]!.resourceId ? [] : [{ requester: 'source' as const, sourceId, target }])),
+	);
+	const requested = fresh.length - known.filter(({ resourceId }) => resourceId).length;
+	return { created: leads.length, deduplicated: drafts.length - skipped - requested, skipped };
 }

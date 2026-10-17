@@ -6,3 +6,6 @@ export function kindWhere(column: SQL, rule: ResourceKindRule, value = true): SQ
 	const kinds = resourceKindsWhere(rule, value);
 	return kinds.length ? sql`${column} IN (${sql.raw(kinds.map((kind) => `'${kind}'`).join(', '))})` : sql`false`;
 }
+
+/** Whether a Resource has a readable original, over the `resource` and `original` aliases. An untitled kind needs no title. */
+export const READABLE_ORIGINAL_SQL = sql`COALESCE((${kindWhere(sql`resource.kind`, 'titled', false)} OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> '', false)`;

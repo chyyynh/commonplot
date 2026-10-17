@@ -1,14 +1,13 @@
-import { hash } from 'node:crypto';
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { stageResourceAcquisition } from '../adapters/acquire';
 import type { AcquisitionInput, StoredPdf } from '../contracts/acquired-resource';
 import { resourceImageSources, withHostedImages } from '../contracts/image-mapping';
-import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
+import { ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { blobKey } from '../contracts/storage-keys';
-import { coreExports } from '../exports.ts';
 import { stageResourceImages } from '../services/image-rehosting';
 import { STORAGE_STEP } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
+import { completeUserRequests, failRequests } from '../store/requests';
 import {
 	claimAcquisitionFence,
 	loadReacquisitionSource,
@@ -18,64 +17,53 @@ import {
 import { translatesContentAutomatically } from '../store/translations';
 import { deriveResource } from './derivation';
 import { stageResourceReferences } from './references';
-import { enqueueResourceTranslation, importTranslationProgress } from './translation';
+import { admitRequests, requestSaveTarget } from './requests';
+import { enqueueResourceTranslation } from './translation';
 
-/** What an import reads back: the published Resource and the translation it waits for, or a run a newer attempt replaced. */
+/** The published Resource and the translation its imports follow, or a run a newer attempt replaced. */
 type ResourceProcessingOutput =
 	| { outcome: 'ready'; resourceId: string; textHash: string; translationId?: string }
 	| { outcome: 'superseded' };
 
-export type ResourceImportExecution =
-	| { state: 'absent' | 'queued' | 'running' | 'failed' }
-	| { state: 'ready'; resourceId: string; translation?: 'running' | 'failed' };
-
-/** An import's progress, read from its Workflow and the translation that Workflow admitted. */
-export async function resourceImportExecution(id: string): Promise<ResourceImportExecution> {
-	let snapshot: Awaited<ReturnType<WorkflowInstance['status']>>;
-	try {
-		snapshot = await (await coreExports.ResourceProcessingV2Workflow.get(id)).status();
-	} catch {
-		return { state: 'absent' };
-	}
-	switch (snapshot.status) {
-		case 'queued':
-			return { state: 'queued' };
-		case 'errored':
-		case 'terminated':
-			return { state: 'failed' };
-		case 'complete': {
-			const output = snapshot.output as ResourceProcessingOutput;
-			if (output.outcome === 'superseded') return { state: 'failed' };
-			const translation = output.translationId
-				? await importTranslationProgress(output.resourceId, output.textHash, output.translationId)
-				: undefined;
-			return { state: 'ready', resourceId: output.resourceId, ...(translation ? { translation } : {}) };
-		}
-		default:
-			return { state: 'running' };
-	}
-}
-
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep): Promise<ResourceProcessingOutput> {
 		const target = ResourceProcessingTargetSchema.parse(event.payload);
+		try {
+			return await this.process(target, event.instanceId, step);
+		} catch (error) {
+			// Every request waiting on this acquisition settles with it, so none waits for a workflow that ended.
+			const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+			await step.do('fail-resource-requests-v1', STORAGE_STEP, () =>
+				withCoreDb(this.env, (db) => failRequests(db, target.requestId, message)),
+			);
+			throw error;
+		}
+	}
+
+	private async process(target: ResourceProcessingTarget, instanceId: string, step: WorkflowStep): Promise<ResourceProcessingOutput> {
 		let upload: StoredPdf | null | undefined;
 		if (target.kind === 'storedBlob') {
 			// Web owns the upload: it confirms this attempt and describes the bytes. Core only rechecks, when it commits, that the object is still ready.
 			upload = await step.do('start-owned-pdf-attempt-v2', async () => {
-				const verified = await this.env.APP.verifyStoredBlobProcessing(target.objectId, event.instanceId);
+				const verified = await this.env.APP.verifyStoredBlobProcessing(target.objectId, instanceId);
 				return verified && { contentHash: verified.contentHash, fileName: verified.fileName };
 			});
-			if (!upload) return { outcome: 'superseded' };
+			if (!upload) {
+				// A newer attempt of the same upload, or one Web gave up on, waits behind this lead or retries on its own.
+				await step.do('supersede-upload-request-v1', STORAGE_STEP, () =>
+					withCoreDb(this.env, (db) => failRequests(db, target.requestId, 'Superseded by a newer upload attempt', true)),
+				);
+				return { outcome: 'superseded' };
+			}
 		}
 		// An uploaded PDF that names a paper publishes that paper, read from the upload.
 		const { resource, uploadedPaper } = await stageResourceAcquisition(
 			this.env,
 			step,
 			await loadAcquisitionInput(this.env, step, target, upload),
-			event.instanceId,
+			instanceId,
 		);
-		const plan = await planAttempt(target, uploadedPaper, event.instanceId, (resourceId) =>
+		const persistenceTarget = await planAttempt(target, uploadedPaper, (resourceId) =>
 			step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () => withCoreDb(this.env, (db) => claimAcquisitionFence(db, resourceId))),
 		);
 
@@ -84,32 +72,46 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			msg: 'Starting',
 			resourceKind: resource.kind,
 			resourcePlatform: resource.resourcePlatform,
-			processing_id: event.instanceId,
+			processing_id: instanceId,
 			target_kind: target.kind,
 		});
-		const hosted = withHostedImages(
-			resource,
-			await stageResourceImages(this.env, step, event.instanceId, resourceImageSources([resource])),
-		);
+		const hosted = withHostedImages(resource, await stageResourceImages(this.env, step, instanceId, resourceImageSources([resource])));
 		const persistence = await step.do('persist-resolved-resource-scope-v9', STORAGE_STEP, async () =>
 			withCoreDb(this.env, (db) =>
 				persistResolvedResource(
 					db,
 					hosted,
-					plan.persistence,
+					persistenceTarget,
+					target.requestId,
 					async (contentHash) => (await this.env.R2.head(blobKey(contentHash))) !== null,
 				),
 			),
 		);
 		if (persistence.outcome === 'superseded') return { outcome: 'superseded' };
-		const { id: resourceId, scope, subjectResourceId, textHash, outcome } = persistence;
-		const { saveTarget } = plan;
-		if (saveTarget)
-			await step.do('complete-resource-save-v2', STORAGE_STEP, () => this.env.APP.completeResourceSave(resourceId, saveTarget));
+		const { id: resourceId, scope, subjectResourceId, textHash, outcome, requests } = persistence;
+		// Each user who asked saves the Resource; one save failing fails only that user's request.
+		const saved = (
+			await Promise.all(
+				requests.users.map(async (request) => {
+					try {
+						await step.do(`complete-request-save-v1-${request.id}`, STORAGE_STEP, () =>
+							this.env.APP.completeResourceSave(resourceId, requestSaveTarget(request)),
+						);
+						return [request.id];
+					} catch (error) {
+						const message = error instanceof Error ? error.message : String(error);
+						await step.do(`fail-request-save-v1-${request.id}`, STORAGE_STEP, () =>
+							withCoreDb(this.env, (db) => failRequests(db, request.id, `Save failed: ${message}`, true)),
+						);
+						return [];
+					}
+				}),
+			)
+		).flat();
 
 		// The Resource is published; its summary and entities are derived from what was written, before the handoffs read them.
 		await Promise.all(
-			persistence.derivations.map((kind) => deriveResource(this.env, step, resourceId, textHash, hosted, kind, event.instanceId)),
+			persistence.derivations.map((kind) => deriveResource(this.env, step, resourceId, textHash, hosted, kind, instanceId)),
 		);
 		const subjectUrl = resource.subjectUrl;
 		// Crossref enrichment runs beside the handoffs; the import settles only after it, since the Workflow returns last.
@@ -123,10 +125,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					})
 				: undefined;
 		// Attaching a subject rewrote its carrier's search document, so the carrier syncs too.
-		const searchSyncIds = [
-			...(scope === 'corpus' ? [resourceId] : []),
-			...(target.kind === 'draft' && target.relation?.kind === 'subject' ? [target.relation.parentResourceId] : []),
-		];
+		const searchSyncIds = [...(scope === 'corpus' ? [resourceId] : []), ...requests.carriers];
 		// Every handoff runs to completion even when an independent one fails.
 		const followups = await Promise.allSettled([
 			searchSyncIds.length
@@ -141,17 +140,23 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				return enqueueResourceTranslation(persistence, automatic ? 'full' : 'metadata', target.kind !== 'draft' && outcome === 'written');
 			}),
 			subjectUrl && outcome === 'written' && subjectResourceId === null
-				? step.do('enqueue-resolved-subject-child-v2', STORAGE_STEP, async () => {
-						const subjectTarget = ResourceDraftTargetSchema.parse({
-							kind: 'draft',
-							relation: { kind: 'subject', parentResourceId: resourceId, parentTextHash: textHash },
-							// Carrier-resolved hints only; the subject page still wins when it states its own date.
-							...(resource.publishedDate ? { sourceHints: { publishedDate: resource.publishedDate } } : {}),
-							url: subjectUrl,
-						});
-						const id = `subject-draft-auto-v1-${hash('sha256', JSON.stringify(subjectTarget), 'hex')}`;
-						await coreExports.ResourceProcessingV2Workflow.createBatch([{ id, params: subjectTarget }]);
-						return id;
+				? step.do('request-subject-v1', STORAGE_STEP, async () => {
+						const leads = await withCoreDb(this.env, (db) =>
+							admitRequests(db, [
+								{
+									requester: 'subject',
+									parentResourceId: resourceId,
+									parentTextHash: textHash,
+									target: {
+										kind: 'draft',
+										url: subjectUrl,
+										// Carrier-resolved hints only; the subject page still wins when it states its own date.
+										...(resource.publishedDate ? { sourceHints: { publishedDate: resource.publishedDate } } : {}),
+									},
+								},
+							]),
+						);
+						return leads.map(({ workflowId }) => workflowId);
 					})
 				: undefined,
 		]);
@@ -163,6 +168,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: resourceId, target_kind: target.kind });
 		const translation = followups[1];
 		const translationId = translation.status === 'fulfilled' ? translation.value?.id : undefined;
+		await step.do('complete-user-requests-v1', STORAGE_STEP, () =>
+			withCoreDb(this.env, (db) => completeUserRequests(db, saved, translationId ?? null)),
+		);
 		return { outcome: 'ready', resourceId, textHash, ...(translationId ? { translationId } : {}) };
 	}
 }
@@ -190,36 +198,26 @@ async function loadAcquisitionInput(
 }
 
 /**
- * Where this attempt writes and which save it completes. Reacquiring an existing Resource claims a fencing token, so it
- * commits only if no newer attempt has committed first. An upload runs one attempt at a time: an identified one is a draft
- * of its public paper, and any other stays the uploader's private file.
+ * Where this attempt writes. Reacquiring an existing Resource claims a fencing token, so it commits only if no newer attempt
+ * has committed first. An upload runs one attempt at a time: an identified one is a draft of its public paper, and any other
+ * stays the uploader's private file.
  */
 async function planAttempt(
 	target: ResourceProcessingTarget,
 	uploadedPaper: boolean,
-	instanceId: string,
 	claimFence: (resourceId: string) => Promise<number>,
-): Promise<{ persistence: ResourcePersistenceTarget; saveTarget: unknown }> {
+): Promise<ResourcePersistenceTarget> {
 	switch (target.kind) {
 		case 'draft':
-			return {
-				persistence: { kind: 'draft', ...(target.relation ? { relation: target.relation } : {}) },
-				saveTarget: target.saveTarget ?? null,
-			};
+			return { kind: 'draft' };
 		case 'reacquire':
 			return {
-				persistence: {
-					kind: 'existing',
-					resourceId: target.resourceId,
-					fence: await claimFence(target.resourceId),
-					...(target.force ? { force: true } : {}),
-				},
-				saveTarget: null,
+				kind: 'existing',
+				resourceId: target.resourceId,
+				fence: await claimFence(target.resourceId),
+				...(target.force ? { force: true } : {}),
 			};
 		case 'storedBlob':
-			return {
-				persistence: uploadedPaper ? { kind: 'draft', uploadId: target.objectId } : { kind: 'upload', objectId: target.objectId },
-				saveTarget: { kind: 'userFileResult', objectId: target.objectId, workflowId: instanceId },
-			};
+			return uploadedPaper ? { kind: 'draft', uploadId: target.objectId } : { kind: 'upload', objectId: target.objectId };
 	}
 }
