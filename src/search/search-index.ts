@@ -26,12 +26,8 @@ export const SEARCHABLE_CORPUS_RESOURCE_SQL = sql`(
 	r.scope = 'corpus'
 	AND ${kindWhere(sql`r.kind`, 'searchable')}
 	AND (r.kind <> 'file' OR r.file_type = 'application/pdf')
-	AND EXISTS (
-		SELECT 1 FROM resource_translations original
-		WHERE original.resource_id = r.id AND original.lang = r.original_lang
-		  AND (${kindWhere(sql`r.kind`, 'titled', false)} OR BTRIM(COALESCE(original.title, '')) <> '')
-		  AND BTRIM(COALESCE(original.content, '')) <> ''
-	)
+	AND (${kindWhere(sql`r.kind`, 'titled', false)} OR BTRIM(COALESCE(r.title, '')) <> '')
+	AND EXISTS (SELECT 1 FROM resource_content body WHERE body.resource_id = r.id AND BTRIM(body.markdown) <> '')
 )`;
 
 type SearchableResourceKind = z.infer<typeof SearchableResourceKindSchema>;
@@ -136,15 +132,25 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 		               SELECT derivation.output->>'summary' FROM resource_derivations derivation
 		               WHERE derivation.resource_id = r.id AND derivation.kind = 'summary'
 		                 AND derivation.lang = translation.lang AND derivation.status = 'done'
-		             ), translation.summary),
+		             ), (
+		               -- Until a regenerated summary lands, the old one stands in.
+		               SELECT legacy.summary FROM resource_translations legacy
+		               WHERE legacy.resource_id = r.id AND legacy.lang = translation.lang
+		             )),
 		             'content', CASE WHEN translation.lang = r.original_lang OR ${kindWhere(sql`r.kind`, 'titled', false)}
 		               THEN LEFT(translation.content, ${ORIGINAL_CONTENT_MAX_CHARS}::integer) END
 		           )
 		           ORDER BY (translation.lang = r.original_lang) DESC, translation.lang
 		         )
-		         FROM resource_translations translation
-		         WHERE translation.resource_id = r.id
-		           AND (translation.lang = r.original_lang OR ${inArray(sql`translation.lang`, INDEX_TRANSLATION_LANGS)})
+		         FROM (
+		           SELECT r.original_lang AS lang, r.title, body.markdown AS content
+		           FROM resource_content body WHERE body.resource_id = r.id
+		           UNION ALL
+		           SELECT derivation.lang, derivation.output->>'title', derivation.output->>'content'
+		           FROM resource_derivations derivation
+		           WHERE derivation.resource_id = r.id AND derivation.kind = 'translation' AND derivation.status = 'done'
+		             AND ${inArray(sql`derivation.lang`, INDEX_TRANSLATION_LANGS)}
+		         ) translation
 		       ), '[]'::jsonb) AS translations
 		FROM resources r
 		WHERE ${inArray(sql`r.id`, resourceIds)}

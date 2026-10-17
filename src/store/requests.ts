@@ -242,11 +242,9 @@ export async function fulfillRequests(tx: NodePgDatabase, requestId: string, res
 		? (
 				await tx.execute<{ id: string }>(sql`
 					UPDATE resources resource SET subject_resource_id = ${resourceId}::uuid, updated_at = NOW()
-					FROM resource_translations original,
-					     jsonb_to_recordset(${JSON.stringify(subjects.map(({ parentResourceId, parentTextHash }) => ({ id: parentResourceId, hash: parentTextHash })))}::jsonb)
+					FROM jsonb_to_recordset(${JSON.stringify(subjects.map(({ parentResourceId, parentTextHash }) => ({ id: parentResourceId, hash: parentTextHash })))}::jsonb)
 					     AS parent(id uuid, hash text)
 					WHERE resource.id = parent.id AND resource.text_hash = parent.hash
-					  AND original.resource_id = resource.id AND original.lang = resource.original_lang
 					  AND resource.scope = 'corpus' AND ${READABLE_ORIGINAL_SQL}
 					  AND resource.id <> ${resourceId}::uuid
 					RETURNING resource.id::text

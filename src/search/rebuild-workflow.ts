@@ -74,7 +74,7 @@ async function listCorpusIdsAfter(
 		         ${since}::timestamptz IS NOT NULL AND (
 		           r.updated_at > ${since}::timestamptz
 		           OR EXISTS (
-		             SELECT 1 FROM resource_translations t WHERE t.resource_id = r.id AND t.updated_at > ${since}::timestamptz
+		             SELECT 1 FROM resource_derivations d WHERE d.resource_id = r.id AND d.updated_at > ${since}::timestamptz
 		           )
 		         )
 		       ) AS changed

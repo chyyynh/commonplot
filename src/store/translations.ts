@@ -65,19 +65,17 @@ export async function loadResourceTranslationInput(
 	const result = await db.execute<ResourceTranslationInput & { textHash: string }>(sql`
 		SELECT
 			${CANDIDATE_COLUMNS},
-			COALESCE(original.title, '') AS title,
+			COALESCE(resource.title, '') AS title,
 			(SELECT output->>'summary' FROM resource_derivations
 			 WHERE resource_id = resource.id AND kind = 'summary' AND lang = 'en' AND status = 'done') AS summary,
-			COALESCE(original.content, '') AS content,
+			COALESCE(original.markdown, '') AS content,
 			zh_hant.output->>'title' IS NOT NULL AS "hasTranslatedTitle",
 			zh_hant.output->>'content' IS NOT NULL AS "hasTranslatedContent",
 			CASE WHEN resource.original_lang = 'zh-Hant' THEN 'original' WHEN zh_hant.resource_id IS NOT NULL THEN 'machine' END
 				AS "translationSource",
 			en.output->>'title' IS NOT NULL AS "hasEnglishTitle"
 		FROM resources resource
-		JOIN resource_translations original
-		  ON original.resource_id = resource.id
-		 AND original.lang = resource.original_lang
+		LEFT JOIN resource_content original ON original.resource_id = resource.id
 		LEFT JOIN resource_derivations zh_hant
 		  ON zh_hant.resource_id = resource.id AND zh_hant.kind = 'translation' AND zh_hant.lang = 'zh-Hant' AND zh_hant.status = 'done'
 		LEFT JOIN resource_derivations en
@@ -150,7 +148,7 @@ const TRANSLATABLE_CORPUS_SQL = sql`(
 	AND resource.url IS NOT NULL
 	AND resource.original_lang <> 'zh-Hant'
 	AND ${kindWhere(sql`resource.kind`, 'translatable')}
-	AND BTRIM(COALESCE(original.content, '')) <> ''
+	AND BTRIM(COALESCE(original.markdown, '')) <> ''
 )`;
 
 /**
@@ -162,14 +160,14 @@ const AUTOMATIC_CONTENT_TRANSLATION_SQL = sql`(
 		resource.source_id IS NOT NULL
 		OR EXISTS (SELECT 1 FROM resources carrier WHERE carrier.subject_resource_id = resource.id AND carrier.source_id IS NOT NULL)
 	)
-	AND LENGTH(original.content) <= ${MAX_AUTOMATIC_CONTENT_CHARACTERS}
+	AND COALESCE(LENGTH(original.markdown), 0) <= ${MAX_AUTOMATIC_CONTENT_CHARACTERS}
 )`;
 
 export async function translatesContentAutomatically(db: NodePgDatabase, resourceId: string): Promise<boolean> {
 	const result = await db.execute<{ automatic: boolean }>(sql`
 		SELECT ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS automatic
 		FROM resources resource
-		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+		LEFT JOIN resource_content original ON original.resource_id = resource.id
 		WHERE resource.id = ${resourceId}::uuid
 	`);
 	return result.rows[0]?.automatic ?? false;
@@ -182,10 +180,10 @@ type StoredTranslationCandidate = ResourceTranslationCandidate &
 export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: string): Promise<StoredTranslationCandidate | null> {
 	const result = await db.execute<StoredTranslationCandidate>(sql`
 		SELECT ${CANDIDATE_COLUMNS},
-		       BTRIM(COALESCE(original.content, '')) <> '' AS "hasContent",
+		       BTRIM(COALESCE(original.markdown, '')) <> '' AS "hasContent",
 		       zh_hant.output->>'content' IS NOT NULL AS "hasTranslatedContent"
 		FROM resources resource
-		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+		LEFT JOIN resource_content original ON original.resource_id = resource.id
 		LEFT JOIN resource_derivations zh_hant
 		  ON zh_hant.resource_id = resource.id AND zh_hant.kind = 'translation' AND zh_hant.lang = 'zh-Hant' AND zh_hant.status = 'done'
 		WHERE resource.id = ${resourceId}::uuid
@@ -205,7 +203,7 @@ export async function listMissingTranslations(db: NodePgDatabase, limit: number)
 		SELECT ${CANDIDATE_COLUMNS},
 		       ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS "automaticContent"
 		FROM resources resource
-		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+		LEFT JOIN resource_content original ON original.resource_id = resource.id
 		LEFT JOIN resource_derivations zh_hant
 		  ON zh_hant.resource_id = resource.id AND zh_hant.kind = 'translation' AND zh_hant.lang = 'zh-Hant' AND zh_hant.status = 'done'
 		LEFT JOIN resource_derivations en

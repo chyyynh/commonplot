@@ -78,7 +78,6 @@ async function findResourceCandidates(
 			JOIN resource_keys stored USING (scheme, value)
 		) candidate ON true
 		LEFT JOIN resources resource ON resource.id = candidate.id
-		LEFT JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 		GROUP BY input.ordinal ORDER BY input.ordinal
 	`);
 	return rows.map(({ owners }) => owners);
@@ -106,11 +105,11 @@ async function lockResourceIfAny(db: NodePgDatabase, resourceId: string): Promis
 		       resource.original_lang AS "originalLang", resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform",
 		       resource.subject_resource_id::text AS "subjectResourceId",
 		       ${READABLE_ORIGINAL_SQL} AS "hasOriginal",
-		       COALESCE(CHAR_LENGTH(original.content), 0) AS "originalChars",
+		       COALESCE((SELECT CHAR_LENGTH(body.markdown) FROM resource_content body WHERE body.resource_id = resource.id), 0)
+		         AS "originalChars",
 		       resource.committed_seq AS "committedSeq",
 		       resource.text_hash AS "textHash"
 		FROM resources resource
-		LEFT JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 		WHERE resource.id = ${resourceId}::uuid
 		FOR UPDATE OF resource
 	`);
@@ -365,10 +364,10 @@ export async function listEntityCandidates(db: NodePgDatabase, keys: readonly st
 	const result = await db.execute<EntityCandidate>(sql`
 		SELECT split_part(e.key, '(', 1) AS bare, e.name, e.type,
 		       (SELECT count(*)::int FROM resource_entities used WHERE used.entity_id = e.id) AS uses,
-		       (SELECT left(COALESCE(t.title, t.content), 120)
+		       (SELECT left(COALESCE(r.title, body.markdown), 120)
 		        FROM resource_entities top
 		        JOIN resources r ON r.id = top.resource_id
-		        JOIN resource_translations t ON t.resource_id = r.id AND t.lang = r.original_lang
+		        LEFT JOIN resource_content body ON body.resource_id = r.id
 		        WHERE top.entity_id = e.id
 		        ORDER BY top.weight DESC LIMIT 1) AS example
 		FROM entities e
@@ -591,9 +590,8 @@ export async function attachSourceToReadableResources(db: NodePgDatabase, source
 	const { rows } = await db.execute<{ id: string }>(sql`
 		UPDATE resources resource
 		SET source_id = ${sourceId}::uuid, updated_at = NOW()
-		FROM resource_translations original
 		WHERE resource.id = ANY(${sql.param([...resourceIds])}::uuid[]) AND resource.scope = 'corpus' AND resource.source_id IS NULL
-		  AND original.resource_id = resource.id AND original.lang = resource.original_lang AND ${READABLE_ORIGINAL_SQL}
+		  AND ${READABLE_ORIGINAL_SQL}
 		RETURNING resource.id::text
 	`);
 	return new Set(rows.map(({ id }) => id));
