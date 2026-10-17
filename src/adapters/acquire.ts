@@ -47,10 +47,7 @@ async function stageUrlAcquisition(
 	const platformId = detected.identifiers[0]!.value;
 	switch (detected.resourcePlatform) {
 		case 'hackernews':
-			return stageHackerNewsAcquisition(env, step, {
-				itemId: platformId,
-				processingId: input.processingId,
-			});
+			return stageHackerNewsAcquisition(step, platformId);
 		case 'lesswrong':
 			return stageLessWrongAcquisition(step, platformId);
 		case 'twitter':

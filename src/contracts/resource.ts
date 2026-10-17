@@ -41,10 +41,7 @@ const ResourceMediaAttachmentSchema = z.strictObject({
 
 export const RESOURCE_KIND_METADATA = {
 	blog: z.strictObject({ siteName: z.string().trim().min(1).optional() }).nullable(),
-	forum: z.strictObject({
-		points: z.int().nonnegative().optional(),
-		commentCount: z.int().nonnegative().optional(),
-	}),
+	forum: z.strictObject({}),
 	post: z.strictObject({ attachments: z.array(ResourceMediaAttachmentSchema).max(16) }),
 	video: z.strictObject({
 		durationSeconds: z.int().positive().optional(),
