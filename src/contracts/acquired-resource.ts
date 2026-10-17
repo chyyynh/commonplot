@@ -1,5 +1,6 @@
 import type { ReferenceCitation } from './reference-citation';
-import type { ResourceCreator, ResourceIdentifier, ResourceKind, ResourceKindMetadata, ResourcePlatform } from './resource';
+import type { ResourceIdentifier } from './resource';
+import type { ResourceCreator, ResourceKind, ResourceKindMetadata, ResourcePlatform } from './resource-kinds';
 
 /** One reader line: whole sentences from one speaker, timed from its first cue. */
 export type YouTubeTranscriptLine = Readonly<{ speakerTurn: boolean; startTime: number; text: string }>;

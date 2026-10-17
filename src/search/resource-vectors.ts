@@ -1,4 +1,4 @@
-import { RESOURCE_KINDS } from '../contracts/resource';
+import { RESOURCE_KINDS } from '../contracts/resource-kinds';
 import { isEnglishLanguage } from '../contracts/resource-language';
 import { coreGatewayOptions } from '../services/ai-model';
 import type { CorpusDocument } from './search-index';

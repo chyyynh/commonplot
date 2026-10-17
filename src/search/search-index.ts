@@ -1,7 +1,7 @@
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import { RESOURCE_KINDS, type ResourceKind, resourceKindsWhere } from '../contracts/resource';
+import { RESOURCE_KINDS, type ResourceKind, resourceKindsWhere } from '../contracts/resource-kinds';
 import { withCoreDb } from '../store/db';
 import { kindWhere } from '../store/kind-sql';
 

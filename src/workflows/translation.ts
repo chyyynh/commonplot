@@ -4,7 +4,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pLimit from 'p-limit';
 import { z } from 'zod';
-import { RESOURCE_KINDS } from '../contracts/resource';
+import { RESOURCE_KINDS } from '../contracts/resource-kinds';
 import { needsEnglishMetadata } from '../contracts/resource-language';
 import { coreExports } from '../exports.ts';
 import { AI_STEP_RETRIES, AiOutputError, aiRetryDelay, CORE_TEXT_MODEL, CORE_TEXT_REASONING, generateObject } from '../services/ai-model';

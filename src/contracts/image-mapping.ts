@@ -1,5 +1,5 @@
 // Pure Resource image selection and Hosted Images URL mapping; Cloudflare I/O lives in image-rehosting.ts.
-import type { ResourceCreator, ResourceKindMetadata } from './resource.ts';
+import type { ResourceCreator, ResourceKindMetadata } from './resource-kinds.ts';
 
 const HOSTED_RESOURCE_IMAGE_PATTERN = /^https:\/\/imagedelivery\.net\/[a-zA-Z0-9_-]+\/resource-[a-f0-9]{64}\/public$/;
 const PREVIEW_IMAGE_TARGET_WIDTH = 1200;

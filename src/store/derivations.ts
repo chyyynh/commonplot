@@ -1,6 +1,7 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { entityKey, type ResourceEntity, type ResourceKind, type ResourcePlatform } from '../contracts/resource';
+import { entityKey, type ResourceEntity } from '../contracts/resource';
+import { type ResourceKind, type ResourcePlatform } from '../contracts/resource-kinds';
 
 /** The languages every titled Resource is summarized in, each written directly rather than translated. */
 export const SUMMARY_LANGS = ['zh-Hant', 'en'] as const;

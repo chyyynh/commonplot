@@ -2,7 +2,8 @@ import { toString } from 'mdast-util-to-string';
 import type { AcquiredResource, SourceHints } from './acquired-resource';
 import { cleanText, parseMarkdown } from './markdown';
 import { isPaperIdentifierScheme } from './paper-identity';
-import { RESOURCE_KINDS, RESOURCE_PLATFORMS, ResourceCreatorsSchema, ResourceIdentifiersSchema } from './resource';
+import { ResourceIdentifiersSchema } from './resource';
+import { RESOURCE_KINDS, RESOURCE_PLATFORM_KINDS, ResourceCreatorsSchema } from './resource-kinds';
 import { detectResourceLanguage, ResourceLanguageSchema } from './resource-language';
 import { resolveResourceUrl } from './resource-url';
 
@@ -34,7 +35,7 @@ export function normalizeAcquiredResource(resource: AcquiredResource, hints?: So
 	const identifiers = ResourceIdentifiersSchema.parse(resource.resourceIdentifiers);
 	if (
 		resource.resourcePlatform !== null
-			? !(RESOURCE_PLATFORMS[resource.resourcePlatform].kinds as readonly string[]).includes(resource.kind) ||
+			? !(RESOURCE_PLATFORM_KINDS[resource.resourcePlatform] as readonly string[]).includes(resource.kind) ||
 				!identifiers.length ||
 				identifiers.some(({ scheme }) => scheme !== resource.resourcePlatform)
 			: resource.kind === 'paper'

@@ -1,6 +1,7 @@
 import normalizeUrl, { type Options } from 'normalize-url';
 import { canonicalPaperUrl, normalizeArxivId, normalizeDoi, normalizeOpenAlexId, paperIdentifiersFromIdentity } from './paper-identity';
-import { httpUrlSchema, RESOURCE_PLATFORM_NAMES, RESOURCE_PLATFORMS, type ResourceIdentifier, type ResourcePlatform } from './resource';
+import { RESOURCE_PLATFORMS, type ResourceIdentifier } from './resource';
+import { httpUrlSchema, RESOURCE_PLATFORM_NAMES, type ResourcePlatform } from './resource-kinds';
 
 export type ResolvedResourceUrl = {
 	url: string;

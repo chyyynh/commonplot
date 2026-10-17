@@ -1,5 +1,5 @@
 import { type SQL, sql } from 'drizzle-orm';
-import { type ResourceKindRule, resourceKindsWhere } from '../contracts/resource';
+import { type ResourceKindRule, resourceKindsWhere } from '../contracts/resource-kinds';
 
 /** `column IN (…)` over the kinds one `RESOURCE_KINDS` rule selects, written as literals so partial indexes still match. */
 export function kindWhere(column: SQL, rule: ResourceKindRule, value = true): SQL {

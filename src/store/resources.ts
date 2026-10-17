@@ -3,13 +3,8 @@ import { type SQL, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { HostedPreview } from '../contracts/image-mapping';
 import type { NormalizedResource } from '../contracts/normalize-resource';
-import {
-	type EntityType,
-	type ResourceKind,
-	type ResourcePlatform,
-	RESOURCE_KINDS,
-	ResourceIdentifiersSchema,
-} from '../contracts/resource';
+import { ResourceIdentifiersSchema } from '../contracts/resource';
+import { type EntityType, type ResourceKind, type ResourcePlatform, RESOURCE_KINDS } from '../contracts/resource-kinds';
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { blobKey } from '../contracts/storage-keys';

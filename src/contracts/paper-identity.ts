@@ -1,4 +1,5 @@
 import { cleanText } from './markdown';
+import { PAPER_IDENTIFIER_SCHEMES } from './resource-kinds.ts';
 
 // DOI suffixes are opaque printable Unicode, not an ASCII publisher-specific alphabet.
 const DOI_RE = /^10\.\d{4,9}\/[^\s\p{C}]+$/u;
@@ -11,7 +12,6 @@ const ARXIV_IN_TEXT_RE = /\barxiv(?:\.org\/(?:abs|html|pdf)\/|[.:\s]+)((?:\d{4}\
 const ARXIV_DOI_PREFIX = '10.48550/arxiv.';
 const OPENALEX_ID_RE = /^(?:https?:\/\/openalex\.org\/)?(?:works\/)?(W\d+)\/?$/i;
 
-export const PAPER_IDENTIFIER_SCHEMES = ['doi', 'arxiv', 'openalex'] as const;
 type PaperIdentifierScheme = (typeof PAPER_IDENTIFIER_SCHEMES)[number];
 
 export function isPaperIdentifierScheme(value: unknown): value is PaperIdentifierScheme {

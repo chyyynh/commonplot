@@ -2,7 +2,7 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { PDF_MIME } from '../contracts/pdf-policy';
-import { RESOURCE_KINDS, type ResourceKind, type ResourcePlatform } from '../contracts/resource';
+import { RESOURCE_KINDS, type ResourceKind, type ResourcePlatform } from '../contracts/resource-kinds';
 import { needsEnglishMetadata } from '../contracts/resource-language';
 import { type Derivation, failDerivation } from './derivations';
 

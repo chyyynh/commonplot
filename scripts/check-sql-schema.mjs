@@ -7,12 +7,22 @@
  * finds each template passed to `.execute(`, inlines the shared `*_SQL`
  * fragments, renders every other interpolation as NULL, and runs EXPLAIN:
  * PostgreSQL resolves every table, column, function and cast without running
- * the statement. Usage: DATABASE_URL=postgres://… node scripts/check-sql-schema.mjs
+ * the statement. It then checks that the CHECK constraints accept exactly the
+ * kinds, platforms, schemes, roles and entity types `resource-kinds.ts` lists.
+ * Usage: DATABASE_URL=postgres://… node scripts/check-sql-schema.mjs
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import {
+	ENTITY_TYPES,
+	RESOURCE_CREATOR_ROLES,
+	RESOURCE_KEY_SCHEMES,
+	RESOURCE_KIND_NAMES,
+	RESOURCE_PLATFORM_KINDS,
+	RESOURCE_PLATFORM_NAMES,
+} from '../src/contracts/resource-kinds.ts';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const SOURCE_DIRS = ['src/store', 'src/search'];
@@ -231,8 +241,55 @@ for (const { where, text } of statements) {
 		await client.query('ROLLBACK');
 	}
 }
+
+/** Runs a CHECK constraint over candidate rows, so its lists are compared by what it accepts rather than its text. */
+async function constraintAccepts(name, columns, rows) {
+	const { rows: found } = await client.query('SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint WHERE conname = $1', [
+		name,
+	]);
+	if (found.length !== 1) throw new Error(`Constraint ${name} not found`);
+	const literal = (value) => (value === null ? 'NULL::text' : `'${value}'::text`);
+	const values = rows.map((row, index) => `(${index}, ${row.map(literal).join(', ')})`).join(', ');
+	const { rows: accepted } = await client.query(
+		`SELECT COALESCE(${found[0].definition.replace(/^CHECK /, '')}, true) AS ok FROM (VALUES ${values}) AS candidate(i, ${columns.join(', ')}) ORDER BY i`,
+	);
+	return accepted.map(({ ok }) => ok);
+}
+
+const UNKNOWN = 'unknown';
+const listed = (name, column, list) => ({
+	name,
+	columns: [column],
+	rows: [...list, UNKNOWN].map((value) => [value]),
+	expect: ([value]) => list.includes(value),
+});
+const contracts = [
+	{
+		name: 'resources_identity_check',
+		columns: ['kind', 'resource_platform'],
+		rows: [...RESOURCE_KIND_NAMES, UNKNOWN].flatMap((kind) =>
+			[null, ...RESOURCE_PLATFORM_NAMES, UNKNOWN].map((platform) => [kind, platform]),
+		),
+		expect: ([kind, platform]) =>
+			RESOURCE_KIND_NAMES.includes(kind) && (platform === null || (RESOURCE_PLATFORM_KINDS[platform] ?? []).includes(kind)),
+	},
+	listed('resource_keys_scheme_check', 'scheme', RESOURCE_KEY_SCHEMES),
+	listed('creator_accounts_platform_check', 'platform', RESOURCE_PLATFORM_NAMES),
+	listed('resource_creators_role_check', 'role', RESOURCE_CREATOR_ROLES),
+	listed('entities_type_check', 'type', ENTITY_TYPES),
+];
+const drifts = [];
+for (const { name, columns, rows, expect } of contracts) {
+	const accepted = await constraintAccepts(name, columns, rows);
+	for (const [index, row] of rows.entries())
+		if (accepted[index] !== expect(row)) drifts.push(`${name} ${accepted[index] ? 'accepts' : 'rejects'} (${row.join(', ')})`);
+}
 await client.end();
 
 for (const { where, error, text } of failures) console.error(`✗ ${where}: ${error}\n${text.trim()}\n`);
+for (const drift of drifts) console.error(`✗ ${drift}, unlike resource-kinds.ts`);
 console.info(`${statements.length - failures.length}/${statements.length} Core statements plan against the migrated schema.`);
-if (failures.length) process.exit(1);
+console.info(
+	`${contracts.length - new Set(drifts.map((drift) => drift.split(' ')[0])).size}/${contracts.length} CHECK constraints match resource-kinds.ts.`,
+);
+if (failures.length || drifts.length) process.exit(1);
