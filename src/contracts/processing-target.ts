@@ -2,9 +2,13 @@ import { z } from 'zod';
 import { ResourceLanguageSchema } from './resource-language';
 import { ResourceUrlSchema } from './resource-url';
 
-const ResourceDraftRelationSchema = z.discriminatedUnion('kind', [
+const ResourceDraftRelationSchema = z.union([
 	z.strictObject({ kind: z.literal('source'), sourceId: z.uuid() }),
-	z.strictObject({ kind: z.literal('subject'), parentResourceId: z.uuid(), parentOriginalHash: z.hash('md5') }),
+	z.strictObject({ kind: z.literal('subject'), parentResourceId: z.uuid(), parentTextHash: z.hash('md5') }),
+	// A subject draft queued before text_hash names its parent's former original_hash; drop it with that column.
+	z
+		.strictObject({ kind: z.literal('subject'), parentResourceId: z.uuid(), parentOriginalHash: z.hash('md5') })
+		.transform(({ parentOriginalHash, ...relation }) => ({ ...relation, parentTextHash: parentOriginalHash })),
 ]);
 
 export type ResourceDraftRelation = z.infer<typeof ResourceDraftRelationSchema>;

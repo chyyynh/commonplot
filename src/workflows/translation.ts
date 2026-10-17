@@ -27,7 +27,7 @@ import {
 	loadTranslationCandidate,
 	type MachineEnglishTranslationPatch,
 	type MachineZhHantTranslationPatch,
-	OriginalHashSchema,
+	TextHashSchema,
 	persistMachineTranslation,
 	type ResourceTranslationCandidate,
 	type ResourceTranslationInput,
@@ -35,7 +35,11 @@ import {
 
 /** `metadata` translates the title and summary; `full` also translates the content. */
 type TranslationScope = 'metadata' | 'full';
-type ResourceTranslationPayload = { force?: boolean; resourceId: string; originalHash: string; scope: TranslationScope };
+/** `originalHash` is how runs admitted before text_hash name their original; drop it with that column. */
+type ResourceTranslationPayload = { force?: boolean; resourceId: string; scope: TranslationScope } & (
+	| { textHash: string }
+	| { originalHash: string }
+);
 
 const MARKDOWN_TRANSLATION_CONCURRENCY = 15;
 type TranslationPlan = { metadata: boolean; content: boolean; english: boolean };
@@ -51,8 +55,8 @@ const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v36';
 
 // One execution per original and scope: concurrent imports, requests and the sweep all meet on this ID, so paid work
 // is never doubled, and a changed original gets a new one.
-function translationInstanceId(resourceId: string, originalHash: string, scope: TranslationScope): string {
-	return `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${scope}-${resourceId}-${originalHash}`;
+function translationInstanceId(resourceId: string, textHash: string, scope: TranslationScope): string {
+	return `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${scope}-${resourceId}-${textHash}`;
 }
 
 type TranslationExecution = 'absent' | 'live' | 'done' | 'rerun';
@@ -75,10 +79,10 @@ async function translationExecution(id: string): Promise<TranslationExecution> {
  */
 export async function importTranslationProgress(
 	resourceId: string,
-	originalHash: string,
+	textHash: string,
 	admittedId: string,
 ): Promise<'running' | 'failed' | undefined> {
-	const fullId = translationInstanceId(resourceId, originalHash, 'full');
+	const fullId = translationInstanceId(resourceId, textHash, 'full');
 	const [admitted, full] = await Promise.all([
 		translationExecution(admittedId),
 		fullId === admittedId ? undefined : translationExecution(fullId),
@@ -92,14 +96,14 @@ export async function importTranslationProgress(
 
 // `admitted` is false when the same work was already queued, running or complete.
 export async function enqueueResourceTranslation(
-	resource: ResourceTranslationCandidate & Readonly<{ id: string; originalHash: string }>,
+	resource: ResourceTranslationCandidate & Readonly<{ id: string; textHash: string }>,
 	scope: TranslationScope,
 	force: boolean,
 ): Promise<{ id: string; admitted: boolean } | null> {
 	if (!isTranslatable(resource)) return null;
-	const { id: resourceId, originalHash } = resource;
-	OriginalHashSchema.parse(originalHash);
-	const id = translationInstanceId(resourceId, originalHash, scope);
+	const { id: resourceId, textHash } = resource;
+	TextHashSchema.parse(textHash);
+	const id = translationInstanceId(resourceId, textHash, scope);
 	const execution = await translationExecution(id);
 	// Completed work already lives in ResourceTranslation. There is no new
 	// execution to subscribe to, and no second source of progress to project.
@@ -108,7 +112,7 @@ export async function enqueueResourceTranslation(
 	if (execution === 'rerun') await (await coreExports.ResourceTranslationV2Workflow.get(id)).restart();
 	if (execution === 'absent') {
 		await coreExports.ResourceTranslationV2Workflow.createBatch([
-			{ id, params: { ...(force ? { force: true } : {}), resourceId, originalHash, scope } },
+			{ id, params: { ...(force ? { force: true } : {}), resourceId, textHash, scope } },
 		]);
 	}
 	return { id, admitted: execution !== 'live' };
@@ -130,7 +134,7 @@ export async function requestContentTranslation(env: CoreEnv, resourceId: string
 export async function contentTranslationStatus(env: CoreEnv, resourceId: string): Promise<'running' | 'idle'> {
 	const candidate = await withCoreDb(env, (db) => loadTranslationCandidate(db, resourceId));
 	if (!candidate || candidate.hasTranslatedContent) return 'idle';
-	return (await translationExecution(translationInstanceId(resourceId, candidate.originalHash, 'full'))) === 'live' ? 'running' : 'idle';
+	return (await translationExecution(translationInstanceId(resourceId, candidate.textHash, 'full'))) === 'live' ? 'running' : 'idle';
 }
 
 // Kept small so recovery never crowds new imports out of the provider's per-minute window.
@@ -153,7 +157,8 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		event: WorkflowEvent<ResourceTranslationPayload>,
 		step: WorkflowStep,
 	): Promise<{ status: 'complete' | 'skipped' | 'superseded'; resourceId: string }> {
-		const { force = false, resourceId, originalHash, scope } = event.payload;
+		const { force = false, resourceId, scope } = event.payload;
+		const textHash = 'textHash' in event.payload ? event.payload.textHash : event.payload.originalHash;
 		// Every run that publishes nothing ends here.
 		const end = (status: 'skipped' | 'superseded', reason: string) => {
 			console.info({ tag: 'RESOURCE_TRANSLATION', event: 'translation_outcome', outcome: status, reason, resource_id: resourceId });
@@ -165,7 +170,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				withCoreDb(this.env, (db) => loadResourceTranslationInput(db, resourceId)),
 			);
 			if (!input) return end('skipped', 'missing');
-			if (input.originalHash !== originalHash) return end('superseded', 'superseded');
+			if (textHash !== input.textHash && textHash !== input.legacyHash) return end('superseded', 'superseded');
 			const resource = input.resource;
 			const plan = planTranslation(resource, scope, force);
 			if (!plan.metadata && !plan.content && !plan.english) return end('skipped', 'unneeded');
@@ -195,13 +200,13 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 
 			if (hasPatch) {
 				const persisted = await step.do('persist-zh-hant-translation-v2', STORAGE_STEP, async () =>
-					withCoreDb(this.env, (db) => persistMachineTranslation(db, resourceId, originalHash, 'zh-Hant', patch)),
+					withCoreDb(this.env, (db) => persistMachineTranslation(db, resourceId, textHash, 'zh-Hant', patch)),
 				);
 				if (!persisted) return end('superseded', 'persist-superseded');
 			}
 			if (hasEnglishPatch) {
 				const persisted = await step.do('persist-en-translation-v1', STORAGE_STEP, async () =>
-					withCoreDb(this.env, (db) => persistMachineTranslation(db, resourceId, originalHash, 'en', englishPatch)),
+					withCoreDb(this.env, (db) => persistMachineTranslation(db, resourceId, textHash, 'en', englishPatch)),
 				);
 				if (!persisted) return end('superseded', 'persist-superseded');
 			}

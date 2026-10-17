@@ -6,7 +6,7 @@ import { RESOURCE_KINDS, type ResourceKind, type ResourcePlatform } from '../con
 import { WITHOUT_ENGLISH_METADATA_LANG_PATTERN } from '../contracts/resource-language';
 import { kindWhere } from './kind-sql';
 
-export const OriginalHashSchema = z.hash('md5').lowercase();
+export const TextHashSchema = z.hash('md5').lowercase();
 
 export type ResourceTranslationCandidate = Readonly<{
 	fileType: string | null;
@@ -31,7 +31,7 @@ export function isTranslatable(candidate: ResourceTranslationCandidate): boolean
 	);
 }
 
-const CANDIDATE_COLUMNS = sql`resource.id::text, resource.original_hash AS "originalHash", resource.kind, resource.scope, resource.url,
+const CANDIDATE_COLUMNS = sql`resource.id::text, resource.text_hash AS "textHash", resource.kind, resource.scope, resource.url,
 	resource.file_type AS "fileType", resource.resource_platform AS "resourcePlatform", resource.original_lang AS "originalLang"`;
 
 /** Longer automatic translations wait for a reader to request and pay for them. */
@@ -61,11 +61,12 @@ const ENGLISH_METADATA_SQL = sql`(${kindWhere(sql`resource.kind`, 'titled')} AND
 export async function loadResourceTranslationInput(
 	db: NodePgDatabase,
 	resourceId: string,
-): Promise<{ resource: ResourceTranslationInput; originalHash: string } | null> {
+): Promise<{ resource: ResourceTranslationInput; textHash: string; legacyHash: string | null } | null> {
 	// Machine fields are validated before persistence; planning needs their presence, not another copy of the translation.
-	const result = await db.execute<ResourceTranslationInput & { originalHash: string }>(sql`
+	const result = await db.execute<ResourceTranslationInput & { textHash: string; legacyHash: string | null }>(sql`
 		SELECT
 			${CANDIDATE_COLUMNS},
+			resource.original_hash AS "legacyHash",
 			COALESCE(original.title, '') AS title,
 			original.summary AS summary,
 			COALESCE(original.content, '') AS content,
@@ -88,19 +89,19 @@ export async function loadResourceTranslationInput(
 		WHERE resource.id = ${resourceId}::uuid
 	`);
 	const row = result.rows[0];
-	if (!row?.originalHash || !isTranslatable(row)) return null;
-	const { originalHash, ...resource } = row;
-	return { resource, originalHash: OriginalHashSchema.parse(originalHash) };
+	if (!row?.textHash || !isTranslatable(row)) return null;
+	const { textHash, legacyHash, ...resource } = row;
+	return { resource, textHash: TextHashSchema.parse(textHash), legacyHash };
 }
 
 /** Writes over machine fields only; a row the source supplied in that language is never replaced. */
 export async function persistMachineTranslation(
 	db: NodePgDatabase,
 	resourceId: string,
-	originalHash: string,
+	textHash: string,
 	...[lang, patch]: ['zh-Hant', MachineZhHantTranslationPatch] | ['en', MachineEnglishTranslationPatch]
 ): Promise<boolean> {
-	OriginalHashSchema.parse(originalHash);
+	TextHashSchema.parse(textHash);
 	const content = 'content' in patch ? patch.content : undefined;
 	const alignment = 'alignment' in patch ? patch.alignment : undefined;
 	if ((content === undefined) !== (alignment === undefined)) {
@@ -111,7 +112,8 @@ export async function persistMachineTranslation(
 			SELECT resource.id
 			FROM resources resource
 			WHERE resource.id = ${resourceId}::uuid
-			  AND resource.original_hash = ${originalHash}
+			  -- A run admitted before text_hash carries the former original_hash; drop it with that column.
+			  AND ${textHash} IN (resource.text_hash, resource.original_hash)
 			FOR UPDATE OF resource
 		)
 		INSERT INTO resource_translations AS current_translation (
@@ -137,7 +139,7 @@ export async function persistMachineTranslation(
 /** A stored corpus original in a language other than zh-Hant that the translation Workflow accepts. */
 const TRANSLATABLE_CORPUS_SQL = sql`(
 	resource.scope = 'corpus'
-	AND resource.original_hash IS NOT NULL
+	AND resource.text_hash IS NOT NULL
 	AND resource.url IS NOT NULL
 	AND resource.original_lang <> 'zh-Hant'
 	AND ${kindWhere(sql`resource.kind`, 'translatable')}
@@ -167,7 +169,7 @@ export async function translatesContentAutomatically(db: NodePgDatabase, resourc
 }
 
 type StoredTranslationCandidate = ResourceTranslationCandidate &
-	Readonly<{ id: string; originalHash: string; hasContent: boolean; hasTranslatedContent: boolean }>;
+	Readonly<{ id: string; textHash: string; hasContent: boolean; hasTranslatedContent: boolean }>;
 
 /** A stored, translatable Resource as a requested content translation sees it. */
 export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: string): Promise<StoredTranslationCandidate | null> {
@@ -179,7 +181,7 @@ export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: s
 		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 		LEFT JOIN resource_translations zh_hant ON zh_hant.resource_id = resource.id AND zh_hant.lang = 'zh-Hant'
 		WHERE resource.id = ${resourceId}::uuid
-		  AND resource.original_hash IS NOT NULL
+		  AND resource.text_hash IS NOT NULL
 	`);
 	const row = result.rows[0];
 	return row && isTranslatable(row) ? row : null;
@@ -191,7 +193,7 @@ export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: s
  * Content counts as missing only where it translates automatically; English is only ever a title and summary.
  */
 export async function listMissingTranslations(db: NodePgDatabase, limit: number) {
-	const { rows } = await db.execute<ResourceTranslationCandidate & { id: string; originalHash: string; automaticContent: boolean }>(sql`
+	const { rows } = await db.execute<ResourceTranslationCandidate & { id: string; textHash: string; automaticContent: boolean }>(sql`
 		SELECT ${CANDIDATE_COLUMNS},
 		       ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS "automaticContent"
 		FROM resources resource

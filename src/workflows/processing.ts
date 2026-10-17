@@ -25,7 +25,8 @@ import { enqueueResourceTranslation, importTranslationProgress } from './transla
 
 /** What an import reads back: the published Resource and the translation it waits for, or a run a newer attempt replaced. */
 type ResourceProcessingOutput =
-	| { outcome: 'ready'; resourceId: string; originalHash: string; translationId?: string }
+	// Runs completed before text_hash return `originalHash`; drop it after their 7-day retention.
+	| ({ outcome: 'ready'; resourceId: string; translationId?: string } & ({ textHash: string } | { originalHash: string }))
 	| { outcome: 'superseded' };
 
 export type ResourceImportExecution =
@@ -50,7 +51,11 @@ export async function resourceImportExecution(id: string): Promise<ResourceImpor
 			const output = snapshot.output as ResourceProcessingOutput;
 			if (output.outcome === 'superseded') return { state: 'failed' };
 			const translation = output.translationId
-				? await importTranslationProgress(output.resourceId, output.originalHash, output.translationId)
+				? await importTranslationProgress(
+						output.resourceId,
+						'textHash' in output ? output.textHash : output.originalHash,
+						output.translationId,
+					)
 				: undefined;
 			return { state: 'ready', resourceId: output.resourceId, ...(translation ? { translation } : {}) };
 		}
@@ -117,7 +122,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			),
 		);
 		if (persistence.outcome === 'superseded') return { outcome: 'superseded' };
-		const { id: resourceId, scope, subjectResourceId, originalHash, outcome } = persistence;
+		const { id: resourceId, scope, subjectResourceId, textHash, outcome } = persistence;
 		const { saveTarget } = plan;
 		if (saveTarget)
 			await step.do('complete-resource-save-v2', STORAGE_STEP, () => this.env.APP.completeResourceSave(resourceId, saveTarget));
@@ -155,7 +160,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				? step.do('enqueue-resolved-subject-child-v2', STORAGE_STEP, async () => {
 						const subjectTarget = ResourceDraftTargetSchema.parse({
 							kind: 'draft',
-							relation: { kind: 'subject', parentResourceId: resourceId, parentOriginalHash: originalHash },
+							relation: { kind: 'subject', parentResourceId: resourceId, parentTextHash: textHash },
 							// Carrier-resolved hints only; the subject page still wins when it states its own date.
 							...(resource.publishedDate ? { sourceHints: { publishedDate: resource.publishedDate } } : {}),
 							url: subjectUrl,
@@ -174,7 +179,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: resourceId, target_kind: target.kind });
 		const translation = followups[1];
 		const translationId = translation.status === 'fulfilled' ? translation.value?.id : undefined;
-		return { outcome: 'ready', resourceId, originalHash, ...(translationId ? { translationId } : {}) };
+		return { outcome: 'ready', resourceId, textHash, ...(translationId ? { translationId } : {}) };
 	}
 }
 

@@ -49,7 +49,7 @@ type StoredResource = Readonly<{
 	originalChars: number;
 	committedSeq: number;
 	subjectResourceId: string | null;
-	originalHash: string | null;
+	textHash: string | null;
 	kind: ResourceKind;
 	fileType: string | null;
 	resourcePlatform: ResourcePlatform | null;
@@ -112,7 +112,7 @@ async function lockResourceIfAny(db: NodePgDatabase, resourceId: string): Promis
 		       ${READABLE_ORIGINAL_SQL} AS "hasOriginal",
 		       COALESCE(CHAR_LENGTH(original.content), 0) AS "originalChars",
 		       resource.committed_seq AS "committedSeq",
-		       resource.original_hash AS "originalHash"
+		       resource.text_hash AS "textHash"
 		FROM resources resource
 		LEFT JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
 		WHERE resource.id = ${resourceId}::uuid
@@ -171,7 +171,7 @@ async function writeCanonicalResource(
 	const columns = sql`
 		kind, resource_platform, source_name, url, normalized_url, file_type, pdf_hash, original_lang, published_date,
 		og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id, original_hash,
-		scraped_date, updated_at
+		text_hash, scraped_date, updated_at
 	`;
 	const preview = await articlePreview(db, resourceId, resource);
 	const values = sql`
@@ -179,7 +179,8 @@ async function writeCanonicalResource(
 		${resource.fileType}, ${existing ? sql`COALESCE(${resource.pdfHash ?? null}, pdf_hash)` : (resource.pdfHash ?? null)}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
 		${preview.url}, ${preview.width}, ${preview.height}, ${JSON.stringify(resource.creators)}::jsonb,
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
-		(SELECT MD5(jsonb_build_array(lang, title, summary, content)::text) FROM incoming), NOW(), NOW()
+		(SELECT MD5(jsonb_build_array(lang, title, summary, content)::text) FROM incoming),
+		(SELECT MD5(jsonb_build_array(lang, title, content)::text) FROM incoming), NOW(), NOW()
 	`;
 	// The cleanup excludes the incoming language: no CTE deletes a row another CTE writes.
 	const written = await db.execute(sql`
@@ -362,7 +363,8 @@ async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relati
 		  AND resource.scope = 'corpus'
 		  AND ${READABLE_ORIGINAL_SQL}
 		  AND resource.id <> ${resourceId}::uuid
-		  AND resource.original_hash = ${relation.parentOriginalHash}
+		  -- A subject draft queued before text_hash carries the former original_hash; drop it with that column.
+		  AND ${relation.parentTextHash} IN (resource.text_hash, resource.original_hash)
 	`);
 	if (attached.rowCount !== 1) throw new NonRetryableError('Subject parent was reacquired or is no longer eligible for attachment');
 }
@@ -511,8 +513,8 @@ function isDegradedOriginal(content: string, stored: StoredResource): boolean {
 }
 
 function committed(stored: StoredResource, outcome: PersistOutcome) {
-	if (!stored.originalHash) throw new Error(`Resource ${stored.id} has no recorded original revision`);
-	return { ...stored, originalHash: stored.originalHash, outcome };
+	if (!stored.textHash) throw new Error(`Resource ${stored.id} has no recorded original revision`);
+	return { ...stored, textHash: stored.textHash, outcome };
 }
 
 /** Issue the next fencing token for reacquiring an existing Resource; call it inside the attempt's first durable step. */
