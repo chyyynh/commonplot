@@ -368,7 +368,7 @@ type TwitterAcquisitionInput = {
 
 function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {
 	if (!tweet.author?.userName.trim() || !tweet.author.name.trim()) {
-		throw new Error(`Tweet ${tweet.id} has no complete author`);
+		throw new NonRetryableError(`Tweet ${tweet.id} has no complete author`);
 	}
 	return tweet.author;
 }
@@ -488,16 +488,17 @@ async function fetchTwitterApiArticle(tweetId: string, apiKey: string): Promise<
 	return payload.article;
 }
 
-async function scrapeTwitterLongform(tweet: Tweet, loadArticle: () => Promise<TwitterArticle>) {
+/** The tweet's own Article, or null when it only shares someone else's: that keeps the tweet a post. */
+async function scrapeTwitterLongform(tweet: Tweet, loadArticle: () => Promise<TwitterArticle | null>) {
 	const tweetId = tweet.id;
 	const longform = await loadArticle();
-	const title = longform.title?.trim();
-	const contentText = expandKnownTweetUrls(renderTwitterArticleMarkdown(longform), tweet);
-	if (!title || !contentText) throw new Error(`Twitter longform ${tweetId} requires both title and renderable content`);
+	if (!longform) return null;
 	const tweetAuthor = requiredTweetAuthor(tweet);
-	// Sharing someone else's Article keeps the tweet a post; only the author's own Article is this Resource.
 	const articleHandle = longform.author?.userName?.trim().toLowerCase();
 	if (articleHandle && articleHandle !== tweetAuthor.userName.trim().toLowerCase()) return null;
+	const title = longform.title?.trim();
+	const contentText = expandKnownTweetUrls(renderTwitterArticleMarkdown(longform), tweet);
+	if (!title || !contentText) throw new NonRetryableError(`Twitter longform ${tweetId} requires both title and renderable content`);
 	const author = {
 		...tweetAuthor,
 		...(longform.author?.name?.trim() ? { name: longform.author.name.trim() } : {}),
@@ -508,7 +509,8 @@ async function scrapeTwitterLongform(tweet: Tweet, loadArticle: () => Promise<Tw
 			: { isBlueVerified: longform.author.isBlueVerified }),
 	};
 	const publishedDate = longform.createdAt?.trim() || tweet.createdAt;
-	if (Number.isNaN(new Date(publishedDate).getTime())) throw new Error(`Twitter longform ${tweetId} requires a valid published date`);
+	if (Number.isNaN(new Date(publishedDate).getTime()))
+		throw new NonRetryableError(`Twitter longform ${tweetId} requires a valid published date`);
 
 	console.info({ tag: 'TWITTER', msg: 'Longform fetched', title });
 
@@ -524,7 +526,7 @@ async function scrapeTwitterLongform(tweet: Tweet, loadArticle: () => Promise<Tw
 	};
 }
 
-async function resolveTweetContent(tweet: Tweet, loadArticle: () => Promise<TwitterArticle>) {
+async function resolveTweetContent(tweet: Tweet, loadArticle: () => Promise<TwitterArticle | null>) {
 	const expandedUrls = (tweet.entities?.urls ?? []).flatMap((url) => {
 		const expandedUrl = url.expanded_url?.trim();
 		return expandedUrl ? [expandedUrl] : [];
@@ -544,9 +546,10 @@ async function resolveTweetContent(tweet: Tweet, loadArticle: () => Promise<Twit
 	}
 
 	const author = requiredTweetAuthor(tweet);
-	const text = tweet.text.trim();
-	if (!text) throw new Error(`Tweet ${tweet.id} has no text`);
-	const content = expandTweetUrls(text, tweet);
+	const attachments = tweetAttachments(tweet);
+	const content = expandTweetUrls(tweet.text.trim(), tweet);
+	// A photo or GIF posted without a caption is the post its media makes.
+	if (!content && !attachments.length) throw new NonRetryableError(`Tweet ${tweet.id} has no text or media`);
 
 	console.info({ tag: 'TWITTER', msg: 'Tweet fetched', userName: author.userName });
 
@@ -557,7 +560,7 @@ async function resolveTweetContent(tweet: Tweet, loadArticle: () => Promise<Twit
 		content,
 		publishedDate: tweet.createdAt,
 		creators: [twitterCreator(author)],
-		kindMetadata: { attachments: tweetAttachments(tweet) },
+		kindMetadata: { attachments },
 		previewImageUrl: null,
 		subjectUrl,
 	};
@@ -579,7 +582,7 @@ async function fetchTwitterApiTweet(tweetId: string, apiKey: string): Promise<Tw
 	return tweet;
 }
 
-async function acquiredTweet(tweet: Tweet, loadArticle: () => Promise<TwitterArticle>) {
+async function acquiredTweet(tweet: Tweet, loadArticle: () => Promise<TwitterArticle | null>) {
 	const { subjectUrl, ...content } = await resolveTweetContent(tweet, loadArticle);
 	return {
 		...content,
@@ -594,17 +597,22 @@ async function acquiredTweet(tweet: Tweet, loadArticle: () => Promise<TwitterArt
 	} satisfies AcquiredResource;
 }
 
-/** FxTwitter is free and needs no key; twitterapi.io (paid) covers anything it cannot read or map. */
+/**
+ * FxTwitter is free and needs no key; twitterapi.io (paid) covers a tweet it cannot read or map. What the tweet itself
+ * lacks fails the same way from either, so it never falls back. FxTwitter includes the author's own Article, so a tweet
+ * it read without one only shares someone else's.
+ */
 async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string) {
 	const fx = await fetchFxTweet(tweetId);
-	if (fx) {
-		try {
-			const tweet = tweetFromFx(fx);
-			const article = fx.article;
-			return await acquiredTweet(tweet, async () => (article ? articleFromFx(article) : fetchTwitterApiArticle(tweetId, apiKey)));
-		} catch (error) {
-			console.warn({ tag: 'TWITTER', msg: 'FxTwitter tweet unusable, falling back', tweetId, error: String(error) });
-		}
+	let mapped: { tweet: Tweet; article: TwitterArticle | null } | undefined;
+	try {
+		mapped = fx ? { tweet: tweetFromFx(fx), article: fx.article ? articleFromFx(fx.article) : null } : undefined;
+	} catch (error) {
+		console.warn({ tag: 'TWITTER', msg: 'FxTwitter tweet unusable, falling back', tweetId, error: String(error) });
+	}
+	if (mapped) {
+		const { tweet, article } = mapped;
+		return acquiredTweet(tweet, async () => article);
 	}
 	const tweet = await fetchTwitterApiTweet(tweetId, apiKey);
 	return acquiredTweet(tweet, () => fetchTwitterApiArticle(tweetId, apiKey));

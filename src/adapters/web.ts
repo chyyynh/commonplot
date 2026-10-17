@@ -22,6 +22,10 @@ const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
+/** The whole title of a bot check or block page, which an article about one never is when its body is this short. */
+const BLOCK_PAGE_TITLE =
+	/^(?:access denied|just a moment\.*|attention required!?(?: \| cloudflare)?|are you a robot\??|verify you are human|security check(?:point)?|robot check|(?:403 )?forbidden|sign in ・ cloudflare access)$/i;
+const MAX_BLOCK_PAGE_CHARS = 2_000;
 const LOOP_VIDEO_PATH = /\.(?:mp4|webm|m4v|mov)$/i;
 const FOOTNOTE_TARGET = /^#fn:(.+)$/;
 const FOOTNOTE_ID = /^fn:(.+)$/;
@@ -199,6 +203,9 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 	).trim();
 	if (content.length < MIN_ARTICLE_CONTENT_CHARS) {
 		throw new NonRetryableError(`Extracted HTML content is too short (${content.length} chars)`);
+	}
+	if (BLOCK_PAGE_TITLE.test(title) && content.length < MAX_BLOCK_PAGE_CHARS) {
+		throw new NonRetryableError(`Fetched page is a block page: ${title}`);
 	}
 	return {
 		kind: 'blog',

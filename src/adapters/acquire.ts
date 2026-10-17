@@ -54,6 +54,7 @@ async function stageUrlAcquisition(
 		const identifiers = [...(input.identifiers ?? []), ...detected.identifiers];
 		if (identifiers.length) return stageLinkedPaper(env, step, { ...input, identifiers });
 		const acquired = await stageWebAcquisition(env, step, { url: detected.url });
+		if ('titlePageText' in acquired) return stagePdfPaper(env, step, acquired, input.processingId);
 		if (!('platform' in acquired)) return acquired;
 		detected = acquired.platform;
 		if (!detected.resourcePlatform)
@@ -72,15 +73,24 @@ export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep,
 	return { resource: normalizeAcquiredResource(resource, input.sourceHints), uploadedPaper: false };
 }
 
-/** An uploaded PDF whose title page names a paper is published as that paper; any other stays its uploader's private file. */
+/** A PDF whose title page names a paper is published as that paper; any other stays a file, an upload its uploader's private one. */
+async function stagePdfPaper(
+	env: CoreEnv,
+	step: WorkflowStep,
+	pdf: AcquiredResource & { kind: 'file'; titlePageText: string | null },
+	processingId: string,
+) {
+	const { titlePageText, resourceIdentifiers, ...file } = pdf;
+	const upload = { ...file, resourceIdentifiers: [] };
+	const paper = await stagePaper(env, step, { identifiers: resourceIdentifiers, titlePageText, upload, processingId });
+	return paper ?? upload;
+}
+
 async function stageStoredPdfUpload(
 	env: CoreEnv,
 	step: WorkflowStep,
 	input: Extract<AcquisitionInput, { kind: 'storedPdf' }>,
 	processingId: string,
 ) {
-	const { titlePageText, resourceIdentifiers, ...file } = await stageStoredPdfAcquisition(env, step, input);
-	const upload = { ...file, resourceIdentifiers: [] };
-	const paper = await stagePaper(env, step, { identifiers: resourceIdentifiers, titlePageText, upload, url: null, processingId });
-	return paper ?? upload;
+	return stagePdfPaper(env, step, await stageStoredPdfAcquisition(env, step, input), processingId);
 }

@@ -3,11 +3,14 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { normalizedResourceImageUrl } from '../contracts/image-mapping';
+import { ResourceUrlSchema } from '../contracts/resource-url';
 import { readBoundedResponseText } from '../services/response';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
 const MAX_LESSWRONG_RESPONSE_BYTES = 8 * 1024 * 1024;
+/** The line LessWrong opens a linkpost with when the post itself does not carry the link. */
+const LINKPOST_LEAD = /^This is a linkpost for \[?(https?:\/\/[^\]\s)]+)/;
 
 const POST_QUERY = `query PostForIngest($id: String!) {
   post(selector: { documentId: $id }, allowNull: true) {
@@ -15,6 +18,7 @@ const POST_QUERY = `query PostForIngest($id: String!) {
       _id
       title
       postedAt
+      url
       contents { markdown }
       user { _id displayName username }
       socialPreviewImageUrl
@@ -30,6 +34,7 @@ const LessWrongDataSchema = z.object({
 				_id: z.string(),
 				title: z.string(),
 				postedAt: z.string(),
+				url: z.string().nullable(),
 				contents: z.object({ markdown: z.string().nullable() }).nullable(),
 				user: z.object({ _id: z.string(), displayName: z.string(), username: z.string().nullable() }).nullable(),
 				socialPreviewImageUrl: z.string().nullable(),
@@ -66,7 +71,10 @@ async function scrapeLessWrong(postId: string) {
 	if (!post) throw new NonRetryableError(`LessWrong post was not found: ${postId}`);
 	if (post._id !== postId) throw new Error(`LessWrong GraphQL returned no matching post for ${postId}`);
 	const title = post.title.trim();
-	const markdown = post.contents?.markdown?.trim();
+	const body = post.contents?.markdown?.trim();
+	// A linkpost shares another page, which is its subject; it may have no words of its own.
+	const linked = ResourceUrlSchema.safeParse(post.url?.trim() || LINKPOST_LEAD.exec(body ?? '')?.[1]).data ?? null;
+	const markdown = body || (linked && `This is a linkpost for ${linked}`);
 	if (!title) throw new NonRetryableError(`LessWrong post ${postId} has no title`);
 	if (!markdown) throw new NonRetryableError(`LessWrong post ${postId} has no Markdown content`);
 	const author = post.user?.displayName.trim() || post.user?.username?.trim() || null;
@@ -88,7 +96,7 @@ async function scrapeLessWrong(postId: string) {
 		summary: null,
 		creators: post.user && author ? [{ role: 'author', literal: author, account: { platform: 'lesswrong', id: post.user._id } }] : [],
 		kindMetadata: null,
-		subjectUrl: null,
+		subjectUrl: linked,
 	} satisfies AcquiredResource;
 }
 

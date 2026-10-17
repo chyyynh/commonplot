@@ -199,7 +199,8 @@ type PaperMetadata = NonNullable<Awaited<ReturnType<typeof resolveOpenAlexPaper>
 /**
  * OpenAlex describes every paper. Identifiers read from a PDF only count when the
  * resolved title appears on that PDF's title page; `titlePageText` is omitted for
- * identifiers taken from the link itself.
+ * identifiers taken from the link itself. OpenAlex failing after its retries reads as
+ * not found, so the paper still reads from its full text.
  */
 async function stagePaperMetadata(
 	env: CoreEnv,
@@ -210,7 +211,16 @@ async function stagePaperMetadata(
 	const startedAt = Date.now();
 	const work = await stepJson(step, 'resolve-paper-openalex-v7', PAPER_METADATA_STEP, () =>
 		resolveOpenAlexPaper({ apiKey: env.OPENALEX_API_KEY, identifiers: input.identifiers }),
-	);
+	).catch((error: unknown) => {
+		console.error({
+			tag: 'PAPER_PROVIDER',
+			event: 'paper_metadata_failed',
+			provider: 'openalex',
+			processing_id: input.processingId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
+	});
 	const verified =
 		!work ||
 		input.titlePageText === undefined ||
@@ -226,38 +236,27 @@ async function stagePaperMetadata(
 	return verified ? work : null;
 }
 
-/**
- * Readable full text, best source first: arXiv's HTML, then a licensed PDF. arXiv's rendering
- * needs no metadata, so a paper OpenAlex has not indexed yet still reads.
- */
-async function stagePaperFullText(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: { identifiers: readonly PaperIdentifier[]; contentPdfUrl: string | null; processingId: string },
-) {
-	const arxivId = paperIdentityFromIdentifiers(input.identifiers)?.arxivId;
-	if (arxivId) {
-		try {
-			const html = await stageArxivHtmlAcquisition(step, arxivId);
-			if (html) return html;
-		} catch (error) {
-			console.error({
-				tag: 'PAPER_CONTENT',
-				event: 'arxiv_html_failed',
-				processing_id: input.processingId,
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
+/** arXiv's HTML rendering, which needs no metadata, so a paper OpenAlex has not indexed yet still reads. */
+async function stageArxivFullText(step: WorkflowStep, arxivId: string, processingId: string) {
+	try {
+		return await stageArxivHtmlAcquisition(step, arxivId);
+	} catch (error) {
+		console.error({
+			tag: 'PAPER_CONTENT',
+			event: 'arxiv_html_failed',
+			processing_id: processingId,
+			error: error instanceof Error ? error.message : String(error),
+		});
+		return null;
 	}
-	if (!input.contentPdfUrl) return null;
-	return stagePaperPdfContent(env, step, { contentPdfUrl: input.contentPdfUrl, processingId: input.processingId });
 }
 
 /**
  * A paper reads as its full text, else its abstract; null when it has neither, or when
  * identifiers read from a PDF (`titlePageText` given) resolve to a work not named on it.
- * An uploaded copy (`upload`) is that full text. Without `url` the paper lives at its canonical
- * identifier URL, not at the source it was read from.
+ * Full text is, best source first, an uploaded copy (`upload`), arXiv's HTML, then a licensed PDF;
+ * arXiv's is fetched alongside OpenAlex when the identifiers already name it. The paper lives at
+ * its canonical identifier URL, not at the source it was read from.
  */
 export async function stagePaper(
 	env: CoreEnv,
@@ -266,26 +265,30 @@ export async function stagePaper(
 		identifiers: readonly ResourceIdentifier[];
 		titlePageText?: string | null;
 		upload?: AcquiredResource;
-		url: string | null;
 		processingId: string;
 	},
 ): Promise<(AcquiredResource & { kind: 'paper'; resourcePlatform: null }) | null> {
 	const identifiers = mergePaperIdentifiers(
 		input.identifiers.filter((identifier): identifier is PaperIdentifier => isPaperIdentifierScheme(identifier.scheme)),
 	);
-	const work = await stagePaperMetadata(env, step, { identifiers, titlePageText: input.titlePageText, processingId: input.processingId });
+	const knownArxivId = input.upload ? undefined : paperIdentityFromIdentifiers(identifiers)?.arxivId;
+	const [work, knownArxivHtml] = await Promise.all([
+		stagePaperMetadata(env, step, { identifiers, titlePageText: input.titlePageText, processingId: input.processingId }),
+		knownArxivId ? stageArxivFullText(step, knownArxivId, input.processingId) : null,
+	]);
 	if (!work && input.titlePageText !== undefined) return null;
 	const resourceIdentifiers = work?.identifiers ?? identifiers;
 	const identity = paperIdentityFromIdentifiers(resourceIdentifiers);
 	if (!identity) throw new TypeError('A paper requires a DOI, arXiv, or OpenAlex identifier');
-	const url = input.url ?? canonicalPaperUrl(identity);
+	const url = canonicalPaperUrl(identity);
+	const resolvedArxivId = identity.arxivId && identity.arxivId !== knownArxivId ? identity.arxivId : undefined;
 	const fullText =
 		input.upload ??
-		(await stagePaperFullText(env, step, {
-			identifiers: resourceIdentifiers,
-			contentPdfUrl: work?.contentPdfUrl ?? null,
-			processingId: input.processingId,
-		}));
+		knownArxivHtml ??
+		(resolvedArxivId ? await stageArxivFullText(step, resolvedArxivId, input.processingId) : null) ??
+		(work?.contentPdfUrl
+			? await stagePaperPdfContent(env, step, { contentPdfUrl: work.contentPdfUrl, processingId: input.processingId })
+			: null);
 	const { abstract, authors, publicationDate, title, ...kindMetadata } = work?.metadata ?? {};
 	const content = fullText?.content ?? abstract?.trim();
 	if (!content) return null;

@@ -109,6 +109,7 @@ async function findNames(chunk: string, env: CoreEnv) {
 			messages: [{ role: 'user', content: chunk }],
 			schema: { entities: NAMED_TYPES },
 		}),
+		signal: AbortSignal.timeout(30_000),
 	});
 	if (!response.ok) throw new Error(`Fastino NER failed with ${response.status}: ${(await response.text()).slice(0, 200)}`);
 	const body = NerResponseSchema.parse(await response.json());
@@ -214,9 +215,9 @@ async function askJev(spans: Iterable<Span>, text: string, env: CoreEnv, process
 		};
 	if (!Object.keys(questions).length) return { questions: 0, tokens: 0 };
 
-	const { gateway } = coreGatewayOptions(env, { feature: 'resource-entities', processing_id: processingId });
+	const { gateway, signal } = coreGatewayOptions(env, { feature: 'resource-entities', processing_id: processingId });
 	const { result } = LinkResultSchema.parse(
-		await env.AI.run(LINK_MODEL as keyof AiModels, { state: text, questions } as never, { gateway }),
+		await env.AI.run(LINK_MODEL as keyof AiModels, { state: text, questions } as never, { gateway, signal }),
 	);
 	for (const { id, span } of asked) {
 		const answer = result.answers[id];

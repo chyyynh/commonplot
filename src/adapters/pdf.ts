@@ -23,9 +23,15 @@ async function stagePdfBody(
 	});
 }
 
-/** What every PDF file Resource shares: its parsed body, and no platform, subject, date or creators. */
+/**
+ * What every PDF file Resource shares: its parsed body, and no platform, subject, date or creators. The first page and
+ * the PDF's own properties are where a paper prints its DOI or arXiv id; `titlePageText` lets the paper check them.
+ */
 function pdfFileResource(pdfHash: string, body: PdfBody) {
+	const printedIdentity = paperIdentityFromText(body.paperIdentifierText);
 	return {
+		resourceIdentifiers: printedIdentity ? paperIdentifiersFromIdentity(printedIdentity) : [],
+		titlePageText: body.paperIdentifierText,
 		kind: 'file',
 		subjectUrl: null,
 		previewImageUrl: null,
@@ -38,14 +44,14 @@ function pdfFileResource(pdfHash: string, body: PdfBody) {
 		summary: null,
 		creators: [],
 		kindMetadata: null,
-	} satisfies Partial<AcquiredResource>;
+	} satisfies Partial<AcquiredResource> & { titlePageText: string | null };
 }
 
 export async function stagePublicPdfAcquisition(
 	env: CoreEnv,
 	step: WorkflowStep,
 	source: Awaited<ReturnType<typeof storePublicPdfResponse>>,
-): Promise<AcquiredResource & { kind: 'file'; resourcePlatform: null; url: string }> {
+): Promise<AcquiredResource & { kind: 'file'; resourcePlatform: null; url: string; titlePageText: string | null }> {
 	const url = new URL(source.url);
 	let fileName = url.pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';
 	try {
@@ -59,7 +65,6 @@ export async function stagePublicPdfAcquisition(
 	if (!parsed.markdown) throw new NonRetryableError('Fetched PDF has no usable text; OCR is required');
 	return {
 		...pdfFileResource(source.inputContentHash, parsed),
-		resourceIdentifiers: [],
 		url: source.url,
 		title,
 		source: url.hostname.replace(/^www\./, ''),
@@ -82,13 +87,9 @@ export async function stageStoredPdfAcquisition(
 	});
 	// An unidentified upload is titled by its file name, as Web titles a new upload.
 	const name = fileName?.trim() || 'PDF';
-	// The first page and the PDF's own properties are where a paper prints its DOI or arXiv id.
-	const printedIdentity = paperIdentityFromText(parsed.paperIdentifierText);
 	if (!parsed.markdown) throw new NonRetryableError(`Stored PDF ${target.objectId} has no usable text; OCR is required`);
 	return {
 		...pdfFileResource(contentHash, parsed),
-		resourceIdentifiers: printedIdentity ? paperIdentifiersFromIdentity(printedIdentity) : [],
-		titlePageText: parsed.paperIdentifierText,
 		url: null,
 		title: name.replace(/\.[a-z0-9]{1,8}$/i, '') || name,
 		source: 'File',

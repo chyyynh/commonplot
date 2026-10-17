@@ -173,8 +173,16 @@ export async function rehostInlineImages(images: ImagesBinding, markdown: string
 		if (!url && base64 && hosted.size < MAX_INLINE_IMAGES) {
 			const bytes = new Uint8Array(Buffer.from(base64, 'base64'));
 			if (bytes.length <= MAX_INLINE_IMAGE_BYTES) {
-				url = await hostInlineImage(images, bytes);
-				hosted.set(image.url, url);
+				// An image Images cannot read or store is dropped alone; the page still reads.
+				url = await hostInlineImage(images, bytes).catch((error: unknown) => {
+					console.warn({
+						tag: 'RESOURCE_IMAGE',
+						event: 'inline_image_failed',
+						error: error instanceof Error ? error.message : String(error),
+					});
+					return undefined;
+				});
+				if (url) hosted.set(image.url, url);
 			}
 		}
 		if (!url) dropped += 1;

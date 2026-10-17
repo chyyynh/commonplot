@@ -24,7 +24,11 @@ export const RESOURCE_PLATFORMS = {
 	},
 	twitter: {
 		identifier: z.string().regex(/^\d+$/),
-		identify: (host, url) => (isXHost(host) ? (url.pathname.match(/^\/[^/]+\/status\/(\d+)(?:\/|$)/)?.[1] ?? null) : undefined),
+		// Embed mirrors serve the same `/:user/status/:id` paths; `/i/web/status/:id` is X's own share form.
+		identify: (host, url) =>
+			isXHost(host) || /(^|\.)(fxtwitter|vxtwitter|fixupx|fixvx)\.com$/.test(host)
+				? (url.pathname.match(/^\/(?:i\/web|[^/]+)\/status\/(\d+)(?:\/|$)/)?.[1] ?? null)
+				: undefined,
 		url: (id) => `https://x.com/i/status/${id}`,
 	},
 	youtube: {

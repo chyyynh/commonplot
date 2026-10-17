@@ -127,6 +127,9 @@ export async function claimDueDerivations(db: NodePgDatabase, limit: number): Pr
 	return rows;
 }
 
+/** More than any derivation reads (a summary 10k, entities 20k), so a long original never bloats the step's checkpoint. */
+const DERIVATION_SOURCE_MAX_CHARS = 20_000;
+
 /** What a derivation reads from a stored original. */
 export type DerivationSource = Readonly<{
 	kind: ResourceKind;
@@ -142,7 +145,7 @@ export type DerivationSource = Readonly<{
 export async function loadDerivationSource(db: NodePgDatabase, resourceId: string, inputHash: string) {
 	const { rows } = await db.execute<DerivationSource>(sql`
 		SELECT resource.kind, resource.resource_platform AS "resourcePlatform", COALESCE(resource.source_name, '') AS source,
-		       resource.title, resource.description, COALESCE(body.markdown, '') AS content
+		       resource.title, resource.description, LEFT(COALESCE(body.markdown, ''), ${DERIVATION_SOURCE_MAX_CHARS}::integer) AS content
 		FROM resources resource
 		LEFT JOIN resource_content body ON body.resource_id = resource.id
 		WHERE resource.id = ${resourceId}::uuid AND resource.text_hash = ${inputHash}

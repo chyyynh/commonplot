@@ -68,9 +68,17 @@ type ResourceDerivationPayload = DirectDerivation & { resourceId: string; inputH
 export class ResourceDerivationWorkflow extends WorkflowEntrypoint<CoreEnv, ResourceDerivationPayload> {
 	async run(event: WorkflowEvent<ResourceDerivationPayload>, step: WorkflowStep) {
 		const { resourceId, inputHash, ...derivation } = event.payload;
-		const source = await step.do('load-derivation-source-v1', STORAGE_STEP, () =>
-			withCoreDb(this.env, (db) => loadDerivationSource(db, resourceId, inputHash)),
-		);
+		// A failed load counts as an attempt too: the next attempt has a new instance id, and this one would never rerun.
+		const source = await step
+			.do('load-derivation-source-v1', STORAGE_STEP, () => withCoreDb(this.env, (db) => loadDerivationSource(db, resourceId, inputHash)))
+			.catch(async (error: unknown) => {
+				const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+				await step.do('record-failed-load-v1', STORAGE_STEP, () =>
+					withCoreDb(this.env, (db) => failDerivation(db, resourceId, derivation, inputHash, message)),
+				);
+				return undefined;
+			});
+		if (source === undefined) return { status: 'unchanged' as const };
 		if (!source) return { status: 'superseded' as const };
 		if (!(await deriveResource(this.env, step, resourceId, inputHash, source, derivation, event.instanceId)))
 			return { status: 'unchanged' as const };
@@ -87,7 +95,11 @@ export class ResourceDerivationWorkflow extends WorkflowEntrypoint<CoreEnv, Reso
 // Sized to regenerate every titled Resource's summaries within a day of a summary prompt change.
 const DERIVATION_SWEEP_BATCH = 300;
 
-/** Starts each derivation whose attempt failed or never settled; its lease keeps the next sweep from starting it again. */
+/**
+ * Starts each derivation whose attempt failed or never settled; its lease keeps the next sweep from starting it again.
+ * The instance id names the text and the attempt, so a sweep that takes over a still-running attempt finds that instance
+ * instead of starting a second one.
+ */
 export async function enqueueDueDerivations(db: NodePgDatabase): Promise<void> {
 	const due = await claimDueDerivations(db, DERIVATION_SWEEP_BATCH);
 	if (!due.length) return;
@@ -98,8 +110,8 @@ export async function enqueueDueDerivations(db: NodePgDatabase): Promise<void> {
 	);
 	const instances = due
 		.filter(({ kind }) => kind !== 'translation')
-		.map(({ resourceId, kind, lang, inputHash }) => ({
-			id: `rd-v1-${kind}-${resourceId}-${crypto.randomUUID()}`,
+		.map(({ resourceId, kind, lang, inputHash, attempts }) => ({
+			id: `rd-v2-${kind}${lang ? `-${lang}` : ''}-${resourceId}-${inputHash.slice(0, 16)}-${attempts}`,
 			params: { resourceId, inputHash, ...({ kind, lang } as DirectDerivation) },
 		}));
 	// createBatch takes at most 100 instances.

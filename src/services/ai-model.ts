@@ -10,6 +10,10 @@ export const CORE_TEXT_REASONING = 'low';
 type GatewayMetadata = NonNullable<GatewayOptions['metadata']>;
 type AiEnv = Pick<CoreEnv, 'AI' | 'AI_GATEWAY_ENVIRONMENT'>;
 
+/** The longest one model call may take; a hung call otherwise holds its step until the step's own timeout. */
+const AI_REQUEST_TIMEOUT_MS = 180_000;
+
+/** Options for one model call, made right before it: the timeout starts here. */
 export function coreGatewayOptions(env: Pick<CoreEnv, 'AI_GATEWAY_ENVIRONMENT'>, metadata: GatewayMetadata) {
 	return {
 		gateway: {
@@ -19,6 +23,7 @@ export function coreGatewayOptions(env: Pick<CoreEnv, 'AI_GATEWAY_ENVIRONMENT'>,
 			metadata: { ...metadata, environment: env.AI_GATEWAY_ENVIRONMENT },
 		} satisfies GatewayOptions,
 		extraHeaders: { 'cf-aig-collect-log-payload': 'false' },
+		signal: AbortSignal.timeout(AI_REQUEST_TIMEOUT_MS),
 	};
 }
 

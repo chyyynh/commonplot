@@ -30,6 +30,11 @@ const TwitterAdvancedSearchEnvelopeSchema = z.object({
 const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
 
 const TWITTER_SOURCE_CONCURRENCY = 5;
+/**
+ * Each window starts this long before the last one ended: search indexes a tweet a while after it is posted, so one
+ * posted just before a window closed can be missing from it. Admission drops the tweets seen twice.
+ */
+const WINDOW_OVERLAP_SECONDS = 30 * 60;
 
 /** Fetch one fixed monitoring window using twitterapi.io's native cursor. */
 async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime: number, untilTime: number) {
@@ -139,7 +144,9 @@ async function enqueueTweets(db: NodePgDatabase, tweets: Iterable<DiscoveredTwee
 }
 
 async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: TwitterSource, windowEnd: Date) {
-	const sinceTime = Math.floor(new Date(source.scrapedAt ?? source.createdAt).getTime() / 1000);
+	const sinceTime = source.scrapedAt
+		? Math.floor(new Date(source.scrapedAt).getTime() / 1000) - WINDOW_OVERLAP_SECONDS
+		: Math.floor(new Date(source.createdAt).getTime() / 1000);
 	const untilTime = Math.floor(windowEnd.getTime() / 1000);
 	try {
 		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, sinceTime, untilTime);

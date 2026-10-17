@@ -29,7 +29,10 @@ export function normalizeAcquiredResource(resource: AcquiredResource, hints?: So
 		throw new TypeError('An untitled kind has no title or summary; every other Resource requires a title');
 	}
 	const content = (title ? withoutDuplicateResourceTitle(resource.content, title) : resource.content).trim();
-	if (!content) throw new TypeError('Resolved Resource requires content');
+	const kindMetadata = RESOURCE_KINDS[resource.kind].metadata.parse(resource.kindMetadata);
+	// A post may be its media alone, such as a photo or GIF without a caption.
+	if (!content && !(kindMetadata && 'attachments' in kindMetadata && kindMetadata.attachments.length))
+		throw new TypeError('Resolved Resource requires content');
 	const source = resource.source.trim();
 	if (!source) throw new TypeError('Resolved Resource requires a source name');
 	const identifiers = ResourceIdentifiersSchema.parse(resource.resourceIdentifiers);
@@ -64,7 +67,7 @@ export function normalizeAcquiredResource(resource: AcquiredResource, hints?: So
 		source,
 		resourceIdentifiers: identifiers,
 		creators: ResourceCreatorsSchema.parse(resource.creators),
-		kindMetadata: RESOURCE_KINDS[resource.kind].metadata.parse(resource.kindMetadata),
+		kindMetadata,
 		originalLang: ResourceLanguageSchema.parse(
 			detectResourceLanguage(content, declaredLang && declaredLang !== 'und' ? declaredLang : (hints?.originalLang ?? 'und')),
 		),
