@@ -41,7 +41,8 @@ export async function summarizeResource(resource: DerivationSource, lang: Summar
 			system: `Write a 1–2 sentence summary in ${SUMMARY_TARGETS[lang].language}, whatever the original language.
 ${SUMMARY_TARGETS[lang].style}
 Preserve attribution, tone, limitations and uncertainty; add nothing the content does not say.
-A discussion thread's summary describes the discussion; a short post's summary is proportionate to it.`,
+A discussion thread's summary describes the discussion; a short post's summary is proportionate to it.
+Plain text only: no Markdown, LaTeX or other markup.`,
 			output: { name: 'resource_summary', schema: z.object({ summary: z.string().trim().min(1) }) },
 			maxTokens: 1000,
 			temperature: 0.3,

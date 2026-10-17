@@ -37,8 +37,8 @@ export function detectResourceLanguage(content: string, knownLanguage = 'und'): 
 	if (detected === 'und') return known;
 	if (detected !== 'zh') return detected;
 	chineseConverters ??= {
-		toTraditional: Converter({ from: 'cn', to: 't' }),
-		toSimplified: Converter({ from: 't', to: 'cn' }),
+		toTraditional: Converter({ from: 'cn', to: 'tw' }),
+		toSimplified: Converter({ from: 'tw', to: 'cn' }),
 	};
 	const chars = [...text];
 	const difference = (converted: string) => [...converted].filter((char, index) => char !== chars[index]).length;
@@ -51,6 +51,9 @@ export function detectResourceLanguage(content: string, knownLanguage = 'und'): 
  * Whether generated prose reads as `lang`: Taiwan Traditional Chinese with no Simplified forms, or English with no
  * CJK script. Names in other scripts may appear; the prose around them may not.
  */
+// Forms Taiwan writes every day that OpenCC still turns into their formal variant (台 → 臺).
+const TAIWAN_COMMON_FORMS = new Set(['台']);
+
 export function isWrittenIn(text: string, lang: 'zh-Hant' | 'en'): boolean {
 	const letters = text.match(/\p{L}/gu)?.length ?? 0;
 	const han = text.match(/\p{Script=Han}/gu)?.length ?? 0;
@@ -61,11 +64,13 @@ export function isWrittenIn(text: string, lang: 'zh-Hant' | 'en'): boolean {
 	const latinWords = text.match(/\p{Script=Latin}+/gu)?.length ?? 0;
 	if (han / (han + latinWords) < 0.5) return false;
 	chineseConverters ??= {
-		toTraditional: Converter({ from: 'cn', to: 't' }),
-		toSimplified: Converter({ from: 't', to: 'cn' }),
+		toTraditional: Converter({ from: 'cn', to: 'tw' }),
+		toSimplified: Converter({ from: 'tw', to: 'cn' }),
 	};
 	const chars = [...text];
-	const simplified = [...chineseConverters.toTraditional(text)].filter((char, index) => char !== chars[index]).length;
+	const simplified = [...chineseConverters.toTraditional(text)].filter(
+		(char, index) => char !== chars[index] && !TAIWAN_COMMON_FORMS.has(chars[index]!),
+	).length;
 	return simplified <= Math.max(1, Math.floor(han / 50));
 }
 
