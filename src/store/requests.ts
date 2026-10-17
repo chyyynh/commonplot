@@ -232,11 +232,6 @@ export async function fulfillRequests(tx: NodePgDatabase, requestId: string, res
 		ON CONFLICT (scheme, value) DO NOTHING
 	`);
 	if (!rows.length) return { users: [] as UserRequest[], carriers: [] as string[] };
-	const sourceId = rows.find(({ requester }) => requester === 'source')?.sourceId;
-	if (sourceId)
-		await tx.execute(sql`
-			UPDATE resources SET source_id = ${sourceId}::uuid, updated_at = NOW() WHERE id = ${resourceId}::uuid AND source_id IS NULL
-		`);
 	const subjects = rows.filter(({ requester }) => requester === 'subject');
 	const carriers = subjects.length
 		? (

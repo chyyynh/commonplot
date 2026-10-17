@@ -65,10 +65,10 @@ async function findResourceCandidates(
 ) {
 	if (!identities.length) return [];
 	const { rows } = await db.execute<{
-		owners: { id: string; sourceId: string | null; scope: 'corpus' | 'private'; hasOriginal: boolean }[];
+		owners: { id: string; scope: 'corpus' | 'private'; hasOriginal: boolean }[];
 	}>(sql`
 		SELECT COALESCE(jsonb_agg(jsonb_build_object(
-		  'id', resource.id, 'sourceId', resource.source_id, 'scope', resource.scope,
+		  'id', resource.id, 'scope', resource.scope,
 		  'hasOriginal', ${READABLE_ORIGINAL_SQL}))
 		  FILTER (WHERE resource.id IS NOT NULL), '[]'::jsonb) AS owners
 		FROM jsonb_array_elements(${JSON.stringify(identities.map(({ normalizedUrl, identifiers }) => ({ normalizedUrl, identifiers })))}::jsonb) WITH ORDINALITY AS input(value, ordinal)
@@ -90,7 +90,7 @@ export async function findResourcesByUrls(db: NodePgDatabase, urls: readonly Res
 	return urls.map(({ url, normalizedUrl }, index) => {
 		const owners = candidates[index]!.filter(({ scope }) => scope === 'corpus');
 		const owner = owners.length === 1 && owners[0]!.hasOriginal ? owners[0] : null;
-		return { url, normalizedUrl, resourceId: owner?.id ?? null, sourceId: owner?.sourceId ?? null };
+		return { url, normalizedUrl, resourceId: owner?.id ?? null };
 	});
 }
 
@@ -317,11 +317,10 @@ async function writeCanonicalResource(
 		`);
 	}
 	// Every titled Resource is summarized in each reader language, whatever its source said about itself.
-	return requireDerivations(db, resourceId, [
+	return [
 		...(RESOURCE_KINDS[resource.kind].titled ? SUMMARY_LANGS.map((lang) => ({ kind: 'summary' as const, lang })) : []),
 		...(privateObjectId ? [] : [{ kind: 'entities' as const, lang: '' as const }]),
-		...(await requiredTranslations(db, resourceId)),
-	]);
+	] satisfies Derivation[];
 }
 
 export type EntityCandidate = Readonly<{
@@ -392,7 +391,7 @@ export async function persistResolvedResource(
 		const claim = await claimRow(tx, resource, target, blobExists);
 		// A newer attempt that already committed did what these requests asked.
 		if (claim.settled) return { ...claim.settled, derivations: [], requests: await fulfillRequests(tx, requestId, claim.resourceId) };
-		const derivations = await writeOriginal(tx, resource, target, claim);
+		const required = await writeOriginal(tx, resource, target, claim);
 		if (resource.hackerNewsId && target.kind !== 'upload')
 			await tx.execute(sql`
 				INSERT INTO resource_keys AS stored (resource_id, scheme, value) VALUES (${claim.resourceId}::uuid, 'hackernews', ${resource.hackerNewsId})
@@ -402,6 +401,10 @@ export async function persistResolvedResource(
 		// Follow-ups read the committed row, which can differ from this draft; links stored before it existed now point to it.
 		if (target.kind !== 'upload') await resolveLinksTo(tx, claim.resourceId, resource);
 		const requests = await fulfillRequests(tx, requestId, claim.resourceId);
+		// Whether content translates automatically depends on who asked, which fulfilling the requests just recorded.
+		const derivations = required
+			? await requireDerivations(tx, claim.resourceId, [...required, ...(await requiredTranslations(tx, claim.resourceId))])
+			: [];
 		return { ...committed(await lockResource(tx, claim.resourceId), claim.outcome), derivations, requests };
 	});
 }
@@ -492,15 +495,15 @@ async function claimRow(
 }
 
 /**
- * Writes the original where the claim replaces it, returning the derivations that now wait for it; a kept paper still
- * gains the new version's identifiers and PDF.
+ * Writes the original where the claim replaces it, returning the derivations other than translations that it needs; a
+ * kept paper still gains the new version's identifiers and PDF, and needs none.
  */
 async function writeOriginal(
 	tx: NodePgDatabase,
 	resource: HostedResource,
 	target: ResourcePersistenceTarget,
 	claim: RowClaim,
-): Promise<Derivation[]> {
+): Promise<Derivation[] | null> {
 	const { resourceId, root, outcome, subjectCandidates } = claim;
 	if (outcome === 'written') {
 		const subject = subjectCandidates.length === 1 && subjectCandidates[0]?.scope === 'corpus' ? subjectCandidates[0] : null;
@@ -523,7 +526,7 @@ async function writeOriginal(
 		if (resource.pdfHash)
 			await tx.execute(sql`UPDATE resources SET pdf_hash = ${resource.pdfHash} WHERE id = ${resourceId}::uuid AND pdf_hash IS NULL`);
 	}
-	return [];
+	return null;
 }
 
 function isDegradedOriginal(content: string, stored: StoredResource): boolean {
@@ -559,17 +562,4 @@ export async function loadReacquisitionSource(db: NodePgDatabase, resourceId: st
 	const url = ResourceUrlSchema.safeParse(rows[0].url).data;
 	if (!url) throw new NonRetryableError(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
 	return { url, identifiers: ResourceIdentifiersSchema.parse(rows[0].identifiers) };
-}
-
-/** Attach a discovery source to known Resources that already have a readable original; returns the attached ids. */
-export async function attachSourceToReadableResources(db: NodePgDatabase, sourceId: string, resourceIds: readonly string[]) {
-	if (!resourceIds.length) return new Set<string>();
-	const { rows } = await db.execute<{ id: string }>(sql`
-		UPDATE resources resource
-		SET source_id = ${sourceId}::uuid, updated_at = NOW()
-		WHERE resource.id = ANY(${sql.param([...resourceIds])}::uuid[]) AND resource.scope = 'corpus' AND resource.source_id IS NULL
-		  AND ${READABLE_ORIGINAL_SQL}
-		RETURNING resource.id::text
-	`);
-	return new Set(rows.map(({ id }) => id));
 }

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { SourceResourceDraftSchema, type SourceResourceDraft } from '../contracts/processing-target';
 import { resolveResourceUrl } from '../contracts/resource-url';
 import { recordFulfilledSourceRequests, settledSourceRequestKeys } from '../store/requests';
-import { attachSourceToReadableResources, findResourcesByUrls } from '../store/resources';
+import { findResourcesByUrls } from '../store/resources';
 import { admitRequests } from '../workflows/requests';
 
 /**
@@ -45,12 +45,7 @@ export async function enqueueSourceDrafts(db: NodePgDatabase, sourceId: string, 
 		db,
 		fresh.map(({ url }) => url),
 	);
-	// A readable original only needs its discovery source attached.
-	await attachSourceToReadableResources(
-		db,
-		sourceId,
-		known.flatMap(({ resourceId, sourceId }) => (resourceId && !sourceId ? [resourceId] : [])),
-	);
+	// A readable original only needs its discovery source recorded.
 	await recordFulfilledSourceRequests(
 		db,
 		sourceId,

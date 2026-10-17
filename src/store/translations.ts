@@ -122,9 +122,11 @@ export async function persistMachineTranslation(
  * else translates its title on admission and its content only when a reader asks for it.
  */
 const AUTOMATIC_CONTENT_TRANSLATION_SQL = sql`(
-	(
-		resource.source_id IS NOT NULL
-		OR EXISTS (SELECT 1 FROM resources carrier WHERE carrier.subject_resource_id = resource.id AND carrier.source_id IS NOT NULL)
+	EXISTS (
+		SELECT 1 FROM resource_requests discovery
+		WHERE discovery.requester = 'source' AND discovery.status = 'fulfilled'
+		  AND (discovery.resource_id = resource.id
+		       OR discovery.resource_id IN (SELECT carrier.id FROM resources carrier WHERE carrier.subject_resource_id = resource.id))
 	)
 	AND COALESCE(LENGTH(original.markdown), 0) <= ${MAX_AUTOMATIC_CONTENT_CHARACTERS}
 )`;
