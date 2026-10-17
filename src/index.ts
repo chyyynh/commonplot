@@ -11,7 +11,7 @@ import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
 import { enqueueDueDerivations } from './workflows/derivation';
 import { admitRequests, reconcileRequests, resourceImportExecutions } from './workflows/requests';
-import { contentTranslationStatus, enqueueMissingTranslations, requestContentTranslation } from './workflows/translation';
+import { contentTranslationStatus, requestContentTranslation } from './workflows/translation';
 
 export { ZoteroSdt } from './services/zotero-sdt-container';
 export { ResourceTranslationV2Workflow } from './workflows/translation';
@@ -32,14 +32,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		// derives their slower polling cadence from the canonical feed URL.
 		if (event.cron === '*/5 * * * *') {
 			this.ctx.waitUntil(
-				withCoreDb(this.env, (db) =>
-					Promise.allSettled([
-						handleRSSCron(db),
-						enqueueMissingTranslations(db),
-						enqueueDueDerivations(db),
-						reconcileRequests(this.env, db),
-					]),
-				),
+				withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(db), enqueueDueDerivations(db), reconcileRequests(this.env, db)])),
 			);
 		} else if (event.cron === '0 */6 * * *') {
 			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));

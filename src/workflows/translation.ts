@@ -1,5 +1,5 @@
 // Translation into zh-Hant, plus an English title for recommendation vectors: admission (imports, reader
-// requests, the missing-translation sweep), the durable Workflow, and its model work. Markdown structure lives in services/markdown-translation, which never calls out.
+// requests, the derivation sweep), the durable Workflow, and its model work. Markdown structure lives in services/markdown-translation, which never calls out.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pLimit from 'p-limit';
@@ -22,15 +22,17 @@ import { STORAGE_STEP, stepJson } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import {
 	isTranslatable,
-	listMissingTranslations,
 	loadResourceTranslationInput,
 	loadTranslationCandidate,
+	loadTranslationStates,
 	type MachineEnglishTranslationPatch,
 	type MachineZhHantTranslationPatch,
 	TextHashSchema,
 	persistMachineTranslation,
 	type ResourceTranslationCandidate,
 	type ResourceTranslationInput,
+	settleOpenTranslations,
+	translatesContentAutomatically,
 } from '../store/translations';
 
 /** `metadata` translates the title; `full` also translates the content. */
@@ -50,7 +52,7 @@ function failureReason(error: unknown): string {
 const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v36';
 
 // One execution per original and scope: concurrent imports, requests and the sweep all meet on this ID, so paid work
-// is never doubled, and a changed original gets a new one.
+// is never doubled, and a changed original gets a new one. Its translation rows, not the execution, say whether it landed.
 function translationInstanceId(resourceId: string, textHash: string, scope: TranslationScope): string {
 	return `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${scope}-${resourceId}-${textHash}`;
 }
@@ -69,33 +71,27 @@ async function translationExecution(id: string): Promise<TranslationExecution> {
 	return snapshot.status === 'complete' ? 'done' : 'live';
 }
 
-/**
- * What an import shows for its translations: the one its processing admitted, plus a full one that a Pro save or a
- * reader added for the same original. Nothing once they ended without failing.
- */
+/** What an import shows for its translations: running while any is open or a full one is live, failed once one failed. */
 export async function importTranslationProgress(
+	db: NodePgDatabase,
 	resourceId: string,
 	textHash: string,
-	admittedId: string,
 ): Promise<'running' | 'failed' | undefined> {
-	const fullId = translationInstanceId(resourceId, textHash, 'full');
-	const [admitted, full] = await Promise.all([
-		translationExecution(admittedId),
-		fullId === admittedId ? undefined : translationExecution(fullId),
+	const [states, full] = await Promise.all([
+		loadTranslationStates(db, resourceId, textHash),
+		translationExecution(translationInstanceId(resourceId, textHash, 'full')),
 	]);
-	// The admitted one exists, so an unreadable execution counts as running rather than settling early; a full one
-	// nobody requested is absent.
-	if (admitted === 'live' || admitted === 'absent' || full === 'live') return 'running';
-	if (admitted === 'rerun' || full === 'rerun') return 'failed';
+	if (states.includes('pending') || full === 'live') return 'running';
+	if (states.includes('failed') || full === 'rerun') return 'failed';
 	return undefined;
 }
 
-// `admitted` is false when the same work was already queued, running or complete.
+// `execution` is what the same work was before this call: live and done ones are left alone.
 export async function enqueueResourceTranslation(
 	resource: ResourceTranslationCandidate & Readonly<{ id: string; textHash: string }>,
 	scope: TranslationScope,
 	force: boolean,
-): Promise<{ id: string; admitted: boolean } | null> {
+): Promise<{ id: string; execution: TranslationExecution } | null> {
 	if (!isTranslatable(resource)) return null;
 	const { id: resourceId, textHash } = resource;
 	TextHashSchema.parse(textHash);
@@ -103,7 +99,7 @@ export async function enqueueResourceTranslation(
 	const execution = await translationExecution(id);
 	// Completed work already lives in ResourceTranslation. There is no new
 	// execution to subscribe to, and no second source of progress to project.
-	if (execution === 'done') return { id, admitted: false };
+	if (execution === 'done') return { id, execution };
 	// Concurrent callers share one execution; a failed one runs again under the same ID.
 	if (execution === 'rerun') await (await coreExports.ResourceTranslationV2Workflow.get(id)).restart();
 	if (execution === 'absent') {
@@ -111,7 +107,7 @@ export async function enqueueResourceTranslation(
 			{ id, params: { ...(force ? { force: true } : {}), resourceId, textHash, scope } },
 		]);
 	}
-	return { id, admitted: execution !== 'live' };
+	return { id, execution };
 }
 
 type ContentTranslationRequest = { status: 'unavailable' } | { status: 'complete' } | { status: 'running'; admitted: boolean };
@@ -123,7 +119,7 @@ export async function requestContentTranslation(env: CoreEnv, resourceId: string
 	if (candidate.hasTranslatedContent) return { status: 'complete' };
 	const enqueued = await enqueueResourceTranslation(candidate, 'full', false);
 	if (!enqueued) return { status: 'unavailable' };
-	return { status: 'running', admitted: enqueued.admitted };
+	return { status: 'running', admitted: enqueued.execution !== 'live' && enqueued.execution !== 'done' };
 }
 
 /** Whether a requested full translation is still on its way; `idle` after it lands or fails. */
@@ -133,17 +129,14 @@ export async function contentTranslationStatus(env: CoreEnv, resourceId: string)
 	return (await translationExecution(translationInstanceId(resourceId, candidate.textHash, 'full'))) === 'live' ? 'running' : 'idle';
 }
 
-// Kept small so recovery never crowds new imports out of the provider's per-minute window.
-const TRANSLATION_SWEEP_BATCH = 25;
-
-/** Re-admit recent corpus translations that never landed. */
-export async function enqueueMissingTranslations(db: NodePgDatabase): Promise<void> {
-	const rows = await listMissingTranslations(db, TRANSLATION_SWEEP_BATCH);
-	const results = await Promise.allSettled(
-		rows.map((row) => enqueueResourceTranslation(row, row.automaticContent ? 'full' : 'metadata', false)),
-	);
-	const failed = results.filter((result) => result.status === 'rejected').length;
-	console.info({ tag: 'RESOURCE_TRANSLATION', msg: 'Missing translation sweep', admitted: rows.length - failed, failed });
+/** The sweep's retry of a Resource whose translation came due; a live one keeps running, and a gone one settles its rows. */
+export async function resumeTranslation(db: NodePgDatabase, resourceId: string, textHash: string): Promise<void> {
+	const candidate = await loadTranslationCandidate(db, resourceId);
+	if (candidate?.textHash !== textHash) return settleOpenTranslations(db, resourceId, textHash, null);
+	const automatic = await translatesContentAutomatically(db, resourceId);
+	const enqueued = await enqueueResourceTranslation(candidate, automatic ? 'full' : 'metadata', false);
+	// Every run now settles its rows, so one that completed with them open predates them: it runs again.
+	if (enqueued?.execution === 'done') await (await coreExports.ResourceTranslationV2Workflow.get(enqueued.id)).restart();
 }
 
 // The Workflow
@@ -168,7 +161,8 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			if (input.textHash !== textHash) return end('superseded', 'superseded');
 			const resource = input.resource;
 			const plan = planTranslation(resource, scope, force);
-			if (!plan.metadata && !plan.content && !plan.english) return end('skipped', 'unneeded');
+			if (!plan.metadata && !plan.content && !plan.english)
+				return await this.settle(step, resourceId, textHash, end('skipped', 'unneeded'));
 
 			// Every part settles before any failure is raised, so no step is left running.
 			const [metadata, content, english] = await Promise.allSettled([
@@ -191,7 +185,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			const englishPatch: MachineEnglishTranslationPatch = english.value ?? {};
 			const hasPatch = patch.title !== undefined || patch.content !== undefined;
 			const hasEnglishPatch = englishPatch.title !== undefined;
-			if (!hasPatch && !hasEnglishPatch) return end('skipped', 'empty');
+			if (!hasPatch && !hasEnglishPatch) return await this.settle(step, resourceId, textHash, end('skipped', 'empty'));
 
 			if (hasPatch) {
 				const persisted = await step.do('persist-zh-hant-translation-v2', STORAGE_STEP, async () =>
@@ -213,6 +207,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				scope,
 				translated_characters: patch.content?.length,
 			});
+			await this.settle(step, resourceId, textHash, null);
 			corpus = resource.scope === 'corpus';
 		} catch (error) {
 			console.error({
@@ -223,6 +218,9 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				error: error instanceof Error ? error.message : String(error),
 				resource_id: resourceId,
 			});
+			await step.do('fail-open-translations-v1', STORAGE_STEP, () =>
+				withCoreDb(this.env, (db) => settleOpenTranslations(db, resourceId, textHash, failureReason(error))),
+			);
 			throw error;
 		}
 		// The translation is published, so a lost index handoff is logged rather than failing the run readers follow.
@@ -235,6 +233,14 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 					console.error({ tag: 'RESOURCE_TRANSLATION', event: 'followup_dispatch_failed', error, resource_id: resourceId });
 				});
 		return { status: 'complete', resourceId };
+	}
+
+	/** Whatever this run left of its text's translations has nothing more coming from it. */
+	private async settle<T>(step: WorkflowStep, resourceId: string, textHash: string, result: T): Promise<T> {
+		await step.do('settle-open-translations-v1', STORAGE_STEP, () =>
+			withCoreDb(this.env, (db) => settleOpenTranslations(db, resourceId, textHash, null)),
+		);
+		return result;
 	}
 }
 

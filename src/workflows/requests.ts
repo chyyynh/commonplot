@@ -70,7 +70,7 @@ export async function reconcileRequests(env: CoreEnv, db: NodePgDatabase) {
 	for (const request of unsaved) {
 		try {
 			await env.APP.completeResourceSave(request.resourceId, requestSaveTarget(request));
-			await completeUserRequests(db, [request.id], null);
+			await completeUserRequests(db, [request.id]);
 		} catch (error) {
 			console.error({ tag: 'REQUEST', msg: 'Recovered save failed', request_id: request.id, error });
 		}
@@ -90,7 +90,7 @@ export type ResourceImportExecution =
 	| { state: 'absent' | 'queued' | 'running' | 'failed' }
 	| { state: 'ready'; resourceId: string; translation?: 'running' | 'failed' };
 
-/** An import's progress from its request: readable once its Resource is written, settled once its save and translation are. */
+/** An import's progress from its request: readable once its Resource is written, settled once its save and translations are. */
 export async function resourceImportExecutions(db: NodePgDatabase, workflowIds: readonly string[]) {
 	const ids = workflowIds.map((id) => id.slice('app-ingest-v1-'.length));
 	const requests = new Map((await loadImportRequests(db, ids)).map((request) => [request.id, request]));
@@ -98,46 +98,14 @@ export async function resourceImportExecutions(db: NodePgDatabase, workflowIds: 
 		await Promise.all(
 			workflowIds.map(async (workflowId, index): Promise<[string, ResourceImportExecution]> => {
 				const request = requests.get(ids[index]!);
-				if (!request) return [workflowId, await legacyImportExecution(workflowId)];
-				const { status, resourceId, translationId, textHash } = request;
+				if (!request) return [workflowId, { state: 'absent' }];
+				const { status, resourceId, textHash } = request;
 				if (status === 'failed' || (status === 'fulfilled' && !resourceId)) return [workflowId, { state: 'failed' }];
 				if (!resourceId) return [workflowId, { state: 'running' }];
 				if (status === 'pending') return [workflowId, { state: 'ready', resourceId, translation: 'running' }];
-				const translation = translationId && textHash ? await importTranslationProgress(resourceId, textHash, translationId) : undefined;
+				const translation = textHash ? await importTranslationProgress(db, resourceId, textHash) : undefined;
 				return [workflowId, { state: 'ready', resourceId, ...(translation ? { translation } : {}) }];
 			}),
 		),
 	);
-}
-
-/** What a workflow admitted before the ledger returned. */
-type LegacyProcessingOutput =
-	| { outcome: 'ready'; resourceId: string; textHash: string; translationId?: string }
-	| { outcome: 'superseded' };
-
-/** An import admitted before the ledger, read from its workflow until those age out of Web's inbox. */
-async function legacyImportExecution(id: string): Promise<ResourceImportExecution> {
-	let snapshot: Awaited<ReturnType<WorkflowInstance['status']>>;
-	try {
-		snapshot = await (await coreExports.ResourceProcessingV2Workflow.get(id)).status();
-	} catch {
-		return { state: 'absent' };
-	}
-	switch (snapshot.status) {
-		case 'queued':
-			return { state: 'queued' };
-		case 'errored':
-		case 'terminated':
-			return { state: 'failed' };
-		case 'complete': {
-			const output = snapshot.output as LegacyProcessingOutput;
-			if (output.outcome === 'superseded') return { state: 'failed' };
-			const translation = output.translationId
-				? await importTranslationProgress(output.resourceId, output.textHash, output.translationId)
-				: undefined;
-			return { state: 'ready', resourceId: output.resourceId, ...(translation ? { translation } : {}) };
-		}
-		default:
-			return { state: 'running' };
-	}
 }

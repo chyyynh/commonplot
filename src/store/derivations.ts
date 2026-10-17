@@ -6,10 +6,14 @@ import { entityKey, type ResourceEntity, type ResourceKind, type ResourcePlatfor
 export const SUMMARY_LANGS = ['zh-Hant', 'en'] as const;
 export type SummaryLang = (typeof SUMMARY_LANGS)[number];
 /**
- * What Core derives from an original after it is written; each lands, fails and retries on its own. Only summaries
- * have a language.
+ * What Core derives from an original after it is written; each lands, fails and retries on its own. Summaries and
+ * translations have a language; a translation is written by its own Workflow.
  */
-export type Derivation = Readonly<{ kind: 'summary'; lang: SummaryLang } | { kind: 'entities'; lang: '' }>;
+export type Derivation = Readonly<
+	{ kind: 'summary'; lang: SummaryLang } | { kind: 'entities'; lang: '' } | { kind: 'translation'; lang: TranslationLang }
+>;
+/** zh-Hant translates the title, and the content where it translates automatically; English is only ever a title. */
+export type TranslationLang = 'zh-Hant' | 'en';
 
 /** A pending derivation belongs to the attempt that wrote its original this long before the sweep may take it. */
 const DERIVATION_LEASE = sql`interval '15 minutes'`;
@@ -27,8 +31,6 @@ export async function requireDerivations(tx: NodePgDatabase, resourceId: string,
 		DELETE FROM resource_derivations
 		WHERE resource_id = ${resourceId}::uuid
 		  AND (kind, lang) NOT IN (SELECT * FROM unnest(${sql.param(kinds)}::text[], ${sql.param(langs)}::text[]))
-		  -- Translations are written by their own Workflow, which won't rerun for an unchanged text.
-		  AND NOT (kind = 'translation' AND input_hash = (SELECT text_hash FROM resources WHERE id = ${resourceId}::uuid))
 	`);
 	if (!required.length) return [];
 	const { rows } = await tx.execute<Derivation>(sql`
@@ -38,7 +40,9 @@ export async function requireDerivations(tx: NodePgDatabase, resourceId: string,
 		WHERE resource.id = ${resourceId}::uuid
 		ON CONFLICT (resource_id, kind, lang) DO UPDATE SET
 			(input_hash, status, attempts, retry_at, error, updated_at) =
-			(EXCLUDED.input_hash, 'pending', 0, EXCLUDED.retry_at, NULL, NOW())
+			(EXCLUDED.input_hash, 'pending', 0, EXCLUDED.retry_at, NULL, NOW()),
+			-- A translation merges its parts onto the same text, so a new text starts from nothing.
+			output = CASE WHEN current.input_hash = EXCLUDED.input_hash THEN current.output END
 		WHERE current.input_hash <> EXCLUDED.input_hash OR current.status <> 'done'
 		RETURNING kind, lang
 	`);

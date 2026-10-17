@@ -80,7 +80,7 @@ export function isWrittenIn(text: string, lang: 'zh-Hant' | 'en'): boolean {
  * English, or a code for no linguistic content, undetermined or private-use text: an English title would
  * add nothing. A POSIX pattern, so SQL applies the same rule to `original_lang` with `~*`.
  */
-export const WITHOUT_ENGLISH_METADATA_LANG_PATTERN = '^(en|zxx|und|mis|mul|art|q[a-t][a-z])(-|$)';
+const WITHOUT_ENGLISH_METADATA_LANG_PATTERN = '^(en|zxx|und|mis|mul|art|q[a-t][a-z])(-|$)';
 
 export function isEnglishLanguage(lang: string): boolean {
 	return /^en(-|$)/i.test(lang);

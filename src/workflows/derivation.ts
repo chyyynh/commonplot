@@ -1,5 +1,5 @@
-// Derivations of a written original — its AI summary and its entities. Each is recorded in resource_derivations,
-// so a failure leaves the Resource published and a later sweep runs it again.
+// Derivations of a written original — its AI summary, its entities and its translations. Each is recorded in
+// resource_derivations, so a failure leaves the Resource published and a later sweep runs it again.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { coreExports } from '../exports.ts';
@@ -17,6 +17,10 @@ import {
 	failDerivation,
 	loadDerivationSource,
 } from '../store/derivations';
+import { resumeTranslation } from './translation';
+
+/** What this Workflow derives itself; translations run in their own. */
+type DirectDerivation = Exclude<Derivation, { kind: 'translation' }>;
 
 /** Runs one derivation for the text `inputHash` names; true when it wrote something. A failure is recorded, not thrown. */
 export async function deriveResource(
@@ -25,7 +29,7 @@ export async function deriveResource(
 	resourceId: string,
 	inputHash: string,
 	source: DerivationSource,
-	derivation: Derivation,
+	derivation: DirectDerivation,
 	processingId: string,
 ): Promise<boolean> {
 	const { kind, lang } = derivation;
@@ -58,7 +62,7 @@ export async function deriveResource(
 	}
 }
 
-type ResourceDerivationPayload = Derivation & { resourceId: string; inputHash: string };
+type ResourceDerivationPayload = DirectDerivation & { resourceId: string; inputHash: string };
 
 /** A derivation the sweep took over: the attempt that wrote its original failed it or never settled it. */
 export class ResourceDerivationWorkflow extends WorkflowEntrypoint<CoreEnv, ResourceDerivationPayload> {
@@ -87,12 +91,25 @@ const DERIVATION_SWEEP_BATCH = 300;
 export async function enqueueDueDerivations(db: NodePgDatabase): Promise<void> {
 	const due = await claimDueDerivations(db, DERIVATION_SWEEP_BATCH);
 	if (!due.length) return;
-	const instances = due.map(({ resourceId, kind, lang, inputHash }) => ({
-		id: `rd-v1-${kind}-${resourceId}-${crypto.randomUUID()}`,
-		params: { resourceId, inputHash, ...({ kind, lang } as Derivation) },
-	}));
+	// One translation run covers both languages of a text.
+	const translations = new Map(due.flatMap(({ kind, resourceId, inputHash }) => (kind === 'translation' ? [[resourceId, inputHash]] : [])));
+	const resumed = await Promise.allSettled(
+		[...translations].map(([resourceId, inputHash]) => resumeTranslation(db, resourceId, inputHash)),
+	);
+	const instances = due
+		.filter(({ kind }) => kind !== 'translation')
+		.map(({ resourceId, kind, lang, inputHash }) => ({
+			id: `rd-v1-${kind}-${resourceId}-${crypto.randomUUID()}`,
+			params: { resourceId, inputHash, ...({ kind, lang } as DirectDerivation) },
+		}));
 	// createBatch takes at most 100 instances.
 	for (let offset = 0; offset < instances.length; offset += 100)
 		await coreExports.ResourceDerivationWorkflow.createBatch(instances.slice(offset, offset + 100));
-	console.info({ tag: 'DERIVATION', msg: 'Due derivation sweep', started: due.length });
+	console.info({
+		tag: 'DERIVATION',
+		msg: 'Due derivation sweep',
+		started: instances.length,
+		translations: translations.size,
+		failed: resumed.filter(({ status }) => status === 'rejected').length,
+	});
 }

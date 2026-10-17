@@ -20,10 +20,8 @@ import { stageResourceReferences } from './references';
 import { admitRequests, requestSaveTarget } from './requests';
 import { enqueueResourceTranslation } from './translation';
 
-/** The published Resource and the translation its imports follow, or a run a newer attempt replaced. */
-type ResourceProcessingOutput =
-	| { outcome: 'ready'; resourceId: string; textHash: string; translationId?: string }
-	| { outcome: 'superseded' };
+/** The published Resource, or a run a newer attempt replaced. */
+type ResourceProcessingOutput = { outcome: 'ready'; resourceId: string; textHash: string } | { outcome: 'superseded' };
 
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep): Promise<ResourceProcessingOutput> {
@@ -112,7 +110,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		// The Resource is published; its summary and entities are derived from what was written, before the handoffs read them.
 		await Promise.all(
 			persistence.derivations.map((derivation) =>
-				deriveResource(this.env, step, resourceId, textHash, { ...hosted, description: hosted.summary }, derivation, instanceId),
+				derivation.kind === 'translation'
+					? undefined
+					: deriveResource(this.env, step, resourceId, textHash, { ...hosted, description: hosted.summary }, derivation, instanceId),
 			),
 		);
 		const subjectUrl = resource.subjectUrl;
@@ -168,12 +168,8 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		if (failures.length) console.error({ tag: 'WORKFLOW', msg: 'Follow-up dispatch failed', resource_id: resourceId, errors: failures });
 
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: resourceId, target_kind: target.kind });
-		const translation = followups[1];
-		const translationId = translation.status === 'fulfilled' ? translation.value?.id : undefined;
-		await step.do('complete-user-requests-v1', STORAGE_STEP, () =>
-			withCoreDb(this.env, (db) => completeUserRequests(db, saved, translationId ?? null)),
-		);
-		return { outcome: 'ready', resourceId, textHash, ...(translationId ? { translationId } : {}) };
+		await step.do('complete-user-requests-v1', STORAGE_STEP, () => withCoreDb(this.env, (db) => completeUserRequests(db, saved)));
+		return { outcome: 'ready', resourceId, textHash };
 	}
 }
 

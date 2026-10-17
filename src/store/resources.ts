@@ -16,6 +16,7 @@ import { blobKey } from '../contracts/storage-keys';
 import { type Derivation, replaceResourceEntities, requireDerivations, SUMMARY_LANGS } from './derivations';
 import { kindWhere, READABLE_ORIGINAL_SQL } from './kind-sql';
 import { fulfillRequests } from './requests';
+import { requiredTranslations } from './translations';
 
 /** Web's `storedBlobs` advisory lock namespace (`web-tanstack/src/server/db/locks.server.ts`). */
 const STORED_BLOB_LOCK_NAMESPACE = 330571;
@@ -319,6 +320,7 @@ async function writeCanonicalResource(
 	return requireDerivations(db, resourceId, [
 		...(RESOURCE_KINDS[resource.kind].titled ? SUMMARY_LANGS.map((lang) => ({ kind: 'summary' as const, lang })) : []),
 		...(privateObjectId ? [] : [{ kind: 'entities' as const, lang: '' as const }]),
+		...(await requiredTranslations(db, resourceId)),
 	]);
 }
 

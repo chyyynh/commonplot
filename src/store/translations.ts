@@ -3,8 +3,8 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { PDF_MIME } from '../contracts/pdf-policy';
 import { RESOURCE_KINDS, type ResourceKind, type ResourcePlatform } from '../contracts/resource';
-import { WITHOUT_ENGLISH_METADATA_LANG_PATTERN } from '../contracts/resource-language';
-import { kindWhere } from './kind-sql';
+import { needsEnglishMetadata } from '../contracts/resource-language';
+import { type Derivation, failDerivation } from './derivations';
 
 export const TextHashSchema = z.hash('md5').lowercase();
 
@@ -53,9 +53,6 @@ export type ResourceTranslationInput = ResourceTranslationCandidate & {
 export type MachineZhHantTranslationPatch = Readonly<{ title?: string; content?: string; alignment?: unknown }>;
 /** English is only ever a title: recommendation vectors read it, and content stays in its original. */
 export type MachineEnglishTranslationPatch = Readonly<{ title?: string }>;
-
-/** A titled Resource whose original is in another named language, so its English title comes from translation. */
-const ENGLISH_METADATA_SQL = sql`(${kindWhere(sql`resource.kind`, 'titled')} AND resource.original_lang !~* ${WITHOUT_ENGLISH_METADATA_LANG_PATTERN})`;
 
 export async function loadResourceTranslationInput(
 	db: NodePgDatabase,
@@ -120,16 +117,6 @@ export async function persistMachineTranslation(
 	return result.rows.length > 0;
 }
 
-/** A stored corpus original in a language other than zh-Hant that the translation Workflow accepts. */
-const TRANSLATABLE_CORPUS_SQL = sql`(
-	resource.scope = 'corpus'
-	AND resource.text_hash IS NOT NULL
-	AND resource.url IS NOT NULL
-	AND resource.original_lang <> 'zh-Hant'
-	AND ${kindWhere(sql`resource.kind`, 'translatable')}
-	AND BTRIM(COALESCE(original.markdown, '')) <> ''
-)`;
-
 /**
  * Monitor discoveries, and the subjects their carriers point at, translate in full at the operator's cost. Everything
  * else translates its title on admission and its content only when a reader asks for it.
@@ -173,31 +160,50 @@ export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: s
 }
 
 /**
- * Corpus translations that never landed, usually after a burst hit the provider rate limit. Only recent acquisitions
- * qualify: completed attempts stay visible for the Workflow retention window, so a no-op attempt is not repeated.
- * Content counts as missing only where it translates automatically; English is only ever a title.
+ * The translations a written original waits for, in the transaction that wrote it: zh-Hant for a title, for content
+ * that translates automatically, or to keep one a reader already has of this text; English for a title only.
  */
-export async function listMissingTranslations(db: NodePgDatabase, limit: number) {
-	const { rows } = await db.execute<ResourceTranslationCandidate & { id: string; textHash: string; automaticContent: boolean }>(sql`
-		SELECT ${CANDIDATE_COLUMNS},
-		       ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS "automaticContent"
+export async function requiredTranslations(tx: NodePgDatabase, resourceId: string): Promise<Derivation[]> {
+	const { rows } = await tx.execute<ResourceTranslationCandidate & { automatic: boolean; translated: boolean }>(sql`
+		SELECT ${CANDIDATE_COLUMNS}, ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS automatic,
+		       EXISTS (
+		         SELECT 1 FROM resource_derivations zh_hant
+		         WHERE zh_hant.resource_id = resource.id AND zh_hant.kind = 'translation' AND zh_hant.lang = 'zh-Hant'
+		           AND zh_hant.input_hash = resource.text_hash
+		       ) AS translated
 		FROM resources resource
 		LEFT JOIN resource_content original ON original.resource_id = resource.id
-		LEFT JOIN resource_derivations zh_hant
-		  ON zh_hant.resource_id = resource.id AND zh_hant.kind = 'translation' AND zh_hant.lang = 'zh-Hant' AND zh_hant.status = 'done'
-		LEFT JOIN resource_derivations en
-		  ON en.resource_id = resource.id AND en.kind = 'translation' AND en.lang = 'en' AND en.status = 'done'
-		WHERE ${TRANSLATABLE_CORPUS_SQL}
-		  AND resource.scraped_date > now() - interval '6 days'
-		  AND resource.scraped_date < now() - interval '15 minutes'
-		  AND (
-		    -- An untitled Resource outside automatic scope has no metadata to translate, so it never gets a zh-Hant row.
-		    (zh_hant.resource_id IS NULL AND (${kindWhere(sql`resource.kind`, 'titled')} OR ${AUTOMATIC_CONTENT_TRANSLATION_SQL}))
-		    OR (zh_hant.output->>'content' IS NULL AND ${AUTOMATIC_CONTENT_TRANSLATION_SQL})
-		    OR (en.resource_id IS NULL AND ${ENGLISH_METADATA_SQL})
-		  )
-		ORDER BY resource.published_date DESC NULLS LAST
-		LIMIT ${limit}
+		WHERE resource.id = ${resourceId}::uuid
 	`);
-	return rows;
+	const row = rows[0];
+	if (!row || !isTranslatable(row)) return [];
+	const { titled } = RESOURCE_KINDS[row.kind];
+	return [
+		...(titled || row.automatic || row.translated ? [{ kind: 'translation' as const, lang: 'zh-Hant' as const }] : []),
+		...(titled && needsEnglishMetadata(row.originalLang) ? [{ kind: 'translation' as const, lang: 'en' as const }] : []),
+	];
+}
+
+/**
+ * Settles the translations of the text `textHash` names that a run left open: done when it ended with nothing more to
+ * write for them, failed with `error` when it threw.
+ */
+export async function settleOpenTranslations(db: NodePgDatabase, resourceId: string, textHash: string, error: string | null) {
+	if (error !== null) {
+		for (const lang of ['zh-Hant', 'en'] as const) await failDerivation(db, resourceId, { kind: 'translation', lang }, textHash, error);
+		return;
+	}
+	await db.execute(sql`
+		UPDATE resource_derivations SET status = 'done', retry_at = NULL, error = NULL, updated_at = NOW()
+		WHERE resource_id = ${resourceId}::uuid AND kind = 'translation' AND input_hash = ${textHash} AND status <> 'done'
+	`);
+}
+
+/** The states of the translations of the text `textHash` names. */
+export async function loadTranslationStates(db: NodePgDatabase, resourceId: string, textHash: string) {
+	const { rows } = await db.execute<{ status: 'pending' | 'done' | 'failed' }>(sql`
+		SELECT status FROM resource_derivations
+		WHERE resource_id = ${resourceId}::uuid AND kind = 'translation' AND input_hash = ${textHash}
+	`);
+	return rows.map(({ status }) => status);
 }

@@ -267,11 +267,11 @@ export async function fulfillRequests(tx: NodePgDatabase, requestId: string, res
 	return { users, carriers };
 }
 
-/** A user request whose save landed; it now reports the translation its import follows. */
-export async function completeUserRequests(db: NodePgDatabase, ids: readonly string[], translationId: string | null) {
+/** A user request whose save landed; its import now follows its Resource's translations. */
+export async function completeUserRequests(db: NodePgDatabase, ids: readonly string[]) {
 	if (!ids.length) return;
 	await db.execute(sql`
-		UPDATE resource_requests SET status = 'fulfilled', translation_id = ${translationId}, updated_at = NOW()
+		UPDATE resource_requests SET status = 'fulfilled', updated_at = NOW()
 		WHERE id = ANY(${sql.param([...ids])}::uuid[]) AND status = 'pending'
 	`);
 }
@@ -352,11 +352,9 @@ export async function loadImportRequests(db: NodePgDatabase, ids: readonly strin
 		id: string;
 		status: RequestRow['status'];
 		resourceId: string | null;
-		translationId: string | null;
 		textHash: string | null;
 	}>(sql`
-		SELECT request.id::text, request.status, request.resource_id::text AS "resourceId",
-		       request.translation_id AS "translationId", resource.text_hash AS "textHash"
+		SELECT request.id::text, request.status, request.resource_id::text AS "resourceId", resource.text_hash AS "textHash"
 		FROM resource_requests request
 		LEFT JOIN resources resource ON resource.id = request.resource_id
 		WHERE request.id = ANY(${sql.param([...ids])}::uuid[])
