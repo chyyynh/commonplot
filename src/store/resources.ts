@@ -235,13 +235,13 @@ async function writeCanonicalResource(
 	privateObjectId: string | null,
 ) {
 	const columns = sql`
-		kind, resource_platform, source_name, url, file_type, pdf_hash, original_lang, published_date,
+		kind, resource_platform, source_name, title, description, url, file_type, pdf_hash, original_lang, published_date,
 		og_image_url, og_image_width, og_image_height, kind_metadata, subject_resource_id, text_hash,
 		scraped_date, updated_at
 	`;
 	const preview = await articlePreview(db, resourceId, resource);
 	const values = sql`
-		${resource.kind}, ${resource.resourcePlatform}, ${resource.source}, ${resource.url},
+		${resource.kind}, ${resource.resourcePlatform}, ${resource.source}, ${resource.title}, ${resource.summary}, ${resource.url},
 		${resource.fileType}, ${existing ? sql`COALESCE(${resource.pdfHash ?? null}, pdf_hash)` : (resource.pdfHash ?? null)}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
 		${preview.url}, ${preview.width}, ${preview.height},
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
@@ -281,6 +281,12 @@ async function writeCanonicalResource(
 					THEN resource_translations.summary END),
 				 EXCLUDED.content, EXCLUDED.source, NULL, EXCLUDED.updated_at)
 			RETURNING resource_id
+		), written_content AS (
+			INSERT INTO resource_content (resource_id, markdown)
+			SELECT written_resource.id, incoming.content FROM written_resource CROSS JOIN incoming WHERE incoming.content <> ''
+			ON CONFLICT (resource_id) DO UPDATE SET markdown = EXCLUDED.markdown
+		), cleared_content AS (
+			DELETE FROM resource_content WHERE resource_id = ${resourceId}::uuid AND ${existing} AND (SELECT content FROM incoming) = ''
 		)
 		SELECT 1 FROM written_resource JOIN written_original ON written_original.resource_id = written_resource.id
 	`);
@@ -327,6 +333,10 @@ async function writeCanonicalResource(
 			RETURNING resource_id
 		`);
 		if (!savedTranscript.rows.length) throw new NonRetryableError('YouTube reacquisition returned no captions for an existing transcript');
+		await db.execute(sql`
+			UPDATE resource_content SET transcript = ${JSON.stringify(transcript.lines)}::jsonb, chapters = ${JSON.stringify(transcript.chapters)}::jsonb
+			WHERE resource_id = ${resourceId}::uuid
+		`);
 	}
 	// A summary the source supplied needs none derived.
 	return requireDerivations(db, resourceId, [
