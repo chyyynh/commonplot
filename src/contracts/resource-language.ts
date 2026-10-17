@@ -51,14 +51,15 @@ export function detectResourceLanguage(content: string, knownLanguage = 'und'): 
  * Whether generated prose reads as `lang`: Taiwan Traditional Chinese with no Simplified forms, or English with no
  * CJK script. Names in other scripts may appear; the prose around them may not.
  */
-// Forms Taiwan writes every day that OpenCC still turns into their formal variant (台 → 臺).
-const TAIWAN_COMMON_FORMS = new Set(['台']);
+// Forms Taiwan writes every day that OpenCC still turns into another variant (台 → 臺, 干擾 → 幹擾).
+const TAIWAN_COMMON_FORMS = new Set('台干里污范雇占准岩游');
 
 export function isWrittenIn(text: string, lang: 'zh-Hant' | 'en'): boolean {
 	const letters = text.match(/\p{L}/gu)?.length ?? 0;
 	const han = text.match(/\p{Script=Han}/gu)?.length ?? 0;
 	const otherCjk = text.match(/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu)?.length ?? 0;
-	if (!letters || otherCjk) return false;
+	// A model that breaks off mid-reply sometimes spells the rest as `\uXXXX` escapes.
+	if (!letters || otherCjk || /\\u[\da-f]{4}/iu.test(text)) return false;
 	if (lang === 'en') return han === 0 && (text.match(/\p{Script=Latin}/gu)?.length ?? 0) / letters >= 0.9;
 	// Latin names count as words, so Chinese prose naming products in English still reads as Chinese.
 	const latinWords = text.match(/\p{Script=Latin}+/gu)?.length ?? 0;
@@ -67,9 +68,10 @@ export function isWrittenIn(text: string, lang: 'zh-Hant' | 'en'): boolean {
 		toTraditional: Converter({ from: 'cn', to: 'tw' }),
 		toSimplified: Converter({ from: 'tw', to: 'cn' }),
 	};
-	const chars = [...text];
-	const simplified = [...chineseConverters.toTraditional(text)].filter(
-		(char, index) => char !== chars[index] && !TAIWAN_COMMON_FORMS.has(chars[index]!),
+	// Character by character: OpenCC's phrase rules rewrite valid Taiwan words too (宣布 → 宣佈, 家具 → 傢俱).
+	const { toTraditional, toSimplified } = chineseConverters;
+	const simplified = [...text].filter(
+		(char) => !TAIWAN_COMMON_FORMS.has(char) && /\p{Script=Han}/u.test(char) && toTraditional(char) !== char && toSimplified(char) === char,
 	).length;
 	return simplified <= Math.max(1, Math.floor(han / 50));
 }
