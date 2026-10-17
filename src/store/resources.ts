@@ -236,14 +236,14 @@ async function writeCanonicalResource(
 ) {
 	const columns = sql`
 		kind, resource_platform, source_name, url, file_type, pdf_hash, original_lang, published_date,
-		og_image_url, og_image_width, og_image_height, creators, kind_metadata, subject_resource_id, text_hash,
+		og_image_url, og_image_width, og_image_height, kind_metadata, subject_resource_id, text_hash,
 		scraped_date, updated_at
 	`;
 	const preview = await articlePreview(db, resourceId, resource);
 	const values = sql`
 		${resource.kind}, ${resource.resourcePlatform}, ${resource.source}, ${resource.url},
 		${resource.fileType}, ${existing ? sql`COALESCE(${resource.pdfHash ?? null}, pdf_hash)` : (resource.pdfHash ?? null)}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
-		${preview.url}, ${preview.width}, ${preview.height}, ${JSON.stringify(resource.creators)}::jsonb,
+		${preview.url}, ${preview.width}, ${preview.height},
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
 		(SELECT MD5(jsonb_build_array(lang, title, content)::text) FROM incoming), NOW(), NOW()
 	`;
