@@ -126,7 +126,8 @@ export async function enqueueLateSummaryTranslation(env: CoreEnv, resourceId: st
 	const candidate = await withCoreDb(env, (db) => loadTranslationCandidate(db, resourceId));
 	if (!candidate || !isTranslatable(candidate)) return;
 	const { textHash } = candidate;
-	const id = `${translationInstanceId(resourceId, textHash, 'metadata')}-summary`;
+	// Workflow IDs stop at 100 characters, so the late run names its own scope rather than extending the metadata ID.
+	const id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-summary-${resourceId}-${textHash}`;
 	if ((await translationExecution(id)) !== 'absent') return;
 	await coreExports.ResourceTranslationV2Workflow.createBatch([{ id, params: { resourceId, textHash, scope: 'metadata' } }]);
 }
