@@ -93,6 +93,8 @@ export async function failDerivation(db: NodePgDatabase, resourceId: string, { k
 			retry_at = CASE WHEN attempts + 1 >= ${MAX_DERIVATION_ATTEMPTS} THEN NULL
 			                ELSE NOW() + interval '30 minutes' * power(2, attempts) END
 		WHERE resource_id = ${resourceId}::uuid AND kind = ${kind} AND lang = ${lang} AND input_hash = ${inputHash}
+		  -- A stale attempt failing late never undoes one that landed.
+		  AND status <> 'done'
 	`);
 }
 
