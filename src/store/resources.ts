@@ -367,13 +367,42 @@ async function applyDraftRelation(db: NodePgDatabase, resourceId: string, relati
 	if (attached.rowCount !== 1) throw new NonRetryableError('Subject parent was reacquired or is no longer eligible for attachment');
 }
 
-/** `blobExists` confirms, under the blob lock, that the PDF a Resource reads as was not purged since it was stored. */
+/**
+ * Writes an acquired Resource in one transaction, in three parts: `claimRow` decides which row it is and whether its
+ * original is replaced, `writeOriginal` writes or keeps that original, and `applyRequester` records who asked for it.
+ * `blobExists` confirms, under the blob lock, that the PDF a Resource reads as was not purged since it was stored.
+ */
 export async function persistResolvedResource(
 	db: NodePgDatabase,
 	resource: HostedResource,
 	target: ResourcePersistenceTarget,
 	blobExists: (contentHash: string) => Promise<boolean>,
 ) {
+	return db.transaction(async (tx) => {
+		const claim = await claimRow(tx, resource, target, blobExists);
+		if (claim.settled) return claim.settled;
+		await writeOriginal(tx, resource, target, claim);
+		await applyRequester(tx, claim.resourceId, resource, target);
+		return committed(await lockResource(tx, claim.resourceId), claim.outcome);
+	});
+}
+
+type RowClaim = Readonly<{
+	resourceId: string;
+	root: StoredResource | null;
+	outcome: PersistOutcome;
+	subjectCandidates: Awaited<ReturnType<typeof findResourceCandidates>>[number];
+	/** Set when a newer or identical attempt already committed, so nothing is written. */
+	settled?: ReturnType<typeof committed>;
+}>;
+
+/** Locks every identity the Resource and its subject are known by, then decides which row it is and whether its original is replaced. */
+async function claimRow(
+	tx: NodePgDatabase,
+	resource: HostedResource,
+	target: ResourcePersistenceTarget,
+	blobExists: (contentHash: string) => Promise<boolean>,
+): Promise<RowClaim> {
 	const lockKeys = [
 		...(resource.normalizedUrl ? [`url:${resource.normalizedUrl}`] : []),
 		...resource.resourceIdentifiers.map(({ scheme, value }) => `id:${scheme}:${value}`),
@@ -381,93 +410,100 @@ export async function persistResolvedResource(
 			? [`url:${resource.subject.normalizedUrl}`, ...resource.subject.identifiers.map(({ scheme, value }) => `id:${scheme}:${value}`)]
 			: []),
 	];
-	return db.transaction(async (tx) => {
-		if (lockKeys.length) {
-			// Preserve the same lock order while acquiring all identities in one round trip.
-			await tx.execute(sql`
-				SELECT pg_advisory_xact_lock(hashtextextended('newsence:resource:' || key, 0))
-				FROM unnest(${sql.param([...new Set(lockKeys)].sort())}::text[]) WITH ORDINALITY AS locks(key, ordinal)
-				ORDER BY ordinal
-			`);
-		}
-		if (resource.pdfHash) {
-			// Web purges a blob only while holding this lock and finding no Resource that reads it.
-			await tx.execute(sql`SELECT pg_advisory_xact_lock(${STORED_BLOB_LOCK_NAMESPACE}, hashtext(${blobKey(resource.pdfHash)}))`);
-			if (!(await blobExists(resource.pdfHash))) throw new NonRetryableError('Stored PDF was purged before its Resource committed');
-		}
-		const uploadId = target.kind === 'upload' ? target.objectId : target.kind === 'draft' ? target.uploadId : undefined;
-		if (uploadId) {
-			// Core's one read of Web's stored_objects: every Web path that ends ownership (file deletion, unsaving,
-			// account purge) marks the object `deleting` in the same transaction, so a ready, locked row is still owned.
-			const owned = await tx.execute(sql`SELECT id FROM stored_objects WHERE id = ${uploadId}::uuid AND status = 'ready' FOR UPDATE`);
-			if (!owned.rows.length) throw new NonRetryableError('Uploaded PDF ownership was deleted');
-		}
-		const candidates = await findResourceCandidates(tx, [
-			...(target.kind === 'draft' ? [{ normalizedUrl: resource.normalizedUrl, identifiers: resource.resourceIdentifiers }] : []),
-			...(resource.subject ? [resource.subject] : []),
-		]);
-		const rootCandidates = target.kind === 'draft' ? candidates.shift()! : [];
-		const subjectCandidates = candidates[0] ?? [];
-		// Each candidate is already committed; another attempt finds the same ones.
-		if (target.kind === 'draft' && (rootCandidates.length > 1 || rootCandidates[0]?.scope === 'private'))
-			throw new NonRetryableError('Resolved identity is ambiguous or belongs to a private Resource');
-		// A private file that an earlier attempt removed, when its upload became a paper, is written again.
-		const existingId = target.kind === 'existing' ? target.resourceId : target.kind === 'upload' ? target.objectId : rootCandidates[0]?.id;
-		const root = existingId ? await lockResourceIfAny(tx, existingId) : null;
-		if (target.kind === 'existing' && !root) throw new Error(`Resource ${target.resourceId} was not found`);
-		if (target.kind === 'upload' && root && root.scope !== 'private') throw new NonRetryableError('Uploaded file Resource is not private');
-		const resourceId = root?.id ?? existingId ?? crypto.randomUUID();
-		const fence = target.kind === 'existing' ? target.fence : null;
-		if (root && fence !== null && root.committedSeq > fence) {
-			console.info({
-				tag: 'PERSIST',
-				msg: 'Superseded by a newer acquisition',
-				resource_id: resourceId,
-				fence,
-				committed: root.committedSeq,
-			});
-			return committed(root, 'superseded');
-		}
-		// A retried step whose commit already landed replays it instead of writing again.
-		if (root && fence !== null && root.committedSeq === fence) return committed(root, 'written');
-		// An uploaded copy of a paper also replaces a stored original it far outgrows, such as an abstract.
-		const outcome: PersistOutcome =
-			target.kind === 'upload' ||
-			!root?.hasOriginal ||
-			(target.kind === 'existing' && (target.force || !isDegradedOriginal(resource.content, root))) ||
-			(target.kind === 'draft' &&
-				target.uploadId !== undefined &&
-				resource.content.length * MIN_REACQUIRED_CONTENT_RATIO > root.originalChars)
-				? 'written'
-				: 'kept';
-		if (outcome === 'written') {
-			const subject = subjectCandidates.length === 1 && subjectCandidates[0]?.scope === 'corpus' ? subjectCandidates[0] : null;
-			const subjectResourceId =
-				subject && subject.id !== resourceId && (await lockResource(tx, subject.id)).hasOriginal ? subject.id : null;
-			await writeCanonicalResource(
-				tx,
-				resourceId,
-				resource,
-				root !== null,
-				subjectResourceId,
-				fence,
-				target.kind === 'upload' ? target.objectId : null,
-			);
-		} else {
-			if (target.kind === 'existing')
-				console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });
-			if (root?.kind === 'paper' && resource.kind === 'paper') {
-				await mergePaperIdentifiers(tx, resourceId, resource.resourceIdentifiers);
-				// A kept full text without a PDF of its own, such as arXiv HTML, still gains the copy for the PDF view.
-				if (resource.pdfHash)
-					await tx.execute(sql`UPDATE resources SET pdf_hash = ${resource.pdfHash} WHERE id = ${resourceId}::uuid AND pdf_hash IS NULL`);
-			}
-		}
-		if (target.kind === 'draft' && target.relation) await applyDraftRelation(tx, resourceId, target.relation);
-		// Follow-ups read the committed row, which can differ from this draft.
-		if (target.kind !== 'upload') await resolveLinksTo(tx, resourceId, resource);
-		return committed(await lockResource(tx, resourceId), outcome);
-	});
+	if (lockKeys.length) {
+		// Preserve the same lock order while acquiring all identities in one round trip.
+		await tx.execute(sql`
+			SELECT pg_advisory_xact_lock(hashtextextended('newsence:resource:' || key, 0))
+			FROM unnest(${sql.param([...new Set(lockKeys)].sort())}::text[]) WITH ORDINALITY AS locks(key, ordinal)
+			ORDER BY ordinal
+		`);
+	}
+	if (resource.pdfHash) {
+		// Web purges a blob only while holding this lock and finding no Resource that reads it.
+		await tx.execute(sql`SELECT pg_advisory_xact_lock(${STORED_BLOB_LOCK_NAMESPACE}, hashtext(${blobKey(resource.pdfHash)}))`);
+		if (!(await blobExists(resource.pdfHash))) throw new NonRetryableError('Stored PDF was purged before its Resource committed');
+	}
+	const uploadId = target.kind === 'upload' ? target.objectId : target.kind === 'draft' ? target.uploadId : undefined;
+	if (uploadId) {
+		// Core's one read of Web's stored_objects: every Web path that ends ownership (file deletion, unsaving,
+		// account purge) marks the object `deleting` in the same transaction, so a ready, locked row is still owned.
+		const owned = await tx.execute(sql`SELECT id FROM stored_objects WHERE id = ${uploadId}::uuid AND status = 'ready' FOR UPDATE`);
+		if (!owned.rows.length) throw new NonRetryableError('Uploaded PDF ownership was deleted');
+	}
+	const candidates = await findResourceCandidates(tx, [
+		...(target.kind === 'draft' ? [{ normalizedUrl: resource.normalizedUrl, identifiers: resource.resourceIdentifiers }] : []),
+		...(resource.subject ? [resource.subject] : []),
+	]);
+	const rootCandidates = target.kind === 'draft' ? candidates.shift()! : [];
+	const subjectCandidates = candidates[0] ?? [];
+	// Each candidate is already committed; another attempt finds the same ones.
+	if (target.kind === 'draft' && (rootCandidates.length > 1 || rootCandidates[0]?.scope === 'private'))
+		throw new NonRetryableError('Resolved identity is ambiguous or belongs to a private Resource');
+	// A private file that an earlier attempt removed, when its upload became a paper, is written again.
+	const existingId = target.kind === 'existing' ? target.resourceId : target.kind === 'upload' ? target.objectId : rootCandidates[0]?.id;
+	const root = existingId ? await lockResourceIfAny(tx, existingId) : null;
+	if (target.kind === 'existing' && !root) throw new Error(`Resource ${target.resourceId} was not found`);
+	if (target.kind === 'upload' && root && root.scope !== 'private') throw new NonRetryableError('Uploaded file Resource is not private');
+	const resourceId = root?.id ?? existingId ?? crypto.randomUUID();
+	const fence = target.kind === 'existing' ? target.fence : null;
+	if (root && fence !== null && root.committedSeq > fence) {
+		console.info({
+			tag: 'PERSIST',
+			msg: 'Superseded by a newer acquisition',
+			resource_id: resourceId,
+			fence,
+			committed: root.committedSeq,
+		});
+		return { resourceId, root, outcome: 'superseded', subjectCandidates, settled: committed(root, 'superseded') };
+	}
+	// A retried step whose commit already landed replays it instead of writing again.
+	if (root && fence !== null && root.committedSeq === fence)
+		return { resourceId, root, outcome: 'written', subjectCandidates, settled: committed(root, 'written') };
+	// An uploaded copy of a paper also replaces a stored original it far outgrows, such as an abstract.
+	const outcome: PersistOutcome =
+		target.kind === 'upload' ||
+		!root?.hasOriginal ||
+		(target.kind === 'existing' && (target.force || !isDegradedOriginal(resource.content, root))) ||
+		(target.kind === 'draft' &&
+			target.uploadId !== undefined &&
+			resource.content.length * MIN_REACQUIRED_CONTENT_RATIO > root.originalChars)
+			? 'written'
+			: 'kept';
+	return { resourceId, root, outcome, subjectCandidates };
+}
+
+/** Writes the original where the claim replaces it; a kept paper still gains the new version's identifiers and PDF. */
+async function writeOriginal(tx: NodePgDatabase, resource: HostedResource, target: ResourcePersistenceTarget, claim: RowClaim) {
+	const { resourceId, root, outcome, subjectCandidates } = claim;
+	if (outcome === 'written') {
+		const subject = subjectCandidates.length === 1 && subjectCandidates[0]?.scope === 'corpus' ? subjectCandidates[0] : null;
+		const subjectResourceId = subject && subject.id !== resourceId && (await lockResource(tx, subject.id)).hasOriginal ? subject.id : null;
+		await writeCanonicalResource(
+			tx,
+			resourceId,
+			resource,
+			root !== null,
+			subjectResourceId,
+			target.kind === 'existing' ? target.fence : null,
+			target.kind === 'upload' ? target.objectId : null,
+		);
+		return;
+	}
+	if (target.kind === 'existing')
+		console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });
+	if (root?.kind === 'paper' && resource.kind === 'paper') {
+		await mergePaperIdentifiers(tx, resourceId, resource.resourceIdentifiers);
+		// A kept full text without a PDF of its own, such as arXiv HTML, still gains the copy for the PDF view.
+		if (resource.pdfHash)
+			await tx.execute(sql`UPDATE resources SET pdf_hash = ${resource.pdfHash} WHERE id = ${resourceId}::uuid AND pdf_hash IS NULL`);
+	}
+}
+
+/** Records who asked for the Resource, and points links stored before it existed at it. */
+async function applyRequester(tx: NodePgDatabase, resourceId: string, resource: HostedResource, target: ResourcePersistenceTarget) {
+	if (target.kind === 'draft' && target.relation) await applyDraftRelation(tx, resourceId, target.relation);
+	// Follow-ups read the committed row, which can differ from this draft.
+	if (target.kind !== 'upload') await resolveLinksTo(tx, resourceId, resource);
 }
 
 function isDegradedOriginal(content: string, stored: StoredResource): boolean {
