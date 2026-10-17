@@ -8,9 +8,9 @@ export type ReferenceDoi = StoredReference & { doi: string };
 export async function loadUnresolvedReferences(db: NodePgDatabase, resourceId: string) {
 	const result = await db.execute<{ doi: string | null; references: StoredReference[] }>(sql`
 		SELECT (
-			SELECT identifier.value FROM resource_identifiers identifier
+			SELECT identifier.value FROM resource_keys identifier
 			WHERE identifier.resource_id = resource.id AND identifier.scheme = 'doi' AND identifier.value NOT LIKE '10.48550/%'
-			ORDER BY identifier.is_preferred DESC, identifier.value LIMIT 1
+			ORDER BY identifier.preferred DESC, identifier.value LIMIT 1
 		) AS doi, COALESCE((
 			SELECT jsonb_agg(jsonb_build_object('ordinal', reference.ordinal, 'text', reference.text) ORDER BY reference.ordinal)
 			FROM resource_references reference

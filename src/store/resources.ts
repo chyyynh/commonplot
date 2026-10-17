@@ -72,10 +72,10 @@ async function findResourceCandidates(
 		  FILTER (WHERE resource.id IS NOT NULL), '[]'::jsonb) AS owners
 		FROM jsonb_array_elements(${JSON.stringify(identities.map(({ normalizedUrl, identifiers }) => ({ normalizedUrl, identifiers })))}::jsonb) WITH ORDINALITY AS input(value, ordinal)
 		LEFT JOIN LATERAL (
-			SELECT id FROM resources WHERE scope = 'corpus' AND normalized_url = input.value->>'normalizedUrl'
+			SELECT resource_id AS id FROM resource_keys WHERE scheme = 'url' AND value = input.value->>'normalizedUrl'
 			UNION SELECT stored.resource_id AS id
 			FROM jsonb_to_recordset(input.value->'identifiers') AS incoming(scheme text, value text)
-			JOIN resource_identifiers stored USING (scheme, value)
+			JOIN resource_keys stored USING (scheme, value)
 		) candidate ON true
 		LEFT JOIN resources resource ON resource.id = candidate.id
 		LEFT JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
@@ -155,6 +155,34 @@ async function articlePreview(db: NodePgDatabase, resourceId: string, resource: 
 	return recorded.rows.length ? NO_PREVIEW : preview;
 }
 
+/**
+ * Replaces a Resource's platform and paper ids and records its own URL. A URL it was known by before, its earlier URL or
+ * one that redirected to it, stays as an alias. A key another Resource holds is left to it.
+ */
+async function writeResourceKeys(
+	db: NodePgDatabase,
+	resourceId: string,
+	normalizedUrl: string | null,
+	identifiers: NormalizedResource['resourceIdentifiers'],
+	existing: boolean,
+) {
+	if (existing) {
+		await db.execute(sql`DELETE FROM resource_keys WHERE resource_id = ${resourceId}::uuid AND scheme <> 'url'`);
+		await db.execute(sql`
+			UPDATE resource_keys SET preferred = false
+			WHERE resource_id = ${resourceId}::uuid AND scheme = 'url' AND preferred AND value IS DISTINCT FROM ${normalizedUrl}
+		`);
+	}
+	const keys = [...(normalizedUrl ? [{ scheme: 'url', value: normalizedUrl, preferred: true }] : []), ...identifiers];
+	if (!keys.length) return;
+	await db.execute(sql`
+		INSERT INTO resource_keys AS stored (resource_id, scheme, value, preferred)
+		SELECT ${resourceId}::uuid, scheme, value, preferred
+		FROM jsonb_to_recordset(${JSON.stringify(keys)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
+		ON CONFLICT (scheme, value) DO UPDATE SET preferred = EXCLUDED.preferred WHERE stored.resource_id = EXCLUDED.resource_id
+	`);
+}
+
 async function writeCanonicalResource(
 	db: NodePgDatabase,
 	resourceId: string,
@@ -225,6 +253,7 @@ async function writeCanonicalResource(
 			FROM jsonb_to_recordset(${JSON.stringify(resource.resourceIdentifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
 		`);
 	}
+	await writeResourceKeys(db, resourceId, privateObjectId ? null : resource.normalizedUrl, resource.resourceIdentifiers, existing);
 	if (resource.references?.length) {
 		// These references describe exactly the original written in this transaction.
 		await db.execute(sql`
@@ -318,6 +347,14 @@ async function mergePaperIdentifiers(db: NodePgDatabase, resourceId: string, ide
 		INSERT INTO resource_identifiers (resource_id, scheme, value, is_preferred)
 		SELECT ${resourceId}::uuid, incoming.scheme, incoming.value, incoming.preferred AND NOT EXISTS (
 			SELECT 1 FROM resource_identifiers stored WHERE stored.resource_id = ${resourceId}::uuid AND stored.scheme = incoming.scheme
+		)
+		FROM jsonb_to_recordset(${JSON.stringify(identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
+		ON CONFLICT (scheme, value) DO NOTHING
+	`);
+	await db.execute(sql`
+		INSERT INTO resource_keys (resource_id, scheme, value, preferred)
+		SELECT ${resourceId}::uuid, incoming.scheme, incoming.value, incoming.preferred AND NOT EXISTS (
+			SELECT 1 FROM resource_keys stored WHERE stored.resource_id = ${resourceId}::uuid AND stored.scheme = incoming.scheme AND stored.preferred
 		)
 		FROM jsonb_to_recordset(${JSON.stringify(identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
 		ON CONFLICT (scheme, value) DO NOTHING
@@ -491,9 +528,9 @@ export async function claimAcquisitionFence(db: NodePgDatabase, resourceId: stri
 export async function loadReacquisitionSource(db: NodePgDatabase, resourceId: string) {
 	const { rows } = await db.execute<{ url: string | null; identifiers: unknown }>(sql`
 		SELECT resource.url, COALESCE((
-			SELECT jsonb_agg(jsonb_build_object('scheme', scheme, 'value', value, 'preferred', is_preferred)
-				ORDER BY scheme, is_preferred DESC, value)
-			FROM resource_identifiers WHERE resource_id = resource.id
+			SELECT jsonb_agg(jsonb_build_object('scheme', scheme, 'value', value, 'preferred', preferred)
+				ORDER BY scheme, preferred DESC, value)
+			FROM resource_keys WHERE resource_id = resource.id AND scheme <> 'url'
 		), '[]'::jsonb) AS identifiers
 		FROM resources resource WHERE resource.id = ${resourceId}::uuid
 	`);

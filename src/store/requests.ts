@@ -223,6 +223,14 @@ export async function fulfillRequests(tx: NodePgDatabase, requestId: string, res
 		ORDER BY waiting.created_at
 		FOR UPDATE OF waiting
 	`);
+	// The URL asked for finds this Resource next time, even when it redirected to another one.
+	await tx.execute(sql`
+		INSERT INTO resource_keys (resource_id, scheme, value, preferred)
+		SELECT resource.id, 'url', substr(lead.target_key, 5), false
+		FROM resource_requests lead JOIN resources resource ON resource.id = ${resourceId}::uuid AND resource.scope = 'corpus'
+		WHERE lead.id = ${requestId}::uuid AND lead.target_key LIKE 'url:%'
+		ON CONFLICT (scheme, value) DO NOTHING
+	`);
 	if (!rows.length) return { users: [] as UserRequest[], carriers: [] as string[] };
 	const sourceId = rows.find(({ requester }) => requester === 'source')?.sourceId;
 	if (sourceId)
