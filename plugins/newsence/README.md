@@ -134,8 +134,7 @@ which first ask the user for the `newsence:documents` scope.
   scopes (plus `newsence:documents` once the user allows notebooks and
   documents, and `newsence:write` once they allow adding to notebooks) and the MCP URL audience; `offline_access` gives the host a refresh token. Every call also
   checks that the user's consent still exists, so disconnecting is immediate.
-- Requests are limited per user and log only `NEWSENCE_PLUGIN_TIMING` durations,
-  never URLs, user ids or tokens.
+- Requests are limited per user and are not logged: no URLs, user ids or tokens.
 
 ## Manual verification
 
