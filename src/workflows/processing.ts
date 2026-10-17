@@ -4,13 +4,9 @@ import { stageResourceAcquisition } from '../adapters/acquire';
 import type { AcquisitionInput, StoredPdf } from '../contracts/acquired-resource';
 import { resourceImageSources, withHostedImages } from '../contracts/image-mapping';
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
-import { RESOURCE_KINDS } from '../contracts/resource';
 import { blobKey } from '../contracts/storage-keys';
 import { coreExports } from '../exports.ts';
-import { AI_STEP } from '../services/ai-model';
-import { extractResourceEntities } from '../services/entities';
 import { stageResourceImages } from '../services/image-rehosting';
-import { summarizeResource } from '../services/summary';
 import { STORAGE_STEP } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import {
@@ -20,6 +16,7 @@ import {
 	type ResourcePersistenceTarget,
 } from '../store/resources';
 import { translatesContentAutomatically } from '../store/translations';
+import { deriveResource } from './derivation';
 import { stageResourceReferences } from './references';
 import { enqueueResourceTranslation, importTranslationProgress } from './translation';
 
@@ -95,27 +92,15 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			processing_id: event.instanceId,
 			target_kind: target.kind,
 		});
-		const [summary, entities, hostedImages] = await Promise.all([
-			// An untitled Resource is its text; a summary would only restate it.
-			resource.summary ??
-				(!RESOURCE_KINDS[resource.kind].titled
-					? null
-					: step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, event.instanceId))),
-			// Entities only relate Resources; an import never fails without them, and a reacquisition keeps the stored ones.
-			step
-				.do('extract-resource-entities-v2', AI_STEP, () => extractResourceEntities(resource, this.env, event.instanceId))
-				.catch((error: unknown) => {
-					console.error({ tag: 'WORKFLOW', msg: 'Entity extraction failed', processing_id: event.instanceId, error });
-					return undefined;
-				}),
-			stageResourceImages(this.env, step, event.instanceId, resourceImageSources([resource])),
-		]);
-		const summarized = withHostedImages({ ...resource, summary, entities }, hostedImages);
-		const persistence = await step.do('persist-resolved-resource-scope-v8', STORAGE_STEP, async () =>
+		const hosted = withHostedImages(
+			resource,
+			await stageResourceImages(this.env, step, event.instanceId, resourceImageSources([resource])),
+		);
+		const persistence = await step.do('persist-resolved-resource-scope-v9', STORAGE_STEP, async () =>
 			withCoreDb(this.env, (db) =>
 				persistResolvedResource(
 					db,
-					summarized,
+					hosted,
 					plan.persistence,
 					async (contentHash) => (await this.env.R2.head(blobKey(contentHash))) !== null,
 				),
@@ -127,13 +112,17 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		if (saveTarget)
 			await step.do('complete-resource-save-v2', STORAGE_STEP, () => this.env.APP.completeResourceSave(resourceId, saveTarget));
 
+		// The Resource is published; its summary and entities are derived from what was written, before the handoffs read them.
+		await Promise.all(
+			persistence.derivations.map((kind) => deriveResource(this.env, step, resourceId, textHash, hosted, kind, event.instanceId)),
+		);
 		const subjectUrl = resource.subjectUrl;
 		// Crossref enrichment runs beside the handoffs; the import settles only after it, since the Workflow returns last.
 		const references =
 			scope === 'corpus' &&
 			persistence.kind === 'paper' &&
 			outcome === 'written' &&
-			summarized.references?.some(({ doi, arxivId }) => !doi && !arxivId)
+			hosted.references?.some(({ doi, arxivId }) => !doi && !arxivId)
 				? stageResourceReferences(this.env, step, resourceId).catch((error: unknown) => {
 						console.error({ tag: 'WORKFLOW', msg: 'Reference enrichment failed', resource_id: resourceId, error });
 					})

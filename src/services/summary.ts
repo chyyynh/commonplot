@@ -1,11 +1,17 @@
 import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
+import type { ResourceKind } from '../contracts/resource';
 import { generateObject } from './ai-model';
 
 const ANALYSIS_CONTENT_MAX_LENGTH = 10_000;
 const ANALYSIS_MODEL = 'google/gemini-3.5-flash-lite';
 
-function analysisPrompt(resource: AcquiredResource) {
+/** An acquired original, or a stored one whose summary is derived later. */
+type SummarySource = Pick<AcquiredResource, 'title' | 'summary' | 'content' | 'source' | 'originalLang' | 'resourcePlatform'> & {
+	kind: ResourceKind;
+};
+
+function analysisPrompt(resource: SummarySource) {
 	return `文章資訊:
 ${resource.title ? `標題: ${resource.title}\n` : ''}來源: ${resource.source.trim()}
 資源種類: ${resource.kind}
@@ -17,7 +23,7 @@ ${resource.content.trim().substring(0, ANALYSIS_CONTENT_MAX_LENGTH)}`;
 }
 
 /** Called only when acquisition supplied no summary. */
-export async function summarizeResource(resource: AcquiredResource, env: CoreEnv, processingId: string) {
+export async function summarizeResource(resource: SummarySource, env: CoreEnv, processingId: string) {
 	const startedAt = performance.now();
 	const { output, outputTokens } = await generateObject(
 		env,

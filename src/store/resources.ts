@@ -6,8 +6,6 @@ import type { NormalizedResource } from '../contracts/normalize-resource';
 import type { ResourceDraftRelation } from '../contracts/processing-target';
 import {
 	type EntityType,
-	entityKey,
-	type ResourceEntity,
 	type ResourceKind,
 	type ResourcePlatform,
 	RESOURCE_KINDS,
@@ -16,6 +14,7 @@ import {
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { blobKey } from '../contracts/storage-keys';
+import { type DerivationKind, replaceResourceEntities, requireDerivations } from './derivations';
 import { kindWhere } from './kind-sql';
 
 /** Web's `storedBlobs` advisory lock namespace (`web-tanstack/src/server/db/locks.server.ts`). */
@@ -212,7 +211,11 @@ async function writeCanonicalResource(
 			FROM written_resource CROSS JOIN incoming
 			ON CONFLICT (resource_id, lang) DO UPDATE SET
 				(title, summary, content, source, alignment, updated_at) =
-				(EXCLUDED.title, EXCLUDED.summary, EXCLUDED.content, EXCLUDED.source, NULL, EXCLUDED.updated_at)
+				(EXCLUDED.title, COALESCE(EXCLUDED.summary, CASE
+					-- A derived summary outlives a reacquisition that left the text as it was.
+					WHEN jsonb_build_array(resource_translations.title, resource_translations.content) = jsonb_build_array(EXCLUDED.title, EXCLUDED.content)
+					THEN resource_translations.summary END),
+				 EXCLUDED.content, EXCLUDED.source, NULL, EXCLUDED.updated_at)
 			RETURNING resource_id
 		)
 		SELECT 1 FROM written_resource JOIN written_original ON written_original.resource_id = written_resource.id
@@ -252,8 +255,8 @@ async function writeCanonicalResource(
 			FROM jsonb_array_elements(${JSON.stringify(rows)}::jsonb) WITH ORDINALITY AS incoming(value, ordinal)
 		`);
 	}
-	// Only corpus originals relate through entities, like links; a reacquisition without an extraction keeps them.
-	if (resource.entities !== undefined) await replaceResourceEntities(db, resourceId, privateObjectId ? [] : resource.entities);
+	// Only corpus originals relate through entities, like links; theirs are derived after this write.
+	if (privateObjectId) await replaceResourceEntities(db, resourceId, []);
 	if (resource.youtube) {
 		const transcript = resource.youtube;
 		const savedTranscript = await db.execute(sql`
@@ -267,31 +270,11 @@ async function writeCanonicalResource(
 		`);
 		if (!savedTranscript.rows.length) throw new NonRetryableError('YouTube reacquisition returned no captions for an existing transcript');
 	}
-}
-
-/** Replaces what a Resource is about. Run inside the caller's transaction. */
-async function replaceResourceEntities(db: NodePgDatabase, resourceId: string, entities: readonly ResourceEntity[]) {
-	await db.execute(sql`DELETE FROM resource_entities WHERE resource_id = ${resourceId}::uuid`);
-	if (!entities.length) return;
-	// Sorted keys lock entity rows in one order across concurrent writers.
-	const rows = entities
-		.map((entity) => ({ ...entity, key: entityKey(entity.name) }))
-		.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
-	await db.execute(sql`
-		WITH incoming AS (
-			SELECT * FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb)
-			AS incoming(key text, name text, type text, weight real)
-		), entity AS (
-			INSERT INTO entities (key, name, type)
-			SELECT DISTINCT ON (key) key, name, type FROM incoming ORDER BY key, weight DESC
-			ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key
-			RETURNING id, key
-		)
-		INSERT INTO resource_entities (resource_id, entity_id, weight)
-		SELECT DISTINCT ON (entity.id) ${resourceId}::uuid, entity.id, incoming.weight
-		FROM incoming JOIN entity USING (key)
-		ORDER BY entity.id, incoming.weight DESC
-	`);
+	// A summary the source supplied needs none derived.
+	return requireDerivations(db, resourceId, [
+		...(RESOURCE_KINDS[resource.kind].titled && resource.summary === null ? (['summary'] as const) : []),
+		...(privateObjectId ? [] : (['entities'] as const)),
+	]);
 }
 
 export type EntityCandidate = Readonly<{
@@ -382,10 +365,10 @@ export async function persistResolvedResource(
 ) {
 	return db.transaction(async (tx) => {
 		const claim = await claimRow(tx, resource, target, blobExists);
-		if (claim.settled) return claim.settled;
-		await writeOriginal(tx, resource, target, claim);
+		if (claim.settled) return { ...claim.settled, derivations: [] };
+		const derivations = await writeOriginal(tx, resource, target, claim);
 		await applyRequester(tx, claim.resourceId, resource, target);
-		return committed(await lockResource(tx, claim.resourceId), claim.outcome);
+		return { ...committed(await lockResource(tx, claim.resourceId), claim.outcome), derivations };
 	});
 }
 
@@ -474,13 +457,21 @@ async function claimRow(
 	return { resourceId, root, outcome, subjectCandidates };
 }
 
-/** Writes the original where the claim replaces it; a kept paper still gains the new version's identifiers and PDF. */
-async function writeOriginal(tx: NodePgDatabase, resource: HostedResource, target: ResourcePersistenceTarget, claim: RowClaim) {
+/**
+ * Writes the original where the claim replaces it, returning the derivations that now wait for it; a kept paper still
+ * gains the new version's identifiers and PDF.
+ */
+async function writeOriginal(
+	tx: NodePgDatabase,
+	resource: HostedResource,
+	target: ResourcePersistenceTarget,
+	claim: RowClaim,
+): Promise<DerivationKind[]> {
 	const { resourceId, root, outcome, subjectCandidates } = claim;
 	if (outcome === 'written') {
 		const subject = subjectCandidates.length === 1 && subjectCandidates[0]?.scope === 'corpus' ? subjectCandidates[0] : null;
 		const subjectResourceId = subject && subject.id !== resourceId && (await lockResource(tx, subject.id)).hasOriginal ? subject.id : null;
-		await writeCanonicalResource(
+		return writeCanonicalResource(
 			tx,
 			resourceId,
 			resource,
@@ -489,7 +480,6 @@ async function writeOriginal(tx: NodePgDatabase, resource: HostedResource, targe
 			target.kind === 'existing' ? target.fence : null,
 			target.kind === 'upload' ? target.objectId : null,
 		);
-		return;
 	}
 	if (target.kind === 'existing')
 		console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });
@@ -499,6 +489,7 @@ async function writeOriginal(tx: NodePgDatabase, resource: HostedResource, targe
 		if (resource.pdfHash)
 			await tx.execute(sql`UPDATE resources SET pdf_hash = ${resource.pdfHash} WHERE id = ${resourceId}::uuid AND pdf_hash IS NULL`);
 	}
+	return [];
 }
 
 /** Records who asked for the Resource, and points links stored before it existed at it. */

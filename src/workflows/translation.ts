@@ -118,6 +118,19 @@ export async function enqueueResourceTranslation(
 	return { id, admitted: execution !== 'live' };
 }
 
+/**
+ * A summary derived after its original's translation ran: the title is translated already, so this run adds only the
+ * summary, under its own ID because the original's metadata run is done.
+ */
+export async function enqueueLateSummaryTranslation(env: CoreEnv, resourceId: string): Promise<void> {
+	const candidate = await withCoreDb(env, (db) => loadTranslationCandidate(db, resourceId));
+	if (!candidate || !isTranslatable(candidate)) return;
+	const { textHash } = candidate;
+	const id = `${translationInstanceId(resourceId, textHash, 'metadata')}-summary`;
+	if ((await translationExecution(id)) !== 'absent') return;
+	await coreExports.ResourceTranslationV2Workflow.createBatch([{ id, params: { resourceId, textHash, scope: 'metadata' } }]);
+}
+
 type ContentTranslationRequest = { status: 'unavailable' } | { status: 'complete' } | { status: 'running'; admitted: boolean };
 
 /** A reader's request for a stored Resource's full translation; the app Worker admits and bills it first. */

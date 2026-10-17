@@ -105,6 +105,11 @@ export const coreWorker = defineWorker({
 		ResourceProcessingV2Workflow: exports.workflow({
 			name: 'newsence-resource-processing-v2',
 		}),
+		/** A summary or entity extraction the import that wrote its original failed or never settled. */
+		ResourceDerivationWorkflow: exports.workflow({
+			name: 'newsence-resource-derivation',
+			defaultRetention: { successRetention: '1 day', errorRetention: '7 days' },
+		}),
 		ResourceTranslationV2Workflow: exports.workflow({
 			name: 'newsence-resource-translation-v2',
 			defaultRetention: { successRetention: '7 days', errorRetention: '7 days' },

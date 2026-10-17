@@ -10,6 +10,7 @@ import { type PublicResourceSearchInput, searchPublicResourceIds, searchPublicRe
 import { consumeSearchSyncBatch } from './search/sync-consumer';
 import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
+import { enqueueDueDerivations } from './workflows/derivation';
 import { resourceImportExecution } from './workflows/processing';
 import { contentTranslationStatus, enqueueMissingTranslations, requestContentTranslation } from './workflows/translation';
 
@@ -17,6 +18,7 @@ export { ZoteroSdt } from './services/zotero-sdt-container';
 export { ResourceTranslationV2Workflow } from './workflows/translation';
 export { SearchIndexRebuildWorkflow } from './search/rebuild-workflow';
 export { ResourceProcessingV2Workflow } from './workflows/processing';
+export { ResourceDerivationWorkflow } from './workflows/derivation';
 export { YouTubeCaptionFetcher } from './services/youtube-captions';
 
 export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
@@ -30,7 +32,9 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		// YouTube channels ride the feed monitor through their Atom URLs; Core
 		// derives their slower polling cadence from the canonical feed URL.
 		if (event.cron === '*/5 * * * *') {
-			this.ctx.waitUntil(withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(db), enqueueMissingTranslations(db)])));
+			this.ctx.waitUntil(
+				withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(db), enqueueMissingTranslations(db), enqueueDueDerivations(db)])),
+			);
 		} else if (event.cron === '0 */6 * * *') {
 			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
 		}
