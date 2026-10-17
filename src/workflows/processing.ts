@@ -111,7 +111,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 
 		// The Resource is published; its summary and entities are derived from what was written, before the handoffs read them.
 		await Promise.all(
-			persistence.derivations.map((kind) => deriveResource(this.env, step, resourceId, textHash, hosted, kind, instanceId)),
+			persistence.derivations.map((derivation) =>
+				deriveResource(this.env, step, resourceId, textHash, { ...hosted, description: hosted.summary }, derivation, instanceId),
+			),
 		);
 		const subjectUrl = resource.subjectUrl;
 		// Crossref enrichment runs beside the handoffs; the import settles only after it, since the Workflow returns last.

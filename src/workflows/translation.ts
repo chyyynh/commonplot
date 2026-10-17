@@ -1,4 +1,4 @@
-// Translation into zh-Hant, plus an English title and summary for recommendation vectors: admission (imports, reader
+// Translation into zh-Hant, plus an English title for recommendation vectors: admission (imports, reader
 // requests, the missing-translation sweep), the durable Workflow, and its model work. Markdown structure lives in services/markdown-translation, which never calls out.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
@@ -33,13 +33,13 @@ import {
 	type ResourceTranslationInput,
 } from '../store/translations';
 
-/** `metadata` translates the title and summary; `full` also translates the content. */
+/** `metadata` translates the title; `full` also translates the content. */
 type TranslationScope = 'metadata' | 'full';
 type ResourceTranslationPayload = { force?: boolean; resourceId: string; textHash: string; scope: TranslationScope };
 
 const MARKDOWN_TRANSLATION_CONCURRENCY = 15;
 type TranslationPlan = { metadata: boolean; content: boolean; english: boolean };
-const MetadataTranslationSchema = z.object({ title: z.string().trim().min(1), summary: z.string().trim().min(1) });
+const MetadataTranslationSchema = z.object({ title: z.string().trim().min(1) });
 
 function failureReason(error: unknown): string {
 	return error instanceof MarkdownTranslationInvariantError ? error.code : error instanceof Error ? error.name : 'unknown';
@@ -114,20 +114,6 @@ export async function enqueueResourceTranslation(
 	return { id, admitted: execution !== 'live' };
 }
 
-/**
- * A summary derived after its original's translation ran: the title is translated already, so this run adds only the
- * summary, under its own ID because the original's metadata run is done.
- */
-export async function enqueueLateSummaryTranslation(env: CoreEnv, resourceId: string): Promise<void> {
-	const candidate = await withCoreDb(env, (db) => loadTranslationCandidate(db, resourceId));
-	if (!candidate || !isTranslatable(candidate)) return;
-	const { textHash } = candidate;
-	// Workflow IDs stop at 100 characters, so the late run names its own scope rather than extending the metadata ID.
-	const id = `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-summary-${resourceId}-${textHash}`;
-	if ((await translationExecution(id)) !== 'absent') return;
-	await coreExports.ResourceTranslationV2Workflow.createBatch([{ id, params: { resourceId, textHash, scope: 'metadata' } }]);
-}
-
 type ContentTranslationRequest = { status: 'unavailable' } | { status: 'complete' } | { status: 'running'; admitted: boolean };
 
 /** A reader's request for a stored Resource's full translation; the app Worker admits and bills it first. */
@@ -187,13 +173,13 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			// Every part settles before any failure is raised, so no step is left running.
 			const [metadata, content, english] = await Promise.allSettled([
 				plan.metadata
-					? step.do('translate-zh-hant-title-summary-v3', { retries: AI_STEP_RETRIES, timeout: '180 seconds' }, () =>
+					? step.do('translate-zh-hant-title-v4', { retries: AI_STEP_RETRIES, timeout: '180 seconds' }, () =>
 							translateResourceMetadata(resource, 'zh-Hant', this.env),
 						)
 					: undefined,
 				plan.content ? translatePlannedContent(resource, this.env, step) : undefined,
 				plan.english
-					? step.do('translate-en-title-summary-v1', { retries: AI_STEP_RETRIES, timeout: '180 seconds' }, () =>
+					? step.do('translate-en-title-v2', { retries: AI_STEP_RETRIES, timeout: '180 seconds' }, () =>
 							translateResourceMetadata(resource, 'en', this.env),
 						)
 					: undefined,
@@ -203,8 +189,8 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			if (english.status === 'rejected') throw english.reason;
 			const patch: MachineZhHantTranslationPatch = { ...metadata.value, ...content.value };
 			const englishPatch: MachineEnglishTranslationPatch = english.value ?? {};
-			const hasPatch = patch.title !== undefined || patch.summary !== undefined || patch.content !== undefined;
-			const hasEnglishPatch = englishPatch.title !== undefined || englishPatch.summary !== undefined;
+			const hasPatch = patch.title !== undefined || patch.content !== undefined;
+			const hasEnglishPatch = englishPatch.title !== undefined;
 			if (!hasPatch && !hasEnglishPatch) return end('skipped', 'empty');
 
 			if (hasPatch) {
@@ -252,7 +238,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 	}
 }
 
-// What to translate, and the title/summary
+// What to translate, and the title
 
 function isBlank(value: string | null | undefined): boolean {
 	return !value?.trim();
@@ -264,14 +250,11 @@ function planTranslation(resource: ResourceTranslationInput, scope: TranslationS
 		return { metadata: false, content: false, english: false };
 	}
 	// An untitled Resource is its text alone, so only its content is translated, and never into English.
-	const english =
-		titled &&
-		needsEnglishMetadata(resource.originalLang) &&
-		(force || !resource.hasEnglishTitle || (!isBlank(resource.summary) && !resource.hasEnglishSummary));
+	const english = titled && needsEnglishMetadata(resource.originalLang) && (force || !resource.hasEnglishTitle);
 	if (resource.translationSource === 'original') return { metadata: false, content: false, english };
 
 	return {
-		metadata: titled && (force || !resource.hasTranslatedTitle || (!isBlank(resource.summary) && !resource.hasTranslatedSummary)),
+		metadata: titled && (force || !resource.hasTranslatedTitle),
 		content: scope === 'full' && (force || !resource.hasTranslatedContent),
 		english,
 	};
@@ -290,30 +273,26 @@ const METADATA_TARGETS = {
 	},
 } as const;
 
-/** Translate persisted metadata only; missing summaries are resolved during original enrichment. */
+/** Translates the title; summaries are derived in each language rather than translated. */
 async function translateResourceMetadata(resource: ResourceTranslationInput, lang: keyof typeof METADATA_TARGETS, env: CoreEnv) {
 	const target = METADATA_TARGETS[lang];
-	const summary = resource.summary?.trim();
 	const { output } = await generateObject(
 		env,
 		CORE_TEXT_MODEL,
 		{ feature: 'resource-metadata-localization', resource_id: resource.id, target_lang: lang },
 		{
 			system: `Translate the supplied resource metadata into ${target.language}.
-Translate the title faithfully.
-${summary ? 'Translate the supplied summary in full. Preserve its length and meaning; do not summarize it again.' : 'Translate only the title. No source summary is available; do not create one.'}
-Preserve attribution, tone, technical terminology, qualifications, and uncertainty. Do not add information.
-For papers, preserve the academic claims and limitations of the supplied abstract or summary.
-${target.style} Return only the requested schema fields as plain text without Markdown.`,
+Translate the title faithfully, preserving technical terminology. Do not add information.
+${target.style} Return only the requested schema field as plain text without Markdown.`,
 			prompt: `Original language: ${resource.originalLang}
 Resource kind: ${resource.kind}
-Title: ${resource.title}${summary ? `\nSummary: ${summary}` : ''}`,
+Title: ${resource.title}`,
 			output: {
 				name: 'resource_translation_metadata',
 				description: target.description,
-				schema: summary ? MetadataTranslationSchema : MetadataTranslationSchema.pick({ title: true }),
+				schema: MetadataTranslationSchema,
 			},
-			maxTokens: summary ? 2400 : 500,
+			maxTokens: 500,
 			temperature: 0.3,
 			reasoning: CORE_TEXT_REASONING,
 		},

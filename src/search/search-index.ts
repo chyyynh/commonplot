@@ -132,7 +132,11 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 		           jsonb_build_object(
 		             'lang', translation.lang,
 		             'title', translation.title,
-		             'summary', translation.summary,
+		             'summary', COALESCE((
+		               SELECT derivation.output->>'summary' FROM resource_derivations derivation
+		               WHERE derivation.resource_id = r.id AND derivation.kind = 'summary'
+		                 AND derivation.lang = translation.lang AND derivation.status = 'done'
+		             ), translation.summary),
 		             'content', CASE WHEN translation.lang = r.original_lang OR ${kindWhere(sql`r.kind`, 'titled', false)}
 		               THEN LEFT(translation.content, ${ORIGINAL_CONTENT_MAX_CHARS}::integer) END
 		           )

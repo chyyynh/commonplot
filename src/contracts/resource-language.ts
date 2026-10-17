@@ -48,7 +48,29 @@ export function detectResourceLanguage(content: string, knownLanguage = 'und'): 
 }
 
 /**
- * English, or a code for no linguistic content, undetermined or private-use text: an English title and summary would
+ * Whether generated prose reads as `lang`: Taiwan Traditional Chinese with no Simplified forms, or English with no
+ * CJK script. Names in other scripts may appear; the prose around them may not.
+ */
+export function isWrittenIn(text: string, lang: 'zh-Hant' | 'en'): boolean {
+	const letters = text.match(/\p{L}/gu)?.length ?? 0;
+	const han = text.match(/\p{Script=Han}/gu)?.length ?? 0;
+	const otherCjk = text.match(/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu)?.length ?? 0;
+	if (!letters || otherCjk) return false;
+	if (lang === 'en') return han === 0 && (text.match(/\p{Script=Latin}/gu)?.length ?? 0) / letters >= 0.9;
+	// Latin names count as words, so Chinese prose naming products in English still reads as Chinese.
+	const latinWords = text.match(/\p{Script=Latin}+/gu)?.length ?? 0;
+	if (han / (han + latinWords) < 0.5) return false;
+	chineseConverters ??= {
+		toTraditional: Converter({ from: 'cn', to: 't' }),
+		toSimplified: Converter({ from: 't', to: 'cn' }),
+	};
+	const chars = [...text];
+	const simplified = [...chineseConverters.toTraditional(text)].filter((char, index) => char !== chars[index]).length;
+	return simplified <= Math.max(1, Math.floor(han / 50));
+}
+
+/**
+ * English, or a code for no linguistic content, undetermined or private-use text: an English title would
  * add nothing. A POSIX pattern, so SQL applies the same rule to `original_lang` with `~*`.
  */
 export const WITHOUT_ENGLISH_METADATA_LANG_PATTERN = '^(en|zxx|und|mis|mul|art|q[a-t][a-z])(-|$)';
@@ -57,7 +79,7 @@ export function isEnglishLanguage(lang: string): boolean {
 	return /^en(-|$)/i.test(lang);
 }
 
-/** Recommendation vectors read English, so every other named language gets an English title and summary. */
+/** Recommendation vectors read English, so every other named language gets an English title. */
 export function needsEnglishMetadata(lang: string): boolean {
 	return !new RegExp(WITHOUT_ENGLISH_METADATA_LANG_PATTERN, 'i').test(lang);
 }

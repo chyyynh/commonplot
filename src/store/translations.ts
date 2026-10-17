@@ -40,22 +40,21 @@ const MAX_AUTOMATIC_CONTENT_CHARACTERS = 150_000;
 export type ResourceTranslationInput = ResourceTranslationCandidate & {
 	id: string;
 	title: string;
+	/** The English summary, when derived already; context for translating the content. */
 	summary: string | null;
 	content: string;
 	hasTranslatedTitle: boolean;
-	hasTranslatedSummary: boolean;
 	hasTranslatedContent: boolean;
 	translationSource: 'original' | 'machine' | null;
 	hasEnglishTitle: boolean;
-	hasEnglishSummary: boolean;
 };
 
-/** Machine fields only; alignment is stored as the JSON the translation compiled. */
-export type MachineZhHantTranslationPatch = Readonly<{ title?: string; summary?: string; content?: string; alignment?: unknown }>;
-/** English is only ever a title and summary: recommendation vectors read them, and content stays in its original. */
-export type MachineEnglishTranslationPatch = Readonly<{ title?: string; summary?: string }>;
+/** Machine fields only; alignment is stored as the JSON the translation compiled. Summaries are derived per language. */
+export type MachineZhHantTranslationPatch = Readonly<{ title?: string; content?: string; alignment?: unknown }>;
+/** English is only ever a title: recommendation vectors read it, and content stays in its original. */
+export type MachineEnglishTranslationPatch = Readonly<{ title?: string }>;
 
-/** A titled Resource whose original is in another named language, so its English title and summary come from translation. */
+/** A titled Resource whose original is in another named language, so its English title comes from translation. */
 const ENGLISH_METADATA_SQL = sql`(${kindWhere(sql`resource.kind`, 'titled')} AND resource.original_lang !~* ${WITHOUT_ENGLISH_METADATA_LANG_PATTERN})`;
 
 export async function loadResourceTranslationInput(
@@ -67,14 +66,13 @@ export async function loadResourceTranslationInput(
 		SELECT
 			${CANDIDATE_COLUMNS},
 			COALESCE(original.title, '') AS title,
-			original.summary AS summary,
+			(SELECT output->>'summary' FROM resource_derivations
+			 WHERE resource_id = resource.id AND kind = 'summary' AND lang = 'en' AND status = 'done') AS summary,
 			COALESCE(original.content, '') AS content,
 			zh_hant.title IS NOT NULL AS "hasTranslatedTitle",
-			zh_hant.summary IS NOT NULL AS "hasTranslatedSummary",
 			zh_hant.content IS NOT NULL AS "hasTranslatedContent",
 			zh_hant.source AS "translationSource",
-			en.title IS NOT NULL AS "hasEnglishTitle",
-			en.summary IS NOT NULL AS "hasEnglishSummary"
+			en.title IS NOT NULL AS "hasEnglishTitle"
 		FROM resources resource
 		JOIN resource_translations original
 		  ON original.resource_id = resource.id
@@ -118,13 +116,12 @@ export async function persistMachineTranslation(
 			resource_id, lang, title, summary, content, alignment, source, updated_at
 		)
 		SELECT
-			target_resource.id, ${lang}, ${patch.title ?? null}, ${patch.summary ?? null}, ${content ?? null},
+			target_resource.id, ${lang}, ${patch.title ?? null}, NULL, ${content ?? null},
 			${alignment === undefined ? null : JSON.stringify(alignment)}::jsonb,
 			'machine', NOW()
 		FROM target_resource
 		ON CONFLICT (resource_id, lang) DO UPDATE SET
 			title = COALESCE(EXCLUDED.title, current_translation.title),
-			summary = COALESCE(EXCLUDED.summary, current_translation.summary),
 			content = COALESCE(EXCLUDED.content, current_translation.content),
 			alignment = COALESCE(EXCLUDED.alignment, current_translation.alignment),
 			updated_at = NOW()
@@ -146,7 +143,7 @@ const TRANSLATABLE_CORPUS_SQL = sql`(
 
 /**
  * Monitor discoveries, and the subjects their carriers point at, translate in full at the operator's cost. Everything
- * else translates its title and summary on admission and its content only when a reader asks for it.
+ * else translates its title on admission and its content only when a reader asks for it.
  */
 const AUTOMATIC_CONTENT_TRANSLATION_SQL = sql`(
 	(
@@ -188,7 +185,7 @@ export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: s
 /**
  * Corpus translations that never landed, usually after a burst hit the provider rate limit. Only recent acquisitions
  * qualify: completed attempts stay visible for the Workflow retention window, so a no-op attempt is not repeated.
- * Content counts as missing only where it translates automatically; English is only ever a title and summary.
+ * Content counts as missing only where it translates automatically; English is only ever a title.
  */
 export async function listMissingTranslations(db: NodePgDatabase, limit: number) {
 	const { rows } = await db.execute<ResourceTranslationCandidate & { id: string; textHash: string; automaticContent: boolean }>(sql`

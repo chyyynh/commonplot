@@ -2,8 +2,14 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { entityKey, type ResourceEntity, type ResourceKind, type ResourcePlatform } from '../contracts/resource';
 
-/** What Core derives from an original after it is written; each lands, fails and retries on its own. */
-export type DerivationKind = 'summary' | 'entities';
+/** The languages every titled Resource is summarized in, each written directly rather than translated. */
+export const SUMMARY_LANGS = ['zh-Hant', 'en'] as const;
+export type SummaryLang = (typeof SUMMARY_LANGS)[number];
+/**
+ * What Core derives from an original after it is written; each lands, fails and retries on its own. Only summaries
+ * have a language.
+ */
+export type Derivation = Readonly<{ kind: 'summary'; lang: SummaryLang } | { kind: 'entities'; lang: '' }>;
 
 /** A pending derivation belongs to the attempt that wrote its original this long before the sweep may take it. */
 const DERIVATION_LEASE = sql`interval '15 minutes'`;
@@ -11,27 +17,30 @@ const DERIVATION_LEASE = sql`interval '15 minutes'`;
 const MAX_DERIVATION_ATTEMPTS = 5;
 
 /**
- * In the transaction that writes an original: the derivations it needs wait for that text, and any other kind is
- * dropped. A kind already done for the same text stays done. Returns the kinds now pending.
+ * In the transaction that writes an original: the derivations it needs wait for that text, and any other is dropped.
+ * One already done for the same text stays done. Returns those now pending.
  */
-export async function requireDerivations(tx: NodePgDatabase, resourceId: string, kinds: readonly DerivationKind[]) {
+export async function requireDerivations(tx: NodePgDatabase, resourceId: string, required: readonly Derivation[]) {
+	const kinds = required.map(({ kind }) => kind);
+	const langs = required.map(({ lang }) => lang);
 	await tx.execute(sql`
 		DELETE FROM resource_derivations
-		WHERE resource_id = ${resourceId}::uuid AND NOT (kind = ANY(${sql.param([...kinds])}::text[]))
+		WHERE resource_id = ${resourceId}::uuid
+		  AND (kind, lang) NOT IN (SELECT * FROM unnest(${sql.param(kinds)}::text[], ${sql.param(langs)}::text[]))
 	`);
-	if (!kinds.length) return [];
-	const { rows } = await tx.execute<{ kind: DerivationKind }>(sql`
-		INSERT INTO resource_derivations AS current (resource_id, kind, input_hash, status, attempts, retry_at, error, updated_at)
-		SELECT resource.id, required.kind, resource.text_hash, 'pending', 0, NOW() + ${DERIVATION_LEASE}, NULL, NOW()
-		FROM resources resource CROSS JOIN unnest(${sql.param([...kinds])}::text[]) AS required(kind)
+	if (!required.length) return [];
+	const { rows } = await tx.execute<Derivation>(sql`
+		INSERT INTO resource_derivations AS current (resource_id, kind, lang, input_hash, status, attempts, retry_at, error, output, updated_at)
+		SELECT resource.id, required.kind, required.lang, resource.text_hash, 'pending', 0, NOW() + ${DERIVATION_LEASE}, NULL, NULL, NOW()
+		FROM resources resource CROSS JOIN unnest(${sql.param(kinds)}::text[], ${sql.param(langs)}::text[]) AS required(kind, lang)
 		WHERE resource.id = ${resourceId}::uuid
 		ON CONFLICT (resource_id, kind, lang) DO UPDATE SET
 			(input_hash, status, attempts, retry_at, error, updated_at) =
 			(EXCLUDED.input_hash, 'pending', 0, EXCLUDED.retry_at, NULL, NOW())
 		WHERE current.input_hash <> EXCLUDED.input_hash OR current.status <> 'done'
-		RETURNING kind
+		RETURNING kind, lang
 	`);
-	return rows.map(({ kind }) => kind);
+	return rows;
 }
 
 /** Locks the Resource while its text is still the one a derivation read; null once it was replaced. */
@@ -42,27 +51,26 @@ async function lockDerivedText(tx: NodePgDatabase, resourceId: string, inputHash
 	return rows[0] ?? null;
 }
 
-async function settleDerivation(tx: NodePgDatabase, resourceId: string, kind: DerivationKind, inputHash: string) {
+async function settleDerivation(
+	tx: NodePgDatabase,
+	resourceId: string,
+	{ kind, lang }: Derivation,
+	inputHash: string,
+	output: unknown = null,
+) {
 	await tx.execute(sql`
-		UPDATE resource_derivations SET status = 'done', retry_at = NULL, error = NULL, updated_at = NOW()
-		WHERE resource_id = ${resourceId}::uuid AND kind = ${kind} AND input_hash = ${inputHash}
+		UPDATE resource_derivations SET status = 'done', output = ${output === null ? null : JSON.stringify(output)}::jsonb,
+			retry_at = NULL, error = NULL, updated_at = NOW()
+		WHERE resource_id = ${resourceId}::uuid AND kind = ${kind} AND lang = ${lang} AND input_hash = ${inputHash}
 	`);
 }
 
-/** Writes an AI summary where the original has none; false when nothing was written. */
-export async function completeSummary(db: NodePgDatabase, resourceId: string, inputHash: string, summary: string) {
+/** Records a summary of the text `inputHash` names; false when that text was replaced meanwhile. */
+export async function completeSummary(db: NodePgDatabase, resourceId: string, inputHash: string, lang: SummaryLang, summary: string) {
 	return db.transaction(async (tx) => {
 		if (!(await lockDerivedText(tx, resourceId, inputHash))) return false;
-		// A summary the source supplied, or one an earlier attempt wrote, is never replaced.
-		const written = await tx.execute(sql`
-			UPDATE resource_translations original SET summary = ${summary}, updated_at = NOW()
-			FROM resources resource
-			WHERE resource.id = ${resourceId}::uuid
-			  AND original.resource_id = resource.id AND original.lang = resource.original_lang
-			  AND original.summary IS NULL
-		`);
-		await settleDerivation(tx, resourceId, 'summary', inputHash);
-		return (written.rowCount ?? 0) > 0;
+		await settleDerivation(tx, resourceId, { kind: 'summary', lang }, inputHash, { summary });
+		return true;
 	});
 }
 
@@ -72,23 +80,23 @@ export async function completeEntities(db: NodePgDatabase, resourceId: string, i
 		const resource = await lockDerivedText(tx, resourceId, inputHash);
 		if (resource?.scope !== 'corpus') return false;
 		await replaceResourceEntities(tx, resourceId, entities);
-		await settleDerivation(tx, resourceId, 'entities', inputHash);
+		await settleDerivation(tx, resourceId, { kind: 'entities', lang: '' }, inputHash);
 		return true;
 	});
 }
 
 /** Records a failed derivation; it runs again after a doubling wait, until it gives up. */
-export async function failDerivation(db: NodePgDatabase, resourceId: string, kind: DerivationKind, inputHash: string, error: string) {
+export async function failDerivation(db: NodePgDatabase, resourceId: string, { kind, lang }: Derivation, inputHash: string, error: string) {
 	await db.execute(sql`
 		UPDATE resource_derivations SET
 			status = 'failed', attempts = attempts + 1, error = LEFT(${error}, 500), updated_at = NOW(),
 			retry_at = CASE WHEN attempts + 1 >= ${MAX_DERIVATION_ATTEMPTS} THEN NULL
 			                ELSE NOW() + interval '30 minutes' * power(2, attempts) END
-		WHERE resource_id = ${resourceId}::uuid AND kind = ${kind} AND input_hash = ${inputHash}
+		WHERE resource_id = ${resourceId}::uuid AND kind = ${kind} AND lang = ${lang} AND input_hash = ${inputHash}
 	`);
 }
 
-export type DueDerivation = Readonly<{ resourceId: string; kind: DerivationKind; inputHash: string; attempts: number }>;
+export type DueDerivation = Derivation & Readonly<{ resourceId: string; inputHash: string; attempts: number }>;
 
 /** Takes derivations whose attempt never settled or whose wait is over, leasing them so the next sweep skips them. */
 export async function claimDueDerivations(db: NodePgDatabase, limit: number): Promise<DueDerivation[]> {
@@ -104,7 +112,8 @@ export async function claimDueDerivations(db: NodePgDatabase, limit: number): Pr
 			FOR UPDATE OF due SKIP LOCKED
 		) claimed
 		WHERE derivation.resource_id = claimed.resource_id AND derivation.kind = claimed.kind AND derivation.lang = claimed.lang
-		RETURNING derivation.resource_id::text AS "resourceId", derivation.kind, derivation.input_hash AS "inputHash", derivation.attempts
+		RETURNING derivation.resource_id::text AS "resourceId", derivation.kind, derivation.lang, derivation.input_hash AS "inputHash",
+		          derivation.attempts
 	`);
 	return rows;
 }
@@ -116,7 +125,8 @@ export type DerivationSource = Readonly<{
 	source: string;
 	originalLang: string;
 	title: string | null;
-	summary: string | null;
+	/** What the source said about itself; a hint for a summary, never one. */
+	description: string | null;
 	content: string;
 }>;
 
@@ -124,9 +134,9 @@ export type DerivationSource = Readonly<{
 export async function loadDerivationSource(db: NodePgDatabase, resourceId: string, inputHash: string) {
 	const { rows } = await db.execute<DerivationSource>(sql`
 		SELECT resource.kind, resource.resource_platform AS "resourcePlatform", COALESCE(resource.source_name, '') AS source,
-		       resource.original_lang AS "originalLang", original.title, original.summary, COALESCE(original.content, '') AS content
+		       resource.original_lang AS "originalLang", resource.title, resource.description, COALESCE(body.markdown, '') AS content
 		FROM resources resource
-		JOIN resource_translations original ON original.resource_id = resource.id AND original.lang = resource.original_lang
+		LEFT JOIN resource_content body ON body.resource_id = resource.id
 		WHERE resource.id = ${resourceId}::uuid AND resource.text_hash = ${inputHash}
 	`);
 	return rows[0] ?? null;

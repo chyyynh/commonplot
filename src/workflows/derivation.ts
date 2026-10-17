@@ -12,12 +12,11 @@ import {
 	claimDueDerivations,
 	completeEntities,
 	completeSummary,
-	type DerivationKind,
+	type Derivation,
 	type DerivationSource,
 	failDerivation,
 	loadDerivationSource,
 } from '../store/derivations';
-import { enqueueLateSummaryTranslation } from './translation';
 
 /** Runs one derivation for the text `inputHash` names; true when it wrote something. A failure is recorded, not thrown. */
 export async function deriveResource(
@@ -26,14 +25,15 @@ export async function deriveResource(
 	resourceId: string,
 	inputHash: string,
 	source: DerivationSource,
-	kind: DerivationKind,
+	derivation: Derivation,
 	processingId: string,
 ): Promise<boolean> {
+	const { kind, lang } = derivation;
 	try {
 		if (kind === 'summary') {
-			const summary = await step.do('derive-summary-v1', AI_STEP, () => summarizeResource(source, env, processingId));
-			return await step.do('persist-derived-summary-v1', STORAGE_STEP, () =>
-				withCoreDb(env, (db) => completeSummary(db, resourceId, inputHash, summary)),
+			const summary = await step.do(`derive-summary-${lang}-v2`, AI_STEP, () => summarizeResource(source, lang, env, processingId));
+			return await step.do(`persist-derived-summary-${lang}-v2`, STORAGE_STEP, () =>
+				withCoreDb(env, (db) => completeSummary(db, resourceId, inputHash, lang, summary)),
 			);
 		}
 		const entities = await step.do('derive-entities-v1', AI_STEP, () => extractResourceEntities(source, env, processingId));
@@ -46,32 +46,32 @@ export async function deriveResource(
 			tag: 'DERIVATION',
 			msg: 'Derivation failed',
 			kind,
+			lang,
 			resource_id: resourceId,
 			processing_id: processingId,
 			error: message,
 		});
-		await step.do(`record-failed-${kind}-v1`, STORAGE_STEP, () =>
-			withCoreDb(env, (db) => failDerivation(db, resourceId, kind, inputHash, message)),
+		await step.do(`record-failed-${kind}${lang && `-${lang}`}-v1`, STORAGE_STEP, () =>
+			withCoreDb(env, (db) => failDerivation(db, resourceId, derivation, inputHash, message)),
 		);
 		return false;
 	}
 }
 
-type ResourceDerivationPayload = { resourceId: string; kind: DerivationKind; inputHash: string };
+type ResourceDerivationPayload = Derivation & { resourceId: string; inputHash: string };
 
 /** A derivation the sweep took over: the attempt that wrote its original failed it or never settled it. */
 export class ResourceDerivationWorkflow extends WorkflowEntrypoint<CoreEnv, ResourceDerivationPayload> {
 	async run(event: WorkflowEvent<ResourceDerivationPayload>, step: WorkflowStep) {
-		const { resourceId, kind, inputHash } = event.payload;
+		const { resourceId, inputHash, ...derivation } = event.payload;
 		const source = await step.do('load-derivation-source-v1', STORAGE_STEP, () =>
 			withCoreDb(this.env, (db) => loadDerivationSource(db, resourceId, inputHash)),
 		);
 		if (!source) return { status: 'superseded' as const };
-		if (!(await deriveResource(this.env, step, resourceId, inputHash, source, kind, event.instanceId)))
+		if (!(await deriveResource(this.env, step, resourceId, inputHash, source, derivation, event.instanceId)))
 			return { status: 'unchanged' as const };
-		// A late summary still needs its translation, and search documents lead with it.
-		if (kind === 'summary') {
-			await step.do('enqueue-late-summary-translation-v1', STORAGE_STEP, () => enqueueLateSummaryTranslation(this.env, resourceId));
+		// Search documents lead with the summary.
+		if (derivation.kind === 'summary') {
 			await step.do('enqueue-summary-search-sync-v1', STORAGE_STEP, async () => {
 				await this.env.RESOURCE_SEARCH_SYNC_QUEUE.send({ resourceId });
 			});
@@ -80,17 +80,19 @@ export class ResourceDerivationWorkflow extends WorkflowEntrypoint<CoreEnv, Reso
 	}
 }
 
-const DERIVATION_SWEEP_BATCH = 10;
+// Sized to regenerate every titled Resource's summaries within a day of a summary prompt change.
+const DERIVATION_SWEEP_BATCH = 300;
 
 /** Starts each derivation whose attempt failed or never settled; its lease keeps the next sweep from starting it again. */
 export async function enqueueDueDerivations(db: NodePgDatabase): Promise<void> {
 	const due = await claimDueDerivations(db, DERIVATION_SWEEP_BATCH);
 	if (!due.length) return;
-	await coreExports.ResourceDerivationWorkflow.createBatch(
-		due.map(({ resourceId, kind, inputHash }) => ({
-			id: `rd-v1-${kind}-${resourceId}-${crypto.randomUUID()}`,
-			params: { resourceId, kind, inputHash },
-		})),
-	);
+	const instances = due.map(({ resourceId, kind, lang, inputHash }) => ({
+		id: `rd-v1-${kind}-${resourceId}-${crypto.randomUUID()}`,
+		params: { resourceId, inputHash, ...({ kind, lang } as Derivation) },
+	}));
+	// createBatch takes at most 100 instances.
+	for (let offset = 0; offset < instances.length; offset += 100)
+		await coreExports.ResourceDerivationWorkflow.createBatch(instances.slice(offset, offset + 100));
 	console.info({ tag: 'DERIVATION', msg: 'Due derivation sweep', started: due.length });
 }

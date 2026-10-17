@@ -13,7 +13,7 @@ import {
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { blobKey } from '../contracts/storage-keys';
-import { type DerivationKind, replaceResourceEntities, requireDerivations } from './derivations';
+import { type Derivation, replaceResourceEntities, requireDerivations, SUMMARY_LANGS } from './derivations';
 import { kindWhere, READABLE_ORIGINAL_SQL } from './kind-sql';
 import { fulfillRequests } from './requests';
 
@@ -338,10 +338,10 @@ async function writeCanonicalResource(
 			WHERE resource_id = ${resourceId}::uuid
 		`);
 	}
-	// A summary the source supplied needs none derived.
+	// Every titled Resource is summarized in each reader language, whatever its source said about itself.
 	return requireDerivations(db, resourceId, [
-		...(RESOURCE_KINDS[resource.kind].titled && resource.summary === null ? (['summary'] as const) : []),
-		...(privateObjectId ? [] : (['entities'] as const)),
+		...(RESOURCE_KINDS[resource.kind].titled ? SUMMARY_LANGS.map((lang) => ({ kind: 'summary' as const, lang })) : []),
+		...(privateObjectId ? [] : [{ kind: 'entities' as const, lang: '' as const }]),
 	]);
 }
 
@@ -521,7 +521,7 @@ async function writeOriginal(
 	resource: HostedResource,
 	target: ResourcePersistenceTarget,
 	claim: RowClaim,
-): Promise<DerivationKind[]> {
+): Promise<Derivation[]> {
 	const { resourceId, root, outcome, subjectCandidates } = claim;
 	if (outcome === 'written') {
 		const subject = subjectCandidates.length === 1 && subjectCandidates[0]?.scope === 'corpus' ? subjectCandidates[0] : null;
