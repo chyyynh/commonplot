@@ -1,3 +1,4 @@
+import { RESOURCE_KINDS } from '../contracts/resource';
 import { isEnglishLanguage } from '../contracts/resource-language';
 import { coreGatewayOptions } from '../services/ai-model';
 import type { CorpusDocument } from './search-index';
@@ -8,8 +9,8 @@ const EMBEDDING_MODEL = '@cf/baai/bge-m3';
 const VECTOR_TEXT_MAX_CHARS = 1_500;
 
 /**
- * Every vector reads English where the Resource has it, so neighbours compare like with like. Posts have no title, so
- * their text opens with the post itself; Resources without English fall back to their original.
+ * Every vector reads English where the Resource has it, so neighbours compare like with like. An untitled kind's text
+ * opens with the text itself; Resources without English fall back to their original.
  */
 export function resourceVectorText(document: CorpusDocument): string {
 	const original = document.translations.find((translation) => translation.lang === document.original_lang);
@@ -17,7 +18,7 @@ export function resourceVectorText(document: CorpusDocument): string {
 		? original
 		: (document.translations.find((translation) => translation.lang === 'en' && translation.title?.trim()) ?? original);
 	if (!english) throw new Error(`Resource vector ${document.id} is missing its ${document.original_lang} translation`);
-	const parts = document.kind === 'post' ? [english.content] : [english.title, english.summary];
+	const parts = RESOURCE_KINDS[document.kind].titled ? [english.title, english.summary] : [english.content];
 	const text = parts
 		.map((part) => part?.replace(/\s+/g, ' ').trim())
 		.filter(Boolean)

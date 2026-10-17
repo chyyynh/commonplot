@@ -4,6 +4,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pLimit from 'p-limit';
 import { z } from 'zod';
+import { RESOURCE_KINDS } from '../contracts/resource';
 import { needsEnglishMetadata } from '../contracts/resource-language';
 import { coreExports } from '../exports.ts';
 import { AI_STEP_RETRIES, AiOutputError, aiRetryDelay, CORE_TEXT_MODEL, CORE_TEXT_REASONING, generateObject } from '../services/ai-model';
@@ -244,19 +245,19 @@ function isBlank(value: string | null | undefined): boolean {
 }
 
 function planTranslation(resource: ResourceTranslationInput, scope: TranslationScope, force: boolean): TranslationPlan {
-	if ((resource.kind !== 'post' && isBlank(resource.title)) || isBlank(resource.content)) {
+	const titled = RESOURCE_KINDS[resource.kind].titled;
+	if ((titled && isBlank(resource.title)) || isBlank(resource.content)) {
 		return { metadata: false, content: false, english: false };
 	}
-	// Posts are their text alone, so only their content is translated, and never into English.
+	// An untitled Resource is its text alone, so only its content is translated, and never into English.
 	const english =
-		resource.kind !== 'post' &&
+		titled &&
 		needsEnglishMetadata(resource.originalLang) &&
 		(force || !resource.hasEnglishTitle || (!isBlank(resource.summary) && !resource.hasEnglishSummary));
 	if (resource.translationSource === 'original') return { metadata: false, content: false, english };
 
 	return {
-		metadata:
-			resource.kind !== 'post' && (force || !resource.hasTranslatedTitle || (!isBlank(resource.summary) && !resource.hasTranslatedSummary)),
+		metadata: titled && (force || !resource.hasTranslatedTitle || (!isBlank(resource.summary) && !resource.hasTranslatedSummary)),
 		content: scope === 'full' && (force || !resource.hasTranslatedContent),
 		english,
 	};

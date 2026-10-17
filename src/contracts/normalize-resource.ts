@@ -2,7 +2,7 @@ import { toString } from 'mdast-util-to-string';
 import type { AcquiredResource, SourceHints } from './acquired-resource';
 import { cleanText, parseMarkdown } from './markdown';
 import { isPaperIdentifierScheme } from './paper-identity';
-import { RESOURCE_KIND_METADATA, RESOURCE_PLATFORMS, ResourceCreatorsSchema, ResourceIdentifiersSchema } from './resource';
+import { RESOURCE_KINDS, RESOURCE_PLATFORMS, ResourceCreatorsSchema, ResourceIdentifiersSchema } from './resource';
 import { detectResourceLanguage, ResourceLanguageSchema } from './resource-language';
 import { resolveResourceUrl } from './resource-url';
 
@@ -24,8 +24,8 @@ function withoutDuplicateResourceTitle(markdown: string, title: string): string 
 export function normalizeAcquiredResource(resource: AcquiredResource, hints?: SourceHints) {
 	const title = resource.title?.trim() || null;
 	const summary = resource.summary?.trim() || hints?.summary?.trim() || null;
-	if (resource.kind === 'post' ? title !== null || summary !== null : !title) {
-		throw new TypeError('Posts have no title or summary; every other Resource requires a title');
+	if (RESOURCE_KINDS[resource.kind].titled ? !title : title !== null || summary !== null) {
+		throw new TypeError('An untitled kind has no title or summary; every other Resource requires a title');
 	}
 	const content = (title ? withoutDuplicateResourceTitle(resource.content, title) : resource.content).trim();
 	if (!content) throw new TypeError('Resolved Resource requires content');
@@ -63,7 +63,7 @@ export function normalizeAcquiredResource(resource: AcquiredResource, hints?: So
 		source,
 		resourceIdentifiers: identifiers,
 		creators: ResourceCreatorsSchema.parse(resource.creators),
-		kindMetadata: RESOURCE_KIND_METADATA[resource.kind].parse(resource.kindMetadata),
+		kindMetadata: RESOURCE_KINDS[resource.kind].metadata.parse(resource.kindMetadata),
 		originalLang: ResourceLanguageSchema.parse(
 			detectResourceLanguage(content, declaredLang && declaredLang !== 'und' ? declaredLang : (hints?.originalLang ?? 'und')),
 		),

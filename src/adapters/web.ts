@@ -214,7 +214,7 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 		// Defuddle reads publisher metadata only, never a body excerpt.
 		summary: article.description.trim() || null,
 		creators: authors.map((literal) => ({ role: 'author', literal })),
-		kindMetadata: { siteName },
+		kindMetadata: null,
 		previewImageUrl: normalizedResourceImageUrl(article.image, url),
 		subjectUrl: null,
 	} satisfies AcquiredResource;

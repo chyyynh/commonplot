@@ -10,11 +10,13 @@ import {
 	type ResourceEntity,
 	type ResourceKind,
 	type ResourcePlatform,
+	RESOURCE_KINDS,
 	ResourceIdentifiersSchema,
 } from '../contracts/resource';
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { blobKey } from '../contracts/storage-keys';
+import { kindWhere } from './kind-sql';
 
 /** Web's `storedBlobs` advisory lock namespace (`web-tanstack/src/server/db/locks.server.ts`). */
 const STORED_BLOB_LOCK_NAMESPACE = 330571;
@@ -37,8 +39,8 @@ export type ResourcePersistenceTarget =
 /** A reacquired original this much shorter than the stored one is kept out unless forced (error or challenge pages). */
 const MIN_REACQUIRED_CONTENT_RATIO = 0.5;
 
-/** Whether a Resource has a readable original, over the `resource` and `original` aliases. Posts need no title. */
-const READABLE_ORIGINAL_SQL = sql`COALESCE((resource.kind = 'post' OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> '', false)`;
+/** Whether a Resource has a readable original, over the `resource` and `original` aliases. An untitled kind needs no title. */
+const READABLE_ORIGINAL_SQL = sql`COALESCE((${kindWhere(sql`resource.kind`, 'titled', false)} OR BTRIM(original.title) <> '') AND BTRIM(original.content) <> '', false)`;
 
 /** A Resource row as its transaction sees it, locked; also what persistence hands its follow-ups. */
 type StoredResource = Readonly<{
@@ -120,7 +122,6 @@ async function lockResourceIfAny(db: NodePgDatabase, resourceId: string): Promis
 }
 
 const NO_PREVIEW = { url: null, width: null, height: null } as const;
-const SITE_PREVIEW_KINDS: ReadonlySet<ResourceKind> = new Set(['blog', 'forum', 'paper']);
 /** Pages of one host sharing a preview before it counts as the site's card; fewer is a reused photo. */
 const SITE_DEFAULT_PREVIEW_PAGES = 5;
 const HOST_SQL = (url: SQL) => sql`lower(substring(${url} from '://([^/]+)'))`;
@@ -133,7 +134,7 @@ const HOST_SQL = (url: SQL) => sql`lower(substring(${url} from '://([^/]+)'))`;
 async function articlePreview(db: NodePgDatabase, resourceId: string, resource: HostedResource) {
 	const { previewImageUrl: url, previewImageWidth: width, previewImageHeight: height } = resource;
 	const preview = { url, width, height };
-	if (!url || !resource.url || !SITE_PREVIEW_KINDS.has(resource.kind)) return preview;
+	if (!url || !resource.url || !RESOURCE_KINDS[resource.kind].sitePreview) return preview;
 	if (width !== null && height !== null && (width < 300 || height < 150)) return NO_PREVIEW;
 	const host = HOST_SQL(sql`${resource.url}::text`);
 	const known = await db.execute(sql`SELECT 1 FROM site_default_images WHERE host = ${host} AND image_url = ${url}`);
@@ -141,7 +142,7 @@ async function articlePreview(db: NodePgDatabase, resourceId: string, resource: 
 	const holders = sql`
 		SELECT id FROM resources
 		WHERE og_image_url = ${url} AND id <> ${resourceId}::uuid AND scope = 'corpus'
-		  AND kind IN ('blog', 'forum', 'paper') AND ${HOST_SQL(sql`url`)} = ${host}
+		  AND ${kindWhere(sql`kind`, 'sitePreview')} AND ${HOST_SQL(sql`url`)} = ${host}
 	`;
 	const recorded = await db.execute(sql`
 		WITH recorded AS (

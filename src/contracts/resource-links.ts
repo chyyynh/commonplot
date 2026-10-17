@@ -1,7 +1,8 @@
 import type { Nodes } from 'mdast';
 import { parseMarkdown } from './markdown';
 import { canonicalPaperUrl } from './paper-identity';
-import { isXHost, type ResolvedResourceUrl, resolveResourceUrl } from './resource-url';
+import { isXHost } from './resource';
+import { type ResolvedResourceUrl, resolveResourceUrl } from './resource-url';
 
 /** A long original's links past this many are navigation or bibliography noise, not reading paths. */
 const MAX_RESOURCE_LINKS = 200;

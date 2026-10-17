@@ -1,8 +1,9 @@
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import { RESOURCE_KIND_METADATA, type ResourceKind } from '../contracts/resource';
+import { RESOURCE_KINDS, type ResourceKind, resourceKindsWhere } from '../contracts/resource';
 import { withCoreDb } from '../store/db';
+import { kindWhere } from '../store/kind-sql';
 
 // Postgres is canonical; AI Search is its derived public-corpus index.
 export const AI_SEARCH_ITEM_PREFIX = 'resources/';
@@ -18,17 +19,17 @@ const PLAIN_SEARCH_OPTIONS = {
 } as const;
 /** The most results one AI Search query returns. */
 export const RESULT_LIMIT_MAX = 50;
-const SearchableResourceKindSchema = z.enum(Object.keys(RESOURCE_KIND_METADATA) as ResourceKind[]).exclude(['image']);
+const SearchableResourceKindSchema = z.enum(resourceKindsWhere('searchable') as [ResourceKind, ...ResourceKind[]]);
 
 /** A corpus Resource `r` that has a searchable document. */
 export const SEARCHABLE_CORPUS_RESOURCE_SQL = sql`(
 	r.scope = 'corpus'
-	AND r.kind <> 'image'
+	AND ${kindWhere(sql`r.kind`, 'searchable')}
 	AND (r.kind <> 'file' OR r.file_type = 'application/pdf')
 	AND EXISTS (
 		SELECT 1 FROM resource_translations original
 		WHERE original.resource_id = r.id AND original.lang = r.original_lang
-		  AND (r.kind = 'post' OR BTRIM(COALESCE(original.title, '')) <> '')
+		  AND (${kindWhere(sql`r.kind`, 'titled', false)} OR BTRIM(COALESCE(original.title, '')) <> '')
 		  AND BTRIM(COALESCE(original.content, '')) <> ''
 	)
 )`;
@@ -85,9 +86,9 @@ function requiredDocumentText(value: string | null, field: string, resourceId: s
 	return text;
 }
 
-/** Posts have no title, so their document opens with the source line. */
+/** An untitled kind's document opens with the source line. */
 function documentHeading(row: CorpusDocument, original: CorpusTranslationRow): string {
-	return row.kind === 'post' ? '' : `# ${requiredDocumentText(original.title, 'title', row.id)}`;
+	return RESOURCE_KINDS[row.kind].titled ? `# ${requiredDocumentText(original.title, 'title', row.id)}` : '';
 }
 
 function serializeTranslation(translation: CorpusTranslationRow): string {
@@ -132,7 +133,7 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 		             'lang', translation.lang,
 		             'title', translation.title,
 		             'summary', translation.summary,
-		             'content', CASE WHEN translation.lang = r.original_lang OR r.kind = 'post'
+		             'content', CASE WHEN translation.lang = r.original_lang OR ${kindWhere(sql`r.kind`, 'titled', false)}
 		               THEN LEFT(translation.content, ${ORIGINAL_CONTENT_MAX_CHARS}::integer) END
 		           )
 		           ORDER BY (translation.lang = r.original_lang) DESC, translation.lang

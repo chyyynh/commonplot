@@ -4,6 +4,7 @@ import { stageResourceAcquisition } from '../adapters/acquire';
 import type { AcquisitionInput, StoredPdf } from '../contracts/acquired-resource';
 import { resourceImageSources, withHostedImages } from '../contracts/image-mapping';
 import { ResourceDraftTargetSchema, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
+import { RESOURCE_KINDS } from '../contracts/resource';
 import { blobKey } from '../contracts/storage-keys';
 import { coreExports } from '../exports.ts';
 import { AI_STEP } from '../services/ai-model';
@@ -90,9 +91,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			target_kind: target.kind,
 		});
 		const [summary, entities, hostedImages] = await Promise.all([
-			// Posts are their text; a summary would only restate it.
+			// An untitled Resource is its text; a summary would only restate it.
 			resource.summary ??
-				(resource.kind === 'post'
+				(!RESOURCE_KINDS[resource.kind].titled
 					? null
 					: step.do('summarize-resource-v2', AI_STEP, () => summarizeResource(resource, this.env, event.instanceId))),
 			// Entities only relate Resources; an import never fails without them, and a reacquisition keeps the stored ones.

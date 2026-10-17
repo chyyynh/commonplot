@@ -39,38 +39,122 @@ const ResourceMediaAttachmentSchema = z.strictObject({
 	height: z.int().positive().optional(),
 });
 
-export const RESOURCE_KIND_METADATA = {
-	blog: z.strictObject({ siteName: z.string().trim().min(1).optional() }).nullable(),
-	forum: z.strictObject({}),
-	post: z.strictObject({ attachments: z.array(ResourceMediaAttachmentSchema).max(16) }),
-	video: z.strictObject({
-		durationSeconds: z.int().positive().optional(),
-	}),
-	paper: z.strictObject({
-		venue: z.string().trim().min(1).optional(),
-		year: z.int().positive().optional(),
-		citedByCount: z.int().nonnegative().optional(),
-		referenceCount: z.int().nonnegative().optional(),
-		pdfUrl: optionalHttpUrl.optional(),
-	}),
-	image: z.null(),
-	file: z.null(),
-} as const;
+/**
+ * Every rule that depends on what a Resource is lives here, not in `kind === …` checks.
+ * - `metadata`: the stable attributes stored in `kind_metadata`.
+ * - `titled`: the original has its own title; a post is only its text.
+ * - `translatable`: gets automatic zh-Hant and English localization.
+ * - `sitePreview`: may borrow its site's preview image.
+ * - `searchable`: may enter the search corpus.
+ */
+export const RESOURCE_KINDS = {
+	blog: { metadata: z.null(), titled: true, translatable: true, sitePreview: true, searchable: true },
+	forum: { metadata: z.strictObject({}), titled: true, translatable: true, sitePreview: true, searchable: true },
+	post: {
+		metadata: z.strictObject({ attachments: z.array(ResourceMediaAttachmentSchema).max(16) }),
+		titled: false,
+		translatable: true,
+		sitePreview: false,
+		searchable: true,
+	},
+	video: {
+		metadata: z.strictObject({ durationSeconds: z.int().positive().optional() }),
+		titled: true,
+		translatable: true,
+		sitePreview: false,
+		searchable: true,
+	},
+	paper: {
+		metadata: z.strictObject({
+			venue: z.string().trim().min(1).optional(),
+			year: z.int().positive().optional(),
+			citedByCount: z.int().nonnegative().optional(),
+			referenceCount: z.int().nonnegative().optional(),
+			pdfUrl: optionalHttpUrl.optional(),
+		}),
+		titled: true,
+		translatable: true,
+		sitePreview: true,
+		searchable: true,
+	},
+	image: { metadata: z.null(), titled: true, translatable: false, sitePreview: false, searchable: false },
+	file: { metadata: z.null(), titled: true, translatable: false, sitePreview: false, searchable: true },
+} as const satisfies Record<
+	string,
+	{ metadata: z.ZodType; titled: boolean; translatable: boolean; sitePreview: boolean; searchable: boolean }
+>;
 
-export type ResourceKind = keyof typeof RESOURCE_KIND_METADATA;
-export type ResourceKindMetadata = z.infer<(typeof RESOURCE_KIND_METADATA)[ResourceKind]>;
+export type ResourceKind = keyof typeof RESOURCE_KINDS;
+export type ResourceKindMetadata = z.infer<(typeof RESOURCE_KINDS)[ResourceKind]['metadata']>;
+export const RESOURCE_KIND_NAMES = Object.keys(RESOURCE_KINDS) as ResourceKind[];
 
-// A tweet is a post, or a blog when it publishes an X Article; its identity is the tweet either way.
+/** The kinds whose `rule` is true, for SQL `kind IN (…)` filters. */
+export type ResourceKindRule = 'titled' | 'translatable' | 'sitePreview' | 'searchable';
+
+export function resourceKindsWhere(rule: ResourceKindRule, value = true): ResourceKind[] {
+	return RESOURCE_KIND_NAMES.filter((kind) => RESOURCE_KINDS[kind][rule] === value);
+}
+
+/**
+ * Every rule that depends on where a Resource lives. `identify` reads the platform id from a URL on one of
+ * its hosts, and `url` is the canonical URL built from that id. A tweet is a post, or a blog when it
+ * publishes an X Article; its identity is the tweet either way.
+ */
 export const RESOURCE_PLATFORMS = {
-	lesswrong: { kinds: ['blog'], identifier: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/) },
-	hackernews: { kinds: ['forum'], identifier: z.string().regex(/^[1-9]\d*$/) },
-	twitter: { kinds: ['post', 'blog'], identifier: z.string().regex(/^\d+$/) },
-	youtube: { kinds: ['video'], identifier: z.string().regex(/^[A-Za-z0-9_-]{11}$/) },
-} as const satisfies Record<string, { kinds: readonly ResourceKind[]; identifier: z.ZodString }>;
+	lesswrong: {
+		kinds: ['blog'],
+		identifier: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+		identify: (host, url) =>
+			host === 'lesswrong.com' || host.endsWith('.lesswrong.com')
+				? (url.pathname.match(/^\/posts\/([^/]+)(?:\/|$)/)?.[1] ?? null)
+				: undefined,
+		url: (id) => `https://lesswrong.com/posts/${id}`,
+	},
+	hackernews: {
+		kinds: ['forum'],
+		identifier: z.string().regex(/^[1-9]\d*$/),
+		identify: (host, url) => (host === 'news.ycombinator.com' && url.pathname === '/item' ? url.searchParams.get('id') : undefined),
+		url: (id) => `https://news.ycombinator.com/item?id=${id}`,
+	},
+	twitter: {
+		kinds: ['post', 'blog'],
+		identifier: z.string().regex(/^\d+$/),
+		identify: (host, url) => (isXHost(host) ? (url.pathname.match(/^\/[^/]+\/status\/(\d+)(?:\/|$)/)?.[1] ?? null) : undefined),
+		url: (id) => `https://x.com/i/status/${id}`,
+	},
+	youtube: {
+		kinds: ['video'],
+		identifier: z.string().regex(/^[A-Za-z0-9_-]{11}$/),
+		identify: (host, url) => {
+			if (host === 'youtu.be') return url.pathname.match(/^\/([^/]+)\/?$/)?.[1] ?? null;
+			if (host !== 'youtube.com' && !host.endsWith('.youtube.com')) return undefined;
+			return /^\/watch\/?$/.test(url.pathname)
+				? url.searchParams.get('v')
+				: (url.pathname.match(/^\/(?:embed|shorts|live|v)\/([^/]+)\/?$/)?.[1] ?? null);
+		},
+		url: (id) => `https://youtube.com/watch?v=${id}`,
+	},
+} as const satisfies Record<
+	string,
+	{
+		kinds: readonly ResourceKind[];
+		identifier: z.ZodString;
+		/** `undefined`: not this platform's host; `null`: its host, but no Resource id in the URL. */
+		identify: (host: string, url: URL) => string | null | undefined;
+		url: (id: string) => string;
+	}
+>;
+export const RESOURCE_PLATFORM_NAMES = Object.keys(RESOURCE_PLATFORMS) as ResourcePlatform[];
+
+/** twitter.com, x.com, or one of their subdomains. */
+export function isXHost(hostname: string): boolean {
+	return /(^|\.)(twitter|x)\.com$/.test(hostname);
+}
+
 export type ResourcePlatform = keyof typeof RESOURCE_PLATFORMS;
 export const ResourceCreatorsSchema = z.array(ResourceCreatorSchema);
 
-const ResourceIdentifierSchemeSchema = z.enum([...PAPER_IDENTIFIER_SCHEMES, ...(Object.keys(RESOURCE_PLATFORMS) as ResourcePlatform[])]);
+const ResourceIdentifierSchemeSchema = z.enum([...PAPER_IDENTIFIER_SCHEMES, ...RESOURCE_PLATFORM_NAMES]);
 
 function canonicalIdentifierValue(scheme: z.infer<typeof ResourceIdentifierSchemeSchema>, value: string): string | null {
 	if (isPaperIdentifierScheme(scheme)) {

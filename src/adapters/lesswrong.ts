@@ -87,7 +87,7 @@ async function scrapeLessWrong(postId: string) {
 		publishedDate: post.postedAt.trim() || null,
 		summary: null,
 		creators: author ? [{ role: 'author', literal: author }] : [],
-		kindMetadata: { siteName: 'LessWrong' },
+		kindMetadata: null,
 		subjectUrl: null,
 	} satisfies AcquiredResource;
 }

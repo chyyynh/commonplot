@@ -2,12 +2,11 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { PDF_MIME } from '../contracts/pdf-policy';
-import type { ResourceKind, ResourcePlatform } from '../contracts/resource';
+import { RESOURCE_KINDS, type ResourceKind, type ResourcePlatform } from '../contracts/resource';
 import { WITHOUT_ENGLISH_METADATA_LANG_PATTERN } from '../contracts/resource-language';
+import { kindWhere } from './kind-sql';
 
 export const OriginalHashSchema = z.hash('md5').lowercase();
-
-const TRANSLATABLE_RESOURCE_KINDS = ['blog', 'forum', 'post', 'paper', 'video'] as const;
 
 export type ResourceTranslationCandidate = Readonly<{
 	fileType: string | null;
@@ -27,7 +26,7 @@ export function isTranslatable(candidate: ResourceTranslationCandidate): boolean
 	}
 	return (
 		Boolean(candidate.url) &&
-		(TRANSLATABLE_RESOURCE_KINDS as readonly string[]).includes(candidate.kind) &&
+		RESOURCE_KINDS[candidate.kind].translatable &&
 		(candidate.fileType !== PDF_MIME || (candidate.kind === 'paper' && candidate.resourcePlatform === null))
 	);
 }
@@ -56,8 +55,8 @@ export type MachineZhHantTranslationPatch = Readonly<{ title?: string; summary?:
 /** English is only ever a title and summary: recommendation vectors read them, and content stays in its original. */
 export type MachineEnglishTranslationPatch = Readonly<{ title?: string; summary?: string }>;
 
-/** A non-post whose original is in another named language, so its English title and summary come from translation. */
-const ENGLISH_METADATA_SQL = sql`(resource.kind <> 'post' AND resource.original_lang !~* ${WITHOUT_ENGLISH_METADATA_LANG_PATTERN})`;
+/** A titled Resource whose original is in another named language, so its English title and summary come from translation. */
+const ENGLISH_METADATA_SQL = sql`(${kindWhere(sql`resource.kind`, 'titled')} AND resource.original_lang !~* ${WITHOUT_ENGLISH_METADATA_LANG_PATTERN})`;
 
 export async function loadResourceTranslationInput(
 	db: NodePgDatabase,
@@ -141,7 +140,7 @@ const TRANSLATABLE_CORPUS_SQL = sql`(
 	AND resource.original_hash IS NOT NULL
 	AND resource.url IS NOT NULL
 	AND resource.original_lang <> 'zh-Hant'
-	AND resource.kind = ANY(${sql.param([...TRANSLATABLE_RESOURCE_KINDS])}::text[])
+	AND ${kindWhere(sql`resource.kind`, 'translatable')}
 	AND BTRIM(COALESCE(original.content, '')) <> ''
 )`;
 
@@ -203,8 +202,8 @@ export async function listMissingTranslations(db: NodePgDatabase, limit: number)
 		  AND resource.scraped_date > now() - interval '6 days'
 		  AND resource.scraped_date < now() - interval '15 minutes'
 		  AND (
-		    -- A post outside automatic scope has no metadata to translate, so it never gets a zh-Hant row.
-		    (zh_hant.resource_id IS NULL AND (resource.kind <> 'post' OR ${AUTOMATIC_CONTENT_TRANSLATION_SQL}))
+		    -- An untitled Resource outside automatic scope has no metadata to translate, so it never gets a zh-Hant row.
+		    (zh_hant.resource_id IS NULL AND (${kindWhere(sql`resource.kind`, 'titled')} OR ${AUTOMATIC_CONTENT_TRANSLATION_SQL}))
 		    OR (zh_hant.content IS NULL AND ${AUTOMATIC_CONTENT_TRANSLATION_SQL})
 		    OR (en.resource_id IS NULL AND ${ENGLISH_METADATA_SQL})
 		  )

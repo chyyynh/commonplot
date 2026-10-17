@@ -1,6 +1,6 @@
 import normalizeUrl, { type Options } from 'normalize-url';
 import { canonicalPaperUrl, normalizeArxivId, normalizeDoi, normalizeOpenAlexId, paperIdentifiersFromIdentity } from './paper-identity';
-import { httpUrlSchema, RESOURCE_PLATFORMS, type ResourceIdentifier, type ResourcePlatform } from './resource';
+import { httpUrlSchema, RESOURCE_PLATFORM_NAMES, RESOURCE_PLATFORMS, type ResourceIdentifier, type ResourcePlatform } from './resource';
 
 export type ResolvedResourceUrl = {
 	url: string;
@@ -80,11 +80,6 @@ const GENERIC_IDENTITY_OPTIONS: Options = {
  */
 const INTERSTITIAL_QUERY_PARAMETERS = ['showWelcomeOnShare'];
 
-/** twitter.com, x.com, or one of their subdomains. */
-export function isXHost(hostname: string): boolean {
-	return /(^|\.)(twitter|x)\.com$/.test(hostname);
-}
-
 /**
  * Pure resource identity resolution. Keep the fetch URL intact, including PDF paths and signed queries. */
 export function resolveResourceUrl(value: string | null | undefined): ResolvedResourceUrl | null {
@@ -94,33 +89,18 @@ export function resolveResourceUrl(value: string | null | undefined): ResolvedRe
 	const url = parsed.toString();
 	const hostname = parsed.hostname.replace(/^www\d*\./, '');
 	const path = parsed.pathname;
-	let resourcePlatform: ResourcePlatform | null = null;
-	let id: string | null | undefined;
-	let platformUrl = '';
-	if (hostname === 'news.ycombinator.com' && path === '/item') {
-		resourcePlatform = 'hackernews';
-		id = parsed.searchParams.get('id');
-		platformUrl = `https://news.ycombinator.com/item?id=${id}`;
-	} else if (hostname === 'lesswrong.com' || hostname.endsWith('.lesswrong.com')) {
-		resourcePlatform = 'lesswrong';
-		id = path.match(/^\/posts\/([^/]+)(?:\/|$)/)?.[1];
-		platformUrl = `https://lesswrong.com/posts/${id}`;
-	} else if (isXHost(hostname)) {
-		resourcePlatform = 'twitter';
-		id = path.match(/^\/[^/]+\/status\/(\d+)(?:\/|$)/)?.[1];
-		platformUrl = `https://x.com/i/status/${id}`;
-	} else if (hostname === 'youtube.com' || hostname.endsWith('.youtube.com') || hostname === 'youtu.be') {
-		resourcePlatform = 'youtube';
-		id =
-			hostname === 'youtu.be'
-				? path.match(/^\/([^/]+)\/?$/)?.[1]
-				: /^\/watch\/?$/.test(path)
-					? parsed.searchParams.get('v')
-					: path.match(/^\/(?:embed|shorts|live|v)\/([^/]+)\/?$/)?.[1];
-		platformUrl = `https://youtube.com/watch?v=${id}`;
-	}
-	if (resourcePlatform && RESOURCE_PLATFORMS[resourcePlatform].identifier.validate(id)) {
-		return { url, normalizedUrl: platformUrl, resourcePlatform, identifiers: [{ preferred: true, scheme: resourcePlatform, value: id! }] };
+	for (const resourcePlatform of RESOURCE_PLATFORM_NAMES) {
+		const platform = RESOURCE_PLATFORMS[resourcePlatform];
+		const id = platform.identify(hostname, parsed);
+		if (id === undefined) continue;
+		// A platform host without a Resource id (a profile, a search page) is an ordinary web page.
+		if (!platform.identifier.validate(id)) break;
+		return {
+			url,
+			normalizedUrl: platform.url(id!),
+			resourcePlatform,
+			identifiers: [{ preferred: true, scheme: resourcePlatform, value: id! }],
+		};
 	}
 
 	// Query/fragment decorations do not form part of an exact bibliographic identifier.

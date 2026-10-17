@@ -1,8 +1,8 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import type { AcquisitionInput } from '../contracts/acquired-resource';
+import type { AcquiredResource, AcquisitionInput } from '../contracts/acquired-resource';
 import { normalizeAcquiredResource } from '../contracts/normalize-resource';
-import type { ResourceIdentifier } from '../contracts/resource';
+import type { ResourceIdentifier, ResourcePlatform } from '../contracts/resource';
 import { resolveResourceUrl } from '../contracts/resource-url';
 import { stageHackerNewsAcquisition } from './hackernews';
 import { stageLessWrongAcquisition } from './lesswrong';
@@ -11,6 +11,17 @@ import { stageStoredPdfAcquisition } from './pdf';
 import { stageTwitterAcquisition } from './twitter';
 import { stageWebAcquisition } from './web';
 import { stageYouTubeAcquisition } from './youtube';
+
+/** How each platform's Resource is fetched, from the id `resolveResourceUrl` read. */
+const PLATFORM_ACQUISITION: Record<
+	ResourcePlatform,
+	(env: CoreEnv, step: WorkflowStep, id: string, processingId: string) => Promise<AcquiredResource>
+> = {
+	hackernews: (_env, step, id) => stageHackerNewsAcquisition(step, id),
+	lesswrong: (_env, step, id) => stageLessWrongAcquisition(step, id),
+	twitter: (env, step, id, processingId) => stageTwitterAcquisition(env, step, { processingId, tweetId: id }),
+	youtube: (env, step, id) => stageYouTubeAcquisition(env, step, id),
+};
 
 /** A linked paper with neither full text nor an abstract is not acquired. */
 async function stageLinkedPaper(
@@ -44,22 +55,7 @@ async function stageUrlAcquisition(
 			return stageLinkedPaper(env, step, { processingId: input.processingId, url: detected.url, identifiers: detected.identifiers });
 	}
 
-	const platformId = detected.identifiers[0]!.value;
-	switch (detected.resourcePlatform) {
-		case 'hackernews':
-			return stageHackerNewsAcquisition(step, platformId);
-		case 'lesswrong':
-			return stageLessWrongAcquisition(step, platformId);
-		case 'twitter':
-			return stageTwitterAcquisition(env, step, {
-				processingId: input.processingId,
-				tweetId: platformId,
-			});
-		case 'youtube':
-			return stageYouTubeAcquisition(env, step, platformId);
-		default:
-			throw new NonRetryableError('Redirected resource has no supported platform');
-	}
+	return PLATFORM_ACQUISITION[detected.resourcePlatform](env, step, detected.identifiers[0]!.value, input.processingId);
 }
 
 export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep, input: AcquisitionInput, processingId: string) {
