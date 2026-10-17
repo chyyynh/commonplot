@@ -21,7 +21,15 @@ export const ResourceLanguageSchema = z
 	})
 	.pipe(z.string().max(35));
 
-let chineseConverters: { toTraditional: (text: string) => string; toSimplified: (text: string) => string } | undefined;
+let converters: { toTraditional: (text: string) => string; toSimplified: (text: string) => string } | undefined;
+
+/** OpenCC converters, built on first use. */
+function chineseConverters() {
+	return (converters ??= {
+		toTraditional: Converter({ from: 'cn', to: 'tw' }),
+		toSimplified: Converter({ from: 'tw', to: 'cn' }),
+	});
+}
 
 /** Local detection only; uncertain text stays und instead of incurring an AI request. */
 export function detectResourceLanguage(content: string, knownLanguage = 'und'): string {
@@ -36,14 +44,11 @@ export function detectResourceLanguage(content: string, knownLanguage = 'und'): 
 	const detected = ResourceLanguageSchema.parse(franc(text, { minLength: 20 }));
 	if (detected === 'und') return known;
 	if (detected !== 'zh') return detected;
-	chineseConverters ??= {
-		toTraditional: Converter({ from: 'cn', to: 'tw' }),
-		toSimplified: Converter({ from: 'tw', to: 'cn' }),
-	};
 	const chars = [...text];
 	const difference = (converted: string) => [...converted].filter((char, index) => char !== chars[index]).length;
-	const simplified = difference(chineseConverters.toTraditional(text));
-	const traditional = difference(chineseConverters.toSimplified(text));
+	const { toTraditional, toSimplified } = chineseConverters();
+	const simplified = difference(toTraditional(text));
+	const traditional = difference(toSimplified(text));
 	return traditional > simplified ? 'zh-Hant' : simplified > traditional ? 'zh-Hans' : 'zh';
 }
 
@@ -64,12 +69,8 @@ export function isWrittenIn(text: string, lang: 'zh-Hant' | 'en'): boolean {
 	// Latin names count as words, so Chinese prose naming products in English still reads as Chinese.
 	const latinWords = text.match(/\p{Script=Latin}+/gu)?.length ?? 0;
 	if (han / (han + latinWords) < 0.5) return false;
-	chineseConverters ??= {
-		toTraditional: Converter({ from: 'cn', to: 'tw' }),
-		toSimplified: Converter({ from: 'tw', to: 'cn' }),
-	};
 	// Character by character: OpenCC's phrase rules rewrite valid Taiwan words too (宣布 → 宣佈, 家具 → 傢俱).
-	const { toTraditional, toSimplified } = chineseConverters;
+	const { toTraditional, toSimplified } = chineseConverters();
 	const simplified = [...text].filter(
 		(char) => !TAIWAN_COMMON_FORMS.has(char) && /\p{Script=Han}/u.test(char) && toTraditional(char) !== char && toSimplified(char) === char,
 	).length;
@@ -78,7 +79,7 @@ export function isWrittenIn(text: string, lang: 'zh-Hant' | 'en'): boolean {
 
 /**
  * English, or a code for no linguistic content, undetermined or private-use text: an English title would
- * add nothing. A POSIX pattern, so SQL applies the same rule to `original_lang` with `~*`.
+ * add nothing.
  */
 const WITHOUT_ENGLISH_METADATA_LANG_PATTERN = '^(en|zxx|und|mis|mul|art|q[a-t][a-z])(-|$)';
 

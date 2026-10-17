@@ -1,7 +1,57 @@
 import normalizeUrl, { type Options } from 'normalize-url';
-import { canonicalPaperUrl, normalizeArxivId, normalizeDoi, normalizeOpenAlexId, paperIdentifiersFromIdentity } from './paper-identity';
-import { RESOURCE_PLATFORMS, type ResourceIdentifier } from './resource';
+import { z } from 'zod';
+import { canonicalPaperUrl, normalizePaperIdentifiers, paperIdentifiersFromIdentity } from './paper-identity';
+import type { ResourceIdentifier } from './resource';
 import { httpUrlSchema, RESOURCE_PLATFORM_NAMES, type ResourcePlatform } from './resource-kinds';
+
+/**
+ * How each platform names a Resource: `identify` reads the platform id from a URL on one of its hosts, and `url` is
+ * the canonical URL built from that id. Which kinds it hosts is in `resource-kinds.ts`.
+ */
+export const RESOURCE_PLATFORMS = {
+	lesswrong: {
+		identifier: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+		identify: (host, url) =>
+			host === 'lesswrong.com' || host.endsWith('.lesswrong.com')
+				? (url.pathname.match(/^\/posts\/([^/]+)(?:\/|$)/)?.[1] ?? null)
+				: undefined,
+		url: (id) => `https://lesswrong.com/posts/${id}`,
+	},
+	hackernews: {
+		identifier: z.string().regex(/^[1-9]\d*$/),
+		identify: (host, url) => (host === 'news.ycombinator.com' && url.pathname === '/item' ? url.searchParams.get('id') : undefined),
+		url: (id) => `https://news.ycombinator.com/item?id=${id}`,
+	},
+	twitter: {
+		identifier: z.string().regex(/^\d+$/),
+		identify: (host, url) => (isXHost(host) ? (url.pathname.match(/^\/[^/]+\/status\/(\d+)(?:\/|$)/)?.[1] ?? null) : undefined),
+		url: (id) => `https://x.com/i/status/${id}`,
+	},
+	youtube: {
+		identifier: z.string().regex(/^[A-Za-z0-9_-]{11}$/),
+		identify: (host, url) => {
+			if (host === 'youtu.be') return url.pathname.match(/^\/([^/]+)\/?$/)?.[1] ?? null;
+			if (host !== 'youtube.com' && !host.endsWith('.youtube.com')) return undefined;
+			return /^\/watch\/?$/.test(url.pathname)
+				? url.searchParams.get('v')
+				: (url.pathname.match(/^\/(?:embed|shorts|live|v)\/([^/]+)\/?$/)?.[1] ?? null);
+		},
+		url: (id) => `https://youtube.com/watch?v=${id}`,
+	},
+} as const satisfies Record<
+	ResourcePlatform,
+	{
+		identifier: z.ZodString;
+		/** `undefined`: not this platform's host; `null`: its host, but no Resource id in the URL. */
+		identify: (host: string, url: URL) => string | null | undefined;
+		url: (id: string) => string;
+	}
+>;
+
+/** twitter.com, x.com, or one of their subdomains. */
+export function isXHost(hostname: string): boolean {
+	return /(^|\.)(twitter|x)\.com$/.test(hostname);
+}
 
 export type ResolvedResourceUrl = {
 	url: string;
@@ -106,9 +156,7 @@ export function resolveResourceUrl(value: string | null | undefined): ResolvedRe
 
 	// Query/fragment decorations do not form part of an exact bibliographic identifier.
 	const paperUrl = `${parsed.origin}${path}`;
-	const doi = normalizeDoi(paperUrl);
-	const arxivId = normalizeArxivId(paperUrl);
-	const openAlexId = normalizeOpenAlexId(paperUrl);
+	const { doi, arxivId, openAlexId } = normalizePaperIdentifiers(paperUrl);
 	if (doi || arxivId || openAlexId) {
 		const identity = { ...(arxivId ? { arxivId } : doi ? { doi } : {}), ...(openAlexId ? { openAlexId } : {}) };
 		return { url, normalizedUrl: canonicalPaperUrl(identity), resourcePlatform: null, identifiers: paperIdentifiersFromIdentity(identity) };

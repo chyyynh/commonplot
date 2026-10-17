@@ -4,7 +4,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { HostedPreview } from '../contracts/image-mapping';
 import type { NormalizedResource } from '../contracts/normalize-resource';
 import { ResourceIdentifiersSchema } from '../contracts/resource';
-import { type EntityType, type ResourceKind, type ResourcePlatform, RESOURCE_KINDS } from '../contracts/resource-kinds';
+import { type ResourceKind, type ResourcePlatform, RESOURCE_KINDS } from '../contracts/resource-kinds';
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { blobKey } from '../contracts/storage-keys';
@@ -79,13 +79,18 @@ async function findResourceCandidates(
 	return rows.map(({ owners }) => owners);
 }
 
+/** The one corpus Resource an identity names; none when it names no corpus Resource or several. Private ones are ignored. */
+function soleCorpusOwner<T extends Readonly<{ scope: 'corpus' | 'private' }>>(candidates: readonly T[]): T | null {
+	const owners = candidates.filter(({ scope }) => scope === 'corpus');
+	return owners.length === 1 ? owners[0]! : null;
+}
+
 /** Admission only reuses an unambiguous public identity with a readable original. */
 export async function findResourcesByUrls(db: NodePgDatabase, urls: readonly ResolvedResourceUrl[]) {
 	const candidates = await findResourceCandidates(db, urls);
 	return urls.map(({ url, normalizedUrl }, index) => {
-		const owners = candidates[index]!.filter(({ scope }) => scope === 'corpus');
-		const owner = owners.length === 1 && owners[0]!.hasOriginal ? owners[0] : null;
-		return { url, normalizedUrl, resourceId: owner?.id ?? null };
+		const owner = soleCorpusOwner(candidates[index]!);
+		return { url, normalizedUrl, resourceId: owner?.hasOriginal ? owner.id : null };
 	});
 }
 
@@ -110,73 +115,6 @@ async function lockResourceIfAny(db: NodePgDatabase, resourceId: string): Promis
 		FOR UPDATE OF resource
 	`);
 	return result.rows[0] ?? null;
-}
-
-const NO_PREVIEW = { url: null, width: null, height: null } as const;
-/** Pages of one host sharing a preview before it counts as the site's card; fewer is a reused photo. */
-const SITE_DEFAULT_PREVIEW_PAGES = 5;
-const HOST_SQL = (url: SQL) => sql`lower(substring(${url} from '://([^/]+)'))`;
-
-/**
- * An article's preview is its own picture, not the site's. Icons and avatars are dropped, and
- * so is a share image enough other pages of the same host carry: that is the site's default
- * card. It is recorded in `site_default_images` and cleared from the pages that had it.
- */
-async function articlePreview(db: NodePgDatabase, resourceId: string, resource: HostedResource) {
-	const { previewImageUrl: url, previewImageWidth: width, previewImageHeight: height } = resource;
-	const preview = { url, width, height };
-	if (!url || !resource.url || !RESOURCE_KINDS[resource.kind].sitePreview) return preview;
-	if (width !== null && height !== null && (width < 300 || height < 150)) return NO_PREVIEW;
-	const host = HOST_SQL(sql`${resource.url}::text`);
-	const known = await db.execute(sql`SELECT 1 FROM site_default_images WHERE host = ${host} AND image_url = ${url}`);
-	if (known.rows.length) return NO_PREVIEW;
-	const holders = sql`
-		SELECT id FROM resources
-		WHERE og_image_url = ${url} AND id <> ${resourceId}::uuid AND scope = 'corpus'
-		  AND ${kindWhere(sql`kind`, 'sitePreview')} AND ${HOST_SQL(sql`url`)} = ${host}
-	`;
-	const recorded = await db.execute(sql`
-		WITH recorded AS (
-			INSERT INTO site_default_images (host, image_url)
-			SELECT ${host}, ${url} WHERE (SELECT count(*) FROM (${holders}) holder) >= ${SITE_DEFAULT_PREVIEW_PAGES - 1}
-			ON CONFLICT DO NOTHING
-			RETURNING host
-		), cleared AS (
-			UPDATE resources SET og_image_url = NULL, og_image_width = NULL, og_image_height = NULL
-			WHERE id IN (${holders}) AND EXISTS (SELECT 1 FROM recorded)
-		)
-		SELECT 1 FROM recorded
-	`);
-	return recorded.rows.length ? NO_PREVIEW : preview;
-}
-
-/**
- * Replaces a Resource's platform and paper ids and records its own URL; the Hacker News threads that discussed it stay. A URL it was known by before, its earlier URL or
- * one that redirected to it, stays as an alias. A key another Resource holds is left to it.
- */
-async function writeResourceKeys(
-	db: NodePgDatabase,
-	resourceId: string,
-	normalizedUrl: string | null,
-	identifiers: NormalizedResource['resourceIdentifiers'],
-	existing: boolean,
-) {
-	if (existing) {
-		// Hacker News threads that discussed it stay; a thread Resource keeps its own id below.
-		await db.execute(sql`DELETE FROM resource_keys WHERE resource_id = ${resourceId}::uuid AND scheme NOT IN ('url', 'hackernews')`);
-		await db.execute(sql`
-			UPDATE resource_keys SET preferred = false
-			WHERE resource_id = ${resourceId}::uuid AND scheme = 'url' AND preferred AND value IS DISTINCT FROM ${normalizedUrl}
-		`);
-	}
-	const keys = [...(normalizedUrl ? [{ scheme: 'url', value: normalizedUrl, preferred: true }] : []), ...identifiers];
-	if (!keys.length) return;
-	await db.execute(sql`
-		INSERT INTO resource_keys AS stored (resource_id, scheme, value, preferred)
-		SELECT ${resourceId}::uuid, scheme, value, preferred
-		FROM jsonb_to_recordset(${JSON.stringify(keys)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
-		ON CONFLICT (scheme, value) DO UPDATE SET preferred = EXCLUDED.preferred WHERE stored.resource_id = EXCLUDED.resource_id
-	`);
 }
 
 /**
@@ -288,8 +226,8 @@ async function writeCanonicalResource(
 	if (links.length) {
 		const candidates = await findResourceCandidates(db, links);
 		const rows = links.map(({ url, normalizedUrl }, index) => {
-			const owners = candidates[index]!.filter(({ scope }) => scope === 'corpus');
-			return { url, normalizedUrl, target: owners.length === 1 && owners[0]!.id !== resourceId ? owners[0]!.id : null };
+			const owner = soleCorpusOwner(candidates[index]!);
+			return { url, normalizedUrl, target: owner && owner.id !== resourceId ? owner.id : null };
 		});
 		await db.execute(sql`
 			INSERT INTO resource_links (source_resource_id, ordinal, url, normalized_url, target_resource_id)
@@ -318,54 +256,12 @@ async function writeCanonicalResource(
 	] satisfies Derivation[];
 }
 
-export type EntityCandidate = Readonly<{
-	/** The key without its maker qualifier, which a name in a text is looked up by. */
-	bare: string;
-	name: string;
-	type: EntityType;
-	/** How many Resources name it. */
-	uses: number;
-	/** The Resource most about it, so a reader can tell same-named entities apart. */
-	example: string | null;
-}>;
-
-/** Stored entities whose name, without a maker qualifier, has one of the keys. */
-export async function listEntityCandidates(db: NodePgDatabase, keys: readonly string[]): Promise<EntityCandidate[]> {
-	if (!keys.length) return [];
-	const result = await db.execute<EntityCandidate>(sql`
-		SELECT split_part(e.key, '(', 1) AS bare, e.name, e.type,
-		       (SELECT count(*)::int FROM resource_entities used WHERE used.entity_id = e.id) AS uses,
-		       (SELECT left(COALESCE(r.title, body.markdown), 120)
-		        FROM resource_entities top
-		        JOIN resources r ON r.id = top.resource_id
-		        LEFT JOIN resource_content body ON body.resource_id = r.id
-		        WHERE top.entity_id = e.id
-		        ORDER BY top.weight DESC LIMIT 1) AS example
-		FROM entities e
-		WHERE split_part(e.key, '(', 1) = ANY(${sql.param([...keys])}::text[])
-	`);
-	return result.rows;
-}
-
 /** Links stored before this Resource existed, under any URL it is known by, now point to it. */
 async function resolveLinksTo(db: NodePgDatabase, resourceId: string, resource: HostedResource) {
 	await db.execute(sql`
 		UPDATE resource_links SET target_resource_id = ${resourceId}::uuid
 		WHERE normalized_url = ANY(${sql.param(linkedResourceUrls(resource.normalizedUrl, resource.resourceIdentifiers))}::text[])
 		  AND target_resource_id IS NULL AND source_resource_id <> ${resourceId}::uuid
-	`);
-}
-
-/** Another version's identifiers join the paper that is already stored, so both find it next time. */
-async function mergePaperIdentifiers(db: NodePgDatabase, resourceId: string, identifiers: NormalizedResource['resourceIdentifiers']) {
-	if (!identifiers.length) return;
-	await db.execute(sql`
-		INSERT INTO resource_keys (resource_id, scheme, value, preferred)
-		SELECT ${resourceId}::uuid, incoming.scheme, incoming.value, incoming.preferred AND NOT EXISTS (
-			SELECT 1 FROM resource_keys stored WHERE stored.resource_id = ${resourceId}::uuid AND stored.scheme = incoming.scheme AND stored.preferred
-		)
-		FROM jsonb_to_recordset(${JSON.stringify(identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
-		ON CONFLICT (scheme, value) DO NOTHING
 	`);
 }
 
@@ -516,7 +412,7 @@ async function writeOriginal(
 	if (target.kind === 'existing')
 		console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });
 	if (root?.kind === 'paper' && resource.kind === 'paper') {
-		await mergePaperIdentifiers(tx, resourceId, resource.resourceIdentifiers);
+		await addPaperIdentifierKeys(tx, resourceId, resource.resourceIdentifiers);
 		// A kept full text without a PDF of its own, such as arXiv HTML, still gains the copy for the PDF view.
 		if (resource.pdfHash)
 			await tx.execute(sql`UPDATE resources SET pdf_hash = ${resource.pdfHash} WHERE id = ${resourceId}::uuid AND pdf_hash IS NULL`);
@@ -557,4 +453,84 @@ export async function loadReacquisitionSource(db: NodePgDatabase, resourceId: st
 	const url = ResourceUrlSchema.safeParse(rows[0].url).data;
 	if (!url) throw new NonRetryableError(`Resource ${resourceId} has no valid external HTTP URL and cannot be reacquired`);
 	return { url, identifiers: ResourceIdentifiersSchema.parse(rows[0].identifiers) };
+}
+
+const NO_PREVIEW = { url: null, width: null, height: null } as const;
+/** Pages of one host sharing a preview before it counts as the site's card; fewer is a reused photo. */
+const SITE_DEFAULT_PREVIEW_PAGES = 5;
+const HOST_SQL = (url: SQL) => sql`lower(substring(${url} from '://([^/]+)'))`;
+
+/**
+ * An article's preview is its own picture, not the site's. Icons and avatars are dropped, and
+ * so is a share image enough other pages of the same host carry: that is the site's default
+ * card. It is recorded in `site_default_images` and cleared from the pages that had it.
+ */
+async function articlePreview(db: NodePgDatabase, resourceId: string, resource: HostedResource) {
+	const { previewImageUrl: url, previewImageWidth: width, previewImageHeight: height } = resource;
+	const preview = { url, width, height };
+	if (!url || !resource.url || !RESOURCE_KINDS[resource.kind].sitePreview) return preview;
+	if (width !== null && height !== null && (width < 300 || height < 150)) return NO_PREVIEW;
+	const host = HOST_SQL(sql`${resource.url}::text`);
+	const known = await db.execute(sql`SELECT 1 FROM site_default_images WHERE host = ${host} AND image_url = ${url}`);
+	if (known.rows.length) return NO_PREVIEW;
+	const holders = sql`
+		SELECT id FROM resources
+		WHERE og_image_url = ${url} AND id <> ${resourceId}::uuid AND scope = 'corpus'
+		  AND ${kindWhere(sql`kind`, 'sitePreview')} AND ${HOST_SQL(sql`url`)} = ${host}
+	`;
+	const recorded = await db.execute(sql`
+		WITH recorded AS (
+			INSERT INTO site_default_images (host, image_url)
+			SELECT ${host}, ${url} WHERE (SELECT count(*) FROM (${holders}) holder) >= ${SITE_DEFAULT_PREVIEW_PAGES - 1}
+			ON CONFLICT DO NOTHING
+			RETURNING host
+		), cleared AS (
+			UPDATE resources SET og_image_url = NULL, og_image_width = NULL, og_image_height = NULL
+			WHERE id IN (${holders}) AND EXISTS (SELECT 1 FROM recorded)
+		)
+		SELECT 1 FROM recorded
+	`);
+	return recorded.rows.length ? NO_PREVIEW : preview;
+}
+
+/**
+ * Replaces a Resource's platform and paper ids and records its own URL; the Hacker News threads that discussed it stay. A URL it was known by before, its earlier URL or
+ * one that redirected to it, stays as an alias. A key another Resource holds is left to it.
+ */
+async function writeResourceKeys(
+	db: NodePgDatabase,
+	resourceId: string,
+	normalizedUrl: string | null,
+	identifiers: NormalizedResource['resourceIdentifiers'],
+	existing: boolean,
+) {
+	if (existing) {
+		// Hacker News threads that discussed it stay; a thread Resource's own id is rewritten by `persistResolvedResource`.
+		await db.execute(sql`DELETE FROM resource_keys WHERE resource_id = ${resourceId}::uuid AND scheme NOT IN ('url', 'hackernews')`);
+		await db.execute(sql`
+			UPDATE resource_keys SET preferred = false
+			WHERE resource_id = ${resourceId}::uuid AND scheme = 'url' AND preferred AND value IS DISTINCT FROM ${normalizedUrl}
+		`);
+	}
+	const keys = [...(normalizedUrl ? [{ scheme: 'url', value: normalizedUrl, preferred: true }] : []), ...identifiers];
+	if (!keys.length) return;
+	await db.execute(sql`
+		INSERT INTO resource_keys AS stored (resource_id, scheme, value, preferred)
+		SELECT ${resourceId}::uuid, scheme, value, preferred
+		FROM jsonb_to_recordset(${JSON.stringify(keys)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
+		ON CONFLICT (scheme, value) DO UPDATE SET preferred = EXCLUDED.preferred WHERE stored.resource_id = EXCLUDED.resource_id
+	`);
+}
+
+/** Another version's identifiers join the paper that is already stored, so both find it next time. */
+async function addPaperIdentifierKeys(db: NodePgDatabase, resourceId: string, identifiers: NormalizedResource['resourceIdentifiers']) {
+	if (!identifiers.length) return;
+	await db.execute(sql`
+		INSERT INTO resource_keys (resource_id, scheme, value, preferred)
+		SELECT ${resourceId}::uuid, incoming.scheme, incoming.value, incoming.preferred AND NOT EXISTS (
+			SELECT 1 FROM resource_keys stored WHERE stored.resource_id = ${resourceId}::uuid AND stored.scheme = incoming.scheme AND stored.preferred
+		)
+		FROM jsonb_to_recordset(${JSON.stringify(identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
+		ON CONFLICT (scheme, value) DO NOTHING
+	`);
 }

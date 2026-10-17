@@ -5,7 +5,7 @@ import { cleanText } from '../contracts/markdown';
 import { entityKey, type ResourceEntity } from '../contracts/resource';
 import { type EntityType } from '../contracts/resource-kinds';
 import { withCoreDb } from '../store/db';
-import { type EntityCandidate, listEntityCandidates } from '../store/resources';
+import { type EntityCandidate, listEntityCandidates } from '../store/derivations';
 import { coreGatewayOptions } from './ai-model';
 
 const FASTINO_URL = 'https://api.fastino.ai/v1/chat/completions';

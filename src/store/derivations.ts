@@ -1,7 +1,7 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { entityKey, type ResourceEntity } from '../contracts/resource';
-import { type ResourceKind, type ResourcePlatform } from '../contracts/resource-kinds';
+import { type EntityType, type ResourceKind, type ResourcePlatform } from '../contracts/resource-kinds';
 
 /** The languages every titled Resource is summarized in, each written directly rather than translated. */
 export const SUMMARY_LANGS = ['zh-Hant', 'en'] as const;
@@ -174,4 +174,33 @@ export async function replaceResourceEntities(db: NodePgDatabase, resourceId: st
 		FROM incoming JOIN entity USING (key)
 		ORDER BY entity.id, incoming.weight DESC
 	`);
+}
+
+export type EntityCandidate = Readonly<{
+	/** The key without its maker qualifier, which a name in a text is looked up by. */
+	bare: string;
+	name: string;
+	type: EntityType;
+	/** How many Resources name it. */
+	uses: number;
+	/** The Resource most about it, so a reader can tell same-named entities apart. */
+	example: string | null;
+}>;
+
+/** Stored entities whose name, without a maker qualifier, has one of the keys. */
+export async function listEntityCandidates(db: NodePgDatabase, keys: readonly string[]): Promise<EntityCandidate[]> {
+	if (!keys.length) return [];
+	const result = await db.execute<EntityCandidate>(sql`
+		SELECT split_part(e.key, '(', 1) AS bare, e.name, e.type,
+		       (SELECT count(*)::int FROM resource_entities used WHERE used.entity_id = e.id) AS uses,
+		       (SELECT left(COALESCE(r.title, body.markdown), 120)
+		        FROM resource_entities top
+		        JOIN resources r ON r.id = top.resource_id
+		        LEFT JOIN resource_content body ON body.resource_id = r.id
+		        WHERE top.entity_id = e.id
+		        ORDER BY top.weight DESC LIMIT 1) AS example
+		FROM entities e
+		WHERE split_part(e.key, '(', 1) = ANY(${sql.param([...keys])}::text[])
+	`);
+	return result.rows;
 }

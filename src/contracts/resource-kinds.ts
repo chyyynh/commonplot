@@ -14,7 +14,7 @@ export function httpUrlSchema(options: { normalize?: boolean } = {}) {
 	}, 'URL credentials are not allowed');
 }
 const optionalHttpUrl = httpUrlSchema();
-export const ResourceCreatorSchema = z
+const ResourceCreatorSchema = z
 	.strictObject({
 		role: z.enum(RESOURCE_CREATOR_ROLES),
 		given: z.string().trim().min(1).optional(),

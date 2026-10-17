@@ -140,6 +140,20 @@ export function normalizeOpenAlexId(value: unknown): string | null {
 	return raw?.match(OPENALEX_ID_RE)?.[1]?.toUpperCase() ?? null;
 }
 
+/** Each paper identifier scheme: how a value is normalized to it, and the `PaperIdentity` field it fills. */
+export const PAPER_IDENTIFIERS = {
+	doi: { normalize: normalizeDoi, identityKey: 'doi' },
+	arxiv: { normalize: normalizeArxivId, identityKey: 'arxivId' },
+	openalex: { normalize: normalizeOpenAlexId, identityKey: 'openAlexId' },
+} as const satisfies Record<PaperIdentifierScheme, { normalize: (value: unknown) => string | null; identityKey: keyof PaperIdentity }>;
+
+/** What `value` reads as under every scheme, by `PaperIdentity` field; null where it is not that identifier. */
+export function normalizePaperIdentifiers(value: unknown) {
+	return Object.fromEntries(
+		PAPER_IDENTIFIER_SCHEMES.map((scheme) => [PAPER_IDENTIFIERS[scheme].identityKey, PAPER_IDENTIFIERS[scheme].normalize(value)]),
+	) as { [K in keyof PaperIdentity]-?: string | null };
+}
+
 /** A published paper lives at its version of record; a preprint at arXiv. */
 export function canonicalPaperUrl(identity: PaperIdentity): string {
 	if (identity.doi && !identity.doi.startsWith(ARXIV_DOI_PREFIX))

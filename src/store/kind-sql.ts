@@ -1,7 +1,7 @@
 import { type SQL, sql } from 'drizzle-orm';
 import { type ResourceKindRule, resourceKindsWhere } from '../contracts/resource-kinds';
 
-/** `column IN (…)` over the kinds one `RESOURCE_KINDS` rule selects, written as literals so partial indexes still match. */
+/** A `RESOURCE_KINDS` rule as SQL: `column IN (…)` over the kinds it selects, written as literals. */
 export function kindWhere(column: SQL, rule: ResourceKindRule, value = true): SQL {
 	const kinds = resourceKindsWhere(rule, value);
 	return kinds.length ? sql`${column} IN (${sql.raw(kinds.map((kind) => `'${kind}'`).join(', '))})` : sql`false`;

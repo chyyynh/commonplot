@@ -1,8 +1,7 @@
 import type { Nodes } from 'mdast';
 import { parseMarkdown } from './markdown';
-import { canonicalPaperUrl } from './paper-identity';
-import { isXHost } from './resource';
-import { type ResolvedResourceUrl, resolveResourceUrl } from './resource-url';
+import { canonicalPaperUrl, isPaperIdentifierScheme, PAPER_IDENTIFIERS } from './paper-identity';
+import { isXHost, type ResolvedResourceUrl, resolveResourceUrl } from './resource-url';
 
 /** A long original's links past this many are navigation or bibliography noise, not reading paths. */
 const MAX_RESOURCE_LINKS = 200;
@@ -53,13 +52,10 @@ export function resourceLinks(content: string, excluded: readonly (string | null
 	return links;
 }
 
-const PAPER_IDENTITY_KEYS = { doi: 'doi', arxiv: 'arxivId', openalex: 'openAlexId' } as const;
-
 /** Every normalized URL a link to this Resource is stored under: its own, and each paper identifier's canonical URL. */
 export function linkedResourceUrls(normalizedUrl: string | null, identifiers: readonly { scheme: string; value: string }[]): string[] {
-	const urls = identifiers.flatMap(({ scheme, value }) => {
-		const key = PAPER_IDENTITY_KEYS[scheme as keyof typeof PAPER_IDENTITY_KEYS];
-		return key ? [canonicalPaperUrl({ [key]: value })] : [];
-	});
+	const urls = identifiers.flatMap(({ scheme, value }) =>
+		isPaperIdentifierScheme(scheme) ? [canonicalPaperUrl({ [PAPER_IDENTIFIERS[scheme].identityKey]: value })] : [],
+	);
 	return [...new Set([...(normalizedUrl ? [normalizedUrl] : []), ...urls])];
 }
