@@ -156,7 +156,7 @@ async function articlePreview(db: NodePgDatabase, resourceId: string, resource: 
 }
 
 /**
- * Replaces a Resource's platform and paper ids and records its own URL. A URL it was known by before, its earlier URL or
+ * Replaces a Resource's platform and paper ids and records its own URL; the Hacker News threads that discussed it stay. A URL it was known by before, its earlier URL or
  * one that redirected to it, stays as an alias. A key another Resource holds is left to it.
  */
 async function writeResourceKeys(
@@ -167,7 +167,8 @@ async function writeResourceKeys(
 	existing: boolean,
 ) {
 	if (existing) {
-		await db.execute(sql`DELETE FROM resource_keys WHERE resource_id = ${resourceId}::uuid AND scheme <> 'url'`);
+		// Hacker News threads that discussed it stay; a thread Resource keeps its own id below.
+		await db.execute(sql`DELETE FROM resource_keys WHERE resource_id = ${resourceId}::uuid AND scheme NOT IN ('url', 'hackernews')`);
 		await db.execute(sql`
 			UPDATE resource_keys SET preferred = false
 			WHERE resource_id = ${resourceId}::uuid AND scheme = 'url' AND preferred AND value IS DISTINCT FROM ${normalizedUrl}
@@ -361,6 +362,11 @@ export async function persistResolvedResource(
 		// A newer attempt that already committed did what these requests asked.
 		if (claim.settled) return { ...claim.settled, derivations: [], requests: await fulfillRequests(tx, requestId, claim.resourceId) };
 		const derivations = await writeOriginal(tx, resource, target, claim);
+		if (resource.hackerNewsId && target.kind !== 'upload')
+			await tx.execute(sql`
+				INSERT INTO resource_keys (resource_id, scheme, value) VALUES (${claim.resourceId}::uuid, 'hackernews', ${resource.hackerNewsId})
+				ON CONFLICT (scheme, value) DO NOTHING
+			`);
 		// Follow-ups read the committed row, which can differ from this draft; links stored before it existed now point to it.
 		if (target.kind !== 'upload') await resolveLinksTo(tx, claim.resourceId, resource);
 		const requests = await fulfillRequests(tx, requestId, claim.resourceId);
@@ -512,7 +518,8 @@ export async function loadReacquisitionSource(db: NodePgDatabase, resourceId: st
 		SELECT resource.url, COALESCE((
 			SELECT jsonb_agg(jsonb_build_object('scheme', scheme, 'value', value, 'preferred', preferred)
 				ORDER BY scheme, preferred DESC, value)
-			FROM resource_keys WHERE resource_id = resource.id AND scheme <> 'url'
+			-- A Hacker News thread that discussed it is not how it is fetched.
+			FROM resource_keys WHERE resource_id = resource.id AND scheme <> 'url' AND (scheme <> 'hackernews' OR resource.resource_platform = 'hackernews')
 		), '[]'::jsonb) AS identifiers
 		FROM resources resource WHERE resource.id = ${resourceId}::uuid
 	`);

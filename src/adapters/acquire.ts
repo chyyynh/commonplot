@@ -17,7 +17,11 @@ const PLATFORM_ACQUISITION: Record<
 	ResourcePlatform,
 	(env: CoreEnv, step: WorkflowStep, id: string, processingId: string) => Promise<AcquiredResource>
 > = {
-	hackernews: (_env, step, id) => stageHackerNewsAcquisition(step, id),
+	hackernews: async (env, step, id, processingId) => {
+		const thread = await stageHackerNewsAcquisition(step, id);
+		if (!('linkedUrl' in thread)) return thread;
+		return { ...(await stageUrlAcquisition(env, step, { processingId, url: thread.linkedUrl })), hackerNewsId: id };
+	},
 	lesswrong: (_env, step, id) => stageLessWrongAcquisition(step, id),
 	twitter: (env, step, id, processingId) => stageTwitterAcquisition(env, step, { processingId, tweetId: id }),
 	youtube: (env, step, id) => stageYouTubeAcquisition(env, step, id),

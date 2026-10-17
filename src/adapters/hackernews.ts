@@ -5,7 +5,7 @@ import { toText } from 'hast-util-to-text';
 import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
-import { ResourceUrlSchema } from '../contracts/resource-url';
+import { resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 
 const HN_ITEM_API = 'https://hacker-news.firebaseio.com/v0/item';
@@ -42,12 +42,18 @@ function hnMarkdown(html: string): string {
 	return stringifyMarkdown(htmlToMdast(`<base href="https://news.ycombinator.com/">${html}`)).trim();
 }
 
-/** Only the submission itself: comments are never read, so the content stays the submitter's own words. */
-async function scrapeHackerNews(itemId: string): Promise<AcquiredResource> {
+/**
+ * A link submission is the page it links to, read in its place; a text thread is the submitter's own words. Comments are
+ * never read.
+ */
+async function scrapeHackerNews(itemId: string): Promise<AcquiredResource | { linkedUrl: string }> {
 	console.info({ tag: 'HN', msg: 'Fetching item', itemId });
 	const item = await fetchHnItem(itemId);
 	if (!item) throw new NonRetryableError(`Hacker News item ${itemId} was not found`);
 	if ([item.deleted, item.dead].includes(true)) throw new NonRetryableError(`Hacker News item ${itemId} is unavailable`);
+	const linkedUrl = ResourceUrlSchema.safeParse(item.url).data;
+	// A link back to Hacker News is read as the thread it is.
+	if (linkedUrl && resolveResourceUrl(linkedUrl)?.resourcePlatform !== 'hackernews') return { linkedUrl };
 	if (!item.title && !item.text) throw new NonRetryableError(`Hacker News item ${itemId} has no content`);
 
 	// HN titles are HTML, but the Resource title is plain text, not Markdown.
@@ -81,12 +87,12 @@ async function scrapeHackerNews(itemId: string): Promise<AcquiredResource> {
 		kindMetadata: {},
 		fileType: null,
 		previewImageUrl: null,
-		subjectUrl: ResourceUrlSchema.safeParse(item.url).data ?? null,
+		subjectUrl: null,
 	};
 }
 
 export function stageHackerNewsAcquisition(step: WorkflowStep, itemId: string) {
-	return stepJson(step, 'acquire-hackernews-item-v6', { retries: FETCH_STEP_RETRIES, timeout: '30 seconds' }, () =>
+	return stepJson(step, 'acquire-hackernews-item-v7', { retries: FETCH_STEP_RETRIES, timeout: '30 seconds' }, () =>
 		scrapeHackerNews(itemId),
 	);
 }

@@ -38,6 +38,8 @@ export type AcquiredResource = {
 	pdfHash?: string;
 	previewImageUrl: string | null;
 	subjectUrl: string | null;
+	/** The Hacker News thread a link was acquired through; it becomes a key of the linked Resource, not a Resource. */
+	hackerNewsId?: string;
 	/** Only YouTube videos carry a transcript. */
 	youtube?: YouTubeTranscript;
 };
