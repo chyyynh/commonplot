@@ -7,8 +7,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![npm: newsence](https://img.shields.io/npm/v/newsence?label=npm%3A%20newsence&color=cb3837&logo=npm)](https://www.npmjs.com/package/newsence)
-[![MCP](https://img.shields.io/badge/MCP-Compatible-8A2BE2?logo=anthropic&logoColor=white)](https://www.newsence.app/api/mcp)
-[![Website](https://img.shields.io/badge/newsence.app-live-00c853)](https://www.newsence.app)
+[![MCP](https://img.shields.io/badge/MCP-Compatible-8A2BE2?logo=anthropic&logoColor=white)](https://www.commonplot.co/api/mcp)
+[![Website](https://img.shields.io/badge/commonplot.co-live-00c853)](https://www.commonplot.co)
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/chyyynh/newsence)
 
@@ -20,7 +20,7 @@
 
 ## commonplot 是什麼？
 
-[**newsence.app**](https://www.newsence.app) 的引擎。支援 RSS、Twitter/X、YouTube、Hacker News、一般網頁與上傳檔案，自動進行結構化 AI 分析與繁中翻譯並保留每筆 resource 的實體註記，再將完成 enrichment 的 corpus resource 同步到 Cloudflare AI Search。
+[**commonplot.co**](https://www.commonplot.co) 的引擎。支援 RSS、Twitter/X、YouTube、Hacker News、一般網頁與上傳檔案，自動進行結構化 AI 分析與繁中翻譯並保留每筆 resource 的實體註記，再將完成 enrichment 的 corpus resource 同步到 Cloudflare AI Search。
 
 ## 支援平台
 
@@ -163,7 +163,7 @@ URL／platform acquisition 與 app-owned R2 PDF 讀取各自產生一個 canonic
 
 ## Hosted MCP
 
-commonplot app 在 `https://www.newsence.app/api/mcp` 提供匿名、唯讀的 hosted
+commonplot app 在 `https://www.commonplot.co/api/mcp` 提供匿名、唯讀的 hosted
 [MCP](https://modelcontextprotocol.io) endpoint，支援公開 corpus 搜尋與有限長度的
 resource 讀取。已退役的本機 CLI／MCP 套件不屬於這個 Worker。
 

@@ -7,8 +7,8 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![npm: newsence](https://img.shields.io/npm/v/newsence?label=npm%3A%20newsence&color=cb3837&logo=npm)](https://www.npmjs.com/package/newsence)
-[![MCP](https://img.shields.io/badge/MCP-Compatible-8A2BE2?logo=anthropic&logoColor=white)](https://www.newsence.app/api/mcp)
-[![Website](https://img.shields.io/badge/newsence.app-live-00c853)](https://www.newsence.app)
+[![MCP](https://img.shields.io/badge/MCP-Compatible-8A2BE2?logo=anthropic&logoColor=white)](https://www.commonplot.co/api/mcp)
+[![Website](https://img.shields.io/badge/commonplot.co-live-00c853)](https://www.commonplot.co)
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/chyyynh/newsence)
 
@@ -20,7 +20,7 @@
 
 ## What is commonplot?
 
-Ingestion engine for [**newsence.app**](https://www.newsence.app). Pulls content from RSS / Twitter/X / YouTube / Hacker News / web URLs / uploaded files, runs structured AI analysis and zh-Hant localization, and stores searchable resources with resource-local entity annotations. Each enriched corpus resource is synchronized to Cloudflare AI Search for retrieval.
+Ingestion engine for [**commonplot.co**](https://www.commonplot.co). Pulls content from RSS / Twitter/X / YouTube / Hacker News / web URLs / uploaded files, runs structured AI analysis and zh-Hant localization, and stores searchable resources with resource-local entity annotations. Each enriched corpus resource is synchronized to Cloudflare AI Search for retrieval.
 
 ## Supported Platforms
 
@@ -214,7 +214,7 @@ URL/platform acquisition and app-owned R2 PDF reads each produce one canonical p
 
 The commonplot app exposes an anonymous, read-only hosted
 [MCP](https://modelcontextprotocol.io) endpoint at
-`https://www.newsence.app/api/mcp`. It supports public corpus search and
+`https://www.commonplot.co/api/mcp`. It supports public corpus search and
 bounded resource reads. The retired local CLI/MCP package is not part of this
 Worker.
 

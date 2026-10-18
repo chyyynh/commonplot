@@ -26,7 +26,7 @@ host rescans the MCP server.
 
 ## Connect
 
-Add a remote MCP server with the URL `https://www.newsence.app/api/mcp`
+Add a remote MCP server with the URL `https://www.commonplot.co/api/mcp`
 and OAuth authentication. ChatGPT and Claude identify themselves with a Client
 ID Metadata Document on their own domain; there is no dynamic client
 registration, so other hosts cannot connect. Sign in to commonplot and allow the connection; disconnect in
@@ -110,7 +110,7 @@ which first ask the user for the `newsence:documents` scope.
 - `open_newsence` is a ChatGPT global entrypoint (`openai/ui.entrypoints`):
   the sidebar and the plugin's **Open plugin** button open
   `ui://newsence/app-v2.html` full screen. That view frames
-  `https://www.newsence.app` (`csp.frameDomains`). The tool returns only the
+  `https://www.commonplot.co` (`csp.frameDomains`). The tool returns only the
   public `/api/embed` entry URL, which sets a UI-mode cookie and redirects to
   the app. It never exchanges OAuth access for a website login. The user signs
   in independently with an email code inside the frame; Google sign-in is

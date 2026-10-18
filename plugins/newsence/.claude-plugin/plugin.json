@@ -5,8 +5,8 @@
 	"description": "Save the articles, papers, posts and videos Claude recommends to your commonplot library with one tap, search and ask about what you saved, and put notes into a notebook when you ask.",
 	"author": {
 		"name": "commonplot",
-		"url": "https://www.newsence.app"
+		"url": "https://www.commonplot.co"
 	},
-	"homepage": "https://www.newsence.app",
+	"homepage": "https://www.commonplot.co",
 	"license": "Proprietary"
 }

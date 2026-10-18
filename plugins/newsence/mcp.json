@@ -3,7 +3,7 @@
 	"mcpServers": {
 		"newsence": {
 			"type": "streamable-http",
-			"url": "https://www.newsence.app/api/mcp"
+			"url": "https://www.commonplot.co/api/mcp"
 		}
 	}
 }

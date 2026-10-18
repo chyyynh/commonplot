@@ -5,9 +5,9 @@
 	"description": "Save the articles, papers, posts and videos the assistant recommends to your commonplot library with one tap, search and ask about what you saved, your notebooks and your documents, and put notes into a notebook when you ask.",
 	"author": {
 		"name": "commonplot",
-		"url": "https://www.newsence.app"
+		"url": "https://www.commonplot.co"
 	},
-	"homepage": "https://www.newsence.app",
+	"homepage": "https://www.commonplot.co",
 	"license": "Proprietary",
 	"keywords": [
 		"reading",
@@ -27,10 +27,10 @@
 					"Read",
 					"Write"
 				],
-				"websiteURL": "https://www.newsence.app",
-				"supportURL": "https://docs.newsence.app/user/chatgpt-and-claude/",
-				"privacyPolicyURL": "https://www.newsence.app/privacy",
-				"termsOfServiceURL": "https://www.newsence.app/terms",
+				"websiteURL": "https://www.commonplot.co",
+				"supportURL": "https://docs.commonplot.co/user/chatgpt-and-claude/",
+				"privacyPolicyURL": "https://www.commonplot.co/privacy",
+				"termsOfServiceURL": "https://www.commonplot.co/terms",
 				"defaultPrompt": [
 					"What did I save to commonplot this week?",
 					"Recommend five papers on agent evaluation to read",
