@@ -100,7 +100,7 @@ which first ask the user for the `newsence:documents` scope.
   without submitting another save. Change its URI when the UI contract changes.
 - **Read** on a saved card opens a full-screen reader in hosts that allow it
   (others open the commonplot page). `open_reader` returns the same resource
-  projection as `/p/{id}`, and the view renders it with the app's
+  projection as `/p/{slug}`, and the view renders it with the app's
   `ResourceBody`; the widget build swaps the app's video player for a native
   one. The reader tells the model which item is open, so "summarize this"
   works. Images and math fonts from other origins stay blocked by the card's
