@@ -45,7 +45,6 @@ export type ResourceTranslationInput = ResourceTranslationCandidate & {
 	content: string;
 	hasTranslatedTitle: boolean;
 	hasTranslatedContent: boolean;
-	translationSource: 'original' | 'machine' | null;
 	hasEnglishTitle: boolean;
 };
 
@@ -68,8 +67,6 @@ export async function loadResourceTranslationInput(
 			COALESCE(original.markdown, '') AS content,
 			zh_hant.output->>'title' IS NOT NULL AS "hasTranslatedTitle",
 			zh_hant.output->>'content' IS NOT NULL AS "hasTranslatedContent",
-			CASE WHEN resource.original_lang = 'zh-Hant' THEN 'original' WHEN zh_hant.resource_id IS NOT NULL THEN 'machine' END
-				AS "translationSource",
 			en.output->>'title' IS NOT NULL AS "hasEnglishTitle"
 		FROM resources resource
 		LEFT JOIN resource_content original ON original.resource_id = resource.id

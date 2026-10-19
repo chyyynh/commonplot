@@ -258,7 +258,6 @@ function planTranslation(resource: ResourceTranslationInput, scope: TranslationS
 	}
 	// An untitled Resource is its text alone, so only its content is translated, and never into English.
 	const english = titled && needsEnglishMetadata(resource.originalLang) && (force || !resource.hasEnglishTitle);
-	if (resource.translationSource === 'original') return { metadata: false, content: false, english };
 
 	return {
 		metadata: titled && (force || !resource.hasTranslatedTitle),
@@ -391,7 +390,7 @@ function splitSegmentsInHalf(segments: readonly MarkdownTranslationSegment[]): r
 
 /** Only malformed model output should split; transport/capacity failures retry the same durable group. */
 function isMarkdownTranslationFormatError(error: unknown): boolean {
-	return error instanceof AiOutputError || (error instanceof MarkdownTranslationInvariantError && error.code !== 'invalid-plan');
+	return error instanceof AiOutputError || error instanceof MarkdownTranslationInvariantError;
 }
 
 /** Each segment's verified translation, or null where the model broke its tags; the rest of the batch still lands. */
@@ -403,75 +402,56 @@ async function translateMarkdownBatchToZhHant(
 	env: CoreEnv,
 	resourceId: string,
 ): Promise<BatchTranslations> {
-	try {
-		const promptSegments = batch.segments.map(markdownTranslationModelInput);
-		// A capped or malformed reply throws AiOutputError, which splits the batch.
-		const { output } = await generateObject(
-			env,
-			CORE_TEXT_MODEL,
-			{
-				batch_id: batch.id,
-				feature: 'resource-content-translation',
-				recovery_strategy: batch.id.includes('-') ? 'split' : 'batch',
-				resource_id: resourceId,
-			},
-			{
-				prompt: `${JSON.stringify({
-					targetLocale: 'zh-Hant',
-					editorialVariant: 'zh-TW',
-					document: {
-						title: document.title,
-						summary: document.summary?.slice(0, DOCUMENT_SUMMARY_CONTEXT_CHARACTERS) || null,
-					},
-					segments: promptSegments,
-				})}`,
-				system: ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT,
-				output: {
-					name: 'translation_batch',
-					description: 'Complete, faithful, naturally edited Taiwan Traditional Chinese prose blocks keyed by exact input segment IDs.',
-					schema: zhHantMarkdownTranslationsSchema(batch.segments),
-				},
-				maxTokens: translationOutputTokenBudget(batch.segments),
-				temperature: 0.2,
-				reasoning: CORE_TEXT_REASONING,
-			},
-		);
-		return Object.fromEntries(
-			batch.segments.map((segment) => {
-				try {
-					return [segment.id, verifySegmentTranslation(segment, output.translations[segment.id]!)];
-				} catch (error) {
-					if (!isMarkdownTranslationFormatError(error)) throw error;
-					console.warn({
-						tag: 'RESOURCE_TRANSLATION',
-						event: 'markdown_segment_rejected',
-						batch_id: batch.id,
-						message: errorMessage(error),
-						resource_id: resourceId,
-						segment_id: segment.id,
-					});
-					return [segment.id, null];
-				}
-			}),
-		);
-	} catch (error) {
-		console.error({
-			tag: 'RESOURCE_TRANSLATION',
-			event: 'markdown_batch_attempt_failed',
+	const promptSegments = batch.segments.map(markdownTranslationModelInput);
+	// A capped or malformed reply throws AiOutputError, which splits the batch.
+	const { output } = await generateObject(
+		env,
+		CORE_TEXT_MODEL,
+		{
 			batch_id: batch.id,
-			message: errorMessage(error),
-			reason: failureReason(error),
+			feature: 'resource-content-translation',
+			recovery_strategy: batch.id.includes('-') ? 'split' : 'batch',
 			resource_id: resourceId,
-			...(error instanceof AiOutputError
-				? {
-						cause: error.cause instanceof Error ? error.cause.name : undefined,
-						finish_reason: error.finishReason,
-						generated_text_characters: error.text.length,
-					}
-				: {}),
-		});
-		throw error;
-	}
+		},
+		{
+			prompt: `${JSON.stringify({
+				targetLocale: 'zh-Hant',
+				editorialVariant: 'zh-TW',
+				document: {
+					title: document.title,
+					summary: document.summary?.slice(0, DOCUMENT_SUMMARY_CONTEXT_CHARACTERS) || null,
+				},
+				segments: promptSegments,
+			})}`,
+			system: ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT,
+			output: {
+				name: 'translation_batch',
+				description: 'Complete, faithful, naturally edited Taiwan Traditional Chinese prose blocks keyed by exact input segment IDs.',
+				schema: zhHantMarkdownTranslationsSchema(batch.segments),
+			},
+			maxTokens: translationOutputTokenBudget(batch.segments),
+			temperature: 0.2,
+			reasoning: CORE_TEXT_REASONING,
+		},
+	);
+	return Object.fromEntries(
+		batch.segments.map((segment) => {
+			try {
+				return [segment.id, verifySegmentTranslation(segment, output.translations[segment.id]!)];
+			} catch (error) {
+				if (!isMarkdownTranslationFormatError(error)) throw error;
+				console.warn({
+					tag: 'RESOURCE_TRANSLATION',
+					event: 'markdown_segment_rejected',
+					batch_id: batch.id,
+					message: errorMessage(error),
+					resource_id: resourceId,
+					segment_id: segment.id,
+				});
+				return [segment.id, null];
+			}
+		}),
+	);
 }
 
 async function translateDurableBatch(
@@ -489,6 +469,21 @@ async function translateDurableBatch(
 			try {
 				return await translateMarkdownBatchToZhHant(batch, document, env, resourceId);
 			} catch (error) {
+				console.error({
+					tag: 'RESOURCE_TRANSLATION',
+					event: 'markdown_batch_attempt_failed',
+					batch_id: batch.id,
+					message: errorMessage(error),
+					reason: failureReason(error),
+					resource_id: resourceId,
+					...(error instanceof AiOutputError
+						? {
+								cause: error.cause instanceof Error ? error.cause.name : undefined,
+								finish_reason: error.finishReason,
+								generated_text_characters: error.text.length,
+							}
+						: {}),
+				});
 				if (!isMarkdownTranslationFormatError(error)) throw error;
 				// Persist the format failure so replay goes straight to the same smaller groups.
 				return Object.fromEntries(batch.segments.map(({ id }) => [id, null]));

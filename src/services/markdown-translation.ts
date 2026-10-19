@@ -138,17 +138,12 @@ function isTranslatableProse(value: string): boolean {
 	return Boolean(trimmed && TRANSLATABLE_CHARACTER.test(trimmed) && !URL_OR_EMAIL.test(trimmed));
 }
 
-function containsTranslatableProse(node: Nodes, ancestors: readonly Nodes[] = []): boolean {
+/** Whether `node` has prose to translate; `withAlt` also counts image alt text. */
+function containsTranslatableText(node: Nodes, ancestors: readonly Nodes[] = [], withAlt = false): boolean {
 	if (node.type === 'text') return !isProtectedLinkText(node.value, ancestors) && isTranslatableProse(node.value);
-	if (node.type === 'image' || node.type === 'imageReference') return Boolean(node.alt && isTranslatableProse(node.alt));
+	if (withAlt && (node.type === 'image' || node.type === 'imageReference')) return Boolean(node.alt && isTranslatableProse(node.alt));
 	if (!isParent(node)) return false;
-	return node.children.some((child) => containsTranslatableProse(child, [...ancestors, node]));
-}
-
-function containsTranslatableText(node: Nodes, ancestors: readonly Nodes[] = []): boolean {
-	if (node.type === 'text') return !isProtectedLinkText(node.value, ancestors) && isTranslatableProse(node.value);
-	if (!isParent(node)) return false;
-	return node.children.some((child) => containsTranslatableText(child, [...ancestors, node]));
+	return node.children.some((child) => containsTranslatableText(child, [...ancestors, node], withAlt));
 }
 
 function sentences(value: string): string[] {
@@ -536,7 +531,7 @@ function createMarkdownTranslationAlignment(sourceMarkdown: string, translatedMa
 		if (source.type !== translated.type)
 			throw new MarkdownTranslationInvariantError('markdown-structure-changed', 'Aligned block types differ');
 		if (isProseBlock(source)) {
-			if (containsTranslatableProse(source)) paths.push(path);
+			if (containsTranslatableText(source, [], true)) paths.push(path);
 			return;
 		}
 		if (isParent(source)) {
