@@ -98,16 +98,15 @@ async function loadEligibleCorpusIds(db: NodePgDatabase, resourceIds: readonly s
 	return new Set(result.rows.map((row) => row.id));
 }
 
-async function loadSearchItemPageCount(instance: AiSearchInstance): Promise<number> {
-	const listed = await instance.items.list({
-		metadata_filter: CORPUS_FOLDER_FILTER,
-		page: 1,
-		per_page: REINDEX_PAGE_SIZE,
-		source: 'builtin',
-	});
-	const total = listed.result_info?.total_count;
+/** One page of the corpus folder's indexed items. */
+function listCorpusItems(instance: AiSearchInstance, page: number, perPage = REINDEX_PAGE_SIZE, status?: 'error') {
+	return instance.items.list({ metadata_filter: CORPUS_FOLDER_FILTER, page, per_page: perPage, source: 'builtin', status });
+}
+
+async function countCorpusItems(instance: AiSearchInstance): Promise<number> {
+	const total = (await listCorpusItems(instance, 1, 1)).result_info?.total_count;
 	if (total === undefined) throw new Error('AI Search item listing did not return total_count');
-	return Math.ceil(total / REINDEX_PAGE_SIZE);
+	return total;
 }
 
 /** Deletes a page's stale items and returns the Resources it still indexes. */
@@ -116,12 +115,7 @@ async function pruneSearchItemPage(
 	db: NodePgDatabase,
 	page: number,
 ): Promise<{ deleted: number; kept: string[] }> {
-	const listed = await instance.items.list({
-		metadata_filter: CORPUS_FOLDER_FILTER,
-		page,
-		per_page: REINDEX_PAGE_SIZE,
-		source: 'builtin',
-	});
+	const listed = await listCorpusItems(instance, page);
 	const resourceIds = listed.result.map((item) => resourceIdFromAiSearchItemKey(item.key)).filter((id): id is string => id !== null);
 	const eligibleIds = await loadEligibleCorpusIds(db, resourceIds);
 	const staleItems = listed.result.filter((item) => {
@@ -136,7 +130,9 @@ async function pruneSearchItemPage(
 async function reconcileSearchItems(env: CoreEnv, instance: AiSearchInstance, step: WorkflowStep) {
 	let deleted = 0;
 	for (let pass = 0; pass < REINDEX_MAX_PRUNE_PASSES; pass++) {
-		const pageCount = await step.do(`count-search-item-pages-${pass}`, SHORT_STEP_OPTIONS, () => loadSearchItemPageCount(instance));
+		const pageCount = await step.do(`count-search-item-pages-${pass}`, SHORT_STEP_OPTIONS, async () =>
+			Math.ceil((await countCorpusItems(instance)) / REINDEX_PAGE_SIZE),
+		);
 		let passDeleted = 0;
 		const indexed = new Set<string>();
 		// Walking backwards keeps deletions from shifting unvisited items past the cursor.
@@ -196,14 +192,7 @@ async function ensureCanonicalSearchInstanceConfig(instance: AiSearchInstance): 
 async function observeSearchIndex(instance: AiSearchInstance, db: NodePgDatabase): Promise<SearchIndexStats & { configReady: boolean }> {
 	const info = await instance.info();
 	const stats = await instance.stats();
-	const listed = await instance.items.list({
-		metadata_filter: CORPUS_FOLDER_FILTER,
-		page: 1,
-		per_page: 1,
-		source: 'builtin',
-	});
-	const indexedItems = listed.result_info?.total_count;
-	if (indexedItems === undefined) throw new Error('AI Search readiness listing did not return total_count');
+	const indexedItems = await countCorpusItems(instance);
 	return {
 		completed: stats.completed ?? 0,
 		configReady: canonicalSearchInstanceConfigMatches(info),
@@ -218,13 +207,7 @@ async function observeSearchIndex(instance: AiSearchInstance, db: NodePgDatabase
 }
 
 async function retryFailedSearchItems(instance: AiSearchInstance): Promise<number> {
-	const listed = await instance.items.list({
-		metadata_filter: CORPUS_FOLDER_FILTER,
-		page: 1,
-		per_page: REINDEX_PAGE_SIZE,
-		source: 'builtin',
-		status: 'error',
-	});
+	const listed = await listCorpusItems(instance, 1, REINDEX_PAGE_SIZE, 'error');
 	const items = listed.result.filter((item) => resourceIdFromAiSearchItemKey(item.key) !== null);
 	await pLimit(REINDEX_AI_SEARCH_CONCURRENCY).map(items, (item) => instance.items.get(item.id).sync());
 	return items.length;
