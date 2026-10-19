@@ -53,12 +53,10 @@ type VisitContext = Readonly<{
 	path: readonly number[];
 }>;
 
-type MarkdownTranslationInvariantCode = 'invalid-plan' | 'invalid-result' | 'markdown-structure-changed' | 'source-not-roundtrippable';
-
 export class MarkdownTranslationInvariantError extends Error {
-	readonly code: MarkdownTranslationInvariantCode;
+	readonly code: 'invalid-result' | 'markdown-structure-changed' | 'source-not-roundtrippable';
 
-	constructor(code: MarkdownTranslationInvariantCode, message: string) {
+	constructor(code: MarkdownTranslationInvariantError['code'], message: string) {
 		super(message);
 		this.code = code;
 		this.name = 'MarkdownTranslationInvariantError';
@@ -74,10 +72,6 @@ function parseMarkdown(markdown: string): Root {
 		escaped = `${escaped.slice(0, offset)}\\${escaped.slice(offset)}`;
 	}
 	return parseDialect(escaped);
-}
-
-function isCurrencyMath(source: string, start: number, end: number): boolean {
-	return source.slice(start, start + 2) !== '$$' && /\p{Nd}/u.test(source[start + 1] ?? '') && /\p{Nd}/u.test(source[end] ?? '');
 }
 
 function isParent(node: Nodes): node is Parents {
@@ -98,7 +92,9 @@ function currencyDelimiterOffsets(tree: Root, source: string): number[] {
 				end !== undefined &&
 				source[start] === '$' &&
 				source[end - 1] === '$' &&
-				isCurrencyMath(source, start, end)
+				source.slice(start, start + 2) !== '$$' &&
+				/\p{Nd}/u.test(source[start + 1] ?? '') &&
+				/\p{Nd}/u.test(source[end] ?? '')
 			) {
 				offsets.push(start, end - 1);
 			}
@@ -146,10 +142,6 @@ function containsTranslatableText(node: Nodes, ancestors: readonly Nodes[] = [],
 	return node.children.some((child) => containsTranslatableText(child, [...ancestors, node], withAlt));
 }
 
-function sentences(value: string): string[] {
-	return [...new Intl.Segmenter(undefined, { granularity: 'sentence' }).segment(value)].map(({ segment }) => segment);
-}
-
 function appendText(children: PhrasingContent[], value: string): void {
 	if (!value) return;
 	const previous = children.at(-1);
@@ -164,11 +156,6 @@ function appendNode(children: PhrasingContent[], node: PhrasingContent): void {
 
 function markerText(value: string): string {
 	return value.replace(MARKER, '');
-}
-
-function atomHint(node: PhrasingContent): string | undefined {
-	if (node.type !== 'inlineCode' && node.type !== 'inlineMath') return undefined;
-	return `${node.type}: ${node.value.slice(0, MAX_ATOM_HINT_CHARACTERS)}`;
 }
 
 type Encoding = {
@@ -196,15 +183,11 @@ function encodePhrasing(children: readonly PhrasingContent[], ancestors: readonl
 			continue;
 		}
 		encoding.inlines[id] = { kind: 'atom', node };
-		const hint = atomHint(node);
-		if (hint) encoding.atoms[`{{${id}}}`] = hint;
+		if (node.type === 'inlineCode' || node.type === 'inlineMath')
+			encoding.atoms[`{{${id}}}`] = `${node.type}: ${node.value.slice(0, MAX_ATOM_HINT_CHARACTERS)}`;
 		text += `{{${id}}}`;
 	}
 	return text;
-}
-
-function blockShape(block: ProseBlock): BlockShape {
-	return block.type === 'heading' ? { type: 'heading', depth: block.depth } : { type: block.type };
 }
 
 function referenceDefinitions(nodes: readonly Nodes[]): RootContent[] {
@@ -353,14 +336,7 @@ export function verifySegmentTranslation(segment: MarkdownTranslationSegment, tr
 	return translated;
 }
 
-function createBatch(segments: readonly MarkdownTranslationSegment[], index: number) {
-	return {
-		id: `b${String(index + 1).padStart(4, '0')}`,
-		segments,
-	};
-}
-
-export type MarkdownTranslationBatch = Readonly<ReturnType<typeof createBatch>>;
+export type MarkdownTranslationBatch = Readonly<{ id: string; segments: readonly MarkdownTranslationSegment[] }>;
 
 export function segmentCharacters(segment: MarkdownTranslationSegment): number {
 	return segment.text.length + (segment.context?.length ?? 0);
@@ -370,24 +346,30 @@ function batchSegments(segments: readonly MarkdownTranslationSegment[]): Markdow
 	const batches: MarkdownTranslationBatch[] = [];
 	let current: MarkdownTranslationSegment[] = [];
 	let currentCharacters = 0;
+	const flush = () => {
+		if (current.length) batches.push({ id: `b${String(batches.length + 1).padStart(4, '0')}`, segments: current });
+		current = [];
+		currentCharacters = 0;
+	};
 	for (const segment of segments) {
 		const characters = segmentCharacters(segment);
-		if (current.length > 0 && (currentCharacters + characters > MAX_BATCH_CHARACTERS || current.length >= MAX_BATCH_SEGMENTS)) {
-			batches.push(createBatch(current, batches.length));
-			current = [];
-			currentCharacters = 0;
-		}
+		if (currentCharacters + characters > MAX_BATCH_CHARACTERS || current.length >= MAX_BATCH_SEGMENTS) flush();
 		current.push(segment);
 		currentCharacters += characters;
 	}
-	if (current.length) batches.push(createBatch(current, batches.length));
+	flush();
 	return batches;
 }
 
 /** Long blocks split between top-level inlines and at sentence ends inside top-level text. */
 function chunkPhrasing(children: readonly PhrasingContent[]): PhrasingContent[][] {
 	const pieces = children.flatMap((node): PhrasingContent[] =>
-		node.type === 'text' ? sentences(node.value).map((value) => ({ type: 'text', value })) : [node],
+		node.type === 'text'
+			? [...new Intl.Segmenter(undefined, { granularity: 'sentence' }).segment(node.value)].map(({ segment }) => ({
+					type: 'text',
+					value: segment,
+				}))
+			: [node],
 	);
 	const chunks: PhrasingContent[][] = [];
 	let chunk: PhrasingContent[] = [];
@@ -404,17 +386,6 @@ function chunkPhrasing(children: readonly PhrasingContent[]): PhrasingContent[][
 	}
 	if (chunk.length) chunks.push(chunk);
 	return chunks;
-}
-
-function splitWhitespace(value: string): Readonly<{ leading: string; prose: string; trailing: string }> {
-	const withoutLeading = value.trimStart();
-	const leading = value.slice(0, value.length - withoutLeading.length);
-	const prose = withoutLeading.trimEnd();
-	return {
-		leading,
-		prose,
-		trailing: withoutLeading.slice(prose.length),
-	};
 }
 
 function planProseBlock(block: ProseBlock, context: VisitContext, accumulator: PlanAccumulator): void {
@@ -439,13 +410,13 @@ function planProseBlock(block: ProseBlock, context: VisitContext, accumulator: P
 			trailing.unshift(body.pop()!);
 		const first = body[0];
 		if (first?.type === 'text') {
-			const { leading: space } = splitWhitespace(first.value);
+			const space = first.value.slice(0, first.value.length - first.value.trimStart().length);
 			if (space) leading.push({ type: 'text', value: space });
 			first.value = first.value.slice(space.length);
 		}
 		const last = body.at(-1);
 		if (last?.type === 'text') {
-			const { trailing: space } = splitWhitespace(last.value);
+			const space = last.value.slice(last.value.trimEnd().length);
 			if (space) trailing.unshift({ type: 'text', value: space });
 			last.value = last.value.slice(0, last.value.length - space.length);
 		}
@@ -457,7 +428,7 @@ function planProseBlock(block: ProseBlock, context: VisitContext, accumulator: P
 		} else {
 			const segment: MarkdownTranslationSegment = {
 				atoms: encoding.atoms,
-				block: blockShape(block),
+				block: block.type === 'heading' ? { type: 'heading', depth: block.depth } : { type: block.type },
 				context: translationContext,
 				id: `s${String(accumulator.segments.length + 1).padStart(6, '0')}`,
 				inlines: encoding.inlines,
@@ -493,13 +464,6 @@ function nodeAtPath(tree: Root, path: readonly number[]): Nodes | undefined {
 		current = child;
 	}
 	return current;
-}
-
-function proseBlockAtPath(tree: Root, path: readonly number[]): ProseBlock {
-	const block = nodeAtPath(tree, path);
-	if (!block || !isProseBlock(block))
-		throw new MarkdownTranslationInvariantError('invalid-plan', 'Translation target is not a prose block');
-	return block;
 }
 
 export function planMarkdownTranslation(sourceMarkdown: string) {
@@ -574,23 +538,25 @@ export function compileMarkdownTranslationArtifact(
 				for (const node of structuredClone(part.source)) appendNode(children, node);
 				continue;
 			}
-			const segment = segments.get(part.segmentId);
-			if (!segment) throw new MarkdownTranslationInvariantError('invalid-plan', `Unknown segment ${part.segmentId}`);
+			// The plan never leaves this process: its targets and segments come from this same source.
+			const segment = segments.get(part.segmentId)!;
 			for (const node of decodeSegment(segment, translations[segment.id] ?? segment.text)) appendNode(children, node);
 		}
 		separateAdjacentDelimitedNodes(children);
-		proseBlockAtPath(tree, target.path).children = children;
+		(nodeAtPath(tree, target.path) as ProseBlock).children = children;
 	}
 	let translatedMarkdown = stringifyMarkdown(tree);
 	const reparsed = parseMarkdown(translatedMarkdown);
 	const reverted = plan.targets.filter((target) => {
 		const block = nodeAtPath(reparsed, target.path);
-		return !block || !sameStructure(block, proseBlockAtPath(tree, target.path));
+		return !block || !sameStructure(block, nodeAtPath(tree, target.path)!);
 	});
 	if (reverted.length) {
 		console.warn({ tag: 'RESOURCE_TRANSLATION', event: 'blocks_kept_in_source_language', blocks: reverted.length });
 		for (const target of reverted) {
-			proseBlockAtPath(tree, target.path).children = structuredClone(proseBlockAtPath(sourceTree, target.path).children);
+			(nodeAtPath(tree, target.path) as ProseBlock).children = structuredClone(
+				(nodeAtPath(sourceTree, target.path) as ProseBlock).children,
+			);
 		}
 		translatedMarkdown = stringifyMarkdown(tree);
 	}

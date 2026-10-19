@@ -15,7 +15,7 @@ import {
 	persistResolvedResource,
 	type ResourcePersistenceTarget,
 } from '../store/resources';
-import { translatesContentAutomatically } from '../store/translations';
+import { loadTranslationCandidate } from '../store/translations';
 import { deriveResource } from './derivation';
 import { stageResourceReferences } from './references';
 import { admitRequests, requestSaveTarget } from './requests';
@@ -103,24 +103,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 
 		// The Resource is published; its summary and entities are derived from what was written, and each handoff waits
 		// only for the derivations it reads.
-		const derivations = persistence.derivations.flatMap((derivation) =>
-			derivation.kind === 'translation'
-				? []
-				: [
-						{
-							derivation,
-							done: deriveResource(
-								this.env,
-								step,
-								resourceId,
-								textHash,
-								{ ...hosted, description: hosted.summary },
-								derivation,
-								instanceId,
-							),
-						},
-					],
-		);
+		const derivations = persistence.derivations
+			.filter((derivation) => derivation.kind !== 'translation')
+			.map((derivation) => ({
+				derivation,
+				done: deriveResource(this.env, step, resourceId, textHash, { ...hosted, description: hosted.summary }, derivation, instanceId),
+			}));
 		const summaries = Promise.all(derivations.flatMap(({ derivation, done }) => (derivation.kind === 'summary' ? [done] : [])));
 		const englishSummary = derivations.find(({ derivation }) => derivation.kind === 'summary' && derivation.lang === 'en')?.done;
 		const subjectUrl = resource.subjectUrl;
@@ -151,7 +139,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			// the English summary as context; a title translation starts at once.
 			(async () => {
 				const automatic = await step.do('load-translation-scope-v1', STORAGE_STEP, () =>
-					withCoreDb(this.env, (db) => translatesContentAutomatically(db, resourceId)),
+					withCoreDb(this.env, async (db) => (await loadTranslationCandidate(db, resourceId))?.automatic ?? false),
 				);
 				if (automatic) await englishSummary;
 				return step.do('enqueue-resource-translation-v8', STORAGE_STEP, () =>

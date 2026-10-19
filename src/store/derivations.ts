@@ -8,13 +8,12 @@ export const SUMMARY_LANGS = ['zh-Hant', 'en'] as const;
 export type SummaryLang = (typeof SUMMARY_LANGS)[number];
 /**
  * What Core derives from an original after it is written; each lands, fails and retries on its own. Summaries and
- * translations have a language; a translation is written by its own Workflow.
+ * translations have a language; a translation is written by its own Workflow. zh-Hant translates the title, and the
+ * content where it translates automatically; English is only ever a title.
  */
 export type Derivation = Readonly<
-	{ kind: 'summary'; lang: SummaryLang } | { kind: 'entities'; lang: '' } | { kind: 'translation'; lang: TranslationLang }
+	{ kind: 'summary'; lang: SummaryLang } | { kind: 'entities'; lang: '' } | { kind: 'translation'; lang: SummaryLang }
 >;
-/** zh-Hant translates the title, and the content where it translates automatically; English is only ever a title. */
-export type TranslationLang = 'zh-Hant' | 'en';
 
 /** A pending derivation belongs to the attempt that wrote its original this long before the sweep may take it. */
 const DERIVATION_LEASE = sql`interval '15 minutes'`;
@@ -105,7 +104,7 @@ export async function failDerivation(db: NodePgDatabase, resourceId: string, { k
 	`);
 }
 
-export type DueDerivation = Derivation & Readonly<{ resourceId: string; inputHash: string; attempts: number }>;
+type DueDerivation = Derivation & Readonly<{ resourceId: string; inputHash: string; attempts: number }>;
 
 /** Takes derivations whose attempt never settled or whose wait is over, leasing them so the next sweep skips them. */
 export async function claimDueDerivations(db: NodePgDatabase, limit: number): Promise<DueDerivation[]> {

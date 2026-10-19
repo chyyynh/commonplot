@@ -26,14 +26,11 @@ import {
 	loadResourceTranslationInput,
 	loadTranslationCandidate,
 	loadTranslationStates,
-	type MachineEnglishTranslationPatch,
-	type MachineZhHantTranslationPatch,
 	TextHashSchema,
 	persistMachineTranslation,
 	type ResourceTranslationCandidate,
 	type ResourceTranslationInput,
 	settleOpenTranslations,
-	translatesContentAutomatically,
 } from '../store/translations';
 
 /** `metadata` translates the title; `full` also translates the content. */
@@ -41,7 +38,6 @@ type TranslationScope = 'metadata' | 'full';
 type ResourceTranslationPayload = { force?: boolean; resourceId: string; textHash: string; scope: TranslationScope };
 
 const MARKDOWN_TRANSLATION_CONCURRENCY = 15;
-type TranslationPlan = { metadata: boolean; content: boolean; english: boolean };
 const MetadataTranslationSchema = z.object({ title: z.string().trim().min(1) });
 
 function failureReason(error: unknown): string {
@@ -58,18 +54,16 @@ function translationInstanceId(resourceId: string, textHash: string, scope: Tran
 	return `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${scope}-${resourceId}-${textHash}`;
 }
 
-type TranslationExecution = 'absent' | 'live' | 'done' | 'rerun';
-
-async function translationExecution(id: string): Promise<TranslationExecution> {
+async function translationExecution(id: string) {
 	let snapshot: Awaited<ReturnType<WorkflowInstance['status']>>;
 	try {
 		snapshot = await (await coreExports.ResourceTranslationV2Workflow.get(id)).status();
 	} catch {
 		// Missing, expired, or an unavailable control plane: createBatch recovers this exact ID either way.
-		return 'absent';
+		return 'absent' as const;
 	}
-	if (snapshot.status === 'errored' || snapshot.status === 'terminated') return 'rerun';
-	return snapshot.status === 'complete' ? 'done' : 'live';
+	if (snapshot.status === 'errored' || snapshot.status === 'terminated') return 'rerun' as const;
+	return snapshot.status === 'complete' ? ('done' as const) : ('live' as const);
 }
 
 /** What an import shows for its translations: running while any is open or a full one is live, failed once one failed. */
@@ -92,7 +86,7 @@ export async function enqueueResourceTranslation(
 	resource: ResourceTranslationCandidate & Readonly<{ id: string; textHash: string }>,
 	scope: TranslationScope,
 	force: boolean,
-): Promise<{ id: string; execution: TranslationExecution } | null> {
+) {
 	if (!isTranslatable(resource)) return null;
 	const { id: resourceId, textHash } = resource;
 	TextHashSchema.parse(textHash);
@@ -111,16 +105,14 @@ export async function enqueueResourceTranslation(
 	return { id, execution };
 }
 
-type ContentTranslationRequest = { status: 'unavailable' } | { status: 'complete' } | { status: 'running'; admitted: boolean };
-
 /** A reader's request for a stored Resource's full translation; the app Worker admits and bills it first. */
-export async function requestContentTranslation(env: CoreEnv, resourceId: string): Promise<ContentTranslationRequest> {
+export async function requestContentTranslation(env: CoreEnv, resourceId: string) {
 	const candidate = await withCoreDb(env, (db) => loadTranslationCandidate(db, resourceId));
-	if (!candidate?.hasContent) return { status: 'unavailable' };
-	if (candidate.hasTranslatedContent) return { status: 'complete' };
-	const enqueued = await enqueueResourceTranslation(candidate, 'full', false);
-	if (!enqueued) return { status: 'unavailable' };
-	return { status: 'running', admitted: enqueued.execution !== 'live' && enqueued.execution !== 'done' };
+	if (!candidate?.hasContent) return { status: 'unavailable' as const };
+	if (candidate.hasTranslatedContent) return { status: 'complete' as const };
+	// A loaded candidate is translatable, so it always enqueues.
+	const { execution } = (await enqueueResourceTranslation(candidate, 'full', false))!;
+	return { status: 'running' as const, admitted: execution !== 'live' && execution !== 'done' };
 }
 
 /** Whether a requested full translation is still on its way; `idle` after it lands or fails. */
@@ -134,8 +126,7 @@ export async function contentTranslationStatus(env: CoreEnv, resourceId: string)
 export async function resumeTranslation(db: NodePgDatabase, resourceId: string, textHash: string): Promise<void> {
 	const candidate = await loadTranslationCandidate(db, resourceId);
 	if (candidate?.textHash !== textHash) return settleOpenTranslations(db, resourceId, textHash, null);
-	const automatic = await translatesContentAutomatically(db, resourceId);
-	const enqueued = await enqueueResourceTranslation(candidate, automatic ? 'full' : 'metadata', false);
+	const enqueued = await enqueueResourceTranslation(candidate, candidate.automatic ? 'full' : 'metadata', false);
 	// Every run now settles its rows, so one that completed with them open predates them: it runs again.
 	if (enqueued?.execution === 'done') await (await coreExports.ResourceTranslationV2Workflow.get(enqueued.id)).restart();
 }
@@ -182,11 +173,10 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 			if (metadata.status === 'rejected') throw metadata.reason;
 			if (content.status === 'rejected') throw content.reason;
 			if (english.status === 'rejected') throw english.reason;
-			const patch: MachineZhHantTranslationPatch = { ...metadata.value, ...content.value };
-			const englishPatch: MachineEnglishTranslationPatch = english.value ?? {};
+			const patch = { ...metadata.value, ...content.value };
+			const englishTitle = english.value?.title;
 			const hasPatch = patch.title !== undefined || patch.content !== undefined;
-			const hasEnglishPatch = englishPatch.title !== undefined;
-			if (!hasPatch && !hasEnglishPatch) return await this.settle(step, resourceId, textHash, end('skipped', 'empty'));
+			if (!hasPatch && englishTitle === undefined) return await this.settle(step, resourceId, textHash, end('skipped', 'empty'));
 
 			if (hasPatch) {
 				const persisted = await step.do('persist-zh-hant-translation-v2', STORAGE_STEP, async () =>
@@ -194,9 +184,9 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				);
 				if (!persisted) return end('superseded', 'persist-superseded');
 			}
-			if (hasEnglishPatch) {
+			if (englishTitle !== undefined) {
 				const persisted = await step.do('persist-en-translation-v1', STORAGE_STEP, async () =>
-					withCoreDb(this.env, (db) => persistMachineTranslation(db, resourceId, textHash, 'en', englishPatch)),
+					withCoreDb(this.env, (db) => persistMachineTranslation(db, resourceId, textHash, 'en', { title: englishTitle })),
 				);
 				if (!persisted) return end('superseded', 'persist-superseded');
 			}
@@ -247,13 +237,9 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 
 // What to translate, and the title
 
-function isBlank(value: string | null | undefined): boolean {
-	return !value?.trim();
-}
-
-function planTranslation(resource: ResourceTranslationInput, scope: TranslationScope, force: boolean): TranslationPlan {
+function planTranslation(resource: ResourceTranslationInput, scope: TranslationScope, force: boolean) {
 	const titled = RESOURCE_KINDS[resource.kind].titled;
-	if ((titled && isBlank(resource.title)) || isBlank(resource.content)) {
+	if ((titled && !resource.title.trim()) || !resource.content.trim()) {
 		return { metadata: false, content: false, english: false };
 	}
 	// An untitled Resource is its text alone, so only its content is translated, and never into English.
@@ -308,39 +294,8 @@ Title: ${resource.title}`,
 
 // Content: checkpointed Markdown batches
 
-function zhHantMarkdownTranslationsSchema(segments: readonly MarkdownTranslationSegment[]) {
-	return z.strictObject({
-		translations: z
-			.strictObject(
-				Object.fromEntries(
-					segments.map(({ id }) => [
-						id,
-						z.string().min(1).describe('The translated segment text with every <n>…</n> pair and {{n}} placeholder exactly once.'),
-					]),
-				),
-			)
-			.describe('One translation for every input segment ID.'),
-	});
-}
-
-type TranslationDocument = Readonly<{ title: string; summary: string | null }>;
-
 const DOCUMENT_SUMMARY_CONTEXT_CHARACTERS = 600;
 const MAX_TRANSLATION_OUTPUT_TOKENS = 12_000;
-
-/**
- * Room for a complete translation of this batch plus low-effort reasoning. A
- * degenerate, repeating response stops here and splits instead of running to
- * the global cap.
- */
-function translationOutputTokenBudget(segments: readonly MarkdownTranslationSegment[]): number {
-	const characters = segments.reduce((total, segment) => total + segment.text.length, 0);
-	return Math.min(MAX_TRANSLATION_OUTPUT_TOKENS, Math.max(2_048, Math.ceil(characters * 1.5) + 1_024));
-}
-
-function markdownTranslationModelInput({ atoms, context, id, text }: MarkdownTranslationSegment) {
-	return { id, ...(context ? { context } : {}), text, ...(Object.keys(atoms).length ? { atoms } : {}) };
-}
 
 const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯編輯。請產出自然、準確、符合台灣讀者習慣的繁體中文。
 
@@ -374,7 +329,6 @@ const ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT = `你是專業的全文翻譯�
 - 只輸出符合 schema 的結果，不要輸出說明或額外段落；不可刪除正文。專有名詞、產品名或單一字母若不需翻譯，請照原文保留。`;
 
 function splitSegmentsInHalf(segments: readonly MarkdownTranslationSegment[]): readonly (readonly MarkdownTranslationSegment[])[] {
-	if (segments.length <= 1) return [segments];
 	const totalCharacters = segments.reduce((total, segment) => total + segmentCharacters(segment), 0);
 	const targetCharacters = totalCharacters / 2;
 	let consumedCharacters = 0;
@@ -398,11 +352,13 @@ type BatchTranslations = Readonly<Record<string, string | null>>;
 
 async function translateMarkdownBatchToZhHant(
 	batch: MarkdownTranslationBatch,
-	document: TranslationDocument,
+	resource: ResourceTranslationInput,
 	env: CoreEnv,
-	resourceId: string,
 ): Promise<BatchTranslations> {
-	const promptSegments = batch.segments.map(markdownTranslationModelInput);
+	const resourceId = resource.id;
+	// Room for a complete translation of this batch plus low-effort reasoning. A degenerate, repeating response stops
+	// here and splits instead of running to the global cap.
+	const characters = batch.segments.reduce((total, segment) => total + segment.text.length, 0);
 	// A capped or malformed reply throws AiOutputError, which splits the batch.
 	const { output } = await generateObject(
 		env,
@@ -418,18 +374,34 @@ async function translateMarkdownBatchToZhHant(
 				targetLocale: 'zh-Hant',
 				editorialVariant: 'zh-TW',
 				document: {
-					title: document.title,
-					summary: document.summary?.slice(0, DOCUMENT_SUMMARY_CONTEXT_CHARACTERS) || null,
+					title: resource.title,
+					summary: resource.summary?.slice(0, DOCUMENT_SUMMARY_CONTEXT_CHARACTERS) || null,
 				},
-				segments: promptSegments,
+				segments: batch.segments.map(({ atoms, context, id, text }) => ({
+					id,
+					...(context ? { context } : {}),
+					text,
+					...(Object.keys(atoms).length ? { atoms } : {}),
+				})),
 			})}`,
 			system: ZH_HANT_MARKDOWN_TRANSLATION_SYSTEM_PROMPT,
 			output: {
 				name: 'translation_batch',
 				description: 'Complete, faithful, naturally edited Taiwan Traditional Chinese prose blocks keyed by exact input segment IDs.',
-				schema: zhHantMarkdownTranslationsSchema(batch.segments),
+				schema: z.strictObject({
+					translations: z
+						.strictObject(
+							Object.fromEntries(
+								batch.segments.map(({ id }) => [
+									id,
+									z.string().min(1).describe('The translated segment text with every <n>…</n> pair and {{n}} placeholder exactly once.'),
+								]),
+							),
+						)
+						.describe('One translation for every input segment ID.'),
+				}),
 			},
-			maxTokens: translationOutputTokenBudget(batch.segments),
+			maxTokens: Math.min(MAX_TRANSLATION_OUTPUT_TOKENS, Math.max(2_048, Math.ceil(characters * 1.5) + 1_024)),
 			temperature: 0.2,
 			reasoning: CORE_TEXT_REASONING,
 		},
@@ -456,18 +428,18 @@ async function translateMarkdownBatchToZhHant(
 
 async function translateDurableBatch(
 	batch: MarkdownTranslationBatch,
-	document: TranslationDocument,
+	resource: ResourceTranslationInput,
 	env: CoreEnv,
-	resourceId: string,
 	step: WorkflowStep,
 	depth = 0,
 ): Promise<MarkdownSegmentTranslations> {
+	const resourceId = resource.id;
 	const result = await step.do(
 		`translate-zh-hant-markdown-${batch.id}-v20`,
 		{ retries: { limit: 3, delay: aiRetryDelay, backoff: 'constant' }, timeout: '300 seconds' },
 		async (): Promise<BatchTranslations> => {
 			try {
-				return await translateMarkdownBatchToZhHant(batch, document, env, resourceId);
+				return await translateMarkdownBatchToZhHant(batch, resource, env);
 			} catch (error) {
 				console.error({
 					tag: 'RESOURCE_TRANSLATION',
@@ -514,7 +486,7 @@ async function translateDurableBatch(
 		// Each subgroup has its own checkpoint; a later failure never redoes an earlier successful group.
 		Object.assign(
 			translations,
-			await translateDurableBatch({ ...batch, id: `${batch.id}-${index + 1}`, segments }, document, env, resourceId, step, depth + 1),
+			await translateDurableBatch({ ...batch, id: `${batch.id}-${index + 1}`, segments }, resource, env, step, depth + 1),
 		);
 	}
 	return translations;
@@ -522,7 +494,6 @@ async function translateDurableBatch(
 
 async function translatePlannedContent(resource: ResourceTranslationInput, env: CoreEnv, step: WorkflowStep) {
 	const { content, id: resourceId } = resource;
-	const document: TranslationDocument = { title: resource.title, summary: resource.summary };
 	let markdownPlan: ReturnType<typeof planMarkdownTranslation>;
 	try {
 		markdownPlan = planMarkdownTranslation(content);
@@ -549,7 +520,7 @@ async function translatePlannedContent(resource: ResourceTranslationInput, env: 
 		markdownPlan.batches.map((batch) =>
 			limit(async () => {
 				try {
-					return await translateDurableBatch(batch, document, env, resourceId, step);
+					return await translateDurableBatch(batch, resource, env, step);
 				} catch (error) {
 					// Clear before this slot frees, so no queued batch starts after a failure.
 					failure ??= { error };

@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { PDF_MIME } from '../contracts/pdf-policy';
 import { RESOURCE_KINDS, type ResourceKind, type ResourcePlatform } from '../contracts/resource-kinds';
 import { needsEnglishMetadata } from '../contracts/resource-language';
-import { type Derivation, failDerivation } from './derivations';
+import { type Derivation, failDerivation, type SummaryLang } from './derivations';
 
 export const TextHashSchema = z.hash('md5').lowercase();
 
@@ -48,11 +48,6 @@ export type ResourceTranslationInput = ResourceTranslationCandidate & {
 	hasEnglishTitle: boolean;
 };
 
-/** Machine fields only; alignment is stored as the JSON the translation compiled. Summaries are derived per language. */
-export type MachineZhHantTranslationPatch = Readonly<{ title?: string; content?: string; alignment?: unknown }>;
-/** English is only ever a title: recommendation vectors read it, and content stays in its original. */
-export type MachineEnglishTranslationPatch = Readonly<{ title?: string }>;
-
 export async function loadResourceTranslationInput(
 	db: NodePgDatabase,
 	resourceId: string,
@@ -79,27 +74,25 @@ export async function loadResourceTranslationInput(
 	const row = result.rows[0];
 	if (!row?.textHash || !isTranslatable(row)) return null;
 	const { textHash, ...resource } = row;
-	return { resource, textHash: TextHashSchema.parse(textHash) };
+	return { resource, textHash };
 }
 
-/** Writes a machine translation of the text `textHash` names; false once that text is gone. */
+/**
+ * Writes a machine translation of the text `textHash` names; false once that text is gone. Machine fields only:
+ * alignment is the JSON the content translation compiled, and English is only ever a title.
+ */
 export async function persistMachineTranslation(
 	db: NodePgDatabase,
 	resourceId: string,
 	textHash: string,
-	...[lang, patch]: ['zh-Hant', MachineZhHantTranslationPatch] | ['en', MachineEnglishTranslationPatch]
+	lang: SummaryLang,
+	{ title, content, alignment }: Readonly<{ title?: string; content?: string; alignment?: unknown }>,
 ): Promise<boolean> {
-	TextHashSchema.parse(textHash);
-	const content = 'content' in patch ? patch.content : undefined;
-	const alignment = 'alignment' in patch ? patch.alignment : undefined;
-	if ((content === undefined) !== (alignment === undefined)) {
-		throw new TypeError('Machine translation content and alignment must be persisted together');
-	}
 	// Only onto the text it translated, and never into the original's own language; fields merge, a new text starts over.
 	const result = await db.execute<{ resource_id: string }>(sql`
 		INSERT INTO resource_derivations AS current (resource_id, kind, lang, input_hash, status, attempts, output, updated_at)
 		SELECT resource.id, 'translation', ${lang}, ${textHash}, 'done', 0, jsonb_strip_nulls(jsonb_build_object(
-			'title', ${patch.title ?? null}::text, 'content', ${content ?? null}::text,
+			'title', ${title ?? null}::text, 'content', ${content ?? null}::text,
 			'alignment', ${alignment === undefined ? null : JSON.stringify(alignment)}::jsonb
 		)), NOW()
 		FROM resources resource
@@ -128,25 +121,24 @@ const AUTOMATIC_CONTENT_TRANSLATION_SQL = sql`(
 	AND COALESCE(LENGTH(original.markdown), 0) <= ${MAX_AUTOMATIC_CONTENT_CHARACTERS}
 )`;
 
-export async function translatesContentAutomatically(db: NodePgDatabase, resourceId: string): Promise<boolean> {
-	const result = await db.execute<{ automatic: boolean }>(sql`
-		SELECT ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS automatic
-		FROM resources resource
-		LEFT JOIN resource_content original ON original.resource_id = resource.id
-		WHERE resource.id = ${resourceId}::uuid
-	`);
-	return result.rows[0]?.automatic ?? false;
-}
-
 type StoredTranslationCandidate = ResourceTranslationCandidate &
-	Readonly<{ id: string; textHash: string; hasContent: boolean; hasTranslatedContent: boolean }>;
+	Readonly<{ id: string; textHash: string; hasContent: boolean; hasTranslatedContent: boolean; automatic: boolean; translated: boolean }>;
 
-/** A stored, translatable Resource as a requested content translation sees it. */
+/**
+ * A stored, translatable Resource: whether its content translates automatically, has a done translation (`hasTranslatedContent`),
+ * or has a zh-Hant translation of this text in any state (`translated`).
+ */
 export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: string): Promise<StoredTranslationCandidate | null> {
 	const result = await db.execute<StoredTranslationCandidate>(sql`
 		SELECT ${CANDIDATE_COLUMNS},
 		       BTRIM(COALESCE(original.markdown, '')) <> '' AS "hasContent",
-		       zh_hant.output->>'content' IS NOT NULL AS "hasTranslatedContent"
+		       zh_hant.output->>'content' IS NOT NULL AS "hasTranslatedContent",
+		       ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS automatic,
+		       EXISTS (
+		         SELECT 1 FROM resource_derivations translation
+		         WHERE translation.resource_id = resource.id AND translation.kind = 'translation' AND translation.lang = 'zh-Hant'
+		           AND translation.input_hash = resource.text_hash
+		       ) AS translated
 		FROM resources resource
 		LEFT JOIN resource_content original ON original.resource_id = resource.id
 		LEFT JOIN resource_derivations zh_hant
@@ -163,19 +155,8 @@ export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: s
  * that translates automatically, or to keep one a reader already has of this text; English for a title only.
  */
 export async function requiredTranslations(tx: NodePgDatabase, resourceId: string): Promise<Derivation[]> {
-	const { rows } = await tx.execute<ResourceTranslationCandidate & { automatic: boolean; translated: boolean }>(sql`
-		SELECT ${CANDIDATE_COLUMNS}, ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS automatic,
-		       EXISTS (
-		         SELECT 1 FROM resource_derivations zh_hant
-		         WHERE zh_hant.resource_id = resource.id AND zh_hant.kind = 'translation' AND zh_hant.lang = 'zh-Hant'
-		           AND zh_hant.input_hash = resource.text_hash
-		       ) AS translated
-		FROM resources resource
-		LEFT JOIN resource_content original ON original.resource_id = resource.id
-		WHERE resource.id = ${resourceId}::uuid
-	`);
-	const row = rows[0];
-	if (!row || !isTranslatable(row)) return [];
+	const row = await loadTranslationCandidate(tx, resourceId);
+	if (!row) return [];
 	const { titled } = RESOURCE_KINDS[row.kind];
 	return [
 		...(titled || row.automatic || row.translated ? [{ kind: 'translation' as const, lang: 'zh-Hant' as const }] : []),
