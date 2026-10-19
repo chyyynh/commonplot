@@ -6,7 +6,7 @@ import type { Image, Nodes } from 'mdast';
 import pLimit from 'p-limit';
 import type { HostedResourceImage, ResourceImageSources } from '../contracts/image-mapping';
 import { parseMarkdown } from '../contracts/markdown';
-import { crawlerUserAgent } from './crawler-identity';
+import { crawlerUserAgent } from './response';
 import { errorMessage, limitByteStream, responseError } from './response';
 
 const REHOST_TIMEOUT_MS = 8_000;

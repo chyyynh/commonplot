@@ -4,11 +4,12 @@ import { DurableObject, type WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { ReadDocument } from '../contracts/acquired-resource.ts';
 import { paperIdentityFromText } from '../contracts/paper-identity.ts';
-import { MAX_PDF_BYTES, PDF_MIME } from '../contracts/pdf-policy.ts';
-import { blobKey, storedPdfCropUrlPrefix, structuredPdfCropPrefix, structuredPdfDocumentKey } from '../contracts/storage-keys.ts';
+import { blobKey, storedPdfCropUrlPrefix, structuredPdfCropPrefix, structuredPdfDocumentKey, PDF_MIME } from '../contracts/storage-keys.ts';
 import { coreExports } from '../exports.ts';
 import { errorMessage, limitByteStream, readBoundedResponseText, statusError } from './response.ts';
 import { stepJson } from './workflow-step.ts';
+
+const MAX_PDF_BYTES = 25 * 1024 * 1024;
 import {
 	normalizeStructuredPdf,
 	parseStructuredPdfDocumentJson,

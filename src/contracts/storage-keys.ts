@@ -18,3 +18,5 @@ export function structuredPdfCropPrefix(pdfStorageKey: string, inputContentHash:
 export function storedPdfCropUrlPrefix(contentHash: string): string {
 	return `/api/media/files/${contentHash}?crop=`;
 }
+
+export const PDF_MIME = 'application/pdf';

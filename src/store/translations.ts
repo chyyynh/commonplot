@@ -1,9 +1,9 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import { PDF_MIME } from '../contracts/pdf-policy';
 import { RESOURCE_KINDS, type ResourceKind, type ResourcePlatform } from '../contracts/resource-kinds';
 import { needsEnglishMetadata } from '../contracts/resource-language';
+import { PDF_MIME } from '../contracts/storage-keys';
 import { type Derivation, failDerivation, type SummaryLang } from './derivations';
 
 export const TextHashSchema = z.hash('md5').lowercase();

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { canonicalPaperUrl, normalizeBibliographicText, normalizeDoi } from '../contracts/paper-identity.ts';
-import { CRAWLER_CONTACT, crawlerUserAgent } from './crawler-identity.ts';
+import { CRAWLER_CONTACT, crawlerUserAgent } from './response';
 import { fetchOk, readBoundedResponseText } from './response.ts';
 
 const CROSSREF_WORKS_URL = 'https://api.crossref.org/works';

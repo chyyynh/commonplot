@@ -6,7 +6,7 @@ import type { FootnoteDefinition, Root } from 'mdast';
 import { cleanText, htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { paperIdentityFromText } from '../contracts/paper-identity';
 import { parseReferenceCitation } from '../contracts/reference-citation';
-import { crawlerUserAgent } from '../services/crawler-identity';
+import { crawlerUserAgent } from '../services/response';
 import { fetchOk, limitByteStream } from '../services/response';
 import { stepJson } from '../services/workflow-step';
 

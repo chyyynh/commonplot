@@ -6,7 +6,7 @@ import type { PlatformResource } from '../contracts/acquired-resource';
 import { stringifyMarkdown } from '../contracts/markdown';
 import { isSocialLinkHost } from '../contracts/resource-links';
 import { isXHost, resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
-import { crawlerUserAgent } from '../services/crawler-identity';
+import { crawlerUserAgent } from '../services/response';
 import { fetchOk } from '../services/response';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 

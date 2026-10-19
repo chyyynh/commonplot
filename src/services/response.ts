@@ -1,5 +1,12 @@
 import { NonRetryableError } from 'cloudflare:workflows';
 
+// How our fetches introduce themselves to sources that ask for a contact.
+const CRAWLER_SITE = 'https://www.commonplot.co';
+export const CRAWLER_CONTACT = 'hello@commonplot.co';
+
+/** An identifying User-Agent: product token, site and contact inbox. */
+export const crawlerUserAgent = (product = 'commonplot') => `${product}/1.0 (+${CRAWLER_SITE}; mailto:${CRAWLER_CONTACT})`;
+
 export function limitByteStream(input: ReadableStream<Uint8Array>, maxBytes: number, error: () => Error): ReadableStream<Uint8Array> {
 	let byteLength = 0;
 	return input.pipeThrough(
