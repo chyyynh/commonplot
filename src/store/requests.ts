@@ -1,6 +1,6 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { RequestTarget, ResourceProcessingTarget } from '../contracts/processing-target';
+import { IMPORT_WORKFLOW_PREFIX, type RequestTarget, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { resolveResourceUrl } from '../contracts/resource-url';
 import { READABLE_ORIGINAL_SQL } from './kind-sql';
 
@@ -57,7 +57,7 @@ export function requestKey(target: RequestTarget): string | null {
 
 /** Web's handle for an import is fixed by Web; Core's own requests get a fresh workflow per attempt. */
 function leadWorkflowId(row: RequestRow) {
-	return row.requester === 'user' ? `app-ingest-v1-${row.id}` : `rq-v1-${row.id}-${crypto.randomUUID().slice(0, 8)}`;
+	return row.requester === 'user' ? `${IMPORT_WORKFLOW_PREFIX}${row.id}` : `rq-v1-${row.id}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
 /** Rebuilds what the lead's workflow acquires; null when a resync's Resource was deleted meanwhile. */

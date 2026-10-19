@@ -38,3 +38,8 @@ export async function responseError(response: Response, permanent: PermanentStat
 	await response.body?.cancel();
 	return statusError(response.status, permanent, message);
 }
+
+/** A thrown value's message, for logs and stored errors. */
+export function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}

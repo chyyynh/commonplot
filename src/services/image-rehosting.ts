@@ -12,7 +12,7 @@ import {
 } from '../contracts/image-mapping';
 import { parseMarkdown } from '../contracts/markdown';
 import { crawlerUserAgent } from './crawler-identity';
-import { limitByteStream, responseError } from './response';
+import { errorMessage, limitByteStream, responseError } from './response';
 
 const REHOST_TIMEOUT_MS = 8_000;
 // Hosted Images rejects larger uploads.
@@ -34,7 +34,7 @@ async function fetchImageSource(sourceUrl: string): Promise<ArrayBuffer> {
 			signal: AbortSignal.timeout(REHOST_TIMEOUT_MS),
 		});
 	} catch (error) {
-		throw new Error(`fetch_error: ${error instanceof Error ? error.message : String(error)}`);
+		throw new Error(`fetch_error: ${errorMessage(error)}`);
 	}
 	// A gone or refused image stays gone; only a timeout or rate limit is worth another try.
 	if (!response.ok) {
@@ -87,7 +87,7 @@ async function probeImageDimensions(
 			tag: 'RESOURCE_IMAGE',
 			event: 'dimensions_unavailable',
 			source_host: new URL(sourceUrl).hostname,
-			error: error instanceof Error ? error.message : String(error),
+			error: errorMessage(error),
 		});
 		return NULL_IMAGE_DIMENSIONS;
 	}
@@ -111,7 +111,7 @@ async function hostedImage(images: ImagesBinding, imageId: string): Promise<Imag
 	try {
 		return await images.hosted.image(imageId).details();
 	} catch (error) {
-		throw new Error(`images_read_error: ${error instanceof Error ? error.message : String(error)}`);
+		throw new Error(`images_read_error: ${errorMessage(error)}`);
 	}
 }
 
@@ -136,7 +136,7 @@ async function storedImage(images: ImagesBinding, imageId: string, load: () => P
 		// Another Workflow may have stored the same image first.
 		const raced = await hostedImage(images, imageId).catch(() => null);
 		if (raced) return raced;
-		throw new Error(`images_write_error: ${error instanceof Error ? error.message : String(error)}`);
+		throw new Error(`images_write_error: ${errorMessage(error)}`);
 	}
 }
 
@@ -191,7 +191,7 @@ export async function rehostInlineImages(images: ImagesBinding, markdown: string
 					console.warn({
 						tag: 'RESOURCE_IMAGE',
 						event: 'inline_image_failed',
-						error: error instanceof Error ? error.message : String(error),
+						error: errorMessage(error),
 					});
 					return null;
 				});
@@ -239,7 +239,7 @@ export async function stageResourceImages(
 					event: 'optional_image_skipped',
 					processing_id: processingId,
 					source_host: new URL(url).hostname,
-					error: error instanceof Error ? error.message : String(error),
+					error: errorMessage(error),
 				});
 				return null;
 			}),

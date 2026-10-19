@@ -43,7 +43,8 @@ export const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
 export type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSchema>;
 
 /** Web's handle for one import; its UUID is the import's request id. */
-export const ImportWorkflowIdSchema = z.string().pipe(z.templateLiteral(['app-ingest-v1-', z.uuidv4()]));
+export const IMPORT_WORKFLOW_PREFIX = 'app-ingest-v1-';
+export const ImportWorkflowIdSchema = z.string().pipe(z.templateLiteral([IMPORT_WORKFLOW_PREFIX, z.uuidv4()]));
 
 export const ResourceImportDispatchSchema = z.strictObject({
 	workflowId: ImportWorkflowIdSchema,

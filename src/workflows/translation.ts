@@ -18,6 +18,7 @@ import {
 	segmentCharacters,
 	verifySegmentTranslation,
 } from '../services/markdown-translation';
+import { errorMessage } from '../services/response';
 import { STORAGE_STEP, stepJson } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import {
@@ -215,7 +216,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				event: 'translation_outcome',
 				outcome: 'failed',
 				reason: failureReason(error),
-				error: error instanceof Error ? error.message : String(error),
+				error: errorMessage(error),
 				resource_id: resourceId,
 			});
 			await step.do('fail-open-translations-v1', STORAGE_STEP, () =>
@@ -445,7 +446,7 @@ async function translateMarkdownBatchToZhHant(
 						tag: 'RESOURCE_TRANSLATION',
 						event: 'markdown_segment_rejected',
 						batch_id: batch.id,
-						message: error instanceof Error ? error.message : String(error),
+						message: errorMessage(error),
 						resource_id: resourceId,
 						segment_id: segment.id,
 					});
@@ -458,7 +459,7 @@ async function translateMarkdownBatchToZhHant(
 			tag: 'RESOURCE_TRANSLATION',
 			event: 'markdown_batch_attempt_failed',
 			batch_id: batch.id,
-			message: error instanceof Error ? error.message : String(error),
+			message: errorMessage(error),
 			reason: failureReason(error),
 			resource_id: resourceId,
 			...(error instanceof AiOutputError

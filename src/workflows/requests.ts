@@ -1,7 +1,9 @@
 // The admission ledger's side effects: each request's lead starts the one workflow its key needs, a sweep restarts or
 // settles leads whose workflow went missing, and Web's imports read their progress from their own rows.
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { IMPORT_WORKFLOW_PREFIX } from '../contracts/processing-target';
 import { coreExports } from '../exports.ts';
+import { errorMessage } from '../services/response';
 import {
 	claimStaleLeads,
 	completeUserRequests,
@@ -37,7 +39,7 @@ export async function admitRequests(db: NodePgDatabase, requests: readonly Resou
 /** What Web's save completes for a user request. */
 export function requestSaveTarget(request: UserRequest) {
 	return request.storedObjectId
-		? { kind: 'userFileResult', objectId: request.storedObjectId, workflowId: `app-ingest-v1-${request.id}` }
+		? { kind: 'userFileResult', objectId: request.storedObjectId, workflowId: `${IMPORT_WORKFLOW_PREFIX}${request.id}` }
 		: { kind: 'resourceSave', userId: request.userId, notebookId: request.notebookId };
 }
 
@@ -73,7 +75,7 @@ export async function reconcileRequests(env: CoreEnv, db: NodePgDatabase) {
 			await completeUserRequests(db, [request.id]);
 		} catch (error) {
 			console.error({ tag: 'REQUEST', msg: 'Recovered save failed', request_id: request.id, error });
-			await failRequests(db, request.id, `Save failed: ${error instanceof Error ? error.message : String(error)}`, true);
+			await failRequests(db, request.id, `Save failed: ${errorMessage(error)}`, true);
 		}
 	}
 	if (stale.length || promoted.length || unsaved.length)
@@ -93,7 +95,7 @@ export type ResourceImportExecution =
 
 /** An import's progress from its request: readable once its Resource is written, settled once its save and translations are. */
 export async function resourceImportExecutions(db: NodePgDatabase, workflowIds: readonly string[]) {
-	const ids = workflowIds.map((id) => id.slice('app-ingest-v1-'.length));
+	const ids = workflowIds.map((id) => id.slice(IMPORT_WORKFLOW_PREFIX.length));
 	const requests = new Map((await loadImportRequests(db, ids)).map((request) => [request.id, request]));
 	return Object.fromEntries(
 		await Promise.all(
@@ -101,7 +103,7 @@ export async function resourceImportExecutions(db: NodePgDatabase, workflowIds: 
 				const request = requests.get(ids[index]!);
 				if (!request) return [workflowId, { state: 'absent' }];
 				const { status, resourceId, textHash } = request;
-				if (status === 'failed' || (status === 'fulfilled' && !resourceId)) return [workflowId, { state: 'failed' }];
+				if (status === 'failed') return [workflowId, { state: 'failed' }];
 				if (!resourceId) return [workflowId, { state: 'running' }];
 				if (status === 'pending') return [workflowId, { state: 'ready', resourceId, translation: 'running' }];
 				const translation = textHash ? await importTranslationProgress(db, resourceId, textHash) : undefined;

@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod';
-import { ImportWorkflowIdSchema, ResourceImportDispatchSchema } from './contracts/processing-target';
+import { IMPORT_WORKFLOW_PREFIX, ImportWorkflowIdSchema, ResourceImportDispatchSchema } from './contracts/processing-target';
 import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url';
 import type {} from './env';
 import { handleRSSCron } from './monitors/rss';
@@ -64,7 +64,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	 */
 	async dispatchResourceImport(input: z.input<typeof ResourceImportDispatchSchema>): Promise<void> {
 		const { workflowId, payload } = ResourceImportDispatchSchema.parse(input);
-		const id = workflowId.slice('app-ingest-v1-'.length);
+		const id = workflowId.slice(IMPORT_WORKFLOW_PREFIX.length);
 		// The admission DO waits for committed ownership. The Workflow rechecks ownership and the latest attempt
 		// before provider execution, after any queueing delay.
 		await withCoreDb(this.env, (db) =>

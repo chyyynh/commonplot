@@ -14,7 +14,7 @@ import {
 	titlePageNamesTitle,
 } from '../contracts/paper-identity';
 import type { ResourceIdentifier } from '../contracts/resource';
-import { readBoundedResponseText, responseError } from '../services/response';
+import { errorMessage, readBoundedResponseText, responseError } from '../services/response';
 import { stepJson } from '../services/workflow-step';
 import { storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 import { stageArxivHtmlAcquisition } from './arxiv-html';
@@ -188,7 +188,7 @@ async function stagePaperPdfContent(env: CoreEnv, step: WorkflowStep, input: { c
 			tag: 'PAPER_CONTENT',
 			event: 'pdf_acquisition_failed',
 			processing_id: input.processingId,
-			error: error instanceof Error ? error.message : String(error),
+			error: errorMessage(error),
 		});
 		return null;
 	}
@@ -217,7 +217,7 @@ async function stagePaperMetadata(
 			event: 'paper_metadata_failed',
 			provider: 'openalex',
 			processing_id: input.processingId,
-			error: error instanceof Error ? error.message : String(error),
+			error: errorMessage(error),
 		});
 		return null;
 	});
@@ -245,7 +245,7 @@ async function stageArxivFullText(step: WorkflowStep, arxivId: string, processin
 			tag: 'PAPER_CONTENT',
 			event: 'arxiv_html_failed',
 			processing_id: processingId,
-			error: error instanceof Error ? error.message : String(error),
+			error: errorMessage(error),
 		});
 		return null;
 	}

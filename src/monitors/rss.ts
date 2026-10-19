@@ -5,7 +5,7 @@ import { toText } from 'hast-util-to-text';
 import pLimit from 'p-limit';
 import { cleanText } from '../contracts/markdown';
 import { resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
-import { readBoundedResponseText } from '../services/response';
+import { errorMessage, readBoundedResponseText } from '../services/response';
 import { advanceSourceWatermark, type FeedValidators, listDueFeedSources, type MonitoredFeedSource } from '../store/sources';
 import { enqueueSourceDrafts } from './source-drafts';
 
@@ -116,7 +116,6 @@ function feedEntryDescription(entry: Record<string, unknown>): string {
 export async function handleRSSCron(db: NodePgDatabase): Promise<void> {
 	console.info({ tag: 'RSS', msg: 'start' });
 	const feeds = await listDueFeedSources(db);
-	const failures: unknown[] = [];
 	const limit = pLimit(FEED_CONCURRENCY);
 	// A failed poll still advances the watermark, so a flaky YouTube channel feed waits its 30-minute cadence; it keeps its
 	// old validators, so the next poll reads the feed in full.
@@ -132,17 +131,17 @@ export async function handleRSSCron(db: NodePgDatabase): Promise<void> {
 			}),
 		),
 	);
+	let failed = 0;
 	for (const [index, result] of results.entries()) {
 		if (result.status === 'fulfilled') continue;
-		failures.push(result.reason);
+		failed++;
 		console.error({
 			tag: 'RSS',
 			msg: 'Feed processing failed',
 			feed: feeds[index]!.name,
-			error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+			error: errorMessage(result.reason),
 		});
 	}
 
-	console.info({ tag: 'RSS', msg: 'end', sources: feeds.length, failed_sources: failures.length });
-	if (failures.length) throw new AggregateError(failures, `${failures.length} feed monitor operations failed`);
+	console.info({ tag: 'RSS', msg: 'end', sources: feeds.length, failed_sources: failed });
 }

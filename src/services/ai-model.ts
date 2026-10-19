@@ -64,7 +64,7 @@ export class AiOutputError extends Error {
  * One chat completion through the ingest gateway. Native models (`@cf/…`) run on Workers AI; catalog slugs
  * (`google/…`) are third-party models the gateway proxies with the OpenAI Chat Completions body.
  */
-async function chatCompletion(env: AiEnv, model: string, metadata: GatewayMetadata, request: ChatRequest, responseFormat?: object) {
+async function chatCompletion(env: AiEnv, model: string, metadata: GatewayMetadata, request: ChatRequest, responseFormat: object) {
 	const body = {
 		messages: [
 			{ role: 'system', content: request.system },
@@ -73,7 +73,7 @@ async function chatCompletion(env: AiEnv, model: string, metadata: GatewayMetada
 		temperature: request.temperature,
 		...(request.maxTokens ? { max_tokens: request.maxTokens } : {}),
 		...(request.reasoning ? { reasoning_effort: request.reasoning } : {}),
-		...(responseFormat ? { response_format: responseFormat } : {}),
+		response_format: responseFormat,
 	};
 	const options = coreGatewayOptions(env, metadata);
 	let raw: unknown;
@@ -92,11 +92,6 @@ async function chatCompletion(env: AiEnv, model: string, metadata: GatewayMetada
 		finishReason: finish_reason === 'model_length' ? 'length' : (finish_reason ?? 'stop'),
 		outputTokens: usage?.completion_tokens,
 	};
-}
-
-/** Plain text from `model`, logged through the ingest gateway under `metadata`. */
-export function generateText(env: AiEnv, model: string, metadata: GatewayMetadata, request: ChatRequest) {
-	return chatCompletion(env, model, metadata, request);
 }
 
 /** A zod-validated object from `model`; a capped or malformed reply throws `AiOutputError`. */

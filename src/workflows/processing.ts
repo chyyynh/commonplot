@@ -5,6 +5,7 @@ import { resourceImageSources, withHostedImages } from '../contracts/image-mappi
 import { ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { blobKey } from '../contracts/storage-keys';
 import { stageResourceImages } from '../services/image-rehosting';
+import { errorMessage } from '../services/response';
 import { STORAGE_STEP } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import { completeUserRequests, failRequests } from '../store/requests';
@@ -96,7 +97,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					);
 					return [request.id];
 				} catch (error) {
-					const message = error instanceof Error ? error.message : String(error);
+					const message = errorMessage(error);
 					await step.do(`fail-request-save-v1-${request.id}`, STORAGE_STEP, () =>
 						withCoreDb(this.env, (db) => failRequests(db, request.id, `Save failed: ${message}`, true)),
 					);

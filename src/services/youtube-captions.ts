@@ -1,6 +1,7 @@
 import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod';
 import { coreExports } from '../exports.ts';
+import { errorMessage } from './response.ts';
 
 const CAPTION_FETCH_TIMEOUT_MS = 8_000;
 /**
@@ -144,7 +145,7 @@ function unplayable(status: PlayerResponse['playabilityStatus']) {
 async function attemptCaptions(videoId: string, audioLanguage: string | null): Promise<CaptionAttempt> {
 	const withheld: string[] = [];
 	for (const load of [innerTubePlayer, watchPagePlayer]) {
-		const player = await load(videoId).catch((error: unknown) => (error instanceof Error ? error.message : String(error)));
+		const player = await load(videoId).catch((error: unknown) => errorMessage(error));
 		if (typeof player !== 'string' && unplayable(player.playabilityStatus))
 			return { status: 'unavailable', reason: `${player.playabilityStatus?.status}: ${player.playabilityStatus?.reason ?? 'no reason'}` };
 		if (typeof player === 'string' || player.playabilityStatus?.status !== 'OK') {
@@ -187,7 +188,7 @@ export async function fetchYouTubeCaptions(videoId: string, audioLanguage: strin
 						audioLanguage,
 					)
 		)
-			.catch((error: unknown): CaptionAttempt => ({ status: 'withheld', reason: error instanceof Error ? error.message : String(error) }))
+			.catch((error: unknown): CaptionAttempt => ({ status: 'withheld', reason: errorMessage(error) }))
 			.then((result) => ({ attempt, where: hint ?? 'workflow', result }));
 	};
 	for (let first = 0; first < CAPTION_FETCHER_ATTEMPTS && Date.now() < deadline; first += CAPTION_ATTEMPT_WAVE) {

@@ -4,7 +4,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { MAX_PDF_BYTES } from '../contracts/pdf-policy.ts';
 import { blobKey, storedPdfCropUrlPrefix, structuredPdfCropPrefix, structuredPdfDocumentKey } from '../contracts/storage-keys.ts';
 import { coreExports } from '../exports.ts';
-import { limitByteStream, readBoundedResponseText, statusError } from './response.ts';
+import { errorMessage, limitByteStream, readBoundedResponseText, statusError } from './response.ts';
 import {
 	normalizeStructuredPdf,
 	parseStructuredPdfDocumentJson,
@@ -35,7 +35,7 @@ function structuredPdfFailureMessage(status: number, body: string): string {
 
 function cropFailure(error: unknown) {
 	return {
-		reason: (error instanceof Error ? error.message : String(error)).slice(0, MAX_ERROR_BODY_BYTES),
+		reason: errorMessage(error).slice(0, MAX_ERROR_BODY_BYTES),
 		retryable: !(error instanceof NonRetryableError),
 	};
 }
@@ -209,7 +209,7 @@ async function parsePdfArtifactStream(input: ReadableStream<Uint8Array>, byteLen
 			event: 'zotero_sdt_failed',
 			parser_version: ZOTERO_SDT_ARTIFACT_VERSION,
 			source: sourceLabel,
-			error: error instanceof Error ? error.message : String(error),
+			error: errorMessage(error),
 		});
 		throw error;
 	}
@@ -234,7 +234,7 @@ async function readStructuredPdfArtifact(
 	try {
 		return parseStructuredPdfDocumentJson(json);
 	} catch (error) {
-		console.warn({ tag: 'PDF_PARSE', event: 'zotero_sdt_artifact_invalid', error: error instanceof Error ? error.message : String(error) });
+		console.warn({ tag: 'PDF_PARSE', event: 'zotero_sdt_artifact_invalid', error: errorMessage(error) });
 		return null;
 	}
 }

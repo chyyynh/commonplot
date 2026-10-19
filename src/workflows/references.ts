@@ -1,5 +1,6 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { fetchCrossrefDepositedReferences, matchDepositedReferences, resolveCrossrefReferenceDoi } from '../services/crossref';
+import { errorMessage } from '../services/response';
 import { STORAGE_STEP, stepJson } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import { loadUnresolvedReferences, persistReferenceDois, type ReferenceDoi, type StoredReference } from '../store/references';
@@ -20,7 +21,7 @@ async function resolveReferenceDois(step: WorkflowStep, references: readonly Sto
 							tag: 'CROSSREF',
 							event: 'reference_resolution_failed',
 							ordinal,
-							error: error instanceof Error ? error.message : String(error),
+							error: errorMessage(error),
 						});
 						return null;
 					}),

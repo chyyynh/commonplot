@@ -1,4 +1,5 @@
 import { DurableObject } from 'cloudflare:workers';
+import { errorMessage } from './response.ts';
 
 const PORT = 8080;
 const INACTIVITY_TIMEOUT_MS = 2 * 60 * 1000;
@@ -64,7 +65,7 @@ export class ZoteroSdt extends DurableObject<CoreEnv> {
 							console.error({
 								tag: 'PDF_PARSE',
 								event: 'zotero_sdt_container_crashed',
-								error: error instanceof Error ? error.message : String(error),
+								error: errorMessage(error),
 								exit_code: (error as { exitCode?: number } | null)?.exitCode ?? null,
 							}),
 					),
@@ -89,7 +90,7 @@ export class ZoteroSdt extends DurableObject<CoreEnv> {
 				operation,
 				cold_start: coldStart,
 				waited_ms: Date.now() - startedAt,
-				error: error instanceof Error ? error.message : String(error),
+				error: errorMessage(error),
 			});
 			await input.cancel('PDF container failed to become ready');
 			throw error;
@@ -123,7 +124,7 @@ async function waitForPort(container: Container, port: Fetcher): Promise<void> {
 			await response.body?.cancel();
 			return;
 		} catch (error) {
-			const reason = error instanceof Error ? error.message : String(error);
+			const reason = errorMessage(error);
 			if (!container.running) throw new Error(`PDF container exited before it became ready: ${reason}`);
 			if (Date.now() >= deadline) throw new Error(`PDF container did not become ready: ${reason}`);
 			await scheduler.wait(READY_POLL_MS);

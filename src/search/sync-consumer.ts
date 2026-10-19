@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { errorMessage } from '../services/response';
 import { withCoreDb } from '../store/db';
 import { syncResourceVectors } from './resource-vectors';
 import { loadCorpusDocuments, syncCorpusItem } from './search-index';
@@ -54,7 +55,7 @@ export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<u
 					tag: 'RESOURCE_VECTORS',
 					msg: 'Resource vector sync failed',
 					resource_count: ids.length,
-					error: error instanceof Error ? error.message : String(error),
+					error: errorMessage(error),
 				});
 				retryAll();
 				return;

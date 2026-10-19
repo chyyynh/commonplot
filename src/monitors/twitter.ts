@@ -2,6 +2,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pLimit from 'p-limit';
 import { z } from 'zod';
 import type { SourceResourceDraft } from '../contracts/processing-target';
+import { errorMessage } from '../services/response';
 import { withCoreDb } from '../store/db';
 import { advanceSourceWatermark, listTwitterSources, type TwitterSource } from '../store/sources';
 import { enqueueSourceDrafts } from './source-drafts';
@@ -131,7 +132,7 @@ async function enqueueTweets(db: NodePgDatabase, tweets: Iterable<DiscoveredTwee
 				event: 'twitter_item_skipped',
 				userName: source.handle,
 				tweetId: tweet.id,
-				error: error instanceof Error ? error.message : String(error),
+				error: errorMessage(error),
 			});
 		}
 	}
@@ -172,7 +173,7 @@ async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: Tw
 			userName: source.handle,
 			since_time: sinceTime,
 			until_time: untilTime,
-			error: error instanceof Error ? error.message : String(error),
+			error: errorMessage(error),
 		});
 		throw error;
 	}
