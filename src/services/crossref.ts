@@ -12,15 +12,21 @@ const MAX_CROSSREF_SEARCH_BYTES = 256 * 1024;
 const MAX_CROSSREF_WORK_BYTES = 8 * 1024 * 1024;
 const CROSSREF_ROWS = 3;
 
+// Some agencies (Airiti) give date parts as strings.
+const DateSchema = z.object({ 'date-parts': z.array(z.array(z.coerce.number()).min(1).max(3)).min(1).max(3) }).nullish();
+/** A Crossref work, or the CSL JSON doi.org answers with, which gives single strings where Crossref gives lists. */
 const CrossrefWorkSchema = z.object({
 	DOI: z.string(),
-	author: z.array(z.object({ family: z.string().nullish(), name: z.string().nullish() })).nullish(),
-	published: z
-		.object({
-			'date-parts': z.array(z.array(z.number()).min(1).max(3)).min(1).max(3),
-		})
+	author: z
+		.array(
+			z.object({ family: z.string().nullish(), given: z.string().nullish(), name: z.string().nullish(), literal: z.string().nullish() }),
+		)
 		.nullish(),
-	title: z.array(z.string()).min(1).max(10).nullish(),
+	published: DateSchema,
+	issued: DateSchema,
+	title: z.union([z.string(), z.array(z.string()).max(10)]).nullish(),
+	'container-title': z.union([z.string(), z.array(z.string()).max(10)]).nullish(),
+	type: z.string().nullish(),
 });
 
 const CrossrefResponseSchema = z.object({
@@ -30,12 +36,44 @@ const CrossrefResponseSchema = z.object({
 
 type CrossrefWork = z.infer<typeof CrossrefWorkSchema>;
 
+const first = (value: string | string[] | null | undefined) => (Array.isArray(value) ? value[0] : value)?.trim() || null;
+
+/** A work a PDF may be: what Jev is shown to pick from, and what a picked paper falls back to when OpenAlex has no record. */
+export type WorkCandidate = {
+	doi: string;
+	title: string;
+	authors: string[];
+	year: number | null;
+	venue: string | null;
+	type: string | null;
+};
+
+function workCandidate(work: CrossrefWork): WorkCandidate | null {
+	const doi = normalizeDoi(work.DOI);
+	const title = first(work.title);
+	if (!doi || !title) return null;
+	const authors = (work.author ?? []).map(
+		(author) => author.literal || author.name || [author.given, author.family].filter(Boolean).join(' '),
+	);
+	return {
+		doi,
+		title,
+		authors: authors
+			.map((name) => name.trim())
+			.filter(Boolean)
+			.slice(0, 8),
+		year: publishedYear(work),
+		venue: first(work['container-title']),
+		type: work.type ?? null,
+	};
+}
+
 function significantTokens(value: string): string[] {
 	return [...new Set(value.split(' ').filter((token) => token.length >= 3))];
 }
 
 function publishedYear(work: CrossrefWork): number | null {
-	const year = work.published?.['date-parts'][0]?.[0];
+	const year = (work.published ?? work.issued)?.['date-parts'][0]?.[0];
 	return typeof year === 'number' && Number.isInteger(year) && year >= 1800 && year <= 2199 ? year : null;
 }
 
@@ -48,7 +86,7 @@ function normalizedAuthorNames(work: CrossrefWork): string[] {
 
 function workMatchesCitation(citation: string, work: CrossrefWork): boolean {
 	const citationText = normalizeBibliographicText(citation);
-	const titleText = normalizeBibliographicText(work.title?.[0] ?? '');
+	const titleText = normalizeBibliographicText(first(work.title) ?? '');
 	if (!citationText || !titleText) return false;
 
 	const titleTokens = significantTokens(titleText);
@@ -157,4 +195,28 @@ export function matchDepositedReferences<T extends { text: string }>(
 		for (const match of matches) unused.delete(match);
 		return [{ ...citation, doi: matches[0]!.doi }];
 	});
+}
+
+/** Crossref's best matches for the title a PDF prints. */
+export async function searchCrossrefWorks(title: string): Promise<WorkCandidate[]> {
+	const response = await fetchCrossref({
+		'query.bibliographic': title.slice(0, MAX_CITATION_QUERY_CHARS),
+		rows: String(CROSSREF_ROWS),
+		select: 'DOI,title,author,published,container-title,type',
+	});
+	return CrossrefResponseSchema.parse(response).message.items.flatMap((work) => workCandidate(work) ?? []);
+}
+
+/** The work a DOI names, as its registration agency describes it: doi.org answers for Crossref, DataCite, Airiti and the rest. */
+export async function lookupDoiWork(doi: string): Promise<WorkCandidate | null> {
+	const response = await fetchOk(`https://doi.org/${doi.split('/').map(encodeURIComponent).join('/')}`, {
+		label: 'doi.org request',
+		timeoutMs: CROSSREF_TIMEOUT_MS,
+		permanent: [400, 401, 403, 404, 406, 410],
+		missing: [404],
+		headers: { Accept: 'application/vnd.citationstyles.csl+json', 'User-Agent': CROSSREF_USER_AGENT },
+	});
+	if (!response) return null;
+	const work = CrossrefWorkSchema.parse(JSON.parse(await readBoundedResponseText(response, MAX_CROSSREF_WORK_BYTES, 'doi.org response')));
+	return workCandidate(work);
 }

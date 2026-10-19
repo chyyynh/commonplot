@@ -450,6 +450,35 @@ export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 	return { crops, excludedAuthorTables: excludedAuthorTables.size, missing };
 }
 
+/** Where a paper's front matter ends; its title comes before. */
+const FRONT_MATTER_END = /^(?:abstract|(?:1\.?\s*)?introduction)/iu;
+
+/**
+ * The title a PDF prints: its first heading on the first page before the abstract, joined with the headings of the same
+ * height right after it (a title set on two lines), else the PDF's Title property.
+ */
+function firstPageTitle(document: StructuredPdfDocument): string | null {
+	const parts: string[] = [];
+	let height = 0;
+	for (const block of document.content) {
+		const [rect] = pageRects(block);
+		if (rect && rect[0] !== 0) break;
+		const text = cleanPdfText(nodeText(block));
+		if (!rect || block.type !== 'heading' || block.flowClass === 'excluded' || !text) {
+			if (parts.length) break;
+			continue;
+		}
+		if (FRONT_MATTER_END.test(text)) break;
+		const blockHeight = rect[4] - rect[2];
+		if (parts.length && Math.abs(blockHeight - height) > height * 0.1) break;
+		parts.push(text);
+		height = blockHeight;
+	}
+	const property = document.metadata.source.properties?.Title;
+	const title = parts.join(' ') || (typeof property === 'string' ? cleanPdfText(property) : '');
+	return boundedText(title, 500) || null;
+}
+
 function firstPageIdentifierText(document: StructuredPdfDocument): string | null {
 	const pageText = cleanPdfText(getFulltextFromStructuredText(document, [0]));
 	const propertyText = Object.entries(document.metadata.source.properties ?? {})
@@ -780,6 +809,7 @@ export function normalizeStructuredPdf(
 	return {
 		markdown,
 		paperIdentifierText: firstPageIdentifierText(document),
+		title: firstPageTitle(document),
 		parse: {
 			visual,
 			parserVersion: `zotero-pdf-${document.metadata.processor.version}/sdt-${document.schemaVersion}`,

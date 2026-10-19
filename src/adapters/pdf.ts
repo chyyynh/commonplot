@@ -1,99 +1,58 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import type { AcquiredResource, AcquisitionInput } from '../contracts/acquired-resource';
+import type { ReadDocument } from '../contracts/acquired-resource';
 import { paperIdentifiersFromIdentity, paperIdentityFromText } from '../contracts/paper-identity';
 import { PDF_MIME } from '../contracts/pdf-policy';
-import { blobKey, storedPdfCropUrlPrefix } from '../contracts/storage-keys';
 import { stepJson } from '../services/workflow-step';
-import { parseStoredPdfRepresentation, type storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
+import { parseStoredPdfRepresentation } from '../services/zotero-sdt-service.ts';
 
 const PDF_PARSE_STEP = { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' } as const;
 
-type PdfBody = Pick<Awaited<ReturnType<typeof parseStoredPdfRepresentation>>, 'markdown' | 'references' | 'paperIdentifierText'>;
+type PdfBody = Pick<Awaited<ReturnType<typeof parseStoredPdfRepresentation>>, 'markdown' | 'references' | 'paperIdentifierText' | 'title'>;
 
-/** Zotero reads the body of every PDF. */
-async function stagePdfBody(
-	env: CoreEnv,
-	step: WorkflowStep,
-	input: Readonly<{ stepKey: string; pdfStorageKey: string; inputContentHash: string; sourceLabel: string; cropUrlPrefix: string }>,
-): Promise<PdfBody> {
-	return stepJson(step, `parse-pdf-body-v1-${input.stepKey}`, PDF_PARSE_STEP, async (): Promise<PdfBody> => {
-		const { markdown, references, paperIdentifierText } = await parseStoredPdfRepresentation(env, input);
-		return { markdown, references, paperIdentifierText };
-	});
-}
+/** A stored PDF to read: an owned upload has no URL, a fetched one keeps where it was fetched from. */
+export type PdfSource = Readonly<{
+	url: string | null;
+	fileName: string | null;
+	inputContentHash: string;
+	pdfStorageKey: string;
+	sourceLabel: string;
+	cropUrlPrefix: string;
+}>;
 
 /**
- * What every PDF file Resource shares: its parsed body, and no platform, subject, date or creators. The first page and
- * the PDF's own properties are where a paper prints its DOI or arXiv id; `titlePageText` lets the paper check them.
+ * Zotero reads the body of every PDF. Its first page and its own properties are where it prints its DOI or arXiv id and
+ * its title; without a printed title it is titled by its file name.
  */
-function pdfFileResource(pdfHash: string, body: PdfBody) {
+export async function stagePdfDocument(env: CoreEnv, step: WorkflowStep, pdf: PdfSource): Promise<ReadDocument> {
+	const body = await stepJson(
+		step,
+		`parse-pdf-body-v2-${pdf.url ? pdf.pdfStorageKey : 'stored'}`,
+		PDF_PARSE_STEP,
+		async (): Promise<PdfBody> => {
+			const { markdown, references, paperIdentifierText, title } = await parseStoredPdfRepresentation(env, pdf);
+			return { markdown, references, paperIdentifierText, title };
+		},
+	);
+	if (!body.markdown) throw new NonRetryableError(`${pdf.sourceLabel} has no usable text; OCR is required`);
+	const name = pdf.fileName?.trim() || 'PDF';
 	const printedIdentity = paperIdentityFromText(body.paperIdentifierText);
 	return {
-		resourceIdentifiers: printedIdentity ? paperIdentifiersFromIdentity(printedIdentity) : [],
-		titlePageText: body.paperIdentifierText,
-		kind: 'file',
-		subjectUrl: null,
-		previewImageUrl: null,
-		resourcePlatform: null,
+		url: pdf.url,
+		title: body.title ?? (name.replace(/\.[a-z0-9]{1,8}$/i, '') || name),
+		source: pdf.url ? new URL(pdf.url).hostname.replace(/^www\./, '') : 'File',
+		printed: { identifiers: printedIdentity ? paperIdentifiersFromIdentity(printedIdentity) : [], title: body.title },
 		fileType: PDF_MIME,
-		pdfHash,
+		pdfHash: pdf.inputContentHash,
 		content: body.markdown,
 		references: body.references,
+		// Core analysis replaces this BCP-47 undetermined marker.
+		originalLang: 'und',
+		subjectUrl: null,
+		previewImageUrl: null,
 		publishedDate: null,
 		summary: null,
 		creators: [],
 		kindMetadata: null,
-	} satisfies Partial<AcquiredResource> & { titlePageText: string | null };
-}
-
-export async function stagePublicPdfAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	source: Awaited<ReturnType<typeof storePublicPdfResponse>>,
-): Promise<AcquiredResource & { kind: 'file'; resourcePlatform: null; url: string; titlePageText: string | null }> {
-	const url = new URL(source.url);
-	let fileName = url.pathname.split('/').filter(Boolean).at(-1) || 'document.pdf';
-	try {
-		fileName = decodeURIComponent(fileName) || 'document.pdf';
-	} catch {
-		// Keep a malformed path segment in its encoded form.
-	}
-	const title = fileName.replace(/\.[a-z0-9]+$/i, '').trim();
-	if (!title) throw new NonRetryableError(`File name has no title: ${fileName}`);
-	const parsed = await stagePdfBody(env, step, { ...source, stepKey: source.pdfStorageKey });
-	if (!parsed.markdown) throw new NonRetryableError('Fetched PDF has no usable text; OCR is required');
-	return {
-		...pdfFileResource(source.inputContentHash, parsed),
-		url: source.url,
-		title,
-		source: url.hostname.replace(/^www\./, ''),
-		originalLang: 'und',
-	};
-}
-
-export async function stageStoredPdfAcquisition(
-	env: CoreEnv,
-	step: WorkflowStep,
-	target: Extract<AcquisitionInput, { kind: 'storedPdf' }>,
-): Promise<AcquiredResource & { kind: 'file'; resourcePlatform: null; titlePageText: string | null }> {
-	const { contentHash, fileName } = target.pdf;
-	const parsed = await stagePdfBody(env, step, {
-		stepKey: 'stored',
-		pdfStorageKey: blobKey(contentHash),
-		inputContentHash: contentHash,
-		sourceLabel: `Stored PDF ${target.objectId}`,
-		cropUrlPrefix: storedPdfCropUrlPrefix(contentHash),
-	});
-	// An unidentified upload is titled by its file name, as Web titles a new upload.
-	const name = fileName?.trim() || 'PDF';
-	if (!parsed.markdown) throw new NonRetryableError(`Stored PDF ${target.objectId} has no usable text; OCR is required`);
-	return {
-		...pdfFileResource(contentHash, parsed),
-		url: null,
-		title: name.replace(/\.[a-z0-9]{1,8}$/i, '') || name,
-		source: 'File',
-		// Core analysis replaces this BCP-47 undetermined marker, as for a new upload.
-		originalLang: 'und',
 	};
 }

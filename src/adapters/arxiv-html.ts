@@ -3,7 +3,6 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import type { Element as HastElement } from 'hast';
 import { DOMParser } from 'linkedom';
 import type { FootnoteDefinition, Root } from 'mdast';
-import type { AcquiredResource } from '../contracts/acquired-resource';
 import { cleanText, htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { paperIdentityFromText } from '../contracts/paper-identity';
 import { parseReferenceCitation } from '../contracts/reference-citation';
@@ -257,29 +256,10 @@ async function fetchArxivHtml(arxivId: string) {
 	return arxivHtmlDocument(await new Response(body).text(), response.url || `https://arxiv.org/html/${arxivId}`);
 }
 
-/** arXiv's own HTML rendering of the paper; null when arXiv has none. */
-export async function stageArxivHtmlAcquisition(
-	step: WorkflowStep,
-	arxivId: string,
-): Promise<(AcquiredResource & { kind: 'paper'; resourcePlatform: null }) | null> {
+/** arXiv's own HTML rendering of the paper, as a paper's full text; null when arXiv has none. */
+export async function stageArxivHtmlAcquisition(step: WorkflowStep, arxivId: string) {
 	const document = await stepJson(step, 'acquire-arxiv-html-v3', ARXIV_HTML_STEP, () => fetchArxivHtml(arxivId));
 	if (!document) return null;
-	return {
-		kind: 'paper',
-		resourcePlatform: null,
-		resourceIdentifiers: [{ preferred: true, scheme: 'arxiv', value: arxivId }],
-		url: `https://arxiv.org/abs/${arxivId}`,
-		fileType: null,
-		title: document.title,
-		summary: null,
-		content: document.content,
-		references: document.references,
-		source: 'arxiv.org',
-		originalLang: 'und',
-		publishedDate: null,
-		creators: document.authors.map((literal) => ({ role: 'author', literal })),
-		kindMetadata: {},
-		previewImageUrl: null,
-		subjectUrl: null,
-	};
+	const { authors, ...fullText } = document;
+	return { ...fullText, creators: authors.map((literal) => ({ role: 'author' as const, literal })) };
 }

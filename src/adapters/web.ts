@@ -7,25 +7,21 @@ import { defaultHandlers } from 'hast-util-to-mdast';
 import { toText } from 'hast-util-to-text';
 import { DOMParser } from 'linkedom';
 import type { FootnoteDefinition } from 'mdast';
-import type { AcquiredResource } from '../contracts/acquired-resource';
+import type { ReadDocument } from '../contracts/acquired-resource';
 import { normalizedExternalMediaUrl, normalizedResourceImageUrl } from '../contracts/image-mapping';
 import { cleanText, htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { PDF_MIME } from '../contracts/pdf-policy';
-import { resolveResourceUrl, type ResolvedResourceUrl } from '../contracts/resource-url';
+import { resolveResourceUrl } from '../contracts/resource-url';
 import { rehostInlineImages } from '../services/image-rehosting';
 import { fetchOk, limitByteStream } from '../services/response';
 import { FETCH_STEP_RETRIES } from '../services/workflow-step';
 import { storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
-import { stagePublicPdfAcquisition } from './pdf';
+import { stagePdfDocument } from './pdf';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
 const GENERIC_WEB_USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36';
 const MIN_ARTICLE_CONTENT_CHARS = 180;
-/** The whole title of a bot check or block page, which an article about one never is when its body is this short. */
-const BLOCK_PAGE_TITLE =
-	/^(?:access denied|just a moment\.*|attention required!?(?: \| cloudflare)?|are you a robot\??|verify you are human|security check(?:point)?|robot check|(?:403 )?forbidden|sign in ・ cloudflare access)$/i;
-const MAX_BLOCK_PAGE_CHARS = 2_000;
 const LOOP_VIDEO_PATH = /\.(?:mp4|webm|m4v|mov)$/i;
 const FOOTNOTE_TARGET = /^#fn:(.+)$/;
 const FOOTNOTE_ID = /^fn:(.+)$/;
@@ -67,7 +63,7 @@ function parseDocument(document: ReturnType<typeof htmlDocument>, url: string) {
 	return new Defuddle(document as unknown as ConstructorParameters<typeof Defuddle>[0], { url }).parse();
 }
 
-async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredResource & { kind: 'blog'; resourcePlatform: null }> {
+async function acquireHtmlArticle(html: string, url: string): Promise<ReadDocument> {
 	const document = htmlDocument(html, url);
 	// A <br> separates lines but leaves no text, so a byline like "by Name<br>Date" would read as one string.
 	for (const br of document.querySelectorAll('br')) if (!br.closest('pre')) br.before('\n');
@@ -204,13 +200,7 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 	if (content.length < MIN_ARTICLE_CONTENT_CHARS) {
 		throw new NonRetryableError(`Extracted HTML content is too short (${content.length} chars)`);
 	}
-	if (BLOCK_PAGE_TITLE.test(title) && content.length < MAX_BLOCK_PAGE_CHARS) {
-		throw new NonRetryableError(`Fetched page is a block page: ${title}`);
-	}
 	return {
-		kind: 'blog',
-		resourcePlatform: null,
-		resourceIdentifiers: [],
 		url,
 		fileType: null,
 		title,
@@ -224,13 +214,13 @@ async function acquireHtmlArticle(html: string, url: string): Promise<AcquiredRe
 		kindMetadata: null,
 		previewImageUrl: normalizedResourceImageUrl(article.image, url),
 		subjectUrl: null,
-	} satisfies AcquiredResource;
+	};
 }
 
-type WebPage =
-	| { platform: ResolvedResourceUrl }
-	| { pdf: Response; url: string }
-	| { html: ReadableStream<Uint8Array>; url: string; contentType: string };
+/** A page that moved to a platform's or a paper's URL, which acquisition reads in its place. */
+type Redirect = { redirect: string };
+
+type WebPage = Redirect | { pdf: Response; url: string } | { html: ReadableStream<Uint8Array>; url: string; contentType: string };
 
 function decoderFor(label: string | undefined) {
 	try {
@@ -288,7 +278,7 @@ async function fetchWebPage(url: string): Promise<WebPage> {
 	}
 	if (resolved.resourcePlatform || resolved.identifiers.length) {
 		await response.body?.cancel();
-		return { platform: resolved };
+		return { redirect: resolved.url };
 	}
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
 	if (contentType.includes(PDF_MIME) || new URL(resolved.url).pathname.toLowerCase().endsWith('.pdf')) {
@@ -308,15 +298,11 @@ async function fetchWebPage(url: string): Promise<WebPage> {
 	return { html: response.body, url: resolved.url, contentType };
 }
 
-type WebAcquisition =
-	| { platform: ResolvedResourceUrl }
-	| Awaited<ReturnType<typeof acquireHtmlArticle>>
-	| Awaited<ReturnType<typeof storePublicPdfResponse>>;
+type WebAcquisition = Redirect | ReadDocument | Awaited<ReturnType<typeof storePublicPdfResponse>>;
 
-/** A redirect to a platform or a paper re-enters acquisition at its own adapter. */
 async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisition> {
 	const page = await fetchWebPage(url);
-	if ('platform' in page) return page;
+	if ('redirect' in page) return page;
 	if ('pdf' in page) return storePublicPdfResponse(env, page.pdf, page.url);
 	const body = limitByteStream(
 		page.html,
@@ -328,12 +314,13 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 	return { ...article, content: await rehostInlineImages(env.IMAGES, article.content) };
 }
 
-export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, input: { url: string }) {
-	const result = await step.do('acquire-web-v16', { retries: FETCH_STEP_RETRIES, timeout: '300 seconds' }, async () => {
-		const acquired = await acquireWebResource(env, input.url);
-		return 'platform' in acquired ? acquired : Response.json(acquired).body!;
+/** A page or a PDF as read; a redirect to a platform or a paper re-enters acquisition at its own adapter. */
+export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, url: string): Promise<Redirect | ReadDocument> {
+	const result = await step.do('acquire-web-v17', { retries: FETCH_STEP_RETRIES, timeout: '300 seconds' }, async () => {
+		const acquired = await acquireWebResource(env, url);
+		return 'redirect' in acquired ? acquired : Response.json(acquired).body!;
 	});
-	if ('platform' in result) return result;
-	const acquired = await new Response(result).json<Exclude<WebAcquisition, { platform: ResolvedResourceUrl }>>();
-	return 'pdfStorageKey' in acquired ? stagePublicPdfAcquisition(env, step, acquired) : acquired;
+	if ('redirect' in result) return result;
+	const acquired = await new Response(result).json<Exclude<WebAcquisition, Redirect>>();
+	return 'pdfStorageKey' in acquired ? stagePdfDocument(env, step, acquired) : acquired;
 }

@@ -42,7 +42,7 @@ export function normalizeAcquiredResource(resource: AcquiredResource, hints?: So
 				!identifiers.length ||
 				identifiers.some(({ scheme }) => scheme !== resource.resourcePlatform)
 			: resource.kind === 'paper'
-				? !identifiers.length || identifiers.some((identifier) => !isPaperIdentifierScheme(identifier.scheme))
+				? identifiers.some((identifier) => !isPaperIdentifierScheme(identifier.scheme))
 				: identifiers.length > 0
 	) {
 		throw new TypeError('Resource identifiers do not match its identity');

@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
-import type { AcquiredResource, YouTubeChapter, YouTubeTranscript } from '../contracts/acquired-resource';
+import type { PlatformResource, YouTubeChapter, YouTubeTranscript } from '../contracts/acquired-resource';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 import { buildTranscriptLines, fetchYouTubeCaptions, transcriptMarkdown } from '../services/youtube-captions';
 
@@ -154,9 +154,6 @@ async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
 
 	return {
 		kind: 'video',
-		resourcePlatform: 'youtube',
-		resourceIdentifiers: [{ preferred: true, scheme: 'youtube', value: videoId }],
-		url: `https://youtube.com/watch?v=${videoId}`,
 		fileType: null,
 		title: snippet.title.trim(),
 		source: channelTitle || 'YouTube',
@@ -182,7 +179,7 @@ async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
 		previewImageUrl: thumbnailUrl?.trim() || null,
 		subjectUrl: null,
 		chapters,
-	} satisfies Omit<AcquiredResource, 'content' | 'originalLang'> & { audioLanguage: string | null; chapters: YouTubeChapter[] };
+	} satisfies Omit<PlatformResource, 'content' | 'originalLang'> & { audioLanguage: string | null; chapters: YouTubeChapter[] };
 }
 
 type YouTubeVideo = Awaited<ReturnType<typeof scrapeYouTubeVideo>>;
@@ -206,5 +203,5 @@ export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, 
 		content: lines?.length ? transcriptMarkdown(lines) : video.summary.trim(),
 		originalLang: captions?.language ?? audioLanguage ?? 'und',
 		youtube: { lines, chapters },
-	} satisfies AcquiredResource & { youtube: YouTubeTranscript };
+	} satisfies PlatformResource & { youtube: YouTubeTranscript };
 }

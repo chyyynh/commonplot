@@ -10,7 +10,7 @@ import { coreGatewayOptions } from './ai-model';
 
 const FASTINO_URL = 'https://api.fastino.ai/v1/chat/completions';
 const NER_MODEL = 'fastino/gliner2.5-multi-v1';
-const LINK_MODEL = 'typesafe/jev';
+export const JEV_MODEL = 'typesafe/jev';
 const ENTITY_TEXT_MAX_LENGTH = 20_000;
 /** GLiNER reads 4,096 tokens at most; sentences are packed up to this many characters. */
 const NER_CHUNK_LENGTH = 1_500;
@@ -159,7 +159,7 @@ const LinkAnswerSchema = z.union([
 	z.object({ choice: z.string(), probabilities: z.record(z.string(), z.number()) }),
 	z.object({ noul: z.number() }),
 ]);
-const LinkResultSchema = z.object({
+export const JevResultSchema = z.object({
 	result: z.object({
 		answers: z.record(z.string(), LinkAnswerSchema),
 		usage: z.object({ input_tokens: z.number() }),
@@ -216,8 +216,8 @@ async function askJev(spans: Iterable<Span>, text: string, env: CoreEnv, process
 	if (!Object.keys(questions).length) return { questions: 0, tokens: 0 };
 
 	const { gateway, signal } = coreGatewayOptions(env, { feature: 'resource-entities', processing_id: processingId });
-	const { result } = LinkResultSchema.parse(
-		await env.AI.run(LINK_MODEL as keyof AiModels, { state: text, questions } as never, { gateway, signal }),
+	const { result } = JevResultSchema.parse(
+		await env.AI.run(JEV_MODEL as keyof AiModels, { state: text, questions } as never, { gateway, signal }),
 	);
 	for (const { id, span } of asked) {
 		const answer = result.answers[id];

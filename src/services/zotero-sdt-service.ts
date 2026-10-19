@@ -253,6 +253,15 @@ export async function parseStoredPdfRepresentation(
 	return normalized;
 }
 
+function decodedPathSegment(segment: string): string {
+	try {
+		return decodeURIComponent(segment);
+	} catch {
+		// Keep a malformed path segment in its encoded form.
+		return segment;
+	}
+}
+
 /** A fetched public PDF is stored by its bytes, like any upload. */
 export async function storePublicPdfResponse(env: CoreEnv, response: Response, sourceUrl: string) {
 	const source = URL.parse(sourceUrl);
@@ -281,8 +290,10 @@ export async function storePublicPdfResponse(env: CoreEnv, response: Response, s
 	const inputContentHash = hash('sha256', new Uint8Array(bytes), 'hex');
 	const pdfStorageKey = blobKey(inputContentHash);
 	await env.R2.put(pdfStorageKey, bytes, { httpMetadata: { contentType: 'application/pdf' } });
+	const fileName = source.pathname.split('/').filter(Boolean).at(-1) ?? null;
 	return {
 		url: source.toString(),
+		fileName: fileName && decodedPathSegment(fileName),
 		inputContentHash,
 		pdfStorageKey,
 		sourceLabel: `Public PDF ${inputContentHash}`,

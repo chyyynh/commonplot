@@ -55,14 +55,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				return { outcome: 'superseded' };
 			}
 		}
-		// An uploaded PDF that names a paper publishes that paper, read from the upload.
-		const { resource, uploadedPaper } = await stageResourceAcquisition(
-			this.env,
-			step,
-			await loadAcquisitionInput(this.env, step, target, upload),
-			instanceId,
-		);
-		const persistenceTarget = await planAttempt(target, uploadedPaper, (resourceId) =>
+		// An uploaded PDF identified as a paper publishes that paper, read from the upload.
+		const resource = await stageResourceAcquisition(this.env, step, await loadAcquisitionInput(this.env, step, target, upload), instanceId);
+		const persistenceTarget = await planAttempt(target, resource.kind === 'paper', (resourceId) =>
 			step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () => withCoreDb(this.env, (db) => claimAcquisitionFence(db, resourceId))),
 		);
 

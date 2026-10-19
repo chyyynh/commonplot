@@ -187,9 +187,3 @@ export function normalizeBibliographicText(value: string): string {
 			.replace(/[^\p{Letter}\p{Number}]+/gu, ' '),
 	);
 }
-
-/** A PDF's title page names a work when the work's full title appears on it. */
-export function titlePageNamesTitle(titlePageText: string, title: string): boolean {
-	const normalizedTitle = normalizeBibliographicText(title);
-	return !!normalizedTitle && normalizeBibliographicText(titlePageText).includes(normalizedTitle);
-}

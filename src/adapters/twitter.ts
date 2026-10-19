@@ -2,7 +2,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { PhrasingContent, Root } from 'mdast';
 import { z } from 'zod';
-import type { AcquiredResource } from '../contracts/acquired-resource';
+import type { PlatformResource } from '../contracts/acquired-resource';
 import { stringifyMarkdown } from '../contracts/markdown';
 import { isSocialLinkHost } from '../contracts/resource-links';
 import { isXHost, resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
@@ -583,15 +583,12 @@ async function acquiredTweet(tweet: Tweet, loadArticle: () => Promise<TwitterArt
 	const { subjectUrl, ...content } = await resolveTweetContent(tweet, loadArticle);
 	return {
 		...content,
-		resourcePlatform: 'twitter',
-		resourceIdentifiers: [{ preferred: true, scheme: 'twitter', value: tweet.id }],
-		url: `https://x.com/i/status/${tweet.id}`,
 		source: 'Twitter',
 		originalLang: tweet.lang ?? 'und',
 		summary: null,
 		fileType: null,
 		subjectUrl: ResourceUrlSchema.safeParse(subjectUrl).data ?? null,
-	} satisfies AcquiredResource;
+	} satisfies PlatformResource;
 }
 
 /**

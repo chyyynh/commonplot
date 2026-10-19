@@ -1,7 +1,7 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
-import type { AcquiredResource } from '../contracts/acquired-resource';
+import type { PlatformResource } from '../contracts/acquired-resource';
 import { normalizedResourceImageUrl } from '../contracts/image-mapping';
 import { ResourceUrlSchema } from '../contracts/resource-url';
 import { fetchOk, readBoundedResponseText } from '../services/response';
@@ -75,9 +75,6 @@ async function scrapeLessWrong(postId: string) {
 	const author = post.user?.displayName.trim() || post.user?.username?.trim() || null;
 	return {
 		kind: 'blog',
-		resourcePlatform: 'lesswrong',
-		resourceIdentifiers: [{ preferred: true, scheme: 'lesswrong', value: postId }],
-		url: `https://lesswrong.com/posts/${postId}`,
 		fileType: null,
 		title,
 		content: markdown,
@@ -92,7 +89,7 @@ async function scrapeLessWrong(postId: string) {
 		creators: post.user && author ? [{ role: 'author', literal: author, account: { platform: 'lesswrong', id: post.user._id } }] : [],
 		kindMetadata: null,
 		subjectUrl: linked,
-	} satisfies AcquiredResource;
+	} satisfies PlatformResource;
 }
 
 export async function stageLessWrongAcquisition(step: WorkflowStep, postId: string) {
