@@ -1,5 +1,6 @@
 import { Buffer } from 'node:buffer';
 import { hash } from 'node:crypto';
+import { DurableObject } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { MAX_PDF_BYTES } from '../contracts/pdf-policy.ts';
 import { blobKey, storedPdfCropUrlPrefix, structuredPdfCropPrefix, structuredPdfDocumentKey } from '../contracts/storage-keys.ts';
@@ -103,7 +104,6 @@ async function ensureStructuredPdfSourceCrops(
 		crops: readonly StructuredPdfSourceCrop[];
 		inputContentHash: string;
 		pdfStorageKey: string;
-		quality: ReturnType<typeof normalizeStructuredPdf>['parse'];
 		sourceLabel: string;
 	}>,
 ): Promise<void> {
@@ -127,7 +127,9 @@ async function ensureStructuredPdfSourceCrops(
 		try {
 			const pdf = await env.R2.get(input.pdfStorageKey);
 			if (!pdf) throw new NonRetryableError('PDF source object is missing');
-			const response = await coreExports.ZoteroSdt.getByName(ZOTERO_SDT_CONTAINER_NAME).renderPdfAreas(pdf.body, pdf.size, batch);
+			const response = await coreExports.ZoteroSdt.getByName(ZOTERO_SDT_CONTAINER_NAME).request('render-areas', pdf.body, pdf.size, {
+				'x-pdf-crops': JSON.stringify(batch.map(({ id, pageIndex, rect }) => ({ id, pageIndex, rect }))),
+			});
 			if (!response.ok) {
 				const body = await readBoundedResponseText(response, MAX_ERROR_BODY_BYTES, 'Zotero source crop error');
 				throw statusError(response.status, [400, 413, 415, 422], `Zotero source crop failed with ${response.status}: ${body}`);
@@ -158,23 +160,6 @@ async function ensureStructuredPdfSourceCrops(
 			for (const { id } of batch) if (!readyCropIds.has(id)) failed.set(id, cropFailure(error));
 		}
 	}
-	// PNGs are the retry checkpoints; publish one manifest after the complete attempt.
-	await putPdfDerivative(
-		env,
-		input.pdfStorageKey,
-		`${prefix}manifest.json`,
-		JSON.stringify({
-			artifactVersion: SOURCE_CROP_ARTIFACT_VERSION,
-			inputSha256: input.inputContentHash,
-			pdfStorageKey: input.pdfStorageKey,
-			planned: [...plannedIds],
-			ready: [...readyCropIds],
-			failed: [...failed].map(([id, failure]) => ({ id, ...failure })),
-			state: readyCropIds.size === plannedIds.size ? 'complete' : 'partial',
-			quality: readyCropIds.size === plannedIds.size ? input.quality : null,
-		}),
-		{ httpMetadata: { contentType: 'application/json' } },
-	);
 	console.info({
 		tag: 'PDF_PARSE',
 		event: 'zotero_source_crops_completed',
@@ -183,17 +168,20 @@ async function ensureStructuredPdfSourceCrops(
 		source: input.sourceLabel,
 	});
 	if (readyCropIds.size !== plannedIds.size) {
-		// Workflow retries reuse the parsed document and all successful immutable
-		// crops. A partial batch must never become a successful acquisition checkpoint.
+		// Stored PNGs are the retry checkpoints: Workflow retries reuse the parsed document and every finished crop.
+		// A partial batch must never become a successful acquisition checkpoint.
 		const retryable = [...failed.values()].some(({ retryable }) => retryable);
 		const ErrorType = retryable ? Error : NonRetryableError;
-		throw new ErrorType(`Structured PDF crops incomplete: ${readyCropIds.size}/${plannedIds.size}; inspect missing crops in the manifest`);
+		const [firstId, first] = [...failed][0] ?? [];
+		throw new ErrorType(
+			`Structured PDF crops incomplete: ${readyCropIds.size}/${plannedIds.size}${first ? `; ${firstId}: ${first.reason}` : ''}`,
+		);
 	}
 }
 
 async function parsePdfArtifactStream(input: ReadableStream<Uint8Array>, byteLength: number, sourceLabel: string) {
 	try {
-		const response = await coreExports.ZoteroSdt.getByName(ZOTERO_SDT_CONTAINER_NAME).processPdf(input, byteLength);
+		const response = await coreExports.ZoteroSdt.getByName(ZOTERO_SDT_CONTAINER_NAME).request('parse', input, byteLength);
 		const maxBytes = response.ok ? ZOTERO_SDT_MAX_RESPONSE_BYTES : MAX_ERROR_BODY_BYTES;
 		const body = await readBoundedResponseText(response, maxBytes, 'Zotero SDT response');
 		if (!response.ok) {
@@ -259,13 +247,8 @@ export async function parseStoredPdfRepresentation(
 	}
 	const visualPlan = structuredPdfVisualPlan(document);
 	const normalized = normalizeStructuredPdf(document, { visualPlan, cropUrlPrefix: input.cropUrlPrefix });
-	// Stage the complete body once. It becomes readable only after every planned
-	// crop is stored and its quality is committed in the same completion manifest.
-	await ensureStructuredPdfSourceCrops(env, {
-		...input,
-		crops: visualPlan.crops,
-		quality: normalized.parse,
-	});
+	// The body becomes readable only after every planned crop is stored.
+	await ensureStructuredPdfSourceCrops(env, { ...input, crops: visualPlan.crops });
 	console.info({ tag: 'PDF_PARSE', event: 'zotero_sdt_completed', source: input.sourceLabel, ...normalized.parse });
 	return normalized;
 }
@@ -305,4 +288,108 @@ export async function storePublicPdfResponse(env: CoreEnv, response: Response, s
 		sourceLabel: `Public PDF ${inputContentHash}`,
 		cropUrlPrefix: storedPdfCropUrlPrefix(inputContentHash),
 	};
+}
+
+const PORT = 8080;
+const INACTIVITY_TIMEOUT_MS = 2 * 60 * 1000;
+const READY_TIMEOUT_MS = 240_000;
+const READY_POLL_MS = 500;
+const PING_TIMEOUT_MS = 5_000;
+
+/** Durable Object-scheduled Zotero document-worker. Each call streams one R2 PDF into the container. */
+export class ZoteroSdt extends DurableObject<CoreEnv> {
+	constructor(ctx: DurableObjectState, env: CoreEnv) {
+		super(ctx, env);
+		// Inactivity timeouts do not survive a Durable Object restart.
+		const container = ctx.container;
+		if (container?.running) void ctx.blockConcurrencyWhile(() => container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS));
+	}
+
+	/** `parse` answers with the structured document; `render-areas` streams one PNG row per crop in `x-pdf-crops`. */
+	async request(operation: PdfOperation, input: ReadableStream<Uint8Array>, byteLength: number, headers: Record<string, string> = {}) {
+		const port = await this.ensureReady(input, operation, byteLength);
+		const startedAt = Date.now();
+		const response = await port.fetch(`http://zotero-sdt/${operation}`, {
+			body: input.pipeThrough(new FixedLengthStream(byteLength)),
+			headers: { 'content-type': 'application/pdf', ...headers },
+			method: 'POST',
+		});
+		// Time to response headers; the server answers only after the whole document is processed.
+		console.info({
+			tag: 'PDF_PARSE',
+			event: 'zotero_sdt_request_completed',
+			operation,
+			status: response.status,
+			duration_ms: Date.now() - startedAt,
+			byte_length: byteLength,
+		});
+		return response;
+	}
+
+	private async ensureReady(input: ReadableStream<Uint8Array>, operation: PdfOperation, byteLength: number): Promise<Fetcher> {
+		const startedAt = Date.now();
+		const coldStart = !this.ctx.container?.running;
+		try {
+			const container = this.ctx.container;
+			if (!container) throw new Error('ZoteroSdt has no attached container');
+			if (coldStart) {
+				// `basic` is not a runtime instance size; `lite` (256 MiB) cannot hold PDF.js and canvas.
+				container.start({ enableInternet: false, image: container.images['zotero-sdt'], instance: 'standard-1' });
+				this.ctx.waitUntil(
+					container.monitor().then(
+						() => console.info({ tag: 'PDF_PARSE', event: 'zotero_sdt_container_exited' }),
+						(error: unknown) =>
+							console.error({
+								tag: 'PDF_PARSE',
+								event: 'zotero_sdt_container_crashed',
+								error: errorMessage(error),
+								exit_code: (error as { exitCode?: number } | null)?.exitCode ?? null,
+							}),
+					),
+				);
+				await container.setInactivityTimeout(INACTIVITY_TIMEOUT_MS);
+			}
+			const port = container.getTcpPort(PORT);
+			await waitForPort(container, port);
+			console.info({
+				tag: 'PDF_PARSE',
+				event: 'zotero_sdt_container_ready',
+				operation,
+				cold_start: coldStart,
+				ready_ms: Date.now() - startedAt,
+				byte_length: byteLength,
+			});
+			return port;
+		} catch (error) {
+			console.error({
+				tag: 'PDF_PARSE',
+				event: 'zotero_sdt_container_not_ready',
+				operation,
+				cold_start: coldStart,
+				waited_ms: Date.now() - startedAt,
+				error: errorMessage(error),
+			});
+			await input.cancel('PDF container failed to become ready');
+			throw error;
+		}
+	}
+}
+
+type PdfOperation = 'parse' | 'render-areas';
+
+/** `start()` returns before the server listens; any HTTP response (the server 404s pings) means it is ready. */
+async function waitForPort(container: Container, port: Fetcher): Promise<void> {
+	const deadline = Date.now() + READY_TIMEOUT_MS;
+	for (;;) {
+		try {
+			const response = await port.fetch('http://zotero-sdt/ping', { signal: AbortSignal.timeout(PING_TIMEOUT_MS) });
+			await response.body?.cancel();
+			return;
+		} catch (error) {
+			const reason = errorMessage(error);
+			if (!container.running) throw new Error(`PDF container exited before it became ready: ${reason}`);
+			if (Date.now() >= deadline) throw new Error(`PDF container did not become ready: ${reason}`);
+			await scheduler.wait(READY_POLL_MS);
+		}
+	}
 }

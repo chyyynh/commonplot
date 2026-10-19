@@ -13,7 +13,7 @@ import { enqueueDueDerivations } from './workflows/derivation';
 import { admitRequests, reconcileRequests, resourceImportExecutions } from './workflows/requests';
 import { contentTranslationStatus, requestContentTranslation } from './workflows/translation';
 
-export { ZoteroSdt } from './services/zotero-sdt-container';
+export { ZoteroSdt } from './services/zotero-sdt-service';
 export { ResourceTranslationV2Workflow } from './workflows/translation';
 export { SearchIndexRebuildWorkflow } from './search/rebuild-workflow';
 export { ResourceProcessingV2Workflow } from './workflows/processing';
