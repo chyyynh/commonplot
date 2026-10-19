@@ -3,8 +3,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
 import type { AcquiredResource, YouTubeChapter, YouTubeTranscript } from '../contracts/acquired-resource';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
-import { fetchYouTubeCaptions } from '../services/youtube-captions';
-import { buildTranscriptLines, transcriptMarkdown } from './youtube-transcript';
+import { buildTranscriptLines, fetchYouTubeCaptions, transcriptMarkdown } from '../services/youtube-captions';
 
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
 
