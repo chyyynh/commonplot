@@ -1,0 +1,584 @@
+import type { WorkflowStep } from 'cloudflare:workers';
+import { NonRetryableError } from 'cloudflare:workflows';
+import type { PhrasingContent, Root } from 'mdast';
+import { z } from 'zod';
+import type { PlatformResource } from '../contracts/acquired-resource';
+import { stringifyMarkdown } from '../contracts/markdown';
+import { isSocialLinkHost } from '../contracts/resource-links';
+import { isXHost, resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
+import { crawlerUserAgent } from '../services/response';
+import { fetchOk } from '../services/response';
+import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
+
+const VideoVariantSchema = z.object({ url: z.string(), content_type: z.string(), bitrate: z.number().nonnegative().optional() });
+
+const TwitterAuthorSchema = z.object({
+	id: z.string().regex(/^\d+$/).optional(),
+	userName: z.string(),
+	name: z.string(),
+	profilePicture: z.string().optional(),
+	isBlueVerified: z.boolean().optional(),
+});
+
+const TwitterUrlEntitySchema = z.object({
+	expanded_url: z.string().optional(),
+	url: z.string().optional(),
+});
+
+const TwitterMediaEntitySchema = z.object({
+	media_url_https: z.string(),
+	type: z.string(),
+	video_info: z
+		.object({
+			variants: z.array(VideoVariantSchema),
+		})
+		.optional(),
+	sizes: z
+		.object({
+			large: z.object({ w: z.number(), h: z.number() }).optional(),
+		})
+		.optional(),
+});
+
+const TweetSchema = z.object({
+	id: z.string().regex(/^\d+$/),
+	url: z.string().min(1),
+	createdAt: z.string().min(1),
+	author: TwitterAuthorSchema.optional(),
+	text: z.string(),
+	extendedEntities: z.object({ media: z.array(TwitterMediaEntitySchema).optional() }).optional(),
+	entities: z.object({ urls: z.array(TwitterUrlEntitySchema).optional() }).optional(),
+	lang: z.string().max(35).optional(),
+	get quoted_tweet(): z.ZodCatch<z.ZodOptional<z.ZodNullable<typeof TweetSchema>>> {
+		return TweetSchema.nullish().catch(null);
+	},
+});
+
+type Tweet = z.infer<typeof TweetSchema>;
+
+const TwitterTweetsResponseSchema = z.object({ tweets: z.array(TweetSchema) });
+
+const TwitterArticleInlineStyleSchema = z.object({
+	offset: z.int().nonnegative(),
+	length: z.int().nonnegative(),
+	style: z.string(),
+});
+
+const DRAFT_TEXT_BLOCKS = ['unstyled', 'header-one', 'header-two', 'header-three', 'unordered-list-item', 'ordered-list-item'] as const;
+
+const TwitterArticleContentSchema = z.object({
+	type: z.enum([...DRAFT_TEXT_BLOCKS, 'image', 'gif', 'markdown', 'divider']),
+	text: z.string().nullish(),
+	url: z.string().nullish(),
+	previewUrl: z.string().nullish(),
+	inlineStyleRanges: z.array(TwitterArticleInlineStyleSchema).nullish(),
+});
+
+const TwitterArticleSchema = z.object({
+	title: z.string().nullish(),
+	cover_media_img_url: z.string().nullish(),
+	contents: z.array(TwitterArticleContentSchema).nullish(),
+	author: z
+		.object({
+			userName: z.string().nullish(),
+			name: z.string().nullish(),
+			isBlueVerified: z.boolean().nullish(),
+			profilePicture: z.string().nullish(),
+		})
+		.nullish(),
+	createdAt: z.string().nullish(),
+});
+
+const TwitterArticleResponseSchema = z.object({
+	article: TwitterArticleSchema.nullish(),
+	status: z.enum(['success', 'failed']),
+	message: z.string().optional(),
+});
+
+type TwitterArticle = z.infer<typeof TwitterArticleSchema>;
+type TwitterArticleContent = NonNullable<TwitterArticle['contents']>[number];
+
+const ARTICLE_INLINE_STYLES = {
+	bold: 'strong',
+	italic: 'emphasis',
+	strikethrough: 'delete',
+	code: 'inlineCode',
+	monospace: 'inlineCode',
+} as const;
+
+function styledArticleText(block: TwitterArticleContent): PhrasingContent[] {
+	const text = block.text ?? '';
+	const ranges = (block.inlineStyleRanges ?? []).flatMap(({ offset, length, style }) => {
+		const type = ARTICLE_INLINE_STYLES[style.trim().toLowerCase() as keyof typeof ARTICLE_INLINE_STYLES];
+		return type && length > 0 && offset + length <= text.length ? [{ start: offset, end: offset + length, type }] : [];
+	});
+	const boundaries = [...new Set([0, text.length, ...ranges.flatMap(({ start, end }) => [start, end])])].sort((a, b) => a - b);
+	const children: PhrasingContent[] = [];
+	for (let index = 1; index < boundaries.length; index++) {
+		const start = boundaries[index - 1]!;
+		const end = boundaries[index]!;
+		const styles = new Set(ranges.filter((range) => range.start <= start && range.end >= end).map(({ type }) => type));
+		let target = children;
+		// Reuse adjacent containers so overlapping provider ranges remain valid Markdown nesting.
+		for (const type of ['strong', 'emphasis', 'delete'] as const) {
+			if (!styles.has(type)) continue;
+			const previous = target.at(-1);
+			if (previous?.type === type && 'children' in previous) target = previous.children;
+			else {
+				const children: PhrasingContent[] = [];
+				target.push({ type, children });
+				target = children;
+			}
+		}
+		const type = styles.has('inlineCode') ? 'inlineCode' : 'text';
+		const value = text.slice(start, end);
+		const previous = target.at(-1);
+		if (previous?.type === type) previous.value += value;
+		else target.push({ type, value });
+	}
+	return children;
+}
+
+function renderTwitterArticleBlock(block: TwitterArticleContent): string {
+	if (block.type === 'markdown') return block.text?.trim() ?? '';
+	const children = styledArticleText(block);
+	const tree: Root = { type: 'root', children: [] };
+	switch (block.type) {
+		case 'header-one':
+		case 'header-two':
+		case 'header-three':
+			if (block.text?.trim())
+				tree.children.push({ type: 'heading', depth: block.type === 'header-one' ? 1 : block.type === 'header-two' ? 2 : 3, children });
+			break;
+		case 'unordered-list-item':
+		case 'ordered-list-item':
+			if (block.text?.trim())
+				tree.children.push({
+					type: 'list',
+					ordered: block.type === 'ordered-list-item',
+					children: [{ type: 'listItem', children: [{ type: 'paragraph', children }] }],
+				});
+			break;
+		case 'image':
+			if (block.url) tree.children.push({ type: 'paragraph', children: [{ type: 'image', url: block.url, alt: '' }] });
+			break;
+		case 'gif':
+			if (block.previewUrl) tree.children.push({ type: 'paragraph', children: [{ type: 'image', url: block.previewUrl, alt: 'GIF' }] });
+			if (block.url)
+				tree.children.push({ type: 'paragraph', children: [{ type: 'link', url: block.url, children: [{ type: 'text', value: 'GIF' }] }] });
+			break;
+		case 'divider':
+			tree.children.push({ type: 'thematicBreak' });
+			break;
+		case 'unstyled':
+			if (block.text?.trim()) tree.children.push({ type: 'paragraph', children });
+	}
+	return stringifyMarkdown(tree);
+}
+
+function renderTwitterArticleMarkdown(article: TwitterArticle): string {
+	let markdown = '';
+	let previous: TwitterArticleContent | undefined;
+	for (const block of article.contents ?? []) {
+		const rendered = renderTwitterArticleBlock(block);
+		if (!rendered) continue;
+		const sameList = previous?.type === block.type && (block.type === 'unordered-list-item' || block.type === 'ordered-list-item');
+		markdown += `${markdown ? (sameList ? '\n' : '\n\n') : ''}${rendered}`;
+		previous = block;
+	}
+	return markdown;
+}
+
+const FxMediaSchema = z.object({
+	type: z.enum(['photo', 'video', 'gif']),
+	url: z.string(),
+	thumbnail_url: z.string().optional(),
+	width: z.number().optional(),
+	height: z.number().optional(),
+	variants: z.array(VideoVariantSchema).optional(),
+});
+
+const FxAuthorSchema = z.object({
+	id: z.string().regex(/^\d+$/).optional(),
+	screen_name: z.string(),
+	name: z.string(),
+	avatar_url: z.string().nullish(),
+	verification: z.object({ verified: z.boolean() }).nullish(),
+});
+
+const FxArticleMediaInfoSchema = z.object({
+	__typename: z.string(),
+	original_img_url: z.string().optional(),
+	preview_image: z.object({ original_img_url: z.string() }).optional(),
+	variants: z.array(z.object({ url: z.string() })).optional(),
+});
+
+/** X Articles arrive as Draft.js raw content: text blocks plus atomic blocks pointing into entityMap. */
+const FxArticleSchema = z.object({
+	title: z.string(),
+	created_at: z.string().nullish(),
+	cover_media: z.object({ media_info: FxArticleMediaInfoSchema.optional() }).nullish(),
+	content: z.object({
+		blocks: z.array(
+			z.object({
+				type: z.string(),
+				text: z.string(),
+				inlineStyleRanges: z.array(TwitterArticleInlineStyleSchema).optional(),
+				entityRanges: z.array(z.object({ key: z.int() })).optional(),
+			}),
+		),
+		entityMap: z.array(z.object({ key: z.string(), value: z.object({ type: z.string(), data: z.record(z.string(), z.unknown()) }) })),
+	}),
+	media_entities: z.array(z.object({ media_id: z.string(), media_info: FxArticleMediaInfoSchema.optional() })).nullish(),
+});
+
+const FxTweetSchema = z.object({
+	id: z.string().regex(/^\d+$/),
+	url: z.string().min(1),
+	created_at: z.string().min(1),
+	lang: z.string().max(35).nullish(),
+	// raw_text keeps the t.co tokens; its url facets map each one to its destination.
+	raw_text: z.object({
+		text: z.string(),
+		facets: z.array(z.object({ type: z.string(), original: z.string().optional(), replacement: z.string().optional() })),
+	}),
+	author: FxAuthorSchema,
+	media: z.object({ all: z.array(FxMediaSchema).optional() }).nullish(),
+	article: FxArticleSchema.nullish(),
+	get quote(): z.ZodCatch<z.ZodOptional<z.ZodNullable<typeof FxTweetSchema>>> {
+		return FxTweetSchema.nullish().catch(null);
+	},
+});
+
+type FxTweet = z.infer<typeof FxTweetSchema>;
+
+async function fetchFxTweet(tweetId: string): Promise<FxTweet | null> {
+	try {
+		// FxTwitter rejects requests without an identifying User-Agent (HTTP 401).
+		const response = await fetchOk(`https://api.fxtwitter.com/i/status/${tweetId}`, {
+			label: 'FxTwitter',
+			timeoutMs: 10_000,
+			headers: { 'user-agent': crawlerUserAgent() },
+		});
+		const { tweet } = z.object({ tweet: FxTweetSchema }).parse(await response.json());
+		if (tweet.id !== tweetId) throw new Error(`returned tweet ${tweet.id}`);
+		return tweet;
+	} catch (error) {
+		console.warn({ tag: 'TWITTER', msg: 'FxTwitter request failed, falling back', tweetId, error: String(error) });
+		return null;
+	}
+}
+
+function tweetFromFx(fx: FxTweet): Tweet {
+	return {
+		id: fx.id,
+		url: fx.url,
+		createdAt: fx.created_at,
+		author: {
+			...(fx.author.id ? { id: fx.author.id } : {}),
+			userName: fx.author.screen_name,
+			name: fx.author.name,
+			...(fx.author.avatar_url ? { profilePicture: fx.author.avatar_url } : {}),
+			...(fx.author.verification ? { isBlueVerified: fx.author.verification.verified } : {}),
+		},
+		text: fx.raw_text.text,
+		// Media t.co tokens stay unmapped, as with twitterapi.io, so expansion drops them.
+		entities: {
+			urls: fx.raw_text.facets.flatMap(({ type, original, replacement }) =>
+				type === 'url' && original && replacement ? [{ url: original, expanded_url: replacement }] : [],
+			),
+		},
+		extendedEntities: {
+			media: (fx.media?.all ?? []).map((media) => ({
+				// A video's media URL is its poster, as in Twitter's own entities.
+				media_url_https: media.type === 'photo' ? media.url : (media.thumbnail_url ?? ''),
+				type: media.type === 'gif' ? 'animated_gif' : media.type,
+				...(media.variants?.length ? { video_info: { variants: media.variants } } : {}),
+				...(media.width && media.height ? { sizes: { large: { w: media.width, h: media.height } } } : {}),
+			})),
+		},
+		...(fx.lang ? { lang: fx.lang } : {}),
+		quoted_tweet: fx.quote ? tweetFromFx(fx.quote) : null,
+	};
+}
+
+/** fx only attaches an Article to the tweet that publishes it, so its author is the tweet's. */
+function articleFromFx(article: NonNullable<FxTweet['article']>): TwitterArticle {
+	const entities = new Map(article.content.entityMap.map(({ key, value }) => [key, value]));
+	const media = new Map((article.media_entities ?? []).map(({ media_id, media_info }) => [media_id, media_info]));
+	const contents = article.content.blocks.flatMap((block): TwitterArticleContent[] => {
+		if (block.type !== 'atomic') {
+			// Other text blocks (quotes, code) keep their words as paragraphs.
+			const type = DRAFT_TEXT_BLOCKS.find((type) => type === block.type) ?? 'unstyled';
+			return [{ type, text: block.text, inlineStyleRanges: block.inlineStyleRanges ?? null }];
+		}
+		const entity = entities.get(String(block.entityRanges?.[0]?.key));
+		if (entity?.type === 'DIVIDER') return [{ type: 'divider' }];
+		if (entity?.type === 'MARKDOWN') {
+			const markdown = z.object({ markdown: z.string() }).safeParse(entity.data).data?.markdown;
+			return markdown ? [{ type: 'markdown', text: markdown }] : [];
+		}
+		if (entity?.type !== 'MEDIA') return [];
+		const mediaId = z.object({ mediaItems: z.array(z.object({ mediaId: z.string() })) }).safeParse(entity.data).data
+			?.mediaItems[0]?.mediaId;
+		const info = mediaId ? media.get(mediaId) : undefined;
+		if (info?.__typename === 'ApiImage' && info.original_img_url) return [{ type: 'image', url: info.original_img_url }];
+		const preview = info?.preview_image?.original_img_url;
+		if (info?.__typename === 'ApiGif') return [{ type: 'gif', previewUrl: preview ?? null, url: info.variants?.[0]?.url ?? null }];
+		return preview ? [{ type: 'image', url: preview }] : [];
+	});
+	return {
+		title: article.title,
+		cover_media_img_url: article.cover_media?.media_info?.original_img_url ?? null,
+		contents,
+		createdAt: article.created_at ?? null,
+	};
+}
+
+function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {
+	if (!tweet.author?.userName.trim() || !tweet.author.name.trim()) {
+		throw new NonRetryableError(`Tweet ${tweet.id} has no complete author`);
+	}
+	return tweet.author;
+}
+
+function tweetAttachments(tweet: Tweet) {
+	return (
+		tweet.extendedEntities?.media?.flatMap((media) => {
+			const url = media.media_url_https.trim();
+			if (!url) return [];
+			const playback =
+				media.type === 'photo'
+					? undefined
+					: media.video_info?.variants
+							.flatMap((variant) => {
+								const type = variant.content_type.toLowerCase();
+								const src = ResourceUrlSchema.safeParse(variant.url).data;
+								return src && (type === 'video/mp4' || type === 'application/x-mpegurl')
+									? [{ url: src, type, bitrate: variant.bitrate ?? 0 } as const]
+									: [];
+							})
+							.sort((a, b) => Number(b.type === 'video/mp4') - Number(a.type === 'video/mp4') || b.bitrate - a.bitrate)[0];
+			return [
+				{
+					kind: media.type === 'photo' ? 'image' : media.type === 'animated_gif' ? 'animated' : 'video',
+					url,
+					...(playback ? { playback: { url: playback.url, type: playback.type } } : {}),
+					...(media.sizes?.large ? { width: media.sizes.large.w, height: media.sizes.large.h } : {}),
+				} as const,
+			];
+		}) ?? []
+	);
+}
+
+const TCO_TOKEN_RE = /https?:\/\/t\.co\/[A-Za-z0-9]+/g;
+
+/** Each t.co token the tweet's url entities map to an expanded URL. */
+function tcoExpansions(tweet: Tweet): Map<string, string> {
+	const expansions = new Map<string, string>();
+	for (const entity of tweet.entities?.urls ?? []) {
+		const token = entity.url?.trim();
+		const expanded = entity.expanded_url?.trim();
+		if (token && expanded) expansions.set(token, expanded);
+	}
+	return expansions;
+}
+
+/**
+ * Rewrite tweet text the way Twitter renders it: each t.co token becomes its
+ * expanded URL. Tokens are dropped when Twitter hides them — media links
+ * (expansions pointing at the tweet's own photo/video pages, or t.co with no
+ * url entity at all) and a trailing link to the quoted tweet (the quote box
+ * renders instead).
+ */
+function expandTweetUrls(text: string, tweet: Tweet): string {
+	const replacements = new Map<string, string>();
+	for (const [token, expanded] of tcoExpansions(tweet)) {
+		const parsed = URL.parse(expanded);
+		const mediaLink =
+			parsed && resolveResourceUrl(expanded)?.resourcePlatform === 'twitter' && /\/status\/\d+\/(?:photo|video)\/\d+/.test(parsed.pathname);
+		replacements.set(token, mediaLink ? '' : expanded);
+	}
+	const quotedTweetId = tweet.quoted_tweet?.id;
+	const trailing = text.match(/(https?:\/\/\S+)\s*$/)?.[1];
+	if (quotedTweetId && trailing) {
+		const expandedTrailing = replacements.get(trailing) ?? trailing;
+		if (tweetIdOf(expandedTrailing) === quotedTweetId) {
+			replacements.set(trailing, '');
+		}
+	}
+	return text
+		.replace(TCO_TOKEN_RE, (token) => replacements.get(token) ?? '')
+		.replace(/[^\S\n]+\n/g, '\n')
+		.replace(/[^\S\n]{2,}/g, ' ')
+		.trim();
+}
+
+/** Expand mapped t.co tokens only — for longform bodies, where unmapped t.co are the article's own links. */
+function expandKnownTweetUrls(text: string, tweet: Tweet): string {
+	const replacements = tcoExpansions(tweet);
+	return text.replace(TCO_TOKEN_RE, (token) => replacements.get(token) ?? token);
+}
+
+function tweetIdOf(url: string): string | undefined {
+	return resolveResourceUrl(url)?.identifiers.find(({ scheme }) => scheme === 'twitter')?.value;
+}
+
+const TwitterApiStatusSchema = z.object({ status: z.string().optional(), message: z.string().optional(), msg: z.string().optional() });
+
+/**
+ * A twitterapi.io JSON response parsed by `schema`; a client error other than a timeout or rate limit is permanent, and
+ * a response reporting status `error` throws.
+ */
+export async function fetchTwitterApi<Schema extends z.ZodType>(path: string, apiKey: string, label: string, schema: Schema) {
+	const response = await fetchOk(`https://api.twitterapi.io/twitter/${path}`, {
+		label,
+		timeoutMs: 20_000,
+		permanent: (status) => status >= 400 && status < 500 && status !== 408 && status !== 429,
+		headers: { 'x-api-key': apiKey },
+	});
+	const payload: unknown = await response.json();
+	const { status, message, msg } = TwitterApiStatusSchema.parse(payload);
+	if (status?.toLowerCase() === 'error') throw new Error(`${label} failed: ${(message ?? msg)?.trim() || 'unknown provider error'}`);
+	return schema.parse(payload) as z.output<Schema>;
+}
+
+async function fetchTwitterApiArticle(tweetId: string, apiKey: string): Promise<TwitterArticle> {
+	console.info({ tag: 'TWITTER', msg: 'Fetching longform for tweet', tweetId });
+	const payload = await fetchTwitterApi(`article?tweet_id=${tweetId}`, apiKey, 'Twitter longform request', TwitterArticleResponseSchema);
+	if (payload.status !== 'success') {
+		throw new Error(`Twitter article ${tweetId} failed: ${payload.message?.trim() || 'unknown provider error'}`);
+	}
+	if (!payload.article) throw new Error(`Twitter article ${tweetId} omitted article content`);
+	return payload.article;
+}
+
+/** The tweet's own Article, or null when it only shares someone else's: that keeps the tweet a post. */
+async function scrapeTwitterLongform(tweet: Tweet, loadArticle: () => Promise<TwitterArticle | null>) {
+	const tweetId = tweet.id;
+	const longform = await loadArticle();
+	if (!longform) return null;
+	const tweetAuthor = requiredTweetAuthor(tweet);
+	const articleHandle = longform.author?.userName?.trim().toLowerCase();
+	if (articleHandle && articleHandle !== tweetAuthor.userName.trim().toLowerCase()) return null;
+	const title = longform.title?.trim();
+	const contentText = expandKnownTweetUrls(renderTwitterArticleMarkdown(longform), tweet);
+	if (!title || !contentText) throw new NonRetryableError(`Twitter longform ${tweetId} requires both title and renderable content`);
+	const author = {
+		...tweetAuthor,
+		...(longform.author?.name?.trim() ? { name: longform.author.name.trim() } : {}),
+		...(longform.author?.userName?.trim() ? { userName: longform.author.userName.trim() } : {}),
+		...(longform.author?.profilePicture ? { profilePicture: longform.author.profilePicture } : {}),
+		...(longform.author?.isBlueVerified === null || longform.author?.isBlueVerified === undefined
+			? {}
+			: { isBlueVerified: longform.author.isBlueVerified }),
+	};
+	const publishedDate = longform.createdAt?.trim() || tweet.createdAt;
+	if (Number.isNaN(new Date(publishedDate).getTime()))
+		throw new NonRetryableError(`Twitter longform ${tweetId} requires a valid published date`);
+
+	console.info({ tag: 'TWITTER', msg: 'Longform fetched', title });
+
+	return {
+		kind: 'blog' as const,
+		title,
+		content: contentText,
+		publishedDate,
+		creators: [twitterCreator(author)],
+		kindMetadata: null,
+		previewImageUrl: longform.cover_media_img_url?.trim() || null,
+		subjectUrl: null,
+	};
+}
+
+async function resolveTweetContent(tweet: Tweet, loadArticle: () => Promise<TwitterArticle | null>) {
+	const expandedUrls = (tweet.entities?.urls ?? []).flatMap((url) => {
+		const expandedUrl = url.expanded_url?.trim();
+		return expandedUrl ? [expandedUrl] : [];
+	});
+	const longformUrl = [tweet.url, ...expandedUrls].find((url) => {
+		const parsed = URL.parse(url);
+		return parsed && isXHost(parsed.hostname) && parsed.pathname.startsWith('/i/article/');
+	});
+	const linkedContentUrl = expandedUrls.find((url) => {
+		const hostname = URL.parse(url)?.hostname;
+		return hostname && !isXHost(hostname) && !isSocialLinkHost(hostname);
+	});
+	// The quoted tweet is its own Resource; the quote box renders from that subject.
+	const quote = tweet.quoted_tweet;
+	const quotedUrl = quote && tweetIdOf(quote.url) === quote.id ? quote.url : undefined;
+	// X shows the quote box instead of a link card, so the quote wins.
+	const subjectUrl = quotedUrl ?? linkedContentUrl;
+	const resource = { source: 'Twitter', originalLang: tweet.lang ?? 'und', summary: null, fileType: null };
+
+	if (longformUrl) {
+		console.info({ tag: 'TWITTER', msg: 'Detected Twitter longform', longformUrl });
+		const longform = await scrapeTwitterLongform(tweet, loadArticle);
+		if (longform) return { ...longform, ...resource } satisfies PlatformResource;
+	}
+
+	const author = requiredTweetAuthor(tweet);
+	const attachments = tweetAttachments(tweet);
+	const content = expandTweetUrls(tweet.text.trim(), tweet);
+	// A photo or GIF posted without a caption is the post its media makes.
+	if (!content && !attachments.length) throw new NonRetryableError(`Tweet ${tweet.id} has no text or media`);
+
+	console.info({ tag: 'TWITTER', msg: 'Tweet fetched', userName: author.userName });
+
+	// A post is its author and text; it has no title or summary.
+	return {
+		kind: 'post' as const,
+		title: null,
+		content,
+		publishedDate: tweet.createdAt,
+		creators: [twitterCreator(author)],
+		kindMetadata: { attachments },
+		previewImageUrl: null,
+		...resource,
+		subjectUrl: ResourceUrlSchema.safeParse(subjectUrl).data ?? null,
+	} satisfies PlatformResource;
+}
+
+async function fetchTwitterApiTweet(tweetId: string, apiKey: string): Promise<Tweet> {
+	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
+	const payload = await fetchTwitterApi(`tweets?tweet_ids=${tweetId}`, apiKey, `Twitter API tweet ${tweetId}`, TwitterTweetsResponseSchema);
+	if (!payload.tweets.length) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
+	const tweet = payload.tweets.find((tweet) => tweet.id === tweetId);
+	if (!tweet) throw new Error(`Twitter API returned no matching tweet for ${tweetId}`);
+	return tweet;
+}
+
+/**
+ * FxTwitter is free and needs no key; twitterapi.io (paid) covers a tweet it cannot read or map. What the tweet itself
+ * lacks fails the same way from either, so it never falls back. FxTwitter includes the author's own Article, so a tweet
+ * it read without one only shares someone else's.
+ */
+async function scrapeTweet(tweetId: string, apiKey: string) {
+	const fx = await fetchFxTweet(tweetId);
+	if (fx) {
+		const article = fx.article ? articleFromFx(fx.article) : null;
+		return resolveTweetContent(tweetFromFx(fx), async () => article);
+	}
+	const tweet = await fetchTwitterApiTweet(tweetId, apiKey);
+	return resolveTweetContent(tweet, () => fetchTwitterApiArticle(tweetId, apiKey));
+}
+
+export function stageTwitterAcquisition(env: CoreEnv, step: WorkflowStep, tweetId: string) {
+	return stepJson(step, 'acquire-twitter-v4', { retries: FETCH_STEP_RETRIES, timeout: '120 seconds' }, () =>
+		scrapeTweet(tweetId, env.KAITO_API_KEY),
+	);
+}
+
+function twitterCreator(author: NonNullable<Tweet['author']>) {
+	const handle = author.userName.replace(/^\s*@/, '').trim();
+	const profileUrl = handle ? `https://x.com/${encodeURIComponent(handle)}` : undefined;
+	return {
+		role: 'author' as const,
+		literal: author.name.trim(),
+		...(handle ? { handle } : {}),
+		...(author.profilePicture?.trim() ? { avatarUrl: author.profilePicture.trim() } : {}),
+		...(profileUrl ? { profileUrl } : {}),
+		...(author.isBlueVerified === undefined ? {} : { verified: author.isBlueVerified }),
+		...(author.id ? { account: { platform: 'twitter' as const, id: author.id } } : {}),
+	};
+}

@@ -1,0 +1,46 @@
+{
+	"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+	"name": "newsence",
+	"version": "1.5.0",
+	"description": "Save the articles, papers, posts and videos the assistant recommends to your commonplot library with one tap, search and ask about what you saved, your notebooks and your documents, and put notes into a notebook when you ask.",
+	"author": {
+		"name": "commonplot",
+		"url": "https://www.commonplot.co"
+	},
+	"homepage": "https://www.commonplot.co",
+	"license": "Proprietary",
+	"keywords": [
+		"reading",
+		"read-later",
+		"bookmarks",
+		"research"
+	],
+	"extensions": {
+		"com.openai": {
+			"interface": {
+				"displayName": "commonplot",
+				"shortDescription": "Save reads, ask your library",
+				"longDescription": "commonplot shows the articles, papers, posts and videos the assistant recommends as cards. Press Save on a card to keep it in your commonplot library and public profile; nothing is saved without your press. Ask what you saved this week, or about a saved item, a notebook or a document you wrote, and the assistant reads it from your commonplot. When you ask, it can also write notes into one of your notebooks or add saves to it; it never edits or deletes what is there.",
+				"developerName": "commonplot",
+				"category": "Productivity",
+				"capabilities": [
+					"Read",
+					"Write"
+				],
+				"websiteURL": "https://www.commonplot.co",
+				"supportURL": "https://docs.commonplot.co/user/chatgpt-and-claude/",
+				"privacyPolicyURL": "https://www.commonplot.co/privacy",
+				"termsOfServiceURL": "https://www.commonplot.co/terms",
+				"defaultPrompt": [
+					"What did I save to commonplot this week?",
+					"Recommend five papers on agent evaluation to read",
+					"Summarize the latest thing I saved",
+					"Put a summary of this chat in my research notebook"
+				],
+				"brandColor": "#E2522B",
+				"composerIcon": "./assets/icon.png",
+				"logo": "./assets/logo.png"
+			}
+		}
+	}
+}

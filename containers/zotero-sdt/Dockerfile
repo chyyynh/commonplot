@@ -12,6 +12,10 @@ RUN git clone --filter=blob:none --no-checkout https://github.com/zotero/documen
 RUN git fetch --depth=1 origin ${DOCUMENT_WORKER_COMMIT}
 RUN git checkout --detach ${DOCUMENT_WORKER_COMMIT}
 RUN git submodule update --init --recursive --depth=1
+# Upstream's renderer still passes pdf.js's removed per-resource factories, so page
+# renders cannot load the JBIG2/CCITT decoder and scanned pages render blank.
+COPY render-binary-data.patch /tmp/
+RUN git apply /tmp/render-binary-data.patch
 RUN pnpm install --ignore-scripts
 RUN pnpm build
 

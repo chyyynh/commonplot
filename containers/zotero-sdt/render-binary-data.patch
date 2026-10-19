@@ -1,0 +1,29 @@
+diff --git a/src/pdf/renderer.js b/src/pdf/renderer.js
+index 36e2876..9e65c85 100644
+--- a/src/pdf/renderer.js
++++ b/src/pdf/renderer.js
+@@ -107,17 +107,13 @@ async function getRenderablePdfDocument(source, password, dataProvider, pdfOptio
+ 	};
+ 
+ 	if (dataProvider) {
+-		options.CMapReaderFactory = function () {
+-			this.fetch = async ({ name }) => {
+-				let raw = await dataProvider('cmaps/' + name + '.bcmap');
+-				return { cMapData: raw, isCompressed: true };
+-			};
+-		};
+-		options.StandardFontDataFactory = function () {
+-			this.fetch = async ({ filename }) => dataProvider('standard_fonts/' + filename);
+-		};
+-		options.WasmFactory = function () {
+-			this.fetch = async ({ filename }) => dataProvider('wasm/' + filename);
++		// pdf.js loads CMaps, standard fonts and wasm decoders (JBIG2/CCITT,
++		// JPEG 2000) through one BinaryDataFactory.
++		let directories = { cMapUrl: 'cmaps/', standardFontDataUrl: 'standard_fonts/', wasmUrl: 'wasm/' };
++		options.BinaryDataFactory = class {
++			async fetch({ kind, filename }) {
++				return new Uint8Array(await dataProvider(directories[kind] + filename));
++			}
+ 		};
+ 	}
+ 

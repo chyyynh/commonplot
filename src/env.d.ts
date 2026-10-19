@@ -1,20 +1,29 @@
-import type { ProgressReport } from './ingest/progress';
+import type { InferDurableNamespaces, InferEnv, InferMainModule, UnwrapConfig } from 'cf/config';
+import type { coreWorker } from '../cloudflare.config.ts';
+import type { StoredPdf } from './contracts/acquired-resource';
+
+type CoreConfig = UnwrapConfig<typeof coreWorker>;
+type CoreMain = InferMainModule<CoreConfig>;
+type CoreBindings = InferEnv<CoreConfig>;
 
 declare global {
-	type CoreEnv = Omit<CoreBindings, 'APP'> & {
+	/** Inferred from Core's config, not `Cloudflare.Env`: Web's program also type-checks this code. */
+	type CoreEnv = Omit<CoreBindings, 'APP' | 'RESOURCE_VECTORS'> & {
 		APP: CoreBindings['APP'] &
 			Rpc.Provider<{
 				completeResourceSave(resourceId: string, saveTarget: unknown): Promise<void>;
-				verifyStoredBlobProcessing(resourceId: string, workflowId: string): Promise<boolean>;
-				registerResourceProgressTask(input: {
-					taskId: string;
-					kind: 'processing' | 'translation' | 'references' | 'index';
-					resourceId?: string;
-					parentTaskId?: string;
-				}): Promise<boolean>;
-				reportResourceProgress(input: ProgressReport): Promise<boolean>;
-				startResourceProgressTask(taskId: string, stage: NonNullable<ProgressReport['stage']>): Promise<boolean>;
-				sealResourceProgressTask(taskId: string, errorCode?: string): Promise<boolean>;
+				verifyStoredBlobProcessing(objectId: string, workflowId: string): Promise<StoredPdf | null>;
 			}>;
+		/** The config types every Vectorize binding as the legacy index; this one is a V2 index. */
+		RESOURCE_VECTORS: Vectorize;
+	};
+	/** `ctx.exports` for Core's own classes; Durable Objects are also namespaces. */
+	type CoreExports = {
+		[K in keyof CoreMain]: LoopbackForExport<CoreMain[K]> &
+			(K extends InferDurableNamespaces<CoreConfig>
+				? CoreMain[K] extends (new (...args: never[]) => infer Instance extends Rpc.DurableObjectBranded)
+					? DurableObjectNamespace<Instance>
+					: never
+				: unknown);
 	};
 }

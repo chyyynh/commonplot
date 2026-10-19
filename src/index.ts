@@ -1,31 +1,24 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod';
+import { IMPORT_WORKFLOW_PREFIX, ImportWorkflowIdSchema, ResourceImportDispatchSchema } from './contracts/processing-target';
+import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url';
 import type {} from './env';
-import { ResourceImportDispatchSchema } from './ingest/admission';
-import { PaidPdfFallbackGrantSchema, type PaidPdfFallbackGrant } from './ingest/platforms/pdf-policy';
-import { resolveResourceUrl, ResourceUrlSchema } from './ingest/platforms/resource-url';
-import { handleRSSCron } from './ingest/platforms/rss';
-import { handleTwitterCron } from './ingest/platforms/twitter';
-import { findResourcesByUrls } from './ingest/resource-persistence';
-import {
-	loadCorpusDocuments,
-	type PublicResourceSearchInput,
-	type RelatedResourceSearchInput,
-	searchPublicResourceIds,
-	searchRelatedResourceIds,
-	syncCorpusItem,
-} from './search-index';
-import { connectCoreDb } from './shared/db';
+import { handleRSSCron } from './monitors/rss';
+import { handleTwitterCron } from './monitors/twitter';
+import { type PublicResourceSearchInput, searchPublicResourceIds, searchPublicResourcePassages } from './search/search-index';
+import { consumeSearchSyncBatch } from './search/sync-consumer';
+import { withCoreDb } from './store/db';
+import { findResourcesByUrls } from './store/resources';
+import { enqueueDueDerivations } from './workflows/derivation';
+import { admitRequests, reconcileRequests, resourceImportExecutions } from './workflows/requests';
+import { contentTranslationStatus, requestContentTranslation } from './workflows/translation';
 
-export { GrobidContainer, ZoteroSdtContainer } from './ingest/pdf-containers';
-export { ResourceTranslationV2Workflow } from './ingest/translation-workflow';
-export { SearchIndexRebuildWorkflow } from './operations/search-index-rebuild';
-export { ResourceProcessingV2Workflow } from './ingest/workflow';
-
-const ResourceSearchSyncMessageSchema = z.strictObject({
-	resourceId: z.uuid().toLowerCase(),
-	taskId: z.string().min(1).max(150).optional(),
-});
+export { ZoteroSdt } from './services/zotero-sdt-service';
+export { ResourceTranslationV2Workflow } from './workflows/translation';
+export { SearchIndexRebuildWorkflow } from './search/rebuild-workflow';
+export { ResourceProcessingV2Workflow } from './workflows/processing';
+export { ResourceDerivationWorkflow } from './workflows/derivation';
+export { YouTubeCaptionFetcher } from './services/youtube-captions';
 
 export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	override fetch(_request: Request): Response {
@@ -38,61 +31,16 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		// YouTube channels ride the feed monitor through their Atom URLs; Core
 		// derives their slower polling cadence from the canonical feed URL.
 		if (event.cron === '*/5 * * * *') {
-			this.ctx.waitUntil(connectCoreDb(this.env).then((db) => handleRSSCron(this.env, db)));
+			this.ctx.waitUntil(
+				withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(db), enqueueDueDerivations(db), reconcileRequests(this.env, db)])),
+			);
 		} else if (event.cron === '0 */6 * * *') {
 			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
 		}
 	}
 
-	override async queue(batch: MessageBatch<unknown>): Promise<void> {
-		const pending = new Map<string, { messages: Message<unknown>[]; taskIds: Set<string> }>();
-		for (const message of batch.messages) {
-			const input = ResourceSearchSyncMessageSchema.safeParse(message.body);
-			if (!input.success) {
-				console.warn({ tag: 'AI_SEARCH', msg: 'Invalid resource sync message', message_id: message.id });
-				message.ack();
-				continue;
-			}
-			const group = pending.get(input.data.resourceId) ?? { messages: [], taskIds: new Set<string>() };
-			group.messages.push(message);
-			if (input.data.taskId) group.taskIds.add(input.data.taskId);
-			pending.set(input.data.resourceId, group);
-		}
-		if (!pending.size) return;
-		let documents: Awaited<ReturnType<typeof loadCorpusDocuments>>;
-		try {
-			documents = await loadCorpusDocuments(await connectCoreDb(this.env), [...pending.keys()]);
-		} catch (error) {
-			console.error({ tag: 'AI_SEARCH', msg: 'Resource sync batch could not be loaded', error });
-			for (const { messages } of pending.values()) {
-				for (const message of messages) message.retry();
-			}
-			return;
-		}
-		const documentsById = new Map(documents.map((document) => [document.id, document]));
-		for (const [resourceId, { messages, taskIds }] of pending) {
-			try {
-				await syncCorpusItem(this.env, resourceId, documentsById.get(resourceId));
-				for (const taskId of taskIds) {
-					await this.env.APP.reportResourceProgress({
-						taskId,
-						stage: 'indexing',
-						status: documentsById.has(resourceId) ? 'complete' : 'skipped',
-						resourceId,
-					});
-				}
-				for (const message of messages) message.ack();
-			} catch (error) {
-				console.error({
-					tag: 'AI_SEARCH',
-					msg: 'Resource sync failed',
-					resource_id: resourceId,
-					attempt: Math.max(...messages.map((message) => message.attempts)),
-					error,
-				});
-				for (const message of messages) message.retry();
-			}
-		}
+	override queue(batch: MessageBatch<unknown>): Promise<void> {
+		return consumeSearchSyncBatch(this.env, batch);
 	}
 
 	// Service-binding RPC for engine capabilities. Product-domain writes live on
@@ -102,32 +50,69 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	async resolveResourceUrls(urls: string[]) {
 		const parsed = z.array(ResourceUrlSchema.max(2_048)).max(20).parse(urls);
 		if (!parsed.length) return [];
-		return findResourcesByUrls(
-			await connectCoreDb(this.env),
-			parsed.map((url) => resolveResourceUrl(url)!),
+		return withCoreDb(this.env, (db) =>
+			findResourcesByUrls(
+				db,
+				parsed.map((url) => resolveResourceUrl(url)!),
+			),
 		);
 	}
 
-	/** Durable admission outbox: the caller persists this immutable ID and payload first. */
+	/**
+	 * Durable admission outbox: the caller persists this immutable handle and payload first, and its UUID becomes the
+	 * request's id, so dispatching it again records nothing new. An upload's owner is read from its stored object.
+	 */
 	async dispatchResourceImport(input: z.input<typeof ResourceImportDispatchSchema>): Promise<void> {
-		const parsed = ResourceImportDispatchSchema.parse(input);
-		// The admission DO waits for committed ownership. The Workflow rechecks
-		// ownership and the latest attempt before provider execution, after any
-		// queueing delay; another callback here cannot replace that execution gate.
-		await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.createBatch([
-			{ id: parsed.workflowId, params: parsed.payload, retention: { successRetention: '5 minutes', errorRetention: '7 days' } },
-		]);
+		const { workflowId, payload } = ResourceImportDispatchSchema.parse(input);
+		const id = workflowId.slice(IMPORT_WORKFLOW_PREFIX.length);
+		// The admission DO waits for committed ownership. The Workflow rechecks ownership and the latest attempt
+		// before provider execution, after any queueing delay.
+		await withCoreDb(this.env, (db) =>
+			admitRequests(db, [
+				payload.kind === 'draft'
+					? {
+							requester: 'user',
+							id,
+							userId: payload.saveTarget.userId,
+							notebookId: payload.saveTarget.notebookId,
+							target: { kind: 'draft', url: payload.url },
+						}
+					: { requester: 'user', id, userId: null, notebookId: null, target: payload },
+			]),
+		);
 	}
 
-	/** Reacquire a URL-backed resource through the enrichment workflow. */
-	async resyncResource(resourceId: string, paidPdfFallback?: PaidPdfFallbackGrant) {
+	/** Each Web import's progress, read from its request; Web asks only while one is unsettled. */
+	async resourceImportStatus(workflowIds: string[]) {
+		const ids = z.array(ImportWorkflowIdSchema).max(50).parse(workflowIds);
+		return withCoreDb(this.env, (db) => resourceImportExecutions(db, ids));
+	}
+
+	/**
+	 * Reacquire a URL-backed resource through the enrichment workflow. A much shorter result keeps
+	 * the stored original unless `force` is set, e.g. when the source itself was cut down. A resync
+	 * already in flight for the Resource is joined rather than repeated.
+	 */
+	async resyncResource(resourceId: string, force?: boolean) {
 		const id = z.uuid().parse(resourceId);
-		const grant = PaidPdfFallbackGrantSchema.optional().parse(paidPdfFallback);
-		const instance = await this.env.RESOURCE_PROCESSING_V2_WORKFLOW.create({
-			id: `resource-resync-v3-${id}-${crypto.randomUUID()}`,
-			params: { kind: 'reacquire', ...(grant ? { paidPdfFallback: grant } : {}), resourceId: id },
-		});
-		return instance.id;
+		const forced = z.boolean().optional().parse(force);
+		const leads = await withCoreDb(this.env, (db) =>
+			admitRequests(db, [{ requester: 'resync', target: { kind: 'reacquire', resourceId: id, ...(forced ? { force: true } : {}) } }]),
+		);
+		return leads[0]?.workflowId ?? null;
+	}
+
+	/** A reader's full translation into `lang`. The app Worker checks entitlement and bills an admitted request. */
+	requestResourceTranslation(resourceId: string, lang: string) {
+		const id = z.uuid().parse(resourceId);
+		z.literal('zh-Hant').parse(lang);
+		return requestContentTranslation(this.env, id);
+	}
+
+	resourceTranslationStatus(resourceId: string, lang: string) {
+		const id = z.uuid().parse(resourceId);
+		z.literal('zh-Hant').parse(lang);
+		return contentTranslationStatus(this.env, id);
 	}
 
 	/** Ranked AI Search candidates; the app Worker authoritatively filters and hydrates them. */
@@ -135,8 +120,8 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		return searchPublicResourceIds(this.env, input);
 	}
 
-	/** Resource-level semantic neighbors; the app Worker authoritatively filters and hydrates them. */
-	async searchRelatedResourceIds(input: RelatedResourceSearchInput) {
-		return searchRelatedResourceIds(this.env, await connectCoreDb(this.env), input);
+	/** Ranked candidates with matched passages; the app Worker filters and hydrates them. */
+	searchPublicResourcePassages(input: PublicResourceSearchInput) {
+		return searchPublicResourcePassages(this.env, input);
 	}
 }
