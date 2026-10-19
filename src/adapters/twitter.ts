@@ -10,6 +10,8 @@ import { crawlerUserAgent } from '../services/crawler-identity';
 import { fetchOk } from '../services/response';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 
+const VideoVariantSchema = z.object({ url: z.string(), content_type: z.string(), bitrate: z.number().nonnegative().optional() });
+
 const TwitterAuthorSchema = z.object({
 	id: z.string().regex(/^\d+$/).optional(),
 	userName: z.string(),
@@ -28,7 +30,7 @@ const TwitterMediaEntitySchema = z.object({
 	type: z.string(),
 	video_info: z
 		.object({
-			variants: z.array(z.object({ url: z.string(), content_type: z.string(), bitrate: z.number().nonnegative().optional() })),
+			variants: z.array(VideoVariantSchema),
 		})
 		.optional(),
 	sizes: z
@@ -201,15 +203,13 @@ function renderTwitterArticleMarkdown(article: TwitterArticle): string {
 	return markdown;
 }
 
-const FxVariantSchema = z.object({ url: z.string(), content_type: z.string(), bitrate: z.number().nonnegative().optional() });
-
 const FxMediaSchema = z.object({
 	type: z.enum(['photo', 'video', 'gif']),
 	url: z.string(),
 	thumbnail_url: z.string().optional(),
 	width: z.number().optional(),
 	height: z.number().optional(),
-	variants: z.array(FxVariantSchema).optional(),
+	variants: z.array(VideoVariantSchema).optional(),
 });
 
 const FxAuthorSchema = z.object({
@@ -436,7 +436,7 @@ function expandTweetUrls(text: string, tweet: Tweet): string {
 	const trailing = text.match(/(https?:\/\/\S+)\s*$/)?.[1];
 	if (quotedTweetId && trailing) {
 		const expandedTrailing = replacements.get(trailing) ?? trailing;
-		if (resolveResourceUrl(expandedTrailing)?.identifiers.find(({ scheme }) => scheme === 'twitter')?.value === quotedTweetId) {
+		if (tweetIdOf(expandedTrailing) === quotedTweetId) {
 			replacements.set(trailing, '');
 		}
 	}
@@ -457,8 +457,11 @@ function expandKnownTweetUrls(text: string, tweet: Tweet): string {
 function quotedTweetUrl(tweet: Tweet): string | undefined {
 	const quote = tweet.quoted_tweet;
 	if (!quote) return undefined;
-	const identifier = resolveResourceUrl(quote.url)?.identifiers.find(({ scheme }) => scheme === 'twitter');
-	return identifier?.value === quote.id ? quote.url : undefined;
+	return tweetIdOf(quote.url) === quote.id ? quote.url : undefined;
+}
+
+function tweetIdOf(url: string): string | undefined {
+	return resolveResourceUrl(url)?.identifiers.find(({ scheme }) => scheme === 'twitter')?.value;
 }
 
 /** A twitterapi.io JSON response; a client error other than a timeout or rate limit is permanent. */
