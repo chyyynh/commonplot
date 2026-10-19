@@ -59,10 +59,6 @@ function htmlDocument(html: string, url: string) {
 	return document;
 }
 
-function parseDocument(document: ReturnType<typeof htmlDocument>, url: string) {
-	return new Defuddle(document as unknown as ConstructorParameters<typeof Defuddle>[0], { url }).parse();
-}
-
 async function acquireHtmlArticle(html: string, url: string): Promise<ReadDocument> {
 	const document = htmlDocument(html, url);
 	// A <br> separates lines but leaves no text, so a byline like "by Name<br>Date" would read as one string.
@@ -130,7 +126,7 @@ async function acquireHtmlArticle(html: string, url: string): Promise<ReadDocume
 
 	// Pull quotes repeat a sentence of the body as decoration.
 	for (const quote of document.querySelectorAll('.pullquote, .pull-quote')) quote.remove();
-	const article = parseDocument(document, url);
+	const article = new Defuddle(document as unknown as ConstructorParameters<typeof Defuddle>[0], { url }).parse();
 	// On table-laid-out pages the content root can be the layout cell itself, which
 	// Markdown conversion would read as a table cell and flatten into one line.
 	const articleHtml = article.content.trim().replace(/^<(td|th)\b[^>]*>([\s\S]*)<\/\1>$/, '<div>$2</div>');
@@ -220,8 +216,6 @@ async function acquireHtmlArticle(html: string, url: string): Promise<ReadDocume
 /** A page that moved to a platform's or a paper's URL, which acquisition reads in its place. */
 type Redirect = { redirect: string };
 
-type WebPage = Redirect | { pdf: Response; url: string } | { html: ReadableStream<Uint8Array>; url: string; contentType: string };
-
 function decoderFor(label: string | undefined) {
 	try {
 		return label ? new TextDecoder(label) : null;
@@ -256,11 +250,13 @@ function decodeHtml(bytes: Uint8Array, contentType: string): string {
 	}
 }
 
+type WebAcquisition = Redirect | ReadDocument | Awaited<ReturnType<typeof storePublicPdfResponse>>;
+
 /**
  * Fetches a page and sorts what came back. A redirect to a platform or a paper hands back its resolved URL;
- * a PDF keeps its response; an HTML or XML page keeps its unread body.
+ * a PDF is stored; an HTML or XML page is read as an article.
  */
-async function fetchWebPage(url: string): Promise<WebPage> {
+async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisition> {
 	const response = await fetchOk(url, {
 		label: 'Fetched resource',
 		timeoutMs: GENERIC_FETCH_TIMEOUT_MS,
@@ -282,35 +278,20 @@ async function fetchWebPage(url: string): Promise<WebPage> {
 	}
 	const contentType = response.headers.get('content-type')?.toLowerCase() || '';
 	if (contentType.includes(PDF_MIME) || new URL(resolved.url).pathname.toLowerCase().endsWith('.pdf')) {
-		return { pdf: response, url: resolved.url };
+		return storePublicPdfResponse(env, response, resolved.url);
 	}
-	if (
-		contentType &&
-		!contentType.includes('text/html') &&
-		!contentType.includes('text/xml') &&
-		!contentType.includes('application/xhtml') &&
-		!contentType.includes('application/xml')
-	) {
+	if (contentType && !/text\/(?:html|xml)|application\/(?:xhtml|xml)/.test(contentType)) {
 		await response.body?.cancel();
 		throw new NonRetryableError(`Unsupported response content type: ${contentType}`);
 	}
 	if (!response.body) throw new NonRetryableError('Fetched page has no body');
-	return { html: response.body, url: resolved.url, contentType };
-}
-
-type WebAcquisition = Redirect | ReadDocument | Awaited<ReturnType<typeof storePublicPdfResponse>>;
-
-async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisition> {
-	const page = await fetchWebPage(url);
-	if ('redirect' in page) return page;
-	if ('pdf' in page) return storePublicPdfResponse(env, page.pdf, page.url);
 	const body = limitByteStream(
-		page.html,
+		response.body,
 		GENERIC_HTML_MAX_BYTES,
 		() => new NonRetryableError(`HTML response exceeded ${GENERIC_HTML_MAX_BYTES} bytes`),
 	);
-	const html = decodeHtml(new Uint8Array(await new Response(body).arrayBuffer()), page.contentType);
-	const article = await acquireHtmlArticle(html, page.url);
+	const html = decodeHtml(new Uint8Array(await new Response(body).arrayBuffer()), contentType);
+	const article = await acquireHtmlArticle(html, resolved.url);
 	return { ...article, content: await rehostInlineImages(env.IMAGES, article.content) };
 }
 

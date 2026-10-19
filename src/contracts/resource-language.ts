@@ -71,13 +71,13 @@ export function detectResourceLanguage(content: string, knownLanguage = 'und'): 
 	return traditional > simplified ? 'zh-Hant' : simplified > traditional ? 'zh-Hans' : 'zh';
 }
 
+// Forms Taiwan writes every day that OpenCC still turns into another variant (台 → 臺, 干擾 → 幹擾).
+const TAIWAN_COMMON_FORMS = new Set('台干里污范雇占准岩游');
+
 /**
  * Whether generated prose reads as `lang`: Taiwan Traditional Chinese with no Simplified forms, or English with no
  * Han characters. Neither may contain kana or Hangul, not even in a name; Latin names may appear in Chinese prose.
  */
-// Forms Taiwan writes every day that OpenCC still turns into another variant (台 → 臺, 干擾 → 幹擾).
-const TAIWAN_COMMON_FORMS = new Set('台干里污范雇占准岩游');
-
 export function isWrittenIn(text: string, lang: 'zh-Hant' | 'en'): boolean {
 	const letters = text.match(/\p{L}/gu)?.length ?? 0;
 	const han = text.match(/\p{Script=Han}/gu)?.length ?? 0;
@@ -96,17 +96,14 @@ export function isWrittenIn(text: string, lang: 'zh-Hant' | 'en'): boolean {
 	return simplified <= Math.max(1, Math.floor(han / 50));
 }
 
-/**
- * English, or a code for no linguistic content, undetermined or private-use text: an English title would
- * add nothing.
- */
-const WITHOUT_ENGLISH_METADATA_LANG_PATTERN = '^(en|zxx|und|mis|mul|art|q[a-t][a-z])(-|$)';
-
 export function isEnglishLanguage(lang: string): boolean {
 	return /^en(-|$)/i.test(lang);
 }
 
-/** Recommendation vectors read English, so every other named language gets an English title. */
+/**
+ * Recommendation vectors read English, so every other named language gets an English title. English, or a code for no
+ * linguistic content, undetermined or private-use text, needs none: an English title would add nothing.
+ */
 export function needsEnglishMetadata(lang: string): boolean {
-	return !new RegExp(WITHOUT_ENGLISH_METADATA_LANG_PATTERN, 'i').test(lang);
+	return !/^(en|zxx|und|mis|mul|art|q[a-t][a-z])(-|$)/i.test(lang);
 }

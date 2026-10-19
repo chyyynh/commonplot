@@ -56,12 +56,7 @@ const TweetSchema = z.object({
 
 type Tweet = z.infer<typeof TweetSchema>;
 
-const TwitterTweetsResponseSchema = z.object({
-	tweets: z.array(TweetSchema),
-	status: z.string().optional(),
-	msg: z.string().optional(),
-	message: z.string().optional(),
-});
+const TwitterTweetsResponseSchema = z.object({ tweets: z.array(TweetSchema) });
 
 const TwitterArticleInlineStyleSchema = z.object({
 	offset: z.int().nonnegative(),
@@ -69,19 +64,10 @@ const TwitterArticleInlineStyleSchema = z.object({
 	style: z.string(),
 });
 
+const DRAFT_TEXT_BLOCKS = ['unstyled', 'header-one', 'header-two', 'header-three', 'unordered-list-item', 'ordered-list-item'] as const;
+
 const TwitterArticleContentSchema = z.object({
-	type: z.enum([
-		'unstyled',
-		'header-one',
-		'header-two',
-		'header-three',
-		'unordered-list-item',
-		'ordered-list-item',
-		'image',
-		'gif',
-		'markdown',
-		'divider',
-	]),
+	type: z.enum([...DRAFT_TEXT_BLOCKS, 'image', 'gif', 'markdown', 'divider']),
 	text: z.string().nullish(),
 	url: z.string().nullish(),
 	previewUrl: z.string().nullish(),
@@ -316,15 +302,6 @@ function tweetFromFx(fx: FxTweet): Tweet {
 	};
 }
 
-const DRAFT_TEXT_BLOCKS = [
-	'unstyled',
-	'header-one',
-	'header-two',
-	'header-three',
-	'unordered-list-item',
-	'ordered-list-item',
-] as const satisfies TwitterArticleContent['type'][];
-
 /** fx only attaches an Article to the tweet that publishes it, so its author is the tweet's. */
 function articleFromFx(article: NonNullable<FxTweet['article']>): TwitterArticle {
 	const entities = new Map(article.content.entityMap.map(({ key, value }) => [key, value]));
@@ -358,21 +335,11 @@ function articleFromFx(article: NonNullable<FxTweet['article']>): TwitterArticle
 	};
 }
 
-type TwitterAcquisitionInput = {
-	processingId: string;
-	tweetId: string;
-};
-
 function requiredTweetAuthor(tweet: Tweet): NonNullable<Tweet['author']> {
 	if (!tweet.author?.userName.trim() || !tweet.author.name.trim()) {
 		throw new NonRetryableError(`Tweet ${tweet.id} has no complete author`);
 	}
 	return tweet.author;
-}
-
-function isNonResourceLinkUrl(url: string): boolean {
-	const hostname = URL.parse(url)?.hostname;
-	return !hostname || isXHost(hostname) || isSocialLinkHost(hostname);
 }
 
 function tweetAttachments(tweet: Tweet) {
@@ -453,33 +420,32 @@ function expandKnownTweetUrls(text: string, tweet: Tweet): string {
 	return text.replace(TCO_TOKEN_RE, (token) => replacements.get(token) ?? token);
 }
 
-/** The quoted tweet is its own Resource; the quote box renders from that subject. */
-function quotedTweetUrl(tweet: Tweet): string | undefined {
-	const quote = tweet.quoted_tweet;
-	if (!quote) return undefined;
-	return tweetIdOf(quote.url) === quote.id ? quote.url : undefined;
-}
-
 function tweetIdOf(url: string): string | undefined {
 	return resolveResourceUrl(url)?.identifiers.find(({ scheme }) => scheme === 'twitter')?.value;
 }
 
-/** A twitterapi.io JSON response; a client error other than a timeout or rate limit is permanent. */
-async function fetchTwitterApi(path: string, apiKey: string, label: string): Promise<unknown> {
+const TwitterApiStatusSchema = z.object({ status: z.string().optional(), message: z.string().optional(), msg: z.string().optional() });
+
+/**
+ * A twitterapi.io JSON response parsed by `schema`; a client error other than a timeout or rate limit is permanent, and
+ * a response reporting status `error` throws.
+ */
+export async function fetchTwitterApi<Schema extends z.ZodType>(path: string, apiKey: string, label: string, schema: Schema) {
 	const response = await fetchOk(`https://api.twitterapi.io/twitter/${path}`, {
 		label,
 		timeoutMs: 20_000,
 		permanent: (status) => status >= 400 && status < 500 && status !== 408 && status !== 429,
 		headers: { 'x-api-key': apiKey },
 	});
-	return response.json();
+	const payload: unknown = await response.json();
+	const { status, message, msg } = TwitterApiStatusSchema.parse(payload);
+	if (status?.toLowerCase() === 'error') throw new Error(`${label} failed: ${(message ?? msg)?.trim() || 'unknown provider error'}`);
+	return schema.parse(payload) as z.output<Schema>;
 }
 
 async function fetchTwitterApiArticle(tweetId: string, apiKey: string): Promise<TwitterArticle> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching longform for tweet', tweetId });
-	const payload = TwitterArticleResponseSchema.parse(
-		await fetchTwitterApi(`article?tweet_id=${tweetId}`, apiKey, 'Twitter longform request'),
-	);
+	const payload = await fetchTwitterApi(`article?tweet_id=${tweetId}`, apiKey, 'Twitter longform request', TwitterArticleResponseSchema);
 	if (payload.status !== 'success') {
 		throw new Error(`Twitter article ${tweetId} failed: ${payload.message?.trim() || 'unknown provider error'}`);
 	}
@@ -534,14 +500,21 @@ async function resolveTweetContent(tweet: Tweet, loadArticle: () => Promise<Twit
 		const parsed = URL.parse(url);
 		return parsed && isXHost(parsed.hostname) && parsed.pathname.startsWith('/i/article/');
 	});
-	const linkedContentUrl = expandedUrls.find((url) => !isNonResourceLinkUrl(url));
+	const linkedContentUrl = expandedUrls.find((url) => {
+		const hostname = URL.parse(url)?.hostname;
+		return hostname && !isXHost(hostname) && !isSocialLinkHost(hostname);
+	});
+	// The quoted tweet is its own Resource; the quote box renders from that subject.
+	const quote = tweet.quoted_tweet;
+	const quotedUrl = quote && tweetIdOf(quote.url) === quote.id ? quote.url : undefined;
 	// X shows the quote box instead of a link card, so the quote wins.
-	const subjectUrl = quotedTweetUrl(tweet) ?? linkedContentUrl ?? null;
+	const subjectUrl = quotedUrl ?? linkedContentUrl;
+	const resource = { source: 'Twitter', originalLang: tweet.lang ?? 'und', summary: null, fileType: null };
 
 	if (longformUrl) {
 		console.info({ tag: 'TWITTER', msg: 'Detected Twitter longform', longformUrl });
 		const longform = await scrapeTwitterLongform(tweet, loadArticle);
-		if (longform) return longform;
+		if (longform) return { ...longform, ...resource } satisfies PlatformResource;
 	}
 
 	const author = requiredTweetAuthor(tweet);
@@ -561,34 +534,18 @@ async function resolveTweetContent(tweet: Tweet, loadArticle: () => Promise<Twit
 		creators: [twitterCreator(author)],
 		kindMetadata: { attachments },
 		previewImageUrl: null,
-		subjectUrl,
-	};
+		...resource,
+		subjectUrl: ResourceUrlSchema.safeParse(subjectUrl).data ?? null,
+	} satisfies PlatformResource;
 }
 
 async function fetchTwitterApiTweet(tweetId: string, apiKey: string): Promise<Tweet> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
-	const payload = TwitterTweetsResponseSchema.parse(
-		await fetchTwitterApi(`tweets?tweet_ids=${tweetId}`, apiKey, `Twitter API tweet ${tweetId}`),
-	);
-	if (payload.status?.toLowerCase() === 'error') {
-		throw new Error(`Twitter tweets request failed: ${(payload.message ?? payload.msg)?.trim() || 'unknown provider error'}`);
-	}
+	const payload = await fetchTwitterApi(`tweets?tweet_ids=${tweetId}`, apiKey, `Twitter API tweet ${tweetId}`, TwitterTweetsResponseSchema);
 	if (!payload.tweets.length) throw new NonRetryableError(`Twitter API: Tweet ${tweetId} was not found`);
 	const tweet = payload.tweets.find((tweet) => tweet.id === tweetId);
 	if (!tweet) throw new Error(`Twitter API returned no matching tweet for ${tweetId}`);
 	return tweet;
-}
-
-async function acquiredTweet(tweet: Tweet, loadArticle: () => Promise<TwitterArticle | null>) {
-	const { subjectUrl, ...content } = await resolveTweetContent(tweet, loadArticle);
-	return {
-		...content,
-		source: 'Twitter',
-		originalLang: tweet.lang ?? 'und',
-		summary: null,
-		fileType: null,
-		subjectUrl: ResourceUrlSchema.safeParse(subjectUrl).data ?? null,
-	} satisfies PlatformResource;
 }
 
 /**
@@ -596,32 +553,20 @@ async function acquiredTweet(tweet: Tweet, loadArticle: () => Promise<TwitterArt
  * lacks fails the same way from either, so it never falls back. FxTwitter includes the author's own Article, so a tweet
  * it read without one only shares someone else's.
  */
-async function scrapeTweet({ tweetId }: TwitterAcquisitionInput, apiKey: string) {
+async function scrapeTweet(tweetId: string, apiKey: string) {
 	const fx = await fetchFxTweet(tweetId);
-	let mapped: { tweet: Tweet; article: TwitterArticle | null } | undefined;
-	try {
-		mapped = fx ? { tweet: tweetFromFx(fx), article: fx.article ? articleFromFx(fx.article) : null } : undefined;
-	} catch (error) {
-		console.warn({ tag: 'TWITTER', msg: 'FxTwitter tweet unusable, falling back', tweetId, error: String(error) });
-	}
-	if (mapped) {
-		const { tweet, article } = mapped;
-		return acquiredTweet(tweet, async () => article);
+	if (fx) {
+		const article = fx.article ? articleFromFx(fx.article) : null;
+		return resolveTweetContent(tweetFromFx(fx), async () => article);
 	}
 	const tweet = await fetchTwitterApiTweet(tweetId, apiKey);
-	return acquiredTweet(tweet, () => fetchTwitterApiArticle(tweetId, apiKey));
+	return resolveTweetContent(tweet, () => fetchTwitterApiArticle(tweetId, apiKey));
 }
 
-export async function stageTwitterAcquisition(env: CoreEnv, step: WorkflowStep, input: TwitterAcquisitionInput) {
-	return stepJson(step, 'acquire-twitter-v4', { retries: FETCH_STEP_RETRIES, timeout: '120 seconds' }, async (ctx) => {
-		console.info({
-			tag: 'TWITTER',
-			event: 'acquisition_attempt',
-			processing_id: input.processingId,
-			attempt: ctx.attempt,
-		});
-		return scrapeTweet(input, env.KAITO_API_KEY);
-	});
+export function stageTwitterAcquisition(env: CoreEnv, step: WorkflowStep, tweetId: string) {
+	return stepJson(step, 'acquire-twitter-v4', { retries: FETCH_STEP_RETRIES, timeout: '120 seconds' }, () =>
+		scrapeTweet(tweetId, env.KAITO_API_KEY),
+	);
 }
 
 function twitterCreator(author: NonNullable<Tweet['author']>) {

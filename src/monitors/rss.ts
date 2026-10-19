@@ -40,15 +40,9 @@ async function processFeed(db: NodePgDatabase, feed: MonitoredFeedSource): Promi
 		await response.body?.cancel();
 		throw new Error(`Feed fetch failed with HTTP ${status}.`);
 	}
-	const effectiveUrl = ResourceUrlSchema.safeParse(response.url).data;
-	if (!effectiveUrl) {
-		await response.body?.cancel();
-		throw new Error('Feed redirected to an invalid URL.');
-	}
-
 	const content = await readBoundedResponseText(response, MAX_FEED_BYTES, 'Feed');
 	const parserOptions = {
-		baseUrl: effectiveUrl,
+		baseUrl: response.url,
 		getExtraEntryFields: (entry: Record<string, unknown>) => ({ description: feedEntryDescription(entry) }),
 	};
 	const parsed =

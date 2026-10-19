@@ -6,11 +6,11 @@ import { entityKey, type ResourceEntity } from '../contracts/resource';
 import { type EntityType } from '../contracts/resource-kinds';
 import { withCoreDb } from '../store/db';
 import { type EntityCandidate, listEntityCandidates } from '../store/derivations';
-import { coreGatewayOptions } from './ai-model';
+import { coreGatewayOptions, type GatewayMetadata } from './ai-model';
 
 const FASTINO_URL = 'https://api.fastino.ai/v1/chat/completions';
 const NER_MODEL = 'fastino/gliner2.5-multi-v1';
-export const JEV_MODEL = 'typesafe/jev';
+const JEV_MODEL = 'typesafe/jev';
 const ENTITY_TEXT_MAX_LENGTH = 20_000;
 /** GLiNER reads 4,096 tokens at most; sentences are packed up to this many characters. */
 const NER_CHUNK_LENGTH = 1_500;
@@ -159,22 +159,28 @@ const LinkAnswerSchema = z.union([
 	z.object({ choice: z.string(), probabilities: z.record(z.string(), z.number()) }),
 	z.object({ noul: z.number() }),
 ]);
-export const JevResultSchema = z.object({
+const JevResultSchema = z.object({
 	result: z.object({
 		answers: z.record(z.string(), LinkAnswerSchema),
 		usage: z.object({ input_tokens: z.number() }),
 	}),
 });
-type LinkQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> } | { type: 'noul'; instructions: string };
+type JevQuestion = { type: 'choice'; instructions: string; criteria: Record<string, string> } | { type: 'noul'; instructions: string };
 
-const describeCandidate = (candidate: EntityCandidate) =>
-	`${candidate.name}, a ${candidate.type}${candidate.example ? `, as in "${candidate.example}"` : ''}`;
+/** One Jev call through the ingest gateway: each question's answer, and the input tokens it read. */
+export async function askJev(env: CoreEnv, metadata: GatewayMetadata, state: string, questions: Record<string, JevQuestion>) {
+	const { gateway, signal } = coreGatewayOptions(env, metadata);
+	const { result } = JevResultSchema.parse(
+		await env.AI.run(JEV_MODEL as keyof AiModels, { state, questions } as never, { gateway, signal }),
+	);
+	return result;
+}
 
 /** The question that settles a name: which stored candidate it is, or whether a new one is a proper name. */
-function linkQuestion(span: Span): LinkQuestion | null {
+function linkQuestion(span: Span): JevQuestion | null {
 	if (span.candidates.length) {
 		const criteria: Record<string, string> = Object.fromEntries(
-			span.candidates.map((candidate, index) => [`c${index}`, describeCandidate(candidate)]),
+			span.candidates.map(({ name, type, example }, index) => [`c${index}`, `${name}, a ${type}${example ? `, as in "${example}"` : ''}`]),
 		);
 		criteria.none = `None of these, or "${span.text}" is not a specific named thing here`;
 		return { type: 'choice', instructions: `Which of these does "${span.text}" in the text refer to?`, criteria };
@@ -191,9 +197,9 @@ function linkQuestion(span: Span): LinkQuestion | null {
  * One Jev call settles each name, leading and most repeated names first, and weighs which of them the
  * text is mainly about. Sets each settled span's entity and subject weight; returns the questions asked.
  */
-async function askJev(spans: Iterable<Span>, text: string, env: CoreEnv, processingId: string) {
+async function settleSpans(spans: Iterable<Span>, text: string, env: CoreEnv, processingId: string) {
 	const ranked = [...spans].sort((a, b) => Number(b.lead) - Number(a.lead) || b.count - a.count || b.confidence - a.confidence);
-	const questions: Record<string, LinkQuestion> = {};
+	const questions: Record<string, JevQuestion> = {};
 	const asked: { id: string; span: Span }[] = [];
 	for (const span of ranked) {
 		if (asked.length >= MAX_LINK_QUESTIONS) break;
@@ -215,10 +221,7 @@ async function askJev(spans: Iterable<Span>, text: string, env: CoreEnv, process
 		};
 	if (!Object.keys(questions).length) return { questions: 0, tokens: 0 };
 
-	const { gateway, signal } = coreGatewayOptions(env, { feature: 'resource-entities', processing_id: processingId });
-	const { result } = JevResultSchema.parse(
-		await env.AI.run(JEV_MODEL as keyof AiModels, { state: text, questions } as never, { gateway, signal }),
-	);
+	const result = await askJev(env, { feature: 'resource-entities', processing_id: processingId }, text, questions);
 	for (const { id, span } of asked) {
 		const answer = result.answers[id];
 		if (answer && 'choice' in answer && answer.choice !== 'none') {
@@ -261,7 +264,7 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 	const chunks = await Promise.all(textChunks(text).map((chunk) => limit(() => findNames(chunk, env))));
 	const spans = collectSpans(chunks.map(({ found }) => found));
 	await attachCandidates(spans, text, env);
-	const link = await askJev(spans.values(), text, env, processingId);
+	const link = await settleSpans(spans.values(), text, env, processingId);
 	const entities = weighEntities(spans.values());
 	console.info({
 		tag: 'AI',

@@ -1,7 +1,6 @@
 import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod';
 import type { YouTubeTranscriptLine } from '../contracts/acquired-resource.ts';
-import { paragraphsMarkdown } from '../contracts/markdown.ts';
 import { coreExports } from '../exports.ts';
 import { errorMessage } from './response.ts';
 
@@ -23,8 +22,8 @@ const ANDROID_USER_AGENT = `com.google.android.youtube/${ANDROID_CLIENT_VERSION}
 const WEB_USER_AGENT =
 	'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36,gzip(gfe)';
 
-export type YouTubeCaptionCue = Readonly<{ startTime: number; endTime: number; text: string }>;
-export type YouTubeCaptions = { cues: YouTubeCaptionCue[]; language: string | null };
+type YouTubeCaptionCue = Readonly<{ startTime: number; endTime: number; text: string }>;
+type YouTubeCaptions = { cues: YouTubeCaptionCue[]; language: string | null };
 type CaptionAttempt = ({ status: 'fetched' } & YouTubeCaptions) | { status: 'withheld' | 'unavailable'; reason: string };
 
 const CaptionTrackSchema = z.object({
@@ -148,14 +147,15 @@ async function attemptCaptions(videoId: string, audioLanguage: string | null): P
 	const withheld: string[] = [];
 	for (const load of [innerTubePlayer, watchPagePlayer]) {
 		const player = await load(videoId).catch((error: unknown) => errorMessage(error));
-		if (typeof player !== 'string' && unplayable(player.playabilityStatus))
-			return { status: 'unavailable', reason: `${player.playabilityStatus?.status}: ${player.playabilityStatus?.reason ?? 'no reason'}` };
-		if (typeof player === 'string' || player.playabilityStatus?.status !== 'OK') {
-			withheld.push(
-				typeof player === 'string'
-					? player
-					: `${player.playabilityStatus?.status ?? 'no status'}: ${player.playabilityStatus?.reason ?? 'no reason'}`,
-			);
+		if (typeof player === 'string') {
+			withheld.push(player);
+			continue;
+		}
+		const status = player.playabilityStatus;
+		const reason = `${status?.status ?? 'no status'}: ${status?.reason ?? 'no reason'}`;
+		if (unplayable(status)) return { status: 'unavailable', reason };
+		if (status?.status !== 'OK') {
+			withheld.push(reason);
 			continue;
 		}
 		const track = originalTrack(player, audioLanguage);
@@ -183,7 +183,7 @@ export async function fetchYouTubeCaptions(videoId: string, audioLanguage: strin
 		const hint = CAPTION_FETCHER_HINTS[(attempt - 1) % CAPTION_FETCHER_HINTS.length];
 		// A failed timedtext fetch or instance is just another lost draw.
 		return (
-			attempt === 0 || !hint
+			!hint
 				? attemptCaptions(videoId, audioLanguage)
 				: coreExports.YouTubeCaptionFetcher.get(coreExports.YouTubeCaptionFetcher.newUniqueId(), { locationHint: hint }).attempt(
 						videoId,
@@ -291,12 +291,4 @@ export function buildTranscriptLines(cues: readonly YouTubeCaptionCue[]): YouTub
 	}
 	close();
 	return lines;
-}
-
-/**
- * Content keeps one Markdown paragraph per line, so the translation alignment
- * path `[i]` pairs line `i` with its translation.
- */
-export function transcriptMarkdown(lines: readonly YouTubeTranscriptLine[]): string {
-	return paragraphsMarkdown(lines.map((line) => line.text));
 }

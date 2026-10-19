@@ -1,5 +1,4 @@
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { z } from 'zod';
 import { SourceResourceDraftSchema, type SourceResourceDraft } from '../contracts/processing-target';
 import { resolveResourceUrl } from '../contracts/resource-url';
 import { recordFulfilledSourceRequests, settledSourceRequestKeys } from '../store/requests';
@@ -12,7 +11,6 @@ import { admitRequests } from '../workflows/requests';
  * after its wait.
  */
 export async function enqueueSourceDrafts(db: NodePgDatabase, sourceId: string, drafts: SourceResourceDraft[]) {
-	z.uuid().parse(sourceId);
 	const seen = new Set<string>();
 	let skipped = 0;
 	const targets = drafts.flatMap((draft, index) => {

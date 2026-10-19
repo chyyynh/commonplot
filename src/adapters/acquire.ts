@@ -8,9 +8,8 @@ import type { ResourceIdentifier } from '../contracts/resource';
 import type { ResourcePlatform } from '../contracts/resource-kinds';
 import { RESOURCE_PLATFORMS, resolveResourceUrl } from '../contracts/resource-url';
 import { blobKey, storedPdfCropUrlPrefix } from '../contracts/storage-keys';
-import { coreGatewayOptions } from '../services/ai-model';
 import type { WorkCandidate } from '../services/crossref';
-import { JEV_MODEL, JevResultSchema } from '../services/entities';
+import { askJev } from '../services/entities';
 import { errorMessage } from '../services/response';
 import { stepJson } from '../services/workflow-step';
 import { stageHackerNewsAcquisition } from './hackernews';
@@ -34,12 +33,12 @@ const WORK_CONFIDENCE = 0.8;
 /** How each platform's Resource is fetched, from the id `resolveResourceUrl` read. */
 const PLATFORM_ACQUISITION: Record<
 	ResourcePlatform,
-	(env: CoreEnv, step: WorkflowStep, id: string, processingId: string) => Promise<PlatformResource | { redirect: string }>
+	(env: CoreEnv, step: WorkflowStep, id: string) => Promise<PlatformResource | { redirect: string }>
 > = {
 	hackernews: (_env, step, id) => stageHackerNewsAcquisition(step, id),
 	lesswrong: (_env, step, id) => stageLessWrongAcquisition(step, id),
-	twitter: (env, step, id, processingId) => stageTwitterAcquisition(env, step, { processingId, tweetId: id }),
-	youtube: (env, step, id) => stageYouTubeAcquisition(env, step, id),
+	twitter: stageTwitterAcquisition,
+	youtube: stageYouTubeAcquisition,
 };
 
 /** What a page or PDF reads as, as Jev is asked (the wording the thresholds were measured with); each maps to a kind or fails. */
@@ -70,11 +69,11 @@ async function stageIdentify(
 	const fallback: Identification = { kind: pdf ? 'file' : 'blog', work: null };
 	const answers = await stepJson(step, 'identify-document-v1', IDENTIFY_STEP, async () => {
 		const questions = {
-			kind: { type: 'choice', instructions: 'What kind of document is this?', criteria: DOCUMENT_KINDS },
+			kind: { type: 'choice' as const, instructions: 'What kind of document is this?', criteria: DOCUMENT_KINDS },
 			...(candidates.length
 				? {
 						work: {
-							type: 'choice',
+							type: 'choice' as const,
 							instructions: 'Which of these published works is this document itself (not a work it cites)?',
 							criteria: {
 								...Object.fromEntries(
@@ -91,12 +90,9 @@ async function stageIdentify(
 		};
 		const source = document.url ? `URL: ${document.url}` : 'Uploaded file';
 		const state = `Title: ${document.title ?? ''}\n${source}\n\n${document.content.slice(0, JEV_TEXT_CHARS)}`;
-		const { gateway, signal } = coreGatewayOptions(env, { feature: 'resource-identification', processing_id: processingId });
-		const { result } = JevResultSchema.parse(
-			await env.AI.run(JEV_MODEL as keyof AiModels, { state, questions } as never, { gateway, signal }),
-		);
+		const { answers } = await askJev(env, { feature: 'resource-identification', processing_id: processingId }, state, questions);
 		const probabilities = (id: string) => {
-			const answer = result.answers[id];
+			const answer = answers[id];
 			return answer && 'probabilities' in answer ? answer.probabilities : {};
 		};
 		return { kind: probabilities('kind'), work: probabilities('work') };
@@ -164,7 +160,7 @@ async function stageUrlAcquisition(
 	const { resourcePlatform: platform, identifiers } = detected;
 	if (platform) {
 		const id = identifiers[0]!.value;
-		const acquired = await PLATFORM_ACQUISITION[platform](env, step, id, input.processingId);
+		const acquired = await PLATFORM_ACQUISITION[platform](env, step, id);
 		// A Hacker News link submission is the page it links to; its thread becomes a key of that Resource.
 		if ('redirect' in acquired) return { ...(await redirect(acquired.redirect)), hackerNewsId: id };
 		return { ...acquired, resourcePlatform: platform, resourceIdentifiers: identifiers, url: RESOURCE_PLATFORMS[platform].url(id) };

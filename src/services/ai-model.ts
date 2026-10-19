@@ -7,7 +7,7 @@ export const CORE_TEXT_MODEL = '@cf/zai-org/glm-5.3-flash';
 // output budget and leaves no answer. Low effort keeps the thinking to a few sentences.
 export const CORE_TEXT_REASONING = 'low';
 
-type GatewayMetadata = NonNullable<GatewayOptions['metadata']>;
+export type GatewayMetadata = NonNullable<GatewayOptions['metadata']>;
 type AiEnv = Pick<CoreEnv, 'AI' | 'AI_GATEWAY_ENVIRONMENT'>;
 
 /** The longest one model call may take; a hung call otherwise holds its step until the step's own timeout. */

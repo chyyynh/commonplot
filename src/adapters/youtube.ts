@@ -2,19 +2,17 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
 import type { PlatformResource, YouTubeChapter, YouTubeTranscript } from '../contracts/acquired-resource';
+import { paragraphsMarkdown } from '../contracts/markdown';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
-import { buildTranscriptLines, fetchYouTubeCaptions, transcriptMarkdown } from '../services/youtube-captions';
+import { buildTranscriptLines, fetchYouTubeCaptions } from '../services/youtube-captions';
 
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
 
-const YouTubeThumbnailSchema = z.object({ url: z.string().min(1) });
-const YouTubeThumbnailsSchema = z.object({
-	default: YouTubeThumbnailSchema.optional(),
-	medium: YouTubeThumbnailSchema.optional(),
-	high: YouTubeThumbnailSchema.optional(),
-	standard: YouTubeThumbnailSchema.optional(),
-	maxres: YouTubeThumbnailSchema.optional(),
-});
+const THUMBNAIL_SIZES = ['maxres', 'standard', 'high', 'medium', 'default'] as const;
+/** Thumbnails parse to the largest one's URL. */
+const YouTubeThumbnailsSchema = z
+	.partialRecord(z.enum(THUMBNAIL_SIZES), z.object({ url: z.string().min(1) }))
+	.transform((thumbnails) => THUMBNAIL_SIZES.map((size) => thumbnails[size]?.url).find(Boolean) ?? null);
 const YouTubeVideoItemSchema = z.object({
 	id: z.string().min(1),
 	snippet: z.object({
@@ -43,14 +41,6 @@ const YouTubeChannelsResponseSchema = z.object({
 		)
 		.optional(),
 });
-type YouTubeThumbnails = z.infer<typeof YouTubeThumbnailsSchema>;
-
-function bestThumbnailUrl(thumbnails: YouTubeThumbnails): string | null {
-	return (
-		thumbnails.maxres?.url ?? thumbnails.standard?.url ?? thumbnails.high?.url ?? thumbnails.medium?.url ?? thumbnails.default?.url ?? null
-	);
-}
-
 function parseChaptersFromDescription(description: string): YouTubeChapter[] {
 	// `0:00 Intro`, `[00:00:00] — Intro`, `(1:02:03) Intro`
 	const chapterRegex = /(?:^|\n)[ \t]*[[(]?(\d{1,2}:)?(\d{1,2}):(\d{2})[\])]?[ \t]+(.+?)(?=\n|$)/g;
@@ -92,42 +82,40 @@ function isoDurationSeconds(duration: string): number | null {
 	return total > 0 ? total : null;
 }
 
-/** One YouTube Data API listing, as JSON. */
-async function fetchYouTubeApi(resource: 'videos' | 'channels', id: string, part: string, youtubeApiKey: string): Promise<unknown> {
-	const url = new URL(`https://www.googleapis.com/youtube/v3/${resource}`);
-	url.search = new URLSearchParams({ id, part, key: youtubeApiKey }).toString();
-	const response = await fetch(url, { signal: AbortSignal.timeout(YOUTUBE_API_TIMEOUT_MS) });
-	if (!response.ok) {
-		// Google names the cause (keyInvalid, quotaExceeded, …) only in the body.
-		const body = await response.text().catch(() => '');
-		throw new Error(`HTTP ${response.status}: ${body.slice(0, 300) || response.statusText}`);
-	}
-	return response.json();
-}
-
-/** An error's message without the API key the request URL carries. */
-function redactedYouTubeError(error: unknown, youtubeApiKey: string): string {
-	const message = String(error);
-	return youtubeApiKey ? message.replaceAll(youtubeApiKey, '[redacted]') : message;
-}
-
-async function fetchYouTubeVideoData(videoId: string, youtubeApiKey: string) {
+/** One YouTube Data API listing, parsed by `schema`; its errors never carry the API key the request URL holds. */
+async function fetchYouTubeApi<Schema extends z.ZodType>(
+	resource: 'videos' | 'channels',
+	id: string,
+	part: string,
+	youtubeApiKey: string,
+	schema: Schema,
+) {
 	try {
-		return YouTubeVideosResponseSchema.parse(await fetchYouTubeApi('videos', videoId, 'snippet,contentDetails', youtubeApiKey));
+		const url = new URL(`https://www.googleapis.com/youtube/v3/${resource}`);
+		url.search = new URLSearchParams({ id, part, key: youtubeApiKey }).toString();
+		const response = await fetch(url, { signal: AbortSignal.timeout(YOUTUBE_API_TIMEOUT_MS) });
+		if (!response.ok) {
+			// Google names the cause (keyInvalid, quotaExceeded, …) only in the body.
+			const body = await response.text().catch(() => '');
+			throw new Error(`HTTP ${response.status}: ${body.slice(0, 300) || response.statusText}`);
+		}
+		return schema.parse(await response.json()) as z.output<Schema>;
 	} catch (error) {
-		throw new Error(`YouTube API request failed for ${videoId}: ${redactedYouTubeError(error, youtubeApiKey)}`);
+		const message = String(error);
+		throw new Error(
+			`YouTube API ${resource} request failed for ${id}: ${youtubeApiKey ? message.replaceAll(youtubeApiKey, '[redacted]') : message}`,
+		);
 	}
 }
 
 async function fetchChannelAvatar(youtubeApiKey: string, channelId: string): Promise<string | null> {
 	try {
-		if (!youtubeApiKey) throw new Error('YouTube channel lookup is not configured');
-		const channelData = YouTubeChannelsResponseSchema.parse(await fetchYouTubeApi('channels', channelId, 'snippet', youtubeApiKey));
+		const channelData = await fetchYouTubeApi('channels', channelId, 'snippet', youtubeApiKey, YouTubeChannelsResponseSchema);
 		const channel = channelData.items?.find((item) => item.id === channelId);
 		if (channelData.items?.length && !channel) throw new Error('YouTube API returned no matching channel');
-		return channel ? bestThumbnailUrl(channel.snippet.thumbnails) : null;
+		return channel?.snippet.thumbnails ?? null;
 	} catch (error) {
-		console.warn({ tag: 'YOUTUBE', msg: 'Channel avatar unavailable', channelId, error: redactedYouTubeError(error, youtubeApiKey) });
+		console.warn({ tag: 'YOUTUBE', msg: 'Channel avatar unavailable', channelId, error: String(error) });
 		return null;
 	}
 }
@@ -135,7 +123,7 @@ async function fetchChannelAvatar(youtubeApiKey: string, channelId: string): Pro
 async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
 	console.info({ tag: 'YOUTUBE', msg: 'Fetching video', videoId });
 
-	const videoData = await fetchYouTubeVideoData(videoId, youtubeApiKey);
+	const videoData = await fetchYouTubeApi('videos', videoId, 'snippet,contentDetails', youtubeApiKey, YouTubeVideosResponseSchema);
 
 	if (!videoData.items?.length) throw new NonRetryableError(`YouTube video ${videoId} was not found`);
 
@@ -144,7 +132,6 @@ async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
 	const snippet = video.snippet;
 
 	const durationSeconds = isoDurationSeconds(video.contentDetails.duration);
-	const thumbnailUrl = bestThumbnailUrl(snippet.thumbnails);
 	const chapters = parseChaptersFromDescription(snippet.description);
 
 	const channelAvatar = await fetchChannelAvatar(youtubeApiKey, snippet.channelId);
@@ -166,17 +153,13 @@ async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
 						role: 'channel',
 						literal: channelTitle,
 						...(channelAvatar?.trim() ? { avatarUrl: channelAvatar.trim() } : {}),
-						...(snippet.channelId.trim()
-							? {
-									profileUrl: `https://www.youtube.com/channel/${encodeURIComponent(snippet.channelId.trim())}`,
-									account: { platform: 'youtube' as const, id: snippet.channelId.trim() },
-								}
-							: {}),
+						profileUrl: `https://www.youtube.com/channel/${encodeURIComponent(snippet.channelId)}`,
+						account: { platform: 'youtube' as const, id: snippet.channelId },
 					},
 				]
 			: [],
 		kindMetadata: durationSeconds === null ? {} : { durationSeconds },
-		previewImageUrl: thumbnailUrl?.trim() || null,
+		previewImageUrl: snippet.thumbnails?.trim() || null,
 		subjectUrl: null,
 		chapters,
 	} satisfies Omit<PlatformResource, 'content' | 'originalLang'> & { audioLanguage: string | null; chapters: YouTubeChapter[] };
@@ -200,7 +183,8 @@ export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, 
 	const lines = captions && buildTranscriptLines(captions.cues);
 	return {
 		...video,
-		content: lines?.length ? transcriptMarkdown(lines) : video.summary.trim(),
+		// One Markdown paragraph per line, so the translation alignment path `[i]` pairs line `i` with its translation.
+		content: lines?.length ? paragraphsMarkdown(lines.map((line) => line.text)) : video.summary.trim(),
 		originalLang: captions?.language ?? audioLanguage ?? 'und',
 		youtube: { lines, chapters },
 	} satisfies PlatformResource & { youtube: YouTubeTranscript };

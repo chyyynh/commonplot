@@ -1,8 +1,9 @@
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pLimit from 'p-limit';
 import { z } from 'zod';
+import { fetchTwitterApi } from '../adapters/twitter';
 import type { SourceResourceDraft } from '../contracts/processing-target';
-import { errorMessage, fetchOk } from '../services/response';
+import { errorMessage } from '../services/response';
 import { withCoreDb } from '../store/db';
 import { advanceSourceWatermark, listTwitterSources, type TwitterSource } from '../store/sources';
 import { enqueueSourceDrafts } from './source-drafts';
@@ -23,12 +24,7 @@ const TwitterAdvancedSearchEnvelopeSchema = z.object({
 	tweets: z.array(z.unknown()),
 	has_next_page: z.boolean(),
 	next_cursor: z.string().nullish(),
-	status: z.string().optional(),
-	message: z.string().optional(),
-	msg: z.string().optional(),
 });
-
-const TWITTER_ADVANCED_SEARCH_API = 'https://api.twitterapi.io/twitter/tweet/advanced_search';
 
 const TWITTER_SOURCE_CONCURRENCY = 5;
 /**
@@ -39,10 +35,6 @@ const WINDOW_OVERLAP_SECONDS = 30 * 60;
 
 /** Fetch one fixed monitoring window using twitterapi.io's native cursor. */
 async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime: number, untilTime: number) {
-	if (!/^[a-z0-9_]{1,15}$/.test(userName)) throw new Error('Twitter source has an invalid handle');
-	if (!Number.isSafeInteger(sinceTime) || !Number.isSafeInteger(untilTime) || sinceTime < 0 || sinceTime >= untilTime) {
-		throw new Error('Twitter monitor has an invalid time window');
-	}
 	const query = `from:${userName} include:nativeretweets -filter:replies since_time:${sinceTime} until_time:${untilTime}`;
 	const terminalTweets = new Map<string, DiscoveredTweet>();
 	const seenCursors = new Set<string>();
@@ -54,16 +46,12 @@ async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime:
 	while (true) {
 		const params = new URLSearchParams({ query, queryType: 'Latest' });
 		if (cursor) params.set('cursor', cursor);
-
-		const response = await fetchOk(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, {
-			label: 'Twitter Advanced Search',
-			timeoutMs: 20_000,
-			headers: { 'x-api-key': apiKey },
-		});
-		const apiRes = TwitterAdvancedSearchEnvelopeSchema.parse(await response.json());
-		if (apiRes.status?.toLowerCase() === 'error') {
-			throw new Error(`Twitter Advanced Search failed: ${(apiRes.message ?? apiRes.msg)?.trim() || 'unknown provider error'}`);
-		}
+		const apiRes = await fetchTwitterApi(
+			`tweet/advanced_search?${params}`,
+			apiKey,
+			'Twitter Advanced Search',
+			TwitterAdvancedSearchEnvelopeSchema,
+		);
 		pages++;
 		providerTweets += apiRes.tweets.length;
 		for (const [index, item] of apiRes.tweets.entries()) {
@@ -90,48 +78,35 @@ async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime:
 		seenCursors.add(nextCursor);
 		cursor = nextCursor;
 	}
-	console.info({
-		tag: 'TWITTER',
-		event: 'twitter_search_completed',
-		userName,
-		pages,
-		provider_tweets: providerTweets,
-		unique_tweets: terminalTweets.size,
-		skipped_items: skippedItems,
-	});
 	return { tweets: terminalTweets.values(), providerTweets, pages, skippedItems };
 }
 
 async function enqueueTweets(db: NodePgDatabase, tweets: Iterable<DiscoveredTweet>, source: TwitterSource) {
 	const drafts: SourceResourceDraft[] = [];
 	let skippedItems = 0;
+	const skip = (tweetId: string, error: string) => {
+		skippedItems++;
+		console.error({ tag: 'TWITTER', event: 'twitter_item_skipped', userName: source.handle, tweetId, error });
+	};
 	for (const carrier of tweets) {
 		const tweet = carrier.retweeted_tweet ?? carrier;
-		try {
-			const attributedAuthor = carrier.retweeted_tweet
-				? carrier.author?.userName
-				: carrier.retweetedBy?.authorUserName || carrier.author?.userName;
-			const userName = attributedAuthor?.trim().toLowerCase() || null;
-			if (userName !== source.handle) {
-				throw new Error(`Tweet ${tweet.id} was attributed to @${userName ?? 'unknown'}, expected @${source.handle}`);
-			}
-			const url = `https://x.com/i/status/${tweet.id}`;
-			const publishedDate = new Date(tweet.createdAt);
-			if (Number.isNaN(publishedDate.getTime())) throw new Error(`Tweet ${tweet.id} has invalid publishedDate`);
-			drafts.push({
-				url,
-				sourceHints: { publishedDate: publishedDate.toISOString(), originalLang: tweet.lang },
-			});
-		} catch (error) {
-			skippedItems++;
-			console.error({
-				tag: 'TWITTER',
-				event: 'twitter_item_skipped',
-				userName: source.handle,
-				tweetId: tweet.id,
-				error: errorMessage(error),
-			});
+		const attributedAuthor = carrier.retweeted_tweet
+			? carrier.author?.userName
+			: carrier.retweetedBy?.authorUserName || carrier.author?.userName;
+		const userName = attributedAuthor?.trim().toLowerCase() || null;
+		if (userName !== source.handle) {
+			skip(tweet.id, `Tweet ${tweet.id} was attributed to @${userName ?? 'unknown'}, expected @${source.handle}`);
+			continue;
 		}
+		const publishedDate = new Date(tweet.createdAt);
+		if (Number.isNaN(publishedDate.getTime())) {
+			skip(tweet.id, `Tweet ${tweet.id} has invalid publishedDate`);
+			continue;
+		}
+		drafts.push({
+			url: `https://x.com/i/status/${tweet.id}`,
+			sourceHints: { publishedDate: publishedDate.toISOString(), originalLang: tweet.lang },
+		});
 	}
 	const admission = await enqueueSourceDrafts(db, source.id, drafts);
 	return {
@@ -176,32 +151,29 @@ async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: Tw
 	}
 }
 
-export async function handleTwitterCron(env: CoreEnv, windowEnd: Date = new Date()): Promise<void> {
+export async function handleTwitterCron(env: CoreEnv, windowEnd: Date): Promise<void> {
 	if (!env.KAITO_API_KEY) throw new Error('KAITO_API_KEY is not configured');
-	if (!Number.isFinite(windowEnd.getTime())) throw new Error('Twitter monitor window end is invalid');
 	console.info({ tag: 'TWITTER', msg: 'start', window_end: windowEnd.toISOString() });
-	await withCoreDb(env, (db) => monitorTwitterSources(env, db, windowEnd));
-}
+	await withCoreDb(env, async (db) => {
+		const sources = await listTwitterSources(db);
+		if (!sources.length) {
+			console.info({ tag: 'TWITTER', msg: 'No twitter sources configured' });
+			return;
+		}
 
-async function monitorTwitterSources(env: CoreEnv, db: NodePgDatabase, windowEnd: Date): Promise<void> {
-	const sources = await listTwitterSources(db);
-	if (!sources.length) {
-		console.info({ tag: 'TWITTER', msg: 'No twitter sources configured' });
-		return;
-	}
+		console.info({ tag: 'TWITTER', msg: 'Fetching via Advanced Search', sources: sources.length });
+		const limit = pLimit(TWITTER_SOURCE_CONCURRENCY);
+		const results = await Promise.allSettled(sources.map((source) => limit(() => processTwitterSource(env, db, source, windowEnd))));
+		const systemFailures = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
 
-	console.info({ tag: 'TWITTER', msg: 'Fetching via Advanced Search', sources: sources.length });
-	const limit = pLimit(TWITTER_SOURCE_CONCURRENCY);
-	const results = await Promise.allSettled(sources.map((source) => limit(() => processTwitterSource(env, db, source, windowEnd))));
-	const systemFailures = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
-
-	console.info({
-		tag: 'TWITTER',
-		msg: 'end',
-		sources: sources.length,
-		failed_sources: systemFailures.length,
+		console.info({
+			tag: 'TWITTER',
+			msg: 'end',
+			sources: sources.length,
+			failed_sources: systemFailures.length,
+		});
+		if (systemFailures.length) {
+			throw new AggregateError(systemFailures, `${systemFailures.length} Twitter monitor operations failed`);
+		}
 	});
-	if (systemFailures.length) {
-		throw new AggregateError(systemFailures, `${systemFailures.length} Twitter monitor operations failed`);
-	}
 }

@@ -25,16 +25,6 @@ const HackerNewsItemSchema = z.object({
 	url: optionalStringSchema,
 });
 
-type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
-
-async function fetchHnItem(itemId: number | string): Promise<HackerNewsItem | null> {
-	const response = await fetchOk(`${HN_ITEM_API}/${itemId}.json`, { label: 'Hacker News item', timeoutMs: 15_000, missing: [404, 410] });
-	if (!response) return null;
-	const item = HackerNewsItemSchema.nullable().parse(await response.json());
-	if (item && String(item.id) !== String(itemId)) throw new Error(`Hacker News API returned no matching item for ${itemId}`);
-	return item;
-}
-
 function hnMarkdown(html: string): string {
 	return stringifyMarkdown(htmlToMdast(`<base href="https://news.ycombinator.com/">${html}`)).trim();
 }
@@ -45,8 +35,10 @@ function hnMarkdown(html: string): string {
  */
 async function scrapeHackerNews(itemId: string): Promise<PlatformResource | { redirect: string }> {
 	console.info({ tag: 'HN', msg: 'Fetching item', itemId });
-	const item = await fetchHnItem(itemId);
+	const response = await fetchOk(`${HN_ITEM_API}/${itemId}.json`, { label: 'Hacker News item', timeoutMs: 15_000, missing: [404, 410] });
+	const item = response && HackerNewsItemSchema.nullable().parse(await response.json());
 	if (!item) throw new NonRetryableError(`Hacker News item ${itemId} was not found`);
+	if (String(item.id) !== itemId) throw new Error(`Hacker News API returned no matching item for ${itemId}`);
 	if ([item.deleted, item.dead].includes(true)) throw new NonRetryableError(`Hacker News item ${itemId} is unavailable`);
 	const linkedUrl = ResourceUrlSchema.safeParse(item.url).data;
 	// A link back to Hacker News is read as the thread it is.
