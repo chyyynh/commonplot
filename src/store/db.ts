@@ -14,7 +14,9 @@ export async function withCoreDb<T>(env: CoreEnv, work: (db: NodePgDatabase) => 
 		max: 5,
 		connectionTimeoutMillis: 5_000,
 	});
-	pool.on('error', (error) => console.warn({ tag: 'DB', msg: 'Idle connection dropped', error: error.message }));
+	// An idle client whose socket closed is dropped from the pool and the next query opens another; a query's own
+	// failure reaches its caller. The listener only keeps the drop from being an unhandled error.
+	pool.on('error', () => undefined);
 	try {
 		return await work(drizzle({ client: pool }));
 	} finally {
