@@ -15,8 +15,7 @@ import { resolveResourceUrl } from '../contracts/resource-url';
 import { rehostInlineImages } from '../services/image-rehosting';
 import { fetchOk, limitByteStream } from '../services/response';
 import { FETCH_STEP_RETRIES } from '../services/workflow-step';
-import { storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
-import { stagePdfDocument } from './pdf';
+import { stagePdfDocument, storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
 const GENERIC_HTML_MAX_BYTES = 5 * 1024 * 1024;
@@ -303,5 +302,6 @@ export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, url:
 	});
 	if ('redirect' in result) return result;
 	const acquired = await new Response(result).json<Exclude<WebAcquisition, Redirect>>();
-	return 'pdfStorageKey' in acquired ? stagePdfDocument(env, step, acquired) : acquired;
+	// A stored PDF, including one from an older checkpoint that also carries its storage key and crop URL prefix.
+	return 'inputContentHash' in acquired ? stagePdfDocument(env, step, acquired) : acquired;
 }

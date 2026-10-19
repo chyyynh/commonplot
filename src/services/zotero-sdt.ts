@@ -286,7 +286,7 @@ function isChartLabels(node: SdtBlockNode, caption: PageRect): boolean {
 }
 
 /** Plan semantic crops plus conservative caption-bounded recoveries; never infer an entire page. */
-export function structuredPdfVisualPlan(document: StructuredPdfDocument) {
+function structuredPdfVisualPlan(document: StructuredPdfDocument) {
 	const crops: StructuredPdfSourceCrop[] = [];
 	const missing: MissingFigure[] = [];
 	const excludedAuthorTables = authorTablePaths(document);
@@ -489,13 +489,7 @@ function firstPageIdentifierText(document: StructuredPdfDocument): string | null
 	return combined || null;
 }
 
-export function normalizeStructuredPdf(
-	document: StructuredPdfDocument,
-	options: Readonly<{
-		cropUrlPrefix: string;
-		visualPlan: ReturnType<typeof structuredPdfVisualPlan>;
-	}>,
-) {
+export function normalizeStructuredPdf(document: StructuredPdfDocument, cropUrlPrefix: string) {
 	const entries = walkNodes(document.content);
 	const referenceEntries = entries.filter(
 		(entry): entry is { node: SdtBlockNode; path: number[] } => 'reference' in entry.node && entry.node.reference === true,
@@ -533,11 +527,11 @@ export function normalizeStructuredPdf(
 		),
 	);
 	const linkedNotes = new Map<string, Set<string>>();
-	const { visualPlan } = options;
+	const visualPlan = structuredPdfVisualPlan(document);
 	const suppressedBlockPaths = new Set<string>();
 	const sourceCropsByBlock = new Map<string, Array<{ altText: string; placement: 'before' | 'replace'; url: string }>>();
 	for (const crop of visualPlan.crops) {
-		const entry = { altText: crop.altText, placement: crop.placement, url: `${options.cropUrlPrefix}${crop.id}.png` };
+		const entry = { altText: crop.altText, placement: crop.placement, url: `${cropUrlPrefix}${crop.id}.png` };
 		for (const path of crop.suppressedBlockPaths) suppressedBlockPaths.add(path);
 		const existing = sourceCropsByBlock.get(crop.blockPath);
 		if (existing) existing.push(entry);
@@ -816,5 +810,6 @@ export function normalizeStructuredPdf(
 			totalPages: document.catalog.pages.length,
 		},
 		references,
+		crops: visualPlan.crops,
 	};
 }

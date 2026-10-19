@@ -1,4 +1,4 @@
-import type { PaperIdentifier } from './paper-identity';
+import type { PaperIdentity } from './paper-identity';
 import type { ReferenceCitation } from './reference-citation';
 import type { ResourceIdentifier } from './resource';
 import type { ResourceCreator, ResourceKind, ResourceKindMetadata, ResourcePlatform } from './resource-kinds';
@@ -52,8 +52,8 @@ export type PlatformResource = Omit<AcquiredResource, 'resourcePlatform' | 'reso
 
 /** A web page or a PDF as read, before acquisition decides what it is and which work it is. */
 export type ReadDocument = Omit<AcquiredResource, 'kind' | 'resourcePlatform' | 'resourceIdentifiers'> & {
-	/** What a PDF prints on its first page: the identifiers and title its work is looked up by. */
-	printed?: { identifiers: PaperIdentifier[]; title: string | null };
+	/** What a PDF prints on its first page: the DOI or arXiv id and title its work is looked up by. */
+	printed?: Pick<PaperIdentity, 'doi' | 'arxivId'> & { title: string | null };
 };
 
 /** What entity extraction reads: an acquired original, or a stored one. */

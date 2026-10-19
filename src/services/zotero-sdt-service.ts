@@ -1,17 +1,19 @@
 import { Buffer } from 'node:buffer';
 import { hash } from 'node:crypto';
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject, type WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
-import { MAX_PDF_BYTES } from '../contracts/pdf-policy.ts';
+import type { ReadDocument } from '../contracts/acquired-resource.ts';
+import { paperIdentityFromText } from '../contracts/paper-identity.ts';
+import { MAX_PDF_BYTES, PDF_MIME } from '../contracts/pdf-policy.ts';
 import { blobKey, storedPdfCropUrlPrefix, structuredPdfCropPrefix, structuredPdfDocumentKey } from '../contracts/storage-keys.ts';
 import { coreExports } from '../exports.ts';
 import { errorMessage, limitByteStream, readBoundedResponseText, statusError } from './response.ts';
+import { stepJson } from './workflow-step.ts';
 import {
 	normalizeStructuredPdf,
 	parseStructuredPdfDocumentJson,
 	type StructuredPdfDocument,
 	type StructuredPdfSourceCrop,
-	structuredPdfVisualPlan,
 	ZOTERO_SDT_ARTIFACT_VERSION,
 } from './zotero-sdt.ts';
 
@@ -22,6 +24,7 @@ const ZOTERO_SDT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 const CROP_BATCH_SIZE = 8;
 const MAX_CROP_PNG_BYTES = 8 * 1024 * 1024;
 const MAX_CROP_ROW_BYTES = Math.ceil(MAX_CROP_PNG_BYTES / 3) * 4 + 4_096;
+const PDF_PARSE_STEP = { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' } as const;
 
 function structuredPdfFailureMessage(status: number, body: string): string {
 	const message = `Zotero SDT parse failed with ${status}`;
@@ -227,30 +230,61 @@ async function readStructuredPdfArtifact(
 	}
 }
 
+/** A stored PDF to read, kept under `blobKey(inputContentHash)`: an owned upload has no URL, a fetched one keeps where it was fetched from. */
+type PdfSource = Readonly<{ url: string | null; fileName: string | null; inputContentHash: string; sourceLabel: string }>;
+
 /** One acquisition path for owned uploads and independently fetched public PDFs. */
-export async function parseStoredPdfRepresentation(
-	env: CoreEnv,
-	input: Readonly<{ pdfStorageKey: string; inputContentHash: string; sourceLabel: string; cropUrlPrefix: string }>,
-) {
-	let document = await readStructuredPdfArtifact(env, input.pdfStorageKey, input.inputContentHash);
+async function parseStoredPdfRepresentation(env: CoreEnv, { inputContentHash, sourceLabel }: PdfSource) {
+	const pdfStorageKey = blobKey(inputContentHash);
+	let document = await readStructuredPdfArtifact(env, pdfStorageKey, inputContentHash);
 	if (!document) {
-		const object = await env.R2.get(input.pdfStorageKey);
+		const object = await env.R2.get(pdfStorageKey);
 		if (!object) throw new NonRetryableError('PDF source object is missing');
 		if (object.size < 1 || object.size > MAX_PDF_BYTES) {
 			await object.body.cancel('PDF source size is invalid');
 			throw new NonRetryableError(`PDF source object must contain 1-${MAX_PDF_BYTES} bytes`);
 		}
-		document = await parsePdfArtifactStream(object.body, object.size, input.sourceLabel);
-		await putPdfDerivative(env, input.pdfStorageKey, structuredPdfDocumentKey(input.pdfStorageKey), JSON.stringify(document), {
-			customMetadata: { artifactVersion: ZOTERO_SDT_ARTIFACT_VERSION, inputSha256: input.inputContentHash },
+		document = await parsePdfArtifactStream(object.body, object.size, sourceLabel);
+		await putPdfDerivative(env, pdfStorageKey, structuredPdfDocumentKey(pdfStorageKey), JSON.stringify(document), {
+			customMetadata: { artifactVersion: ZOTERO_SDT_ARTIFACT_VERSION, inputSha256: inputContentHash },
 		});
 	}
-	const visualPlan = structuredPdfVisualPlan(document);
-	const normalized = normalizeStructuredPdf(document, { visualPlan, cropUrlPrefix: input.cropUrlPrefix });
+	const normalized = normalizeStructuredPdf(document, storedPdfCropUrlPrefix(inputContentHash));
 	// The body becomes readable only after every planned crop is stored.
-	await ensureStructuredPdfSourceCrops(env, { ...input, crops: visualPlan.crops });
-	console.info({ tag: 'PDF_PARSE', event: 'zotero_sdt_completed', source: input.sourceLabel, ...normalized.parse });
+	await ensureStructuredPdfSourceCrops(env, { crops: normalized.crops, inputContentHash, pdfStorageKey, sourceLabel });
+	console.info({ tag: 'PDF_PARSE', event: 'zotero_sdt_completed', source: sourceLabel, ...normalized.parse });
 	return normalized;
+}
+
+/**
+ * Zotero reads the body of every PDF. Its first page and its own properties are where it prints its DOI or arXiv id and
+ * its title; without a printed title it is titled by its file name.
+ */
+export async function stagePdfDocument(env: CoreEnv, step: WorkflowStep, pdf: PdfSource): Promise<ReadDocument> {
+	const body = await stepJson(step, `parse-pdf-body-v2-${pdf.url ? blobKey(pdf.inputContentHash) : 'stored'}`, PDF_PARSE_STEP, async () => {
+		const { markdown, references, paperIdentifierText, title } = await parseStoredPdfRepresentation(env, pdf);
+		return { markdown, references, paperIdentifierText, title };
+	});
+	if (!body.markdown) throw new NonRetryableError(`${pdf.sourceLabel} has no usable text; OCR is required`);
+	const name = pdf.fileName?.trim() || 'PDF';
+	return {
+		url: pdf.url,
+		title: body.title ?? (name.replace(/\.[a-z0-9]{1,8}$/i, '') || name),
+		source: pdf.url ? new URL(pdf.url).hostname.replace(/^www\./, '') : 'File',
+		printed: { ...paperIdentityFromText(body.paperIdentifierText), title: body.title },
+		fileType: PDF_MIME,
+		pdfHash: pdf.inputContentHash,
+		content: body.markdown,
+		references: body.references,
+		// Core analysis replaces this BCP-47 undetermined marker.
+		originalLang: 'und',
+		subjectUrl: null,
+		previewImageUrl: null,
+		publishedDate: null,
+		summary: null,
+		creators: [],
+		kindMetadata: null,
+	};
 }
 
 function decodedPathSegment(segment: string): string {
@@ -263,16 +297,9 @@ function decodedPathSegment(segment: string): string {
 }
 
 /** A fetched public PDF is stored by its bytes, like any upload. */
-export async function storePublicPdfResponse(env: CoreEnv, response: Response, sourceUrl: string) {
-	const source = URL.parse(sourceUrl);
-	if (!source || !['https:', 'http:'].includes(source.protocol) || source.username || source.password) {
-		await response.body?.cancel('Invalid public PDF source');
-		throw new NonRetryableError('Invalid public PDF source URL');
-	}
-	if (!response.ok || !response.body) {
-		await response.body?.cancel('Public PDF response is not usable');
-		throw new Error(`Public PDF response is not usable (${response.status})`);
-	}
+export async function storePublicPdfResponse(env: CoreEnv, response: Response, sourceUrl: string): Promise<PdfSource> {
+	const source = new URL(sourceUrl);
+	if (!response.body) throw new Error(`Public PDF response has no body (${response.status})`);
 	const declaredLength = Number(response.headers.get('content-length'));
 	if (Number.isFinite(declaredLength) && declaredLength > MAX_PDF_BYTES) {
 		await response.body.cancel('Public PDF is too large');
@@ -288,16 +315,13 @@ export async function storePublicPdfResponse(env: CoreEnv, response: Response, s
 		throw new NonRetryableError('Fetched PDF response has no PDF header');
 	}
 	const inputContentHash = hash('sha256', new Uint8Array(bytes), 'hex');
-	const pdfStorageKey = blobKey(inputContentHash);
-	await env.R2.put(pdfStorageKey, bytes, { httpMetadata: { contentType: 'application/pdf' } });
+	await env.R2.put(blobKey(inputContentHash), bytes, { httpMetadata: { contentType: 'application/pdf' } });
 	const fileName = source.pathname.split('/').filter(Boolean).at(-1) ?? null;
 	return {
 		url: source.toString(),
 		fileName: fileName && decodedPathSegment(fileName),
 		inputContentHash,
-		pdfStorageKey,
 		sourceLabel: `Public PDF ${inputContentHash}`,
-		cropUrlPrefix: storedPdfCropUrlPrefix(inputContentHash),
 	};
 }
 

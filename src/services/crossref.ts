@@ -1,6 +1,5 @@
-import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
-import { normalizeBibliographicText, normalizeDoi } from '../contracts/paper-identity.ts';
+import { canonicalPaperUrl, normalizeBibliographicText, normalizeDoi } from '../contracts/paper-identity.ts';
 import { CRAWLER_CONTACT, crawlerUserAgent } from './crawler-identity.ts';
 import { fetchOk, readBoundedResponseText } from './response.ts';
 
@@ -26,7 +25,6 @@ const CrossrefWorkSchema = z.object({
 	issued: DateSchema,
 	title: z.union([z.string(), z.array(z.string()).max(10)]).nullish(),
 	'container-title': z.union([z.string(), z.array(z.string()).max(10)]).nullish(),
-	type: z.string().nullish(),
 });
 
 const CrossrefResponseSchema = z.object({
@@ -39,33 +37,17 @@ type CrossrefWork = z.infer<typeof CrossrefWorkSchema>;
 const first = (value: string | string[] | null | undefined) => (Array.isArray(value) ? value[0] : value)?.trim() || null;
 
 /** A work a PDF may be: what Jev is shown to pick from, and what a picked paper falls back to when OpenAlex has no record. */
-export type WorkCandidate = {
-	doi: string;
-	title: string;
-	authors: string[];
-	year: number | null;
-	venue: string | null;
-	type: string | null;
-};
+export type WorkCandidate = NonNullable<ReturnType<typeof workCandidate>>;
 
-function workCandidate(work: CrossrefWork): WorkCandidate | null {
+function workCandidate(work: CrossrefWork) {
 	const doi = normalizeDoi(work.DOI);
 	const title = first(work.title);
 	if (!doi || !title) return null;
-	const authors = (work.author ?? []).map(
-		(author) => author.literal || author.name || [author.given, author.family].filter(Boolean).join(' '),
-	);
-	return {
-		doi,
-		title,
-		authors: authors
-			.map((name) => name.trim())
-			.filter(Boolean)
-			.slice(0, 8),
-		year: publishedYear(work),
-		venue: first(work['container-title']),
-		type: work.type ?? null,
-	};
+	const authors = (work.author ?? [])
+		.map((author) => (author.literal || author.name || [author.given, author.family].filter(Boolean).join(' ')).trim())
+		.filter(Boolean)
+		.slice(0, 8);
+	return { doi, title, authors, year: publishedYear(work), venue: first(work['container-title']) };
 }
 
 function significantTokens(value: string): string[] {
@@ -75,13 +57,6 @@ function significantTokens(value: string): string[] {
 function publishedYear(work: CrossrefWork): number | null {
 	const year = (work.published ?? work.issued)?.['date-parts'][0]?.[0];
 	return typeof year === 'number' && Number.isInteger(year) && year >= 1800 && year <= 2199 ? year : null;
-}
-
-function normalizedAuthorNames(work: CrossrefWork): string[] {
-	return (work.author ?? [])
-		.slice(0, 3)
-		.map(({ family, name }) => normalizeBibliographicText(family?.trim() || name || ''))
-		.filter((name) => name.length >= 3);
 }
 
 function workMatchesCitation(citation: string, work: CrossrefWork): boolean {
@@ -101,7 +76,10 @@ function workMatchesCitation(citation: string, work: CrossrefWork): boolean {
 	const year = publishedYear(work);
 	if (years.size && year !== null && !years.has(year)) return false;
 
-	const authorMatches = normalizedAuthorNames(work).some((name) => ` ${citationText} `.includes(` ${name} `));
+	const authorMatches = (work.author ?? [])
+		.slice(0, 3)
+		.map(({ family, name }) => normalizeBibliographicText(family?.trim() || name || ''))
+		.some((name) => name.length >= 3 && ` ${citationText} `.includes(` ${name} `));
 	if (!exactTitle && !authorMatches) return false;
 	if (titleTokens.length < 5 && !authorMatches && !(year !== null && years.has(year))) return false;
 	return true;
@@ -118,21 +96,25 @@ async function fetchCrossref(params: Readonly<Record<string, string>>, doi?: str
 		headers: { Accept: 'application/json', 'User-Agent': CROSSREF_USER_AGENT },
 	});
 	if (!response) return null;
-	if (!response.body) throw new Error('Crossref response had no body');
 	return JSON.parse(
 		await readBoundedResponseText(response, doi ? MAX_CROSSREF_WORK_BYTES : MAX_CROSSREF_SEARCH_BYTES, 'Crossref response'),
 	);
 }
 
-export async function resolveCrossrefReferenceDoi(citation: string) {
-	const query = citation.trim();
-	if (!query) throw new TypeError('Crossref citation must not be empty');
+/** Crossref's best matches for a citation or a title. */
+async function searchCrossref(query: string) {
 	const response = await fetchCrossref({
 		'query.bibliographic': query.slice(0, MAX_CITATION_QUERY_CHARS),
 		rows: String(CROSSREF_ROWS),
-		select: 'DOI,title,author,published',
+		select: 'DOI,title,author,published,container-title',
 	});
-	const matches = CrossrefResponseSchema.parse(response).message.items.filter((work) => workMatchesCitation(query, work));
+	return CrossrefResponseSchema.parse(response).message.items;
+}
+
+/** A citation's DOI when exactly one of Crossref's matches is the cited work; a stored citation is never empty. */
+export async function resolveCrossrefReferenceDoi(citation: string) {
+	const query = citation.trim();
+	const matches = (await searchCrossref(query)).filter((work) => workMatchesCitation(query, work));
 	const dois = [...new Set(matches.map((work) => normalizeDoi(work.DOI)).filter((doi) => doi !== null))];
 	return dois.length === 1 ? dois[0]! : null;
 }
@@ -156,12 +138,11 @@ const CrossrefDepositedReferencesSchema = z.object({
 
 /** The reference list a publisher deposited with the paper's DOI; only entries with a DOI can enrich a citation. */
 export async function fetchCrossrefDepositedReferences(doi: string) {
-	const normalizedDoi = normalizeDoi(doi);
-	if (!normalizedDoi) throw new NonRetryableError('Crossref paper DOI is invalid');
-	const response = await fetchCrossref({}, normalizedDoi);
+	// `doi` is a stored, already normalized key.
+	const response = await fetchCrossref({}, doi);
 	if (response === null) return [];
 	const { message } = CrossrefDepositedReferencesSchema.parse(response);
-	if (normalizeDoi(message.DOI) !== normalizedDoi) return [];
+	if (normalizeDoi(message.DOI) !== doi) return [];
 	return (message.reference ?? []).flatMap((reference) => {
 		const referenceDoi = normalizeDoi(reference.DOI);
 		const title = reference['article-title'] ? normalizeBibliographicText(reference['article-title']) : '';
@@ -199,17 +180,12 @@ export function matchDepositedReferences<T extends { text: string }>(
 
 /** Crossref's best matches for the title a PDF prints. */
 export async function searchCrossrefWorks(title: string): Promise<WorkCandidate[]> {
-	const response = await fetchCrossref({
-		'query.bibliographic': title.slice(0, MAX_CITATION_QUERY_CHARS),
-		rows: String(CROSSREF_ROWS),
-		select: 'DOI,title,author,published,container-title,type',
-	});
-	return CrossrefResponseSchema.parse(response).message.items.flatMap((work) => workCandidate(work) ?? []);
+	return (await searchCrossref(title)).flatMap((work) => workCandidate(work) ?? []);
 }
 
 /** The work a DOI names, as its registration agency describes it: doi.org answers for Crossref, DataCite, Airiti and the rest. */
 export async function lookupDoiWork(doi: string): Promise<WorkCandidate | null> {
-	const response = await fetchOk(`https://doi.org/${doi.split('/').map(encodeURIComponent).join('/')}`, {
+	const response = await fetchOk(canonicalPaperUrl({ doi }), {
 		label: 'doi.org request',
 		timeoutMs: CROSSREF_TIMEOUT_MS,
 		permanent: [400, 401, 403, 404, 406, 410],

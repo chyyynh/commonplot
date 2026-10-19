@@ -10,15 +10,15 @@ import {
 	normalizeOpenAlexId,
 	mergePaperIdentifiers,
 	type PaperIdentifier,
+	paperIdentifiersFromIdentity,
 	paperIdentityFromIdentifiers,
 } from '../contracts/paper-identity';
 import type { ResourceIdentifier } from '../contracts/resource';
 import { lookupDoiWork, searchCrossrefWorks, type WorkCandidate } from '../services/crossref';
 import { errorMessage, fetchOk, readBoundedResponseText } from '../services/response';
 import { stepJson } from '../services/workflow-step';
-import { storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
+import { stagePdfDocument, storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 import { stageArxivHtmlAcquisition } from './arxiv-html';
-import { stagePdfDocument } from './pdf';
 
 const PAPER_METADATA_STEP = { retries: { limit: 2, delay: '15 seconds', backoff: 'exponential' }, timeout: '30 seconds' } as const;
 
@@ -37,7 +37,6 @@ const OpenAlexLocationSchema = z.object({
 
 const OpenAlexWorkSchema = z.object({
 	id: z.string(),
-	type: z.string().nullish(),
 	doi: z.string().nullish(),
 	title: z.string().nullish(),
 	publication_year: z.int().nullish(),
@@ -77,11 +76,12 @@ function resolvedWorkIdentifiers(work: OpenAlexWork, inputIdentifiers: readonly 
 	const providerDoi = normalizeDoi(work.doi);
 	const arxivProxyDoi = arxivId ? `10.48550/arxiv.${arxivId}` : null;
 	const doi = providerDoi === arxivProxyDoi ? identity?.doi : (providerDoi ?? identity?.doi);
-	const openAlexId = normalizeOpenAlexId(work.id);
 	return mergePaperIdentifiers([
-		...(doi && doi !== arxivProxyDoi ? [{ preferred: true, scheme: 'doi' as const, value: doi }] : []),
-		...(arxivId ? [{ preferred: true, scheme: 'arxiv' as const, value: arxivId }] : []),
-		...(openAlexId ? [{ preferred: true, scheme: 'openalex' as const, value: openAlexId }] : []),
+		...paperIdentifiersFromIdentity({
+			doi: doi && doi !== arxivProxyDoi ? doi : undefined,
+			arxivId: arxivId ?? undefined,
+			openAlexId: normalizeOpenAlexId(work.id) ?? undefined,
+		}),
 		...inputIdentifiers
 			.filter((identifier) => identifier.scheme !== 'doi' || identifier.value !== arxivProxyDoi)
 			.map((identifier) => ({ ...identifier, preferred: false })),
@@ -157,10 +157,9 @@ async function stagePaperPdfContent(env: CoreEnv, step: WorkflowStep, input: { c
 			'download-paper-openalex-pdf-v1',
 			{ retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' },
 			async () => {
-				const apiKey = env.OPENALEX_API_KEY?.trim();
-				if (!apiKey) throw new NonRetryableError('OpenAlex content download requires an API key');
+				// Only a paper OpenAlex resolved, which needs the API key, has a content PDF URL.
 				const requestUrl = new URL(input.contentPdfUrl);
-				requestUrl.searchParams.set('api_key', apiKey);
+				requestUrl.searchParams.set('api_key', env.OPENALEX_API_KEY.trim());
 				const response = await fetchOk(requestUrl, {
 					label: 'OpenAlex PDF request',
 					timeoutMs: CONTENT_REQUEST_TIMEOUT_MS,
@@ -301,8 +300,7 @@ const MAX_WORK_CANDIDATES = 6;
  * title it prints. Whether it is any of them is Jev's to judge, so a cover page's proceedings DOI is only a candidate.
  */
 export async function stageWorkCandidates(step: WorkflowStep, printed: NonNullable<ReadDocument['printed']>, processingId: string) {
-	const identity = paperIdentityFromIdentifiers(printed.identifiers);
-	const dois = [identity?.doi, identity?.arxivId && `10.48550/arxiv.${identity.arxivId}`].filter((doi): doi is string => !!doi);
+	const dois = [printed.doi, printed.arxivId && `10.48550/arxiv.${printed.arxivId}`].filter((doi): doi is string => !!doi);
 	if (!dois.length && !printed.title) return [];
 	return stepJson(step, 'find-work-candidates-v1', PAPER_METADATA_STEP, async () => {
 		const found = await Promise.allSettled([

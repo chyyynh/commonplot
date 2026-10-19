@@ -24,7 +24,7 @@ export type PaperIdentifier = Readonly<{
 	value: string;
 }>;
 
-type PaperIdentity = Readonly<{
+export type PaperIdentity = Readonly<{
 	arxivId?: string;
 	doi?: string;
 	openAlexId?: string;

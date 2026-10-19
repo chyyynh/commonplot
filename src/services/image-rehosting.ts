@@ -4,12 +4,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { Image, Nodes } from 'mdast';
 import pLimit from 'p-limit';
-import {
-	type HostedResourceImage,
-	hostedResourceImageUrl,
-	type ResourceImageSources,
-	normalizedResourceImageUrl,
-} from '../contracts/image-mapping';
+import type { HostedResourceImage, ResourceImageSources } from '../contracts/image-mapping';
 import { parseMarkdown } from '../contracts/markdown';
 import { crawlerUserAgent } from './crawler-identity';
 import { errorMessage, limitByteStream, responseError } from './response';
@@ -23,6 +18,7 @@ const MAX_INLINE_IMAGES = 20;
 const MAX_INLINE_IMAGE_BYTES = 5 * 1024 * 1024;
 const IMAGE_UPLOAD_CONCURRENCY = 4;
 const INLINE_RASTER_IMAGE = /^data:image\/(?:png|jpeg|gif|webp|avif);base64,([a-z0-9+/=]+)$/i;
+const HOSTED_RESOURCE_IMAGE_PATTERN = /^https:\/\/imagedelivery\.net\/[a-zA-Z0-9_-]+\/resource-[a-f0-9]{64}\/public$/;
 
 type ImageDimensions = Readonly<Pick<HostedResourceImage, 'height' | 'width'>>;
 
@@ -55,11 +51,8 @@ async function fetchImageSource(sourceUrl: string): Promise<ArrayBuffer> {
 }
 
 function deliveryUrl(image: ImageMetadata): string {
-	const value = image.variants.find((variant) => variant.endsWith(`/${image.id}/public`));
-	const hosted = hostedResourceImageUrl(value);
-	if (!hosted?.endsWith(`/${image.id}/public`)) {
-		throw new Error('images_write_invalid: public delivery variant missing');
-	}
+	const hosted = image.variants.find((variant) => variant.endsWith(`/${image.id}/public`))?.trim();
+	if (!hosted || !HOSTED_RESOURCE_IMAGE_PATTERN.test(hosted)) throw new Error('images_write_invalid: public delivery variant missing');
 	return hosted;
 }
 
@@ -140,9 +133,8 @@ async function storedImage(images: ImagesBinding, imageId: string, load: () => P
 	}
 }
 
-/** One stored copy per source URL, so acquiring a Resource again reuses its images. */
+/** One stored copy per source URL (already normalized by `resourceImageSources`), so acquiring a Resource again reuses its images. */
 async function rehostResourceImage(images: ImagesBinding, sourceUrl: string): Promise<HostedResourceImage> {
-	if (normalizedResourceImageUrl(sourceUrl) !== sourceUrl) throw new TypeError('Resource image source URL is invalid');
 	const image = await storedImage(images, `resource-${hash('sha256', sourceUrl, 'hex')}`, async () => {
 		const bytes = await fetchImageSource(sourceUrl);
 		const dimensions = await probeImageDimensions(images, new Blob([bytes]).stream(), sourceUrl);
@@ -156,12 +148,6 @@ function markdownImages(node: Nodes, found: Image[] = []): Image[] {
 	if (node.type === 'image') found.push(node);
 	if ('children' in node) for (const child of node.children) markdownImages(child, found);
 	return found;
-}
-
-/** Content-addressed, so the same embedded image is stored once however often it is acquired. */
-async function hostInlineImage(images: ImagesBinding, bytes: Uint8Array<ArrayBuffer>): Promise<string> {
-	const imageId = `resource-${hash('sha256', bytes, 'hex')}`;
-	return deliveryUrl(await storedImage(images, imageId, async () => ({ bytes: bytes.buffer, filename: 'inline-image' })));
 }
 
 /**
@@ -186,15 +172,21 @@ export async function rehostInlineImages(images: ImagesBinding, markdown: string
 		kept.map((dataUrl) =>
 			limit(async () => {
 				const bytes = new Uint8Array(Buffer.from(INLINE_RASTER_IMAGE.exec(dataUrl)![1]!, 'base64'));
+				// Content-addressed, so the same embedded image is stored once however often it is acquired.
 				// An image Images cannot read or store is dropped alone; the page still reads.
-				const url = await hostInlineImage(images, bytes).catch((error: unknown) => {
-					console.warn({
-						tag: 'RESOURCE_IMAGE',
-						event: 'inline_image_failed',
-						error: errorMessage(error),
+				const url = await storedImage(images, `resource-${hash('sha256', bytes, 'hex')}`, async () => ({
+					bytes: bytes.buffer,
+					filename: 'inline-image',
+				}))
+					.then(deliveryUrl)
+					.catch((error: unknown) => {
+						console.warn({
+							tag: 'RESOURCE_IMAGE',
+							event: 'inline_image_failed',
+							error: errorMessage(error),
+						});
+						return null;
 					});
-					return null;
-				});
 				return url ? [[dataUrl, url] as const] : [];
 			}),
 		),

@@ -55,7 +55,10 @@ function sentenceEnd(value: string): number {
 	return Number.isFinite(question) ? question + 1 : -1;
 }
 
-function authorSummary(authors: string, surnameFirst: boolean): Pick<ReferenceCitation, 'authors' | 'leadAuthor' | 'hasCoauthors'> {
+function authorSummary(
+	authors: string,
+	surnameFirst = SURNAME_FIRST_START.test(authors),
+): Pick<ReferenceCitation, 'authors' | 'leadAuthor' | 'hasCoauthors'> {
 	const hasEtAl = /\bet\s+al\b/u.test(authors);
 	const body = cleanText(authors.replace(/,?\s*\bet\s+al\b\.?/gu, '')).replace(/[.,;]$/u, '');
 	if (!body || PSEUDO_AUTHORS.has(body.toLowerCase())) return { authors: null, leadAuthor: null, hasCoauthors: false };
@@ -145,7 +148,7 @@ export function parseReferenceCitation(
 	const year = marked.year === undefined ? null : citationYear(cleanText(marked.year));
 	return {
 		...parsed,
-		...(authors ? authorSummary(authors, SURNAME_FIRST_START.test(authors)) : {}),
+		...(authors ? authorSummary(authors) : {}),
 		...(title ? { title } : {}),
 		...(year ? { year } : {}),
 	};
@@ -160,7 +163,7 @@ function parsePrintedCitation(value: string): ReferenceCitation {
 			(ieee[3]!.split(LOCATOR_CUT)[0] ?? '').split(/,\s*(?:vol\.|no\.|pp\.|\p{Lu}\p{Ll}+\.?\s+\d|\d)/u)[0] ?? '',
 		);
 		return {
-			...authorSummary(ieee[1]!, SURNAME_FIRST_START.test(ieee[1]!)),
+			...authorSummary(ieee[1]!),
 			year: citationYear(text),
 			title: trimPunctuation(ieee[2]!) || null,
 			venue: venue && !/^(?:\p{Lu}\p{Ll}+\.?\s+)?\d/u.test(venue) ? venue : null,
@@ -172,9 +175,8 @@ function parsePrintedCitation(value: string): ReferenceCitation {
 		'iu',
 	).exec(text);
 	if (leadingYear && looksLikeAuthorList(leadingYear[1]!)) {
-		const authors = leadingYear[1]!;
 		return {
-			...authorSummary(authors, SURNAME_FIRST_START.test(authors)),
+			...authorSummary(leadingYear[1]!),
 			year: parseYear(leadingYear[2]),
 			...titleAndVenue(text.slice(leadingYear[0].length)),
 		};

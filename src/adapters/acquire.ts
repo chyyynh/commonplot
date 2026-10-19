@@ -2,20 +2,19 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { AcquiredResource, AcquisitionInput, PlatformResource, ReadDocument } from '../contracts/acquired-resource';
 import { normalizeAcquiredResource } from '../contracts/normalize-resource';
-import { paperIdentifiersFromIdentity, paperIdentityFromText } from '../contracts/paper-identity';
+import { paperIdentifiersFromIdentity } from '../contracts/paper-identity';
 import { PDF_MIME } from '../contracts/pdf-policy';
 import type { ResourceIdentifier } from '../contracts/resource';
 import type { ResourcePlatform } from '../contracts/resource-kinds';
 import { RESOURCE_PLATFORMS, resolveResourceUrl } from '../contracts/resource-url';
-import { blobKey, storedPdfCropUrlPrefix } from '../contracts/storage-keys';
 import type { WorkCandidate } from '../services/crossref';
 import { askJev } from '../services/entities';
 import { errorMessage } from '../services/response';
 import { stepJson } from '../services/workflow-step';
+import { stagePdfDocument } from '../services/zotero-sdt-service.ts';
 import { stageHackerNewsAcquisition } from './hackernews';
 import { stageLessWrongAcquisition } from './lesswrong';
 import { stagePaper, stageWorkCandidates } from './paper';
-import { stagePdfDocument } from './pdf';
 import { stageTwitterAcquisition } from './twitter';
 import { stageWebAcquisition } from './web';
 import { stageYouTubeAcquisition } from './youtube';
@@ -134,8 +133,7 @@ async function stageDocument(env: CoreEnv, step: WorkflowStep, document: ReadDoc
 	const candidates = printed ? await stageWorkCandidates(step, printed, processingId) : [];
 	const { kind, work } = await stageIdentify(env, step, document, candidates, processingId);
 	if (work) {
-		const identity = paperIdentityFromText(work.doi);
-		const identifiers = identity ? paperIdentifiersFromIdentity(identity) : [];
+		const identifiers = paperIdentifiersFromIdentity({ doi: work.doi });
 		const paper = await stagePaper(env, step, { identifiers, pdf: read, candidate: work, processingId });
 		if (paper) return paper;
 	}
@@ -184,9 +182,7 @@ export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep,
 		url: null,
 		fileName,
 		inputContentHash: contentHash,
-		pdfStorageKey: blobKey(contentHash),
 		sourceLabel: `Stored PDF ${input.objectId}`,
-		cropUrlPrefix: storedPdfCropUrlPrefix(contentHash),
 	});
 	return normalizeAcquiredResource(await stageDocument(env, step, document, processingId));
 }
