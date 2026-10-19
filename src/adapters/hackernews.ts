@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { htmlToMdast, stringifyMarkdown } from '../contracts/markdown';
 import { resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
+import { fetchOk } from '../services/response';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 
 const HN_ITEM_API = 'https://hacker-news.firebaseio.com/v0/item';
@@ -27,12 +28,8 @@ const HackerNewsItemSchema = z.object({
 type HackerNewsItem = z.infer<typeof HackerNewsItemSchema>;
 
 async function fetchHnItem(itemId: number | string): Promise<HackerNewsItem | null> {
-	const response = await fetch(`${HN_ITEM_API}/${itemId}.json`, { signal: AbortSignal.timeout(15_000) });
-	if (!response.ok) {
-		await response.body?.cancel();
-		if (response.status === 404 || response.status === 410) return null;
-		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-	}
+	const response = await fetchOk(`${HN_ITEM_API}/${itemId}.json`, { label: 'Hacker News item', timeoutMs: 15_000, missing: [404, 410] });
+	if (!response) return null;
 	const item = HackerNewsItemSchema.nullable().parse(await response.json());
 	if (item && String(item.id) !== String(itemId)) throw new Error(`Hacker News API returned no matching item for ${itemId}`);
 	return item;

@@ -8,7 +8,7 @@ import { cleanText, htmlToMdast, stringifyMarkdown } from '../contracts/markdown
 import { paperIdentityFromText } from '../contracts/paper-identity';
 import { parseReferenceCitation } from '../contracts/reference-citation';
 import { crawlerUserAgent } from '../services/crawler-identity';
-import { limitByteStream, responseError } from '../services/response';
+import { fetchOk, limitByteStream } from '../services/response';
 import { stepJson } from '../services/workflow-step';
 
 const ARXIV_HTML_STEP = { retries: { limit: 2, delay: '10 seconds', backoff: 'exponential' }, timeout: '120 seconds' } as const;
@@ -242,16 +242,15 @@ function arxivHtmlDocument(html: string, url: string) {
 }
 
 async function fetchArxivHtml(arxivId: string) {
-	const response = await fetch(`https://arxiv.org/html/${arxivId}`, {
+	// A 404 is a paper arXiv has no HTML rendering for.
+	const response = await fetchOk(`https://arxiv.org/html/${arxivId}`, {
+		label: 'arXiv HTML request',
+		timeoutMs: ARXIV_HTML_TIMEOUT_MS,
+		permanent: [400, 403, 410],
+		missing: [404],
 		headers: { Accept: 'text/html', 'User-Agent': ARXIV_USER_AGENT },
-		signal: AbortSignal.timeout(ARXIV_HTML_TIMEOUT_MS),
 	});
-	if (!response.ok) {
-		const error = await responseError(response, [400, 403, 410], `arXiv HTML request failed with HTTP ${response.status}`);
-		// arXiv has no HTML rendering for this paper.
-		if (response.status === 404) return null;
-		throw error;
-	}
+	if (!response) return null;
 	const body =
 		response.body &&
 		limitByteStream(response.body, ARXIV_HTML_MAX_BYTES, () => new NonRetryableError(`arXiv HTML exceeded ${ARXIV_HTML_MAX_BYTES} bytes`));

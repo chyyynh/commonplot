@@ -39,6 +39,27 @@ export async function responseError(response: Response, permanent: PermanentStat
 	return statusError(response.status, permanent, message);
 }
 
+type FetchOptions = RequestInit & { label: string; timeoutMs: number; permanent?: PermanentStatuses; missing?: readonly number[] };
+
+/**
+ * A provider request that resolves to an ok response. A `missing` status (the provider has no such record) resolves to
+ * null; any other failure throws, permanent only for a `permanent` status, and names a `Retry-After` the provider sent.
+ */
+export async function fetchOk(url: string | URL, options: FetchOptions & { missing: readonly number[] }): Promise<Response | null>;
+export async function fetchOk(url: string | URL, options: FetchOptions): Promise<Response>;
+export async function fetchOk(url: string | URL, { label, timeoutMs, permanent = [], missing = [], ...init }: FetchOptions) {
+	const response = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+	if (response.ok) return response;
+	const retryAfter = response.headers.get('retry-after')?.slice(0, 100);
+	const error = await responseError(
+		response,
+		permanent,
+		`${label} failed with HTTP ${response.status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`,
+	);
+	if (missing.includes(response.status)) return null;
+	throw error;
+}
+
 /** A thrown value's message, for logs and stored errors. */
 export function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);

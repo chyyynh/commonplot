@@ -13,7 +13,7 @@ import { cleanText, htmlToMdast, stringifyMarkdown } from '../contracts/markdown
 import { PDF_MIME } from '../contracts/pdf-policy';
 import { resolveResourceUrl, type ResolvedResourceUrl } from '../contracts/resource-url';
 import { rehostInlineImages } from '../services/image-rehosting';
-import { limitByteStream, responseError } from '../services/response';
+import { fetchOk, limitByteStream } from '../services/response';
 import { FETCH_STEP_RETRIES } from '../services/workflow-step';
 import { storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 import { stagePublicPdfAcquisition } from './pdf';
@@ -271,21 +271,16 @@ function decodeHtml(bytes: Uint8Array, contentType: string): string {
  * a PDF keeps its response; an HTML or XML page keeps its unread body.
  */
 async function fetchWebPage(url: string): Promise<WebPage> {
-	const response = await fetch(url, {
+	const response = await fetchOk(url, {
+		label: 'Fetched resource',
+		timeoutMs: GENERIC_FETCH_TIMEOUT_MS,
+		permanent: [400, 401, 403, 404, 410, 422],
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
 			Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.5',
 			'Accept-Language': 'en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7',
 		},
-		signal: AbortSignal.timeout(GENERIC_FETCH_TIMEOUT_MS),
 	});
-	if (!response.ok) {
-		throw await responseError(
-			response,
-			[400, 401, 403, 404, 410, 422],
-			`Fetched resource returned HTTP ${response.status}: ${response.statusText}`,
-		);
-	}
 	const resolved = resolveResourceUrl(response.url);
 	if (!resolved) {
 		await response.body?.cancel();

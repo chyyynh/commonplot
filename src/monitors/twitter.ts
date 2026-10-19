@@ -2,7 +2,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pLimit from 'p-limit';
 import { z } from 'zod';
 import type { SourceResourceDraft } from '../contracts/processing-target';
-import { errorMessage } from '../services/response';
+import { errorMessage, fetchOk } from '../services/response';
 import { withCoreDb } from '../store/db';
 import { advanceSourceWatermark, listTwitterSources, type TwitterSource } from '../store/sources';
 import { enqueueSourceDrafts } from './source-drafts';
@@ -55,14 +55,11 @@ async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime:
 		const params = new URLSearchParams({ query, queryType: 'Latest' });
 		if (cursor) params.set('cursor', cursor);
 
-		const response = await fetch(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, {
+		const response = await fetchOk(`${TWITTER_ADVANCED_SEARCH_API}?${params}`, {
+			label: 'Twitter Advanced Search',
+			timeoutMs: 20_000,
 			headers: { 'x-api-key': apiKey },
-			signal: AbortSignal.timeout(20_000),
 		});
-		if (!response.ok) {
-			await response.body?.cancel();
-			throw new Error(`Twitter Advanced Search failed with HTTP ${response.status}`);
-		}
 		const apiRes = TwitterAdvancedSearchEnvelopeSchema.parse(await response.json());
 		if (apiRes.status?.toLowerCase() === 'error') {
 			throw new Error(`Twitter Advanced Search failed: ${(apiRes.message ?? apiRes.msg)?.trim() || 'unknown provider error'}`);

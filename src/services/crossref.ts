@@ -2,7 +2,7 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { z } from 'zod';
 import { normalizeBibliographicText, normalizeDoi } from '../contracts/paper-identity.ts';
 import { CRAWLER_CONTACT, crawlerUserAgent } from './crawler-identity.ts';
-import { readBoundedResponseText, responseError } from './response.ts';
+import { fetchOk, readBoundedResponseText } from './response.ts';
 
 const CROSSREF_WORKS_URL = 'https://api.crossref.org/works';
 const CROSSREF_USER_AGENT = crawlerUserAgent();
@@ -72,20 +72,14 @@ function workMatchesCitation(citation: string, work: CrossrefWork): boolean {
 async function fetchCrossref(params: Readonly<Record<string, string>>, doi?: string): Promise<unknown> {
 	const url = new URL(doi ? `${CROSSREF_WORKS_URL}/${encodeURIComponent(doi)}` : CROSSREF_WORKS_URL);
 	url.search = new URLSearchParams({ mailto: CRAWLER_CONTACT, ...params }).toString();
-	const response = await fetch(url, {
+	const response = await fetchOk(url, {
+		label: 'Crossref request',
+		timeoutMs: CROSSREF_TIMEOUT_MS,
+		permanent: [400, 401, 403, 404, 410, 422],
+		missing: doi ? [404] : [],
 		headers: { Accept: 'application/json', 'User-Agent': CROSSREF_USER_AGENT },
-		signal: AbortSignal.timeout(CROSSREF_TIMEOUT_MS),
 	});
-	if (!response.ok) {
-		const retryAfter = response.headers.get('retry-after')?.slice(0, 100);
-		const error = await responseError(
-			response,
-			[400, 401, 403, 404, 410, 422],
-			`Crossref request failed with HTTP ${response.status}${retryAfter ? `; retry_after=${retryAfter}` : ''}`,
-		);
-		if (doi && response.status === 404) return null;
-		throw error;
-	}
+	if (!response) return null;
 	if (!response.body) throw new Error('Crossref response had no body');
 	return JSON.parse(
 		await readBoundedResponseText(response, doi ? MAX_CROSSREF_WORK_BYTES : MAX_CROSSREF_SEARCH_BYTES, 'Crossref response'),

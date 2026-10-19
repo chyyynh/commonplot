@@ -7,7 +7,7 @@ import { stringifyMarkdown } from '../contracts/markdown';
 import { isSocialLinkHost } from '../contracts/resource-links';
 import { isXHost, resolveResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { crawlerUserAgent } from '../services/crawler-identity';
-import { responseError } from '../services/response';
+import { fetchOk } from '../services/response';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 
 const TwitterAuthorSchema = z.object({
@@ -269,14 +269,11 @@ type FxTweet = z.infer<typeof FxTweetSchema>;
 async function fetchFxTweet(tweetId: string): Promise<FxTweet | null> {
 	try {
 		// FxTwitter rejects requests without an identifying User-Agent (HTTP 401).
-		const response = await fetch(`https://api.fxtwitter.com/i/status/${tweetId}`, {
+		const response = await fetchOk(`https://api.fxtwitter.com/i/status/${tweetId}`, {
+			label: 'FxTwitter',
+			timeoutMs: 10_000,
 			headers: { 'user-agent': crawlerUserAgent() },
-			signal: AbortSignal.timeout(10_000),
 		});
-		if (!response.ok) {
-			await response.body?.cancel();
-			throw new Error(`HTTP ${response.status}`);
-		}
 		const { tweet } = z.object({ tweet: FxTweetSchema }).parse(await response.json());
 		if (tweet.id !== tweetId) throw new Error(`returned tweet ${tweet.id}`);
 		return tweet;
@@ -465,21 +462,20 @@ function quotedTweetUrl(tweet: Tweet): string | undefined {
 }
 
 /** A twitterapi.io JSON response; a client error other than a timeout or rate limit is permanent. */
-async function fetchTwitterApi(path: string, apiKey: string, failure: (response: Response) => string): Promise<unknown> {
-	const response = await fetch(`https://api.twitterapi.io/twitter/${path}`, {
+async function fetchTwitterApi(path: string, apiKey: string, label: string): Promise<unknown> {
+	const response = await fetchOk(`https://api.twitterapi.io/twitter/${path}`, {
+		label,
+		timeoutMs: 20_000,
+		permanent: (status) => status >= 400 && status < 500 && status !== 408 && status !== 429,
 		headers: { 'x-api-key': apiKey },
-		signal: AbortSignal.timeout(20_000),
 	});
-	if (!response.ok) {
-		throw await responseError(response, (status) => status >= 400 && status < 500 && status !== 408 && status !== 429, failure(response));
-	}
 	return response.json();
 }
 
 async function fetchTwitterApiArticle(tweetId: string, apiKey: string): Promise<TwitterArticle> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching longform for tweet', tweetId });
 	const payload = TwitterArticleResponseSchema.parse(
-		await fetchTwitterApi(`article?tweet_id=${tweetId}`, apiKey, ({ status }) => `Twitter longform request failed with HTTP ${status}`),
+		await fetchTwitterApi(`article?tweet_id=${tweetId}`, apiKey, 'Twitter longform request'),
 	);
 	if (payload.status !== 'success') {
 		throw new Error(`Twitter article ${tweetId} failed: ${payload.message?.trim() || 'unknown provider error'}`);
@@ -569,9 +565,7 @@ async function resolveTweetContent(tweet: Tweet, loadArticle: () => Promise<Twit
 async function fetchTwitterApiTweet(tweetId: string, apiKey: string): Promise<Tweet> {
 	console.info({ tag: 'TWITTER', msg: 'Fetching tweet', tweetId });
 	const payload = TwitterTweetsResponseSchema.parse(
-		await fetchTwitterApi(`tweets?tweet_ids=${tweetId}`, apiKey, ({ status, statusText }) =>
-			status === 404 || status === 410 ? `Twitter API: Tweet ${tweetId} was not found` : `HTTP ${status}: ${statusText}`,
-		),
+		await fetchTwitterApi(`tweets?tweet_ids=${tweetId}`, apiKey, `Twitter API tweet ${tweetId}`),
 	);
 	if (payload.status?.toLowerCase() === 'error') {
 		throw new Error(`Twitter tweets request failed: ${(payload.message ?? payload.msg)?.trim() || 'unknown provider error'}`);

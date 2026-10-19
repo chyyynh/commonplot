@@ -14,7 +14,7 @@ import {
 	titlePageNamesTitle,
 } from '../contracts/paper-identity';
 import type { ResourceIdentifier } from '../contracts/resource';
-import { errorMessage, readBoundedResponseText, responseError } from '../services/response';
+import { errorMessage, fetchOk, readBoundedResponseText } from '../services/response';
 import { stepJson } from '../services/workflow-step';
 import { storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 import { stageArxivHtmlAcquisition } from './arxiv-html';
@@ -136,20 +136,14 @@ async function resolveOpenAlexPaper(input: { apiKey?: string; identifiers: reado
 	const doi = identity?.doi ?? (identity?.arxivId ? `10.48550/arxiv.${identity.arxivId}` : null);
 	const workId = doi ? `https://doi.org/${encodeURIComponent(doi)}` : identity?.openAlexId ? encodeURIComponent(identity.openAlexId) : null;
 	if (!workId) return null;
-	const response = await fetch(`${OPENALEX_BASE}/works/${workId}?select=${WORK_FIELDS}`, {
+	const response = await fetchOk(`${OPENALEX_BASE}/works/${workId}?select=${WORK_FIELDS}`, {
+		label: 'OpenAlex request',
+		timeoutMs: REQUEST_TIMEOUT_MS,
+		permanent: [400, 401, 403, 410, 422],
+		missing: [404],
 		headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
-		signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
 	});
-	if (!response.ok) {
-		const retryAfter = response.headers.get('retry-after');
-		const error = await responseError(
-			response,
-			[400, 401, 403, 410, 422],
-			`OpenAlex request failed with HTTP ${response.status}${retryAfter ? `; retry_after_seconds=${retryAfter}` : ''}`,
-		);
-		if (response.status === 404) return null;
-		throw error;
-	}
+	if (!response) return null;
 	const work = OpenAlexWorkSchema.parse(
 		JSON.parse(await readBoundedResponseText(response, MAX_OPENALEX_RESPONSE_BYTES, 'OpenAlex response')),
 	);
@@ -169,13 +163,12 @@ async function stagePaperPdfContent(env: CoreEnv, step: WorkflowStep, input: { c
 				if (!apiKey) throw new NonRetryableError('OpenAlex content download requires an API key');
 				const requestUrl = new URL(input.contentPdfUrl);
 				requestUrl.searchParams.set('api_key', apiKey);
-				const response = await fetch(requestUrl, {
+				const response = await fetchOk(requestUrl, {
+					label: 'OpenAlex PDF request',
+					timeoutMs: CONTENT_REQUEST_TIMEOUT_MS,
+					permanent: [400, 401, 403, 404, 410, 422],
 					headers: { Accept: 'application/pdf' },
-					signal: AbortSignal.timeout(CONTENT_REQUEST_TIMEOUT_MS),
 				});
-				if (!response.ok) {
-					throw await responseError(response, [400, 401, 403, 404, 410, 422], `OpenAlex PDF request failed with HTTP ${response.status}`);
-				}
 				// The checkpoint keeps the key-free URL.
 				return storePublicPdfResponse(env, response, input.contentPdfUrl);
 			},

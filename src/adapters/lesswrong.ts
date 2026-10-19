@@ -4,7 +4,7 @@ import { z } from 'zod';
 import type { AcquiredResource } from '../contracts/acquired-resource';
 import { normalizedResourceImageUrl } from '../contracts/image-mapping';
 import { ResourceUrlSchema } from '../contracts/resource-url';
-import { readBoundedResponseText } from '../services/response';
+import { fetchOk, readBoundedResponseText } from '../services/response';
 import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 
 const LESSWRONG_GRAPHQL_URL = 'https://www.lesswrong.com/graphql';
@@ -45,18 +45,13 @@ const LessWrongDataSchema = z.object({
 });
 
 async function scrapeLessWrong(postId: string) {
-	const response = await fetch(LESSWRONG_GRAPHQL_URL, {
+	const response = await fetchOk(LESSWRONG_GRAPHQL_URL, {
+		label: 'LessWrong GraphQL',
+		timeoutMs: 15_000,
 		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-		},
+		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify({ query: POST_QUERY, variables: { id: postId } }),
-		signal: AbortSignal.timeout(15_000),
 	});
-	if (!response.ok) {
-		await response.body?.cancel();
-		throw new Error(`LessWrong GraphQL failed with HTTP ${response.status}`);
-	}
 	const payload = z
 		.object({
 			data: z.unknown().optional(),
