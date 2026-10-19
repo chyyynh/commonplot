@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { ResourceLanguageSchema } from './resource-language';
 import { ResourceUrlSchema } from './resource-url';
 
-export const ResourceDraftTargetSchema = z.strictObject({
+const ResourceDraftTargetSchema = z.strictObject({
 	kind: z.literal('draft'),
 	url: ResourceUrlSchema.max(2_048),
 	sourceHints: z
@@ -27,7 +27,7 @@ const ReacquireTargetSchema = z.strictObject({
 });
 
 /** What a request asks Core to acquire; who asked lives on the request row. */
-export const RequestTargetSchema = z.discriminatedUnion('kind', [StoredBlobTargetSchema, ReacquireTargetSchema, ResourceDraftTargetSchema]);
+const RequestTargetSchema = z.discriminatedUnion('kind', [StoredBlobTargetSchema, ReacquireTargetSchema, ResourceDraftTargetSchema]);
 
 export type RequestTarget = z.infer<typeof RequestTargetSchema>;
 
@@ -49,9 +49,7 @@ export const ImportWorkflowIdSchema = z.string().pipe(z.templateLiteral([IMPORT_
 export const ResourceImportDispatchSchema = z.strictObject({
 	workflowId: ImportWorkflowIdSchema,
 	payload: z.discriminatedUnion('kind', [
-		z.strictObject({
-			kind: z.literal('draft'),
-			url: ResourceUrlSchema.max(2_048),
+		ResourceDraftTargetSchema.pick({ kind: true, url: true }).extend({
 			saveTarget: z.strictObject({
 				kind: z.literal('resourceSave'),
 				userId: z.string().min(1).max(128),

@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { IMPORT_WORKFLOW_PREFIX, type RequestTarget, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { resolveResourceUrl } from '../contracts/resource-url';
+import { lockKeys } from './db';
 import { READABLE_ORIGINAL_SQL } from './kind-sql';
 
 /**
@@ -42,7 +43,7 @@ const REQUEST_COLUMNS = sql`id::text, target_key AS "targetKey", requester, url,
 	resource_id::text AS "resourceId", hints, workflow_id AS "workflowId", status`;
 
 /** What every request for the same thing shares: a draft's normalized URL, an upload's object, a resync's Resource. */
-export function requestKey(target: RequestTarget): string | null {
+function requestKey(target: RequestTarget): string | null {
 	switch (target.kind) {
 		case 'draft': {
 			const url = resolveResourceUrl(target.url);
@@ -53,21 +54,6 @@ export function requestKey(target: RequestTarget): string | null {
 		case 'reacquire':
 			return `resource:${target.resourceId}`;
 	}
-}
-
-/** Web's handle for an import is fixed by Web; Core's own requests get a fresh workflow per attempt. */
-function leadWorkflowId(row: RequestRow) {
-	return row.requester === 'user' ? `${IMPORT_WORKFLOW_PREFIX}${row.id}` : `rq-v1-${row.id}-${crypto.randomUUID().slice(0, 8)}`;
-}
-
-/** Rebuilds what the lead's workflow acquires; null when a resync's Resource was deleted meanwhile. */
-function processingParams(row: RequestRow): ResourceProcessingTarget | null {
-	if (row.storedObjectId) return { kind: 'storedBlob', objectId: row.storedObjectId, requestId: row.id };
-	if (row.requester === 'resync')
-		return row.resourceId
-			? { kind: 'reacquire', resourceId: row.resourceId, ...(row.hints?.force ? { force: true } : {}), requestId: row.id }
-			: null;
-	return { kind: 'draft', url: row.url!, ...(row.hints ? { sourceHints: row.hints } : {}), requestId: row.id };
 }
 
 /** Records the request, or returns it again when already recorded; null when it is not waiting for an acquisition. */
@@ -118,8 +104,10 @@ async function recordRequest(tx: NodePgDatabase, request: ResourceRequest & { ke
 
 /** Makes a waiting request the lead of its key's acquisition, unless one is already in flight. Run under the key's lock. */
 async function claimLead(tx: NodePgDatabase, row: RequestRow) {
+	// Web's handle for an import is fixed by Web; Core's own requests get a fresh workflow per attempt.
+	const workflowId = row.requester === 'user' ? `${IMPORT_WORKFLOW_PREFIX}${row.id}` : `rq-v1-${row.id}-${crypto.randomUUID().slice(0, 8)}`;
 	const { rows } = await tx.execute<RequestRow>(sql`
-		UPDATE resource_requests SET workflow_id = ${leadWorkflowId(row)}, updated_at = NOW()
+		UPDATE resource_requests SET workflow_id = ${workflowId}, updated_at = NOW()
 		WHERE id = ${row.id}::uuid AND status = 'pending' AND workflow_id IS NULL
 		  AND NOT EXISTS (
 			SELECT 1 FROM resource_requests lead
@@ -130,16 +118,17 @@ async function claimLead(tx: NodePgDatabase, row: RequestRow) {
 	return rows[0] ?? null;
 }
 
-async function lockKeys(tx: NodePgDatabase, keys: readonly string[]) {
-	await tx.execute(sql`
-		SELECT pg_advisory_xact_lock(hashtextextended('newsence:request:' || key, 0))
-		FROM unnest(${sql.param([...new Set(keys)].sort())}::text[]) WITH ORDINALITY AS locks(key, ordinal)
-		ORDER BY ordinal
-	`);
-}
-
+/** A lead and what its workflow acquires; no params when a resync's Resource was deleted meanwhile. */
 function toLead(row: RequestRow): RequestLead {
-	return { id: row.id, workflowId: row.workflowId!, params: processingParams(row) };
+	const { id, storedObjectId, resourceId, hints } = row;
+	const params: ResourceProcessingTarget | null = storedObjectId
+		? { kind: 'storedBlob', objectId: storedObjectId, requestId: id }
+		: row.requester !== 'resync'
+			? { kind: 'draft', url: row.url!, ...(hints ? { sourceHints: hints } : {}), requestId: id }
+			: resourceId
+				? { kind: 'reacquire', resourceId, ...(hints?.force ? { force: true } : {}), requestId: id }
+				: null;
+	return { id, workflowId: row.workflowId!, params };
 }
 
 /**
@@ -156,6 +145,7 @@ export async function recordRequests(db: NodePgDatabase, requests: readonly Reso
 	return db.transaction(async (tx) => {
 		await lockKeys(
 			tx,
+			'newsence:request:',
 			keyed.map(({ key }) => key),
 		);
 		const leads: RequestLead[] = [];
@@ -323,6 +313,7 @@ export async function promoteOrphanRequests(db: NodePgDatabase, limit: number) {
 	return db.transaction(async (tx) => {
 		await lockKeys(
 			tx,
+			'newsence:request:',
 			rows.map(({ targetKey }) => targetKey),
 		);
 		const leads: RequestLead[] = [];

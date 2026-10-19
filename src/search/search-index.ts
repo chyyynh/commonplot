@@ -82,11 +82,6 @@ function requiredDocumentText(value: string | null, field: string, resourceId: s
 	return text;
 }
 
-/** An untitled kind's document opens with the source line. */
-function documentHeading(row: CorpusDocument, original: CorpusTranslationRow): string {
-	return RESOURCE_KINDS[row.kind].titled ? `# ${requiredDocumentText(original.title, 'title', row.id)}` : '';
-}
-
 function serializeTranslation(translation: CorpusTranslationRow): string {
 	return [
 		`## ${translation.lang}`,
@@ -105,7 +100,8 @@ function serializeDocument(row: CorpusDocument): string {
 	const original = row.translations.find((translation) => translation.lang === row.original_lang);
 	if (!original) throw new Error(`AI Search document ${row.id} is missing its ${row.original_lang} translation`);
 	return [
-		documentHeading(row, original),
+		// An untitled kind's document opens with the source line.
+		RESOURCE_KINDS[row.kind].titled ? `# ${requiredDocumentText(original.title, 'title', row.id)}` : '',
 		requiredDocumentText(row.source, 'source', row.id),
 		...row.translations.map(serializeTranslation),
 		markdownSection('Content', original.content),
@@ -155,34 +151,24 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 	return result.rows;
 }
 
-async function upsertCorpusItem(env: CoreEnv, document: CorpusDocument): Promise<void> {
-	const publishedAt = document.published_at === null ? null : new Date(document.published_at);
-	if (publishedAt && Number.isNaN(publishedAt.getTime())) {
-		throw new Error(`AI Search document ${document.id} has invalid publication date`);
-	}
-	const options = {
-		metadata: {
-			...(publishedAt ? { published_at: publishedAt.toISOString() } : {}),
+/** Uploads the Resource's current document, or deletes its item when it has none. */
+export async function syncCorpusItem(env: CoreEnv, resourceId: string, document: CorpusDocument | undefined): Promise<void> {
+	const key = aiSearchItemKey(resourceId);
+	if (document) {
+		const metadata = {
+			...(document.published_at ? { published_at: new Date(document.published_at).toISOString() } : {}),
 			kind: document.kind,
 			// Carriers such as HN threads and reposts name the Resource they discuss.
 			...(document.subject_id ? { subject_id: document.subject_id } : {}),
-		},
-	};
-	await env.AI_SEARCH.items.upload(aiSearchItemKey(document.id), serializeDocument(document), options);
-}
-
-async function deleteCorpusItem(env: CoreEnv, resourceId: string): Promise<void> {
-	const key = aiSearchItemKey(resourceId);
+		};
+		await env.AI_SEARCH.items.upload(key, serializeDocument(document), { metadata });
+		return;
+	}
 	const listed = await env.AI_SEARCH.items.list({ key, source: 'builtin', per_page: 1 });
 	const item = listed.result.find((candidate) => candidate.key === key);
 	if (!item) return;
 	await env.AI_SEARCH.items.delete(item.id);
 	console.info({ tag: 'AI_SEARCH', msg: 'Corpus item deleted', resource_id: resourceId, item_id: item.id });
-}
-
-export async function syncCorpusItem(env: CoreEnv, resourceId: string, document: CorpusDocument | undefined): Promise<void> {
-	if (document) await upsertCorpusItem(env, document);
-	else await deleteCorpusItem(env, resourceId);
 }
 
 /** A matched chunk of a Resource's indexed text, trimmed for a model to judge relevance. */
@@ -215,13 +201,9 @@ function hitsFromSearchResponse(response: AiSearchSearchResponse): SearchHit[] {
  * Carriers give way to the Resource they discuss when it is itself searchable and of an allowed
  * kind, so each subject appears once, at its best-ranked position.
  */
-async function collapseCarriers(
-	env: CoreEnv,
-	hits: SearchHit[],
-	kinds?: readonly SearchableResourceKind[],
-): Promise<Array<{ id: string; score: number; passages: SearchPassage[] }>> {
+async function collapseCarriers(env: CoreEnv, hits: SearchHit[], kinds?: readonly SearchableResourceKind[]) {
 	const carrierIds = hits.filter((hit) => hit.subjectId).map((hit) => hit.id);
-	if (!carrierIds.length) return hits.map(({ id, score, passages }) => ({ id, score, passages }));
+	if (!carrierIds.length) return hits;
 	const { rows } = await withCoreDb(env, (db) =>
 		db.execute<{ id: string; subject_id: string }>(sql`
 		SELECT carrier.id::text, r.id::text AS subject_id
@@ -233,7 +215,7 @@ async function collapseCarriers(
 	`),
 	);
 	const subjects = new Map(rows.map((row) => [row.id, row.subject_id]));
-	const collapsed = new Map<string, { id: string; score: number; passages: SearchPassage[] }>();
+	const collapsed = new Map<string, Omit<SearchHit, 'subjectId'>>();
 	for (const hit of hits) {
 		const id = subjects.get(hit.id) ?? hit.id;
 		// A carrier's chunks quote the carrier, not its subject, so only the subject's own text counts.

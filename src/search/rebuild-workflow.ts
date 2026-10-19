@@ -51,15 +51,12 @@ const BATCH_STEP_OPTIONS = { retries: STEP_RETRIES, timeout: '300 seconds' } as 
 const CORPUS_FOLDER_FILTER = JSON.stringify({ folder: AI_SEARCH_ITEM_PREFIX });
 
 async function loadCorpusCount(db: NodePgDatabase): Promise<number> {
-	const result = await db.execute<{ count: string }>(sql`
-		SELECT COUNT(*)::text AS count
+	const { rows } = await db.execute<{ count: number }>(sql`
+		SELECT COUNT(*)::int AS count
 		FROM resources r
 		WHERE ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 	`);
-	const [row] = result.rows;
-	const count = Number(row?.count);
-	if (!Number.isSafeInteger(count) || count < 0) throw new Error(`Invalid corpus count: ${row?.count}`);
-	return count;
+	return rows[0]!.count;
 }
 
 async function listCorpusIdsAfter(
@@ -87,17 +84,6 @@ async function listCorpusIdsAfter(
 	return result.rows;
 }
 
-async function loadEligibleCorpusIds(db: NodePgDatabase, resourceIds: readonly string[]): Promise<Set<string>> {
-	if (!resourceIds.length) return new Set();
-	const result = await db.execute<{ id: string }>(sql`
-		SELECT r.id::text
-		FROM resources r
-		WHERE ${inArray(sql`r.id`, resourceIds)}
-		  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
-	`);
-	return new Set(result.rows.map((row) => row.id));
-}
-
 /** One page of the corpus folder's indexed items. */
 function listCorpusItems(instance: AiSearchInstance, page: number, perPage = REINDEX_PAGE_SIZE, status?: 'error') {
 	return instance.items.list({ metadata_filter: CORPUS_FOLDER_FILTER, page, per_page: perPage, source: 'builtin', status });
@@ -116,12 +102,18 @@ async function pruneSearchItemPage(
 	page: number,
 ): Promise<{ deleted: number; kept: string[] }> {
 	const listed = await listCorpusItems(instance, page);
-	const resourceIds = listed.result.map((item) => resourceIdFromAiSearchItemKey(item.key)).filter((id): id is string => id !== null);
-	const eligibleIds = await loadEligibleCorpusIds(db, resourceIds);
-	const staleItems = listed.result.filter((item) => {
-		const resourceId = resourceIdFromAiSearchItemKey(item.key);
-		return resourceId === null || !eligibleIds.has(resourceId);
-	});
+	const items = listed.result.map((item) => ({ item, resourceId: resourceIdFromAiSearchItemKey(item.key) }));
+	const resourceIds = items.flatMap(({ resourceId }) => (resourceId ? [resourceId] : []));
+	const { rows } = resourceIds.length
+		? await db.execute<{ id: string }>(sql`
+				SELECT r.id::text
+				FROM resources r
+				WHERE ${inArray(sql`r.id`, resourceIds)}
+				  AND ${SEARCHABLE_CORPUS_RESOURCE_SQL}
+			`)
+		: { rows: [] };
+	const eligibleIds = new Set(rows.map((row) => row.id));
+	const staleItems = items.filter(({ resourceId }) => resourceId === null || !eligibleIds.has(resourceId)).map(({ item }) => item);
 	await pLimit(REINDEX_AI_SEARCH_CONCURRENCY).map(staleItems, (item) => instance.items.delete(item.id));
 	return { deleted: staleItems.length, kept: [...eligibleIds] };
 }

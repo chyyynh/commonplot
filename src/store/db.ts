@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm';
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { Pool } from 'pg';
 
@@ -19,4 +20,14 @@ export async function withCoreDb<T>(env: CoreEnv, work: (db: NodePgDatabase) => 
 	} finally {
 		await pool.end().catch(() => undefined);
 	}
+}
+
+/** Takes the transaction's advisory locks on `prefix`-namespaced keys, deduplicated and sorted so every caller locks in one order. */
+export async function lockKeys(tx: NodePgDatabase, prefix: string, keys: readonly string[]) {
+	if (!keys.length) return;
+	await tx.execute(sql`
+		SELECT pg_advisory_xact_lock(hashtextextended(${prefix}::text || key, 0))
+		FROM unnest(${sql.param([...new Set(keys)].sort())}::text[]) WITH ORDINALITY AS locks(key, ordinal)
+		ORDER BY ordinal
+	`);
 }

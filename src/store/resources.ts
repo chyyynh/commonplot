@@ -8,6 +8,7 @@ import { type ResourceKind, type ResourcePlatform, RESOURCE_KINDS } from '../con
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { blobKey } from '../contracts/storage-keys';
+import { lockKeys } from './db';
 import { type Derivation, replaceResourceEntities, requireDerivations, SUMMARY_LANGS } from './derivations';
 import { kindWhere, READABLE_ORIGINAL_SQL } from './kind-sql';
 import { fulfillRequests } from './requests';
@@ -258,15 +259,6 @@ async function writeCanonicalResource(
 	] satisfies Derivation[];
 }
 
-/** Links stored before this Resource existed, under any URL it is known by, now point to it. */
-async function resolveLinksTo(db: NodePgDatabase, resourceId: string, resource: HostedResource) {
-	await db.execute(sql`
-		UPDATE resource_links SET target_resource_id = ${resourceId}::uuid
-		WHERE normalized_url = ANY(${sql.param(linkedResourceUrls(resource.normalizedUrl, resource.resourceIdentifiers))}::text[])
-		  AND target_resource_id IS NULL AND source_resource_id <> ${resourceId}::uuid
-	`);
-}
-
 /**
  * Writes an acquired Resource in one transaction, in three parts: `claimRow` decides which row it is and whether its
  * original is replaced, `writeOriginal` writes or keeps that original, and `fulfillRequests` settles every request waiting
@@ -292,7 +284,12 @@ export async function persistResolvedResource(
 				ON CONFLICT (scheme, value) DO UPDATE SET preferred = false WHERE stored.resource_id = EXCLUDED.resource_id
 			`);
 		// Follow-ups read the committed row, which can differ from this draft; links stored before it existed now point to it.
-		if (target.kind !== 'upload') await resolveLinksTo(tx, claim.resourceId, resource);
+		if (target.kind !== 'upload')
+			await tx.execute(sql`
+				UPDATE resource_links SET target_resource_id = ${claim.resourceId}::uuid
+				WHERE normalized_url = ANY(${sql.param(linkedResourceUrls(resource.normalizedUrl, resource.resourceIdentifiers))}::text[])
+				  AND target_resource_id IS NULL AND source_resource_id <> ${claim.resourceId}::uuid
+			`);
 		const requests = await fulfillRequests(tx, requestId, claim.resourceId);
 		// Whether content translates automatically depends on who asked, which fulfilling the requests just recorded.
 		const derivations = required
@@ -318,21 +315,18 @@ async function claimRow(
 	target: ResourcePersistenceTarget,
 	blobExists: (contentHash: string) => Promise<boolean>,
 ): Promise<RowClaim> {
-	const lockKeys = [
-		...(resource.normalizedUrl ? [`url:${resource.normalizedUrl}`] : []),
-		...resource.resourceIdentifiers.map(({ scheme, value }) => `id:${scheme}:${value}`),
-		...(resource.subject
-			? [`url:${resource.subject.normalizedUrl}`, ...resource.subject.identifiers.map(({ scheme, value }) => `id:${scheme}:${value}`)]
-			: []),
+	const identities = [
+		{ normalizedUrl: resource.normalizedUrl, identifiers: resource.resourceIdentifiers },
+		...(resource.subject ? [resource.subject] : []),
 	];
-	if (lockKeys.length) {
-		// Preserve the same lock order while acquiring all identities in one round trip.
-		await tx.execute(sql`
-			SELECT pg_advisory_xact_lock(hashtextextended('newsence:resource:' || key, 0))
-			FROM unnest(${sql.param([...new Set(lockKeys)].sort())}::text[]) WITH ORDINALITY AS locks(key, ordinal)
-			ORDER BY ordinal
-		`);
-	}
+	await lockKeys(
+		tx,
+		'newsence:resource:',
+		identities.flatMap(({ normalizedUrl, identifiers }) => [
+			...(normalizedUrl ? [`url:${normalizedUrl}`] : []),
+			...identifiers.map(({ scheme, value }) => `id:${scheme}:${value}`),
+		]),
+	);
 	if (resource.pdfHash) {
 		// Web purges a blob only while holding this lock and finding no Resource that reads it.
 		await tx.execute(sql`SELECT pg_advisory_xact_lock(${STORED_BLOB_LOCK_NAMESPACE}, hashtext(${blobKey(resource.pdfHash)}))`);
@@ -345,10 +339,7 @@ async function claimRow(
 		const owned = await tx.execute(sql`SELECT id FROM stored_objects WHERE id = ${uploadId}::uuid AND status = 'ready' FOR UPDATE`);
 		if (!owned.rows.length) throw new NonRetryableError('Uploaded PDF ownership was deleted');
 	}
-	const candidates = await findResourceCandidates(tx, [
-		...(target.kind === 'draft' ? [{ normalizedUrl: resource.normalizedUrl, identifiers: resource.resourceIdentifiers }] : []),
-		...(resource.subject ? [resource.subject] : []),
-	]);
+	const candidates = await findResourceCandidates(tx, target.kind === 'draft' ? identities : identities.slice(1));
 	const rootCandidates = target.kind === 'draft' ? candidates.shift()! : [];
 	const subjectCandidates = candidates[0] ?? [];
 	// Each candidate is already committed; another attempt finds the same ones.
@@ -378,7 +369,7 @@ async function claimRow(
 	const outcome: PersistOutcome =
 		target.kind === 'upload' ||
 		!root?.hasOriginal ||
-		(target.kind === 'existing' && (target.force || !isDegradedOriginal(resource.content, root))) ||
+		(target.kind === 'existing' && (target.force || resource.content.length >= root.originalChars * MIN_REACQUIRED_CONTENT_RATIO)) ||
 		(target.kind === 'draft' &&
 			target.uploadId !== undefined &&
 			resource.content.length * MIN_REACQUIRED_CONTENT_RATIO > root.originalChars)
@@ -414,16 +405,21 @@ async function writeOriginal(
 	if (target.kind === 'existing')
 		console.warn({ tag: 'PERSIST', msg: 'Reacquired original is much shorter; kept the stored one', resource_id: resourceId });
 	if (root?.kind === 'paper' && resource.kind === 'paper') {
-		await addPaperIdentifierKeys(tx, resourceId, resource.resourceIdentifiers);
+		// Another version's identifiers join the paper that is already stored, so both find it next time.
+		if (resource.resourceIdentifiers.length)
+			await tx.execute(sql`
+				INSERT INTO resource_keys (resource_id, scheme, value, preferred)
+				SELECT ${resourceId}::uuid, incoming.scheme, incoming.value, incoming.preferred AND NOT EXISTS (
+					SELECT 1 FROM resource_keys stored WHERE stored.resource_id = ${resourceId}::uuid AND stored.scheme = incoming.scheme AND stored.preferred
+				)
+				FROM jsonb_to_recordset(${JSON.stringify(resource.resourceIdentifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
+				ON CONFLICT (scheme, value) DO NOTHING
+			`);
 		// A kept full text without a PDF of its own, such as arXiv HTML, still gains the copy for the PDF view.
 		if (resource.pdfHash)
 			await tx.execute(sql`UPDATE resources SET pdf_hash = ${resource.pdfHash} WHERE id = ${resourceId}::uuid AND pdf_hash IS NULL`);
 	}
 	return null;
-}
-
-function isDegradedOriginal(content: string, stored: StoredResource): boolean {
-	return stored.hasOriginal && content.length < stored.originalChars * MIN_REACQUIRED_CONTENT_RATIO;
 }
 
 function committed(stored: StoredResource, outcome: PersistOutcome) {
@@ -521,18 +517,5 @@ async function writeResourceKeys(
 		SELECT ${resourceId}::uuid, scheme, value, preferred
 		FROM jsonb_to_recordset(${JSON.stringify(keys)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
 		ON CONFLICT (scheme, value) DO UPDATE SET preferred = EXCLUDED.preferred WHERE stored.resource_id = EXCLUDED.resource_id
-	`);
-}
-
-/** Another version's identifiers join the paper that is already stored, so both find it next time. */
-async function addPaperIdentifierKeys(db: NodePgDatabase, resourceId: string, identifiers: NormalizedResource['resourceIdentifiers']) {
-	if (!identifiers.length) return;
-	await db.execute(sql`
-		INSERT INTO resource_keys (resource_id, scheme, value, preferred)
-		SELECT ${resourceId}::uuid, incoming.scheme, incoming.value, incoming.preferred AND NOT EXISTS (
-			SELECT 1 FROM resource_keys stored WHERE stored.resource_id = ${resourceId}::uuid AND stored.scheme = incoming.scheme AND stored.preferred
-		)
-		FROM jsonb_to_recordset(${JSON.stringify(identifiers)}::jsonb) AS incoming(scheme text, value text, preferred boolean)
-		ON CONFLICT (scheme, value) DO NOTHING
 	`);
 }
