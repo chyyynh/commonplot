@@ -57,7 +57,7 @@ type Identification = { kind: AcquiredResource['kind']; work: WorkCandidate | nu
 
 /**
  * One Jev call answers what a document is and, when the PDF names works it may be, which one. A PDF that is not a paper
- * is a file; a web page an article unless it reads as a thread or a paper. Jev failing reads as no answer.
+ * is a file; a web page an article unless it reads as a thread, another kind of page or a paper. Jev failing reads as no answer.
  */
 async function stageIdentify(
 	env: CoreEnv,
@@ -125,7 +125,8 @@ async function stageIdentify(
 		);
 	}
 	if (work || (answers.kind.paper ?? 0) >= PAPER_CONFIDENCE) return { kind: 'paper', work };
-	return { kind: !pdf && answer === 'thread' ? 'forum' : fallback.kind, work: null };
+	if (pdf) return fallback;
+	return { kind: answer === 'thread' ? 'forum' : answer === 'page' ? 'page' : 'blog', work: null };
 }
 
 /**

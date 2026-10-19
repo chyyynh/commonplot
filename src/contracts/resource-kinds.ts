@@ -52,6 +52,8 @@ export const ResourceMediaAttachmentSchema = z.strictObject({
 export const RESOURCE_KINDS = {
 	blog: { metadata: z.null(), titled: true, translatable: true, sitePreview: true, searchable: true },
 	forum: { metadata: z.strictObject({}), titled: true, translatable: true, sitePreview: true, searchable: true },
+	/** A web page that is not an article: a repository, documentation, a reference entry, a product page or a listing. */
+	page: { metadata: z.null(), titled: true, translatable: true, sitePreview: true, searchable: true },
 	post: {
 		metadata: z.strictObject({ attachments: z.array(ResourceMediaAttachmentSchema).max(16) }),
 		titled: false,
