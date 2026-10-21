@@ -30,7 +30,7 @@ export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<u
 			msg: 'Resource sync failed',
 			resource_id: resourceId,
 			attempt: Math.max(...messages.map((message) => message.attempts)),
-			error,
+			error: errorMessage(error),
 		});
 		for (const message of messages) message.retry();
 	};
@@ -81,7 +81,7 @@ export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<u
 		});
 	} catch (error) {
 		// Only the batch loads can throw here; a message already settled ignores a second ack or retry.
-		console.error({ tag: 'AI_SEARCH', msg: 'Resource sync batch could not be loaded', error });
+		console.error({ tag: 'AI_SEARCH', msg: 'Resource sync batch could not be loaded', error: errorMessage(error) });
 		retryAll();
 	}
 }

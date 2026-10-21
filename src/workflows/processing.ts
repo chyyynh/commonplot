@@ -119,7 +119,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			outcome === 'written' &&
 			hosted.references?.some(({ doi, arxivId }) => !doi && !arxivId)
 				? stageResourceReferences(this.env, step, resourceId).catch((error: unknown) => {
-						console.error({ tag: 'WORKFLOW', msg: 'Reference enrichment failed', resource_id: resourceId, error });
+						console.error({ tag: 'WORKFLOW', msg: 'Reference enrichment failed', resource_id: resourceId, error: errorMessage(error) });
 					})
 				: undefined;
 		// Attaching a subject rewrote its carrier's search document, so the carrier syncs too.

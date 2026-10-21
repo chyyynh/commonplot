@@ -74,7 +74,7 @@ export async function reconcileRequests(env: CoreEnv, db: NodePgDatabase) {
 			await env.APP.completeResourceSave(request.resourceId, requestSaveTarget(request));
 			await completeUserRequests(db, [request.id]);
 		} catch (error) {
-			console.error({ tag: 'REQUEST', msg: 'Recovered save failed', request_id: request.id, error });
+			console.error({ tag: 'REQUEST', msg: 'Recovered save failed', request_id: request.id, error: errorMessage(error) });
 			await failRequests(db, request.id, `Save failed: ${errorMessage(error)}`, true);
 		}
 	}
