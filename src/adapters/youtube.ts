@@ -8,11 +8,17 @@ import { buildTranscriptLines, fetchYouTubeCaptions } from '../services/youtube-
 
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
 
-const THUMBNAIL_SIZES = ['maxres', 'standard', 'high', 'medium', 'default'] as const;
-/** Thumbnails parse to the largest one's URL. */
+const THUMBNAIL_SIZES = ['fhd', 'maxres', 'standard', 'high', 'medium', 'default'] as const;
+/**
+ * Thumbnails parse to the largest known size's URL. YouTube adds sizes without
+ * notice (`fhd` arrived in 2026), so an unknown key is ignored, not an error.
+ */
 const YouTubeThumbnailsSchema = z
-	.partialRecord(z.enum(THUMBNAIL_SIZES), z.object({ url: z.string().min(1) }))
-	.transform((thumbnails) => THUMBNAIL_SIZES.map((size) => thumbnails[size]?.url).find(Boolean) ?? null);
+	.record(z.string(), z.unknown())
+	.transform(
+		(thumbnails) =>
+			THUMBNAIL_SIZES.map((size) => z.object({ url: z.string().min(1) }).safeParse(thumbnails[size]).data?.url).find(Boolean) ?? null,
+	);
 const YouTubeVideoItemSchema = z.object({
 	id: z.string().min(1),
 	snippet: z.object({
