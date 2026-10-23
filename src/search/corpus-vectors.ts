@@ -44,7 +44,7 @@ function chunkUnits(text: string): string[] {
 }
 
 /** Chunks of about CHUNK_TOKENS, each repeating the previous chunk's last units up to CHUNK_OVERLAP_TOKENS. */
-export function chunkText(text: string): string[] {
+function chunkText(text: string): string[] {
 	const chunks: string[] = [];
 	let current: string[] = [];
 	let size = 0;
@@ -107,7 +107,8 @@ function corpusVectors(document: CorpusDocument): CorpusVector[] {
 	// A short untitled text is already whole in its document vector.
 	const chunks = !titled && content.length <= VECTOR_TEXT_MAX_CHARS ? [] : chunkText(content);
 	return [
-		{ id: `${document.id}:d`, text: documentText, metadata: { ...metadata, role: 'doc', text: documentText } },
+		// The document vector counts its chunks, so a later sync clears the ones a shorter text no longer has.
+		{ id: `${document.id}:d`, text: documentText, metadata: { ...metadata, role: 'doc', chunks: chunks.length, text: documentText } },
 		...chunks.map((chunk, index) => ({
 			id: `${document.id}:${index}`,
 			text: `${head}\n\n${chunk}`.slice(0, VECTOR_TEXT_MAX_CHARS),
@@ -116,19 +117,28 @@ function corpusVectors(document: CorpusDocument): CorpusVector[] {
 	];
 }
 
-/** Chunk ids from `fromChunk` on, which a Resource whose text got shorter may still hold. */
-function chunkIdsFrom(resourceId: string, fromChunk: number): string[] {
-	return Array.from({ length: MAX_CHUNKS - fromChunk }, (_, offset) => `${resourceId}:${fromChunk + offset}`);
+/** The most vectors one upsert, ids one delete, and vectors one read takes. */
+const UPSERT_BATCH = 500;
+const DELETE_BATCH = 100;
+const READ_BATCH = 20;
+
+async function inBatches<T, R>(items: readonly T[], size: number, call: (batch: T[]) => Promise<R>): Promise<R[]> {
+	const results: R[] = [];
+	for (let start = 0; start < items.length; start += size) results.push(await call(items.slice(start, start + size)));
+	return results;
 }
 
-/** Vectorize takes a bounded number of vectors or ids per write. */
-const WRITE_BATCH = 500;
-
-async function inBatches<T>(items: readonly T[], write: (batch: T[]) => Promise<unknown>): Promise<void> {
-	for (let start = 0; start < items.length; start += WRITE_BATCH) await write(items.slice(start, start + WRITE_BATCH));
+/** How many chunks each Resource's stored vectors have, by Resource id; a Resource without vectors is absent. */
+async function storedChunkCounts(env: CoreEnv, resourceIds: readonly string[]): Promise<Map<string, number>> {
+	const pages = await inBatches(
+		resourceIds.map((id) => `${id}:d`),
+		READ_BATCH,
+		(ids) => env.CORPUS_VECTORS.getByIds(ids),
+	);
+	return new Map(pages.flat().map((vector) => [vector.id.slice(0, -':d'.length), Number(vector.metadata?.chunks ?? 0)]));
 }
 
-export async function embedTexts(env: CoreEnv, texts: readonly string[], feature: string): Promise<number[][]> {
+async function embedTexts(env: CoreEnv, texts: readonly string[], feature: string): Promise<number[][]> {
 	const vectors: number[][] = [];
 	for (let start = 0; start < texts.length; start += EMBEDDING_BATCH) {
 		const batch = texts.slice(start, start + EMBEDDING_BATCH);
@@ -143,6 +153,7 @@ export async function embedTexts(env: CoreEnv, texts: readonly string[], feature
 
 /** Upserts the current documents' vectors, drops chunks they no longer have, and deletes the rest. */
 export async function syncCorpusVectors(env: CoreEnv, documents: readonly CorpusDocument[], deletedIds: readonly string[]): Promise<void> {
+	const stored = await storedChunkCounts(env, [...documents.map((document) => document.id), ...deletedIds]);
 	const perDocument = documents.map(corpusVectors);
 	const vectors = perDocument.flat();
 	if (vectors.length) {
@@ -153,13 +164,67 @@ export async function syncCorpusVectors(env: CoreEnv, documents: readonly Corpus
 		);
 		await inBatches(
 			vectors.map((vector, index) => ({ id: vector.id, values: values[index]!, metadata: vector.metadata })),
+			UPSERT_BATCH,
 			(batch) => env.CORPUS_VECTORS.upsert(batch),
 		);
 	}
+	const chunkIds = (id: string, from: number, to: number) => Array.from({ length: Math.max(0, to - from) }, (_, n) => `${id}:${from + n}`);
 	const stale = [
-		// Each document's list is its document vector, then its chunks.
-		...documents.flatMap((document, index) => chunkIdsFrom(document.id, perDocument[index]!.length - 1)),
-		...deletedIds.flatMap((id) => [`${id}:d`, ...chunkIdsFrom(id, 0)]),
+		// Each document's vectors are its document vector, then its chunks.
+		...documents.flatMap((document, index) => chunkIds(document.id, perDocument[index]!.length - 1, stored.get(document.id) ?? 0)),
+		...deletedIds.flatMap((id) => (stored.has(id) ? [`${id}:d`, ...chunkIds(id, 0, stored.get(id)!)] : [])),
 	];
-	await inBatches(stale, (batch) => env.CORPUS_VECTORS.deleteByIds(batch));
+	await inBatches(stale, DELETE_BATCH, (batch) => env.CORPUS_VECTORS.deleteByIds(batch));
+}
+
+/** A matched passage of a Resource's indexed text, trimmed for a model to judge relevance. */
+export type SearchPassage = { text: string; score: number };
+export type CorpusHit = { id: string; subjectId: string | null; score: number; passages: SearchPassage[] };
+
+/** Vectorize returns at most 50 matches with metadata; one long Resource can fill several. */
+const QUERY_TOP_K = 50;
+const PASSAGES_PER_RESULT = 3;
+const PASSAGE_MAX_CHARS = 500;
+
+/** A one-line post matches a name it repeats as well as an article about it does; the article ranks first. */
+function lengthWeight(chars: number): number {
+	if (chars < 200) return 0.85;
+	if (chars < 600) return 0.93;
+	return 1;
+}
+
+/** One hit per Resource at its best vector's weighted score, with its best-matching passages. */
+export async function queryCorpusVectors(
+	env: CoreEnv,
+	query: string,
+	filters: { kinds?: readonly string[]; publishedAfter?: Date },
+): Promise<CorpusHit[]> {
+	const [vector] = await embedTexts(env, [query], 'corpus-search');
+	const filter: VectorizeVectorMetadataFilter = {};
+	if (filters.kinds) filter.kind = { $in: [...filters.kinds] };
+	if (filters.publishedAfter) filter.published_at = { $gte: Math.floor(filters.publishedAfter.getTime() / 1000) };
+	const { matches } = await env.CORPUS_VECTORS.query(vector!, {
+		topK: QUERY_TOP_K,
+		returnMetadata: 'all',
+		...(Object.keys(filter).length ? { filter } : {}),
+	});
+	const hits = new Map<string, CorpusHit>();
+	for (const match of matches) {
+		const id = match.id.slice(0, match.id.indexOf(':'));
+		const metadata = match.metadata ?? {};
+		const score = match.score * lengthWeight(Number(metadata.chars ?? 0));
+		const hit = hits.get(id) ?? {
+			id,
+			subjectId: typeof metadata.subject_id === 'string' ? metadata.subject_id : null,
+			score,
+			passages: [],
+		};
+		hit.score = Math.max(hit.score, score);
+		hits.set(id, hit);
+		// Matches come best first, so the first passages kept are the best.
+		const text = typeof metadata.text === 'string' ? oneLine(metadata.text) : '';
+		if (text && hit.passages.length < PASSAGES_PER_RESULT)
+			hit.passages.push({ text: text.slice(0, PASSAGE_MAX_CHARS), score: match.score });
+	}
+	return [...hits.values()].sort((left, right) => right.score - left.score);
 }
