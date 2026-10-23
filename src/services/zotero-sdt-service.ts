@@ -4,7 +4,7 @@ import { DurableObject, type WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { ReadDocument } from '../contracts/acquired-resource.ts';
 import { paperIdentityFromText } from '../contracts/paper-identity.ts';
-import { blobKey, storedPdfCropUrlPrefix, structuredPdfCropPrefix, structuredPdfDocumentKey, PDF_MIME } from '../contracts/storage-keys.ts';
+import { blobKey, storedPdfCropUrlPrefix, structuredPdfCropKey, structuredPdfDocumentKey, PDF_MIME } from '../contracts/storage-keys.ts';
 import { coreExports } from '../exports.ts';
 import { errorMessage, limitByteStream, readBoundedResponseText, statusError } from './response.ts';
 import { stepJson } from './workflow-step.ts';
@@ -111,7 +111,7 @@ async function ensureStructuredPdfSourceCrops(
 		sourceLabel: string;
 	}>,
 ): Promise<void> {
-	const prefix = structuredPdfCropPrefix(input.pdfStorageKey, input.inputContentHash);
+	const cropKey = (id: string) => structuredPdfCropKey(input.pdfStorageKey, input.inputContentHash, id);
 	const plannedIds = new Set(input.crops.map(({ id }) => id));
 	if (plannedIds.size !== input.crops.length) throw new Error('Structured PDF crop IDs must be unique');
 	const readyCropIds = new Set<string>();
@@ -120,7 +120,7 @@ async function ensureStructuredPdfSourceCrops(
 	for (let offset = 0; offset < input.crops.length; offset += CROP_BATCH_SIZE) {
 		await Promise.all(
 			input.crops.slice(offset, offset + CROP_BATCH_SIZE).map(async (crop) => {
-				const object = await env.R2.head(`${prefix}${crop.id}.png`);
+				const object = await env.R2.head(cropKey(crop.id));
 				if (object?.customMetadata?.artifactVersion === SOURCE_CROP_ARTIFACT_VERSION) readyCropIds.add(crop.id);
 			}),
 		);
@@ -150,7 +150,7 @@ async function ensureStructuredPdfSourceCrops(
 						const ErrorType = row.retryable === false ? NonRetryableError : Error;
 						throw new ErrorType(row.error.slice(0, MAX_ERROR_BODY_BYTES));
 					}
-					await putPdfDerivative(env, input.pdfStorageKey, `${prefix}${id}.png`, cropPng(row), {
+					await putPdfDerivative(env, input.pdfStorageKey, cropKey(id), cropPng(row), {
 						customMetadata: { artifactVersion: SOURCE_CROP_ARTIFACT_VERSION },
 						httpMetadata: { contentType: 'image/png' },
 					});
