@@ -10,7 +10,7 @@ const EMBEDDING_BATCH = 50;
 const VECTOR_TEXT_MAX_CHARS = 1_500;
 const CHUNK_TOKENS = 400;
 const CHUNK_OVERLAP_TOKENS = 40;
-/** Original content arrives capped at 8,000 characters, which never splits past this many chunks. */
+/** About 30,000 characters of English prose; longer or CJK text keeps only its opening chunks. */
 const MAX_CHUNKS = 32;
 const HARD_SPLIT_CHARS = 300;
 
