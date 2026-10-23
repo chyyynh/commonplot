@@ -15,7 +15,6 @@ import { contentTranslationStatus, requestContentTranslation } from './workflows
 
 export { ZoteroSdt } from './services/zotero-sdt-service';
 export { ResourceTranslationV2Workflow } from './workflows/translation';
-export { SearchIndexRebuildWorkflow } from './search/rebuild-workflow';
 export { CorpusVectorsBackfillWorkflow } from './search/vectors-backfill-workflow';
 export { ResourceProcessingV2Workflow } from './workflows/processing';
 export { ResourceDerivationWorkflow } from './workflows/derivation';
@@ -116,7 +115,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		return contentTranslationStatus(this.env, id);
 	}
 
-	/** Ranked AI Search candidates; the app Worker authoritatively filters and hydrates them. */
+	/** Ranked corpus candidates; the app Worker authoritatively filters and hydrates them. */
 	searchPublicResourceIds(input: PublicResourceSearchInput) {
 		return searchPublicResourceIds(this.env, input);
 	}

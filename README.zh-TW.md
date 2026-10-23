@@ -20,7 +20,7 @@
 
 ## commonplot 是什麼？
 
-[**commonplot.co**](https://www.commonplot.co) 的引擎。支援 RSS、Twitter/X、YouTube、Hacker News、一般網頁與上傳檔案，自動進行結構化 AI 分析與繁中翻譯並保留每筆 resource 的實體註記，再將完成 enrichment 的 corpus resource 同步到 Cloudflare AI Search。
+[**commonplot.co**](https://www.commonplot.co) 的引擎。支援 RSS、Twitter/X、YouTube、Hacker News、一般網頁與上傳檔案，自動進行結構化 AI 分析與繁中翻譯並保留每筆 resource 的實體註記，再將完成 enrichment 的 corpus resource 寫成 Cloudflare Vectorize 向量。
 
 ## 支援平台
 
@@ -81,7 +81,7 @@ PDF 圖片辨識、來源權限、快取版本與重新處理流程，見 [PDF p
 | **摘要**     | AI Gateway structured output | 來源缺少摘要才生成；語言由本機 package 判斷                    |
 | **分類**     | AI Gateway structured output | 原文可讀後才產生標籤與關鍵字                                  |
 | **翻譯**     | AI Gateway text models      | 符合條件的已持久化 Resource → 繁中標題、摘要與正文             |
-| **搜尋索引** | Cloudflare AI Search  | 對完成 enrichment 的 corpus 文件提供 hybrid retrieval       |
+| **搜尋索引** | Workers AI bge-m3、Vectorize | 對完成 enrichment 的 corpus 文件做分段語意檢索 |
 
 摘要生成與背景分類是分開的 structured call；翻譯在獨立 Workflow 執行，因此 localization 失敗不會讓已寫入的 canonical Resource 失效。
 
@@ -95,7 +95,7 @@ Core 優先保留非空白的來源摘要或論文 abstract；缺少時由既有
 | 任務編排     | Cloudflare Workflows                                |
 | 資料庫       | PostgreSQL（透過 Cloudflare Hyperdrive）            |
 | 大語言模型   | Cloudflare AI Gateway                               |
-| 搜尋         | Cloudflare AI Search                                |
+| 搜尋         | Cloudflare Vectorize                                |
 | Twitter 數據 | Kaito API（第三方）                                 |
 
 ## 自行部署
@@ -124,7 +124,7 @@ Workflows 會在第一次 deploy 時依 `cloudflare.config.ts` 的 `exports` 自
 
 `resource-search-sync` Queue 由 `cloudflare.config.ts` 自動建立。Resource 與
 translation Workflows 只在 PostgreSQL commit 後 durable enqueue Resource ID；
-Queue consumer 再以原生逐訊息 ack 與有限 retry 更新衍生的 AI Search 文件。
+Queue consumer 再以原生逐訊息 ack 與有限 retry 重寫衍生的 corpus 向量。
 Workflow failures 直接透過 Cloudflare 原生 Workflow status 與 Workers Logs 查看。
 
 ### 4. Secrets
@@ -178,7 +178,7 @@ src/
 ├── store/            # 所有 canonical SQL：resources、translations、references、sources、withCoreDb
 ├── monitors/         # RSS/YouTube feed 與 Twitter 探索，產生 source drafts
 ├── workflows/        # processing、translation、references 與進度回報
-└── search/           # AI Search projection、queue consumer、檢索與全量 rebuild
+└── search/           # corpus 向量、queue consumer、檢索與 backfill
 ```
 
 ## 環境變數與 Bindings
@@ -188,11 +188,11 @@ Bindings（在 `cloudflare.config.ts` 裡設定）：
 | Binding            | 用途                                        |
 | ------------------ | ------------------------------------------- |
 | `HYPERDRIVE`       | 連線到你的 Postgres                         |
-| `RESOURCE_SEARCH_SYNC_QUEUE` | canonical PostgreSQL 寫入後 durable 同步 AI Search |
+| `RESOURCE_SEARCH_SYNC_QUEUE` | canonical PostgreSQL 寫入後 durable 同步向量 |
 | `R2`               | 讀取 app-owned uploaded blob，供 PDF extraction 使用 |
 | `IMAGES`           | 將遠端 resource 圖片串流上傳至 Cloudflare Images |
 | `AI`               | Workers AI binding（AI Gateway 文字呼叫）   |
-| `AI_SEARCH`        | `newsence-corpus-v7` canonical public corpus |
+| `CORPUS_VECTORS`   | `newsence-corpus-vectors-v1` public corpus 向量 |
 
 Secrets（透過 `cf workers secrets update --worker newsence-core` 設定）：
 
@@ -215,11 +215,10 @@ Curated source 的 `Source.monitorKind` 只保存 `feed | twitter` 這個 cron
 路由；feed entry 進入正常 resource 偵測後，才選擇 LessWrong 或 YouTube
 adapter。
 
-AI Search 使用 `newsence-corpus-v7`（bge-m3），公開搜尋與相關 Resource 共用同一個 index。PostgreSQL 是 canonical source，Core
-只把 keyed search document 同步進 AI Search；rebuild 的 durable 狀態、重試、
-錯誤與 output 直接使用 Cloudflare Workflow。實體 Workflow 是
-`newsence-search-index-rebuild`，class 是 `SearchIndexRebuildWorkflow`；
-目前帶有 serving-index 版本的 runner 是 `search-index-rebuild-v7-v2`。
+`CORPUS_VECTORS` 使用 `newsence-corpus-vectors-v1`（bge-m3，1024 維）：每筆 corpus
+Resource 有一個 document 向量與最多 32 個 chunk 向量，可依 `kind`、`published_at`
+過濾；公開搜尋與相關 Resource 共用同一個 index。PostgreSQL 是 canonical source，
+Vectorize 只存 keyed 向量。向量格式與 backfill Workflow 見 `CORPUS_VECTORS_RUNBOOK.md`。
 
 ## 新增擷取 adapter
 
