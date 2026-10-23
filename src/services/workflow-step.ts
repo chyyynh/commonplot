@@ -1,4 +1,4 @@
-import type { WorkflowStep, WorkflowStepConfig, WorkflowStepContext } from 'cloudflare:workers';
+import type { WorkflowSleepDuration, WorkflowStep, WorkflowStepConfig, WorkflowStepContext } from 'cloudflare:workers';
 
 /** Step retries for provider fetches; each step sets its own timeout. */
 export const FETCH_STEP_RETRIES = { limit: 3, delay: '10 seconds', backoff: 'exponential' } as const;
@@ -22,20 +22,20 @@ export async function stepJson<T>(
  * without the version suffix. A step replayed from its checkpoint after a restart adds about nothing.
  */
 export function timedStep(step: WorkflowStep, timings: Record<string, number>): WorkflowStep {
-	const run = step.do.bind(step) as (...args: unknown[]) => Promise<unknown>;
+	// The step is an RPC stub: its methods are only ever called on it, never bound or read off it.
 	const timed = {
 		do: async (name: string, ...rest: unknown[]) => {
 			const startedAt = Date.now();
 			try {
-				return await run(name, ...rest);
+				return await (step.do as (...args: unknown[]) => Promise<unknown>)(name, ...rest);
 			} finally {
 				const key = name.replace(/-v\d+(-.*)?$/, '');
 				timings[key] = (timings[key] ?? 0) + Date.now() - startedAt;
 			}
 		},
-		sleep: step.sleep,
-		sleepUntil: step.sleepUntil,
-		waitForEvent: step.waitForEvent.bind(step),
+		sleep: (name: string, duration: WorkflowSleepDuration) => step.sleep(name, duration),
+		sleepUntil: (name: string, timestamp: Date | number) => step.sleepUntil(name, timestamp),
+		waitForEvent: (name: string, options: Parameters<WorkflowStep['waitForEvent']>[1]) => step.waitForEvent(name, options),
 	};
 	return timed as unknown as WorkflowStep;
 }
