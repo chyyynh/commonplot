@@ -5,15 +5,18 @@ import { syncCorpusVectors } from './corpus-vectors';
 import { loadCorpusDocuments, SEARCHABLE_CORPUS_RESOURCE_SQL } from './search-index';
 
 const BACKFILL_PAGE_SIZE = 50;
+/** An optional UUID range `(after, through]`, so several instances can split the corpus. */
+type BackfillParams = { after?: string; through?: string };
 const PAGE_STEP_OPTIONS = { retries: { limit: 5, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' } as const;
 
 /**
  * Writes every searchable corpus Resource's vectors in UUID order, a page per step. A Resource that changed
  * while its page was written goes to the sync queue, whose consumer writes its current snapshot.
  */
-export class CorpusVectorsBackfillWorkflow extends WorkflowEntrypoint<CoreEnv, Record<string, never>> {
-	async run(_event: WorkflowEvent<Record<string, never>>, step: WorkflowStep) {
-		let cursor: string | null = null;
+export class CorpusVectorsBackfillWorkflow extends WorkflowEntrypoint<CoreEnv, BackfillParams> {
+	async run(event: WorkflowEvent<BackfillParams>, step: WorkflowStep) {
+		const through = event.payload.through ?? null;
+		let cursor: string | null = event.payload.after ?? null;
 		let written = 0;
 		let requeued = 0;
 		let pages = 0;
