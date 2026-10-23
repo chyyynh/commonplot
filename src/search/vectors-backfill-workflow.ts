@@ -30,6 +30,7 @@ export class CorpusVectorsBackfillWorkflow extends WorkflowEntrypoint<CoreEnv, B
 							SELECT r.id::text FROM resources r
 							WHERE ${SEARCHABLE_CORPUS_RESOURCE_SQL}
 							  AND (${cursor}::uuid IS NULL OR r.id > ${cursor}::uuid)
+							  AND (${through}::uuid IS NULL OR r.id <= ${through}::uuid)
 							ORDER BY r.id
 							LIMIT ${BACKFILL_PAGE_SIZE}
 						`);

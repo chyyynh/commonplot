@@ -43,6 +43,13 @@ function chunkUnits(text: string): string[] {
 	return units;
 }
 
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
+/** A slice can end inside a surrogate pair, and Workers AI rejects text with a lone surrogate. */
+function clip(text: string, maxChars = VECTOR_TEXT_MAX_CHARS): string {
+	return text.slice(0, maxChars).replace(LONE_SURROGATE, '\uFFFD');
+}
+
 /** Chunks of about CHUNK_TOKENS, each repeating the previous chunk's last units up to CHUNK_OVERLAP_TOKENS. */
 function chunkText(text: string): string[] {
 	const chunks: string[] = [];
@@ -90,10 +97,7 @@ function corpusVectors(document: CorpusDocument): CorpusVector[] {
 			.filter(Boolean)
 			.join('\n'),
 	);
-	const documentText = [head, titled ? oneLine(document.source) : oneLine(content), ...summaries]
-		.filter(Boolean)
-		.join('\n\n')
-		.slice(0, VECTOR_TEXT_MAX_CHARS);
+	const documentText = clip([head, titled ? oneLine(document.source) : oneLine(content), ...summaries].filter(Boolean).join('\n\n'));
 	if (!documentText) throw new Error(`Corpus vectors ${document.id} have no text`);
 	const metadata = {
 		kind: document.kind,
@@ -111,8 +115,8 @@ function corpusVectors(document: CorpusDocument): CorpusVector[] {
 		{ id: `${document.id}:d`, text: documentText, metadata: { ...metadata, role: 'doc', chunks: chunks.length, text: documentText } },
 		...chunks.map((chunk, index) => ({
 			id: `${document.id}:${index}`,
-			text: `${head}\n\n${chunk}`.slice(0, VECTOR_TEXT_MAX_CHARS),
-			metadata: { ...metadata, role: 'chunk', text: chunk.slice(0, VECTOR_TEXT_MAX_CHARS) },
+			text: clip(`${head}\n\n${chunk}`),
+			metadata: { ...metadata, role: 'chunk', text: clip(chunk) },
 		})),
 	];
 }
@@ -223,8 +227,7 @@ export async function queryCorpusVectors(
 		hits.set(id, hit);
 		// Matches come best first, so the first passages kept are the best.
 		const text = typeof metadata.text === 'string' ? oneLine(metadata.text) : '';
-		if (text && hit.passages.length < PASSAGES_PER_RESULT)
-			hit.passages.push({ text: text.slice(0, PASSAGE_MAX_CHARS), score: match.score });
+		if (text && hit.passages.length < PASSAGES_PER_RESULT) hit.passages.push({ text: clip(text, PASSAGE_MAX_CHARS), score: match.score });
 	}
 	return [...hits.values()].sort((left, right) => right.score - left.score);
 }
