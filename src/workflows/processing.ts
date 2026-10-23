@@ -2,11 +2,11 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import { stageResourceAcquisition } from '../adapters/acquire';
 import type { AcquisitionInput, StoredPdf } from '../contracts/acquired-resource';
 import { resourceImageSources, withHostedImages } from '../contracts/image-mapping';
-import { ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
+import { IMPORT_WORKFLOW_PREFIX, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { blobKey } from '../contracts/storage-keys';
 import { stageResourceImages } from '../services/image-rehosting';
 import { errorMessage } from '../services/response';
-import { STORAGE_STEP } from '../services/workflow-step';
+import { STORAGE_STEP, timedStep } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import { failRequests } from '../store/requests';
 import {
@@ -24,22 +24,54 @@ import { enqueueResourceTranslation } from './translation';
 /** The published Resource, or a run a newer attempt replaced. */
 type ResourceProcessingOutput = { outcome: 'ready'; resourceId: string; textHash: string } | { outcome: 'superseded' };
 
+/** What a run's `ingest_run` log line reports beside its step timings; the weekly ingest review reads these lines. */
+type IngestRun = { resourceKind?: string; resourcePlatform?: string | null; chars?: number; writtenAt?: number };
+
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep): Promise<ResourceProcessingOutput> {
 		const target = ResourceProcessingTargetSchema.parse(event.payload);
+		const timings: Record<string, number> = {};
+		const run: IngestRun = {};
+		const record = (outcome: string, error?: string) =>
+			step.do('record-ingest-run-v1', async () => {
+				console.info({
+					tag: 'INGEST',
+					event: 'ingest_run',
+					workflow_id: event.instanceId,
+					requester: event.instanceId.startsWith(IMPORT_WORKFLOW_PREFIX) ? 'user' : 'system',
+					target_kind: target.kind,
+					outcome,
+					resource_kind: run.resourceKind ?? null,
+					resource_platform: run.resourcePlatform ?? null,
+					chars: run.chars ?? null,
+					// From the Workflow's creation, so queueing counts: when the import could first show as ready.
+					written_ms: run.writtenAt ? run.writtenAt - event.timestamp.getTime() : null,
+					total_ms: Date.now() - event.timestamp.getTime(),
+					...(error ? { error: error.slice(0, 500) } : {}),
+					steps: timings,
+				});
+			});
 		try {
-			return await this.process(target, event.instanceId, step);
+			const output = await this.process(target, event.instanceId, timedStep(step, timings), run);
+			await record(output.outcome);
+			return output;
 		} catch (error) {
 			// Every request waiting on this acquisition settles with it, so none waits for a workflow that ended.
 			const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
 			await step.do('fail-resource-requests-v1', STORAGE_STEP, () =>
 				withCoreDb(this.env, (db) => failRequests(db, target.requestId, message)),
 			);
+			await record('failed', message);
 			throw error;
 		}
 	}
 
-	private async process(target: ResourceProcessingTarget, instanceId: string, step: WorkflowStep): Promise<ResourceProcessingOutput> {
+	private async process(
+		target: ResourceProcessingTarget,
+		instanceId: string,
+		step: WorkflowStep,
+		run: IngestRun,
+	): Promise<ResourceProcessingOutput> {
 		let upload: StoredPdf | null | undefined;
 		if (target.kind === 'storedBlob') {
 			// Web owns the upload: it confirms this attempt and describes the bytes. Core only rechecks, when it commits, that the object is still ready.
@@ -57,6 +89,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		}
 		// An uploaded PDF identified as a paper publishes that paper, read from the upload.
 		const resource = await stageResourceAcquisition(this.env, step, await loadAcquisitionInput(this.env, step, target, upload), instanceId);
+		Object.assign(run, { resourceKind: resource.kind, resourcePlatform: resource.resourcePlatform, chars: resource.content.length });
 		const persistenceTarget = await planAttempt(target, resource.kind === 'paper', (resourceId) =>
 			step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () => withCoreDb(this.env, (db) => claimAcquisitionFence(db, resourceId))),
 		);
@@ -82,6 +115,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			),
 		);
 		if (persistence.outcome === 'superseded') return { outcome: 'superseded' };
+		run.writtenAt = Date.now();
 		const { id: resourceId, scope, subjectResourceId, textHash, outcome, carriers } = persistence;
 		// The Resource is published; its summary and entities are derived from what was written, and each handoff waits
 		// only for the derivations it reads.
