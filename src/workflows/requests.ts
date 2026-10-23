@@ -3,18 +3,14 @@
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { IMPORT_WORKFLOW_PREFIX } from '../contracts/processing-target';
 import { coreExports } from '../exports.ts';
-import { errorMessage } from '../services/response';
 import {
 	claimStaleLeads,
-	completeUserRequests,
 	failRequests,
 	loadImportRequests,
 	promoteOrphanRequests,
 	recordRequests,
 	type RequestLead,
 	type ResourceRequest,
-	unsavedUserRequests,
-	type UserRequest,
 } from '../store/requests';
 import { importTranslationProgress } from './translation';
 
@@ -36,13 +32,6 @@ export async function admitRequests(db: NodePgDatabase, requests: readonly Resou
 	return leads;
 }
 
-/** What Web's save completes for a user request. */
-export function requestSaveTarget(request: UserRequest) {
-	return request.storedObjectId
-		? { kind: 'userFileResult', objectId: request.storedObjectId, workflowId: `${IMPORT_WORKFLOW_PREFIX}${request.id}` }
-		: { kind: 'resourceSave', userId: request.userId, notebookId: request.notebookId };
-}
-
 async function workflowState(id: string) {
 	try {
 		return (await (await coreExports.ResourceProcessingV2Workflow.get(id)).status()).status;
@@ -53,9 +42,9 @@ async function workflowState(id: string) {
 
 /**
  * Cron sweep: a lead whose workflow never started is started, one that ended without settling its requests fails them,
- * waiting requests a settled lead left behind take over, and saves a lost workflow never completed are completed.
+ * and waiting requests a settled lead left behind take over.
  */
-export async function reconcileRequests(env: CoreEnv, db: NodePgDatabase) {
+export async function reconcileRequests(db: NodePgDatabase) {
 	const stale = await claimStaleLeads(db, SWEEP_BATCH);
 	const restarts: RequestLead[] = [];
 	await Promise.all(
@@ -68,24 +57,13 @@ export async function reconcileRequests(env: CoreEnv, db: NodePgDatabase) {
 	);
 	const promoted = await promoteOrphanRequests(db, SWEEP_BATCH);
 	await startLeads(db, [...restarts, ...promoted]);
-	const unsaved = await unsavedUserRequests(db, SWEEP_BATCH);
-	for (const request of unsaved) {
-		try {
-			await env.APP.completeResourceSave(request.resourceId, requestSaveTarget(request));
-			await completeUserRequests(db, [request.id]);
-		} catch (error) {
-			console.error({ tag: 'REQUEST', msg: 'Recovered save failed', request_id: request.id, error: errorMessage(error) });
-			await failRequests(db, request.id, `Save failed: ${errorMessage(error)}`, true);
-		}
-	}
-	if (stale.length || promoted.length || unsaved.length)
+	if (stale.length || promoted.length)
 		console.info({
 			tag: 'REQUEST',
 			msg: 'Request sweep',
 			checked: stale.length,
 			restarted: restarts.length,
 			promoted: promoted.length,
-			saved: unsaved.length,
 		});
 }
 
@@ -93,7 +71,7 @@ export type ResourceImportExecution =
 	| { state: 'absent' | 'queued' | 'running' | 'failed' }
 	| { state: 'ready'; resourceId: string; translation?: 'running' | 'failed' };
 
-/** An import's progress from its request: readable once its Resource is written, settled once its save and translations are. */
+/** An import's progress from its request: ready once its Resource is written, which Web then saves, and following its translations. */
 export async function resourceImportExecutions(db: NodePgDatabase, workflowIds: readonly string[]) {
 	const ids = workflowIds.map((id) => id.slice(IMPORT_WORKFLOW_PREFIX.length));
 	const requests = new Map((await loadImportRequests(db, ids)).map((request) => [request.id, request]));
@@ -105,7 +83,6 @@ export async function resourceImportExecutions(db: NodePgDatabase, workflowIds: 
 				const { status, resourceId, textHash } = request;
 				if (status === 'failed') return [workflowId, { state: 'failed' }];
 				if (!resourceId) return [workflowId, { state: 'running' }];
-				if (status === 'pending') return [workflowId, { state: 'ready', resourceId, translation: 'running' }];
 				const translation = textHash ? await importTranslationProgress(db, resourceId, textHash) : undefined;
 				return [workflowId, { state: 'ready', resourceId, ...(translation ? { translation } : {}) }];
 			}),

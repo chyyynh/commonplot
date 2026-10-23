@@ -8,7 +8,7 @@ import { stageResourceImages } from '../services/image-rehosting';
 import { errorMessage } from '../services/response';
 import { STORAGE_STEP } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
-import { completeUserRequests, failRequests } from '../store/requests';
+import { failRequests } from '../store/requests';
 import {
 	claimAcquisitionFence,
 	loadReacquisitionSource,
@@ -18,7 +18,7 @@ import {
 import { loadTranslationCandidate } from '../store/translations';
 import { deriveResource } from './derivation';
 import { stageResourceReferences } from './references';
-import { admitRequests, requestSaveTarget } from './requests';
+import { admitRequests } from './requests';
 import { enqueueResourceTranslation } from './translation';
 
 /** The published Resource, or a run a newer attempt replaced. */
@@ -82,25 +82,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			),
 		);
 		if (persistence.outcome === 'superseded') return { outcome: 'superseded' };
-		const { id: resourceId, scope, subjectResourceId, textHash, outcome, requests } = persistence;
-		// Each user who asked saves the Resource; one save failing fails only that user's request.
-		const saved = Promise.all(
-			requests.users.map(async (request) => {
-				try {
-					await step.do(`complete-request-save-v1-${request.id}`, STORAGE_STEP, () =>
-						this.env.APP.completeResourceSave(resourceId, requestSaveTarget(request)),
-					);
-					return [request.id];
-				} catch (error) {
-					const message = errorMessage(error);
-					await step.do(`fail-request-save-v1-${request.id}`, STORAGE_STEP, () =>
-						withCoreDb(this.env, (db) => failRequests(db, request.id, `Save failed: ${message}`, true)),
-					);
-					return [];
-				}
-			}),
-		).then((ids) => ids.flat());
-
+		const { id: resourceId, scope, subjectResourceId, textHash, outcome, carriers } = persistence;
 		// The Resource is published; its summary and entities are derived from what was written, and each handoff waits
 		// only for the derivations it reads.
 		const derivations = persistence.derivations
@@ -123,7 +105,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					})
 				: undefined;
 		// Attaching a subject rewrote its carrier's search document, so the carrier syncs too.
-		const searchSyncIds = [...(scope === 'corpus' ? [resourceId] : []), ...requests.carriers];
+		const searchSyncIds = [...(scope === 'corpus' ? [resourceId] : []), ...carriers];
 		// Every handoff runs to completion even when an independent one fails.
 		const followups = await Promise.allSettled([
 			// Search documents lead with the summaries.
@@ -174,8 +156,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		if (failures.length) console.error({ tag: 'WORKFLOW', msg: 'Follow-up dispatch failed', resource_id: resourceId, errors: failures });
 
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: resourceId, target_kind: target.kind });
-		const savedIds = await saved;
-		await step.do('complete-user-requests-v1', STORAGE_STEP, () => withCoreDb(this.env, (db) => completeUserRequests(db, savedIds)));
 		return { outcome: 'ready', resourceId, textHash };
 	}
 }

@@ -7,15 +7,12 @@ import { ResourceIdentifiersSchema } from '../contracts/resource';
 import { type ResourceKind, type ResourcePlatform, RESOURCE_KINDS } from '../contracts/resource-kinds';
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
-import { blobKey } from '../contracts/storage-keys';
+import { BLOB_LOCK_NAMESPACE, blobKey } from '../contracts/storage-keys';
 import { lockKeys } from './db';
 import { type Derivation, replaceResourceEntities, requireDerivations, SUMMARY_LANGS } from './derivations';
 import { kindWhere, READABLE_ORIGINAL_SQL } from './kind-sql';
 import { fulfillRequests } from './requests';
 import { requiredTranslations } from './translations';
-
-/** Web's `storedBlobs` advisory lock namespace (`web-tanstack/src/server/db/locks.server.ts`). */
-const STORED_BLOB_LOCK_NAMESPACE = 330571;
 
 /** A normalized resource whose images are already Hosted Images URLs. */
 type HostedResource = NormalizedResource & HostedPreview;
@@ -275,7 +272,7 @@ export async function persistResolvedResource(
 	return db.transaction(async (tx) => {
 		const claim = await claimRow(tx, resource, target, blobExists);
 		// A newer attempt that already committed did what these requests asked.
-		if (claim.settled) return { ...claim.settled, derivations: [], requests: await fulfillRequests(tx, requestId, claim.resourceId) };
+		if (claim.settled) return { ...claim.settled, derivations: [], carriers: await fulfillRequests(tx, requestId, claim.resourceId) };
 		const required = await writeOriginal(tx, resource, target, claim);
 		if (resource.hackerNewsId && target.kind !== 'upload')
 			await tx.execute(sql`
@@ -290,12 +287,12 @@ export async function persistResolvedResource(
 				WHERE normalized_url = ANY(${sql.param(linkedResourceUrls(resource.normalizedUrl, resource.resourceIdentifiers))}::text[])
 				  AND target_resource_id IS NULL AND source_resource_id <> ${claim.resourceId}::uuid
 			`);
-		const requests = await fulfillRequests(tx, requestId, claim.resourceId);
+		const carriers = await fulfillRequests(tx, requestId, claim.resourceId);
 		// Whether content translates automatically depends on who asked, which fulfilling the requests just recorded.
 		const derivations = required
 			? await requireDerivations(tx, claim.resourceId, [...required, ...(await requiredTranslations(tx, claim.resourceId))])
 			: [];
-		return { ...committed(await lockResource(tx, claim.resourceId), claim.outcome), derivations, requests };
+		return { ...committed(await lockResource(tx, claim.resourceId), claim.outcome), derivations, carriers };
 	});
 }
 
@@ -329,7 +326,7 @@ async function claimRow(
 	);
 	if (resource.pdfHash) {
 		// Web purges a blob only while holding this lock and finding no Resource that reads it.
-		await tx.execute(sql`SELECT pg_advisory_xact_lock(${STORED_BLOB_LOCK_NAMESPACE}, hashtext(${blobKey(resource.pdfHash)}))`);
+		await tx.execute(sql`SELECT pg_advisory_xact_lock(${BLOB_LOCK_NAMESPACE}, hashtext(${blobKey(resource.pdfHash)}))`);
 		if (!(await blobExists(resource.pdfHash))) throw new NonRetryableError('Stored PDF was purged before its Resource committed');
 	}
 	const uploadId = target.kind === 'upload' ? target.objectId : target.kind === 'draft' ? target.uploadId : undefined;

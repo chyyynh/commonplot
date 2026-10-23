@@ -32,7 +32,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		// derives their slower polling cadence from the canonical feed URL.
 		if (event.cron === '*/5 * * * *') {
 			this.ctx.waitUntil(
-				withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(db), enqueueDueDerivations(db), reconcileRequests(this.env, db)])),
+				withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(db), enqueueDueDerivations(db), reconcileRequests(db)])),
 			);
 		} else if (event.cron === '0 */6 * * *') {
 			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
@@ -60,26 +60,14 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 
 	/**
 	 * Durable admission outbox: the caller persists this immutable handle and payload first, and its UUID becomes the
-	 * request's id, so dispatching it again records nothing new. An upload's owner is read from its stored object.
+	 * request's id, so dispatching it again records nothing new. Web keeps who asked and saves the Resource it reads back.
 	 */
 	async dispatchResourceImport(input: z.input<typeof ResourceImportDispatchSchema>): Promise<void> {
 		const { workflowId, payload } = ResourceImportDispatchSchema.parse(input);
 		const id = workflowId.slice(IMPORT_WORKFLOW_PREFIX.length);
 		// The admission DO waits for committed ownership. The Workflow rechecks ownership and the latest attempt
 		// before provider execution, after any queueing delay.
-		await withCoreDb(this.env, (db) =>
-			admitRequests(db, [
-				payload.kind === 'draft'
-					? {
-							requester: 'user',
-							id,
-							userId: payload.saveTarget.userId,
-							notebookId: payload.saveTarget.notebookId,
-							target: { kind: 'draft', url: payload.url },
-						}
-					: { requester: 'user', id, userId: null, notebookId: null, target: payload },
-			]),
-		);
+		await withCoreDb(this.env, (db) => admitRequests(db, [{ requester: 'user', id, target: payload }]));
 	}
 
 	/** Each Web import's progress, read from its request; Web asks only while one is unsettled. */

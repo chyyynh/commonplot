@@ -31,3 +31,9 @@ export function storedPdfCropUrlPrefix(contentHash: string): string {
 }
 
 export const PDF_MIME = 'application/pdf';
+
+/**
+ * The advisory lock namespace a blob's key is locked under (`pg_advisory_xact_lock(namespace, hashtext(key))`): Web purges
+ * a blob only while holding it and finding nothing that reads the blob, and Core holds it to commit a Resource that does.
+ */
+export const BLOB_LOCK_NAMESPACE = 330571;

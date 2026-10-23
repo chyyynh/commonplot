@@ -48,16 +48,7 @@ export const ImportWorkflowIdSchema = z.string().pipe(z.templateLiteral([IMPORT_
 
 export const ResourceImportDispatchSchema = z.strictObject({
 	workflowId: ImportWorkflowIdSchema,
-	payload: z.discriminatedUnion('kind', [
-		ResourceDraftTargetSchema.pick({ kind: true, url: true }).extend({
-			saveTarget: z.strictObject({
-				kind: z.literal('resourceSave'),
-				userId: z.string().min(1).max(128),
-				notebookId: z.uuid().nullable(),
-			}),
-		}),
-		StoredBlobTargetSchema,
-	]),
+	payload: z.discriminatedUnion('kind', [ResourceDraftTargetSchema.pick({ kind: true, url: true }), StoredBlobTargetSchema]),
 });
 
 export const SourceResourceDraftSchema = ResourceDraftTargetSchema.pick({ url: true, sourceHints: true });

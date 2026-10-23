@@ -7,12 +7,12 @@ import { READABLE_ORIGINAL_SQL } from './kind-sql';
 
 /**
  * Who asked for a Resource. A source and a subject carrier ask once per URL; a user's import names its own request
- * id, which is the UUID in Web's handle for it. `userId` is read from the stored object when an upload omits it.
+ * id, which is the UUID in Web's handle for it. Who the user is and where the Resource is saved stay with Web.
  */
 export type Requester =
 	| Readonly<{ requester: 'source'; sourceId: string }>
 	| Readonly<{ requester: 'subject'; parentResourceId: string; parentTextHash: string }>
-	| Readonly<{ requester: 'user'; id: string; userId: string | null; notebookId: string | null }>
+	| Readonly<{ requester: 'user'; id: string }>
 	| Readonly<{ requester: 'resync' }>;
 
 export type ResourceRequest = Requester & Readonly<{ target: RequestTarget }>;
@@ -36,8 +36,6 @@ export type RequestLead = Readonly<{ id: string; workflowId: string; params: Res
 const SOURCE_RETRY = sql`interval '1 day'`;
 /** A lead whose workflow is quiet this long is checked; a waiting request this long without a lead takes over. */
 const STALE_REQUEST = sql`interval '10 minutes'`;
-/** A user's save of a written Resource is retried this many times in all before its request fails. */
-const SAVE_ATTEMPTS = 3;
 
 const REQUEST_COLUMNS = sql`id::text, target_key AS "targetKey", requester, url, stored_object_id::text AS "storedObjectId",
 	resource_id::text AS "resourceId", hints, workflow_id AS "workflowId", status`;
@@ -69,20 +67,17 @@ async function recordRequest(tx: NodePgDatabase, request: ResourceRequest & { ke
 		sourceId: request.requester === 'source' ? request.sourceId : null,
 		parentResourceId: request.requester === 'subject' ? request.parentResourceId : null,
 		parentTextHash: request.requester === 'subject' ? request.parentTextHash : null,
-		userId: request.requester === 'user' ? request.userId : null,
-		notebookId: request.requester === 'user' ? request.notebookId : null,
 		resourceId: target.kind === 'reacquire' ? target.resourceId : null,
 	};
 	// A source and a carrier ask for a URL once: asking again revives only a failed or settled request. Web redispatching
 	// an import finds the request it already recorded.
 	const { rows } = await tx.execute<RequestRow>(sql`
 		INSERT INTO resource_requests
-			(id, target_key, url, stored_object_id, hints, requester, source_id, parent_resource_id, parent_text_hash, user_id, notebook_id, resource_id)
+			(id, target_key, url, stored_object_id, hints, requester, source_id, parent_resource_id, parent_text_hash, resource_id)
 		VALUES (
 			COALESCE(${columns.id}::uuid, gen_random_uuid()), ${request.key}, ${columns.url}, ${objectId}::uuid, ${columns.hints}::jsonb,
 			${request.requester}, ${columns.sourceId}::uuid, ${columns.parentResourceId}::uuid, ${columns.parentTextHash},
-			COALESCE(${columns.userId}, (SELECT user_id FROM stored_objects WHERE id = ${objectId}::uuid)),
-			${columns.notebookId}::uuid, ${columns.resourceId}::uuid
+			${columns.resourceId}::uuid
 		)
 		${
 			request.requester === 'source'
@@ -187,13 +182,10 @@ export async function recordFulfilledSourceRequests(
 	`);
 }
 
-/** A user request whose Resource is written; the workflow completes the save before it is fulfilled. */
-export type UserRequest = Readonly<{ id: string; userId: string; notebookId: string | null; storedObjectId: string | null }>;
-
 /**
  * In the transaction that wrote or kept the Resource: settles every request waiting on the lead's key. A source becomes
- * the Resource's discovery source if it has none, a carrier whose text is unchanged gains it as its subject, and user
- * requests keep waiting for their saves. Returns those, and the carriers that gained the subject.
+ * the Resource's discovery source if it has none, and a carrier whose text is unchanged gains it as its subject; Web
+ * saves a user's import once it reads the request's Resource. Returns the carriers that gained the subject.
  */
 export async function fulfillRequests(tx: NodePgDatabase, requestId: string, resourceId: string) {
 	const { rows } = await tx.execute<{
@@ -202,13 +194,9 @@ export async function fulfillRequests(tx: NodePgDatabase, requestId: string, res
 		sourceId: string | null;
 		parentResourceId: string | null;
 		parentTextHash: string | null;
-		userId: string | null;
-		notebookId: string | null;
-		storedObjectId: string | null;
 	}>(sql`
 		SELECT waiting.id::text, waiting.requester, waiting.source_id::text AS "sourceId",
-		       waiting.parent_resource_id::text AS "parentResourceId", waiting.parent_text_hash AS "parentTextHash",
-		       waiting.user_id AS "userId", waiting.notebook_id::text AS "notebookId", waiting.stored_object_id::text AS "storedObjectId"
+		       waiting.parent_resource_id::text AS "parentResourceId", waiting.parent_text_hash AS "parentTextHash"
 		FROM resource_requests lead
 		JOIN resource_requests waiting ON waiting.target_key = lead.target_key AND waiting.status = 'pending'
 		WHERE lead.id = ${requestId}::uuid
@@ -223,7 +211,7 @@ export async function fulfillRequests(tx: NodePgDatabase, requestId: string, res
 		WHERE lead.id = ${requestId}::uuid AND lead.target_key LIKE 'url:%'
 		ON CONFLICT (scheme, value) DO NOTHING
 	`);
-	if (!rows.length) return { users: [] as UserRequest[], carriers: [] as string[] };
+	if (!rows.length) return [];
 	const subjects = rows.filter(({ requester }) => requester === 'subject');
 	const carriers = subjects.length
 		? (
@@ -241,41 +229,23 @@ export async function fulfillRequests(tx: NodePgDatabase, requestId: string, res
 	await tx.execute(sql`
 		UPDATE resource_requests SET
 			resource_id = ${resourceId}::uuid, updated_at = NOW(),
-			status = CASE WHEN requester = 'user' THEN 'pending'
-			              WHEN requester = 'subject' AND NOT (parent_resource_id = ANY(${sql.param(carriers)}::uuid[])) THEN 'failed'
+			status = CASE WHEN requester = 'subject' AND NOT (parent_resource_id = ANY(${sql.param(carriers)}::uuid[])) THEN 'failed'
 			              ELSE 'fulfilled' END,
 			error = CASE WHEN requester = 'subject' AND NOT (parent_resource_id = ANY(${sql.param(carriers)}::uuid[]))
 			             THEN 'Subject carrier was reacquired or is no longer eligible' END
 		WHERE id = ANY(${sql.param(rows.map(({ id }) => id))}::uuid[])
 	`);
-	const users = rows.flatMap(({ id, requester, userId, notebookId, storedObjectId }) =>
-		requester === 'user' && userId ? [{ id, userId, notebookId, storedObjectId }] : [],
-	);
-	return { users, carriers };
-}
-
-/** A user request whose save landed; its import now follows its Resource's translations. */
-export async function completeUserRequests(db: NodePgDatabase, ids: readonly string[]) {
-	if (!ids.length) return;
-	await db.execute(sql`
-		UPDATE resource_requests SET status = 'fulfilled', updated_at = NOW()
-		WHERE id = ANY(${sql.param([...ids])}::uuid[]) AND status = 'pending'
-	`);
+	return carriers;
 }
 
 /**
  * Fails the lead and every request waiting on its key, or only the lead when `alone`. A request whose Resource is
- * already written is fulfilled instead, except a user's: its save is still owed, so it waits without a workflow for the
- * sweep to retry, up to its attempts. A source request retries after a doubling wait; any other gives up.
+ * already written is fulfilled instead. A source request retries after a doubling wait; any other gives up.
  */
 export async function failRequests(db: NodePgDatabase, requestId: string, error: string, alone = false) {
 	await db.execute(sql`
 		UPDATE resource_requests SET
-			status = CASE WHEN resource_id IS NULL OR requester = 'resync' THEN 'failed'
-			              WHEN requester <> 'user' THEN 'fulfilled'
-			              WHEN user_id IS NOT NULL AND attempts + 1 < ${SAVE_ATTEMPTS} THEN 'pending'
-			              ELSE 'failed' END,
-			workflow_id = CASE WHEN requester = 'user' AND resource_id IS NOT NULL THEN NULL ELSE workflow_id END,
+			status = CASE WHEN resource_id IS NULL OR requester = 'resync' THEN 'failed' ELSE 'fulfilled' END,
 			attempts = attempts + 1, error = LEFT(${error}, 500), updated_at = NOW(),
 			retry_after = CASE WHEN requester = 'source' THEN NOW() + ${SOURCE_RETRY} * LEAST(power(2, attempts), 30) END
 		WHERE status = 'pending'
@@ -323,19 +293,6 @@ export async function promoteOrphanRequests(db: NodePgDatabase, limit: number) {
 		}
 		return leads;
 	});
-}
-
-/** User requests whose Resource was written by a workflow that never completed their saves. */
-export async function unsavedUserRequests(db: NodePgDatabase, limit: number) {
-	const { rows } = await db.execute<UserRequest & { resourceId: string }>(sql`
-		SELECT id::text, user_id AS "userId", notebook_id::text AS "notebookId", stored_object_id::text AS "storedObjectId",
-		       resource_id::text AS "resourceId"
-		FROM resource_requests
-		WHERE status = 'pending' AND requester = 'user' AND workflow_id IS NULL AND resource_id IS NOT NULL AND user_id IS NOT NULL
-		  AND updated_at < NOW() - interval '30 minutes'
-		ORDER BY updated_at LIMIT ${limit}
-	`);
-	return rows;
 }
 
 /** Each import's request as Web reads its progress, with the text its translation follows. */
