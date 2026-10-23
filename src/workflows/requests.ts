@@ -1,18 +1,15 @@
-// The admission ledger's side effects: each request's lead starts the one workflow its key needs, a sweep restarts or
-// settles leads whose workflow went missing, and Web's imports read their progress from their own rows.
+// The admission ledger's side effects: each request's lead starts the one workflow its key needs, and a sweep restarts
+// or settles leads whose workflow went missing.
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { IMPORT_WORKFLOW_PREFIX } from '../contracts/processing-target';
 import { coreExports } from '../exports.ts';
 import {
 	claimStaleLeads,
 	failRequests,
-	loadImportRequests,
 	promoteOrphanRequests,
 	recordRequests,
 	type RequestLead,
 	type ResourceRequest,
 } from '../store/requests';
-import { importTranslationProgress } from './translation';
 
 const WORKFLOW_RETENTION = { successRetention: '1 day', errorRetention: '7 days' } as const;
 const SWEEP_BATCH = 20;
@@ -65,27 +62,4 @@ export async function reconcileRequests(db: NodePgDatabase) {
 			restarted: restarts.length,
 			promoted: promoted.length,
 		});
-}
-
-export type ResourceImportExecution =
-	| { state: 'absent' | 'queued' | 'running' | 'failed' }
-	| { state: 'ready'; resourceId: string; translation?: 'running' | 'failed' };
-
-/** An import's progress from its request: ready once its Resource is written, which Web then saves, and following its translations. */
-export async function resourceImportExecutions(db: NodePgDatabase, workflowIds: readonly string[]) {
-	const ids = workflowIds.map((id) => id.slice(IMPORT_WORKFLOW_PREFIX.length));
-	const requests = new Map((await loadImportRequests(db, ids)).map((request) => [request.id, request]));
-	return Object.fromEntries(
-		await Promise.all(
-			workflowIds.map(async (workflowId, index): Promise<[string, ResourceImportExecution]> => {
-				const request = requests.get(ids[index]!);
-				if (!request) return [workflowId, { state: 'absent' }];
-				const { status, resourceId, textHash } = request;
-				if (status === 'failed') return [workflowId, { state: 'failed' }];
-				if (!resourceId) return [workflowId, { state: 'running' }];
-				const translation = textHash ? await importTranslationProgress(db, resourceId, textHash) : undefined;
-				return [workflowId, { state: 'ready', resourceId, ...(translation ? { translation } : {}) }];
-			}),
-		),
-	);
 }

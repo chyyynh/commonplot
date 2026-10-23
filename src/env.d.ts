@@ -11,7 +11,7 @@ declare global {
 	type CoreEnv = Omit<CoreBindings, 'APP' | 'CORPUS_VECTORS'> & {
 		APP: CoreBindings['APP'] &
 			Rpc.Provider<{
-				completeResourceSave(resourceId: string, saveTarget: unknown): Promise<void>;
+				saveImportedResources(requestIds: string[]): Promise<void>;
 				verifyStoredBlobProcessing(objectId: string, workflowId: string): Promise<StoredPdf | null>;
 			}>;
 		/** The config types every Vectorize binding as the legacy index; this one is a V2 index. */

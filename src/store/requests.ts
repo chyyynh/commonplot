@@ -7,12 +7,13 @@ import { READABLE_ORIGINAL_SQL } from './kind-sql';
 
 /**
  * Who asked for a Resource. A source and a subject carrier ask once per URL; a user's import names its own request
- * id, which is the UUID in Web's handle for it. Who the user is and where the Resource is saved stay with Web.
+ * id, which is the UUID in Web's handle for it, and records who asked, where Web files it, and what the inbox shows.
+ * Web saves the Resource and reads the import's progress from this row.
  */
 export type Requester =
 	| Readonly<{ requester: 'source'; sourceId: string }>
 	| Readonly<{ requester: 'subject'; parentResourceId: string; parentTextHash: string }>
-	| Readonly<{ requester: 'user'; id: string }>
+	| Readonly<{ requester: 'user'; id: string; userId: string; notebookId: string | null; label: string }>
 	| Readonly<{ requester: 'resync' }>;
 
 export type ResourceRequest = Requester & Readonly<{ target: RequestTarget }>;
@@ -68,16 +69,20 @@ async function recordRequest(tx: NodePgDatabase, request: ResourceRequest & { ke
 		parentResourceId: request.requester === 'subject' ? request.parentResourceId : null,
 		parentTextHash: request.requester === 'subject' ? request.parentTextHash : null,
 		resourceId: target.kind === 'reacquire' ? target.resourceId : null,
+		userId: request.requester === 'user' ? request.userId : null,
+		notebookId: request.requester === 'user' ? request.notebookId : null,
+		label: request.requester === 'user' ? request.label : null,
 	};
 	// A source and a carrier ask for a URL once: asking again revives only a failed or settled request. Web redispatching
 	// an import finds the request it already recorded.
 	const { rows } = await tx.execute<RequestRow>(sql`
 		INSERT INTO resource_requests
-			(id, target_key, url, stored_object_id, hints, requester, source_id, parent_resource_id, parent_text_hash, resource_id)
+			(id, target_key, url, stored_object_id, hints, requester, source_id, parent_resource_id, parent_text_hash, resource_id,
+			 user_id, notebook_id, label)
 		VALUES (
 			COALESCE(${columns.id}::uuid, gen_random_uuid()), ${request.key}, ${columns.url}, ${objectId}::uuid, ${columns.hints}::jsonb,
 			${request.requester}, ${columns.sourceId}::uuid, ${columns.parentResourceId}::uuid, ${columns.parentTextHash},
-			${columns.resourceId}::uuid
+			${columns.resourceId}::uuid, ${columns.userId}, ${columns.notebookId}::uuid, ${columns.label}
 		)
 		${
 			request.requester === 'source'
@@ -184,8 +189,8 @@ export async function recordFulfilledSourceRequests(
 
 /**
  * In the transaction that wrote or kept the Resource: settles every request waiting on the lead's key. A source becomes
- * the Resource's discovery source if it has none, and a carrier whose text is unchanged gains it as its subject; Web
- * saves a user's import once it reads the request's Resource. Returns the carriers that gained the subject.
+ * the Resource's discovery source if it has none, and a carrier whose text is unchanged gains it as its subject. Returns
+ * the carriers that gained the subject, and the user imports Web saves next.
  */
 export async function fulfillRequests(tx: NodePgDatabase, requestId: string, resourceId: string) {
 	const { rows } = await tx.execute<{
@@ -211,7 +216,7 @@ export async function fulfillRequests(tx: NodePgDatabase, requestId: string, res
 		WHERE lead.id = ${requestId}::uuid AND lead.target_key LIKE 'url:%'
 		ON CONFLICT (scheme, value) DO NOTHING
 	`);
-	if (!rows.length) return [];
+	if (!rows.length) return { carriers: [], imports: [] };
 	const subjects = rows.filter(({ requester }) => requester === 'subject');
 	const carriers = subjects.length
 		? (
@@ -235,7 +240,7 @@ export async function fulfillRequests(tx: NodePgDatabase, requestId: string, res
 			             THEN 'Subject carrier was reacquired or is no longer eligible' END
 		WHERE id = ANY(${sql.param(rows.map(({ id }) => id))}::uuid[])
 	`);
-	return carriers;
+	return { carriers, imports: rows.flatMap(({ id, requester }) => (requester === 'user' ? [id] : [])) };
 }
 
 /**
@@ -293,21 +298,4 @@ export async function promoteOrphanRequests(db: NodePgDatabase, limit: number) {
 		}
 		return leads;
 	});
-}
-
-/** Each import's request as Web reads its progress, with the text its translation follows. */
-export async function loadImportRequests(db: NodePgDatabase, ids: readonly string[]) {
-	if (!ids.length) return [];
-	const { rows } = await db.execute<{
-		id: string;
-		status: RequestRow['status'];
-		resourceId: string | null;
-		textHash: string | null;
-	}>(sql`
-		SELECT request.id::text, request.status, request.resource_id::text AS "resourceId", resource.text_hash AS "textHash"
-		FROM resource_requests request
-		LEFT JOIN resources resource ON resource.id = request.resource_id
-		WHERE request.id = ANY(${sql.param([...ids])}::uuid[])
-	`);
-	return rows;
 }

@@ -48,6 +48,11 @@ export const ImportWorkflowIdSchema = z.string().pipe(z.templateLiteral([IMPORT_
 
 export const ResourceImportDispatchSchema = z.strictObject({
 	workflowId: ImportWorkflowIdSchema,
+	userId: z.string().min(1).max(128),
+	/** Where Web files the Resource; null is the library. */
+	notebookId: z.uuid().nullable(),
+	/** What the inbox shows until the Resource has a title. */
+	label: z.string().min(1).max(240),
 	payload: z.discriminatedUnion('kind', [ResourceDraftTargetSchema.pick({ kind: true, url: true }), StoredBlobTargetSchema]),
 });
 

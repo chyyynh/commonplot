@@ -1,6 +1,6 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod';
-import { IMPORT_WORKFLOW_PREFIX, ImportWorkflowIdSchema, ResourceImportDispatchSchema } from './contracts/processing-target';
+import { IMPORT_WORKFLOW_PREFIX, ResourceImportDispatchSchema } from './contracts/processing-target';
 import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url';
 import type {} from './env';
 import { handleRSSCron } from './monitors/rss';
@@ -10,8 +10,8 @@ import { consumeSearchSyncBatch } from './search/sync-consumer';
 import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
 import { enqueueDueDerivations } from './workflows/derivation';
-import { admitRequests, reconcileRequests, resourceImportExecutions } from './workflows/requests';
-import { contentTranslationStatus, requestContentTranslation } from './workflows/translation';
+import { admitRequests, reconcileRequests } from './workflows/requests';
+import { contentTranslationStatus, importTranslationProgress, requestContentTranslation } from './workflows/translation';
 
 export { ZoteroSdt } from './services/zotero-sdt-service';
 export { ResourceTranslationV2Workflow } from './workflows/translation';
@@ -59,21 +59,31 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	/**
-	 * Durable admission outbox: the caller persists this immutable handle and payload first, and its UUID becomes the
-	 * request's id, so dispatching it again records nothing new. Web keeps who asked and saves the Resource it reads back.
+	 * Records a user's import as a request named by the handle's UUID and starts its acquisition; dispatching it again
+	 * records nothing new. Web dispatches only committed uploads, and the Workflow rechecks ownership and the latest
+	 * attempt before provider execution. Web reads the import's progress from the request and saves its Resource.
 	 */
 	async dispatchResourceImport(input: z.input<typeof ResourceImportDispatchSchema>): Promise<void> {
-		const { workflowId, payload } = ResourceImportDispatchSchema.parse(input);
+		const { workflowId, userId, notebookId, label, payload } = ResourceImportDispatchSchema.parse(input);
 		const id = workflowId.slice(IMPORT_WORKFLOW_PREFIX.length);
-		// The admission DO waits for committed ownership. The Workflow rechecks ownership and the latest attempt
-		// before provider execution, after any queueing delay.
-		await withCoreDb(this.env, (db) => admitRequests(db, [{ requester: 'user', id, target: payload }]));
+		await withCoreDb(this.env, (db) => admitRequests(db, [{ requester: 'user', id, userId, notebookId, label, target: payload }]));
 	}
 
-	/** Each Web import's progress, read from its request; Web asks only while one is unsettled. */
-	async resourceImportStatus(workflowIds: string[]) {
-		const ids = z.array(ImportWorkflowIdSchema).max(50).parse(workflowIds);
-		return withCoreDb(this.env, (db) => resourceImportExecutions(db, ids));
+	/** What Web's ready imports show for their translations, by Resource. */
+	async importTranslations(input: { resourceId: string; textHash: string }[]) {
+		const items = z
+			.array(z.strictObject({ resourceId: z.uuid(), textHash: z.string().min(1) }))
+			.max(50)
+			.parse(input);
+		return withCoreDb(this.env, async (db) =>
+			Object.fromEntries(
+				await Promise.all(
+					items.map(
+						async ({ resourceId, textHash }) => [resourceId, (await importTranslationProgress(db, resourceId, textHash)) ?? null] as const,
+					),
+				),
+			),
+		);
 	}
 
 	/**

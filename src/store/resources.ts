@@ -272,7 +272,7 @@ export async function persistResolvedResource(
 	return db.transaction(async (tx) => {
 		const claim = await claimRow(tx, resource, target, blobExists);
 		// A newer attempt that already committed did what these requests asked.
-		if (claim.settled) return { ...claim.settled, derivations: [], carriers: await fulfillRequests(tx, requestId, claim.resourceId) };
+		if (claim.settled) return { ...claim.settled, derivations: [], ...(await fulfillRequests(tx, requestId, claim.resourceId)) };
 		const required = await writeOriginal(tx, resource, target, claim);
 		if (resource.hackerNewsId && target.kind !== 'upload')
 			await tx.execute(sql`
@@ -287,12 +287,12 @@ export async function persistResolvedResource(
 				WHERE normalized_url = ANY(${sql.param(linkedResourceUrls(resource.normalizedUrl, resource.resourceIdentifiers))}::text[])
 				  AND target_resource_id IS NULL AND source_resource_id <> ${claim.resourceId}::uuid
 			`);
-		const carriers = await fulfillRequests(tx, requestId, claim.resourceId);
+		const fulfilled = await fulfillRequests(tx, requestId, claim.resourceId);
 		// Whether content translates automatically depends on who asked, which fulfilling the requests just recorded.
 		const derivations = required
 			? await requireDerivations(tx, claim.resourceId, [...required, ...(await requiredTranslations(tx, claim.resourceId))])
 			: [];
-		return { ...committed(await lockResource(tx, claim.resourceId), claim.outcome), derivations, carriers };
+		return { ...committed(await lockResource(tx, claim.resourceId), claim.outcome), derivations, ...fulfilled };
 	});
 }
 

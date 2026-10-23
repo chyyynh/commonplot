@@ -116,7 +116,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		);
 		if (persistence.outcome === 'superseded') return { outcome: 'superseded' };
 		run.writtenAt = Date.now();
-		const { id: resourceId, scope, subjectResourceId, textHash, outcome, carriers } = persistence;
+		const { id: resourceId, scope, subjectResourceId, textHash, outcome, carriers, imports } = persistence;
 		// The Resource is published; its summary and entities are derived from what was written, and each handoff waits
 		// only for the derivations it reads.
 		const derivations = persistence.derivations
@@ -142,6 +142,12 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		const searchSyncIds = [...(scope === 'corpus' ? [resourceId] : []), ...carriers];
 		// Every handoff runs to completion even when an independent one fails.
 		const followups = await Promise.allSettled([
+			// Web files each user import that asked for this Resource where its user asked.
+			imports.length
+				? step.do('save-imported-resources-v1', STORAGE_STEP, async () => {
+						await this.env.APP.saveImportedResources(imports);
+					})
+				: undefined,
 			// Search documents lead with the summaries.
 			searchSyncIds.length
 				? summaries.then(() =>
