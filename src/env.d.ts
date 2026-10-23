@@ -8,14 +8,15 @@ type CoreBindings = InferEnv<CoreConfig>;
 
 declare global {
 	/** Inferred from Core's config, not `Cloudflare.Env`: Web's program also type-checks this code. */
-	type CoreEnv = Omit<CoreBindings, 'APP' | 'RESOURCE_VECTORS'> & {
+	type CoreEnv = Omit<CoreBindings, 'APP' | 'RESOURCE_VECTORS' | 'CORPUS_VECTORS'> & {
 		APP: CoreBindings['APP'] &
 			Rpc.Provider<{
 				completeResourceSave(resourceId: string, saveTarget: unknown): Promise<void>;
 				verifyStoredBlobProcessing(objectId: string, workflowId: string): Promise<StoredPdf | null>;
 			}>;
-		/** The config types every Vectorize binding as the legacy index; this one is a V2 index. */
+		/** The config types every Vectorize binding as the legacy index; these are V2 indexes. */
 		RESOURCE_VECTORS: Vectorize;
+		CORPUS_VECTORS: Vectorize;
 	};
 	/** `ctx.exports` for Core's own classes; Durable Objects are also namespaces. */
 	type CoreExports = {

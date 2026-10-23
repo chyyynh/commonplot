@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { errorMessage } from '../services/response';
 import { withCoreDb } from '../store/db';
+import { syncCorpusVectors } from './corpus-vectors';
 import { syncResourceVectors } from './resource-vectors';
 import { loadCorpusDocuments, syncCorpusItem } from './search-index';
 
@@ -45,11 +46,9 @@ export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<u
 			const documents = new Map((await loadCorpusDocuments(db, ids)).map((document) => [document.id, document]));
 			// One embedding call covers the batch, so a failure retries every Resource in it.
 			try {
-				await syncResourceVectors(
-					env,
-					[...documents.values()],
-					ids.filter((id) => !documents.has(id)),
-				);
+				const current = [...documents.values()];
+				const deleted = ids.filter((id) => !documents.has(id));
+				await Promise.all([syncResourceVectors(env, current, deleted), syncCorpusVectors(env, current, deleted)]);
 			} catch (error) {
 				console.error({
 					tag: 'RESOURCE_VECTORS',

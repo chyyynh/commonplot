@@ -99,6 +99,8 @@ export const coreWorker = defineWorker(({ mode }) => ({
 		RESOURCE_SEARCH_SYNC_QUEUE: bindings.queue({ name: named(mode, 'resource-search-sync') }),
 		/** One bge-m3 vector per searchable corpus Resource, written by the search sync queue, for recommendations. */
 		RESOURCE_VECTORS: bindings.vectorize({ name: named(mode, 'newsence-resources-v1') }),
+		/** The public corpus as bge-m3 vectors: one per Resource (`<id>:d`) plus its text's chunks (`<id>:<n>`). */
+		CORPUS_VECTORS: bindings.vectorize({ name: named(mode, 'newsence-corpus-vectors-v1') }),
 		APP: bindings.worker({
 			worker: named(mode, 'newsence-web-tanstack'),
 			exportName: 'DomainRpc',
@@ -119,6 +121,11 @@ export const coreWorker = defineWorker(({ mode }) => ({
 		ResourceTranslationV2Workflow: exports.workflow({
 			name: named(mode, 'newsence-resource-translation-v2'),
 			defaultRetention: { successRetention: '7 days', errorRetention: '7 days' },
+		}),
+		/** Writes every corpus Resource's vectors, a page per step. */
+		CorpusVectorsBackfillWorkflow: exports.workflow({
+			name: named(mode, 'newsence-corpus-vectors-backfill'),
+			limits: { steps: 25000 },
 		}),
 		/** 500k resources need 10k enqueue steps before pruning and readiness checks. */
 		SearchIndexRebuildWorkflow: exports.workflow({
