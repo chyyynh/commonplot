@@ -8,7 +8,7 @@ and authoritatively filters every returned Resource ID.
 
 | Role | Active resource |
 | --- | --- |
-| Binding (Core and Web) | `CORPUS_VECTORS → newsence-corpus-vectors-v1` (1024-d, cosine) |
+| Binding (Core only) | `CORPUS_VECTORS → newsence-corpus-vectors-v1` (1024-d, cosine); Web asks through `searchCorpus` and `nearCorpusResources` |
 | Embedding | `@cf/baai/bge-m3` through AI Gateway |
 | Writes | `resource-search-sync` Queue → `consumeSearchSyncBatch` |
 | Backfill Workflow | `newsence-corpus-vectors-backfill` (`CorpusVectorsBackfillWorkflow`) |

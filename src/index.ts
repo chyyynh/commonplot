@@ -5,7 +5,7 @@ import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url'
 import type {} from './env';
 import { handleRSSCron } from './monitors/rss';
 import { handleTwitterCron } from './monitors/twitter';
-import { type PublicResourceSearchInput, searchPublicResourceIds, searchPublicResourcePassages } from './search/search-index';
+import { nearCorpusResources, type PublicResourceSearchInput, searchPublicResources } from './search/search-index';
 import { consumeSearchSyncBatch } from './search/sync-consumer';
 import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
@@ -115,13 +115,13 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		return contentTranslationStatus(this.env, id);
 	}
 
-	/** Ranked corpus candidates; the app Worker authoritatively filters and hydrates them. */
-	searchPublicResourceIds(input: PublicResourceSearchInput) {
-		return searchPublicResourceIds(this.env, input);
+	/** Ranked corpus candidates with matched passages; the app Worker authoritatively filters and hydrates them. */
+	searchCorpus(input: PublicResourceSearchInput) {
+		return searchPublicResources(this.env, input);
 	}
 
-	/** Ranked candidates with matched passages; the app Worker filters and hydrates them. */
-	searchPublicResourcePassages(input: PublicResourceSearchInput) {
-		return searchPublicResourcePassages(this.env, input);
+	/** The corpus nearest a Resource in meaning, each with its similarity; the app Worker filters and ranks them. */
+	nearCorpusResources(resourceId: string) {
+		return nearCorpusResources(this.env, z.uuid().parse(resourceId));
 	}
 }

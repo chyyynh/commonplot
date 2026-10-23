@@ -75,6 +75,11 @@ function chunkText(text: string): string[] {
 	return chunks.slice(0, MAX_CHUNKS);
 }
 
+/** A Resource's document vector; its chunks are `<id>:<n>`. */
+export function documentVectorId(resourceId: string): string {
+	return `${resourceId}:d`;
+}
+
 type CorpusVector = { id: string; text: string; metadata: Record<string, VectorizeVectorMetadataValue> };
 
 function oneLine(text: string | null | undefined): string {
@@ -112,7 +117,11 @@ function corpusVectors(document: CorpusDocument): CorpusVector[] {
 	const chunks = !titled && content.length <= VECTOR_TEXT_MAX_CHARS ? [] : chunkText(content);
 	return [
 		// The document vector counts its chunks, so a later sync clears the ones a shorter text no longer has.
-		{ id: `${document.id}:d`, text: documentText, metadata: { ...metadata, role: 'doc', chunks: chunks.length, text: documentText } },
+		{
+			id: documentVectorId(document.id),
+			text: documentText,
+			metadata: { ...metadata, role: 'doc', chunks: chunks.length, text: documentText },
+		},
 		...chunks.map((chunk, index) => ({
 			id: `${document.id}:${index}`,
 			text: clip(`${head}\n\n${chunk}`),
@@ -134,11 +143,7 @@ async function inBatches<T, R>(items: readonly T[], size: number, call: (batch: 
 
 /** How many chunks each Resource's stored vectors have, by Resource id; a Resource without vectors is absent. */
 async function storedChunkCounts(env: CoreEnv, resourceIds: readonly string[]): Promise<Map<string, number>> {
-	const pages = await inBatches(
-		resourceIds.map((id) => `${id}:d`),
-		READ_BATCH,
-		(ids) => env.CORPUS_VECTORS.getByIds(ids),
-	);
+	const pages = await inBatches(resourceIds.map(documentVectorId), READ_BATCH, (ids) => env.CORPUS_VECTORS.getByIds(ids));
 	return new Map(pages.flat().map((vector) => [vector.id.slice(0, -':d'.length), Number(vector.metadata?.chunks ?? 0)]));
 }
 
@@ -176,7 +181,7 @@ export async function syncCorpusVectors(env: CoreEnv, documents: readonly Corpus
 	const stale = [
 		// Each document's vectors are its document vector, then its chunks.
 		...documents.flatMap((document, index) => chunkIds(document.id, perDocument[index]!.length - 1, stored.get(document.id) ?? 0)),
-		...deletedIds.flatMap((id) => (stored.has(id) ? [`${id}:d`, ...chunkIds(id, 0, stored.get(id)!)] : [])),
+		...deletedIds.flatMap((id) => (stored.has(id) ? [documentVectorId(id), ...chunkIds(id, 0, stored.get(id)!)] : [])),
 	];
 	await inBatches(stale, DELETE_BATCH, (batch) => env.CORPUS_VECTORS.deleteByIds(batch));
 }

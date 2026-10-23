@@ -4,10 +4,11 @@ import { z } from 'zod';
 import { type ResourceKind, resourceKindsWhere } from '../contracts/resource-kinds';
 import { withCoreDb } from '../store/db';
 import { kindWhere } from '../store/kind-sql';
-import { type CorpusHit, queryCorpusVectors, type SearchPassage } from './corpus-vectors';
+import { type CorpusHit, documentVectorId, queryCorpusVectors, type SearchPassage } from './corpus-vectors';
 
 // Postgres is canonical; CORPUS_VECTORS is its derived public-corpus index.
-const ORIGINAL_CONTENT_MAX_CHARS = 8_000;
+/** Past MAX_CHUNKS of English prose; CJK text fills them sooner. */
+const ORIGINAL_CONTENT_MAX_CHARS = 30_000;
 const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 /** The most results one search returns. */
 const RESULT_LIMIT_MAX = 50;
@@ -74,7 +75,7 @@ export async function loadCorpusDocuments(db: NodePgDatabase, resourceIds: reado
 		               WHERE derivation.resource_id = r.id AND derivation.kind = 'summary'
 		                 AND derivation.lang = translation.lang AND derivation.status = 'done'
 		             ),
-		             'content', CASE WHEN translation.lang = r.original_lang OR ${kindWhere(sql`r.kind`, 'titled', false)}
+		             'content', CASE WHEN translation.lang = r.original_lang
 		               THEN LEFT(translation.content, ${ORIGINAL_CONTENT_MAX_CHARS}::integer) END
 		           )
 		           ORDER BY (translation.lang = r.original_lang) DESC, translation.lang
@@ -137,15 +138,44 @@ async function searchCorpus(env: CoreEnv, input: PublicResourceSearchInput) {
 	return (await collapseCarriers(env, hits, kindFilter)).slice(0, limit);
 }
 
-/** Return ranked candidates only; Web authoritatively filters and hydrates them from Postgres. */
-export async function searchPublicResourceIds(env: CoreEnv, input: PublicResourceSearchInput): Promise<string[]> {
-	return (await searchCorpus(env, input)).map((hit) => hit.id);
-}
-
-/** Candidates with up to three matched passages each, for a model to judge relevance before reading. */
-export async function searchPublicResourcePassages(
+/** Ranked candidates with up to three matched passages each; Web authoritatively filters and hydrates them from Postgres. */
+export async function searchPublicResources(
 	env: CoreEnv,
 	input: PublicResourceSearchInput,
 ): Promise<Array<{ id: string; passages: SearchPassage[] }>> {
 	return (await searchCorpus(env, input)).map(({ id, passages }) => ({ id, passages }));
+}
+
+/** Matches asked of Vectorize, the Resource itself among them. */
+const NEAR_TOP_K = 50;
+
+/**
+ * The corpus nearest a Resource in meaning, nearest first, each with its cosine similarity. A carrier (HN thread,
+ * repost) counts for the Resource it discusses, and neither the Resource nor its own subject is listed.
+ */
+export async function nearCorpusResources(env: CoreEnv, resourceId: string): Promise<Array<{ id: string; similarity: number }>> {
+	// Document vectors only, and without metadata, which Vectorize answers faster; subjects come from Postgres.
+	const { matches } = await env.CORPUS_VECTORS.queryById(documentVectorId(resourceId), { topK: NEAR_TOP_K, filter: { role: 'doc' } });
+	const ids = matches.map((match) => match.id.slice(0, match.id.indexOf(':')));
+	const self = matches[ids.indexOf(resourceId)];
+	// A Resource without a vector yet has no neighbours to offer.
+	if (!self) return [];
+	const { rows } = await withCoreDb(env, (db) =>
+		db.execute<{ id: string; subject_id: string }>(sql`
+		SELECT id::text, subject_resource_id::text AS subject_id FROM resources
+		WHERE ${inArray(sql`id`, ids)} AND subject_resource_id IS NOT NULL
+	`),
+	);
+	const subjects = new Map(rows.map((row) => [row.id, row.subject_id]));
+	const subjectOf = (id: string) => subjects.get(id) ?? id;
+	const excluded = new Set([resourceId, subjectOf(resourceId)]);
+	const near = new Map<string, number>();
+	for (const [index, match] of matches.entries()) {
+		const id = subjectOf(ids[index]!);
+		if (excluded.has(id) || near.has(id)) continue;
+		// Vectorize scores quantized vectors, which reads every similarity low by about the same factor, its own score
+		// included; dividing by that restores cosine similarity to within ~0.02.
+		near.set(id, Math.min(1, match.score / self.score));
+	}
+	return [...near].map(([id, similarity]) => ({ id, similarity }));
 }
