@@ -96,10 +96,6 @@ export function isWrittenIn(text: string, lang: 'zh-Hant' | 'en'): boolean {
 	return simplified <= Math.max(1, Math.floor(han / 50));
 }
 
-export function isEnglishLanguage(lang: string): boolean {
-	return /^en(-|$)/i.test(lang);
-}
-
 /**
  * Recommendation vectors read English, so every other named language gets an English title. English, or a code for no
  * linguistic content, undetermined or private-use text, needs none: an English title would add nothing.
