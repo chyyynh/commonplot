@@ -9,15 +9,15 @@ import { buildTranscriptLines, fetchYouTubeCaptions } from '../services/youtube-
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
 
 const THUMBNAIL_SIZES = ['fhd', 'maxres', 'standard', 'high', 'medium', 'default'] as const;
+const THUMBNAIL_CHECK_TIMEOUT_MS = 5_000;
 /**
- * Thumbnails parse to the largest known size's URL. YouTube adds sizes without
- * notice (`fhd` arrived in 2026), so an unknown key is ignored, not an error.
+ * Thumbnails parse to their URLs, largest known size first. YouTube adds sizes
+ * without notice (`fhd` arrived in 2026), so an unknown key is ignored, not an error.
  */
 const YouTubeThumbnailsSchema = z
 	.record(z.string(), z.unknown())
-	.transform(
-		(thumbnails) =>
-			THUMBNAIL_SIZES.map((size) => z.object({ url: z.string().min(1) }).safeParse(thumbnails[size]).data?.url).find(Boolean) ?? null,
+	.transform((thumbnails) =>
+		THUMBNAIL_SIZES.flatMap((size) => z.object({ url: z.string().trim().min(1) }).safeParse(thumbnails[size]).data?.url ?? []),
 	);
 const YouTubeVideoItemSchema = z.object({
 	id: z.string().min(1),
@@ -119,11 +119,26 @@ async function fetchChannelAvatar(youtubeApiKey: string, channelId: string): Pro
 		const channelData = await fetchYouTubeApi('channels', channelId, 'snippet', youtubeApiKey, YouTubeChannelsResponseSchema);
 		const channel = channelData.items?.find((item) => item.id === channelId);
 		if (channelData.items?.length && !channel) throw new Error('YouTube API returned no matching channel');
-		return channel?.snippet.thumbnails ?? null;
+		return channel?.snippet.thumbnails[0] ?? null;
 	} catch (error) {
 		console.warn({ tag: 'YOUTUBE', msg: 'Channel avatar unavailable', channelId, error: String(error) });
 		return null;
 	}
+}
+
+/**
+ * The first thumbnail that serves. A video's thumbnail URLs carry a `?v=` version that
+ * 404s until YouTube publishes that version (a new upload, a replaced thumbnail), while
+ * the same path without it serves the current one; a size can also be listed but missing.
+ */
+async function servedThumbnail(urls: readonly string[]): Promise<string | null> {
+	const candidates = [...new Set(urls.flatMap((url) => [url, url.split('?')[0]!]))];
+	for (const url of candidates) {
+		const response = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(THUMBNAIL_CHECK_TIMEOUT_MS) }).catch(() => null);
+		if (response?.ok) return url;
+	}
+	console.warn({ tag: 'YOUTUBE', msg: 'No thumbnail served', candidates: candidates.length });
+	return null;
 }
 
 async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
@@ -165,7 +180,7 @@ async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
 				]
 			: [],
 		kindMetadata: durationSeconds === null ? {} : { durationSeconds },
-		previewImageUrl: snippet.thumbnails?.trim() || null,
+		previewImageUrl: await servedThumbnail(snippet.thumbnails),
 		subjectUrl: null,
 		chapters,
 	} satisfies Omit<PlatformResource, 'content' | 'originalLang'> & { audioLanguage: string | null; chapters: YouTubeChapter[] };
