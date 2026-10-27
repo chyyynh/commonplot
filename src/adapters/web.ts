@@ -13,7 +13,8 @@ import { cleanText, htmlToMdast, stringifyMarkdown } from '../contracts/markdown
 import { resolveResourceUrl } from '../contracts/resource-url';
 import { PDF_MIME } from '../contracts/storage-keys';
 import { rehostInlineImages } from '../services/image-rehosting';
-import { fetchOk, limitByteStream } from '../services/response';
+import { fetchPage } from '../services/page-fetcher';
+import { limitByteStream, responseError } from '../services/response';
 import { FETCH_STEP_RETRIES } from '../services/workflow-step';
 import { stagePdfDocument, storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 
@@ -256,17 +257,17 @@ type WebAcquisition = Redirect | ReadDocument | Awaited<ReturnType<typeof storeP
  * a PDF is stored; an HTML or XML page is read as an article.
  */
 async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisition> {
-	const response = await fetchOk(url, {
-		label: 'Fetched resource',
+	const { response, url: fetchedUrl } = await fetchPage(url, {
 		timeoutMs: GENERIC_FETCH_TIMEOUT_MS,
-		permanent: [400, 401, 403, 404, 410, 422],
 		headers: {
 			'User-Agent': GENERIC_WEB_USER_AGENT,
 			Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.5',
 			'Accept-Language': 'en-US,en;q=0.9,zh-TW;q=0.8,zh;q=0.7',
 		},
 	});
-	const resolved = resolveResourceUrl(response.url);
+	if (!response.ok)
+		throw await responseError(response, [400, 401, 403, 404, 410, 422], `Fetched resource failed with HTTP ${response.status}`);
+	const resolved = resolveResourceUrl(fetchedUrl);
 	if (!resolved) {
 		await response.body?.cancel();
 		throw new Error('Fetch response has no valid final URL');

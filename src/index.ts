@@ -18,6 +18,7 @@ export { ResourceTranslationV2Workflow } from './workflows/translation';
 export { CorpusVectorsBackfillWorkflow } from './search/vectors-backfill-workflow';
 export { ResourceProcessingV2Workflow } from './workflows/processing';
 export { ResourceDerivationWorkflow } from './workflows/derivation';
+export { PageFetcher } from './services/page-fetcher';
 export { YouTubeCaptionFetcher } from './services/youtube-captions';
 
 export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {

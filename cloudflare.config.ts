@@ -104,6 +104,7 @@ export const coreWorker = defineWorker(({ mode }) => ({
 		/** Code reaches these Durable Objects and Workflows through `exports` from `cloudflare:workers`. */
 		ZoteroSdt: exports.durableObject({ storage: 'sqlite', container: zoteroSdt }),
 		YouTubeCaptionFetcher: exports.durableObject({ storage: 'sqlite' }),
+		PageFetcher: exports.durableObject({ storage: 'sqlite' }),
 		ResourceProcessingV2Workflow: exports.workflow({
 			name: named(mode, 'newsence-resource-processing-v2'),
 		}),
