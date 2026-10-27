@@ -2,12 +2,12 @@ import { z } from 'zod';
 import { errorMessage } from '../services/response';
 import { withCoreDb } from '../store/db';
 import { syncCorpusVectors } from './corpus-vectors';
-import { loadCorpusDocuments } from './search-index';
+import { loadSearchDocuments } from './search-index';
 
 const ResourceSearchSyncMessageSchema = z.object({ resourceId: z.uuid().toLowerCase() });
 
 /**
- * Write or delete each queued corpus Resource's vectors, acknowledging only a snapshot that is still current.
+ * Write or delete each queued Resource's vectors, acknowledging only a snapshot that is still current.
  */
 export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<unknown>): Promise<void> {
 	const pending = new Map<string, Message<unknown>[]>();
@@ -37,7 +37,7 @@ export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<u
 	const ids = [...pending.keys()];
 	try {
 		await withCoreDb(env, async (db) => {
-			const documents = new Map((await loadCorpusDocuments(db, ids)).map((document) => [document.id, document]));
+			const documents = new Map((await loadSearchDocuments(db, ids)).map((document) => [document.id, document]));
 			// One embedding call covers the batch, so a failure retries every Resource in it.
 			await syncCorpusVectors(
 				env,
@@ -46,7 +46,7 @@ export async function consumeSearchSyncBatch(env: CoreEnv, batch: MessageBatch<u
 			);
 			// Another consumer may have written a newer snapshot first. Retry from
 			// Postgres instead of acknowledging a stale write or deletion.
-			const current = new Map((await loadCorpusDocuments(db, ids)).map((document) => [document.id, document]));
+			const current = new Map((await loadSearchDocuments(db, ids)).map((document) => [document.id, document]));
 			for (const resourceId of ids) {
 				if (JSON.stringify(current.get(resourceId)) === JSON.stringify(documents.get(resourceId))) {
 					for (const message of pending.get(resourceId)!) message.ack();

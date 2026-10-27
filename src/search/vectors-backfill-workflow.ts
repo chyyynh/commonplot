@@ -2,20 +2,21 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import { sql } from 'drizzle-orm';
 import { withCoreDb } from '../store/db';
 import { syncCorpusVectors } from './corpus-vectors';
-import { loadCorpusDocuments, SEARCHABLE_CORPUS_RESOURCE_SQL } from './search-index';
+import { loadSearchDocuments, SEARCHABLE_RESOURCE_SQL } from './search-index';
 
 const BACKFILL_PAGE_SIZE = 50;
-/** An optional UUID range `(after, through]`, so several instances can split the corpus. */
-type BackfillParams = { after?: string; through?: string };
+/** An optional UUID range `(after, through]`, so several instances can split the corpus, and the scope to write. */
+type BackfillParams = { after?: string; through?: string; scope?: 'corpus' | 'private' };
 const PAGE_STEP_OPTIONS = { retries: { limit: 5, delay: '10 seconds', backoff: 'exponential' }, timeout: '300 seconds' } as const;
 
 /**
- * Writes every searchable corpus Resource's vectors in UUID order, a page per step. A Resource that changed
+ * Writes every searchable Resource's vectors of one scope (corpus by default) in UUID order, a page per step. A Resource that changed
  * while its page was written goes to the sync queue, whose consumer writes its current snapshot.
  */
 export class CorpusVectorsBackfillWorkflow extends WorkflowEntrypoint<CoreEnv, BackfillParams> {
 	async run(event: WorkflowEvent<BackfillParams>, step: WorkflowStep) {
 		const through = event.payload.through ?? null;
+		const scope = event.payload.scope ?? 'corpus';
 		let cursor: string | null = event.payload.after ?? null;
 		let written = 0;
 		let requeued = 0;
@@ -28,16 +29,16 @@ export class CorpusVectorsBackfillWorkflow extends WorkflowEntrypoint<CoreEnv, B
 					withCoreDb(this.env, async (db) => {
 						const { rows } = await db.execute<{ id: string }>(sql`
 							SELECT r.id::text FROM resources r
-							WHERE ${SEARCHABLE_CORPUS_RESOURCE_SQL}
+							WHERE r.scope = ${scope} AND ${SEARCHABLE_RESOURCE_SQL}
 							  AND (${cursor}::uuid IS NULL OR r.id > ${cursor}::uuid)
 							  AND (${through}::uuid IS NULL OR r.id <= ${through}::uuid)
 							ORDER BY r.id
 							LIMIT ${BACKFILL_PAGE_SIZE}
 						`);
 						const ids = rows.map((row) => row.id);
-						const documents = await loadCorpusDocuments(db, ids);
+						const documents = await loadSearchDocuments(db, ids);
 						await syncCorpusVectors(this.env, documents, []);
-						const current = new Map((await loadCorpusDocuments(db, ids)).map((document) => [document.id, document]));
+						const current = new Map((await loadSearchDocuments(db, ids)).map((document) => [document.id, document]));
 						const changed = documents.filter((document) => JSON.stringify(current.get(document.id)) !== JSON.stringify(document));
 						if (changed.length)
 							await this.env.RESOURCE_SEARCH_SYNC_QUEUE.sendBatch(changed.map((document) => ({ body: { resourceId: document.id } })));

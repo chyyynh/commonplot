@@ -138,8 +138,9 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						console.error({ tag: 'WORKFLOW', msg: 'Reference enrichment failed', resource_id: resourceId, error: errorMessage(error) });
 					})
 				: undefined;
-		// Attaching a subject rewrote its carrier's search document, so the carrier syncs too.
-		const searchSyncIds = [...(scope === 'corpus' ? [resourceId] : []), ...carriers];
+		// A private Resource keeps a document vector for its owner's interests. Attaching a subject rewrote its
+		// carrier's search document, so the carrier syncs too.
+		const searchSyncIds = [resourceId, ...carriers];
 		// Every handoff runs to completion even when an independent one fails.
 		const followups = await Promise.allSettled([
 			// Web files each user import that asked for this Resource where its user asked.

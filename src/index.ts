@@ -5,7 +5,7 @@ import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url'
 import type {} from './env';
 import { handleRSSCron } from './monitors/rss';
 import { handleTwitterCron } from './monitors/twitter';
-import { nearCorpusResources, type PublicResourceSearchInput, searchPublicResources } from './search/search-index';
+import { nearCorpusResources, nearInterest, type PublicResourceSearchInput, searchPublicResources } from './search/search-index';
 import { consumeSearchSyncBatch } from './search/sync-consumer';
 import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
@@ -121,5 +121,10 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	/** The corpus nearest a Resource in meaning, each with its similarity; the app Worker filters and ranks them. */
 	nearCorpusResources(resourceId: string) {
 		return nearCorpusResources(this.env, z.uuid().parse(resourceId));
+	}
+
+	/** Recent corpus publications nearest a reader's weighted items, each with its similarity; Web owns whose items they are. */
+	nearInterest(input: Parameters<typeof nearInterest>[1]) {
+		return nearInterest(this.env, input);
 	}
 }

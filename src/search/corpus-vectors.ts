@@ -1,9 +1,10 @@
 import { RESOURCE_KINDS } from '../contracts/resource-kinds';
 import { coreGatewayOptions } from '../services/ai-model';
-import type { CorpusDocument } from './search-index';
+import type { SearchDocument } from './search-index';
 
-// Postgres is canonical; CORPUS_VECTORS is its derived public-corpus index. Every searchable Resource has one
-// document vector `<id>:d` (title, source, summaries) and its original text as chunk vectors `<id>:<n>`.
+// Postgres is canonical; CORPUS_VECTORS is its derived index. Every searchable corpus Resource has one document
+// vector `<id>:d` (title, source, summaries) and its original text as chunk vectors `<id>:<n>`; a private one has
+// only its document vector, which every query but its owner's interests leaves out.
 const EMBEDDING_MODEL = '@cf/baai/bge-m3';
 const EMBEDDING_BATCH = 50;
 /** bge-m3 reads 512 tokens; a document vector's text and a chunk's stored passage stay inside that. */
@@ -88,11 +89,11 @@ function oneLine(text: string | null | undefined): string {
 
 /**
  * The document vector reads the title, source and every language's summary; an untitled kind's reads its text
- * instead of a title, which also covers it whole when short. Chunks open with the title so each knows its Resource.
+ * instead of a title, which also covers it whole when short. Chunks open with the title as `head`.
  */
-function corpusVectors(document: CorpusDocument): CorpusVector[] {
+function documentText(document: SearchDocument) {
 	const original = document.translations.find((translation) => translation.lang === document.original_lang);
-	if (!original) throw new Error(`Corpus vectors ${document.id} are missing the ${document.original_lang} translation`);
+	if (!original) throw new Error(`Search document ${document.id} is missing the ${document.original_lang} translation`);
 	const titled = RESOURCE_KINDS[document.kind].titled;
 	const content = original.content?.trim() ?? '';
 	const title = oneLine(original.title);
@@ -102,8 +103,20 @@ function corpusVectors(document: CorpusDocument): CorpusVector[] {
 			.filter(Boolean)
 			.join('\n'),
 	);
-	const documentText = clip([head, titled ? oneLine(document.source) : oneLine(content), ...summaries].filter(Boolean).join('\n\n'));
-	if (!documentText) throw new Error(`Corpus vectors ${document.id} have no text`);
+	const text = clip([head, titled ? oneLine(document.source) : oneLine(content), ...summaries].filter(Boolean).join('\n\n'));
+	if (!text) throw new Error(`Search document ${document.id} has no text`);
+	return { text, head, titled, content };
+}
+
+/**
+ * A corpus Resource's document vector and chunks, which open with the title so each knows its Resource. A private
+ * Resource has only its document vector, as `role: 'private'` without its text: it shapes its owner's interests and
+ * no search or recommendation reads it.
+ */
+function corpusVectors(document: SearchDocument): CorpusVector[] {
+	const { text, head, titled, content } = documentText(document);
+	if (document.scope === 'private')
+		return [{ id: documentVectorId(document.id), text, metadata: { kind: document.kind, role: 'private', chunks: 0 } }];
 	const metadata = {
 		kind: document.kind,
 		// Unix seconds: Vectorize filters ranges on numbers only.
@@ -119,8 +132,8 @@ function corpusVectors(document: CorpusDocument): CorpusVector[] {
 		// The document vector counts its chunks, so a later sync clears the ones a shorter text no longer has.
 		{
 			id: documentVectorId(document.id),
-			text: documentText,
-			metadata: { ...metadata, role: 'doc', chunks: chunks.length, text: documentText },
+			text,
+			metadata: { ...metadata, role: 'doc', chunks: chunks.length, text },
 		},
 		...chunks.map((chunk, index) => ({
 			id: `${document.id}:${index}`,
@@ -161,7 +174,7 @@ async function embedTexts(env: CoreEnv, texts: readonly string[], feature: strin
 }
 
 /** Upserts the current documents' vectors, drops chunks they no longer have, and deletes the rest. */
-export async function syncCorpusVectors(env: CoreEnv, documents: readonly CorpusDocument[], deletedIds: readonly string[]): Promise<void> {
+export async function syncCorpusVectors(env: CoreEnv, documents: readonly SearchDocument[], deletedIds: readonly string[]): Promise<void> {
 	const stored = await storedChunkCounts(env, [...documents.map((document) => document.id), ...deletedIds]);
 	const perDocument = documents.map(corpusVectors);
 	const vectors = perDocument.flat();
@@ -184,6 +197,12 @@ export async function syncCorpusVectors(env: CoreEnv, documents: readonly Corpus
 		...deletedIds.flatMap((id) => (stored.has(id) ? [documentVectorId(id), ...chunkIds(id, 0, stored.get(id)!)] : [])),
 	];
 	await inBatches(stale, DELETE_BATCH, (batch) => env.CORPUS_VECTORS.deleteByIds(batch));
+}
+
+/** The stored document vectors of these Resources, by Resource id; one without a vector is absent. */
+export async function readDocumentVectors(env: CoreEnv, resourceIds: readonly string[]): Promise<Map<string, number[]>> {
+	const pages = await inBatches(resourceIds.map(documentVectorId), READ_BATCH, (ids) => env.CORPUS_VECTORS.getByIds(ids));
+	return new Map(pages.flat().map((vector) => [vector.id.slice(0, -':d'.length), [...vector.values]]));
 }
 
 /** A matched passage of a Resource's indexed text, trimmed for a model to judge relevance. */
@@ -209,13 +228,13 @@ export async function queryCorpusVectors(
 	filters: { kinds?: readonly string[]; publishedAfter?: Date },
 ): Promise<CorpusHit[]> {
 	const [vector] = await embedTexts(env, [query], 'corpus-search');
-	const filter: VectorizeVectorMetadataFilter = {};
+	const filter: VectorizeVectorMetadataFilter = { role: { $ne: 'private' } };
 	if (filters.kinds) filter.kind = { $in: [...filters.kinds] };
 	if (filters.publishedAfter) filter.published_at = { $gte: Math.floor(filters.publishedAfter.getTime() / 1000) };
 	const { matches } = await env.CORPUS_VECTORS.query(vector!, {
 		topK: QUERY_TOP_K,
 		returnMetadata: 'all',
-		...(Object.keys(filter).length ? { filter } : {}),
+		filter,
 	});
 	const hits = new Map<string, CorpusHit>();
 	for (const match of matches) {
