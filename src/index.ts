@@ -1,5 +1,6 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod';
+import { CONTENT_TRANSLATION_LANGS } from './contracts/languages';
 import { IMPORT_WORKFLOW_PREFIX, ResourceImportDispatchSchema } from './contracts/processing-target';
 import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url';
 import type {} from './env';
@@ -104,13 +105,13 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	/** A reader's full translation into `lang`. The app Worker checks entitlement and bills an admitted request. */
 	requestResourceTranslation(resourceId: string, lang: string) {
 		const id = z.uuid().parse(resourceId);
-		z.literal('zh-Hant').parse(lang);
+		z.enum(CONTENT_TRANSLATION_LANGS).parse(lang);
 		return requestContentTranslation(this.env, id);
 	}
 
 	resourceTranslationStatus(resourceId: string, lang: string) {
 		const id = z.uuid().parse(resourceId);
-		z.literal('zh-Hant').parse(lang);
+		z.enum(CONTENT_TRANSLATION_LANGS).parse(lang);
 		return contentTranslationStatus(this.env, id);
 	}
 

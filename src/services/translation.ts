@@ -7,6 +7,7 @@ import type { WorkflowStep } from 'cloudflare:workers';
 import type { Heading, Nodes, Paragraph, Parents, PhrasingContent, Root, RootContent, TableCell, Text } from 'mdast';
 import pLimit from 'p-limit';
 import { z } from 'zod';
+import type { SummaryLang } from '../contracts/languages';
 import { parseMarkdown as parseDialect, stringifyMarkdown } from '../contracts/markdown';
 import type { ResourceKind } from '../contracts/resource-kinds';
 import { AiOutputError, aiRetryDelay, CORE_TEXT_MODEL, CORE_TEXT_REASONING, generateObject } from './ai-model';
@@ -599,7 +600,7 @@ const METADATA_TARGETS = {
 		style: 'Keep established English names of people, organizations and products.',
 		description: 'Faithful English translation of the supplied resource metadata.',
 	},
-} as const;
+} as const satisfies Record<SummaryLang, { language: string; style: string; description: string }>;
 
 /** Translates a title; summaries are derived in each language rather than translated. */
 export async function translateTitle(document: TitledText, lang: keyof typeof METADATA_TARGETS, env: CoreEnv) {

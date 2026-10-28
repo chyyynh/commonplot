@@ -1,6 +1,7 @@
 import { franc } from 'franc-min';
 import { Converter } from 'opencc-js';
 import { z } from 'zod';
+import type { SummaryLang } from './languages';
 
 export const ResourceLanguageSchema = z
 	.string()
@@ -78,7 +79,7 @@ const TAIWAN_COMMON_FORMS = new Set('台干里污范雇占准岩游');
  * Whether generated prose reads as `lang`: Taiwan Traditional Chinese with no Simplified forms, or English with no
  * Han characters. Neither may contain kana or Hangul, not even in a name; Latin names may appear in Chinese prose.
  */
-export function isWrittenIn(text: string, lang: 'zh-Hant' | 'en'): boolean {
+export function isWrittenIn(text: string, lang: SummaryLang): boolean {
 	const letters = text.match(/\p{L}/gu)?.length ?? 0;
 	const han = text.match(/\p{Script=Han}/gu)?.length ?? 0;
 	const otherCjk = text.match(/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu)?.length ?? 0;

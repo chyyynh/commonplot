@@ -3,6 +3,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
+import type { SummaryLang } from '../contracts/languages';
 import { isWrittenIn } from '../contracts/resource-language';
 import { coreExports } from '../exports.ts';
 import { AI_STEP, generateObject } from '../services/ai-model';
@@ -17,7 +18,6 @@ import {
 	type DerivationSource,
 	failDerivation,
 	loadDerivationSource,
-	type SummaryLang,
 } from '../store/derivations';
 import { resumeTranslation } from './translation';
 
@@ -146,7 +146,7 @@ Give Korean and Japanese names of people, companies, places and products their e
 		style: 'Keep established English names of people, organizations and products.',
 		last: '',
 	},
-} as const;
+} as const satisfies Record<SummaryLang, { language: string; style: string; last: string }>;
 
 function analysisPrompt(resource: DerivationSource) {
 	const description = resource.description?.trim().substring(0, DESCRIPTION_MAX_LENGTH);

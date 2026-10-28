@@ -1,11 +1,9 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
+import type { SummaryLang } from '../contracts/languages';
 import { entityKey, type ResourceEntity } from '../contracts/resource';
 import { type EntityType, type ResourceKind, type ResourcePlatform } from '../contracts/resource-kinds';
 
-/** The languages every titled Resource is summarized in, each written directly rather than translated. */
-export const SUMMARY_LANGS = ['zh-Hant', 'en'] as const;
-export type SummaryLang = (typeof SUMMARY_LANGS)[number];
 /**
  * What Core derives from an original after it is written; each lands, fails and retries on its own. Summaries and
  * translations have a language; a translation is written by its own Workflow. zh-Hant translates the title, and the
