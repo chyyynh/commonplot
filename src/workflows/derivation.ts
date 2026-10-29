@@ -3,9 +3,9 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import { LANGUAGES, type SummaryLang } from '../contracts/languages';
+import { LANGUAGES, SCRIPT_NAMES, type SummaryLang } from '../contracts/languages';
 import { RESOURCE_KINDS } from '../contracts/resource-kinds';
-import { isTitleIn, isWrittenIn, isWrittenInOriginal } from '../contracts/resource-language';
+import { foreignWords, isTitleIn, isWrittenIn, isWrittenInOriginal } from '../contracts/resource-language';
 import { coreExports } from '../exports.ts';
 import { AI_STEP, generateObject } from '../services/ai-model';
 import { extractResourceEntities } from '../services/entities';
@@ -147,41 +147,59 @@ ${resource.content.trim().substring(0, ANALYSIS_CONTENT_MAX_LENGTH)}`;
 const CardSchema = z.object({ summary: z.string().trim().min(1) });
 const TitledCardSchema = CardSchema.extend({ title: z.string().trim().min(1) });
 
+/** The scripts a card in `lang` may use, as a prompt names them: the language's own, and Latin, which spells names anywhere. */
+function writtenScripts(lang: SummaryLang) {
+	return [...new Set([...LANGUAGES[lang].scripts, 'Latin' as const])].map((script) => SCRIPT_NAMES[script]).join(' and ');
+}
+
 /**
  * A Resource's card in `lang`: its summary, written directly in `lang`, and its title translated with the content in
- * view, so the two name things alike. A title already in `lang` stays the original's. Output in any other language is
- * rejected so the step retries.
+ * view, so the two name things alike. A title already in `lang` stays the original's. A card with words left in a
+ * script foreign to `lang` is corrected once; output still not in `lang` is rejected so the step retries.
  */
 async function localizeResource(resource: DerivationSource, lang: SummaryLang, env: CoreEnv, processingId: string) {
 	const startedAt = performance.now();
-	const { name, style, last } = LANGUAGES[lang];
+	const { name, style } = LANGUAGES[lang];
+	const scripts = writtenScripts(lang);
 	const titled =
 		RESOURCE_KINDS[resource.kind].titled && Boolean(resource.title?.trim()) && !isWrittenInOriginal(resource.originalLang, lang);
 	const schema: z.ZodType<SummaryCard> = titled ? TitledCardSchema : CardSchema;
-	const { output, outputTokens } = await generateObject(
-		env,
-		ANALYSIS_MODEL,
-		{ feature: 'resource-summary', processing_id: processingId, target_lang: lang },
-		{
-			// The language comes last too: a model summarizing a Japanese original otherwise drifts into Japanese.
-			prompt:
-				`${analysisPrompt(resource)}\n\n${titled ? 'Translate the title and write the summary' : 'Write the summary'} in ${name}. ${last}`.trim(),
-			system: `${titled ? `Translate the title into ${name} and write` : 'Write'} a 1–2 sentence summary in ${name}, whatever the original language.
-${style}
+	const metadata = { feature: 'resource-summary', processing_id: processingId, target_lang: lang };
+	const generated = await generateObject(env, ANALYSIS_MODEL, metadata, {
+		// The language comes last too: a model summarizing a Japanese original otherwise drifts into Japanese.
+		prompt: `${analysisPrompt(resource)}\n\n${titled ? 'Translate the title and write the summary' : 'Write the summary'} in ${name}. Every word is in ${scripts}.`,
+		system: `${titled ? `Translate the title into ${name} and write` : 'Write'} a 1–2 sentence summary in ${name}, whatever the original language.
+Write only in ${scripts}. A name or term from another language takes its established ${name} form; with none, it takes its usual English or romanized form in Latin letters. Never leave a word in the original's script.${style ? `\n${style}` : ''}
 ${titled ? 'The title is a faithful translation of the original title: keep its meaning, claims and tone, neither shortening nor adding to it, and use the content only to choose the right sense of a word and the established form of a name.\n' : ''}Preserve attribution, tone, limitations and uncertainty; add nothing the content does not say.
 A discussion thread's summary describes the discussion; a short post's summary is proportionate to it.
 Plain text only: no Markdown, LaTeX or other markup.`,
-			output: {
-				name: 'resource_summary',
-				schema,
+		output: { name: 'resource_summary', schema },
+		maxTokens: 1000,
+		temperature: 0.3,
+	});
+	let card = generated.output;
+	let outputTokens = generated.outputTokens;
+	const foreign = foreignWords(`${card.title ?? ''}\n${card.summary}`, lang);
+	if (foreign.length > 0) {
+		// The model mostly leaves a name or term in the original's script; pointed at those words, it rewrites them.
+		const corrected = await generateObject(
+			env,
+			ANALYSIS_MODEL,
+			{ ...metadata, feature: 'resource-summary-correction' },
+			{
+				prompt: `${JSON.stringify(card)}\n\nNot in ${scripts}: ${foreign.join(', ')}`,
+				system: `You correct a ${name} title and summary. Rewrite only the words listed, each in its established ${name} form or, with none, its usual English or romanized form in Latin letters; keep everything else exactly. Every word ends up in ${scripts}.`,
+				output: { name: 'resource_summary', schema },
+				maxTokens: 1000,
+				temperature: 0,
 			},
-			maxTokens: 1000,
-			temperature: 0.3,
-		},
-	);
-	if (!isWrittenIn(output.summary, lang)) throw new Error(`Summary is not written in ${lang}: ${output.summary.slice(0, 200)}`);
-	const { title } = output;
-	if (title !== undefined && !isTitleIn(title, lang)) throw new Error(`Title is not written in ${lang}: ${title.slice(0, 200)}`);
+		);
+		card = corrected.output;
+		outputTokens = (outputTokens ?? 0) + (corrected.outputTokens ?? 0);
+	}
+	if (!isWrittenIn(card.summary, lang)) throw new Error(`Summary is not written in ${lang}: ${card.summary.slice(0, 200)}`);
+	if (card.title !== undefined && !isTitleIn(card.title, lang))
+		throw new Error(`Title is not written in ${lang}: ${card.title.slice(0, 200)}`);
 	console.info({
 		tag: 'AI',
 		event: 'summary_completed',
@@ -189,8 +207,9 @@ Plain text only: no Markdown, LaTeX or other markup.`,
 		model: ANALYSIS_MODEL,
 		target_lang: lang,
 		titled,
+		corrected: foreign,
 		latency_ms: Math.round(performance.now() - startedAt),
 		output_tokens: outputTokens,
 	});
-	return output;
+	return card;
 }

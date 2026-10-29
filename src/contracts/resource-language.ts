@@ -13,22 +13,30 @@ export const DETECTED_LANGUAGES = {
 	ko: 'Korean',
 } as const satisfies Record<SummaryLang, string> & Record<string, string>;
 
-/** A text's letters against `lang`: those in its own scripts, and whether any is in neither those nor Latin or Greek, which spell names anywhere. */
+const scriptClass = (scripts: readonly string[]) => scripts.map((script) => `\\p{Script=${script}}`).join('');
+
+/**
+ * The words of a text in a script foreign to `lang`: neither its own scripts nor Latin or Greek, which spell names
+ * anywhere. Each is one the model left untranslated (a Korean company name in a Chinese summary).
+ */
+export function foreignWords(text: string, lang: SummaryLang): string[] {
+	const allowed = scriptClass([...LANGUAGES[lang].scripts, 'Latin', 'Greek']);
+	return [...new Set(text.match(new RegExp(`[^${allowed}\\P{L}]+`, 'gu')))];
+}
+
+/** A text's letters against `lang`: those in its own scripts, and whether any word is foreign to it. */
 function scriptCounts(text: string, lang: SummaryLang) {
-	const scripts: readonly string[] = LANGUAGES[lang].scripts;
+	const { scripts } = LANGUAGES[lang];
 	const letters = text.match(/\p{L}/gu)?.length ?? 0;
-	const own = text.match(new RegExp(`[${scripts.map((script) => `\\p{Script=${script}}`).join('')}]`, 'gu'))?.length ?? 0;
-	const latinScript = scripts.includes('Latin');
-	const shared = text.match(latinScript ? /\p{Script=Greek}/gu : /[\p{Script=Latin}\p{Script=Greek}]/gu)?.length ?? 0;
+	const own = text.match(new RegExp(`[${scriptClass(scripts)}]`, 'gu'))?.length ?? 0;
 	// A model that breaks off mid-reply sometimes spells the rest as `\uXXXX` escapes.
-	const foreign = letters - own - shared > 0 || /\\u[\da-f]{4}/iu.test(text);
-	return { letters, own, latinScript, foreign };
+	const foreign = foreignWords(text, lang).length > 0 || /\\u[\da-f]{4}/iu.test(text);
+	return { letters, own, latinScript: (scripts as readonly string[]).includes('Latin'), foreign };
 }
 
 /**
- * Whether generated prose reads as `lang`: every letter is in one of the language's scripts, or Latin or Greek, which
- * spell names and symbols in any language, and the language's own scripts carry at least half of the words. A word
- * in any other script is one the model left untranslated (a Korean company name in a Chinese summary).
+ * Whether generated prose reads as `lang`: no word is foreign to it, and the language's own scripts carry at least
+ * half of the words.
  */
 export function isWrittenIn(text: string, lang: SummaryLang): boolean {
 	const { letters, own, latinScript, foreign } = scriptCounts(text, lang);
