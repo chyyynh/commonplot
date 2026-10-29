@@ -8,13 +8,15 @@
  * fragments, renders every other interpolation as NULL, and runs EXPLAIN:
  * PostgreSQL resolves every table, column, function and cast without running
  * the statement. It then checks that the CHECK constraints accept exactly the
- * kinds, platforms, schemes, roles and entity types `resource-kinds.ts` lists.
+ * kinds, platforms, schemes, roles and entity types `resource-kinds.ts` lists,
+ * and the monitor kinds and statuses `monitors.ts` lists.
  * Usage: DATABASE_URL=postgres://… node scripts/check-sql-schema.mjs
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import pg from 'pg';
+import { MONITOR_KINDS, MONITOR_STATUSES } from '../src/contracts/monitors.ts';
 import {
 	ENTITY_TYPES,
 	RESOURCE_CREATOR_ROLES,
@@ -277,6 +279,8 @@ const contracts = [
 	listed('creator_accounts_platform_check', 'platform', RESOURCE_PLATFORM_NAMES),
 	listed('resource_creators_role_check', 'role', RESOURCE_CREATOR_ROLES),
 	listed('entities_type_check', 'type', ENTITY_TYPES),
+	listed('monitors_kind_check', 'kind', MONITOR_KINDS),
+	listed('monitors_status_check', 'status', MONITOR_STATUSES),
 ];
 const drifts = [];
 for (const { name, columns, rows, expect } of contracts) {
@@ -287,9 +291,9 @@ for (const { name, columns, rows, expect } of contracts) {
 await client.end();
 
 for (const { where, error, text } of failures) console.error(`✗ ${where}: ${error}\n${text.trim()}\n`);
-for (const drift of drifts) console.error(`✗ ${drift}, unlike resource-kinds.ts`);
+for (const drift of drifts) console.error(`✗ ${drift}, unlike the contracts`);
 console.info(`${statements.length - failures.length}/${statements.length} Core statements plan against the migrated schema.`);
 console.info(
-	`${contracts.length - new Set(drifts.map((drift) => drift.split(' ')[0])).size}/${contracts.length} CHECK constraints match resource-kinds.ts.`,
+	`${contracts.length - new Set(drifts.map((drift) => drift.split(' ')[0])).size}/${contracts.length} CHECK constraints match the contracts.`,
 );
 if (failures.length || drifts.length) process.exit(1);

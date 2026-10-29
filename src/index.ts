@@ -4,8 +4,7 @@ import { CONTENT_TRANSLATION_LANGS } from './contracts/languages';
 import { IMPORT_WORKFLOW_PREFIX, ResourceImportDispatchSchema } from './contracts/processing-target';
 import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url';
 import type {} from './env';
-import { handleRSSCron } from './monitors/rss';
-import { handleTwitterCron } from './monitors/twitter';
+import { runMonitors } from './monitors';
 import { nearCorpusResources, nearInterest, type PublicResourceSearchInput, searchPublicResources } from './search/search-index';
 import { consumeSearchSyncBatch } from './search/sync-consumer';
 import { withCoreDb } from './store/db';
@@ -30,15 +29,10 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	override scheduled(event: ScheduledController): void {
 		console.info({ tag: 'CORE', msg: 'Scheduled', cron: event.cron });
 
-		// YouTube channels ride the feed monitor through their Atom URLs; Core
-		// derives their slower polling cadence from the canonical feed URL.
-		if (event.cron === '*/5 * * * *') {
-			this.ctx.waitUntil(
-				withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(db), enqueueDueDerivations(db), reconcileRequests(db)])),
-			);
-		} else if (event.cron === '0 */6 * * *') {
-			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
-		}
+		// Each monitor keeps its own next check, so one cron serves every kind.
+		this.ctx.waitUntil(
+			withCoreDb(this.env, (db) => Promise.allSettled([runMonitors(this.env, db), enqueueDueDerivations(db), reconcileRequests(db)])),
+		);
 	}
 
 	override queue(batch: MessageBatch<unknown>): Promise<void> {

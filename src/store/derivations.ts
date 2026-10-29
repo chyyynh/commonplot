@@ -317,7 +317,7 @@ export async function persistMachineTranslation(
 const AUTOMATIC_CONTENT_TRANSLATION_SQL = sql`(
 	EXISTS (
 		SELECT 1 FROM resource_requests discovery
-		WHERE discovery.requester = 'source' AND discovery.status = 'fulfilled'
+		WHERE discovery.requester = 'monitor' AND discovery.status = 'fulfilled'
 		  AND (discovery.resource_id = resource.id
 		       OR discovery.resource_id IN (SELECT carrier.id FROM resources carrier WHERE carrier.subject_resource_id = resource.id))
 	)

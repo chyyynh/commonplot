@@ -38,7 +38,7 @@ Ingestion engine for [**commonplot.co**](https://www.commonplot.co). Pulls conte
 | **YouTube**                | Video metadata → channel avatar and transcript in parallel → canonical transaction saves transcript and native chapters → optional AI highlights after publication, guarded by the acquisition revision                                                       |
 | **Hacker News**            | Firebase story and ranked comments → Markdown discussion; an external article remains a separate subject                                                                                                                                                      |
 | **LessWrong**              | GraphQL post → native Markdown and source metadata                                                                                                                                                                                                            |
-| **RSS / Atom / JSON Feed** | Fetch → feed parser → normalized URL drafts → normal acquisition; every 5 minutes, with a 30-minute interval for YouTube feeds                                                                                                                                |
+| **RSS / Atom / JSON Feed** | Fetch → feed parser → normalized URL drafts → normal acquisition; each monitor's next check follows how often it published                                                                                                                                    |
 
 `platforms/resource-url.ts` resolves platform and paper identities for app lookup, feeds, linked subjects, acquisition, and persistence. It preserves the fetch URL separately from the normalized identity key; redirects and response MIME still select the final adapter. Each adapter owns its source parsing and Resource output.
 Only the output contract and small source-hint rules are shared; there is no generic materializer.
@@ -202,7 +202,7 @@ pnpm install
 pnpm exec cf deploy
 ```
 
-Or run locally with `pnpm dev` (uses `cf dev -- --test-scheduled`, so you can curl `/__scheduled?cron=*/5+*+*+*+*` to trigger RSS manually).
+Or run locally with `pnpm dev` (uses `cf dev -- --test-scheduled`, so you can curl `/__scheduled?cron=*/5+*+*+*+*` to run due monitors manually).
 
 ## API surface
 
@@ -226,8 +226,8 @@ src/
 ├── contracts/        # schemas and pure rules: acquired/normalized resource, targets, images, translation policy, the Markdown dialect
 ├── services/         # external systems: AI, Crossref, Hosted Images, PDF parsers, YouTube captions
 ├── adapters/         # provider acquisition without a database; acquire.ts routes and normalizes
-├── store/            # all canonical SQL: resources, translations, references, sources, withCoreDb
-├── monitors/         # RSS/YouTube feeds and Twitter discovery into source drafts
+├── store/            # all canonical SQL: resources, translations, references, monitors, withCoreDb
+├── monitors/         # feed, YouTube and X monitor adapters and their runner
 ├── workflows/        # processing, translation, references, and progress reporting
 └── search/           # corpus vectors, queue consumer, retrieval, and backfill
 ```
@@ -289,17 +289,26 @@ representation (MIME/filename/size/pages), or lifecycle origin (`source`,
 before parsing; uploaded PDF extraction reads the app-owned blob. Neither
 representation is an additional identity value.
 
-Curated sources store only their operational `feed` or `twitter` cron route in
-`Source.monitorKind`. Feed entries acquire their canonical URL, where normal
-resource detection selects LessWrong and YouTube adapters when applicable.
+Curated monitors (`monitors` table) are a `feed` URL, a `youtube` channel id or
+a `twitter` handle, with whatever their adapter keeps between checks in `state`.
+The 5-minute cron claims the active monitors whose `next_check_at` has passed;
+after a check the next one is a quarter of the week's average gap between entries,
+within the adapter's bounds. A failure keeps the monitor active and doubles the
+wait per failure in a row, up to a day, so a source that recovers is read again
+on its own; from four failures in a row its line logs `outcome: 'failing'`, and
+`failures`/`last_error` show it in the table. Only a person sets `paused`. Every
+check logs one `tag: 'MONITOR'` line, and monitors of a kind failing with the
+same error share one. Entries acquire their
+canonical URL, where normal resource detection selects LessWrong and YouTube
+adapters when applicable.
 
 Minimum to add a new ingest source:
 
-1. **Adapter file** (`adapters/foo.ts`) — acquisition only; a monitored source adds `monitors/foo.ts`.
+1. **Adapter file** (`adapters/foo.ts`) — acquisition only.
 2. **Canonical adapter output** — normalize provider data into common creators,
    versioned kind metadata, exact identifiers, and an optional immediate subject.
 3. **Identity contract** — add the exact locator and valid `(kind, platform)` pair.
-4. **Monitor** (optional) — wire a cron only when discovery is not already a feed.
+4. **Monitor** (optional) — a `MonitorAdapter` in `monitors/` and its kind in `contracts/monitors.ts`, only when discovery is not already a feed.
 
 The new resource goes through the same Workflow pipeline as every other ingest
 source. Resolver owns the final identity, the narrowed kind handler owns

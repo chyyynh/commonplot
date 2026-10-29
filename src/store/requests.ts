@@ -6,12 +6,12 @@ import { lockKeys } from './db';
 import { READABLE_ORIGINAL_SQL } from './kind-sql';
 
 /**
- * Who asked for a Resource. A source and a subject carrier ask once per URL; a user's import names its own request
+ * Who asked for a Resource. A monitor and a subject carrier ask once per URL; a user's import names its own request
  * id, which is the UUID in Web's handle for it, and records who asked, where Web files it, and what the inbox shows.
  * Web saves the Resource and reads the import's progress from this row.
  */
 export type Requester =
-	| Readonly<{ requester: 'source'; sourceId: string }>
+	| Readonly<{ requester: 'monitor'; monitorId: string }>
 	| Readonly<{ requester: 'subject'; parentResourceId: string; parentTextHash: string }>
 	| Readonly<{ requester: 'user'; id: string; userId: string; notebookId: string | null; label: string }>
 	| Readonly<{ requester: 'resync' }>;
@@ -33,8 +33,8 @@ type RequestRow = Readonly<{
 
 export type RequestLead = Readonly<{ id: string; workflowId: string; params: ResourceProcessingTarget | null }>;
 
-/** Failed source requests wait this long, doubling per failure up to 30 days, before a feed listing the URL asks again. */
-const SOURCE_RETRY = sql`interval '1 day'`;
+/** Failed monitor requests wait this long, doubling per failure up to 30 days, before a monitor listing the URL asks again. */
+const MONITOR_RETRY = sql`interval '1 day'`;
 /** A lead whose workflow is quiet this long is checked; a waiting request this long without a lead takes over. */
 const STALE_REQUEST = sql`interval '10 minutes'`;
 
@@ -65,7 +65,7 @@ async function recordRequest(tx: NodePgDatabase, request: ResourceRequest & { ke
 		id: request.requester === 'user' ? request.id : null,
 		url: target.kind === 'draft' ? target.url : null,
 		hints: hints === null ? null : JSON.stringify(hints),
-		sourceId: request.requester === 'source' ? request.sourceId : null,
+		monitorId: request.requester === 'monitor' ? request.monitorId : null,
 		parentResourceId: request.requester === 'subject' ? request.parentResourceId : null,
 		parentTextHash: request.requester === 'subject' ? request.parentTextHash : null,
 		resourceId: target.kind === 'reacquire' ? target.resourceId : null,
@@ -73,20 +73,20 @@ async function recordRequest(tx: NodePgDatabase, request: ResourceRequest & { ke
 		notebookId: request.requester === 'user' ? request.notebookId : null,
 		label: request.requester === 'user' ? request.label : null,
 	};
-	// A source and a carrier ask for a URL once: asking again revives only a failed or settled request. Web redispatching
+	// A monitor and a carrier ask for a URL once: asking again revives only a failed or settled request. Web redispatching
 	// an import finds the request it already recorded.
 	const { rows } = await tx.execute<RequestRow>(sql`
 		INSERT INTO resource_requests
-			(id, target_key, url, stored_object_id, hints, requester, source_id, parent_resource_id, parent_text_hash, resource_id,
+			(id, target_key, url, stored_object_id, hints, requester, monitor_id, parent_resource_id, parent_text_hash, resource_id,
 			 user_id, notebook_id, label)
 		VALUES (
 			COALESCE(${columns.id}::uuid, gen_random_uuid()), ${request.key}, ${columns.url}, ${objectId}::uuid, ${columns.hints}::jsonb,
-			${request.requester}, ${columns.sourceId}::uuid, ${columns.parentResourceId}::uuid, ${columns.parentTextHash},
+			${request.requester}, ${columns.monitorId}::uuid, ${columns.parentResourceId}::uuid, ${columns.parentTextHash},
 			${columns.resourceId}::uuid, ${columns.userId}, ${columns.notebookId}::uuid, ${columns.label}
 		)
 		${
-			request.requester === 'source'
-				? sql`ON CONFLICT (source_id, target_key) WHERE requester = 'source' DO UPDATE SET
+			request.requester === 'monitor'
+				? sql`ON CONFLICT (monitor_id, target_key) WHERE requester = 'monitor' DO UPDATE SET
 					(status, url, hints, error, retry_after, updated_at) = ('pending', EXCLUDED.url, EXCLUDED.hints, NULL, NULL, NOW())
 					WHERE resource_requests.status = 'failed'`
 				: request.requester === 'subject'
@@ -158,49 +158,48 @@ export async function recordRequests(db: NodePgDatabase, requests: readonly Reso
 	});
 }
 
-/** Source requests a feed listing the URL again must not repeat: done, in flight, or failed and still waiting. */
-export async function settledSourceRequestKeys(db: NodePgDatabase, sourceId: string, keys: readonly string[]) {
+/** Monitor requests a monitor listing the URL again must not repeat: done, in flight, or failed and still waiting. */
+export async function settledMonitorRequestKeys(db: NodePgDatabase, monitorId: string, keys: readonly string[]) {
 	if (!keys.length) return new Set<string>();
 	const { rows } = await db.execute<{ key: string }>(sql`
 		SELECT target_key AS key FROM resource_requests
-		WHERE requester = 'source' AND source_id = ${sourceId}::uuid AND target_key = ANY(${sql.param([...keys])}::text[])
+		WHERE requester = 'monitor' AND monitor_id = ${monitorId}::uuid AND target_key = ANY(${sql.param([...keys])}::text[])
 		  AND (status <> 'failed' OR retry_after IS NULL OR retry_after > NOW())
 	`);
 	return new Set(rows.map(({ key }) => key));
 }
 
-/** A feed listed a URL Core already has: its request is fulfilled without an acquisition. */
-export async function recordFulfilledSourceRequests(
+/** A monitor listed a URL Core already has: its request is fulfilled without an acquisition. */
+export async function recordFulfilledMonitorRequests(
 	db: NodePgDatabase,
-	sourceId: string,
+	monitorId: string,
 	fulfilled: readonly Readonly<{ key: string; url: string; resourceId: string }>[],
 ) {
 	if (!fulfilled.length) return;
 	await db.execute(sql`
-		INSERT INTO resource_requests AS current (target_key, url, requester, source_id, resource_id, status)
-		SELECT incoming.key, incoming.url, 'source', ${sourceId}::uuid, incoming.resource_id, 'fulfilled'
+		INSERT INTO resource_requests AS current (target_key, url, requester, monitor_id, resource_id, status)
+		SELECT incoming.key, incoming.url, 'monitor', ${monitorId}::uuid, incoming.resource_id, 'fulfilled'
 		FROM jsonb_to_recordset(${JSON.stringify(fulfilled.map(({ key, url, resourceId }) => ({ key, url, resource_id: resourceId })))}::jsonb)
 			AS incoming(key text, url text, resource_id uuid)
-		ON CONFLICT (source_id, target_key) WHERE requester = 'source' DO UPDATE SET
+		ON CONFLICT (monitor_id, target_key) WHERE requester = 'monitor' DO UPDATE SET
 			(status, resource_id, error, retry_after, updated_at) = ('fulfilled', EXCLUDED.resource_id, NULL, NULL, NOW())
 		WHERE current.status = 'failed'
 	`);
 }
 
 /**
- * In the transaction that wrote or kept the Resource: settles every request waiting on the lead's key. A source becomes
- * the Resource's discovery source if it has none, and a carrier whose text is unchanged gains it as its subject. Returns
+ * In the transaction that wrote or kept the Resource: settles every request waiting on the lead's key; a fulfilled monitor
+ * request records where the Resource was discovered. A carrier whose text is unchanged gains it as its subject. Returns
  * the carriers that gained the subject, and the user imports Web saves next.
  */
 export async function fulfillRequests(tx: NodePgDatabase, requestId: string, resourceId: string) {
 	const { rows } = await tx.execute<{
 		id: string;
 		requester: Requester['requester'];
-		sourceId: string | null;
 		parentResourceId: string | null;
 		parentTextHash: string | null;
 	}>(sql`
-		SELECT waiting.id::text, waiting.requester, waiting.source_id::text AS "sourceId",
+		SELECT waiting.id::text, waiting.requester,
 		       waiting.parent_resource_id::text AS "parentResourceId", waiting.parent_text_hash AS "parentTextHash"
 		FROM resource_requests lead
 		JOIN resource_requests waiting ON waiting.target_key = lead.target_key AND waiting.status = 'pending'
@@ -245,14 +244,14 @@ export async function fulfillRequests(tx: NodePgDatabase, requestId: string, res
 
 /**
  * Fails the lead and every request waiting on its key, or only the lead when `alone`. A request whose Resource is
- * already written is fulfilled instead. A source request retries after a doubling wait; any other gives up.
+ * already written is fulfilled instead. A monitor request retries after a doubling wait; any other gives up.
  */
 export async function failRequests(db: NodePgDatabase, requestId: string, error: string, alone = false) {
 	await db.execute(sql`
 		UPDATE resource_requests SET
 			status = CASE WHEN resource_id IS NULL OR requester = 'resync' THEN 'failed' ELSE 'fulfilled' END,
 			attempts = attempts + 1, error = LEFT(${error}, 500), updated_at = NOW(),
-			retry_after = CASE WHEN requester = 'source' THEN NOW() + ${SOURCE_RETRY} * LEAST(power(2, attempts), 30) END
+			retry_after = CASE WHEN requester = 'monitor' THEN NOW() + ${MONITOR_RETRY} * LEAST(power(2, attempts), 30) END
 		WHERE status = 'pending'
 		  AND (id = ${requestId}::uuid OR (${!alone} AND target_key = (SELECT target_key FROM resource_requests WHERE id = ${requestId}::uuid)))
 	`);

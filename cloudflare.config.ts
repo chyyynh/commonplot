@@ -48,10 +48,8 @@ export const coreWorker = defineWorker(({ mode }) => ({
 		},
 	},
 	triggers: [
-		// RSS monitor, incl. YouTube channel feeds (every 5 minutes)
+		// Due monitors, derivations and stalled requests (every 5 minutes)
 		triggers.scheduled({ schedule: '*/5 * * * *' }),
-		// Twitter monitor (every 6 hours)
-		triggers.scheduled({ schedule: '0 */6 * * *' }),
 		/** The corpus vectors are a derived index; this Queue keeps them off canonical Resource Workflows. */
 		triggers.queue({
 			name: named(mode, 'resource-search-sync'),

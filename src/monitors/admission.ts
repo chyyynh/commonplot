@@ -1,16 +1,16 @@
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { SourceResourceDraftSchema, type SourceResourceDraft } from '../contracts/processing-target';
 import { resolveResourceUrl } from '../contracts/resource-url';
-import { recordFulfilledSourceRequests, settledSourceRequestKeys } from '../store/requests';
+import { recordFulfilledMonitorRequests, settledMonitorRequestKeys } from '../store/requests';
 import { findResourcesByUrls } from '../store/resources';
 import { admitRequests } from '../workflows/requests';
 
 /**
- * Crosses the discovery -> Resource boundary for every monitor. A source asks for each URL once: a URL it already asked
+ * Crosses the discovery -> Resource boundary for every monitor. A monitor asks for each URL once: a URL it already asked
  * for is skipped, even one that redirects to a stored Resource under another URL, and a failed one is asked again only
  * after its wait.
  */
-export async function enqueueSourceDrafts(db: NodePgDatabase, sourceId: string, drafts: SourceResourceDraft[]) {
+export async function enqueueMonitorDrafts(db: NodePgDatabase, monitorId: string, drafts: SourceResourceDraft[]) {
 	const seen = new Set<string>();
 	let skipped = 0;
 	const targets = drafts.flatMap((draft, index) => {
@@ -25,17 +25,17 @@ export async function enqueueSourceDrafts(db: NodePgDatabase, sourceId: string, 
 		}
 		skipped++;
 		console.warn({
-			tag: 'SOURCE',
-			msg: 'Invalid source draft skipped',
-			source_id: sourceId,
+			tag: 'MONITOR',
+			msg: 'Invalid monitor draft skipped',
+			monitor_id: monitorId,
 			item_index: index,
 			error: parsed.error.message,
 		});
 		return [];
 	});
-	const asked = await settledSourceRequestKeys(
+	const asked = await settledMonitorRequestKeys(
 		db,
-		sourceId,
+		monitorId,
 		targets.map(({ key }) => key),
 	);
 	const fresh = targets.filter(({ key }) => !asked.has(key));
@@ -43,10 +43,10 @@ export async function enqueueSourceDrafts(db: NodePgDatabase, sourceId: string, 
 		db,
 		fresh.map(({ url }) => url),
 	);
-	// A readable original only needs its discovery source recorded.
-	await recordFulfilledSourceRequests(
+	// A readable original only needs its discovery recorded.
+	await recordFulfilledMonitorRequests(
 		db,
-		sourceId,
+		monitorId,
 		fresh.flatMap(({ key, url }, index) => {
 			const { resourceId } = known[index]!;
 			return resourceId ? [{ key, url: url.url, resourceId }] : [];
@@ -54,7 +54,7 @@ export async function enqueueSourceDrafts(db: NodePgDatabase, sourceId: string, 
 	);
 	const leads = await admitRequests(
 		db,
-		fresh.flatMap(({ target }, index) => (known[index]!.resourceId ? [] : [{ requester: 'source' as const, sourceId, target }])),
+		fresh.flatMap(({ target }, index) => (known[index]!.resourceId ? [] : [{ requester: 'monitor' as const, monitorId, target }])),
 	);
 	const requested = fresh.length - known.filter(({ resourceId }) => resourceId).length;
 	return { created: leads.length, deduplicated: drafts.length - skipped - requested, skipped };
