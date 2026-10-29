@@ -1,7 +1,12 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import { CONTENT_TRANSLATION_LANGS, type ContentTranslationLang, type SummaryLang } from '../contracts/languages';
+import {
+	AUTOMATIC_TRANSLATION_LANGS,
+	CONTENT_TRANSLATION_LANGS,
+	type ContentTranslationLang,
+	type SummaryLang,
+} from '../contracts/languages';
 import { entityKey, type ResourceEntity } from '../contracts/resource';
 import { type EntityType, RESOURCE_KINDS, type ResourceKind, type ResourcePlatform } from '../contracts/resource-kinds';
 import { isWrittenInOriginal } from '../contracts/resource-language';
@@ -306,8 +311,8 @@ export async function persistMachineTranslation(
 }
 
 /**
- * Monitor discoveries, and the subjects their carriers point at, translate in full at the operator's cost. Everything
- * else translates its content only when a reader asks for it.
+ * Monitor discoveries, and the subjects their carriers point at, translate in full into the automatic languages at the
+ * operator's cost. Everything else translates its content only when a reader asks for it.
  */
 const AUTOMATIC_CONTENT_TRANSLATION_SQL = sql`(
 	EXISTS (
@@ -335,7 +340,7 @@ export async function loadTranslationCandidate(
 		SELECT ${CANDIDATE_COLUMNS},
 		       BTRIM(COALESCE(original.markdown, '')) <> '' AS "hasContent",
 		       COALESCE(translation.status = 'done' AND translation.output->>'content' IS NOT NULL, false) AS "hasTranslatedContent",
-		       ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS automatic,
+		       ${(AUTOMATIC_TRANSLATION_LANGS as readonly string[]).includes(lang) ? AUTOMATIC_CONTENT_TRANSLATION_SQL : sql`false`} AS automatic,
 		       COALESCE(translation.input_hash = resource.text_hash, false) AS translated
 		FROM resources resource
 		LEFT JOIN resource_content original ON original.resource_id = resource.id

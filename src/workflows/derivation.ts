@@ -149,7 +149,8 @@ const TitledCardSchema = CardSchema.extend({ title: z.string().trim().min(1) });
 
 /** The scripts a card in `lang` may use, as a prompt names them: the language's own, and Latin, which spells names anywhere. */
 function writtenScripts(lang: SummaryLang) {
-	return [...new Set([...LANGUAGES[lang].scripts, 'Latin' as const])].map((script) => SCRIPT_NAMES[script]).join(' and ');
+	const scripts = [...new Set([...LANGUAGES[lang].scripts, 'Latin' as const])].map((script) => SCRIPT_NAMES[script]);
+	return new Intl.ListFormat('en', { type: 'conjunction' }).format(scripts);
 }
 
 /**
