@@ -2,6 +2,7 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import { stageResourceAcquisition } from '../adapters/acquire';
 import type { AcquisitionInput, StoredPdf } from '../contracts/acquired-resource';
 import { resourceImageSources, withHostedImages } from '../contracts/image-mapping';
+import { CONTENT_TRANSLATION_LANGS } from '../contracts/languages';
 import { IMPORT_WORKFLOW_PREFIX, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { blobKey } from '../contracts/storage-keys';
 import { stageResourceImages } from '../services/image-rehosting';
@@ -126,7 +127,6 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 				done: deriveResource(this.env, step, resourceId, textHash, { ...hosted, description: hosted.summary }, derivation, instanceId),
 			}));
 		const summaries = Promise.all(derivations.flatMap(({ derivation, done }) => (derivation.kind === 'summary' ? [done] : [])));
-		const englishSummary = derivations.find(({ derivation }) => derivation.kind === 'summary' && derivation.lang === 'en')?.done;
 		const subjectUrl = resource.subjectUrl;
 		// Crossref enrichment runs beside the handoffs; the import settles only after it, since the Workflow returns last.
 		const references =
@@ -157,18 +157,19 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 						}),
 					)
 				: undefined,
-			// Ordinary imports share a translation; a reacquisition that replaced the original forces a fresh run.
-			// Only monitor discoveries translate their content here; readers request the rest. A content translation reads
-			// the English summary as context; a title translation starts at once.
-			(async () => {
-				const automatic = await step.do('load-translation-scope-v1', STORAGE_STEP, () =>
-					withCoreDb(this.env, async (db) => (await loadTranslationCandidate(db, resourceId))?.automatic ?? false),
+			// Content translates here where it does automatically, or to renew one a reader has; readers request the rest.
+			// A reacquisition that replaced the original forces a fresh run. Each waits for its language's card, whose title
+			// and summary it reads for the names to keep.
+			...CONTENT_TRANSLATION_LANGS.map(async (lang) => {
+				const candidate = await step.do(`load-translation-candidate-${lang.toLowerCase()}-v1`, STORAGE_STEP, () =>
+					withCoreDb(this.env, (db) => loadTranslationCandidate(db, resourceId, lang)),
 				);
-				if (automatic) await englishSummary;
-				return step.do('enqueue-resource-translation-v8', STORAGE_STEP, () =>
-					enqueueResourceTranslation(persistence, automatic ? 'full' : 'metadata', target.kind !== 'draft' && outcome === 'written'),
+				if (!candidate?.automatic && !candidate?.translated) return;
+				await derivations.find(({ derivation }) => derivation.kind === 'summary' && derivation.lang === lang)?.done;
+				return step.do(`enqueue-resource-translation-${lang.toLowerCase()}-v9`, STORAGE_STEP, () =>
+					enqueueResourceTranslation(persistence, lang, target.kind !== 'draft' && outcome === 'written'),
 				);
-			})(),
+			}),
 			subjectUrl && outcome === 'written' && subjectResourceId === null
 				? step.do('request-subject-v1', STORAGE_STEP, async () => {
 						const leads = await withCoreDb(this.env, (db) =>

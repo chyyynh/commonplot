@@ -129,7 +129,7 @@ The Cocoa regression was checked against the user-supplied 23-page PDF: the new 
 
 Summary generation and background classification are separate structured calls. Translation runs in its own Workflow, so localization failure cannot invalidate an already persisted canonical Resource.
 
-Core preserves a nonblank source summary or abstract. When it is missing, the existing analysis call also generates a summary in the original language; a body excerpt is not a source summary. Metadata localization translates the persisted summary in full and never creates one from the body. Existing records without a summary receive title-only metadata translation until reprocessed.
+Core preserves a nonblank source summary or abstract. When it is missing, the existing analysis call also generates a summary in the original language; a body excerpt is not a source summary. Each summary language then gets a card from one call: a summary in that language and, when the original is written in another, its title translated alongside. Content translation is separate: a `translation` row holds only translated content, made automatically for monitor discoveries or on a reader's request.
 
 ## Stack
 

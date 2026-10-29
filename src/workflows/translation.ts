@@ -1,40 +1,44 @@
-// A Resource's translation into zh-Hant, plus an English title for recommendation vectors: admission (imports, reader
-// requests, the derivation sweep) and the durable Workflow that loads, translates and stores it. The translating itself is
-// services/translation, which knows nothing of Resources.
+// A Resource's content translation into one language: admission (automatic ones at write time, reader requests, the
+// derivation sweep) and the durable Workflow that loads, translates and stores it. Titles are not translated here: each
+// summary language's card carries its own. The translating itself is services/translation, which knows nothing of
+// Resources.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { RESOURCE_KINDS } from '../contracts/resource-kinds';
-import { isWrittenInOriginal } from '../contracts/resource-language';
+import { z } from 'zod';
+import { CONTENT_TRANSLATION_LANGS, type ContentTranslationLang } from '../contracts/languages';
 import { coreExports } from '../exports.ts';
-import { AI_STEP_RETRIES } from '../services/ai-model';
 import { errorMessage } from '../services/response';
-import { failureReason, translateMarkdown, translateTitle } from '../services/translation';
+import { failureReason, translateMarkdown } from '../services/translation';
 import { STORAGE_STEP, stepJson } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import {
 	isTranslatable,
+	loadImportDerivationStates,
 	loadResourceTranslationInput,
 	loadTranslationCandidate,
-	loadTranslationStates,
-	TextHashSchema,
 	persistMachineTranslation,
 	type ResourceTranslationCandidate,
-	type ResourceTranslationInput,
-	settleOpenTranslations,
+	settleOpenTranslation,
+	TextHashSchema,
 } from '../store/derivations';
 
-/** `metadata` translates the title; `full` also translates the content. */
-type TranslationScope = 'metadata' | 'full';
-type ResourceTranslationPayload = { force?: boolean; resourceId: string; textHash: string; scope: TranslationScope };
+// A run queued before `lang` was its parameter fails this parse and ends; the sweep starts its replacement.
+const ResourceTranslationPayloadSchema = z.object({
+	force: z.boolean().optional(),
+	resourceId: z.uuid(),
+	textHash: TextHashSchema,
+	lang: z.enum(CONTENT_TRANSLATION_LANGS),
+});
+type ResourceTranslationPayload = z.infer<typeof ResourceTranslationPayloadSchema>;
 
 // Admission
 
-const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v36';
+const RESOURCE_TRANSLATION_WORKFLOW_REVISION = 'canonical-v37';
 
-// One execution per original and scope: concurrent imports, requests and the sweep all meet on this ID, so paid work
-// is never doubled, and a changed original gets a new one. Its translation rows, not the execution, say whether it landed.
-function translationInstanceId(resourceId: string, textHash: string, scope: TranslationScope): string {
-	return `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${scope}-${resourceId}-${textHash}`;
+// One execution per original and language: concurrent imports, requests and the sweep all meet on this ID, so paid work
+// is never doubled, and a changed original gets a new one. Its translation row, not the execution, says whether it landed.
+function translationInstanceId(resourceId: string, textHash: string, lang: ContentTranslationLang): string {
+	return `rt-${RESOURCE_TRANSLATION_WORKFLOW_REVISION}-${lang}-${resourceId}-${textHash}`;
 }
 
 async function translationExecution(id: string) {
@@ -49,68 +53,68 @@ async function translationExecution(id: string) {
 	return snapshot.status === 'complete' ? ('done' as const) : ('live' as const);
 }
 
-/** What an import shows for its translations: running while any is open or a full one is live, failed once one failed. */
-export async function importTranslationProgress(
-	db: NodePgDatabase,
-	resourceId: string,
-	textHash: string,
-): Promise<'running' | 'failed' | undefined> {
-	const [states, full] = await Promise.all([
-		loadTranslationStates(db, resourceId, textHash),
-		translationExecution(translationInstanceId(resourceId, textHash, 'full')),
+/** What an import shows for its derivations: running while a card or translation is open or one is live, failed once one failed. */
+export async function importProgress(db: NodePgDatabase, resourceId: string, textHash: string): Promise<'running' | 'failed' | undefined> {
+	const [states, executions] = await Promise.all([
+		loadImportDerivationStates(db, resourceId, textHash),
+		Promise.all(CONTENT_TRANSLATION_LANGS.map((lang) => translationExecution(translationInstanceId(resourceId, textHash, lang)))),
 	]);
-	if (states.includes('pending') || full === 'live') return 'running';
-	if (states.includes('failed') || full === 'rerun') return 'failed';
+	if (states.includes('pending') || executions.includes('live')) return 'running';
+	if (states.includes('failed') || executions.includes('rerun')) return 'failed';
 	return undefined;
 }
 
 // `execution` is what the same work was before this call: live and done ones are left alone.
 export async function enqueueResourceTranslation(
 	resource: ResourceTranslationCandidate & Readonly<{ id: string; textHash: string }>,
-	scope: TranslationScope,
+	lang: ContentTranslationLang,
 	force: boolean,
 ) {
-	if (!isTranslatable(resource)) return null;
+	if (!isTranslatable(resource, lang)) return null;
 	const { id: resourceId, textHash } = resource;
 	TextHashSchema.parse(textHash);
-	const id = translationInstanceId(resourceId, textHash, scope);
+	const id = translationInstanceId(resourceId, textHash, lang);
 	const execution = await translationExecution(id);
-	// Completed work already lives in ResourceTranslation. There is no new
+	// Completed work already lives in its translation row. There is no new
 	// execution to subscribe to, and no second source of progress to project.
 	if (execution === 'done') return { id, execution };
 	// Concurrent callers share one execution; a failed one runs again under the same ID.
 	if (execution === 'rerun') await (await coreExports.ResourceTranslationV2Workflow.get(id)).restart();
 	if (execution === 'absent') {
 		await coreExports.ResourceTranslationV2Workflow.createBatch([
-			{ id, params: { ...(force ? { force: true } : {}), resourceId, textHash, scope } },
+			{ id, params: { ...(force ? { force: true } : {}), resourceId, textHash, lang } satisfies ResourceTranslationPayload },
 		]);
 	}
 	return { id, execution };
 }
 
-/** A reader's request for a stored Resource's full translation; the app Worker admits and bills it first. */
-export async function requestContentTranslation(env: CoreEnv, resourceId: string) {
-	const candidate = await withCoreDb(env, (db) => loadTranslationCandidate(db, resourceId));
-	if (!candidate?.hasContent || isWrittenInOriginal(candidate.originalLang, 'zh-Hant')) return { status: 'unavailable' as const };
+/** A reader's request for a stored Resource's content in `lang`; the app Worker admits and bills it first. */
+export async function requestContentTranslation(env: CoreEnv, resourceId: string, lang: ContentTranslationLang) {
+	const candidate = await withCoreDb(env, (db) => loadTranslationCandidate(db, resourceId, lang));
+	if (!candidate?.hasContent) return { status: 'unavailable' as const };
 	if (candidate.hasTranslatedContent) return { status: 'complete' as const };
 	// A loaded candidate is translatable, so it always enqueues.
-	const { execution } = (await enqueueResourceTranslation(candidate, 'full', false))!;
+	const { execution } = (await enqueueResourceTranslation(candidate, lang, false))!;
 	return { status: 'running' as const, admitted: execution !== 'live' && execution !== 'done' };
 }
 
-/** Whether a requested full translation is still on its way; `idle` after it lands or fails. */
-export async function contentTranslationStatus(env: CoreEnv, resourceId: string): Promise<'running' | 'idle'> {
-	const candidate = await withCoreDb(env, (db) => loadTranslationCandidate(db, resourceId));
+/** Whether a requested translation into `lang` is still on its way; `idle` after it lands or fails. */
+export async function contentTranslationStatus(
+	env: CoreEnv,
+	resourceId: string,
+	lang: ContentTranslationLang,
+): Promise<'running' | 'idle'> {
+	const candidate = await withCoreDb(env, (db) => loadTranslationCandidate(db, resourceId, lang));
 	if (!candidate || candidate.hasTranslatedContent) return 'idle';
-	return (await translationExecution(translationInstanceId(resourceId, candidate.textHash, 'full'))) === 'live' ? 'running' : 'idle';
+	return (await translationExecution(translationInstanceId(resourceId, candidate.textHash, lang))) === 'live' ? 'running' : 'idle';
 }
 
-/** The sweep's retry of a Resource whose translation came due; a live one keeps running, and a gone one settles its rows. */
-export async function resumeTranslation(db: NodePgDatabase, resourceId: string, textHash: string): Promise<void> {
-	const candidate = await loadTranslationCandidate(db, resourceId);
-	if (candidate?.textHash !== textHash) return settleOpenTranslations(db, resourceId, textHash, null);
-	const enqueued = await enqueueResourceTranslation(candidate, candidate.automatic ? 'full' : 'metadata', false);
-	// Every run now settles its rows, so one that completed with them open predates them: it runs again.
+/** The sweep's retry of a translation that came due; a live one keeps running, and a gone one settles its row. */
+export async function resumeTranslation(db: NodePgDatabase, resourceId: string, textHash: string, lang: ContentTranslationLang) {
+	const candidate = await loadTranslationCandidate(db, resourceId, lang);
+	if (candidate?.textHash !== textHash) return settleOpenTranslation(db, resourceId, textHash, lang, null);
+	const enqueued = await enqueueResourceTranslation(candidate, lang, false);
+	// Every run now settles its row, so one that completed with it open predates it: it runs again.
 	if (enqueued?.execution === 'done') await (await coreExports.ResourceTranslationV2Workflow.get(enqueued.id)).restart();
 }
 
@@ -121,67 +125,41 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		event: WorkflowEvent<ResourceTranslationPayload>,
 		step: WorkflowStep,
 	): Promise<{ status: 'complete' | 'skipped' | 'superseded'; resourceId: string }> {
-		const { force = false, resourceId, textHash, scope } = event.payload;
+		const payload = ResourceTranslationPayloadSchema.safeParse(event.payload);
+		const resourceId = String(event.payload.resourceId);
 		// Every run that publishes nothing ends here.
 		const end = (status: 'skipped' | 'superseded', reason: string) => {
 			console.info({ tag: 'RESOURCE_TRANSLATION', event: 'translation_outcome', outcome: status, reason, resource_id: resourceId });
 			return { status, resourceId };
 		};
+		if (!payload.success) return end('skipped', 'stale-payload');
+		const { force = false, textHash, lang } = payload.data;
 		let corpus: boolean;
 		try {
-			const input = await stepJson(step, 'load-resource-translation-input-stream-v5', STORAGE_STEP, () =>
-				withCoreDb(this.env, (db) => loadResourceTranslationInput(db, resourceId)),
+			const input = await stepJson(step, `load-resource-translation-input-${lang}-v6`, STORAGE_STEP, () =>
+				withCoreDb(this.env, (db) => loadResourceTranslationInput(db, resourceId, lang)),
 			);
 			if (!input) return end('skipped', 'missing');
 			if (input.textHash !== textHash) return end('superseded', 'superseded');
 			const resource = input.resource;
-			const plan = planTranslation(resource, scope, force);
-			if (!plan.metadata && !plan.content && !plan.english)
-				return await this.settle(step, resourceId, textHash, end('skipped', 'unneeded'));
+			if (!resource.content.trim() || (resource.hasTranslatedContent && !force))
+				return await this.settle(step, resourceId, textHash, lang, end('skipped', 'unneeded'));
 
-			// Every part settles before any failure is raised, so no step is left running.
-			const [metadata, content, english] = await Promise.allSettled([
-				plan.metadata
-					? step.do('translate-zh-hant-title-v4', { retries: AI_STEP_RETRIES, timeout: '180 seconds' }, () =>
-							translateTitle(resource, 'zh-Hant', this.env),
-						)
-					: undefined,
-				plan.content ? translateMarkdown(resource, this.env, step) : undefined,
-				plan.english
-					? step.do('translate-en-title-v2', { retries: AI_STEP_RETRIES, timeout: '180 seconds' }, () =>
-							translateTitle(resource, 'en', this.env),
-						)
-					: undefined,
-			]);
-			if (metadata.status === 'rejected') throw metadata.reason;
-			if (content.status === 'rejected') throw content.reason;
-			if (english.status === 'rejected') throw english.reason;
-			const patch = { ...metadata.value, ...content.value };
-			const englishTitle = english.value?.title;
-			const hasPatch = patch.title !== undefined || patch.content !== undefined;
-			if (!hasPatch && englishTitle === undefined) return await this.settle(step, resourceId, textHash, end('skipped', 'empty'));
-
-			if (hasPatch) {
-				const persisted = await step.do('persist-zh-hant-translation-v2', STORAGE_STEP, async () =>
-					withCoreDb(this.env, (db) => persistMachineTranslation(db, resourceId, textHash, 'zh-Hant', patch)),
-				);
-				if (!persisted) return end('superseded', 'persist-superseded');
-			}
-			if (englishTitle !== undefined) {
-				const persisted = await step.do('persist-en-translation-v1', STORAGE_STEP, async () =>
-					withCoreDb(this.env, (db) => persistMachineTranslation(db, resourceId, textHash, 'en', { title: englishTitle })),
-				);
-				if (!persisted) return end('superseded', 'persist-superseded');
-			}
+			const content = await translateMarkdown(resource, lang, this.env, step);
+			if (!content) return await this.settle(step, resourceId, textHash, lang, end('skipped', 'empty'));
+			const persisted = await step.do(`persist-${lang.toLowerCase()}-translation-v3`, STORAGE_STEP, async () =>
+				withCoreDb(this.env, (db) => persistMachineTranslation(db, resourceId, textHash, lang, content)),
+			);
+			if (!persisted) return end('superseded', 'persist-superseded');
 			console.info({
 				tag: 'RESOURCE_TRANSLATION',
 				event: 'translation_outcome',
 				outcome: 'persisted',
 				resource_id: resourceId,
-				scope,
-				translated_characters: patch.content?.length,
+				lang,
+				translated_characters: content.content.length,
 			});
-			await this.settle(step, resourceId, textHash, null);
+			await this.settle(step, resourceId, textHash, lang, null);
 			corpus = resource.scope === 'corpus';
 		} catch (error) {
 			console.error({
@@ -191,9 +169,10 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				reason: failureReason(error),
 				error: errorMessage(error),
 				resource_id: resourceId,
+				lang,
 			});
-			await step.do('fail-open-translations-v1', STORAGE_STEP, () =>
-				withCoreDb(this.env, (db) => settleOpenTranslations(db, resourceId, textHash, failureReason(error))),
+			await step.do(`fail-open-translation-${lang.toLowerCase()}-v2`, STORAGE_STEP, () =>
+				withCoreDb(this.env, (db) => settleOpenTranslation(db, resourceId, textHash, lang, failureReason(error))),
 			);
 			throw error;
 		}
@@ -209,27 +188,11 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 		return { status: 'complete', resourceId };
 	}
 
-	/** Whatever this run left of its text's translations has nothing more coming from it. */
-	private async settle<T>(step: WorkflowStep, resourceId: string, textHash: string, result: T): Promise<T> {
-		await step.do('settle-open-translations-v1', STORAGE_STEP, () =>
-			withCoreDb(this.env, (db) => settleOpenTranslations(db, resourceId, textHash, null)),
+	/** Whatever this run left of its translation has nothing more coming from it. */
+	private async settle<T>(step: WorkflowStep, resourceId: string, textHash: string, lang: ContentTranslationLang, result: T): Promise<T> {
+		await step.do(`settle-open-translation-${lang.toLowerCase()}-v2`, STORAGE_STEP, () =>
+			withCoreDb(this.env, (db) => settleOpenTranslation(db, resourceId, textHash, lang, null)),
 		);
 		return result;
 	}
-}
-
-// What to translate, and the title
-
-function planTranslation(resource: ResourceTranslationInput, scope: TranslationScope, force: boolean) {
-	const titled = RESOURCE_KINDS[resource.kind].titled;
-	if ((titled && !resource.title.trim()) || !resource.content.trim()) {
-		return { metadata: false, content: false, english: false };
-	}
-	const zhHant = !isWrittenInOriginal(resource.originalLang, 'zh-Hant');
-	return {
-		metadata: zhHant && titled && (force || !resource.hasTranslatedTitle),
-		content: zhHant && scope === 'full' && (force || !resource.hasTranslatedContent),
-		// An untitled Resource is its text alone, so only its content is translated, and never into English.
-		english: !isWrittenInOriginal(resource.originalLang, 'en') && titled && (force || !resource.hasEnglishTitle),
-	};
 }

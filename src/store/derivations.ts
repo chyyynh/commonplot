@@ -1,20 +1,24 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import type { SummaryLang } from '../contracts/languages';
+import { CONTENT_TRANSLATION_LANGS, type ContentTranslationLang, type SummaryLang } from '../contracts/languages';
 import { entityKey, type ResourceEntity } from '../contracts/resource';
 import { type EntityType, RESOURCE_KINDS, type ResourceKind, type ResourcePlatform } from '../contracts/resource-kinds';
 import { isWrittenInOriginal } from '../contracts/resource-language';
 import { PDF_MIME } from '../contracts/storage-keys';
 
 /**
- * What Core derives from an original after it is written; each lands, fails and retries on its own. Summaries and
- * translations have a language; a translation is written by its own Workflow. zh-Hant translates the title, and the
- * content where it translates automatically; English is only ever a title.
+ * What Core derives from an original after it is written; each lands, fails and retries on its own. A `summary` row is
+ * the Resource's card in its language, `{ title?, summary }`: every titled Resource has one in each summary language,
+ * and its title is there unless the original is already in that language. A `translation` row is the content alone,
+ * written by its own Workflow where content translates automatically or a reader asked for it.
  */
 export type Derivation = Readonly<
-	{ kind: 'summary'; lang: SummaryLang } | { kind: 'entities'; lang: '' } | { kind: 'translation'; lang: SummaryLang }
+	{ kind: 'summary'; lang: SummaryLang } | { kind: 'entities'; lang: '' } | { kind: 'translation'; lang: ContentTranslationLang }
 >;
+
+/** A `summary` row's output. */
+export type SummaryCard = Readonly<{ title?: string; summary: string }>;
 
 /** A pending derivation belongs to the attempt that wrote its original this long before the sweep may take it. */
 const DERIVATION_LEASE = sql`interval '15 minutes'`;
@@ -72,11 +76,11 @@ async function settleDerivation(
 	`);
 }
 
-/** Records a summary of the text `inputHash` names; false when that text was replaced meanwhile. */
-export async function completeSummary(db: NodePgDatabase, resourceId: string, inputHash: string, lang: SummaryLang, summary: string) {
+/** Records a card of the text `inputHash` names; false when that text was replaced meanwhile. */
+export async function completeSummary(db: NodePgDatabase, resourceId: string, inputHash: string, lang: SummaryLang, card: SummaryCard) {
 	return db.transaction(async (tx) => {
 		if (!(await lockDerivedText(tx, resourceId, inputHash))) return false;
-		await settleDerivation(tx, resourceId, { kind: 'summary', lang }, inputHash, { summary });
+		await settleDerivation(tx, resourceId, { kind: 'summary', lang }, inputHash, card);
 		return true;
 	});
 }
@@ -134,6 +138,7 @@ const DERIVATION_SOURCE_MAX_CHARS = 20_000;
 export type DerivationSource = Readonly<{
 	kind: ResourceKind;
 	resourcePlatform: ResourcePlatform | null;
+	originalLang: string;
 	source: string;
 	title: string | null;
 	/** What the source said about itself; a hint for a summary, never one. */
@@ -144,7 +149,8 @@ export type DerivationSource = Readonly<{
 /** The stored original a derivation reads, while it is still the text that derivation was required for. */
 export async function loadDerivationSource(db: NodePgDatabase, resourceId: string, inputHash: string) {
 	const { rows } = await db.execute<DerivationSource>(sql`
-		SELECT resource.kind, resource.resource_platform AS "resourcePlatform", COALESCE(resource.source_name, '') AS source,
+		SELECT resource.kind, resource.resource_platform AS "resourcePlatform", resource.original_lang AS "originalLang",
+		       COALESCE(resource.source_name, '') AS source,
 		       resource.title, resource.description, LEFT(COALESCE(body.markdown, ''), ${DERIVATION_SOURCE_MAX_CHARS}::integer) AS content
 		FROM resources resource
 		LEFT JOIN resource_content body ON body.resource_id = resource.id
@@ -207,7 +213,7 @@ export async function listEntityCandidates(db: NodePgDatabase, keys: readonly st
 	return result.rows;
 }
 
-// Translations: which Resources translate, and into what
+// Translations: which Resources' content translates, and into what
 
 export const TextHashSchema = z.hash('md5').lowercase();
 
@@ -220,8 +226,9 @@ export type ResourceTranslationCandidate = Readonly<{
 	url: string | null;
 }>;
 
-/** The one translation policy: what may be translated at all. Which languages it goes into is the original's to say. */
-export function isTranslatable(candidate: ResourceTranslationCandidate): boolean {
+/** The one translation policy: whose content may be translated into `lang`. */
+export function isTranslatable(candidate: ResourceTranslationCandidate, lang: ContentTranslationLang): boolean {
+	if (isWrittenInOriginal(candidate.originalLang, lang)) return false;
 	// A private file Resource exists only while its upload is in the owner's library: Web deletes it with the upload.
 	if (candidate.scope === 'private') {
 		return candidate.kind === 'file' && candidate.fileType === PDF_MIME && candidate.resourcePlatform === null && candidate.url === null;
@@ -241,69 +248,58 @@ const MAX_AUTOMATIC_CONTENT_CHARACTERS = 150_000;
 
 export type ResourceTranslationInput = ResourceTranslationCandidate & {
 	id: string;
+	/** The card's title in the target language, else the original's; with `summary`, context for the content. */
 	title: string;
-	/** The English summary, when derived already; context for translating the content. */
+	/** The card's summary in the target language, when derived already. */
 	summary: string | null;
 	content: string;
-	hasTranslatedTitle: boolean;
 	hasTranslatedContent: boolean;
-	hasEnglishTitle: boolean;
 };
 
 export async function loadResourceTranslationInput(
 	db: NodePgDatabase,
 	resourceId: string,
+	lang: ContentTranslationLang,
 ): Promise<{ resource: ResourceTranslationInput; textHash: string } | null> {
-	// Machine fields are validated before persistence; planning needs their presence, not another copy of the translation.
 	const result = await db.execute<ResourceTranslationInput & { textHash: string }>(sql`
 		SELECT
 			${CANDIDATE_COLUMNS},
-			COALESCE(resource.title, '') AS title,
-			(SELECT output->>'summary' FROM resource_derivations
-			 WHERE resource_id = resource.id AND kind = 'summary' AND lang = 'en' AND status = 'done') AS summary,
+			COALESCE(NULLIF(BTRIM(card.output->>'title'), ''), resource.title, '') AS title,
+			card.output->>'summary' AS summary,
 			COALESCE(original.markdown, '') AS content,
-			zh_hant.output->>'title' IS NOT NULL AS "hasTranslatedTitle",
-			zh_hant.output->>'content' IS NOT NULL AS "hasTranslatedContent",
-			en.output->>'title' IS NOT NULL AS "hasEnglishTitle"
+			translation.output->>'content' IS NOT NULL AS "hasTranslatedContent"
 		FROM resources resource
 		LEFT JOIN resource_content original ON original.resource_id = resource.id
-		LEFT JOIN resource_derivations zh_hant
-		  ON zh_hant.resource_id = resource.id AND zh_hant.kind = 'translation' AND zh_hant.lang = 'zh-Hant' AND zh_hant.status = 'done'
-		LEFT JOIN resource_derivations en
-		  ON en.resource_id = resource.id AND en.kind = 'translation' AND en.lang = 'en' AND en.status = 'done'
+		LEFT JOIN resource_derivations card
+		  ON card.resource_id = resource.id AND card.kind = 'summary' AND card.lang = ${lang} AND card.status = 'done'
+		LEFT JOIN resource_derivations translation
+		  ON translation.resource_id = resource.id AND translation.kind = 'translation' AND translation.lang = ${lang}
+		 AND translation.status = 'done'
 		WHERE resource.id = ${resourceId}::uuid
 	`);
 	const row = result.rows[0];
-	if (!row?.textHash || !isTranslatable(row)) return null;
+	if (!row?.textHash || !isTranslatable(row, lang)) return null;
 	const { textHash, ...resource } = row;
 	return { resource, textHash };
 }
 
-/**
- * Writes a machine translation of the text `textHash` names; false once that text is gone. Machine fields only:
- * alignment is the JSON the content translation compiled, and English is only ever a title.
- */
+/** Writes a content translation of the text `textHash` names; false once that text is gone. */
 export async function persistMachineTranslation(
 	db: NodePgDatabase,
 	resourceId: string,
 	textHash: string,
-	lang: SummaryLang,
-	{ title, content, alignment }: Readonly<{ title?: string; content?: string; alignment?: unknown }>,
+	lang: ContentTranslationLang,
+	{ content, alignment }: Readonly<{ content: string; alignment: unknown }>,
 ): Promise<boolean> {
-	// Only onto the text it translated, and never into the original's own language; fields merge, a new text starts over.
 	const result = await db.execute<{ resource_id: string }>(sql`
 		INSERT INTO resource_derivations AS current (resource_id, kind, lang, input_hash, status, attempts, output, updated_at)
-		SELECT resource.id, 'translation', ${lang}, ${textHash}, 'done', 0, jsonb_strip_nulls(jsonb_build_object(
-			'title', ${title ?? null}::text, 'content', ${content ?? null}::text,
-			'alignment', ${alignment === undefined ? null : JSON.stringify(alignment)}::jsonb
-		)), NOW()
+		SELECT resource.id, 'translation', ${lang}, ${textHash}, 'done', 0,
+		       jsonb_build_object('content', ${content}::text, 'alignment', ${JSON.stringify(alignment)}::jsonb), NOW()
 		FROM resources resource
-		WHERE resource.id = ${resourceId}::uuid AND resource.text_hash = ${textHash} AND resource.original_lang <> ${lang}
+		WHERE resource.id = ${resourceId}::uuid AND resource.text_hash = ${textHash}
 		FOR UPDATE OF resource
 		ON CONFLICT (resource_id, kind, lang) DO UPDATE SET
-			output = CASE WHEN current.input_hash = EXCLUDED.input_hash THEN COALESCE(current.output, '{}'::jsonb) || EXCLUDED.output
-			              ELSE EXCLUDED.output END,
-			input_hash = EXCLUDED.input_hash, status = 'done', retry_at = NULL, error = NULL, updated_at = NOW()
+			output = EXCLUDED.output, input_hash = EXCLUDED.input_hash, status = 'done', retry_at = NULL, error = NULL, updated_at = NOW()
 		RETURNING resource_id::text
 	`);
 	return result.rows.length > 0;
@@ -311,7 +307,7 @@ export async function persistMachineTranslation(
 
 /**
  * Monitor discoveries, and the subjects their carriers point at, translate in full at the operator's cost. Everything
- * else translates its title on admission and its content only when a reader asks for it.
+ * else translates its content only when a reader asks for it.
  */
 const AUTOMATIC_CONTENT_TRANSLATION_SQL = sql`(
 	EXISTS (
@@ -327,67 +323,68 @@ type StoredTranslationCandidate = ResourceTranslationCandidate &
 	Readonly<{ id: string; textHash: string; hasContent: boolean; hasTranslatedContent: boolean; automatic: boolean; translated: boolean }>;
 
 /**
- * A stored, translatable Resource: whether its content translates automatically, has a done translation (`hasTranslatedContent`),
- * or has a zh-Hant translation of this text in any state (`translated`).
+ * A stored Resource whose content translates into `lang`: whether it does so automatically, has a done translation
+ * (`hasTranslatedContent`), or has a translation of this text in any state (`translated`).
  */
-export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: string): Promise<StoredTranslationCandidate | null> {
+export async function loadTranslationCandidate(
+	db: NodePgDatabase,
+	resourceId: string,
+	lang: ContentTranslationLang,
+): Promise<StoredTranslationCandidate | null> {
 	const result = await db.execute<StoredTranslationCandidate>(sql`
 		SELECT ${CANDIDATE_COLUMNS},
 		       BTRIM(COALESCE(original.markdown, '')) <> '' AS "hasContent",
-		       zh_hant.output->>'content' IS NOT NULL AS "hasTranslatedContent",
+		       COALESCE(translation.status = 'done' AND translation.output->>'content' IS NOT NULL, false) AS "hasTranslatedContent",
 		       ${AUTOMATIC_CONTENT_TRANSLATION_SQL} AS automatic,
-		       EXISTS (
-		         SELECT 1 FROM resource_derivations translation
-		         WHERE translation.resource_id = resource.id AND translation.kind = 'translation' AND translation.lang = 'zh-Hant'
-		           AND translation.input_hash = resource.text_hash
-		       ) AS translated
+		       COALESCE(translation.input_hash = resource.text_hash, false) AS translated
 		FROM resources resource
 		LEFT JOIN resource_content original ON original.resource_id = resource.id
-		LEFT JOIN resource_derivations zh_hant
-		  ON zh_hant.resource_id = resource.id AND zh_hant.kind = 'translation' AND zh_hant.lang = 'zh-Hant' AND zh_hant.status = 'done'
+		LEFT JOIN resource_derivations translation
+		  ON translation.resource_id = resource.id AND translation.kind = 'translation' AND translation.lang = ${lang}
 		WHERE resource.id = ${resourceId}::uuid
 		  AND resource.text_hash IS NOT NULL
 	`);
 	const row = result.rows[0];
-	return row && isTranslatable(row) ? row : null;
+	return row && isTranslatable(row, lang) ? row : null;
 }
 
 /**
- * The translations a written original waits for, in the transaction that wrote it, into each language it is not
- * written in: zh-Hant for a title, for content that translates automatically, or to keep one a reader already has of
- * this text; English for a title only.
+ * The content translations a written original waits for, in the transaction that wrote it: where its content
+ * translates automatically, or to keep one a reader already has of this text.
  */
 export async function requiredTranslations(tx: NodePgDatabase, resourceId: string): Promise<Derivation[]> {
-	const row = await loadTranslationCandidate(tx, resourceId);
-	if (!row) return [];
-	const { titled } = RESOURCE_KINDS[row.kind];
-	const into = (lang: SummaryLang) => !isWrittenInOriginal(row.originalLang, lang);
-	return [
-		...(into('zh-Hant') && (titled || row.automatic || row.translated) ? [{ kind: 'translation' as const, lang: 'zh-Hant' as const }] : []),
-		...(into('en') && titled ? [{ kind: 'translation' as const, lang: 'en' as const }] : []),
-	];
+	const required: Derivation[] = [];
+	for (const lang of CONTENT_TRANSLATION_LANGS) {
+		const row = await loadTranslationCandidate(tx, resourceId, lang);
+		if (row?.automatic || row?.translated) required.push({ kind: 'translation', lang });
+	}
+	return required;
 }
 
 /**
- * Settles the translations of the text `textHash` names that a run left open: done when it ended with nothing more to
- * write for them, failed with `error` when it threw.
+ * Settles the `lang` translation of the text `textHash` names that a run left open: done when it ended with nothing
+ * more to write, failed with `error` when it threw.
  */
-export async function settleOpenTranslations(db: NodePgDatabase, resourceId: string, textHash: string, error: string | null) {
-	if (error !== null) {
-		for (const lang of ['zh-Hant', 'en'] as const) await failDerivation(db, resourceId, { kind: 'translation', lang }, textHash, error);
-		return;
-	}
+export async function settleOpenTranslation(
+	db: NodePgDatabase,
+	resourceId: string,
+	textHash: string,
+	lang: ContentTranslationLang,
+	error: string | null,
+) {
+	if (error !== null) return failDerivation(db, resourceId, { kind: 'translation', lang }, textHash, error);
 	await db.execute(sql`
 		UPDATE resource_derivations SET status = 'done', retry_at = NULL, error = NULL, updated_at = NOW()
-		WHERE resource_id = ${resourceId}::uuid AND kind = 'translation' AND input_hash = ${textHash} AND status <> 'done'
+		WHERE resource_id = ${resourceId}::uuid AND kind = 'translation' AND lang = ${lang} AND input_hash = ${textHash}
+		  AND status <> 'done'
 	`);
 }
 
-/** The states of the translations of the text `textHash` names. */
-export async function loadTranslationStates(db: NodePgDatabase, resourceId: string, textHash: string) {
+/** The states of the cards and content translations of the text `textHash` names, which an import waits for. */
+export async function loadImportDerivationStates(db: NodePgDatabase, resourceId: string, textHash: string) {
 	const { rows } = await db.execute<{ status: 'pending' | 'done' | 'failed' }>(sql`
 		SELECT status FROM resource_derivations
-		WHERE resource_id = ${resourceId}::uuid AND kind = 'translation' AND input_hash = ${textHash}
+		WHERE resource_id = ${resourceId}::uuid AND kind IN ('summary', 'translation') AND input_hash = ${textHash}
 	`);
 	return rows.map(({ status }) => status);
 }

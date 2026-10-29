@@ -1,10 +1,11 @@
-// Derivations of a written original — its AI summary, its entities and its translations. Each is recorded in
-// resource_derivations, so a failure leaves the Resource published and a later sweep runs it again.
+// Derivations of a written original — its card in each summary language, its entities and its content translations.
+// Each is recorded in resource_derivations, so a failure leaves the Resource published and a later sweep runs it again.
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
-import type { SummaryLang } from '../contracts/languages';
-import { isWrittenIn } from '../contracts/resource-language';
+import { LANGUAGES, type SummaryLang } from '../contracts/languages';
+import { RESOURCE_KINDS } from '../contracts/resource-kinds';
+import { isTitleIn, isWrittenIn, isWrittenInOriginal } from '../contracts/resource-language';
 import { coreExports } from '../exports.ts';
 import { AI_STEP, generateObject } from '../services/ai-model';
 import { extractResourceEntities } from '../services/entities';
@@ -16,6 +17,7 @@ import {
 	completeSummary,
 	type Derivation,
 	type DerivationSource,
+	type SummaryCard,
 	failDerivation,
 	loadDerivationSource,
 } from '../store/derivations';
@@ -37,9 +39,9 @@ export async function deriveResource(
 	const { kind, lang } = derivation;
 	try {
 		if (kind === 'summary') {
-			const summary = await step.do(`derive-summary-${lang}-v2`, AI_STEP, () => summarizeResource(source, lang, env, processingId));
-			return await step.do(`persist-derived-summary-${lang}-v2`, STORAGE_STEP, () =>
-				withCoreDb(env, (db) => completeSummary(db, resourceId, inputHash, lang, summary)),
+			const card = await step.do(`derive-summary-${lang}-v3`, AI_STEP, () => localizeResource(source, lang, env, processingId));
+			return await step.do(`persist-derived-summary-${lang}-v3`, STORAGE_STEP, () =>
+				withCoreDb(env, (db) => completeSummary(db, resourceId, inputHash, lang, card)),
 			);
 		}
 		const entities = await step.do('derive-entities-v1', AI_STEP, () => extractResourceEntities(source, env, processingId));
@@ -105,10 +107,9 @@ const DERIVATION_SWEEP_BATCH = 300;
 export async function enqueueDueDerivations(db: NodePgDatabase): Promise<void> {
 	const due = await claimDueDerivations(db, DERIVATION_SWEEP_BATCH);
 	if (!due.length) return;
-	// One translation run covers both languages of a text.
-	const translations = new Map(due.flatMap(({ kind, resourceId, inputHash }) => (kind === 'translation' ? [[resourceId, inputHash]] : [])));
+	const translations = due.flatMap((derivation) => (derivation.kind === 'translation' ? [derivation] : []));
 	const resumed = await Promise.allSettled(
-		[...translations].map(([resourceId, inputHash]) => resumeTranslation(db, resourceId, inputHash)),
+		translations.map(({ resourceId, inputHash, lang }) => resumeTranslation(db, resourceId, inputHash, lang)),
 	);
 	const instances = due
 		.filter(({ kind }) => kind !== 'translation')
@@ -123,7 +124,7 @@ export async function enqueueDueDerivations(db: NodePgDatabase): Promise<void> {
 		tag: 'DERIVATION',
 		msg: 'Due derivation sweep',
 		started: instances.length,
-		translations: translations.size,
+		translations: translations.length,
 		failed: resumed.filter(({ status }) => status === 'rejected').length,
 	});
 }
@@ -134,20 +135,6 @@ const ANALYSIS_CONTENT_MAX_LENGTH = 10_000;
 const ANALYSIS_MODEL = 'google/gemini-3.5-flash-lite';
 const DESCRIPTION_MAX_LENGTH = 1_500;
 
-const SUMMARY_TARGETS = {
-	'zh-Hant': {
-		language: 'Taiwan Traditional Chinese (繁體中文, zh-Hant)',
-		style: `Use Taiwan vocabulary and full-width punctuation. Write only in Traditional Chinese characters or Latin script: never Simplified Chinese, Japanese kana or Korean Hangul.
-Give Korean and Japanese names of people, companies, places and products their established Taiwan Chinese form (두산 → 斗山, SK하이닉스 → SK海力士, 삼성전자 → 三星電子), or Latin script when there is none; translate terms too (D램 → DRAM, 나노 → 奈米, ペルソナ → 人物設定).`,
-		last: 'Translate every Korean and Japanese word: the summary holds no Hangul or kana.',
-	},
-	en: {
-		language: 'English',
-		style: 'Keep established English names of people, organizations and products.',
-		last: '',
-	},
-} as const satisfies Record<SummaryLang, { language: string; style: string; last: string }>;
-
 function analysisPrompt(resource: DerivationSource) {
 	const description = resource.description?.trim().substring(0, DESCRIPTION_MAX_LENGTH);
 	return `${resource.title ? `Title: ${resource.title}\n` : ''}Source: ${resource.source.trim()}
@@ -157,35 +144,53 @@ ${description ? `Source's own description (may be boilerplate or link lists; use
 ${resource.content.trim().substring(0, ANALYSIS_CONTENT_MAX_LENGTH)}`;
 }
 
-/** A summary written directly in `lang`; output in any other language is rejected so the step retries. */
-async function summarizeResource(resource: DerivationSource, lang: SummaryLang, env: CoreEnv, processingId: string) {
+const CardSchema = z.object({ summary: z.string().trim().min(1) });
+const TitledCardSchema = CardSchema.extend({ title: z.string().trim().min(1) });
+
+/**
+ * A Resource's card in `lang`: its summary, written directly in `lang`, and its title translated with the content in
+ * view, so the two name things alike. A title already in `lang` stays the original's. Output in any other language is
+ * rejected so the step retries.
+ */
+async function localizeResource(resource: DerivationSource, lang: SummaryLang, env: CoreEnv, processingId: string) {
 	const startedAt = performance.now();
+	const { name, style, last } = LANGUAGES[lang];
+	const titled =
+		RESOURCE_KINDS[resource.kind].titled && Boolean(resource.title?.trim()) && !isWrittenInOriginal(resource.originalLang, lang);
+	const schema: z.ZodType<SummaryCard> = titled ? TitledCardSchema : CardSchema;
 	const { output, outputTokens } = await generateObject(
 		env,
 		ANALYSIS_MODEL,
 		{ feature: 'resource-summary', processing_id: processingId, target_lang: lang },
 		{
 			// The language comes last too: a model summarizing a Japanese original otherwise drifts into Japanese.
-			prompt: `${analysisPrompt(resource)}\n\nWrite the summary in ${SUMMARY_TARGETS[lang].language}. ${SUMMARY_TARGETS[lang].last}`.trim(),
-			system: `Write a 1–2 sentence summary in ${SUMMARY_TARGETS[lang].language}, whatever the original language.
-${SUMMARY_TARGETS[lang].style}
-Preserve attribution, tone, limitations and uncertainty; add nothing the content does not say.
+			prompt:
+				`${analysisPrompt(resource)}\n\n${titled ? 'Translate the title and write the summary' : 'Write the summary'} in ${name}. ${last}`.trim(),
+			system: `${titled ? `Translate the title into ${name} and write` : 'Write'} a 1–2 sentence summary in ${name}, whatever the original language.
+${style}
+${titled ? 'The title is a faithful translation of the original title: keep its meaning, claims and tone, neither shortening nor adding to it, and use the content only to choose the right sense of a word and the established form of a name.\n' : ''}Preserve attribution, tone, limitations and uncertainty; add nothing the content does not say.
 A discussion thread's summary describes the discussion; a short post's summary is proportionate to it.
 Plain text only: no Markdown, LaTeX or other markup.`,
-			output: { name: 'resource_summary', schema: z.object({ summary: z.string().trim().min(1) }) },
+			output: {
+				name: 'resource_summary',
+				schema,
+			},
 			maxTokens: 1000,
 			temperature: 0.3,
 		},
 	);
 	if (!isWrittenIn(output.summary, lang)) throw new Error(`Summary is not written in ${lang}: ${output.summary.slice(0, 200)}`);
+	const { title } = output;
+	if (title !== undefined && !isTitleIn(title, lang)) throw new Error(`Title is not written in ${lang}: ${title.slice(0, 200)}`);
 	console.info({
 		tag: 'AI',
 		event: 'summary_completed',
 		processing_id: processingId,
 		model: ANALYSIS_MODEL,
 		target_lang: lang,
+		titled,
 		latency_ms: Math.round(performance.now() - startedAt),
 		output_tokens: outputTokens,
 	});
-	return output.summary;
+	return output;
 }

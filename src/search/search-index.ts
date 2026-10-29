@@ -1,6 +1,7 @@
 import { inArray, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
+import { SUMMARY_LANGS } from '../contracts/languages';
 import { type ResourceKind, resourceKindsWhere } from '../contracts/resource-kinds';
 import { withCoreDb } from '../store/db';
 import { kindWhere } from '../store/kind-sql';
@@ -9,7 +10,6 @@ import { type CorpusHit, documentVectorId, queryCorpusVectors, readDocumentVecto
 // Postgres is canonical; CORPUS_VECTORS is its derived public-corpus index.
 /** Past MAX_CHUNKS of English prose; CJK text fills them sooner. */
 const ORIGINAL_CONTENT_MAX_CHARS = 30_000;
-const INDEX_TRANSLATION_LANGS = ['en', 'zh-Hant'] as const;
 /** The most results one search returns. */
 const RESULT_LIMIT_MAX = 50;
 const PASSAGES_PER_RESULT = 3;
@@ -88,10 +88,11 @@ export async function loadSearchDocuments(db: NodePgDatabase, resourceIds: reado
 		           SELECT r.original_lang AS lang, r.title, body.markdown AS content
 		           FROM resource_content body WHERE body.resource_id = r.id
 		           UNION ALL
-		           SELECT derivation.lang, derivation.output->>'title', derivation.output->>'content'
-		           FROM resource_derivations derivation
-		           WHERE derivation.resource_id = r.id AND derivation.kind = 'translation' AND derivation.status = 'done'
-		             AND ${inArray(sql`derivation.lang`, INDEX_TRANSLATION_LANGS)}
+		           -- Each other summary language's card: its title, or the original's where the card keeps that.
+		           SELECT card.lang, COALESCE(NULLIF(BTRIM(card.output->>'title'), ''), r.title), NULL
+		           FROM resource_derivations card
+		           WHERE card.resource_id = r.id AND card.kind = 'summary' AND card.status = 'done'
+		             AND card.lang <> r.original_lang AND ${inArray(sql`card.lang`, SUMMARY_LANGS)}
 		         ) translation
 		       ), '[]'::jsonb) AS translations
 		FROM resources r

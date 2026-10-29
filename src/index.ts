@@ -12,7 +12,7 @@ import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
 import { enqueueDueDerivations } from './workflows/derivation';
 import { admitRequests, reconcileRequests } from './workflows/requests';
-import { contentTranslationStatus, importTranslationProgress, requestContentTranslation } from './workflows/translation';
+import { contentTranslationStatus, importProgress, requestContentTranslation } from './workflows/translation';
 
 export { ZoteroSdt } from './services/zotero-sdt-service';
 export { ResourceTranslationV2Workflow } from './workflows/translation';
@@ -71,7 +71,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		await withCoreDb(this.env, (db) => admitRequests(db, [{ requester: 'user', id, userId, notebookId, label, target: payload }]));
 	}
 
-	/** What Web's ready imports show for their translations, by Resource. */
+	/** What Web's ready imports show for their cards and content translations, by Resource. */
 	async importTranslations(input: { resourceId: string; textHash: string }[]) {
 		const items = z
 			.array(z.strictObject({ resourceId: z.uuid(), textHash: z.string().min(1) }))
@@ -80,9 +80,7 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 		return withCoreDb(this.env, async (db) =>
 			Object.fromEntries(
 				await Promise.all(
-					items.map(
-						async ({ resourceId, textHash }) => [resourceId, (await importTranslationProgress(db, resourceId, textHash)) ?? null] as const,
-					),
+					items.map(async ({ resourceId, textHash }) => [resourceId, (await importProgress(db, resourceId, textHash)) ?? null] as const),
 				),
 			),
 		);
@@ -105,14 +103,12 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	/** A reader's full translation into `lang`. The app Worker checks entitlement and bills an admitted request. */
 	requestResourceTranslation(resourceId: string, lang: string) {
 		const id = z.uuid().parse(resourceId);
-		z.enum(CONTENT_TRANSLATION_LANGS).parse(lang);
-		return requestContentTranslation(this.env, id);
+		return requestContentTranslation(this.env, id, z.enum(CONTENT_TRANSLATION_LANGS).parse(lang));
 	}
 
 	resourceTranslationStatus(resourceId: string, lang: string) {
 		const id = z.uuid().parse(resourceId);
-		z.enum(CONTENT_TRANSLATION_LANGS).parse(lang);
-		return contentTranslationStatus(this.env, id);
+		return contentTranslationStatus(this.env, id, z.enum(CONTENT_TRANSLATION_LANGS).parse(lang));
 	}
 
 	/** Ranked corpus candidates with matched passages; the app Worker authoritatively filters and hydrates them. */
