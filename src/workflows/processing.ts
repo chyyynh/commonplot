@@ -8,6 +8,7 @@ import { stageResourceImages } from '../services/image-rehosting';
 import { errorMessage } from '../services/response';
 import { STORAGE_STEP, timedStep } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
+import { loadTranslationCandidate } from '../store/derivations';
 import { failRequests } from '../store/requests';
 import {
 	claimAcquisitionFence,
@@ -15,7 +16,6 @@ import {
 	persistResolvedResource,
 	type ResourcePersistenceTarget,
 } from '../store/resources';
-import { loadTranslationCandidate } from '../store/translations';
 import { deriveResource } from './derivation';
 import { stageResourceReferences } from './references';
 import { admitRequests } from './requests';

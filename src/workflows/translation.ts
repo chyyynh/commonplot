@@ -21,7 +21,7 @@ import {
 	type ResourceTranslationCandidate,
 	type ResourceTranslationInput,
 	settleOpenTranslations,
-} from '../store/translations';
+} from '../store/derivations';
 
 /** `metadata` translates the title; `full` also translates the content. */
 type TranslationScope = 'metadata' | 'full';

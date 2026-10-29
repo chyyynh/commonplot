@@ -10,10 +10,9 @@ import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { BLOB_LOCK_NAMESPACE, blobKey } from '../contracts/storage-keys';
 import { lockKeys } from './db';
-import { type Derivation, replaceResourceEntities, requireDerivations } from './derivations';
+import { type Derivation, replaceResourceEntities, requireDerivations, requiredTranslations } from './derivations';
 import { kindWhere, READABLE_ORIGINAL_SQL } from './kind-sql';
 import { fulfillRequests } from './requests';
-import { requiredTranslations } from './translations';
 
 /** A normalized resource whose images are already Hosted Images URLs. */
 type HostedResource = NormalizedResource & HostedPreview;

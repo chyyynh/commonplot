@@ -228,7 +228,7 @@ discovery / scrape / process 邏輯。App-owned saved URL 以 Workflow draft
 與 `resources`，再以 `resourceId` 啟動 Workflow。Core 在自己的
 `store/resources.ts` transaction 寫入 canonical Resource、source 與 subject；
 使用者的 save／container／file target 則由下一個 durable step 交給 Web。
-Translation 的 SQL 放在 `store/translations.ts`，Workflow 在 `workflows/translation.ts`。
+Translation 的 SQL 放在 `store/derivations.ts`，Workflow 在 `workflows/translation.ts`。
 
 各軸要分開：acquisition（generic web 或專用 adapter）不是 canonical
 `ResourcePlatform`（`youtube`、`twitter`、`hackernews`、`lesswrong` 或 null），也不是
