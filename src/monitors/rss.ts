@@ -64,7 +64,6 @@ async function processFeed(db: NodePgDatabase, feed: MonitoredFeedSource): Promi
 					// Platform adapters own their text; a feed description only fills in for a generic page.
 					summary: (!url.resourcePlatform && item.description) || undefined,
 					publishedDate: item.published || undefined,
-					originalLang: parsed.language?.trim() || undefined,
 				},
 			},
 		];

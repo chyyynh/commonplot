@@ -4,7 +4,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { RESOURCE_KINDS } from '../contracts/resource-kinds';
-import { needsEnglishMetadata } from '../contracts/resource-language';
+import { isWrittenInOriginal } from '../contracts/resource-language';
 import { coreExports } from '../exports.ts';
 import { AI_STEP_RETRIES } from '../services/ai-model';
 import { errorMessage } from '../services/response';
@@ -91,7 +91,7 @@ export async function enqueueResourceTranslation(
 /** A reader's request for a stored Resource's full translation; the app Worker admits and bills it first. */
 export async function requestContentTranslation(env: CoreEnv, resourceId: string) {
 	const candidate = await withCoreDb(env, (db) => loadTranslationCandidate(db, resourceId));
-	if (!candidate?.hasContent) return { status: 'unavailable' as const };
+	if (!candidate?.hasContent || isWrittenInOriginal(candidate.originalLang, 'zh-Hant')) return { status: 'unavailable' as const };
 	if (candidate.hasTranslatedContent) return { status: 'complete' as const };
 	// A loaded candidate is translatable, so it always enqueues.
 	const { execution } = (await enqueueResourceTranslation(candidate, 'full', false))!;
@@ -225,12 +225,11 @@ function planTranslation(resource: ResourceTranslationInput, scope: TranslationS
 	if ((titled && !resource.title.trim()) || !resource.content.trim()) {
 		return { metadata: false, content: false, english: false };
 	}
-	// An untitled Resource is its text alone, so only its content is translated, and never into English.
-	const english = titled && needsEnglishMetadata(resource.originalLang) && (force || !resource.hasEnglishTitle);
-
+	const zhHant = !isWrittenInOriginal(resource.originalLang, 'zh-Hant');
 	return {
-		metadata: titled && (force || !resource.hasTranslatedTitle),
-		content: scope === 'full' && (force || !resource.hasTranslatedContent),
-		english,
+		metadata: zhHant && titled && (force || !resource.hasTranslatedTitle),
+		content: zhHant && scope === 'full' && (force || !resource.hasTranslatedContent),
+		// An untitled Resource is its text alone, so only its content is translated, and never into English.
+		english: !isWrittenInOriginal(resource.originalLang, 'en') && titled && (force || !resource.hasEnglishTitle),
 	};
 }

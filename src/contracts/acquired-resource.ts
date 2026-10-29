@@ -32,7 +32,6 @@ export type AcquiredResource = {
 	summary: string | null;
 	content: string;
 	source: string;
-	originalLang: string;
 	publishedDate: string | null;
 	creators: ResourceCreator[];
 	kindMetadata: ResourceKindMetadata;
@@ -60,7 +59,7 @@ export type ReadDocument = Omit<AcquiredResource, 'kind' | 'resourcePlatform' | 
 export type EntitySource = Pick<AcquiredResource, 'title' | 'content'>;
 
 /** Hints a source monitor or a subject carrier already resolved for a draft. */
-export type SourceHints = Readonly<{ summary?: string; originalLang?: string; publishedDate?: string }>;
+export type SourceHints = Readonly<{ summary?: string; publishedDate?: string }>;
 
 /** An owned PDF upload as Web describes it; its bytes live under `blobKey(contentHash)`. */
 export type StoredPdf = Readonly<{ contentHash: string; fileName: string | null }>;

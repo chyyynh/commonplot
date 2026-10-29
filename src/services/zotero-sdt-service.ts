@@ -277,8 +277,6 @@ export async function stagePdfDocument(env: CoreEnv, step: WorkflowStep, pdf: Pd
 		pdfHash: pdf.inputContentHash,
 		content: body.markdown,
 		references: body.references,
-		// Core analysis replaces this BCP-47 undetermined marker.
-		originalLang: 'und',
 		subjectUrl: null,
 		previewImageUrl: null,
 		publishedDate: null,

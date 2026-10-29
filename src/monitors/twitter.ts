@@ -105,7 +105,7 @@ async function enqueueTweets(db: NodePgDatabase, tweets: Iterable<DiscoveredTwee
 		}
 		drafts.push({
 			url: `https://x.com/i/status/${tweet.id}`,
-			sourceHints: { publishedDate: publishedDate.toISOString(), originalLang: tweet.lang },
+			sourceHints: { publishedDate: publishedDate.toISOString() },
 		});
 	}
 	const admission = await enqueueSourceDrafts(db, source.id, drafts);

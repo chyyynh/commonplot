@@ -1,17 +1,11 @@
 import { z } from 'zod';
-import { ResourceLanguageSchema } from './resource-language';
 import { ResourceUrlSchema } from './resource-url';
 
 const ResourceDraftTargetSchema = z.strictObject({
 	kind: z.literal('draft'),
 	url: ResourceUrlSchema.max(2_048),
-	sourceHints: z
-		.strictObject({
-			summary: z.string().max(20_000).optional(),
-			originalLang: ResourceLanguageSchema.optional().catch(undefined),
-			publishedDate: z.iso.datetime().optional(),
-		})
-		.optional(),
+	// Not strict: a request queued before hints lost `originalLang` still carries it.
+	sourceHints: z.object({ summary: z.string().max(20_000).optional(), publishedDate: z.iso.datetime().optional() }).optional(),
 });
 
 const StoredBlobTargetSchema = z.strictObject({

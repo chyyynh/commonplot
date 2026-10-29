@@ -3,7 +3,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import type { SummaryLang } from '../contracts/languages';
 import { RESOURCE_KINDS, type ResourceKind, type ResourcePlatform } from '../contracts/resource-kinds';
-import { needsEnglishMetadata } from '../contracts/resource-language';
+import { isWrittenInOriginal } from '../contracts/resource-language';
 import { PDF_MIME } from '../contracts/storage-keys';
 import { type Derivation, failDerivation } from './derivations';
 
@@ -18,9 +18,8 @@ export type ResourceTranslationCandidate = Readonly<{
 	url: string | null;
 }>;
 
-/** The one translation policy. Queries only load rows; every caller decides with this. */
+/** The one translation policy: what may be translated at all. Which languages it goes into is the original's to say. */
 export function isTranslatable(candidate: ResourceTranslationCandidate): boolean {
-	if (candidate.originalLang === 'zh-Hant') return false;
 	// A private file Resource exists only while its upload is in the owner's library: Web deletes it with the upload.
 	if (candidate.scope === 'private') {
 		return candidate.kind === 'file' && candidate.fileType === PDF_MIME && candidate.resourcePlatform === null && candidate.url === null;
@@ -152,16 +151,18 @@ export async function loadTranslationCandidate(db: NodePgDatabase, resourceId: s
 }
 
 /**
- * The translations a written original waits for, in the transaction that wrote it: zh-Hant for a title, for content
- * that translates automatically, or to keep one a reader already has of this text; English for a title only.
+ * The translations a written original waits for, in the transaction that wrote it, into each language it is not
+ * written in: zh-Hant for a title, for content that translates automatically, or to keep one a reader already has of
+ * this text; English for a title only.
  */
 export async function requiredTranslations(tx: NodePgDatabase, resourceId: string): Promise<Derivation[]> {
 	const row = await loadTranslationCandidate(tx, resourceId);
 	if (!row) return [];
 	const { titled } = RESOURCE_KINDS[row.kind];
+	const into = (lang: SummaryLang) => !isWrittenInOriginal(row.originalLang, lang);
 	return [
-		...(titled || row.automatic || row.translated ? [{ kind: 'translation' as const, lang: 'zh-Hant' as const }] : []),
-		...(titled && needsEnglishMetadata(row.originalLang) ? [{ kind: 'translation' as const, lang: 'en' as const }] : []),
+		...(into('zh-Hant') && (titled || row.automatic || row.translated) ? [{ kind: 'translation' as const, lang: 'zh-Hant' as const }] : []),
+		...(into('en') && titled ? [{ kind: 'translation' as const, lang: 'en' as const }] : []),
 	];
 }
 

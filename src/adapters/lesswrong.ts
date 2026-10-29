@@ -83,7 +83,6 @@ async function scrapeLessWrong(postId: string) {
 			LESSWRONG_GRAPHQL_URL,
 		),
 		source: 'LessWrong',
-		originalLang: 'und',
 		publishedDate: post.postedAt.trim() || null,
 		summary: null,
 		creators: post.user && author ? [{ role: 'author', literal: author, account: { platform: 'lesswrong', id: post.user._id } }] : [],

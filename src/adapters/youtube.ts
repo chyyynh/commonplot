@@ -183,7 +183,7 @@ async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
 		previewImageUrl: await servedThumbnail(snippet.thumbnails),
 		subjectUrl: null,
 		chapters,
-	} satisfies Omit<PlatformResource, 'content' | 'originalLang'> & { audioLanguage: string | null; chapters: YouTubeChapter[] };
+	} satisfies Omit<PlatformResource, 'content'> & { audioLanguage: string | null; chapters: YouTubeChapter[] };
 }
 
 type YouTubeVideo = Awaited<ReturnType<typeof scrapeYouTubeVideo>>;
@@ -206,7 +206,6 @@ export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, 
 		...video,
 		// One Markdown paragraph per line, so the translation alignment path `[i]` pairs line `i` with its translation.
 		content: lines?.length ? paragraphsMarkdown(lines.map((line) => line.text)) : video.summary.trim(),
-		originalLang: captions?.language ?? audioLanguage ?? 'und',
 		youtube: { lines, chapters },
 	} satisfies PlatformResource & { youtube: YouTubeTranscript };
 }

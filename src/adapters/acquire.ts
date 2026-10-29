@@ -5,6 +5,7 @@ import { normalizeAcquiredResource } from '../contracts/normalize-resource';
 import { paperIdentifiersFromIdentity } from '../contracts/paper-identity';
 import type { ResourceIdentifier } from '../contracts/resource';
 import type { ResourcePlatform } from '../contracts/resource-kinds';
+import { DETECTED_LANGUAGES } from '../contracts/resource-language';
 import { RESOURCE_PLATFORMS, resolveResourceUrl } from '../contracts/resource-url';
 import { PDF_MIME } from '../contracts/storage-keys';
 import type { WorkCandidate } from '../services/crossref';
@@ -174,9 +175,35 @@ async function stageUrlAcquisition(
 	return stageDocument(env, step, page, input.processingId);
 }
 
-export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep, input: AcquisitionInput, processingId: string) {
-	if (input.kind === 'url')
-		return normalizeAcquiredResource(await stageUrlAcquisition(env, step, { ...input, processingId }), input.sourceHints);
+/**
+ * The language an original is written in, as Jev reads its title and text: a detected language, `und` for any other
+ * one or when Jev fails, `zxx` for no prose. Its top answer is taken however sure: on 400 stored originals it was right
+ * wherever it disagreed with the stored language, and its unsure answers split a language with no prose. What a source
+ * declares is not asked: X tags Chinese posts `ja`, and pages often keep a template's `en`.
+ */
+async function stageLanguage(env: CoreEnv, step: WorkflowStep, resource: AcquiredResource, processingId: string): Promise<string> {
+	const text = `${resource.title ?? ''}\n\n${resource.content}`.trim();
+	if (!/\p{L}/u.test(text)) return 'zxx';
+	const answer = await stepJson(step, 'identify-language-v1', IDENTIFY_STEP, async () => {
+		const { answers } = await askJev(env, { feature: 'resource-language', processing_id: processingId }, text.slice(0, JEV_TEXT_CHARS), {
+			language: {
+				type: 'choice',
+				instructions: 'What language is the document mainly written in (its prose, not names, code or quoted terms)?',
+				criteria: { ...DETECTED_LANGUAGES, other: 'Another language', none: 'No prose: code, data, numbers or an empty page' },
+			},
+		});
+		const language = answers.language;
+		return language && 'probabilities' in language ? language.probabilities : {};
+	}).catch((error: unknown) => {
+		console.error({ tag: 'IDENTIFY', event: 'language_failed', processing_id: processingId, error: errorMessage(error) });
+		return {};
+	});
+	const [picked = 'other'] = Object.entries(answer).sort((a, b) => b[1] - a[1])[0] ?? [];
+	return picked === 'other' ? 'und' : picked === 'none' ? 'zxx' : picked;
+}
+
+async function stageAcquired(env: CoreEnv, step: WorkflowStep, input: AcquisitionInput, processingId: string) {
+	if (input.kind === 'url') return stageUrlAcquisition(env, step, { ...input, processingId });
 	const { contentHash, fileName } = input.pdf;
 	const document = await stagePdfDocument(env, step, {
 		url: null,
@@ -184,5 +211,11 @@ export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep,
 		inputContentHash: contentHash,
 		sourceLabel: `Stored PDF ${input.objectId}`,
 	});
-	return normalizeAcquiredResource(await stageDocument(env, step, document, processingId));
+	return stageDocument(env, step, document, processingId);
+}
+
+export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep, input: AcquisitionInput, processingId: string) {
+	const resource = await stageAcquired(env, step, input, processingId);
+	const originalLang = await stageLanguage(env, step, resource, processingId);
+	return normalizeAcquiredResource(resource, originalLang, input.kind === 'url' ? input.sourceHints : undefined);
 }

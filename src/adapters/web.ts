@@ -202,7 +202,6 @@ async function acquireHtmlArticle(html: string, url: string): Promise<ReadDocume
 		title,
 		content,
 		source: siteName,
-		originalLang: article.language.trim() || 'und',
 		publishedDate: article.published.trim() || null,
 		// Defuddle reads publisher metadata only, never a body excerpt.
 		summary: article.description.trim() || null,
