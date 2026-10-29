@@ -1,7 +1,7 @@
 import { franc } from 'franc-min';
 import { Converter } from 'opencc-js';
 import { z } from 'zod';
-import type { SummaryLang } from './languages';
+import { LANGUAGE_SCRIPTS, type SummaryLang } from './languages';
 
 export const ResourceLanguageSchema = z
 	.string()
@@ -72,29 +72,24 @@ export function detectResourceLanguage(content: string, knownLanguage = 'und'): 
 	return traditional > simplified ? 'zh-Hant' : simplified > traditional ? 'zh-Hans' : 'zh';
 }
 
-// Forms Taiwan writes every day that OpenCC still turns into another variant (台 → 臺, 干擾 → 幹擾).
-const TAIWAN_COMMON_FORMS = new Set('台干里污范雇占准岩游');
-
 /**
- * Whether generated prose reads as `lang`: Taiwan Traditional Chinese with no Simplified forms, or English with no
- * Han characters. Neither may contain kana or Hangul, not even in a name; Latin names may appear in Chinese prose.
+ * Whether generated prose reads as `lang`: every letter is in one of the language's scripts, or Latin or Greek, which
+ * spell names and symbols in any language, and the language's own scripts carry at least half of the words. A word
+ * in any other script is one the model left untranslated (a Korean company name in a Chinese summary).
  */
 export function isWrittenIn(text: string, lang: SummaryLang): boolean {
+	const scripts = LANGUAGE_SCRIPTS[lang];
 	const letters = text.match(/\p{L}/gu)?.length ?? 0;
-	const han = text.match(/\p{Script=Han}/gu)?.length ?? 0;
-	const otherCjk = text.match(/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu)?.length ?? 0;
 	// A model that breaks off mid-reply sometimes spells the rest as `\uXXXX` escapes.
-	if (!letters || otherCjk || /\\u[\da-f]{4}/iu.test(text)) return false;
-	if (lang === 'en') return han === 0 && (text.match(/\p{Script=Latin}/gu)?.length ?? 0) / letters >= 0.9;
-	// Latin names count as words, so Chinese prose naming products in English still reads as Chinese.
-	const latinWords = text.match(/\p{Script=Latin}+/gu)?.length ?? 0;
-	if (han / (han + latinWords) < 0.5) return false;
-	// Character by character: OpenCC's phrase rules rewrite valid Taiwan words too (宣布 → 宣佈, 家具 → 傢俱).
-	const { toTraditional, toSimplified } = chineseConverters();
-	const simplified = [...text].filter(
-		(char) => !TAIWAN_COMMON_FORMS.has(char) && /\p{Script=Han}/u.test(char) && toTraditional(char) !== char && toSimplified(char) === char,
-	).length;
-	return simplified <= Math.max(1, Math.floor(han / 50));
+	if (!letters || /\\u[\da-f]{4}/iu.test(text)) return false;
+	const own = text.match(new RegExp(`[${scripts.map((script) => `\\p{Script=${script}}`).join('')}]`, 'gu'))?.length ?? 0;
+	const latinScript = scripts.includes('Latin');
+	const shared = text.match(latinScript ? /\p{Script=Greek}/gu : /[\p{Script=Latin}\p{Script=Greek}]/gu)?.length ?? 0;
+	if (own + shared < letters) return false;
+	if (latinScript) return own > 0;
+	// Latin names count as words, so prose naming products in English still reads as written in `lang`.
+	const nameWords = text.match(/[\p{Script=Latin}\p{Script=Greek}]+/gu)?.length ?? 0;
+	return own / (own + nameWords) >= 0.5;
 }
 
 /**
