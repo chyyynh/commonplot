@@ -3,7 +3,7 @@
  * and `scripts/check-sql-schema.mjs` fails when the CHECK constraints accept anything else.
  */
 
-/** A feed (RSS, Atom or JSON Feed), a YouTube channel by its channel id, or an X account by its handle. */
+/** A feed (RSS, Atom or JSON Feed) by its URL, or a YouTube channel or an X account by its `entity_keys` account. */
 export const MONITOR_KINDS = ['feed', 'youtube', 'twitter'] as const;
 export type MonitorKind = (typeof MONITOR_KINDS)[number];
 

@@ -5,6 +5,7 @@ import type { MonitorKind } from '../contracts/monitors';
 export type DueMonitor = Readonly<{
 	id: string;
 	kind: MonitorKind;
+	/** What its adapter reads: a feed's URL, a YouTube channel id, or an X account's current handle. */
 	locator: string;
 	name: string;
 	state: Record<string, unknown>;
@@ -30,7 +31,14 @@ export async function claimDueMonitors(db: NodePgDatabase, limit: number) {
 			FOR UPDATE SKIP LOCKED
 		) due
 		WHERE monitor.id = due.id
-		RETURNING monitor.id::text, monitor.kind, monitor.locator, monitor.name, monitor.state, monitor.created_at AS "createdAt"
+		RETURNING monitor.id::text, monitor.kind,
+		          CASE monitor.kind
+		            WHEN 'feed' THEN monitor.locator
+		            WHEN 'youtube' THEN monitor.account_value
+		            ELSE (SELECT lower(account.profile ->> 'handle') FROM entity_keys account
+		                  WHERE account.scheme = monitor.account_scheme AND account.value = monitor.account_value)
+		          END AS locator,
+		          monitor.name, monitor.state, monitor.created_at AS "createdAt"
 	`);
 	return rows;
 }
