@@ -1,40 +1,53 @@
 import { sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import type { EntityKeyScheme } from '../contracts/resource-kinds';
+import type { EntityKeyScheme, EntityType } from '../contracts/resource-kinds';
 
-/** An entity made from an account, waiting to be matched against the others. */
-export type UnmatchedAccount = Readonly<{
+/** An entity waiting to be matched against the others: one an account became, or one Resources name. */
+export type UnmatchedEntity = Readonly<{
 	id: string;
 	name: string;
-	scheme: EntityKeyScheme;
-	value: string;
+	type: EntityType;
+	/** The account it is, if it is one. */
+	scheme: EntityKeyScheme | null;
+	value: string | null;
 	handle: string | null;
-	/** Titles of the account's latest Resources. */
+	/** Its most used names. */
+	names: string[];
+	/** How many Resources name it. */
+	uses: number;
+	/** Titles of the account's latest Resources, or of the Resources most about the entity. */
 	titles: string[];
 }>;
 
-/** Takes the oldest unmatched entities of accounts, marking them matched so the next sweep skips them. */
-export async function claimUnmatchedAccounts(db: NodePgDatabase, limit: number): Promise<UnmatchedAccount[]> {
-	const { rows } = await db.execute<UnmatchedAccount>(sql`
+/** Takes the most named unmatched entities, marking them matched so the next sweep skips them. */
+export async function claimUnmatchedEntities(db: NodePgDatabase, limit: number): Promise<UnmatchedEntity[]> {
+	const { rows } = await db.execute<UnmatchedEntity>(sql`
 		WITH claimed AS (
 			UPDATE entities SET matched_at = NOW()
 			WHERE id IN (
-				SELECT id FROM entities WHERE matched_at IS NULL
-				ORDER BY created_at LIMIT ${limit} FOR UPDATE SKIP LOCKED
+				SELECT id FROM entities e WHERE matched_at IS NULL
+				ORDER BY (SELECT count(*) FROM resource_entities used WHERE used.entity_id = e.id) DESC, created_at
+				LIMIT ${limit} FOR UPDATE SKIP LOCKED
 			)
-			RETURNING id, name
+			RETURNING id, name, type
 		)
-		SELECT claimed.id::text, claimed.name, account.scheme, account.value, account.profile ->> 'handle' AS handle,
-		       array_remove(ARRAY(
+		SELECT claimed.id::text, claimed.name, claimed.type, account.scheme, account.value, account.profile ->> 'handle' AS handle,
+		       ARRAY(SELECT known.name FROM entity_names known WHERE known.entity_id = claimed.id ORDER BY known.uses DESC LIMIT 5) AS names,
+		       (SELECT count(*)::int FROM resource_entities used WHERE used.entity_id = claimed.id) AS uses,
+		       CASE WHEN account.scheme IS NULL THEN ARRAY(
+		         SELECT r.title FROM resource_entities used JOIN resources r ON r.id = used.resource_id
+		         WHERE used.entity_id = claimed.id AND r.title IS NOT NULL
+		         ORDER BY used.weight DESC LIMIT 3
+		       ) ELSE array_remove(ARRAY(
 		         SELECT COALESCE(r.title, left(body.markdown, 120))
 		         FROM resource_creators creator
 		         JOIN resources r ON r.id = creator.resource_id
 		         LEFT JOIN resource_content body ON body.resource_id = r.id
 		         WHERE creator.account_scheme = account.scheme AND creator.account_value = account.value
 		         ORDER BY r.published_date DESC NULLS LAST LIMIT 3
-		       ), NULL) AS titles
+		       ), NULL) END AS titles
 		FROM claimed
-		JOIN LATERAL (SELECT * FROM entity_keys k WHERE k.entity_id = claimed.id ORDER BY k.scheme LIMIT 1) account ON true
+		LEFT JOIN LATERAL (SELECT * FROM entity_keys k WHERE k.entity_id = claimed.id ORDER BY k.scheme LIMIT 1) account ON true
 	`);
 	return rows;
 }
@@ -66,12 +79,14 @@ export async function recordDistinct(db: NodePgDatabase, id: string, others: rea
 
 /**
  * Merges `loserId` into `winnerId`: its links (keeping the higher weight), accounts, names and followers move to the
- * winner, and it is deleted with what stayed on it.
+ * winner, and it is deleted with what stayed on it. False when either is gone, merged by another sweep meanwhile.
  */
 export async function mergeEntities(db: NodePgDatabase, loserId: string, winnerId: string) {
 	const loser = sql`${loserId}::uuid`;
 	const winner = sql`${winnerId}::uuid`;
-	await db.transaction(async (tx) => {
+	return db.transaction(async (tx) => {
+		const { rows } = await tx.execute(sql`SELECT id FROM entities WHERE id IN (${loser}, ${winner}) ORDER BY id FOR UPDATE`);
+		if (rows.length < 2) return false;
 		await tx.execute(sql`
 			INSERT INTO resource_entities AS link (resource_id, entity_id, weight)
 			SELECT resource_id, ${winner}, weight FROM resource_entities WHERE entity_id = ${loser}
@@ -91,5 +106,6 @@ export async function mergeEntities(db: NodePgDatabase, loserId: string, winnerI
 			))
 		`);
 		await tx.execute(sql`DELETE FROM entities WHERE id = ${loser}`);
+		return true;
 	});
 }

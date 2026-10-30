@@ -3,16 +3,16 @@ import pLimit from 'p-limit';
 import { z } from 'zod';
 import { cleanText } from '../contracts/markdown';
 import { entityKey, type ResourceEntity } from '../contracts/resource';
-import { type EntityType } from '../contracts/resource-kinds';
+import { type EntityKeyScheme, type EntityType } from '../contracts/resource-kinds';
 import { withCoreDb } from '../store/db';
 import { type DerivationSource, type EntityCandidate, listEntityCandidates, listHandleEntities } from '../store/derivations';
 import {
-	claimUnmatchedAccounts,
+	claimUnmatchedEntities,
 	listJudgedEntities,
 	mergeEntities,
 	recordDistinct,
 	releaseEntity,
-	type UnmatchedAccount,
+	type UnmatchedEntity,
 } from '../store/entities';
 import { coreGatewayOptions, type GatewayMetadata } from './ai-model';
 
@@ -219,6 +219,10 @@ export async function askJev(env: CoreEnv, metadata: GatewayMetadata, state: str
 	return result;
 }
 
+/** A product that keeps releasing is one entity: its versions, tiers and sizes are not entities of their own. */
+const PRODUCT_LINE_RULE =
+	'A version, tier or size of a product is that product line (Claude Opus 4.5 is Claude, GPT-5.4 is GPT), but a different product with a similar name is not (Claude Code is not Claude, Apple TV+ is not Apple TV).';
+
 /** One stored candidate as Jev reads it among the choices. */
 const candidateCriterion = ({ name, type, example }: EntityCandidate) => `${name}, a ${type}${example ? `, as in "${example}"` : ''}`;
 
@@ -229,7 +233,7 @@ function linkQuestion(span: Span): JevQuestion | null {
 			span.candidates.map((candidate, index) => [`c${index}`, candidateCriterion(candidate)]),
 		);
 		criteria.none = `None of these, or "${span.text}" is not a specific named thing here`;
-		return { type: 'choice', instructions: `Which of these does "${span.text}" in the text refer to?`, criteria };
+		return { type: 'choice', instructions: `Which of these does "${span.text}" in the text refer to? ${PRODUCT_LINE_RULE}`, criteria };
 	}
 	if (span.confidence >= NAMED_CONFIDENCE && span.type !== 'place' && (span.lead || span.count >= 2))
 		return {
@@ -339,12 +343,17 @@ export async function extractResourceEntities(
 	return entities;
 }
 
-/** Accounts matched in one sweep. */
-const ACCOUNT_MATCH_BATCH = 20;
-/** How sure Jev must be before an account merges, since a wrong merge moves the account's Resources. */
+/** Entities matched in one sweep, and how many at once. */
+const MATCH_BATCH = 300;
+const MATCH_CONCURRENCY = 8;
+/** How sure Jev must be before two entities merge, since a wrong merge moves Resources and followers. */
 const MERGE_CONFIDENCE = 0.8;
+/** Until the first sweep's judgements are checked, entities Resources name are judged and logged but not merged. */
+const MERGE_NAMED_ENTITIES = false;
 
-const ACCOUNT_KINDS: Record<UnmatchedAccount['scheme'], string> = {
+type UnmatchedAccount = UnmatchedEntity & { scheme: EntityKeyScheme; value: string };
+
+const ACCOUNT_KINDS: Record<EntityKeyScheme, string> = {
 	twitter: 'An X account',
 	youtube: 'A YouTube channel',
 	hackernews: 'A Hacker News user',
@@ -358,10 +367,35 @@ function describeAccount({ scheme, value, name, handle, titles }: UnmatchedAccou
 	return lines.join('\n');
 }
 
+function describeEntity({ name, type, names, titles }: UnmatchedEntity) {
+	const others = names.filter((written) => written !== name.toLowerCase());
+	const lines = [`"${name}", a ${type}${others.length ? `, also written ${others.map((written) => `"${written}"`).join(', ')}` : ''}.`];
+	if (titles.length) lines.push('Resources mainly about it:', ...titles.map((title) => `- ${title}`));
+	return lines.join('\n');
+}
+
 /** A candidate as Jev reads it, saying when it is itself an account rather than an entity Resources name. */
 function accountCriterion(candidate: EntityCandidate) {
-	const kind = ACCOUNT_KINDS[candidate.key.split(':')[0] as UnmatchedAccount['scheme']];
+	const kind = ACCOUNT_KINDS[candidate.key.split(':')[0] as EntityKeyScheme];
 	return kind ? `${candidateCriterion(candidate)} (${kind.toLowerCase()})` : candidateCriterion(candidate);
+}
+
+/** Stored entities with a name like the entity's that were never judged against it. */
+async function listMatchCandidates(db: NodePgDatabase, entity: UnmatchedEntity, names: readonly string[], types?: readonly EntityType[]) {
+	const [judged, found] = await Promise.all([
+		listJudgedEntities(db, entity.id),
+		listEntityCandidates(
+			db,
+			names.map(entityKey).filter(Boolean),
+			names.map((name) => name.toLowerCase()),
+		),
+	]);
+	// A candidate few Resources name, with nothing to read about it, can be told apart only by its name.
+	return rankCandidates(found)
+		.filter(
+			({ id, type, uses, example }) => id !== entity.id && !judged.has(id) && (uses >= 2 || example) && (!types || types.includes(type)),
+		)
+		.slice(0, MAX_CANDIDATES);
 }
 
 /**
@@ -369,18 +403,8 @@ function accountCriterion(candidate: EntityCandidate) {
  * which the account's entity merges into, or answers none, which is recorded so the pairs are never asked again.
  */
 async function matchAccount(env: CoreEnv, db: NodePgDatabase, account: UnmatchedAccount) {
-	const names = [account.name, account.handle ?? ''].filter(Boolean);
-	const judged = await listJudgedEntities(db, account.id);
-	const found = await listEntityCandidates(
-		db,
-		names.map(entityKey).filter(Boolean),
-		names.map((name) => name.toLowerCase()),
-	);
-	// A candidate few Resources name, with nothing to read about it, can be told apart only by its name.
-	const candidates = rankCandidates(found)
-		.filter(({ id, uses, example }) => id !== account.id && !judged.has(id) && (uses >= 2 || example))
-		.slice(0, MAX_CANDIDATES);
-	if (!candidates.length) return null;
+	const candidates = await listMatchCandidates(db, account, [account.name, account.handle ?? ''].filter(Boolean));
+	if (!candidates.length) return 0;
 	const criteria: Record<string, string> = Object.fromEntries(
 		candidates.map((candidate, index) => [`c${index}`, accountCriterion(candidate)]),
 	);
@@ -394,33 +418,90 @@ async function matchAccount(env: CoreEnv, db: NodePgDatabase, account: Unmatched
 		},
 	});
 	const answer = answers.account;
-	if (!answer || !('choice' in answer)) return null;
+	if (!answer || !('choice' in answer)) return 0;
 	if (answer.choice === 'none') {
 		await recordDistinct(
 			db,
 			account.id,
 			candidates.map(({ id }) => id),
 		);
-		return null;
+		return 0;
 	}
 	const picked = candidates[Number(answer.choice.slice(1))];
-	if (!picked || (answer.probabilities[answer.choice] ?? 0) < MERGE_CONFIDENCE) return null;
-	await mergeEntities(db, account.id, picked.id);
+	if (!picked || (answer.probabilities[answer.choice] ?? 0) < MERGE_CONFIDENCE) return 0;
+	if (!(await mergeEntities(db, account.id, picked.id))) return 0;
 	console.info({ tag: 'AI', event: 'entity_merged', account: `${account.scheme}:${account.value}`, name: account.name, into: picked.key });
-	return picked.key;
+	return 1;
 }
 
-/** Matches the entities accounts became against the others, a batch a sweep; a failed one waits for the next sweep. */
-export async function matchAccountEntities(env: CoreEnv, db: NodePgDatabase) {
-	const accounts = await claimUnmatchedAccounts(db, ACCOUNT_MATCH_BATCH);
-	let merged = 0;
-	for (const account of accounts) {
-		try {
-			if (await matchAccount(env, db, account)) merged++;
-		} catch (error) {
-			await releaseEntity(db, account.id);
-			console.warn({ tag: 'AI', event: 'entity_match_failed', entity_id: account.id, error: String(error) });
-		}
+/**
+ * An entity Resources name against the stored entities named alike, one question each, since several may be it (Claude
+ * Opus 4.5 and Claude Sonnet 4.5 are both Claude). Those Jev is sure are the same merge into the most named of them; the
+ * rest are recorded as different.
+ */
+async function matchNamedEntity(env: CoreEnv, db: NodePgDatabase, entity: UnmatchedEntity) {
+	const types = entity.type in LINKABLE_TYPES ? LINKABLE_TYPES[entity.type as NamedType] : [entity.type];
+	const candidates = await listMatchCandidates(db, entity, [entity.name, ...entity.names], types);
+	if (!candidates.length) return 0;
+	const questions: Record<string, JevQuestion> = Object.fromEntries(
+		candidates.map((candidate, index) => [
+			`c${index}`,
+			{
+				type: 'noul',
+				instructions: `Is "${entity.name}" described here the same thing as ${accountCriterion(candidate)}? ${PRODUCT_LINE_RULE} A company and its product, or a person and their company, are not the same. A similar name alone is not enough.`,
+			},
+		]),
+	);
+	const { answers } = await askJev(env, { feature: 'entity-matching', processing_id: entity.id }, describeEntity(entity), questions);
+	const sure = (index: number) => {
+		const answer = answers[`c${index}`];
+		return answer && 'noul' in answer ? answer.noul : 0;
+	};
+	const same = candidates.filter((_, index) => sure(index) >= MERGE_CONFIDENCE);
+	console.info({
+		tag: 'AI',
+		event: 'entity_judged',
+		name: entity.name,
+		uses: entity.uses,
+		same: same.map(({ key }) => key),
+		different: candidates.filter((_, index) => sure(index) < MERGE_CONFIDENCE).map(({ key }) => key),
+	});
+	if (!MERGE_NAMED_ENTITIES) {
+		await releaseEntity(db, entity.id);
+		return 0;
 	}
-	if (accounts.length) console.info({ tag: 'AI', event: 'entities_matched', accounts: accounts.length, merged });
+	await recordDistinct(
+		db,
+		entity.id,
+		candidates.filter((candidate) => !same.includes(candidate)).map(({ id }) => id),
+	);
+	const group = [{ id: entity.id, key: entity.name, uses: entity.uses }, ...same].sort((a, b) => b.uses - a.uses);
+	let merged = 0;
+	for (const loser of group.slice(1))
+		if (await mergeEntities(db, loser.id, group[0].id)) {
+			console.info({ tag: 'AI', event: 'entity_merged', name: loser.key, into: group[0].key });
+			merged++;
+		}
+	return merged;
+}
+
+/** Matches unmatched entities against the others, a batch a sweep, most named first; a failed one waits for the next. */
+export async function matchEntities(env: CoreEnv, db: NodePgDatabase) {
+	const entities = await claimUnmatchedEntities(db, MATCH_BATCH);
+	const limit = pLimit(MATCH_CONCURRENCY);
+	const merged = await Promise.all(
+		entities.map((entity) =>
+			limit(async () => {
+				try {
+					return await (entity.scheme ? matchAccount(env, db, entity as UnmatchedAccount) : matchNamedEntity(env, db, entity));
+				} catch (error) {
+					await releaseEntity(db, entity.id);
+					console.warn({ tag: 'AI', event: 'entity_match_failed', entity_id: entity.id, error: String(error) });
+					return 0;
+				}
+			}),
+		),
+	);
+	if (entities.length)
+		console.info({ tag: 'AI', event: 'entities_matched', entities: entities.length, merged: merged.reduce((sum, n) => sum + n, 0) });
 }
