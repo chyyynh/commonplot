@@ -1,6 +1,6 @@
 {
 	"mcpServers": {
-		"newsence": {
+		"commonplot": {
 			"type": "http",
 			"url": "https://www.commonplot.co/api/mcp"
 		}
