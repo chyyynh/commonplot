@@ -260,16 +260,17 @@ export async function failRequests(db: NodePgDatabase, requestId: string, error:
 /**
  * Records a monitor's judged entry on every request waiting on its key, under the key's lock so none joins meanwhile, and
  * rejects them when the score is below `min` and only monitors wait: a monitor never asks for a rejected URL again. A
- * user, a carrier or a resync waiting too keeps it. Returns whether it was rejected.
+ * user, a carrier or a resync waiting too keeps it. Returns the monitors whose entry was rejected, none when it was kept.
  */
 export async function judgeMonitorRequests(db: NodePgDatabase, requestId: string, quality: number, min: number) {
 	return db.transaction(async (tx) => {
 		const { rows } = await tx.execute<{ key: string }>(sql`SELECT target_key AS key FROM resource_requests WHERE id = ${requestId}::uuid`);
 		const key = rows[0]?.key;
-		if (!key) return false;
+		if (!key) return [];
 		await lockKeys(tx, 'newsence:request:', [key]);
-		const { rows: waiting } = await tx.execute<{ id: string; requester: Requester['requester'] }>(sql`
-			SELECT id::text, requester FROM resource_requests WHERE target_key = ${key} AND status = 'pending' FOR UPDATE
+		const { rows: waiting } = await tx.execute<{ id: string; requester: Requester['requester']; monitorId: string | null }>(sql`
+			SELECT id::text, requester, monitor_id::text AS "monitorId" FROM resource_requests
+			WHERE target_key = ${key} AND status = 'pending' FOR UPDATE
 		`);
 		const rejected = quality < min && waiting.length > 0 && waiting.every(({ requester }) => requester === 'monitor');
 		await tx.execute(sql`
@@ -278,7 +279,7 @@ export async function judgeMonitorRequests(db: NodePgDatabase, requestId: string
 				attempts = attempts + CASE WHEN ${rejected} THEN 1 ELSE 0 END
 			WHERE id = ANY(${sql.param(waiting.map(({ id }) => id))}::uuid[])
 		`);
-		return rejected;
+		return rejected ? waiting.map(({ monitorId }) => monitorId!) : [];
 	});
 }
 

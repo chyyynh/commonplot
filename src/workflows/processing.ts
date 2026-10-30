@@ -6,6 +6,7 @@ import { CONTENT_TRANSLATION_LANGS } from '../contracts/languages';
 import { ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { MONITOR_QUALITY_MIN } from '../contracts/quality';
 import { blobKey } from '../contracts/storage-keys';
+import { enqueueMonitorDrafts } from '../monitors/admission';
 import { stageResourceImages } from '../services/image-rehosting';
 import { errorMessage, namedErrorMessage } from '../services/response';
 import { STORAGE_STEP, timedStep } from '../services/workflow-step';
@@ -119,10 +120,21 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		});
 		// An entry a reader would not save is kept out, unless someone besides monitors asked for it too.
 		if (quality !== null) {
-			const rejected = await step.do('judge-monitor-requests-v1', STORAGE_STEP, () =>
+			const monitors = await step.do('judge-monitor-requests-v2', STORAGE_STEP, () =>
 				withCoreDb(this.env, (db) => judgeMonitorRequests(db, target.requestId, quality, MONITOR_QUALITY_MIN)),
 			);
-			if (rejected) return { outcome: 'rejected', quality };
+			if (monitors.length) {
+				// What a rejected post quotes or links may be worth reading on its own, so each monitor asks for it as an entry it
+				// found, judged by its own text.
+				const subjectUrl = resource.subjectUrl;
+				if (subjectUrl)
+					await step.do('request-rejected-subject-v1', STORAGE_STEP, () =>
+						withCoreDb(this.env, async (db) => {
+							for (const monitorId of new Set(monitors)) await enqueueMonitorDrafts(db, monitorId, [{ url: subjectUrl }]);
+						}),
+					);
+				return { outcome: 'rejected', quality };
+			}
 		}
 		// Where this attempt writes. Reacquiring an existing Resource claims a fencing token, so it commits only if no newer
 		// attempt has committed first. An upload runs one attempt at a time: an identified one is a draft of its public paper,
