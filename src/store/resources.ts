@@ -128,15 +128,16 @@ async function writeResourceCreators(db: NodePgDatabase, resourceId: string, cre
 	if (existing) await db.execute(sql`DELETE FROM resource_creators WHERE resource_id = ${resourceId}::uuid`);
 	if (!creators.length) return;
 	const rows = creators.map((creator, position) => {
-		const name = creatorName(creator);
-		const profile: EntityKeyProfile = {
-			name,
-			handle: creator.handle,
-			avatarUrl: creator.avatarUrl,
-			profileUrl: creator.profileUrl,
-			verified: creator.verified,
+		const { handle, avatarUrl, profileUrl, verified } = creator;
+		const profile: EntityKeyProfile = { handle, avatarUrl, profileUrl, verified };
+		return {
+			position,
+			role: creator.role,
+			name: creatorName(creator),
+			scheme: creator.account?.platform ?? null,
+			value: creator.account?.id ?? null,
+			profile,
 		};
-		return { position, role: creator.role, name, scheme: creator.account?.platform ?? null, value: creator.account?.id ?? null, profile };
 	});
 	await db.execute(sql`
 		WITH incoming AS (
