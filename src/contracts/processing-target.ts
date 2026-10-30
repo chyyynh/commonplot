@@ -25,13 +25,16 @@ const RequestTargetSchema = z.discriminatedUnion('kind', [StoredBlobTargetSchema
 
 export type RequestTarget = z.infer<typeof RequestTargetSchema>;
 
-const requestId = { requestId: z.uuid() };
+/** Who asked for a Resource: a monitor, a carrier for its subject, a user's import or upload, or a resync. */
+export const REQUESTERS = ['monitor', 'subject', 'user', 'resync'] as const;
+
+const lead = { requestId: z.uuid(), requester: z.enum(REQUESTERS) };
 
 /** A workflow acquires for the request it leads, and settles every request waiting on the same key. */
 export const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
-	StoredBlobTargetSchema.extend(requestId),
-	ReacquireTargetSchema.extend(requestId),
-	ResourceDraftTargetSchema.extend(requestId),
+	StoredBlobTargetSchema.extend(lead),
+	ReacquireTargetSchema.extend(lead),
+	ResourceDraftTargetSchema.extend(lead),
 ]);
 
 export type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSchema>;

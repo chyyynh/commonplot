@@ -87,7 +87,7 @@ async function recordRequest(tx: NodePgDatabase, request: ResourceRequest & { ke
 		${
 			request.requester === 'monitor'
 				? sql`ON CONFLICT (monitor_id, target_key) WHERE requester = 'monitor' DO UPDATE SET
-					(status, url, hints, error, retry_after, updated_at) = ('pending', EXCLUDED.url, EXCLUDED.hints, NULL, NULL, NOW())
+					(status, url, hints, error, retry_after, quality_score, updated_at) = ('pending', EXCLUDED.url, EXCLUDED.hints, NULL, NULL, NULL, NOW())
 					WHERE resource_requests.status = 'failed'`
 				: request.requester === 'subject'
 					? sql`ON CONFLICT (parent_resource_id, target_key) WHERE requester = 'subject' DO UPDATE SET
@@ -120,13 +120,13 @@ async function claimLead(tx: NodePgDatabase, row: RequestRow) {
 
 /** A lead and what its workflow acquires; no params when a resync's Resource was deleted meanwhile. */
 function toLead(row: RequestRow): RequestLead {
-	const { id, storedObjectId, resourceId, hints } = row;
+	const { id, requester, storedObjectId, resourceId, hints } = row;
 	const params: ResourceProcessingTarget | null = storedObjectId
-		? { kind: 'storedBlob', objectId: storedObjectId, requestId: id }
-		: row.requester !== 'resync'
-			? { kind: 'draft', url: row.url!, ...(hints ? { sourceHints: hints } : {}), requestId: id }
+		? { kind: 'storedBlob', objectId: storedObjectId, requestId: id, requester }
+		: requester !== 'resync'
+			? { kind: 'draft', url: row.url!, ...(hints ? { sourceHints: hints } : {}), requestId: id, requester }
 			: resourceId
-				? { kind: 'reacquire', resourceId, ...(hints?.force ? { force: true } : {}), requestId: id }
+				? { kind: 'reacquire', resourceId, ...(hints?.force ? { force: true } : {}), requestId: id, requester }
 				: null;
 	return { id, workflowId: row.workflowId!, params };
 }
@@ -258,11 +258,11 @@ export async function failRequests(db: NodePgDatabase, requestId: string, error:
 }
 
 /**
- * Rejects an acquisition only monitors asked for: the lead and every request waiting on its key, under the key's lock so
- * none joins meanwhile. A monitor never asks for a rejected URL again. Returns false, rejecting nothing, when a user, a
- * carrier or a resync waits on it too, since only a monitor's entry is kept out.
+ * Records a monitor's judged entry on every request waiting on its key, under the key's lock so none joins meanwhile, and
+ * rejects them when the score is below `min` and only monitors wait: a monitor never asks for a rejected URL again. A
+ * user, a carrier or a resync waiting too keeps it. Returns whether it was rejected.
  */
-export async function rejectMonitorRequests(db: NodePgDatabase, requestId: string, error: string) {
+export async function judgeMonitorRequests(db: NodePgDatabase, requestId: string, quality: number, min: number) {
 	return db.transaction(async (tx) => {
 		const { rows } = await tx.execute<{ key: string }>(sql`SELECT target_key AS key FROM resource_requests WHERE id = ${requestId}::uuid`);
 		const key = rows[0]?.key;
@@ -271,12 +271,14 @@ export async function rejectMonitorRequests(db: NodePgDatabase, requestId: strin
 		const { rows: waiting } = await tx.execute<{ id: string; requester: Requester['requester'] }>(sql`
 			SELECT id::text, requester FROM resource_requests WHERE target_key = ${key} AND status = 'pending' FOR UPDATE
 		`);
-		if (waiting.some(({ requester }) => requester !== 'monitor')) return false;
+		const rejected = quality < min && waiting.length > 0 && waiting.every(({ requester }) => requester === 'monitor');
 		await tx.execute(sql`
-			UPDATE resource_requests SET status = 'rejected', attempts = attempts + 1, error = LEFT(${error}, 500), updated_at = NOW()
+			UPDATE resource_requests SET quality_score = ${quality}, updated_at = NOW(),
+				status = CASE WHEN ${rejected} THEN 'rejected' ELSE status END,
+				attempts = attempts + CASE WHEN ${rejected} THEN 1 ELSE 0 END
 			WHERE id = ANY(${sql.param(waiting.map(({ id }) => id))}::uuid[])
 		`);
-		return true;
+		return rejected;
 	});
 }
 

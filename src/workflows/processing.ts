@@ -3,7 +3,7 @@ import { stageQuality, stageResourceAcquisition } from '../adapters/acquire';
 import type { AcquisitionInput, StoredPdf } from '../contracts/acquired-resource';
 import { resourceImageSources, withHostedImages } from '../contracts/image-mapping';
 import { CONTENT_TRANSLATION_LANGS } from '../contracts/languages';
-import { IMPORT_WORKFLOW_PREFIX, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
+import { ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { MONITOR_QUALITY_MIN } from '../contracts/quality';
 import { blobKey } from '../contracts/storage-keys';
 import { stageResourceImages } from '../services/image-rehosting';
@@ -11,7 +11,7 @@ import { errorMessage } from '../services/response';
 import { STORAGE_STEP, timedStep } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import { loadTranslationCandidate } from '../store/derivations';
-import { failRequests, rejectMonitorRequests } from '../store/requests';
+import { failRequests, judgeMonitorRequests } from '../store/requests';
 import {
 	claimAcquisitionFence,
 	loadReacquisitionSource,
@@ -43,7 +43,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					tag: 'INGEST',
 					event: 'ingest_run',
 					workflow_id: event.instanceId,
-					requester: event.instanceId.startsWith(IMPORT_WORKFLOW_PREFIX) ? 'user' : 'system',
+					requester: target.requester,
 					target_kind: target.kind,
 					outcome,
 					resource_kind: run.resourceKind ?? null,
@@ -95,21 +95,18 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		}
 		// An uploaded PDF identified as a paper publishes that paper, read from the upload.
 		const resource = await stageResourceAcquisition(this.env, step, await loadAcquisitionInput(this.env, step, target, upload), instanceId);
-		// What a user imported or uploaded they judged worth keeping already; only Core's own requests are judged.
-		const userAsked = target.kind === 'storedBlob' || instanceId.startsWith(IMPORT_WORKFLOW_PREFIX);
-		const quality = userAsked ? null : await stageQuality(this.env, step, resource, instanceId);
+		// Only a monitor's entry is judged: whoever else asked chose it already.
+		const quality = target.requester === 'monitor' ? await stageQuality(this.env, step, resource, instanceId) : null;
 		Object.assign(run, {
 			resourceKind: resource.kind,
 			resourcePlatform: resource.resourcePlatform,
 			chars: resource.content.length,
 			quality,
 		});
-		// A new entry only monitors asked for is kept out when a reader would not save it; anyone else's is kept regardless.
-		if (target.kind === 'draft' && quality !== null && quality < MONITOR_QUALITY_MIN) {
-			const rejected = await step.do('reject-low-quality-requests-v1', STORAGE_STEP, () =>
-				withCoreDb(this.env, (db) =>
-					rejectMonitorRequests(db, target.requestId, `quality ${quality.toFixed(2)} below ${MONITOR_QUALITY_MIN}`),
-				),
+		// An entry a reader would not save is kept out, unless someone besides monitors asked for it too.
+		if (quality !== null) {
+			const rejected = await step.do('judge-monitor-requests-v1', STORAGE_STEP, () =>
+				withCoreDb(this.env, (db) => judgeMonitorRequests(db, target.requestId, quality, MONITOR_QUALITY_MIN)),
 			);
 			if (rejected) return { outcome: 'rejected', quality };
 		}

@@ -36,14 +36,15 @@ export async function claimDueMonitors(db: NodePgDatabase, limit: number) {
 }
 
 /**
- * A quarter of the time between the entries the monitor listed in the last week, within the kind's bounds: a monitor is
- * checked about four times per new entry, and one that listed nothing waits the longest.
+ * A quarter of the time between the entries the monitor listed in the last week and Core kept, within the kind's bounds:
+ * a monitor is checked about four times per kept entry, and one whose entries were all rejected waits the longest.
  */
 function cadenceSql({ min, max }: MonitorInterval) {
 	return sql`LEAST(GREATEST(
 		604800.0 / 4 / GREATEST((
 			SELECT count(*) FROM resource_requests listed
-			WHERE listed.requester = 'monitor' AND listed.monitor_id = monitors.id AND listed.created_at > NOW() - interval '7 days'
+			WHERE listed.requester = 'monitor' AND listed.monitor_id = monitors.id AND listed.status <> 'rejected'
+			  AND listed.created_at > NOW() - interval '7 days'
 		), 1),
 		${min}::float8), ${max}::float8)`;
 }
