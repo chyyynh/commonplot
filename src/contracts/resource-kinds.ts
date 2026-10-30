@@ -33,6 +33,9 @@ const ResourceCreatorSchema = z
 
 export type ResourceCreator = Readonly<z.infer<typeof ResourceCreatorSchema>>;
 
+/** The name a creator is credited by. */
+export const creatorName = (creator: ResourceCreator) => creator.literal ?? [creator.given, creator.family].filter(Boolean).join(' ');
+
 export const ResourceMediaAttachmentSchema = z.strictObject({
 	kind: z.enum(['image', 'video', 'animated']),
 	url: optionalHttpUrl,

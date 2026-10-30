@@ -75,7 +75,7 @@ export class ResourceDerivationWorkflow extends WorkflowEntrypoint<CoreEnv, Reso
 		const { resourceId, inputHash, ...derivation } = event.payload;
 		// A failed load counts as an attempt too: the next attempt has a new instance id, and this one would never rerun.
 		const source = await step
-			.do('load-derivation-source-v1', STORAGE_STEP, () => withCoreDb(this.env, (db) => loadDerivationSource(db, resourceId, inputHash)))
+			.do('load-derivation-source-v2', STORAGE_STEP, () => withCoreDb(this.env, (db) => loadDerivationSource(db, resourceId, inputHash)))
 			.catch(async (error: unknown) => {
 				const message = namedErrorMessage(error);
 				await step.do('record-failed-load-v1', STORAGE_STEP, () =>

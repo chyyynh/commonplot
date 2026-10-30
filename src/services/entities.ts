@@ -1,11 +1,10 @@
 import pLimit from 'p-limit';
 import { z } from 'zod';
-import type { EntitySource } from '../contracts/acquired-resource';
 import { cleanText } from '../contracts/markdown';
 import { entityKey, type ResourceEntity } from '../contracts/resource';
 import { type EntityType } from '../contracts/resource-kinds';
 import { withCoreDb } from '../store/db';
-import { type EntityCandidate, listEntityCandidates } from '../store/derivations';
+import { type DerivationSource, type EntityCandidate, listEntityCandidates, listHandleEntities } from '../store/derivations';
 import { coreGatewayOptions, type GatewayMetadata } from './ai-model';
 
 const FASTINO_URL = 'https://api.fastino.ai/v1/chat/completions';
@@ -21,6 +20,8 @@ const MAX_CANDIDATES = 6;
 const MAX_LINK_QUESTIONS = 63;
 const MAX_SUBJECT_OPTIONS = 10;
 const MAX_ENTITIES = 16;
+/** Below this weight, the site or an author of the text is only its byline, not something it is about. */
+const CREDITED_MIN_WEIGHT = 0.1;
 /** GLiNER is this sure a name is of its type before Jev is asked about a name no stored entity has. */
 const NAMED_CONFIDENCE = 0.8;
 /** A name becomes a new entity only when Jev is this sure it is a proper name; later texts link to it. */
@@ -57,7 +58,9 @@ type Span = {
 	count: number;
 	lead: boolean;
 	candidates: EntityCandidate[];
-	entity?: { name: string; type: EntityType };
+	/** Written as an @handle somewhere in the text. */
+	handle: boolean;
+	entity?: { name: string; type: EntityType; key?: string };
 	subject: number;
 };
 
@@ -124,8 +127,18 @@ function collectSpans(chunks: readonly FoundNames[]) {
 			for (const { text: name, confidence } of found[type] ?? []) {
 				const key = spanKey(name);
 				if (!key) continue;
-				const span = spans.get(key) ?? { text: cleanName(name), type, confidence: 0, count: 0, lead: false, candidates: [], subject: 0 };
+				const span = spans.get(key) ?? {
+					text: cleanName(name),
+					type,
+					confidence: 0,
+					count: 0,
+					lead: false,
+					candidates: [],
+					handle: false,
+					subject: 0,
+				};
 				span.count++;
+				span.handle ||= name.trim().startsWith('@');
 				span.confidence = Math.max(span.confidence, confidence);
 				spans.set(key, span);
 			}
@@ -141,10 +154,20 @@ function collectSpans(chunks: readonly FoundNames[]) {
 	return spans;
 }
 
-/** Stored entities each name may be, most used first, and whether the text opens with it. */
+/**
+ * Stored entities each name may be, most used first, and whether the text opens with it. An @handle of a known X
+ * account is that account's entity, with nothing left to ask.
+ */
 async function attachCandidates(spans: Map<string, Span>, text: string, env: CoreEnv) {
 	const lead = text.slice(0, LEAD_LENGTH).toLowerCase();
-	const stored = await withCoreDb(env, (db) => listEntityCandidates(db, [...new Set([...spans.keys()].flatMap(lookupKeys))]));
+	const handles = [...spans].filter(([, span]) => span.handle).map(([key]) => key);
+	const [stored, accounts] = await withCoreDb(env, (db) =>
+		Promise.all([listEntityCandidates(db, [...new Set([...spans.keys()].flatMap(lookupKeys))]), listHandleEntities(db, handles)]),
+	);
+	for (const account of accounts) {
+		const span = spans.get(account.handle);
+		if (span) span.entity = { name: account.name, type: account.type, key: account.key };
+	}
 	for (const [key, span] of spans) {
 		const keys = new Set(lookupKeys(key));
 		let found = stored.filter((candidate) => keys.has(candidate.bare) && LINKABLE_TYPES[span.type].includes(candidate.type));
@@ -203,13 +226,16 @@ async function settleSpans(spans: Iterable<Span>, text: string, env: CoreEnv, pr
 	const asked: { id: string; span: Span }[] = [];
 	for (const span of ranked) {
 		if (asked.length >= MAX_LINK_QUESTIONS) break;
+		if (span.entity) continue;
 		const question = linkQuestion(span);
 		if (!question) continue;
 		const id = `q${asked.length}`;
 		questions[id] = question;
 		asked.push({ id, span });
 	}
-	const options = ranked.filter((span) => span.candidates.length || span.confidence >= NAMED_CONFIDENCE).slice(0, MAX_SUBJECT_OPTIONS);
+	const options = ranked
+		.filter((span) => span.entity || span.candidates.length || span.confidence >= NAMED_CONFIDENCE)
+		.slice(0, MAX_SUBJECT_OPTIONS);
 	if (options.length)
 		questions.subject = {
 			type: 'choice',
@@ -235,17 +261,22 @@ async function settleSpans(spans: Iterable<Span>, text: string, env: CoreEnv, pr
 	return { questions: Object.keys(questions).length, tokens: result.usage.input_tokens };
 }
 
-/** Settled names that are one entity add up their subject weight; the most central entities are kept. */
-function weighEntities(spans: Iterable<Span>): ResourceEntity[] {
-	const entities = new Map<string, { name: string; type: EntityType; weight: number }>();
+/**
+ * Settled names that are one entity add up their subject weight; the most central entities are kept. The site and
+ * the authors (`credited`) are kept only when the text is about them, as a company's blog is about its own models.
+ */
+function weighEntities(spans: Iterable<Span>, credited: readonly string[]): ResourceEntity[] {
+	const entities = new Map<string, { name: string; type: EntityType; weight: number; key?: string }>();
 	for (const span of spans) {
 		if (!span.entity) continue;
-		const key = entityKey(span.entity.name);
+		const key = span.entity.key ?? entityKey(span.entity.name);
 		const entity = entities.get(key) ?? { ...span.entity, weight: 0 };
 		entity.weight = Math.min(1, entity.weight + span.subject);
 		entities.set(key, entity);
 	}
+	const creditedKeys = new Set(credited.map(entityKey));
 	return [...entities.values()]
+		.filter((entity) => entity.weight >= CREDITED_MIN_WEIGHT || !creditedKeys.has(entityKey(entity.name)))
 		.map((entity) => ({ ...entity, weight: Math.round(entity.weight * 1000) / 1000 }))
 		.sort((a, b) => b.weight - a.weight)
 		.slice(0, MAX_ENTITIES);
@@ -256,7 +287,11 @@ function weighEntities(spans: Iterable<Span>): ResourceEntity[] {
  * of the same name are the candidates, and one Jev call picks the candidate each ambiguous name is,
  * tells a new name from a generic term, and weighs what the text is mainly about.
  */
-export async function extractResourceEntities(resource: EntitySource, env: CoreEnv, processingId: string): Promise<ResourceEntity[]> {
+export async function extractResourceEntities(
+	resource: Pick<DerivationSource, 'title' | 'content' | 'source' | 'byline'>,
+	env: CoreEnv,
+	processingId: string,
+): Promise<ResourceEntity[]> {
 	const startedAt = performance.now();
 	const text = `${resource.title ?? ''}\n${resource.content}`.trim().slice(0, ENTITY_TEXT_MAX_LENGTH);
 	if (!text) return [];
@@ -265,7 +300,7 @@ export async function extractResourceEntities(resource: EntitySource, env: CoreE
 	const spans = collectSpans(chunks.map(({ found }) => found));
 	await attachCandidates(spans, text, env);
 	const link = await settleSpans(spans.values(), text, env, processingId);
-	const entities = weighEntities(spans.values());
+	const entities = weighEntities(spans.values(), [resource.source, ...resource.byline]);
 	console.info({
 		tag: 'AI',
 		event: 'entities_completed',

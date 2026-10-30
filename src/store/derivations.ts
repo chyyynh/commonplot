@@ -145,6 +145,8 @@ export type DerivationSource = Readonly<{
 	resourcePlatform: ResourcePlatform | null;
 	originalLang: string;
 	source: string;
+	/** The byline's names in order. */
+	byline: string[];
 	title: string | null;
 	/** What the source said about itself; a hint for a summary, never one. */
 	description: string | null;
@@ -156,6 +158,7 @@ export async function loadDerivationSource(db: NodePgDatabase, resourceId: strin
 	const { rows } = await db.execute<DerivationSource>(sql`
 		SELECT resource.kind, resource.resource_platform AS "resourcePlatform", resource.original_lang AS "originalLang",
 		       COALESCE(resource.source_name, '') AS source,
+		       ARRAY(SELECT creator.name FROM resource_creators creator WHERE creator.resource_id = resource.id ORDER BY creator.position) AS byline,
 		       resource.title, resource.description, LEFT(COALESCE(body.markdown, ''), ${DERIVATION_SOURCE_MAX_CHARS}::integer) AS content
 		FROM resources resource
 		LEFT JOIN resource_content body ON body.resource_id = resource.id
@@ -170,7 +173,7 @@ export async function replaceResourceEntities(db: NodePgDatabase, resourceId: st
 	if (!entities.length) return;
 	// Sorted keys lock entity rows in one order across concurrent writers.
 	const rows = entities
-		.map((entity) => ({ ...entity, key: entityKey(entity.name) }))
+		.map((entity) => ({ ...entity, key: entity.key ?? entityKey(entity.name) }))
 		.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 	await db.execute(sql`
 		WITH incoming AS (
@@ -187,6 +190,17 @@ export async function replaceResourceEntities(db: NodePgDatabase, resourceId: st
 		FROM incoming JOIN entity USING (key)
 		ORDER BY entity.id, incoming.weight DESC
 	`);
+}
+
+/** The entities of the X accounts with these lowercase handles. */
+export async function listHandleEntities(db: NodePgDatabase, handles: readonly string[]) {
+	if (!handles.length) return [];
+	const result = await db.execute<{ handle: string; key: string; name: string; type: EntityType }>(sql`
+		SELECT lower(account.profile ->> 'handle') AS handle, entity.key, entity.name, entity.type
+		FROM entity_keys account JOIN entities entity ON entity.id = account.entity_id
+		WHERE account.scheme = 'twitter' AND lower(account.profile ->> 'handle') = ANY(${sql.param([...handles])}::text[])
+	`);
+	return result.rows;
 }
 
 export type EntityCandidate = Readonly<{

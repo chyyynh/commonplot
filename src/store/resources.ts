@@ -5,7 +5,7 @@ import type { HostedPreview } from '../contracts/image-mapping';
 import { SUMMARY_LANGS } from '../contracts/languages';
 import type { NormalizedResource } from '../contracts/normalize-resource';
 import { ResourceIdentifiersSchema } from '../contracts/resource';
-import { type EntityKeyProfile, type ResourceKind, type ResourcePlatform, RESOURCE_KINDS } from '../contracts/resource-kinds';
+import { creatorName, type EntityKeyProfile, type ResourceKind, type ResourcePlatform, RESOURCE_KINDS } from '../contracts/resource-kinds';
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { BLOB_LOCK_NAMESPACE, blobKey } from '../contracts/storage-keys';
@@ -128,7 +128,7 @@ async function writeResourceCreators(db: NodePgDatabase, resourceId: string, cre
 	if (existing) await db.execute(sql`DELETE FROM resource_creators WHERE resource_id = ${resourceId}::uuid`);
 	if (!creators.length) return;
 	const rows = creators.map((creator, position) => {
-		const name = creator.literal ?? [creator.given, creator.family].filter(Boolean).join(' ');
+		const name = creatorName(creator);
 		const profile: EntityKeyProfile = {
 			name,
 			handle: creator.handle,

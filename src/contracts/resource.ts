@@ -48,4 +48,6 @@ export type ResourceEntity = Readonly<{
 	name: string;
 	type: EntityType;
 	weight: number;
+	/** The stored entity's key when it is not its name's, as for an X account named by its @handle. */
+	key?: string;
 }>;

@@ -5,6 +5,7 @@ import { resourceImageSources, withHostedImages } from '../contracts/image-mappi
 import { CONTENT_TRANSLATION_LANGS } from '../contracts/languages';
 import { ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { MONITOR_QUALITY_MIN } from '../contracts/quality';
+import { creatorName } from '../contracts/resource-kinds';
 import { blobKey } from '../contracts/storage-keys';
 import { enqueueMonitorDrafts } from '../monitors/admission';
 import { stageResourceImages } from '../services/image-rehosting';
@@ -187,7 +188,15 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			.filter((derivation) => derivation.kind !== 'translation')
 			.map((derivation) => ({
 				derivation,
-				done: deriveResource(this.env, step, resourceId, textHash, { ...hosted, description: hosted.summary }, derivation, instanceId),
+				done: deriveResource(
+					this.env,
+					step,
+					resourceId,
+					textHash,
+					{ ...hosted, description: hosted.summary, byline: hosted.creators.map(creatorName) },
+					derivation,
+					instanceId,
+				),
 			}));
 		const summaries = Promise.all(derivations.flatMap(({ derivation, done }) => (derivation.kind === 'summary' ? [done] : [])));
 		const subjectUrl = resource.subjectUrl;
