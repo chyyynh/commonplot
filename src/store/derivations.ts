@@ -168,8 +168,7 @@ export async function loadDerivationSource(db: NodePgDatabase, resourceId: strin
 }
 
 /**
- * Replaces what a Resource is about, and records each name the text used for each entity. A name stored for an entity
- * since merged links to the entity it became. Run inside the caller's transaction.
+ * Replaces what a Resource is about, and records each name the text used for each entity. Run inside the caller's transaction.
  */
 export async function replaceResourceEntities(db: NodePgDatabase, resourceId: string, entities: readonly ResourceEntity[]) {
 	await db.execute(sql`DELETE FROM resource_entities WHERE resource_id = ${resourceId}::uuid`);
@@ -190,7 +189,7 @@ export async function replaceResourceEntities(db: NodePgDatabase, resourceId: st
 			INSERT INTO entities (key, name, type)
 			SELECT DISTINCT ON (key) key, name, type FROM incoming ORDER BY key, weight DESC
 			ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key
-			RETURNING COALESCE(merged_into, id) AS id, key
+			RETURNING id, key
 		), linked AS (
 			INSERT INTO resource_entities (resource_id, entity_id, weight)
 			SELECT DISTINCT ON (stored.id) ${resourceId}::uuid, stored.id, incoming.weight
@@ -237,7 +236,7 @@ const SIMILAR_NAMES = 30;
 
 /**
  * Stored entities that may be the names: those written with one of the keys, and those with a name sharing enough
- * trigrams with one of the lowercase names (`%`, pg_trgm's similarity of at least 0.3). Merged entities are never candidates.
+ * trigrams with one of the lowercase names (`%`, pg_trgm's similarity of at least 0.3).
  */
 export async function listEntityCandidates(
 	db: NodePgDatabase,
@@ -264,7 +263,7 @@ export async function listEntityCandidates(
 		        LEFT JOIN resource_content body ON body.resource_id = r.id
 		        WHERE top.entity_id = e.id
 		        ORDER BY top.weight DESC LIMIT 1) AS example
-		FROM found JOIN entities e ON e.id = found.entity_id AND e.merged_into IS NULL
+		FROM found JOIN entities e ON e.id = found.entity_id
 		ORDER BY found.query, e.id, found.score DESC
 	`);
 	return result.rows;
