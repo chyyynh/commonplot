@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import pg from 'pg';
 import { MONITOR_KINDS, MONITOR_STATUSES } from '../src/contracts/monitors.ts';
 import {
+	ENTITY_KEY_SCHEMES,
 	ENTITY_TYPES,
 	RESOURCE_CREATOR_ROLES,
 	RESOURCE_KEY_SCHEMES,
@@ -276,7 +277,7 @@ const contracts = [
 			RESOURCE_KIND_NAMES.includes(kind) && (platform === null || (RESOURCE_PLATFORM_KINDS[platform] ?? []).includes(kind)),
 	},
 	listed('resource_keys_scheme_check', 'scheme', RESOURCE_KEY_SCHEMES),
-	listed('creator_accounts_platform_check', 'platform', RESOURCE_PLATFORM_NAMES),
+	listed('entity_keys_scheme_check', 'scheme', ENTITY_KEY_SCHEMES),
 	listed('resource_creators_role_check', 'role', RESOURCE_CREATOR_ROLES),
 	listed('entities_type_check', 'type', ENTITY_TYPES),
 	listed('monitors_kind_check', 'kind', MONITOR_KINDS),

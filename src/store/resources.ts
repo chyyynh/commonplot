@@ -5,7 +5,7 @@ import type { HostedPreview } from '../contracts/image-mapping';
 import { SUMMARY_LANGS } from '../contracts/languages';
 import type { NormalizedResource } from '../contracts/normalize-resource';
 import { ResourceIdentifiersSchema } from '../contracts/resource';
-import { type ResourceKind, type ResourcePlatform, RESOURCE_KINDS } from '../contracts/resource-kinds';
+import { type EntityKeyProfile, type ResourceKind, type ResourcePlatform, RESOURCE_KINDS } from '../contracts/resource-kinds';
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
 import { BLOB_LOCK_NAMESPACE, blobKey } from '../contracts/storage-keys';
@@ -119,40 +119,53 @@ async function lockResourceIfAny(db: NodePgDatabase, resourceId: string): Promis
  * Replaces a Resource's byline. Each platform account it names is upserted by the id the platform never reassigns, so
  * its handle, name and avatar follow this latest acquisition.
  */
+/**
+ * Writes a Resource's byline. An account seen for the first time becomes an entity of its own, keyed
+ * `<platform>:<id>` and taken for a person until it is merged with an extracted entity; a known one keeps its
+ * entity and takes the newest profile.
+ */
 async function writeResourceCreators(db: NodePgDatabase, resourceId: string, creators: NormalizedResource['creators'], existing: boolean) {
 	if (existing) await db.execute(sql`DELETE FROM resource_creators WHERE resource_id = ${resourceId}::uuid`);
 	if (!creators.length) return;
-	const rows = creators.map((creator, position) => ({
-		position,
-		role: creator.role,
-		name: creator.literal ?? [creator.given, creator.family].filter(Boolean).join(' '),
-		platform: creator.account?.platform ?? null,
-		platform_id: creator.account?.id ?? null,
-		handle: creator.handle ?? null,
-		avatar_url: creator.avatarUrl ?? null,
-		profile_url: creator.profileUrl ?? null,
-		verified: creator.verified ?? null,
-	}));
+	const rows = creators.map((creator, position) => {
+		const name = creator.literal ?? [creator.given, creator.family].filter(Boolean).join(' ');
+		const profile: EntityKeyProfile = {
+			name,
+			handle: creator.handle,
+			avatarUrl: creator.avatarUrl,
+			profileUrl: creator.profileUrl,
+			verified: creator.verified,
+		};
+		return { position, role: creator.role, name, scheme: creator.account?.platform ?? null, value: creator.account?.id ?? null, profile };
+	});
 	await db.execute(sql`
 		WITH incoming AS (
 			SELECT * FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS creator(
-				position integer, role text, name text, platform text, platform_id text,
-				handle text, avatar_url text, profile_url text, verified boolean
+				position integer, role text, name text, scheme text, value text, profile jsonb
 			)
-		), accounts AS (
-			INSERT INTO creator_accounts AS stored (platform, platform_id, handle, name, avatar_url, profile_url, verified)
-			SELECT DISTINCT ON (platform, platform_id) platform, platform_id, handle, name, avatar_url, profile_url, verified
-			FROM incoming WHERE platform IS NOT NULL
-			ORDER BY platform, platform_id, position
-			ON CONFLICT (platform, platform_id) DO UPDATE SET
-				(handle, name, avatar_url, profile_url, verified, updated_at) =
-				(EXCLUDED.handle, EXCLUDED.name, COALESCE(EXCLUDED.avatar_url, stored.avatar_url), EXCLUDED.profile_url,
-				 COALESCE(EXCLUDED.verified, stored.verified), NOW())
-			RETURNING id, platform, platform_id
+		), account AS (
+			SELECT DISTINCT ON (scheme, value) scheme, value, name, profile
+			FROM incoming WHERE scheme IS NOT NULL
+			ORDER BY scheme, value, position
+		), created AS (
+			INSERT INTO entities (key, name, type)
+			SELECT account.scheme || ':' || account.value, account.name, 'person'
+			FROM account
+			WHERE NOT EXISTS (SELECT 1 FROM entity_keys known WHERE known.scheme = account.scheme AND known.value = account.value)
+			ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key
+			RETURNING id, key
+		), stored AS (
+			INSERT INTO entity_keys AS stored (scheme, value, entity_id, profile)
+			SELECT account.scheme, account.value, COALESCE(known.entity_id, created.id), account.profile
+			FROM account
+			LEFT JOIN entity_keys known ON known.scheme = account.scheme AND known.value = account.value
+			LEFT JOIN created ON created.key = account.scheme || ':' || account.value
+			ON CONFLICT (scheme, value) DO UPDATE SET profile = stored.profile || EXCLUDED.profile, updated_at = NOW()
+			RETURNING scheme, value
 		)
-		INSERT INTO resource_creators (resource_id, position, role, name, account_id)
-		SELECT ${resourceId}::uuid, incoming.position, incoming.role, incoming.name, accounts.id
-		FROM incoming LEFT JOIN accounts USING (platform, platform_id)
+		INSERT INTO resource_creators (resource_id, position, role, name, account_scheme, account_value)
+		SELECT ${resourceId}::uuid, incoming.position, incoming.role, incoming.name, stored.scheme, stored.value
+		FROM incoming LEFT JOIN stored ON stored.scheme = incoming.scheme AND stored.value = incoming.value
 	`);
 }
 

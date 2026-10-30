@@ -128,3 +128,9 @@ export const RESOURCE_KEY_SCHEMES = ['url', ...PAPER_IDENTIFIER_SCHEMES, ...RESO
 
 export const ENTITY_TYPES = ['person', 'organization', 'product', 'work', 'event', 'place', 'concept'] as const;
 export type EntityType = (typeof ENTITY_TYPES)[number];
+
+/** Where an entity has an identity of its own: a platform account, or a website by its registered domain. */
+export const ENTITY_KEY_SCHEMES = [...RESOURCE_PLATFORM_NAMES, 'web'] as const;
+export type EntityKeyScheme = ResourcePlatform | 'web';
+/** What an account shows, as its latest Resource had it. */
+export type EntityKeyProfile = Readonly<{ name?: string; handle?: string; avatarUrl?: string; profileUrl?: string; verified?: boolean }>;
