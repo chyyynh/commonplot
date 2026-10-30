@@ -45,10 +45,10 @@
 		"@types/mdast": "4.0.4",
 		"@types/node": "26.6.6",
 		"@types/pg": "8.23.1",
-		"cf": "1.0.0-beta.14",
+		"cf": "1.0.0-beta.26",
 		"oxfmt": "0.75.0",
 		"oxlint": "1.90.0",
 		"typescript": "7.0.2",
-		"wrangler": "4.149.0"
+		"wrangler": "4.156.0"
 	}
 }
