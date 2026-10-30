@@ -345,11 +345,9 @@ export async function extractResourceEntities(
 
 /** Entities matched in one sweep, and how many at once. */
 const MATCH_BATCH = 300;
-const MATCH_CONCURRENCY = 8;
+const MATCH_CONCURRENCY = 4;
 /** How sure Jev must be before two entities merge, since a wrong merge moves Resources and followers. */
 const MERGE_CONFIDENCE = 0.8;
-/** Until the first sweep's judgements are checked, entities Resources name are judged and logged but not merged. */
-const MERGE_NAMED_ENTITIES = false;
 
 type UnmatchedAccount = UnmatchedEntity & { scheme: EntityKeyScheme; value: string };
 
@@ -466,10 +464,6 @@ async function matchNamedEntity(env: CoreEnv, db: NodePgDatabase, entity: Unmatc
 		same: same.map(({ key }) => key),
 		different: candidates.filter((_, index) => sure(index) < MERGE_CONFIDENCE).map(({ key }) => key),
 	});
-	if (!MERGE_NAMED_ENTITIES) {
-		await releaseEntity(db, entity.id);
-		return 0;
-	}
 	await recordDistinct(
 		db,
 		entity.id,
