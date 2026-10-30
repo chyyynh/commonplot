@@ -1,16 +1,17 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
-import { stageResourceAcquisition } from '../adapters/acquire';
+import { stageQuality, stageResourceAcquisition } from '../adapters/acquire';
 import type { AcquisitionInput, StoredPdf } from '../contracts/acquired-resource';
 import { resourceImageSources, withHostedImages } from '../contracts/image-mapping';
 import { CONTENT_TRANSLATION_LANGS } from '../contracts/languages';
 import { IMPORT_WORKFLOW_PREFIX, ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
+import { MONITOR_QUALITY_MIN } from '../contracts/quality';
 import { blobKey } from '../contracts/storage-keys';
 import { stageResourceImages } from '../services/image-rehosting';
 import { errorMessage } from '../services/response';
 import { STORAGE_STEP, timedStep } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import { loadTranslationCandidate } from '../store/derivations';
-import { failRequests } from '../store/requests';
+import { failRequests, rejectMonitorRequests } from '../store/requests';
 import {
 	claimAcquisitionFence,
 	loadReacquisitionSource,
@@ -23,10 +24,13 @@ import { admitRequests } from './requests';
 import { enqueueResourceTranslation } from './translation';
 
 /** The published Resource, or a run a newer attempt replaced. */
-type ResourceProcessingOutput = { outcome: 'ready'; resourceId: string; textHash: string } | { outcome: 'superseded' };
+type ResourceProcessingOutput =
+	| { outcome: 'ready'; resourceId: string; textHash: string }
+	| { outcome: 'superseded' }
+	| { outcome: 'rejected'; quality: number };
 
 /** What a run's `ingest_run` log line reports beside its step timings; the weekly ingest review reads these lines. */
-type IngestRun = { resourceKind?: string; resourcePlatform?: string | null; chars?: number; writtenAt?: number };
+type IngestRun = { resourceKind?: string; resourcePlatform?: string | null; chars?: number; quality?: number | null; writtenAt?: number };
 
 export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, ResourceProcessingTarget> {
 	async run(event: WorkflowEvent<ResourceProcessingTarget>, step: WorkflowStep): Promise<ResourceProcessingOutput> {
@@ -45,6 +49,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 					resource_kind: run.resourceKind ?? null,
 					resource_platform: run.resourcePlatform ?? null,
 					chars: run.chars ?? null,
+					quality: run.quality ?? null,
 					// From the Workflow's creation, so queueing counts: when the import could first show as ready.
 					written_ms: run.writtenAt ? run.writtenAt - event.timestamp.getTime() : null,
 					total_ms: Date.now() - event.timestamp.getTime(),
@@ -90,7 +95,24 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		}
 		// An uploaded PDF identified as a paper publishes that paper, read from the upload.
 		const resource = await stageResourceAcquisition(this.env, step, await loadAcquisitionInput(this.env, step, target, upload), instanceId);
-		Object.assign(run, { resourceKind: resource.kind, resourcePlatform: resource.resourcePlatform, chars: resource.content.length });
+		// What a user imported or uploaded they judged worth keeping already; only Core's own requests are judged.
+		const userAsked = target.kind === 'storedBlob' || instanceId.startsWith(IMPORT_WORKFLOW_PREFIX);
+		const quality = userAsked ? null : await stageQuality(this.env, step, resource, instanceId);
+		Object.assign(run, {
+			resourceKind: resource.kind,
+			resourcePlatform: resource.resourcePlatform,
+			chars: resource.content.length,
+			quality,
+		});
+		// A new entry only monitors asked for is kept out when a reader would not save it; anyone else's is kept regardless.
+		if (target.kind === 'draft' && quality !== null && quality < MONITOR_QUALITY_MIN) {
+			const rejected = await step.do('reject-low-quality-requests-v1', STORAGE_STEP, () =>
+				withCoreDb(this.env, (db) =>
+					rejectMonitorRequests(db, target.requestId, `quality ${quality.toFixed(2)} below ${MONITOR_QUALITY_MIN}`),
+				),
+			);
+			if (rejected) return { outcome: 'rejected', quality };
+		}
 		const persistenceTarget = await planAttempt(target, resource.kind === 'paper', (resourceId) =>
 			step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () => withCoreDb(this.env, (db) => claimAcquisitionFence(db, resourceId))),
 		);
@@ -103,7 +125,10 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			processing_id: instanceId,
 			target_kind: target.kind,
 		});
-		const hosted = withHostedImages(resource, await stageResourceImages(this.env, step, instanceId, resourceImageSources([resource])));
+		const hosted = {
+			...withHostedImages(resource, await stageResourceImages(this.env, step, instanceId, resourceImageSources([resource]))),
+			qualityScore: quality,
+		};
 		const persistence = await step.do('persist-resolved-resource-scope-v9', STORAGE_STEP, async () =>
 			withCoreDb(this.env, (db) =>
 				persistResolvedResource(

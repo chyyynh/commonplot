@@ -28,7 +28,7 @@ type RequestRow = Readonly<{
 	resourceId: string | null;
 	hints: Record<string, unknown> | null;
 	workflowId: string | null;
-	status: 'pending' | 'fulfilled' | 'failed';
+	status: 'pending' | 'fulfilled' | 'failed' | 'rejected';
 }>;
 
 export type RequestLead = Readonly<{ id: string; workflowId: string; params: ResourceProcessingTarget | null }>;
@@ -255,6 +255,29 @@ export async function failRequests(db: NodePgDatabase, requestId: string, error:
 		WHERE status = 'pending'
 		  AND (id = ${requestId}::uuid OR (${!alone} AND target_key = (SELECT target_key FROM resource_requests WHERE id = ${requestId}::uuid)))
 	`);
+}
+
+/**
+ * Rejects an acquisition only monitors asked for: the lead and every request waiting on its key, under the key's lock so
+ * none joins meanwhile. A monitor never asks for a rejected URL again. Returns false, rejecting nothing, when a user, a
+ * carrier or a resync waits on it too, since only a monitor's entry is kept out.
+ */
+export async function rejectMonitorRequests(db: NodePgDatabase, requestId: string, error: string) {
+	return db.transaction(async (tx) => {
+		const { rows } = await tx.execute<{ key: string }>(sql`SELECT target_key AS key FROM resource_requests WHERE id = ${requestId}::uuid`);
+		const key = rows[0]?.key;
+		if (!key) return false;
+		await lockKeys(tx, 'newsence:request:', [key]);
+		const { rows: waiting } = await tx.execute<{ id: string; requester: Requester['requester'] }>(sql`
+			SELECT id::text, requester FROM resource_requests WHERE target_key = ${key} AND status = 'pending' FOR UPDATE
+		`);
+		if (waiting.some(({ requester }) => requester !== 'monitor')) return false;
+		await tx.execute(sql`
+			UPDATE resource_requests SET status = 'rejected', attempts = attempts + 1, error = LEFT(${error}, 500), updated_at = NOW()
+			WHERE id = ANY(${sql.param(waiting.map(({ id }) => id))}::uuid[])
+		`);
+		return true;
+	});
 }
 
 /** Leads whose workflow has been quiet a while, touched so the next sweep checks others first. */

@@ -1,8 +1,9 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { AcquiredResource, AcquisitionInput, PlatformResource, ReadDocument } from '../contracts/acquired-resource';
-import { normalizeAcquiredResource } from '../contracts/normalize-resource';
+import { type NormalizedResource, normalizeAcquiredResource } from '../contracts/normalize-resource';
 import { paperIdentifiersFromIdentity } from '../contracts/paper-identity';
+import { QUALITY_QUESTION, qualityState } from '../contracts/quality';
 import type { ResourceIdentifier } from '../contracts/resource';
 import type { ResourcePlatform } from '../contracts/resource-kinds';
 import { DETECTED_LANGUAGES } from '../contracts/resource-language';
@@ -200,6 +201,36 @@ async function stageLanguage(env: CoreEnv, step: WorkflowStep, resource: Acquire
 	});
 	const [picked = 'other'] = Object.entries(answer).sort((a, b) => b[1] - a[1])[0] ?? [];
 	return picked === 'other' ? 'und' : picked === 'none' ? 'zxx' : picked;
+}
+
+/**
+ * How likely a thoughtful reader is to save the Resource, judged on its full text up to Jev's limit: null for a private
+ * file, and when Jev fails, so a failure never keeps an entry out.
+ */
+export async function stageQuality(
+	env: CoreEnv,
+	step: WorkflowStep,
+	resource: NormalizedResource,
+	processingId: string,
+): Promise<number | null> {
+	if (resource.url === null) return null;
+	return step
+		.do('judge-quality-v1', IDENTIFY_STEP, async () => {
+			const { answers } = await askJev(
+				env,
+				{ feature: 'resource-quality', processing_id: processingId },
+				qualityState(resource.title, resource.content),
+				{
+					save: QUALITY_QUESTION,
+				},
+			);
+			const save = answers.save;
+			return save && 'noul' in save ? save.noul : null;
+		})
+		.catch((error: unknown) => {
+			console.error({ tag: 'IDENTIFY', event: 'quality_failed', processing_id: processingId, error: errorMessage(error) });
+			return null;
+		});
 }
 
 async function stageAcquired(env: CoreEnv, step: WorkflowStep, input: AcquisitionInput, processingId: string) {

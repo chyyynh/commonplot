@@ -15,7 +15,8 @@ import { kindWhere, READABLE_ORIGINAL_SQL } from './kind-sql';
 import { fulfillRequests } from './requests';
 
 /** A normalized resource whose images are already Hosted Images URLs. */
-type HostedResource = NormalizedResource & HostedPreview;
+/** What persistence writes: the normalized Resource, its hosted images, and its quality score (null when not judged). */
+type HostedResource = NormalizedResource & HostedPreview & Readonly<{ qualityScore: number | null }>;
 
 /**
  * A draft writes an original only where none is readable yet. An existing Resource is
@@ -167,7 +168,7 @@ async function writeCanonicalResource(
 ) {
 	const columns = sql`
 		kind, resource_platform, source_name, title, description, url, file_type, pdf_hash, original_lang, published_date,
-		og_image_url, og_image_width, og_image_height, kind_metadata, subject_resource_id, text_hash,
+		og_image_url, og_image_width, og_image_height, kind_metadata, subject_resource_id, text_hash, quality_score,
 		scraped_date, updated_at
 	`;
 	const preview = await articlePreview(db, resourceId, resource);
@@ -176,7 +177,8 @@ async function writeCanonicalResource(
 		${resource.fileType}, ${existing ? sql`COALESCE(${resource.pdfHash ?? null}, pdf_hash)` : (resource.pdfHash ?? null)}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
 		${preview.url}, ${preview.width}, ${preview.height},
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
-		(SELECT MD5(jsonb_build_array(lang, title, content)::text) FROM incoming), NOW(), NOW()
+		(SELECT MD5(jsonb_build_array(lang, title, content)::text) FROM incoming),
+		${existing ? sql`COALESCE(${resource.qualityScore}::real, quality_score)` : sql`${resource.qualityScore}::real`}, NOW(), NOW()
 	`;
 	// The cleanup excludes the incoming language: no CTE deletes a row another CTE writes.
 	const written = await db.execute(sql`
