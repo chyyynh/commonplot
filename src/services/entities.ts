@@ -406,6 +406,7 @@ async function matchAccount(env: CoreEnv, db: NodePgDatabase, account: Unmatched
 	const picked = candidates[Number(answer.choice.slice(1))];
 	if (!picked || (answer.probabilities[answer.choice] ?? 0) < MERGE_CONFIDENCE) return null;
 	await mergeEntities(db, account.id, picked.id);
+	console.info({ tag: 'AI', event: 'entity_merged', account: `${account.scheme}:${account.value}`, name: account.name, into: picked.key });
 	return picked.key;
 }
 
