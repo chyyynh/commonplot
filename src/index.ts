@@ -7,6 +7,7 @@ import type {} from './env';
 import { runMonitors } from './monitors';
 import { nearCorpusResources, nearInterest, type PublicResourceSearchInput, searchPublicResources } from './search/search-index';
 import { consumeSearchSyncBatch } from './search/sync-consumer';
+import { matchAccountEntities } from './services/entities';
 import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
 import { enqueueDueDerivations } from './workflows/derivation';
@@ -31,7 +32,14 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 
 		// Each monitor keeps its own next check, so one cron serves every kind.
 		this.ctx.waitUntil(
-			withCoreDb(this.env, (db) => Promise.allSettled([runMonitors(this.env, db), enqueueDueDerivations(db), reconcileRequests(db)])),
+			withCoreDb(this.env, (db) =>
+				Promise.allSettled([
+					runMonitors(this.env, db),
+					enqueueDueDerivations(db),
+					reconcileRequests(db),
+					matchAccountEntities(this.env, db),
+				]),
+			),
 		);
 	}
 

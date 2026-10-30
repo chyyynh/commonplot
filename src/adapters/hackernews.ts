@@ -68,8 +68,8 @@ async function scrapeHackerNews(itemId: string): Promise<PlatformResource | { re
 		source: 'Hacker News',
 		publishedDate: item.time ? new Date(item.time * 1000).toISOString() : null,
 		summary: null,
-		// Hacker News usernames are never reassigned.
-		creators: submitter ? [{ role: 'submitter', literal: submitter, account: { platform: 'hackernews', id: submitter } }] : [],
+		// A submitter is a byline name, not an account: few submit twice, and nobody follows one.
+		creators: submitter ? [{ role: 'submitter', literal: submitter }] : [],
 		kindMetadata: {},
 		fileType: null,
 		previewImageUrl: null,

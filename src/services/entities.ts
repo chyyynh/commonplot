@@ -341,6 +341,8 @@ export async function extractResourceEntities(
 
 /** Accounts matched in one sweep. */
 const ACCOUNT_MATCH_BATCH = 20;
+/** How sure Jev must be before an account merges, since a wrong merge moves the account's Resources. */
+const MERGE_CONFIDENCE = 0.8;
 
 const ACCOUNT_KINDS: Record<UnmatchedAccount['scheme'], string> = {
 	twitter: 'An X account',
@@ -356,6 +358,12 @@ function describeAccount({ scheme, value, name, handle, titles }: UnmatchedAccou
 	return lines.join('\n');
 }
 
+/** A candidate as Jev reads it, saying when it is itself an account rather than an entity Resources name. */
+function accountCriterion(candidate: EntityCandidate) {
+	const kind = ACCOUNT_KINDS[candidate.key.split(':')[0] as UnmatchedAccount['scheme']];
+	return kind ? `${candidateCriterion(candidate)} (${kind.toLowerCase()})` : candidateCriterion(candidate);
+}
+
 /**
  * One account's entity against the stored entities with a name like the account's: Jev picks the one the account is,
  * which the account's entity merges into, or answers none, which is recorded so the pairs are never asked again.
@@ -368,19 +376,20 @@ async function matchAccount(env: CoreEnv, db: NodePgDatabase, account: Unmatched
 		names.map(entityKey).filter(Boolean),
 		names.map((name) => name.toLowerCase()),
 	);
+	// A candidate few Resources name, with nothing to read about it, can be told apart only by its name.
 	const candidates = rankCandidates(found)
-		.filter(({ id }) => id !== account.id && !judged.has(id))
+		.filter(({ id, uses, example }) => id !== account.id && !judged.has(id) && (uses >= 2 || example))
 		.slice(0, MAX_CANDIDATES);
 	if (!candidates.length) return null;
 	const criteria: Record<string, string> = Object.fromEntries(
-		candidates.map((candidate, index) => [`c${index}`, candidateCriterion(candidate)]),
+		candidates.map((candidate, index) => [`c${index}`, accountCriterion(candidate)]),
 	);
 	criteria.none = 'None of these, or not sure';
 	const { answers } = await askJev(env, { feature: 'entity-matching', processing_id: account.id }, describeAccount(account), {
 		account: {
 			type: 'choice',
 			instructions:
-				'Which of these is the same real-world person, organization or thing as this account? Something related but different, such as a product of a company or a company of its founder, is not the same.',
+				'Which of these is the same real-world person, organization or thing as this account? Something related but different, such as a product of a company or a company of its founder, is not the same. A similar name alone is not enough. If both an account and an entity fit, pick the entity.',
 			criteria,
 		},
 	});
@@ -395,7 +404,7 @@ async function matchAccount(env: CoreEnv, db: NodePgDatabase, account: Unmatched
 		return null;
 	}
 	const picked = candidates[Number(answer.choice.slice(1))];
-	if (!picked || (answer.probabilities[answer.choice] ?? 0) < CANDIDATE_CONFIDENCE) return null;
+	if (!picked || (answer.probabilities[answer.choice] ?? 0) < MERGE_CONFIDENCE) return null;
 	await mergeEntities(db, account.id, picked.id);
 	return picked.key;
 }
