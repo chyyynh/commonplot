@@ -6,9 +6,10 @@ import { z } from 'zod';
 import { LANGUAGES, SCRIPT_NAMES, type SummaryLang } from '../contracts/languages';
 import { RESOURCE_KINDS } from '../contracts/resource-kinds';
 import { foreignWords, isTitleIn, isWrittenIn, isWrittenInOriginal } from '../contracts/resource-language';
-import { coreExports } from '../exports.ts';
+import { coreExports, createInstances } from '../exports.ts';
 import { AI_STEP, generateObject } from '../services/ai-model';
 import { extractResourceEntities } from '../services/entities';
+import { namedErrorMessage } from '../services/response';
 import { STORAGE_STEP } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import {
@@ -49,7 +50,7 @@ export async function deriveResource(
 			withCoreDb(env, (db) => completeEntities(db, resourceId, inputHash, entities)),
 		);
 	} catch (error) {
-		const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+		const message = namedErrorMessage(error);
 		console.error({
 			tag: 'DERIVATION',
 			msg: 'Derivation failed',
@@ -76,7 +77,7 @@ export class ResourceDerivationWorkflow extends WorkflowEntrypoint<CoreEnv, Reso
 		const source = await step
 			.do('load-derivation-source-v1', STORAGE_STEP, () => withCoreDb(this.env, (db) => loadDerivationSource(db, resourceId, inputHash)))
 			.catch(async (error: unknown) => {
-				const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+				const message = namedErrorMessage(error);
 				await step.do('record-failed-load-v1', STORAGE_STEP, () =>
 					withCoreDb(this.env, (db) => failDerivation(db, resourceId, derivation, inputHash, message)),
 				);
@@ -117,9 +118,7 @@ export async function enqueueDueDerivations(db: NodePgDatabase): Promise<void> {
 			id: `rd-v2-${kind}${lang ? `-${lang}` : ''}-${resourceId}-${inputHash.slice(0, 16)}-${attempts}`,
 			params: { resourceId, inputHash, ...({ kind, lang } as DirectDerivation) },
 		}));
-	// createBatch takes at most 100 instances.
-	for (let offset = 0; offset < instances.length; offset += 100)
-		await coreExports.ResourceDerivationWorkflow.createBatch(instances.slice(offset, offset + 100));
+	await createInstances(coreExports.ResourceDerivationWorkflow, instances);
 	console.info({
 		tag: 'DERIVATION',
 		msg: 'Due derivation sweep',

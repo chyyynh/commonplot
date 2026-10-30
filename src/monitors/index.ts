@@ -12,7 +12,7 @@ import { twitterMonitor } from './twitter';
 export type Monitor<State> = Omit<DueMonitor, 'state'> & Readonly<{ state: State }>;
 
 /** What one check found: the entries to admit, how many it dropped, the state for the next check, and what to log. */
-export type MonitorPoll<State> = Readonly<{
+type MonitorPoll<State> = Readonly<{
 	drafts: SourceResourceDraft[];
 	skipped: number;
 	state: State;

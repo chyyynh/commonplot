@@ -1,7 +1,7 @@
 // The admission ledger's side effects: each request's lead starts the one workflow its key needs, and a sweep restarts
 // or settles leads whose workflow went missing.
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import { coreExports } from '../exports.ts';
+import { coreExports, createInstances, workflowStatus } from '../exports.ts';
 import {
 	claimStaleLeads,
 	failRequests,
@@ -18,8 +18,7 @@ const SWEEP_BATCH = 20;
 async function startLeads(db: NodePgDatabase, leads: readonly RequestLead[]) {
 	const instances = leads.flatMap(({ workflowId, params }) => (params ? [{ id: workflowId, params, retention: WORKFLOW_RETENTION }] : []));
 	await Promise.all(leads.filter(({ params }) => !params).map(({ id }) => failRequests(db, id, 'The Resource to reacquire was deleted')));
-	for (let offset = 0; offset < instances.length; offset += 100)
-		await coreExports.ResourceProcessingV2Workflow.createBatch(instances.slice(offset, offset + 100));
+	await createInstances(coreExports.ResourceProcessingV2Workflow, instances);
 }
 
 /** Records requests and starts the acquisitions they lead; returns the leads. */
@@ -27,14 +26,6 @@ export async function admitRequests(db: NodePgDatabase, requests: readonly Resou
 	const leads = await recordRequests(db, requests);
 	await startLeads(db, leads);
 	return leads;
-}
-
-async function workflowState(id: string) {
-	try {
-		return (await (await coreExports.ResourceProcessingV2Workflow.get(id)).status()).status;
-	} catch {
-		return 'absent' as const;
-	}
 }
 
 /**
@@ -46,7 +37,7 @@ export async function reconcileRequests(db: NodePgDatabase) {
 	const restarts: RequestLead[] = [];
 	await Promise.all(
 		stale.map(async (lead) => {
-			const state = await workflowState(lead.workflowId);
+			const state = await workflowStatus(coreExports.ResourceProcessingV2Workflow, lead.workflowId);
 			if (state === 'absent') restarts.push(lead);
 			else if (state === 'errored' || state === 'terminated' || state === 'complete')
 				await failRequests(db, lead.id, `Workflow ${state} without settling its request`);

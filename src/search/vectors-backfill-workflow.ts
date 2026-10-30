@@ -1,8 +1,7 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { sql } from 'drizzle-orm';
 import { withCoreDb } from '../store/db';
-import { syncCorpusVectors } from './corpus-vectors';
-import { loadSearchDocuments, SEARCHABLE_RESOURCE_SQL } from './search-index';
+import { SEARCHABLE_RESOURCE_SQL, syncSearchDocuments } from './search-index';
 
 const BACKFILL_PAGE_SIZE = 50;
 /** An optional UUID range `(after, through]`, so several instances can split the corpus, and the scope to write. */
@@ -36,13 +35,10 @@ export class CorpusVectorsBackfillWorkflow extends WorkflowEntrypoint<CoreEnv, B
 							LIMIT ${BACKFILL_PAGE_SIZE}
 						`);
 						const ids = rows.map((row) => row.id);
-						const documents = await loadSearchDocuments(db, ids);
-						await syncCorpusVectors(this.env, documents, []);
-						const current = new Map((await loadSearchDocuments(db, ids)).map((document) => [document.id, document]));
-						const changed = documents.filter((document) => JSON.stringify(current.get(document.id)) !== JSON.stringify(document));
+						const { written, changed } = await syncSearchDocuments(this.env, db, ids);
 						if (changed.length)
-							await this.env.RESOURCE_SEARCH_SYNC_QUEUE.sendBatch(changed.map((document) => ({ body: { resourceId: document.id } })));
-						return { cursor: ids.at(-1) ?? null, written: documents.length, requeued: changed.length };
+							await this.env.RESOURCE_SEARCH_SYNC_QUEUE.sendBatch(changed.map((resourceId) => ({ body: { resourceId } })));
+						return { cursor: ids.at(-1) ?? null, written, requeued: changed.length };
 					}),
 			);
 			if (!page.cursor) break;

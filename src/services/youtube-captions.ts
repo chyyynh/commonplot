@@ -2,7 +2,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { z } from 'zod';
 import type { YouTubeTranscriptLine } from '../contracts/acquired-resource.ts';
 import { coreExports } from '../exports.ts';
-import { errorMessage } from './response.ts';
+import { errorMessage, fetchOk } from './response.ts';
 
 const CAPTION_FETCH_TIMEOUT_MS = 8_000;
 /**
@@ -117,11 +117,11 @@ async function fetchCaptionCues(videoId: string, track: CaptionTrack): Promise<Y
 	const url = new URL(track.baseUrl);
 	if (!url.hostname.endsWith('.youtube.com')) throw new Error(`YouTube caption track ${videoId} points outside youtube.com`);
 	url.searchParams.set('fmt', 'json3');
-	const response = await captionFetch(url.href, { headers: { 'User-Agent': WEB_USER_AGENT } });
-	if (!response.ok) {
-		await response.body?.cancel();
-		throw new Error(`YouTube timedtext ${videoId} returned HTTP ${response.status}`);
-	}
+	const response = await fetchOk(url, {
+		label: `YouTube timedtext ${videoId}`,
+		timeoutMs: CAPTION_FETCH_TIMEOUT_MS,
+		headers: { 'User-Agent': WEB_USER_AGENT },
+	});
 	return TimedTextSchema.parse(await response.json()).events.flatMap(({ tStartMs, dDurationMs, segs }) => {
 		const text = segs
 			?.map((segment) => segment.utf8)

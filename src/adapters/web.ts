@@ -15,7 +15,7 @@ import { PDF_MIME } from '../contracts/storage-keys';
 import { rehostInlineImages } from '../services/image-rehosting';
 import { fetchPage } from '../services/page-fetcher';
 import { limitByteStream, responseError } from '../services/response';
-import { FETCH_STEP_RETRIES } from '../services/workflow-step';
+import { FETCH_STEP_RETRIES, stepJson } from '../services/workflow-step';
 import { stagePdfDocument, storePublicPdfResponse } from '../services/zotero-sdt-service.ts';
 
 const GENERIC_FETCH_TIMEOUT_MS = 8_000;
@@ -296,12 +296,10 @@ async function acquireWebResource(env: CoreEnv, url: string): Promise<WebAcquisi
 
 /** A page or a PDF as read; a redirect to a platform or a paper re-enters acquisition at its own adapter. */
 export async function stageWebAcquisition(env: CoreEnv, step: WorkflowStep, url: string): Promise<Redirect | ReadDocument> {
-	const result = await step.do('acquire-web-v17', { retries: FETCH_STEP_RETRIES, timeout: '300 seconds' }, async () => {
-		const acquired = await acquireWebResource(env, url);
-		return 'redirect' in acquired ? acquired : Response.json(acquired).body!;
-	});
-	if ('redirect' in result) return result;
-	const acquired = await new Response(result).json<Exclude<WebAcquisition, Redirect>>();
-	// A stored PDF, including one from an older checkpoint that also carries its storage key and crop URL prefix.
+	const acquired = await stepJson(step, 'acquire-web-v18', { retries: FETCH_STEP_RETRIES, timeout: '300 seconds' }, () =>
+		acquireWebResource(env, url),
+	);
+	if ('redirect' in acquired) return acquired;
+	// A stored PDF reads on as a document.
 	return 'inputContentHash' in acquired ? stagePdfDocument(env, step, acquired) : acquired;
 }

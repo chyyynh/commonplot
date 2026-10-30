@@ -251,7 +251,7 @@ const CANDIDATE_COLUMNS = sql`resource.id::text, resource.text_hash AS "textHash
 /** Longer automatic translations wait for a reader to request and pay for them. */
 const MAX_AUTOMATIC_CONTENT_CHARACTERS = 150_000;
 
-export type ResourceTranslationInput = ResourceTranslationCandidate & {
+type ResourceTranslationInput = ResourceTranslationCandidate & {
 	id: string;
 	/** The card's title in the target language, else the original's; with `summary`, context for the content. */
 	title: string;
@@ -366,18 +366,8 @@ export async function requiredTranslations(tx: NodePgDatabase, resourceId: strin
 	return required;
 }
 
-/**
- * Settles the `lang` translation of the text `textHash` names that a run left open: done when it ended with nothing
- * more to write, failed with `error` when it threw.
- */
-export async function settleOpenTranslation(
-	db: NodePgDatabase,
-	resourceId: string,
-	textHash: string,
-	lang: ContentTranslationLang,
-	error: string | null,
-) {
-	if (error !== null) return failDerivation(db, resourceId, { kind: 'translation', lang }, textHash, error);
+/** Settles as done the `lang` translation of the text `textHash` names that a run left open with nothing more to write. */
+export async function settleOpenTranslation(db: NodePgDatabase, resourceId: string, textHash: string, lang: ContentTranslationLang) {
 	await db.execute(sql`
 		UPDATE resource_derivations SET status = 'done', retry_at = NULL, error = NULL, updated_at = NOW()
 		WHERE resource_id = ${resourceId}::uuid AND kind = 'translation' AND lang = ${lang} AND input_hash = ${textHash}

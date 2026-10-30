@@ -233,20 +233,21 @@ export async function stageQuality(
 		});
 }
 
-async function stageAcquired(env: CoreEnv, step: WorkflowStep, input: AcquisitionInput, processingId: string) {
-	if (input.kind === 'url') return stageUrlAcquisition(env, step, { ...input, processingId });
-	const { contentHash, fileName } = input.pdf;
-	const document = await stagePdfDocument(env, step, {
-		url: null,
-		fileName,
-		inputContentHash: contentHash,
-		sourceLabel: `Stored PDF ${input.objectId}`,
-	});
-	return stageDocument(env, step, document, processingId);
-}
-
 export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep, input: AcquisitionInput, processingId: string) {
-	const resource = await stageAcquired(env, step, input, processingId);
+	const resource =
+		input.kind === 'url'
+			? await stageUrlAcquisition(env, step, { ...input, processingId })
+			: await stageDocument(
+					env,
+					step,
+					await stagePdfDocument(env, step, {
+						url: null,
+						fileName: input.pdf.fileName,
+						inputContentHash: input.pdf.contentHash,
+						sourceLabel: `Stored PDF ${input.objectId}`,
+					}),
+					processingId,
+				);
 	const originalLang = await stageLanguage(env, step, resource, processingId);
 	return normalizeAcquiredResource(resource, originalLang, input.kind === 'url' ? input.sourceHints : undefined);
 }

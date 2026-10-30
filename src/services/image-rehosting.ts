@@ -6,8 +6,7 @@ import type { Image, Nodes } from 'mdast';
 import pLimit from 'p-limit';
 import type { HostedResourceImage, ResourceImageSources } from '../contracts/image-mapping';
 import { parseMarkdown } from '../contracts/markdown';
-import { crawlerUserAgent } from './response';
-import { errorMessage, limitByteStream, responseError } from './response';
+import { crawlerUserAgent, errorMessage, fetchOk, limitByteStream } from './response';
 
 const REHOST_TIMEOUT_MS = 8_000;
 // Hosted Images rejects larger uploads.
@@ -23,23 +22,13 @@ const HOSTED_RESOURCE_IMAGE_PATTERN = /^https:\/\/imagedelivery\.net\/[a-zA-Z0-9
 type ImageDimensions = Readonly<Pick<HostedResourceImage, 'height' | 'width'>>;
 
 async function fetchImageSource(sourceUrl: string): Promise<ArrayBuffer> {
-	let response: Response;
-	try {
-		response = await fetch(sourceUrl, {
-			headers: { Accept: 'image/*', 'User-Agent': SOURCE_USER_AGENT },
-			signal: AbortSignal.timeout(REHOST_TIMEOUT_MS),
-		});
-	} catch (error) {
-		throw new Error(`fetch_error: ${errorMessage(error)}`);
-	}
-	// A gone or refused image stays gone; only a timeout or rate limit is worth another try.
-	if (!response.ok) {
-		throw await responseError(
-			response,
-			(status) => status >= 400 && status < 500 && status !== 408 && status !== 429,
-			`upstream_status: HTTP ${response.status}`,
-		);
-	}
+	const response = await fetchOk(sourceUrl, {
+		label: 'Image fetch',
+		timeoutMs: REHOST_TIMEOUT_MS,
+		// A gone or refused image stays gone; only a timeout or rate limit is worth another try.
+		permanent: (status) => status >= 400 && status < 500 && status !== 408 && status !== 429,
+		headers: { Accept: 'image/*', 'User-Agent': SOURCE_USER_AGENT },
+	});
 	const contentType = response.headers.get('content-type')?.toLowerCase();
 	if (contentType && !contentType.startsWith('image/')) {
 		await response.body?.cancel();

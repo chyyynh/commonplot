@@ -6,12 +6,13 @@ import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloud
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import { z } from 'zod';
 import { CONTENT_TRANSLATION_LANGS, type ContentTranslationLang } from '../contracts/languages';
-import { coreExports } from '../exports.ts';
+import { coreExports, workflowStatus } from '../exports.ts';
 import { errorMessage } from '../services/response';
 import { failureReason, translateMarkdown } from '../services/translation';
 import { STORAGE_STEP, stepJson } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import {
+	failDerivation,
 	isTranslatable,
 	loadImportDerivationStates,
 	loadResourceTranslationInput,
@@ -42,15 +43,11 @@ function translationInstanceId(resourceId: string, textHash: string, lang: Conte
 }
 
 async function translationExecution(id: string) {
-	let snapshot: Awaited<ReturnType<WorkflowInstance['status']>>;
-	try {
-		snapshot = await (await coreExports.ResourceTranslationV2Workflow.get(id)).status();
-	} catch {
-		// Missing, expired, or an unavailable control plane: createBatch recovers this exact ID either way.
-		return 'absent' as const;
-	}
-	if (snapshot.status === 'errored' || snapshot.status === 'terminated') return 'rerun' as const;
-	return snapshot.status === 'complete' ? ('done' as const) : ('live' as const);
+	const status = await workflowStatus(coreExports.ResourceTranslationV2Workflow, id);
+	// An absent one, even one the control plane only failed to find, is recovered by createBatch under this exact ID.
+	if (status === 'absent') return status;
+	if (status === 'errored' || status === 'terminated') return 'rerun' as const;
+	return status === 'complete' ? ('done' as const) : ('live' as const);
 }
 
 /** What an import shows for its derivations: running while a card or translation is open or one is live, failed once one failed. */
@@ -112,7 +109,7 @@ export async function contentTranslationStatus(
 /** The sweep's retry of a translation that came due; a live one keeps running, and a gone one settles its row. */
 export async function resumeTranslation(db: NodePgDatabase, resourceId: string, textHash: string, lang: ContentTranslationLang) {
 	const candidate = await loadTranslationCandidate(db, resourceId, lang);
-	if (candidate?.textHash !== textHash) return settleOpenTranslation(db, resourceId, textHash, lang, null);
+	if (candidate?.textHash !== textHash) return settleOpenTranslation(db, resourceId, textHash, lang);
 	const enqueued = await enqueueResourceTranslation(candidate, lang, false);
 	// Every run now settles its row, so one that completed with it open predates it: it runs again.
 	if (enqueued?.execution === 'done') await (await coreExports.ResourceTranslationV2Workflow.get(enqueued.id)).restart();
@@ -172,7 +169,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 				lang,
 			});
 			await step.do(`fail-open-translation-${lang.toLowerCase()}-v2`, STORAGE_STEP, () =>
-				withCoreDb(this.env, (db) => settleOpenTranslation(db, resourceId, textHash, lang, failureReason(error))),
+				withCoreDb(this.env, (db) => failDerivation(db, resourceId, { kind: 'translation', lang }, textHash, failureReason(error))),
 			);
 			throw error;
 		}
@@ -191,7 +188,7 @@ export class ResourceTranslationV2Workflow extends WorkflowEntrypoint<CoreEnv, R
 	/** Whatever this run left of its translation has nothing more coming from it. */
 	private async settle<T>(step: WorkflowStep, resourceId: string, textHash: string, lang: ContentTranslationLang, result: T): Promise<T> {
 		await step.do(`settle-open-translation-${lang.toLowerCase()}-v2`, STORAGE_STEP, () =>
-			withCoreDb(this.env, (db) => settleOpenTranslation(db, resourceId, textHash, lang, null)),
+			withCoreDb(this.env, (db) => settleOpenTranslation(db, resourceId, textHash, lang)),
 		);
 		return result;
 	}

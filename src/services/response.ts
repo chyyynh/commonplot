@@ -71,3 +71,8 @@ export async function fetchOk(url: string | URL, { label, timeoutMs, permanent =
 export function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
+
+/** A thrown value's message led by its error name, so a stored failure says what kind it was. */
+export function namedErrorMessage(error: unknown): string {
+	return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}

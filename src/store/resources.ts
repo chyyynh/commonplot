@@ -14,7 +14,6 @@ import { type Derivation, replaceResourceEntities, requireDerivations, requiredT
 import { kindWhere, READABLE_ORIGINAL_SQL } from './kind-sql';
 import { fulfillRequests } from './requests';
 
-/** A normalized resource whose images are already Hosted Images URLs. */
 /** What persistence writes: the normalized Resource, its hosted images, and its quality score (null when not judged). */
 type HostedResource = NormalizedResource & HostedPreview & Readonly<{ qualityScore: number | null }>;
 

@@ -10,7 +10,7 @@ import { READABLE_ORIGINAL_SQL } from './kind-sql';
  * id, which is the UUID in Web's handle for it, and records who asked, where Web files it, and what the inbox shows.
  * Web saves the Resource and reads the import's progress from this row.
  */
-export type Requester =
+type Requester =
 	| Readonly<{ requester: 'monitor'; monitorId: string }>
 	| Readonly<{ requester: 'subject'; parentResourceId: string; parentTextHash: string }>
 	| Readonly<{ requester: 'user'; id: string; userId: string; notebookId: string | null; label: string }>

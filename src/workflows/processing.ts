@@ -1,13 +1,13 @@
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from 'cloudflare:workers';
 import { stageQuality, stageResourceAcquisition } from '../adapters/acquire';
-import type { AcquisitionInput, StoredPdf } from '../contracts/acquired-resource';
+import type { AcquisitionInput } from '../contracts/acquired-resource';
 import { resourceImageSources, withHostedImages } from '../contracts/image-mapping';
 import { CONTENT_TRANSLATION_LANGS } from '../contracts/languages';
 import { ResourceProcessingTargetSchema, type ResourceProcessingTarget } from '../contracts/processing-target';
 import { MONITOR_QUALITY_MIN } from '../contracts/quality';
 import { blobKey } from '../contracts/storage-keys';
 import { stageResourceImages } from '../services/image-rehosting';
-import { errorMessage } from '../services/response';
+import { errorMessage, namedErrorMessage } from '../services/response';
 import { STORAGE_STEP, timedStep } from '../services/workflow-step';
 import { withCoreDb } from '../store/db';
 import { loadTranslationCandidate } from '../store/derivations';
@@ -63,7 +63,7 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			return output;
 		} catch (error) {
 			// Every request waiting on this acquisition settles with it, so none waits for a workflow that ended.
-			const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+			const message = namedErrorMessage(error);
 			await step.do('fail-resource-requests-v1', STORAGE_STEP, () =>
 				withCoreDb(this.env, (db) => failRequests(db, target.requestId, message)),
 			);
@@ -78,23 +78,37 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 		step: WorkflowStep,
 		run: IngestRun,
 	): Promise<ResourceProcessingOutput> {
-		let upload: StoredPdf | null | undefined;
-		if (target.kind === 'storedBlob') {
-			// Web owns the upload: it confirms this attempt and describes the bytes. Core only rechecks, when it commits, that the object is still ready.
-			upload = await step.do('start-owned-pdf-attempt-v2', async () => {
-				const verified = await this.env.APP.verifyStoredBlobProcessing(target.objectId, instanceId);
-				return verified && { contentHash: verified.contentHash, fileName: verified.fileName };
-			});
-			if (!upload) {
-				// A newer attempt of the same upload, or one Web gave up on, waits behind this lead or retries on its own.
-				await step.do('supersede-upload-request-v1', STORAGE_STEP, () =>
-					withCoreDb(this.env, (db) => failRequests(db, target.requestId, 'Superseded by a newer upload attempt', true)),
+		// Read the stored side of a reacquisition here, so adapters never touch the database; Web describes the upload.
+		let input: AcquisitionInput;
+		switch (target.kind) {
+			case 'draft':
+				input = { kind: 'url', url: target.url, ...(target.sourceHints ? { sourceHints: target.sourceHints } : {}) };
+				break;
+			case 'reacquire': {
+				const source = await step.do('load-resource-reacquisition-source-v3', STORAGE_STEP, async () =>
+					withCoreDb(this.env, (db) => loadReacquisitionSource(db, target.resourceId)),
 				);
-				return { outcome: 'superseded' };
+				input = { kind: 'url', ...source };
+				break;
+			}
+			case 'storedBlob': {
+				// Web owns the upload: it confirms this attempt and describes the bytes. Core only rechecks, when it commits, that the object is still ready.
+				const upload = await step.do('start-owned-pdf-attempt-v2', async () => {
+					const verified = await this.env.APP.verifyStoredBlobProcessing(target.objectId, instanceId);
+					return verified && { contentHash: verified.contentHash, fileName: verified.fileName };
+				});
+				if (!upload) {
+					// A newer attempt of the same upload, or one Web gave up on, waits behind this lead or retries on its own.
+					await step.do('supersede-upload-request-v1', STORAGE_STEP, () =>
+						withCoreDb(this.env, (db) => failRequests(db, target.requestId, 'Superseded by a newer upload attempt', true)),
+					);
+					return { outcome: 'superseded' };
+				}
+				input = { kind: 'storedPdf', objectId: target.objectId, pdf: upload };
 			}
 		}
 		// An uploaded PDF identified as a paper publishes that paper, read from the upload.
-		const resource = await stageResourceAcquisition(this.env, step, await loadAcquisitionInput(this.env, step, target, upload), instanceId);
+		const resource = await stageResourceAcquisition(this.env, step, input, instanceId);
 		// Only a monitor's entry is judged: whoever else asked chose it already.
 		const quality = target.requester === 'monitor' ? await stageQuality(this.env, step, resource, instanceId) : null;
 		Object.assign(run, {
@@ -110,9 +124,24 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 			);
 			if (rejected) return { outcome: 'rejected', quality };
 		}
-		const persistenceTarget = await planAttempt(target, resource.kind === 'paper', (resourceId) =>
-			step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () => withCoreDb(this.env, (db) => claimAcquisitionFence(db, resourceId))),
-		);
+		// Where this attempt writes. Reacquiring an existing Resource claims a fencing token, so it commits only if no newer
+		// attempt has committed first. An upload runs one attempt at a time: an identified one is a draft of its public paper,
+		// and any other stays the uploader's private file.
+		const persistenceTarget: ResourcePersistenceTarget =
+			target.kind === 'draft'
+				? { kind: 'draft' }
+				: target.kind === 'reacquire'
+					? {
+							kind: 'existing',
+							resourceId: target.resourceId,
+							fence: await step.do('claim-acquisition-fence-v1', STORAGE_STEP, async () =>
+								withCoreDb(this.env, (db) => claimAcquisitionFence(db, target.resourceId)),
+							),
+							...(target.force ? { force: true } : {}),
+						}
+					: resource.kind === 'paper'
+						? { kind: 'draft', uploadId: target.objectId }
+						: { kind: 'upload', objectId: target.objectId };
 
 		console.info({
 			tag: 'WORKFLOW',
@@ -221,52 +250,5 @@ export class ResourceProcessingV2Workflow extends WorkflowEntrypoint<CoreEnv, Re
 
 		console.info({ tag: 'WORKFLOW', msg: 'Completed', resource_id: resourceId, target_kind: target.kind });
 		return { outcome: 'ready', resourceId, textHash };
-	}
-}
-
-/** Read the stored side of a reacquisition here, so adapters never touch the database; Web described the upload. */
-async function loadAcquisitionInput(
-	env: CoreEnv,
-	step: WorkflowStep,
-	target: ResourceProcessingTarget,
-	upload: StoredPdf | null | undefined,
-): Promise<AcquisitionInput> {
-	switch (target.kind) {
-		case 'draft':
-			return { kind: 'url', url: target.url, ...(target.sourceHints ? { sourceHints: target.sourceHints } : {}) };
-		case 'reacquire': {
-			const source = await step.do('load-resource-reacquisition-source-v3', STORAGE_STEP, async () =>
-				withCoreDb(env, (db) => loadReacquisitionSource(db, target.resourceId)),
-			);
-			return { kind: 'url', ...source };
-		}
-		case 'storedBlob':
-			if (!upload) throw new Error('A stored PDF attempt starts with its verified upload');
-			return { kind: 'storedPdf', objectId: target.objectId, pdf: upload };
-	}
-}
-
-/**
- * Where this attempt writes. Reacquiring an existing Resource claims a fencing token, so it commits only if no newer attempt
- * has committed first. An upload runs one attempt at a time: an identified one is a draft of its public paper, and any other
- * stays the uploader's private file.
- */
-async function planAttempt(
-	target: ResourceProcessingTarget,
-	uploadedPaper: boolean,
-	claimFence: (resourceId: string) => Promise<number>,
-): Promise<ResourcePersistenceTarget> {
-	switch (target.kind) {
-		case 'draft':
-			return { kind: 'draft' };
-		case 'reacquire':
-			return {
-				kind: 'existing',
-				resourceId: target.resourceId,
-				fence: await claimFence(target.resourceId),
-				...(target.force ? { force: true } : {}),
-			};
-		case 'storedBlob':
-			return uploadedPaper ? { kind: 'draft', uploadId: target.objectId } : { kind: 'upload', objectId: target.objectId };
 	}
 }

@@ -5,7 +5,14 @@ import { SUMMARY_LANGS } from '../contracts/languages';
 import { type ResourceKind, resourceKindsWhere } from '../contracts/resource-kinds';
 import { withCoreDb } from '../store/db';
 import { kindWhere } from '../store/kind-sql';
-import { type CorpusHit, documentVectorId, queryCorpusVectors, readDocumentVectors, type SearchPassage } from './corpus-vectors';
+import {
+	type CorpusHit,
+	documentVectorId,
+	queryCorpusVectors,
+	readDocumentVectors,
+	type SearchPassage,
+	syncCorpusVectors,
+} from './corpus-vectors';
 
 // Postgres is canonical; CORPUS_VECTORS is its derived public-corpus index.
 /** Past MAX_CHUNKS of English prose; CJK text fills them sooner. */
@@ -59,7 +66,7 @@ export type SearchDocument = {
 	translations: CorpusTranslationRow[];
 };
 
-export async function loadSearchDocuments(db: NodePgDatabase, resourceIds: readonly string[]): Promise<SearchDocument[]> {
+async function loadSearchDocuments(db: NodePgDatabase, resourceIds: readonly string[]): Promise<SearchDocument[]> {
 	if (!resourceIds.length) return [];
 	const result = await db.execute<SearchDocument>(sql`
 		SELECT r.id::text,
@@ -103,6 +110,26 @@ export async function loadSearchDocuments(db: NodePgDatabase, resourceIds: reado
 }
 
 /**
+ * Writes these Resources' vectors, deleting those no longer searchable, and returns how many were written and the
+ * ids whose snapshot changed meanwhile: another writer may have been first, so those must be synced again.
+ */
+export async function syncSearchDocuments(
+	env: CoreEnv,
+	db: NodePgDatabase,
+	resourceIds: readonly string[],
+): Promise<{ written: number; changed: string[] }> {
+	const documents = new Map((await loadSearchDocuments(db, resourceIds)).map((document) => [document.id, document]));
+	await syncCorpusVectors(
+		env,
+		[...documents.values()],
+		resourceIds.filter((id) => !documents.has(id)),
+	);
+	const current = new Map((await loadSearchDocuments(db, resourceIds)).map((document) => [document.id, document]));
+	const changed = resourceIds.filter((id) => JSON.stringify(current.get(id)) !== JSON.stringify(documents.get(id)));
+	return { written: documents.size, changed };
+}
+
+/**
  * Carriers give way to the Resource they discuss when it is itself searchable and of an allowed
  * kind, so each subject appears once, at its best-ranked position.
  */
@@ -132,23 +159,18 @@ async function collapseCarriers(env: CoreEnv, hits: CorpusHit[], kinds?: readonl
 	return [...collapsed.values()];
 }
 
-/** Ranked corpus hits, each with its best-matching passages. */
-async function searchCorpus(env: CoreEnv, input: PublicResourceSearchInput) {
+/** Ranked candidates with up to three matched passages each; Web authoritatively filters and hydrates them from Postgres. */
+export async function searchPublicResources(
+	env: CoreEnv,
+	input: PublicResourceSearchInput,
+): Promise<Array<{ id: string; passages: SearchPassage[] }>> {
 	const { query, limit, filters } = PublicResourceSearchInputSchema.parse(input);
 	const kinds = filters?.kinds && [...new Set(filters.kinds)];
 	// An explicit empty selection matches nothing; missing kinds match everything.
 	if (!query || kinds?.length === 0) return [];
 	const kindFilter = kinds && kinds.length < SearchableResourceKindSchema.options.length ? kinds : undefined;
 	const hits = await queryCorpusVectors(env, query, { kinds: kindFilter, publishedAfter: filters?.publishedAfter });
-	return (await collapseCarriers(env, hits, kindFilter)).slice(0, limit);
-}
-
-/** Ranked candidates with up to three matched passages each; Web authoritatively filters and hydrates them from Postgres. */
-export async function searchPublicResources(
-	env: CoreEnv,
-	input: PublicResourceSearchInput,
-): Promise<Array<{ id: string; passages: SearchPassage[] }>> {
-	return (await searchCorpus(env, input)).map(({ id, passages }) => ({ id, passages }));
+	return (await collapseCarriers(env, hits, kindFilter)).slice(0, limit).map(({ id, passages }) => ({ id, passages }));
 }
 
 /** Matches asked of Vectorize, the Resource itself among them. */
