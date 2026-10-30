@@ -1,3 +1,4 @@
+import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import pLimit from 'p-limit';
 import { z } from 'zod';
 import { cleanText } from '../contracts/markdown';
@@ -5,6 +6,14 @@ import { entityKey, type ResourceEntity } from '../contracts/resource';
 import { type EntityType } from '../contracts/resource-kinds';
 import { withCoreDb } from '../store/db';
 import { type DerivationSource, type EntityCandidate, listEntityCandidates, listHandleEntities } from '../store/derivations';
+import {
+	claimUnmatchedAccounts,
+	listJudgedEntities,
+	mergeEntities,
+	recordDistinct,
+	releaseEntity,
+	type UnmatchedAccount,
+} from '../store/entities';
 import { coreGatewayOptions, type GatewayMetadata } from './ai-model';
 
 const FASTINO_URL = 'https://api.fastino.ai/v1/chat/completions';
@@ -15,7 +24,7 @@ const ENTITY_TEXT_MAX_LENGTH = 20_000;
 const NER_CHUNK_LENGTH = 1_500;
 const NER_CONCURRENCY = 4;
 const LEAD_LENGTH = 400;
-const MAX_CANDIDATES = 6;
+const MAX_CANDIDATES = 10;
 /** Questions per Jev call; one of them asks what the text is about. */
 const MAX_LINK_QUESTIONS = 63;
 const MAX_SUBJECT_OPTIONS = 10;
@@ -154,27 +163,38 @@ function collectSpans(chunks: readonly FoundNames[]) {
 	return spans;
 }
 
+/** Each candidate once, at its best score: most alike first, then most used. */
+function rankCandidates(found: Iterable<EntityCandidate>) {
+	const best = new Map<string, EntityCandidate>();
+	for (const candidate of found) if (candidate.score > (best.get(candidate.id)?.score ?? 0)) best.set(candidate.id, candidate);
+	return [...best.values()].sort((a, b) => b.score - a.score || b.uses - a.uses);
+}
+
 /**
- * Stored entities each name may be, most used first, and whether the text opens with it. An @handle of a known X
+ * Stored entities each name may be, most alike first, and whether the text opens with it. An @handle of a known X
  * account is that account's entity, with nothing left to ask.
  */
 async function attachCandidates(spans: Map<string, Span>, text: string, env: CoreEnv) {
 	const lead = text.slice(0, LEAD_LENGTH).toLowerCase();
 	const handles = [...spans].filter(([, span]) => span.handle).map(([key]) => key);
+	const keys = [...new Set([...spans.keys()].flatMap(lookupKeys))];
+	const names = [...new Set([...spans.values()].map(({ text }) => text.toLowerCase()))];
 	const [stored, accounts] = await withCoreDb(env, (db) =>
-		Promise.all([listEntityCandidates(db, [...new Set([...spans.keys()].flatMap(lookupKeys))]), listHandleEntities(db, handles)]),
+		Promise.all([listEntityCandidates(db, keys, names), listHandleEntities(db, handles)]),
 	);
 	for (const account of accounts) {
 		const span = spans.get(account.handle);
 		if (span) span.entity = { name: account.name, type: account.type, key: account.key };
 	}
 	for (const [key, span] of spans) {
-		const keys = new Set(lookupKeys(key));
-		let found = stored.filter((candidate) => keys.has(candidate.bare) && LINKABLE_TYPES[span.type].includes(candidate.type));
+		const queries = new Set([...lookupKeys(key), span.text.toLowerCase()]);
+		let found = rankCandidates(
+			stored.filter((candidate) => queries.has(candidate.query) && LINKABLE_TYPES[span.type].includes(candidate.type)),
+		);
 		// Single-use variants are noise once a name has several candidates.
 		if (found.some(({ uses }) => uses >= 2)) found = found.filter(({ uses }) => uses >= 2);
 		span.lead = lead.includes(key);
-		span.candidates = found.sort((a, b) => b.uses - a.uses).slice(0, MAX_CANDIDATES);
+		span.candidates = found.slice(0, MAX_CANDIDATES);
 	}
 }
 
@@ -199,11 +219,14 @@ export async function askJev(env: CoreEnv, metadata: GatewayMetadata, state: str
 	return result;
 }
 
+/** One stored candidate as Jev reads it among the choices. */
+const candidateCriterion = ({ name, type, example }: EntityCandidate) => `${name}, a ${type}${example ? `, as in "${example}"` : ''}`;
+
 /** The question that settles a name: which stored candidate it is, or whether a new one is a proper name. */
 function linkQuestion(span: Span): JevQuestion | null {
 	if (span.candidates.length) {
 		const criteria: Record<string, string> = Object.fromEntries(
-			span.candidates.map(({ name, type, example }, index) => [`c${index}`, `${name}, a ${type}${example ? `, as in "${example}"` : ''}`]),
+			span.candidates.map((candidate, index) => [`c${index}`, candidateCriterion(candidate)]),
 		);
 		criteria.none = `None of these, or "${span.text}" is not a specific named thing here`;
 		return { type: 'choice', instructions: `Which of these does "${span.text}" in the text refer to?`, criteria };
@@ -253,7 +276,7 @@ async function settleSpans(spans: Iterable<Span>, text: string, env: CoreEnv, pr
 		if (answer && 'choice' in answer && answer.choice !== 'none') {
 			const picked = span.candidates[Number(answer.choice.slice(1))];
 			if (picked && (answer.probabilities[answer.choice] ?? 0) >= CANDIDATE_CONFIDENCE)
-				span.entity = { name: picked.name, type: picked.type };
+				span.entity = { name: picked.name, type: picked.type, key: picked.key };
 		} else if (answer && 'noul' in answer && answer.noul >= NEW_ENTITY_CONFIDENCE) span.entity = { name: span.text, type: span.type };
 	}
 	const subject = result.answers.subject;
@@ -266,12 +289,13 @@ async function settleSpans(spans: Iterable<Span>, text: string, env: CoreEnv, pr
  * the authors (`credited`) are kept only when the text is about them, as a company's blog is about its own models.
  */
 function weighEntities(spans: Iterable<Span>, credited: readonly string[]): ResourceEntity[] {
-	const entities = new Map<string, { name: string; type: EntityType; weight: number; key?: string }>();
+	const entities = new Map<string, { name: string; type: EntityType; weight: number; key?: string; names: string[] }>();
 	for (const span of spans) {
 		if (!span.entity) continue;
 		const key = span.entity.key ?? entityKey(span.entity.name);
-		const entity = entities.get(key) ?? { ...span.entity, weight: 0 };
+		const entity = entities.get(key) ?? { ...span.entity, weight: 0, names: [] };
 		entity.weight = Math.min(1, entity.weight + span.subject);
+		entity.names.push(span.text);
 		entities.set(key, entity);
 	}
 	const creditedKeys = new Set(credited.map(entityKey));
@@ -284,7 +308,7 @@ function weighEntities(spans: Iterable<Span>, credited: readonly string[]): Reso
 
 /**
  * Relates corpus originals through the named things they share. GLiNER finds the names, stored entities
- * of the same name are the candidates, and one Jev call picks the candidate each ambiguous name is,
+ * written with the same or a similar name are the candidates, and one Jev call picks the candidate each name is,
  * tells a new name from a generic term, and weighs what the text is mainly about.
  */
 export async function extractResourceEntities(
@@ -313,4 +337,80 @@ export async function extractResourceEntities(
 		entities: entities.length,
 	});
 	return entities;
+}
+
+/** Accounts matched in one sweep. */
+const ACCOUNT_MATCH_BATCH = 20;
+
+const ACCOUNT_KINDS: Record<UnmatchedAccount['scheme'], string> = {
+	twitter: 'An X account',
+	youtube: 'A YouTube channel',
+	hackernews: 'A Hacker News user',
+	lesswrong: 'A LessWrong user',
+	web: 'A website',
+};
+
+function describeAccount({ scheme, value, name, handle, titles }: UnmatchedAccount) {
+	const lines = [`${ACCOUNT_KINDS[scheme]} named "${name}"${handle ? ` (@${handle})` : ''}${scheme === 'web' ? ` at ${value}` : ''}.`];
+	if (titles.length) lines.push('Its latest posts:', ...titles.map((title) => `- ${title}`));
+	return lines.join('\n');
+}
+
+/**
+ * One account's entity against the stored entities with a name like the account's: Jev picks the one the account is,
+ * which the account's entity merges into, or answers none, which is recorded so the pairs are never asked again.
+ */
+async function matchAccount(env: CoreEnv, db: NodePgDatabase, account: UnmatchedAccount) {
+	const names = [account.name, account.handle ?? ''].filter(Boolean);
+	const judged = await listJudgedEntities(db, account.id);
+	const found = await listEntityCandidates(
+		db,
+		names.map(entityKey).filter(Boolean),
+		names.map((name) => name.toLowerCase()),
+	);
+	const candidates = rankCandidates(found)
+		.filter(({ id }) => id !== account.id && !judged.has(id))
+		.slice(0, MAX_CANDIDATES);
+	if (!candidates.length) return null;
+	const criteria: Record<string, string> = Object.fromEntries(
+		candidates.map((candidate, index) => [`c${index}`, candidateCriterion(candidate)]),
+	);
+	criteria.none = 'None of these, or not sure';
+	const { answers } = await askJev(env, { feature: 'entity-matching', processing_id: account.id }, describeAccount(account), {
+		account: {
+			type: 'choice',
+			instructions:
+				'Which of these is the same real-world person, organization or thing as this account? Something related but different, such as a product of a company or a company of its founder, is not the same.',
+			criteria,
+		},
+	});
+	const answer = answers.account;
+	if (!answer || !('choice' in answer)) return null;
+	if (answer.choice === 'none') {
+		await recordDistinct(
+			db,
+			account.id,
+			candidates.map(({ id }) => id),
+		);
+		return null;
+	}
+	const picked = candidates[Number(answer.choice.slice(1))];
+	if (!picked || (answer.probabilities[answer.choice] ?? 0) < CANDIDATE_CONFIDENCE) return null;
+	await mergeEntities(db, account.id, picked.id);
+	return picked.key;
+}
+
+/** Matches the entities accounts became against the others, a batch a sweep; a failed one waits for the next sweep. */
+export async function matchAccountEntities(env: CoreEnv, db: NodePgDatabase) {
+	const accounts = await claimUnmatchedAccounts(db, ACCOUNT_MATCH_BATCH);
+	let merged = 0;
+	for (const account of accounts) {
+		try {
+			if (await matchAccount(env, db, account)) merged++;
+		} catch (error) {
+			await releaseEntity(db, account.id);
+			console.warn({ tag: 'AI', event: 'entity_match_failed', entity_id: account.id, error: String(error) });
+		}
+	}
+	if (accounts.length) console.info({ tag: 'AI', event: 'entities_matched', accounts: accounts.length, merged });
 }

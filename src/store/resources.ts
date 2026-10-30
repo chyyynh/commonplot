@@ -4,7 +4,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { HostedPreview } from '../contracts/image-mapping';
 import { SUMMARY_LANGS } from '../contracts/languages';
 import type { NormalizedResource } from '../contracts/normalize-resource';
-import { ResourceIdentifiersSchema } from '../contracts/resource';
+import { entityKey, ResourceIdentifiersSchema } from '../contracts/resource';
 import { creatorName, type EntityKeyProfile, type ResourceKind, type ResourcePlatform, RESOURCE_KINDS } from '../contracts/resource-kinds';
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
@@ -121,8 +121,8 @@ async function lockResourceIfAny(db: NodePgDatabase, resourceId: string): Promis
  */
 /**
  * Writes a Resource's byline. An account seen for the first time becomes an entity of its own, keyed
- * `<platform>:<id>` and taken for a person until it is merged with an extracted entity; a known one keeps its
- * entity and takes the newest profile.
+ * `<platform>:<id>`, named by its name and handle, and taken for a person until the account matching merges it into
+ * the entity it is; a known one keeps its entity and takes the newest profile.
  */
 async function writeResourceCreators(db: NodePgDatabase, resourceId: string, creators: NormalizedResource['creators'], existing: boolean) {
 	if (existing) await db.execute(sql`DELETE FROM resource_creators WHERE resource_id = ${resourceId}::uuid`);
@@ -134,6 +134,9 @@ async function writeResourceCreators(db: NodePgDatabase, resourceId: string, cre
 			position,
 			role: creator.role,
 			name: creatorName(creator),
+			names: [creatorName(creator), handle ?? '']
+				.map((name) => ({ key: entityKey(name), name: name.toLowerCase() }))
+				.filter(({ key }) => key),
 			scheme: creator.account?.platform ?? null,
 			value: creator.account?.id ?? null,
 			profile,
@@ -142,19 +145,26 @@ async function writeResourceCreators(db: NodePgDatabase, resourceId: string, cre
 	await db.execute(sql`
 		WITH incoming AS (
 			SELECT * FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS creator(
-				position integer, role text, name text, scheme text, value text, profile jsonb
+				position integer, role text, name text, names jsonb, scheme text, value text, profile jsonb
 			)
 		), account AS (
-			SELECT DISTINCT ON (scheme, value) scheme, value, name, profile
+			SELECT DISTINCT ON (scheme, value) scheme, value, name, names, profile
 			FROM incoming WHERE scheme IS NOT NULL
 			ORDER BY scheme, value, position
 		), created AS (
-			INSERT INTO entities (key, name, type)
-			SELECT account.scheme || ':' || account.value, account.name, 'person'
+			INSERT INTO entities (key, name, type, matched_at)
+			SELECT account.scheme || ':' || account.value, account.name, 'person', NULL
 			FROM account
 			WHERE NOT EXISTS (SELECT 1 FROM entity_keys known WHERE known.scheme = account.scheme AND known.value = account.value)
 			ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key
 			RETURNING id, key
+		), named AS (
+			INSERT INTO entity_names (key, entity_id, name)
+			SELECT DISTINCT ON (written.key, created.id) written.key, created.id, written.name
+			FROM account JOIN created ON created.key = account.scheme || ':' || account.value
+			CROSS JOIN jsonb_to_recordset(account.names) AS written(key text, name text)
+			ORDER BY written.key, created.id
+			ON CONFLICT DO NOTHING
 		), stored AS (
 			INSERT INTO entity_keys AS stored (scheme, value, entity_id, profile)
 			SELECT account.scheme, account.value, COALESCE(known.entity_id, created.id), account.profile

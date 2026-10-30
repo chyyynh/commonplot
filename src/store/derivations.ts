@@ -167,28 +167,42 @@ export async function loadDerivationSource(db: NodePgDatabase, resourceId: strin
 	return rows[0] ?? null;
 }
 
-/** Replaces what a Resource is about. Run inside the caller's transaction. */
+/**
+ * Replaces what a Resource is about, and records each name the text used for each entity. A name stored for an entity
+ * since merged links to the entity it became. Run inside the caller's transaction.
+ */
 export async function replaceResourceEntities(db: NodePgDatabase, resourceId: string, entities: readonly ResourceEntity[]) {
 	await db.execute(sql`DELETE FROM resource_entities WHERE resource_id = ${resourceId}::uuid`);
 	if (!entities.length) return;
 	// Sorted keys lock entity rows in one order across concurrent writers.
 	const rows = entities
-		.map((entity) => ({ ...entity, key: entity.key ?? entityKey(entity.name) }))
+		.map(({ names, ...entity }) => ({
+			...entity,
+			key: entity.key ?? entityKey(entity.name),
+			names: names.map((name) => ({ key: entityKey(name), name: name.toLowerCase() })).filter(({ key }) => key),
+		}))
 		.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 	await db.execute(sql`
 		WITH incoming AS (
 			SELECT * FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb)
-			AS incoming(key text, name text, type text, weight real)
-		), entity AS (
+			AS incoming(key text, name text, type text, weight real, names jsonb)
+		), stored AS (
 			INSERT INTO entities (key, name, type)
 			SELECT DISTINCT ON (key) key, name, type FROM incoming ORDER BY key, weight DESC
 			ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key
-			RETURNING id, key
+			RETURNING COALESCE(merged_into, id) AS id, key
+		), linked AS (
+			INSERT INTO resource_entities (resource_id, entity_id, weight)
+			SELECT DISTINCT ON (stored.id) ${resourceId}::uuid, stored.id, incoming.weight
+			FROM incoming JOIN stored USING (key)
+			ORDER BY stored.id, incoming.weight DESC
 		)
-		INSERT INTO resource_entities (resource_id, entity_id, weight)
-		SELECT DISTINCT ON (entity.id) ${resourceId}::uuid, entity.id, incoming.weight
-		FROM incoming JOIN entity USING (key)
-		ORDER BY entity.id, incoming.weight DESC
+		INSERT INTO entity_names AS known (key, entity_id, name, uses)
+		SELECT DISTINCT ON (written.key, stored.id) written.key, stored.id, written.name, 1
+		FROM incoming JOIN stored USING (key)
+		CROSS JOIN jsonb_to_recordset(incoming.names) AS written(key text, name text)
+		ORDER BY written.key, stored.id
+		ON CONFLICT (key, entity_id) DO UPDATE SET uses = known.uses + 1
 	`);
 }
 
@@ -204,21 +218,45 @@ export async function listHandleEntities(db: NodePgDatabase, handles: readonly s
 }
 
 export type EntityCandidate = Readonly<{
-	/** The key without its maker qualifier, which a name in a text is looked up by. */
-	bare: string;
+	/** The name key or the name it was found by. */
+	query: string;
+	id: string;
+	key: string;
 	name: string;
 	type: EntityType;
+	/** How alike the name it was found by is to one of its names: 1 when the keys are the same. */
+	score: number;
 	/** How many Resources name it. */
 	uses: number;
 	/** The Resource most about it, so a reader can tell same-named entities apart. */
 	example: string | null;
 }>;
 
-/** Stored entities whose name, without a maker qualifier, has one of the keys. */
-export async function listEntityCandidates(db: NodePgDatabase, keys: readonly string[]): Promise<EntityCandidate[]> {
-	if (!keys.length) return [];
+/** How many stored names one name may find by trigrams, before the candidates are weighed. */
+const SIMILAR_NAMES = 30;
+
+/**
+ * Stored entities that may be the names: those written with one of the keys, and those with a name sharing enough
+ * trigrams with one of the lowercase names (`%`, pg_trgm's similarity of at least 0.3). Merged entities are never candidates.
+ */
+export async function listEntityCandidates(
+	db: NodePgDatabase,
+	keys: readonly string[],
+	names: readonly string[],
+): Promise<EntityCandidate[]> {
+	if (!keys.length && !names.length) return [];
 	const result = await db.execute<EntityCandidate>(sql`
-		SELECT split_part(e.key, '(', 1) AS bare, e.name, e.type,
+		WITH found AS (
+			SELECT key AS query, entity_id, 1::real AS score FROM entity_names WHERE key = ANY(${sql.param([...keys])}::text[])
+			UNION ALL
+			SELECT query.name, alike.entity_id, alike.score
+			FROM unnest(${sql.param([...names])}::text[]) AS query(name)
+			CROSS JOIN LATERAL (
+				SELECT entity_id, similarity(name, query.name) AS score FROM entity_names
+				WHERE name % query.name ORDER BY score DESC LIMIT ${SIMILAR_NAMES}
+			) alike
+		)
+		SELECT DISTINCT ON (found.query, e.id) found.query, e.id::text, e.key, e.name, e.type, found.score,
 		       (SELECT count(*)::int FROM resource_entities used WHERE used.entity_id = e.id) AS uses,
 		       (SELECT left(COALESCE(r.title, body.markdown), 120)
 		        FROM resource_entities top
@@ -226,8 +264,8 @@ export async function listEntityCandidates(db: NodePgDatabase, keys: readonly st
 		        LEFT JOIN resource_content body ON body.resource_id = r.id
 		        WHERE top.entity_id = e.id
 		        ORDER BY top.weight DESC LIMIT 1) AS example
-		FROM entities e
-		WHERE split_part(e.key, '(', 1) = ANY(${sql.param([...keys])}::text[])
+		FROM found JOIN entities e ON e.id = found.entity_id AND e.merged_into IS NULL
+		ORDER BY found.query, e.id, found.score DESC
 	`);
 	return result.rows;
 }
