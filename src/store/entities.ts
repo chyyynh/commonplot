@@ -1,4 +1,4 @@
-import { sql } from 'drizzle-orm';
+import { type SQL, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { EntityKeyScheme, EntityType } from '../contracts/resource-kinds';
 
@@ -52,17 +52,34 @@ export async function claimUnmatchedEntities(db: NodePgDatabase, limit: number):
 	return rows;
 }
 
-/** A product line: a product named at least this often whose name another product's name starts with. */
-const PRODUCT_LINE_MIN_USES = 5;
-
 /** Products this product's name starts with, as Claude Opus 4.5 starts with Claude, the shortest first. */
 export async function listProductLines(db: NodePgDatabase, id: string, name: string) {
+	// Dashes are compared as one, since GPT‑4.1 is written with a non-breaking hyphen.
+	const dashed = (value: SQL) => sql`translate(lower(${value}), '‐‑‒–—', '-----')`;
 	const { rows } = await db.execute<{ id: string; key: string; name: string }>(sql`
 		SELECT line.id::text, line.key, line.name FROM entities line
 		WHERE line.type = 'product' AND line.id <> ${id}::uuid
-			AND (starts_with(lower(${name}), lower(line.name) || ' ') OR starts_with(lower(${name}), lower(line.name) || '-'))
-			AND (SELECT count(*) FROM resource_entities used WHERE used.entity_id = line.id) >= ${PRODUCT_LINE_MIN_USES}
+			AND (starts_with(${dashed(sql`${name}`)}, ${dashed(sql`line.name`)} || ' ') OR starts_with(${dashed(sql`${name}`)}, ${dashed(sql`line.name`)} || '-'))
 		ORDER BY length(line.name) LIMIT 3
+	`);
+	return rows;
+}
+
+/** People named at least this often whose full name a one-word name is the first or last word of. */
+const FULL_NAME_MIN_USES = 3;
+
+/** People with a full name this one-word name begins or ends, as Joe Biden for Biden, the most named first. */
+export async function listFullNames(db: NodePgDatabase, id: string, name: string) {
+	const { rows } = await db.execute<{ id: string; key: string; name: string; uses: number }>(sql`
+		SELECT * FROM (
+			SELECT person.id::text, person.key, person.name,
+			       (SELECT count(*)::int FROM resource_entities used WHERE used.entity_id = person.id) AS uses
+			FROM entities person
+			WHERE person.type = 'person' AND person.id <> ${id}::uuid AND person.name ~ ' '
+				AND (lower(split_part(person.name, ' ', 1)) = lower(${name}) OR lower(regexp_replace(person.name, '^.* ', '')) = lower(${name}))
+		) full_name
+		WHERE uses >= ${FULL_NAME_MIN_USES}
+		ORDER BY uses DESC LIMIT 10
 	`);
 	return rows;
 }

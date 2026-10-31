@@ -9,6 +9,7 @@ import { type DerivationSource, type EntityCandidate, listEntityCandidates, list
 import {
 	claimUnmatchedEntities,
 	listJudgedEntities,
+	listFullNames,
 	listProductLines,
 	mergeEntities,
 	recordDistinct,
@@ -466,11 +467,36 @@ function productLineQuestions(name: string, lines: readonly { name: string }[]):
 }
 
 /**
+ * A person named by one word (Biden, Elon) against the people whose full name that word begins or ends: Jev reads what
+ * Resources say about them and picks the one meant, which the name merges into.
+ */
+async function matchFullName(env: CoreEnv, db: NodePgDatabase, entity: UnmatchedEntity) {
+	const people = await listFullNames(db, entity.id, entity.name);
+	if (!people.length) return 0;
+	const criteria: Record<string, string> = Object.fromEntries(people.map((person, index) => [`c${index}`, `${person.name}, a person`]));
+	criteria.none = 'None of these, different people in different texts, or not sure';
+	const { answers } = await askJev(env, { feature: 'entity-matching', processing_id: entity.id }, describeEntity(entity), {
+		who: { type: 'choice', instructions: `Which person is "${entity.name}" in these texts?`, criteria },
+	});
+	const answer = answers.who;
+	if (!answer || !('choice' in answer) || answer.choice === 'none') return 0;
+	const person = people[Number(answer.choice.slice(1))];
+	if (!person || (answer.probabilities[answer.choice] ?? 0) < MERGE_CONFIDENCE) return 0;
+	if (!(await mergeEntities(db, entity.id, person.id))) return 0;
+	console.info({ tag: 'AI', event: 'entity_merged', name: entity.name, into: person.key });
+	return 1;
+}
+
+/**
  * An entity Resources name against the stored entities named alike, one question each, since several may be it. Those
  * Jev is sure are the same merge into the most named of them, and the rest are recorded as different. A product that
  * is a version of a product line its name starts with (Claude Opus 4.5 of Claude) merges into that line instead.
  */
 async function matchNamedEntity(env: CoreEnv, db: NodePgDatabase, entity: UnmatchedEntity) {
+	if (entity.type === 'person' && !/\s/u.test(entity.name)) {
+		const merged = await matchFullName(env, db, entity);
+		if (merged) return merged;
+	}
 	const types = entity.type in LINKABLE_TYPES ? LINKABLE_TYPES[entity.type as NamedType] : [entity.type];
 	const [candidates, lines] = await Promise.all([
 		listMatchCandidates(db, entity, [entity.name, ...entity.names], types),
