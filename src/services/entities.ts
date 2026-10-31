@@ -349,6 +349,8 @@ const MATCH_BATCH = 300;
 const MATCH_CONCURRENCY = 4;
 /** How sure Jev must be before two entities merge, since a wrong merge moves Resources and followers. */
 const MERGE_CONFIDENCE = 0.8;
+/** Jev gives Claude or Llama about 0.7 as a product's name, and Pro, v4 or Studio under 0.4. */
+const PRODUCT_LINE_NAMED = 0.5;
 
 type UnmatchedAccount = UnmatchedEntity & { scheme: EntityKeyScheme; value: string };
 
@@ -492,7 +494,7 @@ async function matchNamedEntity(env: CoreEnv, db: NodePgDatabase, entity: Unmatc
 	const line = lines.find((_, index) => {
 		const answer = answers[`line${index}`];
 		const version = answer && 'probabilities' in answer ? (answer.probabilities.version ?? 0) : 0;
-		return version >= MERGE_CONFIDENCE && sure(`named${index}`) >= MERGE_CONFIDENCE;
+		return version >= MERGE_CONFIDENCE && sure(`named${index}`) >= PRODUCT_LINE_NAMED;
 	});
 	const same = candidates.filter((_, index) => sure(`c${index}`) >= MERGE_CONFIDENCE);
 	console.info({
