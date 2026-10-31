@@ -76,9 +76,12 @@ type Span = {
 
 const cleanName = (text: string) => cleanText(text.replace(/’/gu, "'").replace(/'s$/u, '').replace(/^@/u, ''));
 const spanKey = (text: string) => cleanName(text).toLowerCase();
-/** Keys a name may be stored under: as written, without a version, singular or plural. */
+/** A Korean particle after a name: 삼성전자는, 애플의. */
+const KOREAN_PARTICLE = /(?<=\p{Script=Hangul})(?:은|는|이|가|을|를|의|과|와|에|도|으로|로|에서)$/u;
+
+/** Keys a name may be stored under: as written, without a version or a Korean particle, singular or plural. */
 function lookupKeys(name: string) {
-	const names = [name, name.replace(/\s+v?\d+(?:\.\d+)*$/iu, '')];
+	const names = [name, name.replace(/\s+v?\d+(?:\.\d+)*$/iu, ''), name.replace(KOREAN_PARTICLE, '')];
 	const keys = names.map(entityKey).filter(Boolean);
 	return [...new Set(keys.flatMap((key) => [key, key.endsWith('s') ? key.slice(0, -1) : `${key}s`]))];
 }
