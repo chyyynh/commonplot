@@ -61,7 +61,6 @@ export async function listProductLines(db: NodePgDatabase, id: string, name: str
 		SELECT line.id::text, line.key, line.name FROM entities line
 		WHERE line.type = 'product' AND line.id <> ${id}::uuid
 			AND (starts_with(lower(${name}), lower(line.name) || ' ') OR starts_with(lower(${name}), lower(line.name) || '-'))
-			AND NOT EXISTS (SELECT 1 FROM entity_keys k WHERE k.entity_id = line.id)
 			AND (SELECT count(*) FROM resource_entities used WHERE used.entity_id = line.id) >= ${PRODUCT_LINE_MIN_USES}
 		ORDER BY length(line.name) LIMIT 3
 	`);

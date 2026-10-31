@@ -463,7 +463,7 @@ function productLineQuestions(name: string, lines: readonly { name: string }[]):
 /**
  * An entity Resources name against the stored entities named alike, one question each, since several may be it. Those
  * Jev is sure are the same merge into the most named of them, and the rest are recorded as different. A product that
- * is a version of a product line its name starts with (Claude Opus 4.5 of Claude) merges, with them, into that line.
+ * is a version of a product line its name starts with (Claude Opus 4.5 of Claude) merges into that line instead.
  */
 async function matchNamedEntity(env: CoreEnv, db: NodePgDatabase, entity: UnmatchedEntity) {
 	const types = entity.type in LINKABLE_TYPES ? LINKABLE_TYPES[entity.type as NamedType] : [entity.type];
@@ -509,11 +509,12 @@ async function matchNamedEntity(env: CoreEnv, db: NodePgDatabase, entity: Unmatc
 		entity.id,
 		candidates.filter((candidate) => !same.includes(candidate) && candidate.id !== line?.id).map(({ id }) => id),
 	);
-	const group = [{ id: entity.id, key: entity.name, uses: entity.uses }, ...same].sort((a, b) => b.uses - a.uses);
-	const winner = line ?? group[0];
+	// A version merges into its line alone: what it was judged the same as may be the wider line itself.
+	const self = { id: entity.id, key: entity.name, uses: entity.uses };
+	const [winner, ...losers] = line ? [line, self] : [self, ...same].sort((a, b) => b.uses - a.uses);
 	let merged = 0;
-	for (const loser of group)
-		if (loser.id !== winner.id && (await mergeEntities(db, loser.id, winner.id))) {
+	for (const loser of losers)
+		if (await mergeEntities(db, loser.id, winner.id)) {
 			console.info({ tag: 'AI', event: 'entity_merged', name: loser.key, into: winner.key });
 			merged++;
 		}
