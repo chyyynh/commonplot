@@ -9,6 +9,7 @@ import { type DerivationSource, type EntityCandidate, listEntityCandidates, list
 import {
 	claimUnmatchedEntities,
 	listJudgedEntities,
+	listProductLines,
 	mergeEntities,
 	recordDistinct,
 	releaseEntity,
@@ -432,48 +433,88 @@ async function matchAccount(env: CoreEnv, db: NodePgDatabase, account: Unmatched
 	return 1;
 }
 
+/** Questions asking whether a product is a version of each product line its name starts with, and whether that line's name is a product's at all. */
+function productLineQuestions(name: string, lines: readonly { name: string }[]): Record<string, JevQuestion> {
+	return Object.fromEntries(
+		lines.flatMap((line, index) => [
+			[
+				`line${index}`,
+				{
+					type: 'choice',
+					instructions: `What is "${name}"?`,
+					criteria: {
+						version: `A model, version, tier, size or edition of ${line.name} itself`,
+						separate: `A separate app, tool, feature, service, platform or program that carries the ${line.name} name`,
+						unrelated: 'Something unrelated that only shares the name',
+					},
+				},
+			],
+			[
+				`named${index}`,
+				{
+					type: 'noul',
+					instructions: `Is "${line.name}" on its own the name of one specific product or product line, rather than a generic word, tier or version number?`,
+				},
+			],
+		]),
+	);
+}
+
 /**
- * An entity Resources name against the stored entities named alike, one question each, since several may be it (Claude
- * Opus 4.5 and Claude Sonnet 4.5 are both Claude). Those Jev is sure are the same merge into the most named of them; the
- * rest are recorded as different.
+ * An entity Resources name against the stored entities named alike, one question each, since several may be it. Those
+ * Jev is sure are the same merge into the most named of them, and the rest are recorded as different. A product that
+ * is a version of a product line its name starts with (Claude Opus 4.5 of Claude) merges, with them, into that line.
  */
 async function matchNamedEntity(env: CoreEnv, db: NodePgDatabase, entity: UnmatchedEntity) {
 	const types = entity.type in LINKABLE_TYPES ? LINKABLE_TYPES[entity.type as NamedType] : [entity.type];
-	const candidates = await listMatchCandidates(db, entity, [entity.name, ...entity.names], types);
-	if (!candidates.length) return 0;
-	const questions: Record<string, JevQuestion> = Object.fromEntries(
-		candidates.map((candidate, index) => [
-			`c${index}`,
-			{
-				type: 'noul',
-				instructions: `Is "${entity.name}" described here the same thing as ${accountCriterion(candidate)}? ${PRODUCT_LINE_RULE} A company and its product, or a person and their company, are not the same. A similar name alone is not enough.`,
-			},
-		]),
-	);
+	const [candidates, lines] = await Promise.all([
+		listMatchCandidates(db, entity, [entity.name, ...entity.names], types),
+		entity.type === 'product' ? listProductLines(db, entity.id, entity.name) : [],
+	]);
+	if (!candidates.length && !lines.length) return 0;
+	const questions: Record<string, JevQuestion> = {
+		...Object.fromEntries(
+			candidates.map((candidate, index) => [
+				`c${index}`,
+				{
+					type: 'noul',
+					instructions: `Is "${entity.name}" described here the same thing as ${accountCriterion(candidate)}? ${PRODUCT_LINE_RULE} A company and its product, or a person and their company, are not the same. A similar name alone is not enough.`,
+				},
+			]),
+		),
+		...productLineQuestions(entity.name, lines),
+	};
 	const { answers } = await askJev(env, { feature: 'entity-matching', processing_id: entity.id }, describeEntity(entity), questions);
-	const sure = (index: number) => {
-		const answer = answers[`c${index}`];
+	const sure = (id: string) => {
+		const answer = answers[id];
 		return answer && 'noul' in answer ? answer.noul : 0;
 	};
-	const same = candidates.filter((_, index) => sure(index) >= MERGE_CONFIDENCE);
+	const line = lines.find((_, index) => {
+		const answer = answers[`line${index}`];
+		const version = answer && 'probabilities' in answer ? (answer.probabilities.version ?? 0) : 0;
+		return version >= MERGE_CONFIDENCE && sure(`named${index}`) >= MERGE_CONFIDENCE;
+	});
+	const same = candidates.filter((_, index) => sure(`c${index}`) >= MERGE_CONFIDENCE);
 	console.info({
 		tag: 'AI',
 		event: 'entity_judged',
 		name: entity.name,
 		uses: entity.uses,
+		line: line?.key,
 		same: same.map(({ key }) => key),
-		different: candidates.filter((_, index) => sure(index) < MERGE_CONFIDENCE).map(({ key }) => key),
+		different: candidates.filter((candidate) => !same.includes(candidate)).map(({ key }) => key),
 	});
 	await recordDistinct(
 		db,
 		entity.id,
-		candidates.filter((candidate) => !same.includes(candidate)).map(({ id }) => id),
+		candidates.filter((candidate) => !same.includes(candidate) && candidate.id !== line?.id).map(({ id }) => id),
 	);
 	const group = [{ id: entity.id, key: entity.name, uses: entity.uses }, ...same].sort((a, b) => b.uses - a.uses);
+	const winner = line ?? group[0];
 	let merged = 0;
-	for (const loser of group.slice(1))
-		if (await mergeEntities(db, loser.id, group[0].id)) {
-			console.info({ tag: 'AI', event: 'entity_merged', name: loser.key, into: group[0].key });
+	for (const loser of group)
+		if (loser.id !== winner.id && (await mergeEntities(db, loser.id, winner.id))) {
+			console.info({ tag: 'AI', event: 'entity_merged', name: loser.key, into: winner.key });
 			merged++;
 		}
 	return merged;

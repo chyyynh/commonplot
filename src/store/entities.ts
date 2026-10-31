@@ -52,6 +52,22 @@ export async function claimUnmatchedEntities(db: NodePgDatabase, limit: number):
 	return rows;
 }
 
+/** A product line: a product named at least this often whose name another product's name starts with. */
+const PRODUCT_LINE_MIN_USES = 5;
+
+/** Products this product's name starts with, as Claude Opus 4.5 starts with Claude, the shortest first. */
+export async function listProductLines(db: NodePgDatabase, id: string, name: string) {
+	const { rows } = await db.execute<{ id: string; key: string; name: string }>(sql`
+		SELECT line.id::text, line.key, line.name FROM entities line
+		WHERE line.type = 'product' AND line.id <> ${id}::uuid
+			AND (starts_with(lower(${name}), lower(line.name) || ' ') OR starts_with(lower(${name}), lower(line.name) || '-'))
+			AND NOT EXISTS (SELECT 1 FROM entity_keys k WHERE k.entity_id = line.id)
+			AND (SELECT count(*) FROM resource_entities used WHERE used.entity_id = line.id) >= ${PRODUCT_LINE_MIN_USES}
+		ORDER BY length(line.name) LIMIT 3
+	`);
+	return rows;
+}
+
 /** Puts an entity back for the next sweep, after matching it failed. */
 export async function releaseEntity(db: NodePgDatabase, id: string) {
 	await db.execute(sql`UPDATE entities SET matched_at = NULL WHERE id = ${id}::uuid`);
