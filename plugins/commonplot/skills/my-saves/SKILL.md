@@ -19,7 +19,7 @@ description: Answer from what the user saved or wrote in commonplot. Use when th
    read it. If
    `metadata.contentAvailable` is false, say the text is not stored; do not
    invent it.
-4. To show saves to the user, pass their URLs to `recommend_reads`; the cards
+4. To show saves to the user, pass their URLs to `show_links`; the cards
    mark them as already saved. Do not list them as text.
 
 If nothing matches, say so and offer to look further back instead of guessing.
