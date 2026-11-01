@@ -219,7 +219,7 @@ const server = createServer(async (request, response) => {
 			const json = JSON.stringify(document);
 			if (Buffer.byteLength(json) > MAX_DOCUMENT_BYTES)
 				throw new Error(`Structured document exceeds the ${MAX_DOCUMENT_BYTES}-byte limit.`);
-			return response.writeHead(200, { 'content-type': 'application/vnd.newsence.structured-document+json' }).end(json);
+			return response.writeHead(200, { 'content-type': 'application/vnd.commonplot.structured-document+json' }).end(json);
 		} catch (parseError) {
 			if (parseError?.statusCode === 503 || client.failure) throw parseError;
 			let totalPages = null;

@@ -8,11 +8,17 @@ import { buildTranscriptLines, fetchYouTubeCaptions } from '../services/youtube-
 
 const YOUTUBE_API_TIMEOUT_MS = 15_000;
 
-const THUMBNAIL_SIZES = ['maxres', 'standard', 'high', 'medium', 'default'] as const;
-/** Thumbnails parse to the largest one's URL. */
+const THUMBNAIL_SIZES = ['fhd', 'maxres', 'standard', 'high', 'medium', 'default'] as const;
+const THUMBNAIL_CHECK_TIMEOUT_MS = 5_000;
+/**
+ * Thumbnails parse to their URLs, largest known size first. YouTube adds sizes
+ * without notice (`fhd` arrived in 2026), so an unknown key is ignored, not an error.
+ */
 const YouTubeThumbnailsSchema = z
-	.partialRecord(z.enum(THUMBNAIL_SIZES), z.object({ url: z.string().min(1) }))
-	.transform((thumbnails) => THUMBNAIL_SIZES.map((size) => thumbnails[size]?.url).find(Boolean) ?? null);
+	.record(z.string(), z.unknown())
+	.transform((thumbnails) =>
+		THUMBNAIL_SIZES.flatMap((size) => z.object({ url: z.string().trim().min(1) }).safeParse(thumbnails[size]).data?.url ?? []),
+	);
 const YouTubeVideoItemSchema = z.object({
 	id: z.string().min(1),
 	snippet: z.object({
@@ -113,11 +119,26 @@ async function fetchChannelAvatar(youtubeApiKey: string, channelId: string): Pro
 		const channelData = await fetchYouTubeApi('channels', channelId, 'snippet', youtubeApiKey, YouTubeChannelsResponseSchema);
 		const channel = channelData.items?.find((item) => item.id === channelId);
 		if (channelData.items?.length && !channel) throw new Error('YouTube API returned no matching channel');
-		return channel?.snippet.thumbnails ?? null;
+		return channel?.snippet.thumbnails[0] ?? null;
 	} catch (error) {
 		console.warn({ tag: 'YOUTUBE', msg: 'Channel avatar unavailable', channelId, error: String(error) });
 		return null;
 	}
+}
+
+/**
+ * The first thumbnail that serves. A video's thumbnail URLs carry a `?v=` version that
+ * 404s until YouTube publishes that version (a new upload, a replaced thumbnail), while
+ * the same path without it serves the current one; a size can also be listed but missing.
+ */
+async function servedThumbnail(urls: readonly string[]): Promise<string | null> {
+	const candidates = [...new Set(urls.flatMap((url) => [url, url.split('?')[0]!]))];
+	for (const url of candidates) {
+		const response = await fetch(url, { method: 'HEAD', signal: AbortSignal.timeout(THUMBNAIL_CHECK_TIMEOUT_MS) }).catch(() => null);
+		if (response?.ok) return url;
+	}
+	console.warn({ tag: 'YOUTUBE', msg: 'No thumbnail served', candidates: candidates.length });
+	return null;
 }
 
 async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
@@ -159,10 +180,10 @@ async function scrapeYouTubeVideo(videoId: string, youtubeApiKey: string) {
 				]
 			: [],
 		kindMetadata: durationSeconds === null ? {} : { durationSeconds },
-		previewImageUrl: snippet.thumbnails?.trim() || null,
+		previewImageUrl: await servedThumbnail(snippet.thumbnails),
 		subjectUrl: null,
 		chapters,
-	} satisfies Omit<PlatformResource, 'content' | 'originalLang'> & { audioLanguage: string | null; chapters: YouTubeChapter[] };
+	} satisfies Omit<PlatformResource, 'content'> & { audioLanguage: string | null; chapters: YouTubeChapter[] };
 }
 
 type YouTubeVideo = Awaited<ReturnType<typeof scrapeYouTubeVideo>>;
@@ -185,7 +206,6 @@ export async function stageYouTubeAcquisition(env: CoreEnv, step: WorkflowStep, 
 		...video,
 		// One Markdown paragraph per line, so the translation alignment path `[i]` pairs line `i` with its translation.
 		content: lines?.length ? paragraphsMarkdown(lines.map((line) => line.text)) : video.summary.trim(),
-		originalLang: captions?.language ?? audioLanguage ?? 'und',
 		youtube: { lines, chapters },
 	} satisfies PlatformResource & { youtube: YouTubeTranscript };
 }

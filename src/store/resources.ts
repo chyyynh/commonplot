@@ -2,23 +2,20 @@ import { NonRetryableError } from 'cloudflare:workflows';
 import { type SQL, sql } from 'drizzle-orm';
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
 import type { HostedPreview } from '../contracts/image-mapping';
+import { SUMMARY_LANGS } from '../contracts/languages';
 import type { NormalizedResource } from '../contracts/normalize-resource';
-import { ResourceIdentifiersSchema } from '../contracts/resource';
-import { type ResourceKind, type ResourcePlatform, RESOURCE_KINDS } from '../contracts/resource-kinds';
+import { entityKey, ResourceIdentifiersSchema } from '../contracts/resource';
+import { creatorName, type EntityKeyProfile, type ResourceKind, type ResourcePlatform, RESOURCE_KINDS } from '../contracts/resource-kinds';
 import { linkedResourceUrls, resourceLinks } from '../contracts/resource-links';
 import { type ResolvedResourceUrl, ResourceUrlSchema } from '../contracts/resource-url';
-import { blobKey } from '../contracts/storage-keys';
+import { BLOB_LOCK_NAMESPACE, blobKey } from '../contracts/storage-keys';
 import { lockKeys } from './db';
-import { type Derivation, replaceResourceEntities, requireDerivations, SUMMARY_LANGS } from './derivations';
+import { type Derivation, replaceResourceEntities, requireDerivations, requiredTranslations } from './derivations';
 import { kindWhere, READABLE_ORIGINAL_SQL } from './kind-sql';
 import { fulfillRequests } from './requests';
-import { requiredTranslations } from './translations';
 
-/** Web's `storedBlobs` advisory lock namespace (`web-tanstack/src/server/db/locks.server.ts`). */
-const STORED_BLOB_LOCK_NAMESPACE = 330571;
-
-/** A normalized resource whose images are already Hosted Images URLs. */
-type HostedResource = NormalizedResource & HostedPreview;
+/** What persistence writes: the normalized Resource, its hosted images, and its quality score (null when not judged). */
+type HostedResource = NormalizedResource & HostedPreview & Readonly<{ qualityScore: number | null }>;
 
 /**
  * A draft writes an original only where none is readable yet. An existing Resource is
@@ -122,40 +119,64 @@ async function lockResourceIfAny(db: NodePgDatabase, resourceId: string): Promis
  * Replaces a Resource's byline. Each platform account it names is upserted by the id the platform never reassigns, so
  * its handle, name and avatar follow this latest acquisition.
  */
+/**
+ * Writes a Resource's byline. An account seen for the first time becomes an entity of its own, keyed
+ * `<platform>:<id>`, named by its name and handle, and taken for a person until the account matching merges it into
+ * the entity it is; a known one keeps its entity and takes the newest profile.
+ */
 async function writeResourceCreators(db: NodePgDatabase, resourceId: string, creators: NormalizedResource['creators'], existing: boolean) {
 	if (existing) await db.execute(sql`DELETE FROM resource_creators WHERE resource_id = ${resourceId}::uuid`);
 	if (!creators.length) return;
-	const rows = creators.map((creator, position) => ({
-		position,
-		role: creator.role,
-		name: creator.literal ?? [creator.given, creator.family].filter(Boolean).join(' '),
-		platform: creator.account?.platform ?? null,
-		platform_id: creator.account?.id ?? null,
-		handle: creator.handle ?? null,
-		avatar_url: creator.avatarUrl ?? null,
-		profile_url: creator.profileUrl ?? null,
-		verified: creator.verified ?? null,
-	}));
+	const rows = creators.map((creator, position) => {
+		const { handle, avatarUrl, profileUrl, verified } = creator;
+		const profile: EntityKeyProfile = { handle, avatarUrl, profileUrl, verified };
+		return {
+			position,
+			role: creator.role,
+			name: creatorName(creator),
+			names: [creatorName(creator), handle ?? '']
+				.map((name) => ({ key: entityKey(name), name: name.toLowerCase() }))
+				.filter(({ key }) => key),
+			scheme: creator.account?.platform ?? null,
+			value: creator.account?.id ?? null,
+			profile,
+		};
+	});
 	await db.execute(sql`
 		WITH incoming AS (
 			SELECT * FROM jsonb_to_recordset(${JSON.stringify(rows)}::jsonb) AS creator(
-				position integer, role text, name text, platform text, platform_id text,
-				handle text, avatar_url text, profile_url text, verified boolean
+				position integer, role text, name text, names jsonb, scheme text, value text, profile jsonb
 			)
-		), accounts AS (
-			INSERT INTO creator_accounts AS stored (platform, platform_id, handle, name, avatar_url, profile_url, verified)
-			SELECT DISTINCT ON (platform, platform_id) platform, platform_id, handle, name, avatar_url, profile_url, verified
-			FROM incoming WHERE platform IS NOT NULL
-			ORDER BY platform, platform_id, position
-			ON CONFLICT (platform, platform_id) DO UPDATE SET
-				(handle, name, avatar_url, profile_url, verified, updated_at) =
-				(EXCLUDED.handle, EXCLUDED.name, COALESCE(EXCLUDED.avatar_url, stored.avatar_url), EXCLUDED.profile_url,
-				 COALESCE(EXCLUDED.verified, stored.verified), NOW())
-			RETURNING id, platform, platform_id
+		), account AS (
+			SELECT DISTINCT ON (scheme, value) scheme, value, name, names, profile
+			FROM incoming WHERE scheme IS NOT NULL
+			ORDER BY scheme, value, position
+		), created AS (
+			INSERT INTO entities (key, name, type, matched_at)
+			SELECT account.scheme || ':' || account.value, account.name, 'person', NULL
+			FROM account
+			WHERE NOT EXISTS (SELECT 1 FROM entity_keys known WHERE known.scheme = account.scheme AND known.value = account.value)
+			ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key
+			RETURNING id, key
+		), named AS (
+			INSERT INTO entity_names (key, entity_id, name)
+			SELECT DISTINCT ON (written.key, created.id) written.key, created.id, written.name
+			FROM account JOIN created ON created.key = account.scheme || ':' || account.value
+			CROSS JOIN jsonb_to_recordset(account.names) AS written(key text, name text)
+			ORDER BY written.key, created.id
+			ON CONFLICT DO NOTHING
+		), stored AS (
+			INSERT INTO entity_keys AS stored (scheme, value, entity_id, profile)
+			SELECT account.scheme, account.value, COALESCE(known.entity_id, created.id), account.profile
+			FROM account
+			LEFT JOIN entity_keys known ON known.scheme = account.scheme AND known.value = account.value
+			LEFT JOIN created ON created.key = account.scheme || ':' || account.value
+			ON CONFLICT (scheme, value) DO UPDATE SET profile = stored.profile || EXCLUDED.profile, updated_at = NOW()
+			RETURNING scheme, value
 		)
-		INSERT INTO resource_creators (resource_id, position, role, name, account_id)
-		SELECT ${resourceId}::uuid, incoming.position, incoming.role, incoming.name, accounts.id
-		FROM incoming LEFT JOIN accounts USING (platform, platform_id)
+		INSERT INTO resource_creators (resource_id, position, role, name, account_scheme, account_value)
+		SELECT ${resourceId}::uuid, incoming.position, incoming.role, incoming.name, stored.scheme, stored.value
+		FROM incoming LEFT JOIN stored ON stored.scheme = incoming.scheme AND stored.value = incoming.value
 	`);
 }
 
@@ -170,7 +191,7 @@ async function writeCanonicalResource(
 ) {
 	const columns = sql`
 		kind, resource_platform, source_name, title, description, url, file_type, pdf_hash, original_lang, published_date,
-		og_image_url, og_image_width, og_image_height, kind_metadata, subject_resource_id, text_hash,
+		og_image_url, og_image_width, og_image_height, kind_metadata, subject_resource_id, text_hash, quality_score,
 		scraped_date, updated_at
 	`;
 	const preview = await articlePreview(db, resourceId, resource);
@@ -179,7 +200,8 @@ async function writeCanonicalResource(
 		${resource.fileType}, ${existing ? sql`COALESCE(${resource.pdfHash ?? null}, pdf_hash)` : (resource.pdfHash ?? null)}, ${resource.originalLang}, ${resource.publishedDate}::timestamptz,
 		${preview.url}, ${preview.width}, ${preview.height},
 		${resource.kindMetadata === null ? null : JSON.stringify(resource.kindMetadata)}::jsonb, ${subjectResourceId}::uuid,
-		(SELECT MD5(jsonb_build_array(lang, title, content)::text) FROM incoming), NOW(), NOW()
+		(SELECT MD5(jsonb_build_array(lang, title, content)::text) FROM incoming),
+		${existing ? sql`COALESCE(${resource.qualityScore}::real, quality_score)` : sql`${resource.qualityScore}::real`}, NOW(), NOW()
 	`;
 	// The cleanup excludes the incoming language: no CTE deletes a row another CTE writes.
 	const written = await db.execute(sql`
@@ -275,7 +297,7 @@ export async function persistResolvedResource(
 	return db.transaction(async (tx) => {
 		const claim = await claimRow(tx, resource, target, blobExists);
 		// A newer attempt that already committed did what these requests asked.
-		if (claim.settled) return { ...claim.settled, derivations: [], requests: await fulfillRequests(tx, requestId, claim.resourceId) };
+		if (claim.settled) return { ...claim.settled, derivations: [], ...(await fulfillRequests(tx, requestId, claim.resourceId)) };
 		const required = await writeOriginal(tx, resource, target, claim);
 		if (resource.hackerNewsId && target.kind !== 'upload')
 			await tx.execute(sql`
@@ -290,12 +312,12 @@ export async function persistResolvedResource(
 				WHERE normalized_url = ANY(${sql.param(linkedResourceUrls(resource.normalizedUrl, resource.resourceIdentifiers))}::text[])
 				  AND target_resource_id IS NULL AND source_resource_id <> ${claim.resourceId}::uuid
 			`);
-		const requests = await fulfillRequests(tx, requestId, claim.resourceId);
+		const fulfilled = await fulfillRequests(tx, requestId, claim.resourceId);
 		// Whether content translates automatically depends on who asked, which fulfilling the requests just recorded.
 		const derivations = required
 			? await requireDerivations(tx, claim.resourceId, [...required, ...(await requiredTranslations(tx, claim.resourceId))])
 			: [];
-		return { ...committed(await lockResource(tx, claim.resourceId), claim.outcome), derivations, requests };
+		return { ...committed(await lockResource(tx, claim.resourceId), claim.outcome), derivations, ...fulfilled };
 	});
 }
 
@@ -321,7 +343,7 @@ async function claimRow(
 	];
 	await lockKeys(
 		tx,
-		'newsence:resource:',
+		'commonplot:resource:',
 		identities.flatMap(({ normalizedUrl, identifiers }) => [
 			...(normalizedUrl ? [`url:${normalizedUrl}`] : []),
 			...identifiers.map(({ scheme, value }) => `id:${scheme}:${value}`),
@@ -329,7 +351,7 @@ async function claimRow(
 	);
 	if (resource.pdfHash) {
 		// Web purges a blob only while holding this lock and finding no Resource that reads it.
-		await tx.execute(sql`SELECT pg_advisory_xact_lock(${STORED_BLOB_LOCK_NAMESPACE}, hashtext(${blobKey(resource.pdfHash)}))`);
+		await tx.execute(sql`SELECT pg_advisory_xact_lock(${BLOB_LOCK_NAMESPACE}, hashtext(${blobKey(resource.pdfHash)}))`);
 		if (!(await blobExists(resource.pdfHash))) throw new NonRetryableError('Stored PDF was purged before its Resource committed');
 	}
 	const uploadId = target.kind === 'upload' ? target.objectId : target.kind === 'draft' ? target.uploadId : undefined;

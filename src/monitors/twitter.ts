@@ -1,12 +1,7 @@
-import type { NodePgDatabase } from 'drizzle-orm/node-postgres';
-import pLimit from 'p-limit';
 import { z } from 'zod';
+import type { MonitorAdapter } from '.';
 import { fetchTwitterApi } from '../adapters/twitter';
 import type { SourceResourceDraft } from '../contracts/processing-target';
-import { errorMessage } from '../services/response';
-import { withCoreDb } from '../store/db';
-import { advanceSourceWatermark, listTwitterSources, type TwitterSource } from '../store/sources';
-import { enqueueSourceDrafts } from './source-drafts';
 
 const DiscoveredTweetIdentitySchema = z.object({
 	id: z.string().trim().regex(/^\d+$/),
@@ -26,7 +21,6 @@ const TwitterAdvancedSearchEnvelopeSchema = z.object({
 	next_cursor: z.string().nullish(),
 });
 
-const TWITTER_SOURCE_CONCURRENCY = 5;
 /**
  * Each window starts this long before the last one ended: search indexes a tweet a while after it is posted, so one
  * posted just before a window closed can be missing from it. Admission drops the tweets seen twice.
@@ -34,7 +28,7 @@ const TWITTER_SOURCE_CONCURRENCY = 5;
 const WINDOW_OVERLAP_SECONDS = 30 * 60;
 
 /** Fetch one fixed monitoring window using twitterapi.io's native cursor. */
-async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime: number, untilTime: number) {
+async function fetchTweets(apiKey: string, userName: string, sinceTime: number, untilTime: number) {
 	const query = `from:${userName} include:nativeretweets -filter:replies since_time:${sinceTime} until_time:${untilTime}`;
 	const terminalTweets = new Map<string, DiscoveredTweet>();
 	const seenCursors = new Set<string>();
@@ -81,12 +75,13 @@ async function fetchTweetsForSource(apiKey: string, userName: string, sinceTime:
 	return { tweets: terminalTweets.values(), providerTweets, pages, skippedItems };
 }
 
-async function enqueueTweets(db: NodePgDatabase, tweets: Iterable<DiscoveredTweet>, source: TwitterSource) {
+/** The account's own tweets and retweets as drafts; a tweet attributed to anyone else is skipped. */
+function tweetDrafts(tweets: Iterable<DiscoveredTweet>, handle: string) {
 	const drafts: SourceResourceDraft[] = [];
-	let skippedItems = 0;
+	let skipped = 0;
 	const skip = (tweetId: string, error: string) => {
-		skippedItems++;
-		console.error({ tag: 'TWITTER', event: 'twitter_item_skipped', userName: source.handle, tweetId, error });
+		skipped++;
+		console.error({ tag: 'TWITTER', event: 'twitter_item_skipped', userName: handle, tweetId, error });
 	};
 	for (const carrier of tweets) {
 		const tweet = carrier.retweeted_tweet ?? carrier;
@@ -94,8 +89,8 @@ async function enqueueTweets(db: NodePgDatabase, tweets: Iterable<DiscoveredTwee
 			? carrier.author?.userName
 			: carrier.retweetedBy?.authorUserName || carrier.author?.userName;
 		const userName = attributedAuthor?.trim().toLowerCase() || null;
-		if (userName !== source.handle) {
-			skip(tweet.id, `Tweet ${tweet.id} was attributed to @${userName ?? 'unknown'}, expected @${source.handle}`);
+		if (userName !== handle) {
+			skip(tweet.id, `Tweet ${tweet.id} was attributed to @${userName ?? 'unknown'}, expected @${handle}`);
 			continue;
 		}
 		const publishedDate = new Date(tweet.createdAt);
@@ -105,75 +100,34 @@ async function enqueueTweets(db: NodePgDatabase, tweets: Iterable<DiscoveredTwee
 		}
 		drafts.push({
 			url: `https://x.com/i/status/${tweet.id}`,
-			sourceHints: { publishedDate: publishedDate.toISOString(), originalLang: tweet.lang },
+			sourceHints: { publishedDate: publishedDate.toISOString() },
 		});
 	}
-	const admission = await enqueueSourceDrafts(db, source.id, drafts);
-	return {
-		created: admission.created,
-		deduplicated: admission.deduplicated,
-		skippedItems: skippedItems + admission.skipped,
-	};
+	return { drafts, skipped };
 }
 
-async function processTwitterSource(env: CoreEnv, db: NodePgDatabase, source: TwitterSource, windowEnd: Date) {
-	const sinceTime = source.scrapedAt
-		? Math.floor(new Date(source.scrapedAt).getTime() / 1000) - WINDOW_OVERLAP_SECONDS
-		: Math.floor(new Date(source.createdAt).getTime() / 1000);
-	const untilTime = Math.floor(windowEnd.getTime() / 1000);
-	try {
-		const fetched = await fetchTweetsForSource(env.KAITO_API_KEY, source.handle, sinceTime, untilTime);
-		const admission = await enqueueTweets(db, fetched.tweets, source);
-		const watermarkAdvanced = await advanceSourceWatermark(db, source.id, windowEnd);
-		console.info({
-			tag: 'TWITTER',
-			event: 'twitter_source_processed',
-			userName: source.handle,
-			since_time: sinceTime,
-			until_time: untilTime,
-			pages: fetched.pages,
-			provider_tweets: fetched.providerTweets,
-			skipped_items: fetched.skippedItems + admission.skippedItems,
-			created: admission.created,
-			deduplicated: admission.deduplicated,
-			watermark_advanced: watermarkAdvanced,
-		});
-	} catch (error) {
-		console.error({
-			tag: 'TWITTER',
-			event: 'twitter_source_failed',
-			userName: source.handle,
-			since_time: sinceTime,
-			until_time: untilTime,
-			error: errorMessage(error),
-		});
-		throw error;
-	}
-}
+/** An X account, located by its lowercase handle. Each check searches the window since the last one ended. */
+const TwitterStateSchema = z.object({ windowEnd: z.iso.datetime({ offset: true }).optional() });
 
-export async function handleTwitterCron(env: CoreEnv, windowEnd: Date): Promise<void> {
-	if (!env.KAITO_API_KEY) throw new Error('KAITO_API_KEY is not configured');
-	console.info({ tag: 'TWITTER', msg: 'start', window_end: windowEnd.toISOString() });
-	await withCoreDb(env, async (db) => {
-		const sources = await listTwitterSources(db);
-		if (!sources.length) {
-			console.info({ tag: 'TWITTER', msg: 'No twitter sources configured' });
-			return;
-		}
-
-		console.info({ tag: 'TWITTER', msg: 'Fetching via Advanced Search', sources: sources.length });
-		const limit = pLimit(TWITTER_SOURCE_CONCURRENCY);
-		const results = await Promise.allSettled(sources.map((source) => limit(() => processTwitterSource(env, db, source, windowEnd))));
-		const systemFailures = results.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []));
-
-		console.info({
-			tag: 'TWITTER',
-			msg: 'end',
-			sources: sources.length,
-			failed_sources: systemFailures.length,
-		});
-		if (systemFailures.length) {
-			throw new AggregateError(systemFailures, `${systemFailures.length} Twitter monitor operations failed`);
-		}
-	});
-}
+export const twitterMonitor: MonitorAdapter<z.infer<typeof TwitterStateSchema>> = {
+	stateSchema: TwitterStateSchema,
+	// Every search is billed, so even the busiest account is checked a few times a day.
+	interval: { min: 6 * 60 * 60, max: 24 * 60 * 60 },
+	concurrency: 3,
+	async poll(env, monitor) {
+		if (!env.KAITO_API_KEY) throw new Error('KAITO_API_KEY is not configured');
+		const windowEnd = new Date();
+		const sinceTime = monitor.state.windowEnd
+			? Math.floor(new Date(monitor.state.windowEnd).getTime() / 1000) - WINDOW_OVERLAP_SECONDS
+			: Math.floor(new Date(monitor.createdAt).getTime() / 1000);
+		const untilTime = Math.floor(windowEnd.getTime() / 1000);
+		const fetched = await fetchTweets(env.KAITO_API_KEY, monitor.locator, sinceTime, untilTime);
+		const { drafts, skipped } = tweetDrafts(fetched.tweets, monitor.locator);
+		return {
+			drafts,
+			skipped: fetched.skippedItems + skipped,
+			state: { windowEnd: windowEnd.toISOString() },
+			details: { since_time: sinceTime, until_time: untilTime, pages: fetched.pages, provider_tweets: fetched.providerTweets },
+		};
+	},
+};

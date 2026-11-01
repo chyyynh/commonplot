@@ -1,23 +1,25 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import { z } from 'zod';
-import { IMPORT_WORKFLOW_PREFIX, ImportWorkflowIdSchema, ResourceImportDispatchSchema } from './contracts/processing-target';
+import { CONTENT_TRANSLATION_LANGS } from './contracts/languages';
+import { IMPORT_WORKFLOW_PREFIX, ResourceImportDispatchSchema } from './contracts/processing-target';
 import { resolveResourceUrl, ResourceUrlSchema } from './contracts/resource-url';
 import type {} from './env';
-import { handleRSSCron } from './monitors/rss';
-import { handleTwitterCron } from './monitors/twitter';
-import { type PublicResourceSearchInput, searchPublicResourceIds, searchPublicResourcePassages } from './search/search-index';
+import { runMonitors } from './monitors';
+import { nearCorpusResources, nearInterest, type PublicResourceSearchInput, searchPublicResources } from './search/search-index';
 import { consumeSearchSyncBatch } from './search/sync-consumer';
+import { matchEntities } from './services/entities';
 import { withCoreDb } from './store/db';
 import { findResourcesByUrls } from './store/resources';
 import { enqueueDueDerivations } from './workflows/derivation';
-import { admitRequests, reconcileRequests, resourceImportExecutions } from './workflows/requests';
-import { contentTranslationStatus, requestContentTranslation } from './workflows/translation';
+import { admitRequests, reconcileRequests } from './workflows/requests';
+import { contentTranslationStatus, importProgress, requestContentTranslation } from './workflows/translation';
 
 export { ZoteroSdt } from './services/zotero-sdt-service';
 export { ResourceTranslationV2Workflow } from './workflows/translation';
-export { SearchIndexRebuildWorkflow } from './search/rebuild-workflow';
+export { CorpusVectorsBackfillWorkflow } from './search/vectors-backfill-workflow';
 export { ResourceProcessingV2Workflow } from './workflows/processing';
 export { ResourceDerivationWorkflow } from './workflows/derivation';
+export { PageFetcher } from './services/page-fetcher';
 export { YouTubeCaptionFetcher } from './services/youtube-captions';
 
 export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
@@ -28,15 +30,12 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	override scheduled(event: ScheduledController): void {
 		console.info({ tag: 'CORE', msg: 'Scheduled', cron: event.cron });
 
-		// YouTube channels ride the feed monitor through their Atom URLs; Core
-		// derives their slower polling cadence from the canonical feed URL.
-		if (event.cron === '*/5 * * * *') {
-			this.ctx.waitUntil(
-				withCoreDb(this.env, (db) => Promise.allSettled([handleRSSCron(db), enqueueDueDerivations(db), reconcileRequests(this.env, db)])),
-			);
-		} else if (event.cron === '0 */6 * * *') {
-			this.ctx.waitUntil(handleTwitterCron(this.env, new Date(event.scheduledTime)));
-		}
+		// Each monitor keeps its own next check, so one cron serves every kind.
+		this.ctx.waitUntil(
+			withCoreDb(this.env, (db) =>
+				Promise.allSettled([runMonitors(this.env, db), enqueueDueDerivations(db), reconcileRequests(db), matchEntities(this.env, db)]),
+			),
+		);
 	}
 
 	override queue(batch: MessageBatch<unknown>): Promise<void> {
@@ -59,33 +58,29 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	}
 
 	/**
-	 * Durable admission outbox: the caller persists this immutable handle and payload first, and its UUID becomes the
-	 * request's id, so dispatching it again records nothing new. An upload's owner is read from its stored object.
+	 * Records a user's import as a request named by the handle's UUID and starts its acquisition; dispatching it again
+	 * records nothing new. Web dispatches only committed uploads, and the Workflow rechecks ownership and the latest
+	 * attempt before provider execution. Web reads the import's progress from the request and saves its Resource.
 	 */
 	async dispatchResourceImport(input: z.input<typeof ResourceImportDispatchSchema>): Promise<void> {
-		const { workflowId, payload } = ResourceImportDispatchSchema.parse(input);
+		const { workflowId, userId, notebookId, label, payload } = ResourceImportDispatchSchema.parse(input);
 		const id = workflowId.slice(IMPORT_WORKFLOW_PREFIX.length);
-		// The admission DO waits for committed ownership. The Workflow rechecks ownership and the latest attempt
-		// before provider execution, after any queueing delay.
-		await withCoreDb(this.env, (db) =>
-			admitRequests(db, [
-				payload.kind === 'draft'
-					? {
-							requester: 'user',
-							id,
-							userId: payload.saveTarget.userId,
-							notebookId: payload.saveTarget.notebookId,
-							target: { kind: 'draft', url: payload.url },
-						}
-					: { requester: 'user', id, userId: null, notebookId: null, target: payload },
-			]),
-		);
+		await withCoreDb(this.env, (db) => admitRequests(db, [{ requester: 'user', id, userId, notebookId, label, target: payload }]));
 	}
 
-	/** Each Web import's progress, read from its request; Web asks only while one is unsettled. */
-	async resourceImportStatus(workflowIds: string[]) {
-		const ids = z.array(ImportWorkflowIdSchema).max(50).parse(workflowIds);
-		return withCoreDb(this.env, (db) => resourceImportExecutions(db, ids));
+	/** What Web's ready imports show for their cards and content translations, by Resource. */
+	async importTranslations(input: { resourceId: string; textHash: string }[]) {
+		const items = z
+			.array(z.strictObject({ resourceId: z.uuid(), textHash: z.string().min(1) }))
+			.max(50)
+			.parse(input);
+		return withCoreDb(this.env, async (db) =>
+			Object.fromEntries(
+				await Promise.all(
+					items.map(async ({ resourceId, textHash }) => [resourceId, (await importProgress(db, resourceId, textHash)) ?? null] as const),
+				),
+			),
+		);
 	}
 
 	/**
@@ -105,23 +100,26 @@ export default class CoreWorker extends WorkerEntrypoint<CoreEnv> {
 	/** A reader's full translation into `lang`. The app Worker checks entitlement and bills an admitted request. */
 	requestResourceTranslation(resourceId: string, lang: string) {
 		const id = z.uuid().parse(resourceId);
-		z.literal('zh-Hant').parse(lang);
-		return requestContentTranslation(this.env, id);
+		return requestContentTranslation(this.env, id, z.enum(CONTENT_TRANSLATION_LANGS).parse(lang));
 	}
 
 	resourceTranslationStatus(resourceId: string, lang: string) {
 		const id = z.uuid().parse(resourceId);
-		z.literal('zh-Hant').parse(lang);
-		return contentTranslationStatus(this.env, id);
+		return contentTranslationStatus(this.env, id, z.enum(CONTENT_TRANSLATION_LANGS).parse(lang));
 	}
 
-	/** Ranked AI Search candidates; the app Worker authoritatively filters and hydrates them. */
-	searchPublicResourceIds(input: PublicResourceSearchInput) {
-		return searchPublicResourceIds(this.env, input);
+	/** Ranked corpus candidates with matched passages; the app Worker authoritatively filters and hydrates them. */
+	searchCorpus(input: PublicResourceSearchInput) {
+		return searchPublicResources(this.env, input);
 	}
 
-	/** Ranked candidates with matched passages; the app Worker filters and hydrates them. */
-	searchPublicResourcePassages(input: PublicResourceSearchInput) {
-		return searchPublicResourcePassages(this.env, input);
+	/** The corpus nearest a Resource in meaning, each with its similarity; the app Worker filters and ranks them. */
+	nearCorpusResources(resourceId: string) {
+		return nearCorpusResources(this.env, z.uuid().parse(resourceId));
+	}
+
+	/** Recent corpus publications nearest a reader's weighted items, each with its similarity; Web owns whose items they are. */
+	nearInterest(input: Parameters<typeof nearInterest>[1]) {
+		return nearInterest(this.env, input);
 	}
 }

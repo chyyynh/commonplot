@@ -6,13 +6,14 @@ import { lockKeys } from './db';
 import { READABLE_ORIGINAL_SQL } from './kind-sql';
 
 /**
- * Who asked for a Resource. A source and a subject carrier ask once per URL; a user's import names its own request
- * id, which is the UUID in Web's handle for it. `userId` is read from the stored object when an upload omits it.
+ * Who asked for a Resource. A monitor and a subject carrier ask once per URL; a user's import names its own request
+ * id, which is the UUID in Web's handle for it, and records who asked, where Web files it, and what the inbox shows.
+ * Web saves the Resource and reads the import's progress from this row.
  */
-export type Requester =
-	| Readonly<{ requester: 'source'; sourceId: string }>
+type Requester =
+	| Readonly<{ requester: 'monitor'; monitorId: string }>
 	| Readonly<{ requester: 'subject'; parentResourceId: string; parentTextHash: string }>
-	| Readonly<{ requester: 'user'; id: string; userId: string | null; notebookId: string | null }>
+	| Readonly<{ requester: 'user'; id: string; userId: string; notebookId: string | null; label: string }>
 	| Readonly<{ requester: 'resync' }>;
 
 export type ResourceRequest = Requester & Readonly<{ target: RequestTarget }>;
@@ -27,17 +28,15 @@ type RequestRow = Readonly<{
 	resourceId: string | null;
 	hints: Record<string, unknown> | null;
 	workflowId: string | null;
-	status: 'pending' | 'fulfilled' | 'failed';
+	status: 'pending' | 'fulfilled' | 'failed' | 'rejected';
 }>;
 
 export type RequestLead = Readonly<{ id: string; workflowId: string; params: ResourceProcessingTarget | null }>;
 
-/** Failed source requests wait this long, doubling per failure up to 30 days, before a feed listing the URL asks again. */
-const SOURCE_RETRY = sql`interval '1 day'`;
+/** Failed monitor requests wait this long, doubling per failure up to 30 days, before a monitor listing the URL asks again. */
+const MONITOR_RETRY = sql`interval '1 day'`;
 /** A lead whose workflow is quiet this long is checked; a waiting request this long without a lead takes over. */
 const STALE_REQUEST = sql`interval '10 minutes'`;
-/** A user's save of a written Resource is retried this many times in all before its request fails. */
-const SAVE_ATTEMPTS = 3;
 
 const REQUEST_COLUMNS = sql`id::text, target_key AS "targetKey", requester, url, stored_object_id::text AS "storedObjectId",
 	resource_id::text AS "resourceId", hints, workflow_id AS "workflowId", status`;
@@ -66,28 +65,29 @@ async function recordRequest(tx: NodePgDatabase, request: ResourceRequest & { ke
 		id: request.requester === 'user' ? request.id : null,
 		url: target.kind === 'draft' ? target.url : null,
 		hints: hints === null ? null : JSON.stringify(hints),
-		sourceId: request.requester === 'source' ? request.sourceId : null,
+		monitorId: request.requester === 'monitor' ? request.monitorId : null,
 		parentResourceId: request.requester === 'subject' ? request.parentResourceId : null,
 		parentTextHash: request.requester === 'subject' ? request.parentTextHash : null,
+		resourceId: target.kind === 'reacquire' ? target.resourceId : null,
 		userId: request.requester === 'user' ? request.userId : null,
 		notebookId: request.requester === 'user' ? request.notebookId : null,
-		resourceId: target.kind === 'reacquire' ? target.resourceId : null,
+		label: request.requester === 'user' ? request.label : null,
 	};
-	// A source and a carrier ask for a URL once: asking again revives only a failed or settled request. Web redispatching
+	// A monitor and a carrier ask for a URL once: asking again revives only a failed or settled request. Web redispatching
 	// an import finds the request it already recorded.
 	const { rows } = await tx.execute<RequestRow>(sql`
 		INSERT INTO resource_requests
-			(id, target_key, url, stored_object_id, hints, requester, source_id, parent_resource_id, parent_text_hash, user_id, notebook_id, resource_id)
+			(id, target_key, url, stored_object_id, hints, requester, monitor_id, parent_resource_id, parent_text_hash, resource_id,
+			 user_id, notebook_id, label)
 		VALUES (
 			COALESCE(${columns.id}::uuid, gen_random_uuid()), ${request.key}, ${columns.url}, ${objectId}::uuid, ${columns.hints}::jsonb,
-			${request.requester}, ${columns.sourceId}::uuid, ${columns.parentResourceId}::uuid, ${columns.parentTextHash},
-			COALESCE(${columns.userId}, (SELECT user_id FROM stored_objects WHERE id = ${objectId}::uuid)),
-			${columns.notebookId}::uuid, ${columns.resourceId}::uuid
+			${request.requester}, ${columns.monitorId}::uuid, ${columns.parentResourceId}::uuid, ${columns.parentTextHash},
+			${columns.resourceId}::uuid, ${columns.userId}, ${columns.notebookId}::uuid, ${columns.label}
 		)
 		${
-			request.requester === 'source'
-				? sql`ON CONFLICT (source_id, target_key) WHERE requester = 'source' DO UPDATE SET
-					(status, url, hints, error, retry_after, updated_at) = ('pending', EXCLUDED.url, EXCLUDED.hints, NULL, NULL, NOW())
+			request.requester === 'monitor'
+				? sql`ON CONFLICT (monitor_id, target_key) WHERE requester = 'monitor' DO UPDATE SET
+					(status, url, hints, error, retry_after, quality_score, updated_at) = ('pending', EXCLUDED.url, EXCLUDED.hints, NULL, NULL, NULL, NOW())
 					WHERE resource_requests.status = 'failed'`
 				: request.requester === 'subject'
 					? sql`ON CONFLICT (parent_resource_id, target_key) WHERE requester = 'subject' DO UPDATE SET
@@ -120,13 +120,13 @@ async function claimLead(tx: NodePgDatabase, row: RequestRow) {
 
 /** A lead and what its workflow acquires; no params when a resync's Resource was deleted meanwhile. */
 function toLead(row: RequestRow): RequestLead {
-	const { id, storedObjectId, resourceId, hints } = row;
+	const { id, requester, storedObjectId, resourceId, hints } = row;
 	const params: ResourceProcessingTarget | null = storedObjectId
-		? { kind: 'storedBlob', objectId: storedObjectId, requestId: id }
-		: row.requester !== 'resync'
-			? { kind: 'draft', url: row.url!, ...(hints ? { sourceHints: hints } : {}), requestId: id }
+		? { kind: 'storedBlob', objectId: storedObjectId, requestId: id, requester }
+		: requester !== 'resync'
+			? { kind: 'draft', url: row.url!, ...(hints ? { sourceHints: hints } : {}), requestId: id, requester }
 			: resourceId
-				? { kind: 'reacquire', resourceId, ...(hints?.force ? { force: true } : {}), requestId: id }
+				? { kind: 'reacquire', resourceId, ...(hints?.force ? { force: true } : {}), requestId: id, requester }
 				: null;
 	return { id, workflowId: row.workflowId!, params };
 }
@@ -145,7 +145,7 @@ export async function recordRequests(db: NodePgDatabase, requests: readonly Reso
 	return db.transaction(async (tx) => {
 		await lockKeys(
 			tx,
-			'newsence:request:',
+			'commonplot:request:',
 			keyed.map(({ key }) => key),
 		);
 		const leads: RequestLead[] = [];
@@ -158,57 +158,49 @@ export async function recordRequests(db: NodePgDatabase, requests: readonly Reso
 	});
 }
 
-/** Source requests a feed listing the URL again must not repeat: done, in flight, or failed and still waiting. */
-export async function settledSourceRequestKeys(db: NodePgDatabase, sourceId: string, keys: readonly string[]) {
+/** Monitor requests a monitor listing the URL again must not repeat: done, in flight, or failed and still waiting. */
+export async function settledMonitorRequestKeys(db: NodePgDatabase, monitorId: string, keys: readonly string[]) {
 	if (!keys.length) return new Set<string>();
 	const { rows } = await db.execute<{ key: string }>(sql`
 		SELECT target_key AS key FROM resource_requests
-		WHERE requester = 'source' AND source_id = ${sourceId}::uuid AND target_key = ANY(${sql.param([...keys])}::text[])
+		WHERE requester = 'monitor' AND monitor_id = ${monitorId}::uuid AND target_key = ANY(${sql.param([...keys])}::text[])
 		  AND (status <> 'failed' OR retry_after IS NULL OR retry_after > NOW())
 	`);
 	return new Set(rows.map(({ key }) => key));
 }
 
-/** A feed listed a URL Core already has: its request is fulfilled without an acquisition. */
-export async function recordFulfilledSourceRequests(
+/** A monitor listed a URL Core already has: its request is fulfilled without an acquisition. */
+export async function recordFulfilledMonitorRequests(
 	db: NodePgDatabase,
-	sourceId: string,
+	monitorId: string,
 	fulfilled: readonly Readonly<{ key: string; url: string; resourceId: string }>[],
 ) {
 	if (!fulfilled.length) return;
 	await db.execute(sql`
-		INSERT INTO resource_requests AS current (target_key, url, requester, source_id, resource_id, status)
-		SELECT incoming.key, incoming.url, 'source', ${sourceId}::uuid, incoming.resource_id, 'fulfilled'
+		INSERT INTO resource_requests AS current (target_key, url, requester, monitor_id, resource_id, status)
+		SELECT incoming.key, incoming.url, 'monitor', ${monitorId}::uuid, incoming.resource_id, 'fulfilled'
 		FROM jsonb_to_recordset(${JSON.stringify(fulfilled.map(({ key, url, resourceId }) => ({ key, url, resource_id: resourceId })))}::jsonb)
 			AS incoming(key text, url text, resource_id uuid)
-		ON CONFLICT (source_id, target_key) WHERE requester = 'source' DO UPDATE SET
+		ON CONFLICT (monitor_id, target_key) WHERE requester = 'monitor' DO UPDATE SET
 			(status, resource_id, error, retry_after, updated_at) = ('fulfilled', EXCLUDED.resource_id, NULL, NULL, NOW())
 		WHERE current.status = 'failed'
 	`);
 }
 
-/** A user request whose Resource is written; the workflow completes the save before it is fulfilled. */
-export type UserRequest = Readonly<{ id: string; userId: string; notebookId: string | null; storedObjectId: string | null }>;
-
 /**
- * In the transaction that wrote or kept the Resource: settles every request waiting on the lead's key. A source becomes
- * the Resource's discovery source if it has none, a carrier whose text is unchanged gains it as its subject, and user
- * requests keep waiting for their saves. Returns those, and the carriers that gained the subject.
+ * In the transaction that wrote or kept the Resource: settles every request waiting on the lead's key; a fulfilled monitor
+ * request records where the Resource was discovered. A carrier whose text is unchanged gains it as its subject. Returns
+ * the carriers that gained the subject, and the user imports Web saves next.
  */
 export async function fulfillRequests(tx: NodePgDatabase, requestId: string, resourceId: string) {
 	const { rows } = await tx.execute<{
 		id: string;
 		requester: Requester['requester'];
-		sourceId: string | null;
 		parentResourceId: string | null;
 		parentTextHash: string | null;
-		userId: string | null;
-		notebookId: string | null;
-		storedObjectId: string | null;
 	}>(sql`
-		SELECT waiting.id::text, waiting.requester, waiting.source_id::text AS "sourceId",
-		       waiting.parent_resource_id::text AS "parentResourceId", waiting.parent_text_hash AS "parentTextHash",
-		       waiting.user_id AS "userId", waiting.notebook_id::text AS "notebookId", waiting.stored_object_id::text AS "storedObjectId"
+		SELECT waiting.id::text, waiting.requester,
+		       waiting.parent_resource_id::text AS "parentResourceId", waiting.parent_text_hash AS "parentTextHash"
 		FROM resource_requests lead
 		JOIN resource_requests waiting ON waiting.target_key = lead.target_key AND waiting.status = 'pending'
 		WHERE lead.id = ${requestId}::uuid
@@ -223,7 +215,7 @@ export async function fulfillRequests(tx: NodePgDatabase, requestId: string, res
 		WHERE lead.id = ${requestId}::uuid AND lead.target_key LIKE 'url:%'
 		ON CONFLICT (scheme, value) DO NOTHING
 	`);
-	if (!rows.length) return { users: [] as UserRequest[], carriers: [] as string[] };
+	if (!rows.length) return { carriers: [], imports: [] };
 	const subjects = rows.filter(({ requester }) => requester === 'subject');
 	const carriers = subjects.length
 		? (
@@ -241,46 +233,54 @@ export async function fulfillRequests(tx: NodePgDatabase, requestId: string, res
 	await tx.execute(sql`
 		UPDATE resource_requests SET
 			resource_id = ${resourceId}::uuid, updated_at = NOW(),
-			status = CASE WHEN requester = 'user' THEN 'pending'
-			              WHEN requester = 'subject' AND NOT (parent_resource_id = ANY(${sql.param(carriers)}::uuid[])) THEN 'failed'
+			status = CASE WHEN requester = 'subject' AND NOT (parent_resource_id = ANY(${sql.param(carriers)}::uuid[])) THEN 'failed'
 			              ELSE 'fulfilled' END,
 			error = CASE WHEN requester = 'subject' AND NOT (parent_resource_id = ANY(${sql.param(carriers)}::uuid[]))
 			             THEN 'Subject carrier was reacquired or is no longer eligible' END
 		WHERE id = ANY(${sql.param(rows.map(({ id }) => id))}::uuid[])
 	`);
-	const users = rows.flatMap(({ id, requester, userId, notebookId, storedObjectId }) =>
-		requester === 'user' && userId ? [{ id, userId, notebookId, storedObjectId }] : [],
-	);
-	return { users, carriers };
-}
-
-/** A user request whose save landed; its import now follows its Resource's translations. */
-export async function completeUserRequests(db: NodePgDatabase, ids: readonly string[]) {
-	if (!ids.length) return;
-	await db.execute(sql`
-		UPDATE resource_requests SET status = 'fulfilled', updated_at = NOW()
-		WHERE id = ANY(${sql.param([...ids])}::uuid[]) AND status = 'pending'
-	`);
+	return { carriers, imports: rows.flatMap(({ id, requester }) => (requester === 'user' ? [id] : [])) };
 }
 
 /**
  * Fails the lead and every request waiting on its key, or only the lead when `alone`. A request whose Resource is
- * already written is fulfilled instead, except a user's: its save is still owed, so it waits without a workflow for the
- * sweep to retry, up to its attempts. A source request retries after a doubling wait; any other gives up.
+ * already written is fulfilled instead. A monitor request retries after a doubling wait; any other gives up.
  */
 export async function failRequests(db: NodePgDatabase, requestId: string, error: string, alone = false) {
 	await db.execute(sql`
 		UPDATE resource_requests SET
-			status = CASE WHEN resource_id IS NULL OR requester = 'resync' THEN 'failed'
-			              WHEN requester <> 'user' THEN 'fulfilled'
-			              WHEN user_id IS NOT NULL AND attempts + 1 < ${SAVE_ATTEMPTS} THEN 'pending'
-			              ELSE 'failed' END,
-			workflow_id = CASE WHEN requester = 'user' AND resource_id IS NOT NULL THEN NULL ELSE workflow_id END,
+			status = CASE WHEN resource_id IS NULL OR requester = 'resync' THEN 'failed' ELSE 'fulfilled' END,
 			attempts = attempts + 1, error = LEFT(${error}, 500), updated_at = NOW(),
-			retry_after = CASE WHEN requester = 'source' THEN NOW() + ${SOURCE_RETRY} * LEAST(power(2, attempts), 30) END
+			retry_after = CASE WHEN requester = 'monitor' THEN NOW() + ${MONITOR_RETRY} * LEAST(power(2, attempts), 30) END
 		WHERE status = 'pending'
 		  AND (id = ${requestId}::uuid OR (${!alone} AND target_key = (SELECT target_key FROM resource_requests WHERE id = ${requestId}::uuid)))
 	`);
+}
+
+/**
+ * Records a monitor's judged entry on every request waiting on its key, under the key's lock so none joins meanwhile, and
+ * rejects them when the score is below `min` and only monitors wait: a monitor never asks for a rejected URL again. A
+ * user, a carrier or a resync waiting too keeps it. Returns the monitors whose entry was rejected, none when it was kept.
+ */
+export async function judgeMonitorRequests(db: NodePgDatabase, requestId: string, quality: number, min: number) {
+	return db.transaction(async (tx) => {
+		const { rows } = await tx.execute<{ key: string }>(sql`SELECT target_key AS key FROM resource_requests WHERE id = ${requestId}::uuid`);
+		const key = rows[0]?.key;
+		if (!key) return [];
+		await lockKeys(tx, 'commonplot:request:', [key]);
+		const { rows: waiting } = await tx.execute<{ id: string; requester: Requester['requester']; monitorId: string | null }>(sql`
+			SELECT id::text, requester, monitor_id::text AS "monitorId" FROM resource_requests
+			WHERE target_key = ${key} AND status = 'pending' FOR UPDATE
+		`);
+		const rejected = quality < min && waiting.length > 0 && waiting.every(({ requester }) => requester === 'monitor');
+		await tx.execute(sql`
+			UPDATE resource_requests SET quality_score = ${quality}, updated_at = NOW(),
+				status = CASE WHEN ${rejected} THEN 'rejected' ELSE status END,
+				attempts = attempts + CASE WHEN ${rejected} THEN 1 ELSE 0 END
+			WHERE id = ANY(${sql.param(waiting.map(({ id }) => id))}::uuid[])
+		`);
+		return rejected ? waiting.map(({ monitorId }) => monitorId!) : [];
+	});
 }
 
 /** Leads whose workflow has been quiet a while, touched so the next sweep checks others first. */
@@ -313,7 +313,7 @@ export async function promoteOrphanRequests(db: NodePgDatabase, limit: number) {
 	return db.transaction(async (tx) => {
 		await lockKeys(
 			tx,
-			'newsence:request:',
+			'commonplot:request:',
 			rows.map(({ targetKey }) => targetKey),
 		);
 		const leads: RequestLead[] = [];
@@ -323,34 +323,4 @@ export async function promoteOrphanRequests(db: NodePgDatabase, limit: number) {
 		}
 		return leads;
 	});
-}
-
-/** User requests whose Resource was written by a workflow that never completed their saves. */
-export async function unsavedUserRequests(db: NodePgDatabase, limit: number) {
-	const { rows } = await db.execute<UserRequest & { resourceId: string }>(sql`
-		SELECT id::text, user_id AS "userId", notebook_id::text AS "notebookId", stored_object_id::text AS "storedObjectId",
-		       resource_id::text AS "resourceId"
-		FROM resource_requests
-		WHERE status = 'pending' AND requester = 'user' AND workflow_id IS NULL AND resource_id IS NOT NULL AND user_id IS NOT NULL
-		  AND updated_at < NOW() - interval '30 minutes'
-		ORDER BY updated_at LIMIT ${limit}
-	`);
-	return rows;
-}
-
-/** Each import's request as Web reads its progress, with the text its translation follows. */
-export async function loadImportRequests(db: NodePgDatabase, ids: readonly string[]) {
-	if (!ids.length) return [];
-	const { rows } = await db.execute<{
-		id: string;
-		status: RequestRow['status'];
-		resourceId: string | null;
-		textHash: string | null;
-	}>(sql`
-		SELECT request.id::text, request.status, request.resource_id::text AS "resourceId", resource.text_hash AS "textHash"
-		FROM resource_requests request
-		LEFT JOIN resources resource ON resource.id = request.resource_id
-		WHERE request.id = ANY(${sql.param([...ids])}::uuid[])
-	`);
-	return rows;
 }

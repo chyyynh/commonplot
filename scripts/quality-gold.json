@@ -1,0 +1,587 @@
+[
+	{
+		"id": "7226f294-0a51-4397-b0a0-ebfead1caa29",
+		"url": "https://techcrunch.com/2026/10/22/1password-launches-a-way-for-ai-agents-to-log-in-on-your-behalf-without-seeing-your-password/",
+		"label": "save"
+	},
+	{
+		"id": "ca95a7b8-4ce4-44c2-ae37-8963315a272c",
+		"url": "https://github.com/vladocar/Sumi.css",
+		"label": "unsure"
+	},
+	{
+		"id": "d73fe1f1-2ad0-4c3f-b61c-fb9a8fb376ca",
+		"url": "https://x.com/i/status/2113784177338491147",
+		"label": "skip"
+	},
+	{
+		"id": "239314bf-14ba-4d35-b8e3-93cc5160b772",
+		"url": "https://blogs.nvidia.com/blog/european-leaders-vera-cpu-infrastructure/",
+		"label": "skip"
+	},
+	{
+		"id": "6becc8df-6386-40c8-ad2d-dec1490d8b98",
+		"url": "https://techcrunch.com/2026/10/08/5-days-to-techcrunch-disrupt-2026-dont-pay-more-at-the-door/",
+		"label": "skip"
+	},
+	{
+		"id": "c6d67bfa-a9c4-4177-b284-488671a54d80",
+		"url": "https://x.com/i/status/2107798208285966826",
+		"label": "unsure"
+	},
+	{
+		"id": "740d007c-a8ed-478c-96f8-1c9e0a1aa181",
+		"url": "https://cedardb.com/blog/sqldoom/",
+		"label": "save"
+	},
+	{
+		"id": "dec64785-acdc-49f1-9478-47b07629bbbb",
+		"url": "https://techcrunch.com/2026/10/28/7-days-until-techcrunch-founder-summit-save-up-to-100-before-doors-open/",
+		"label": "skip"
+	},
+	{
+		"id": "84733065-d34f-4de5-8635-c6a20a95257b",
+		"url": "https://x.com/i/status/2111487689975587084",
+		"label": "unsure"
+	},
+	{
+		"id": "4bcbf1d7-0d88-48a0-9d89-c5bdcded7321",
+		"url": "https://x.com/i/status/2115480236745974000",
+		"label": "save"
+	},
+	{
+		"id": "208662ec-875e-4734-bd6a-544e6e7592f7",
+		"url": "https://arxiv.org/abs/2610.13928",
+		"label": "save"
+	},
+	{
+		"id": "c9001e12-8379-44e9-8732-ceee6540e5bb",
+		"url": "https://x.com/i/status/2105335606125756472",
+		"label": "skip"
+	},
+	{
+		"id": "fef0e564-da31-4671-b459-1708053ac1c1",
+		"url": "https://x.com/i/status/2111414289030607236",
+		"label": "skip"
+	},
+	{
+		"id": "7c893c25-f91a-4aa8-b8ea-c5d5eb024174",
+		"url": "https://lesswrong.com/posts/zj8Pk3kJujk5LoqhK",
+		"label": "save"
+	},
+	{
+		"id": "4958bca9-758e-490a-baf8-bbc27ec45e72",
+		"url": "https://techcrunch.com/2026/10/02/medical-records-giant-epic-pauses-product-development-to-fix-security-bugs-that-risk-patients-data/",
+		"label": "save"
+	},
+	{
+		"id": "5b51d725-61d3-448b-81b0-eb2ef3d55cbd",
+		"url": "https://x.com/i/status/2113111603650474251",
+		"label": "unsure"
+	},
+	{
+		"id": "85071880-e22b-4349-9e19-1b31515784fe",
+		"url": "https://techcrunch.com/2026/10/06/get-all-your-questions-answered-at-techcrunch-disrupt-2026-the-full-breakout-session-agenda-revealed/",
+		"label": "skip"
+	},
+	{
+		"id": "631cc682-9234-4b2a-9b7c-f2c9d9ad484a",
+		"url": "https://x.com/i/status/2105242643559248234",
+		"label": "skip"
+	},
+	{
+		"id": "e1888fe5-bd17-4eac-9ea3-8eb48b281751",
+		"url": "https://arxiv.org/abs/2610.08144",
+		"label": "save"
+	},
+	{
+		"id": "011df41c-a89d-4c14-81c7-48dd89ed9c79",
+		"url": "https://x.com/i/status/2115183650082054586",
+		"label": "skip"
+	},
+	{
+		"id": "bd948d17-280d-45b4-9545-d88681eb4816",
+		"url": "https://lesswrong.com/posts/9jRJzyJs2ovnndezs",
+		"label": "save"
+	},
+	{
+		"id": "1e94b4bd-71d3-4dfc-9237-0e898b1119f9",
+		"url": "https://x.com/i/status/2105734197801562264",
+		"label": "skip"
+	},
+	{
+		"id": "40e02c53-84d1-4c33-ac1b-b5c0efb585ff",
+		"url": "https://x.com/i/status/2111898895869755420",
+		"label": "skip"
+	},
+	{
+		"id": "b1a11b51-65f6-4336-94d0-2188e92bb90a",
+		"url": "http://muratbuffalo.blogspot.com/2026/10/the-man-from-future-why-johnny-cant.html",
+		"label": "save"
+	},
+	{
+		"id": "9b100ec0-174c-4d00-b8c2-b0963969bd43",
+		"url": "https://x.com/i/status/2105333496768319969",
+		"label": "unsure"
+	},
+	{
+		"id": "5e3a41e2-8e52-4677-bc35-7c8e5a64cef6",
+		"url": "https://x.com/i/status/2107916376459579534",
+		"label": "skip"
+	},
+	{
+		"id": "29f85e24-4cde-4d69-b315-77a62eaed74f",
+		"url": "https://x.com/i/status/2111553994867028409",
+		"label": "save"
+	},
+	{
+		"id": "cf144cfb-e05b-4f3e-bc0b-7057fa0e1cdf",
+		"url": "https://allmodels.io/llm/abliterated",
+		"label": "skip"
+	},
+	{
+		"id": "1ddeba2f-1733-4a3b-8dbb-bdbad387025c",
+		"url": "https://x.com/i/status/2115508498607833290",
+		"label": "save"
+	},
+	{
+		"id": "3d78f9f1-a62a-42dc-97e5-30793190d857",
+		"url": "https://x.com/i/status/2106316022294667742",
+		"label": "skip"
+	},
+	{
+		"id": "4bb054da-9f33-42a6-b56f-7471166216a3",
+		"url": "https://www.firefox.com/en-US/enterprise/",
+		"label": "skip"
+	},
+	{
+		"id": "4e6edf70-bdfc-49fb-a62e-e688658ca59d",
+		"url": "https://x.com/i/status/2115796984712102280",
+		"label": "skip"
+	},
+	{
+		"id": "94c51c2a-3b6d-4c32-9448-f16c307e3ba9",
+		"url": "https://x.com/i/status/2108152128673808586",
+		"label": "unsure"
+	},
+	{
+		"id": "d79e8e09-b812-4abb-be81-cec0113b666e",
+		"url": "https://techcrunch.com/2026/10/07/openais-alexander-embiricos-is-coming-to-techcrunch-disrupt-2026-days-after-the-launch-of-dots/",
+		"label": "skip"
+	},
+	{
+		"id": "76a2d118-5526-4de2-9579-8e006db359f5",
+		"url": "https://spelk.press/gb/products/81-jokes-for-the-zx81",
+		"label": "skip"
+	},
+	{
+		"id": "67e538ff-b201-446f-9893-926868bd2428",
+		"url": "https://x.com/i/status/2109836485981778260",
+		"label": "skip"
+	},
+	{
+		"id": "2553d0d8-1eb4-49d9-8f39-013b3900b9ec",
+		"url": "https://pudding.cool/2026/10/kevin-bacon/",
+		"label": "save"
+	},
+	{
+		"id": "9d679074-9895-411f-b846-0b7c1bc992e9",
+		"url": "https://youtube.com/watch?v=eF6bMSjPepM",
+		"label": "save"
+	},
+	{
+		"id": "53a78332-f344-4844-add9-b40c8ff7b6db",
+		"url": "https://techcrunch.com/2026/10/22/left-alone-with-nothing-to-do-ai-agents-started-playing/",
+		"label": "save"
+	},
+	{
+		"id": "6473a593-4492-4f4f-a60b-51f8732a0c30",
+		"url": "https://x.com/i/status/2110420958737813612",
+		"label": "skip"
+	},
+	{
+		"id": "89645ae6-b4af-476a-9243-027304511108",
+		"url": "https://x.com/i/status/2107144243726729645",
+		"label": "save"
+	},
+	{
+		"id": "3b8066cc-a448-4633-a7e8-5f15deb1a800",
+		"url": "https://x.com/i/status/2110721710156562782",
+		"label": "skip"
+	},
+	{
+		"id": "b2c8cae8-d1ef-43c9-8bf6-5b8488f96bbd",
+		"url": "https://x.com/i/status/2114929079975563269",
+		"label": "save"
+	},
+	{
+		"id": "e9102917-3a42-4007-827d-d23180740e7f",
+		"url": "https://fred.stlouisfed.org/series/W270RE1A156NBEA",
+		"label": "skip"
+	},
+	{
+		"id": "6b9cc2cb-a831-4b68-b039-de83750cceb2",
+		"url": "https://x.com/i/status/2112626457541595476",
+		"label": "save"
+	},
+	{
+		"id": "94bead3b-0463-4451-9d0e-1823637da275",
+		"url": "https://x.com/i/status/2106704525960851930",
+		"label": "skip"
+	},
+	{
+		"id": "e8c22305-f103-4e02-843c-856103de895d",
+		"url": "https://x.com/i/status/2114790675279413738",
+		"label": "save"
+	},
+	{
+		"id": "0bdb3a18-0356-473a-90a0-0ded3cbbf925",
+		"url": "https://x.com/i/status/2105840601195311216",
+		"label": "save"
+	},
+	{
+		"id": "8875bcd6-0b82-474c-aa56-466b3ee28f6a",
+		"url": "https://lesswrong.com/posts/z4guBXZeymkgvd75S",
+		"label": "save"
+	},
+	{
+		"id": "c722de0d-298a-4ea4-8193-7f8780da8809",
+		"url": "https://x.com/i/status/2108992955382210632",
+		"label": "skip"
+	},
+	{
+		"id": "28054438-2dd1-4973-981c-74e1fdb27e0c",
+		"url": "https://www.theguardian.com/technology/2026/oct/15/israeli-firm-digital-ads-enabling-installation-of-zero-click-spyware-researchers-say",
+		"label": "save"
+	},
+	{
+		"id": "0d670dbb-1920-40d9-83f1-a01a7327236f",
+		"url": "http://gamesbyemail.com/WoodTape/Default.htm",
+		"label": "unsure"
+	},
+	{
+		"id": "b76b8f7c-1d1b-4bc3-9b45-77b4a1c13239",
+		"url": "https://x.com/i/status/2114042708105060501",
+		"label": "skip"
+	},
+	{
+		"id": "c381b2df-7f4a-446c-a3b4-05ce18806ec9",
+		"url": "https://x.com/i/status/2113505009476190666",
+		"label": "skip"
+	},
+	{
+		"id": "98ed5ffb-c773-488f-b605-0b938532978c",
+		"url": "https://korindiehacker.bloffy.blog/en/removing-nextjs-got-my-blog-to-100-on-every-lighthouse-category",
+		"label": "save"
+	},
+	{
+		"id": "8e5381e5-a801-4409-87c3-7757da44c90f",
+		"url": "https://x.com/i/status/2115229306490126432",
+		"label": "save"
+	},
+	{
+		"id": "558a7273-c761-4ec7-b1ac-7541cca8e1b2",
+		"url": "https://techcrunch.com/2026/10/17/tiktok-permanently-bans-musk-documentary-advertising-account/",
+		"label": "skip"
+	},
+	{
+		"id": "5add359f-251e-445e-9817-f1dd949ae89d",
+		"url": "https://youtube.com/watch?v=7fZ1rFcm1nA",
+		"label": "skip"
+	},
+	{
+		"id": "72741f8c-143a-4f38-a0ba-02e67356e673",
+		"url": "https://phreak.ing/",
+		"label": "skip"
+	},
+	{
+		"id": "a17a4e4f-4137-4bd5-977d-8b0259e4288b",
+		"url": "https://x.com/i/status/2113685028664492405",
+		"label": "save"
+	},
+	{
+		"id": "e68c75a9-6f22-4daf-8611-31a9fee188b8",
+		"url": "https://x.com/i/status/2114469269823992179",
+		"label": "save"
+	},
+	{
+		"id": "6dcb74cc-6443-4d0e-a0ef-c28a8cb850f7",
+		"url": "https://x.com/i/status/2107801047687463078",
+		"label": "skip"
+	},
+	{
+		"id": "ddc8ecf4-2d39-48d7-afd6-6c292fc631ea",
+		"url": "https://x.com/i/status/2114402733629268468",
+		"label": "unsure"
+	},
+	{
+		"id": "cc2db40a-eefc-40f2-ab65-860ab70e2941",
+		"url": "https://stratechery.com/2026/do-you-trust-apple/",
+		"label": "save"
+	},
+	{
+		"id": "a82bb719-c662-4add-8b1c-c555fbe56018",
+		"url": "https://sheets.works/data-viz/holding-up-the-internet",
+		"label": "save"
+	},
+	{
+		"id": "5ede1b9e-9f29-4e57-8075-971e55aee16d",
+		"url": "https://wonderhop.io/en/",
+		"label": "skip"
+	},
+	{
+		"id": "5e8c0eb8-6234-4564-b03c-fac636a9c318",
+		"url": "https://x.com/i/status/2108638867326968196",
+		"label": "save"
+	},
+	{
+		"id": "0b903745-aee0-4248-a31d-25ddcdc16319",
+		"url": "https://x.com/i/status/2108166816099098943",
+		"label": "unsure"
+	},
+	{
+		"id": "83fcab85-928b-4951-948d-9e5146d5f588",
+		"url": "https://lesswrong.com/posts/Y3G26fHXYM3SKYEHh",
+		"label": "save"
+	},
+	{
+		"id": "1f735676-105e-4a83-ad4a-2bb8bc8a946d",
+		"url": "https://blogs.nvidia.com/blog/telecom-operators-open-models/",
+		"label": "skip"
+	},
+	{
+		"id": "b98476f6-2265-4d69-884a-043c1be2e038",
+		"url": "https://convo.casa/@b/117525936178835007",
+		"label": "skip"
+	},
+	{
+		"id": "c209d3d1-c133-480f-816c-6ecfa2578b7c",
+		"url": "https://x.com/i/status/2110768288523251762",
+		"label": "save"
+	},
+	{
+		"id": "4a5fd01f-5b13-4c19-8857-95cfd7c5f3bf",
+		"url": "https://x.com/i/status/2111580933824655815",
+		"label": "skip"
+	},
+	{
+		"id": "4d390659-559f-4425-b4ea-50db4f6bb93c",
+		"url": "https://x.com/i/status/2112934529916616991",
+		"label": "save"
+	},
+	{
+		"id": "8cfcbe9b-bf2e-43e3-9845-6fa3ee4c6e54",
+		"url": "https://peec.ai/blog/publish-stats-get-cited-the-tactic-that-put-my-data-all-over-the-web",
+		"label": "save"
+	},
+	{
+		"id": "6d65f401-6e75-4b98-ac8e-7c4a03aaaf7d",
+		"url": "https://x.com/i/status/2111675690051588271",
+		"label": "unsure"
+	},
+	{
+		"id": "1f73c1d2-2a81-43b5-869a-29ad863237e8",
+		"url": "https://www.dataforprogress.org/blog/2026/9/29/americans-social-activity-has-steeply-declined-in-the-past-30-years",
+		"label": "save"
+	},
+	{
+		"id": "0230ac1b-c323-47b6-8df9-037454734478",
+		"url": "https://x.com/i/status/2111023397106770026",
+		"label": "save"
+	},
+	{
+		"id": "1e1756f5-1ae3-4ef5-9d19-612f39966149",
+		"url": "https://x.com/i/status/2110507362062840278",
+		"label": "skip"
+	},
+	{
+		"id": "022e7d27-1638-4874-95f3-8fcf56dc4303",
+		"url": "https://github.com/ardiri/palmos-lemmings",
+		"label": "skip"
+	},
+	{
+		"id": "aa625103-7fac-46fa-8f5c-ab4aaddd9cd3",
+		"url": "https://con.racket-lang.org/",
+		"label": "skip"
+	},
+	{
+		"id": "bedf515c-7cb0-4e7b-8e98-d345234ed46a",
+		"url": "https://x.com/i/status/2114557656530559285",
+		"label": "skip"
+	},
+	{
+		"id": "c7913eea-5f57-4713-8f23-5b9fe465984a",
+		"url": "https://www.theregister.com/databases/2026/10/16/postgres-19-delayed-after-ai-reviewers-find-more-bugs-than-humans-can-fix/5303471",
+		"label": "save"
+	},
+	{
+		"id": "3d646d49-3654-487a-bb88-190bad055fab",
+		"url": "https://www.anthropic.com/research/ai-expectations-gap",
+		"label": "save"
+	},
+	{
+		"id": "73502d9a-ecc9-4b59-bd12-0a3fa91e9b15",
+		"url": "https://forums.plex.tv/t/2026-20-0-beta-ios-and-tvos-4k-dovi-hdr10-won-t-play-infinite-spinning-circle/943966?page=5",
+		"label": "skip"
+	},
+	{
+		"id": "af4fb14c-2cc1-42e5-9347-40cb0c1c3597",
+		"url": "https://x.com/i/status/2110084393255514268",
+		"label": "save"
+	},
+	{
+		"id": "97c65700-f813-4bae-acb0-afb6a2ea7283",
+		"url": "https://lesswrong.com/posts/fDE6k8SGr9ANtMFcj",
+		"label": "save"
+	},
+	{
+		"id": "0af21cd7-1ae9-475b-9c7d-9b7bc44cdbec",
+		"url": "https://x.com/i/status/2108271552991252810",
+		"label": "unsure"
+	},
+	{
+		"id": "6d91ffdc-f9a1-4cab-894c-b373354dd6d5",
+		"url": "https://deepmind.google/blog/genie-4-a-new-generation-of-world-simulation/",
+		"label": "save"
+	},
+	{
+		"id": "6b76345f-0059-4c61-8f28-4e190ac826de",
+		"url": "https://x.com/i/status/2113390212911083894",
+		"label": "save"
+	},
+	{
+		"id": "8c25ba22-b4ed-47be-b7bd-c0d455c9b0fc",
+		"url": "https://lesswrong.com/posts/pY76hHbdD4jduX3YH",
+		"label": "save"
+	},
+	{
+		"id": "f0ef7191-a93d-491b-ba4c-da1e02dad2c4",
+		"url": "https://x.com/i/status/2112567264860061946",
+		"label": "skip"
+	},
+	{
+		"id": "3371d0dd-27f6-4d93-a14b-5b51cc0e0e78",
+		"url": "https://x.com/i/status/2108622285586239619",
+		"label": "skip"
+	},
+	{
+		"id": "196cfb6e-4450-4166-ab3e-a960bc0f7065",
+		"url": "https://uji.sh/ito/",
+		"label": "skip"
+	},
+	{
+		"id": "d4bb8d65-901b-465f-afb4-1a19ed69459d",
+		"url": "https://techcrunch.com/2026/10/25/cyberselfish-author-takes-aim-at-techno-libertarianism-as-her-book-returns-from-the-dead/",
+		"label": "save"
+	},
+	{
+		"id": "205e7ee0-51e5-4640-a61a-48404218f22e",
+		"url": "https://eliastaylor.com/noexploit/",
+		"label": "save"
+	},
+	{
+		"id": "82b0ec13-7fde-443c-b619-51dfdb75a0a7",
+		"url": "https://x.com/i/status/2113694852281938162",
+		"label": "save"
+	},
+	{
+		"id": "8b3082f7-b71f-42a7-a5fe-123296292610",
+		"url": "https://x.com/i/status/2114390310713495731",
+		"label": "unsure"
+	},
+	{
+		"id": "2b44d69e-d002-4844-a52d-aa3c540ee980",
+		"url": "https://mastodon.catgirl.cloud/@49016/117475976434068995",
+		"label": "skip"
+	},
+	{
+		"id": "c15ed325-6db6-4e78-809b-d445c4beadb6",
+		"url": "https://x.com/i/status/2111420842613899537",
+		"label": "skip"
+	},
+	{
+		"id": "53fa9a7b-743c-4b67-abbc-789b643c941f",
+		"url": "https://www.404media.co/lawmakers-introduce-multiple-laws-to-curb-flock-after-404-media-coverage/",
+		"label": "save"
+	},
+	{
+		"id": "b7a9cb1e-99e0-4cbe-b30e-1eb47fef539d",
+		"url": "https://youtube.com/watch?v=DDZ-a6bAn3Y",
+		"label": "unsure"
+	},
+	{
+		"id": "1f8a1e98-0fb5-4024-a313-e70a8dc9fe62",
+		"url": "https://x.com/i/status/2107367130765426932",
+		"label": "skip"
+	},
+	{
+		"id": "1b846284-971c-441b-a668-3ecb97180342",
+		"url": "https://x.com/i/status/2110527175765958968",
+		"label": "save"
+	},
+	{
+		"id": "3cd19cee-9e35-4394-bf92-b37b331304b6",
+		"url": "https://x.com/i/status/2108559440571933172",
+		"label": "skip"
+	},
+	{
+		"id": "64170a64-a4d2-4d97-ae82-790fc1e05f4a",
+		"url": "https://techcrunch.com/2026/10/19/apple-updates-guidelines-to-ban-nudify-apps-masquerading-as-regular-apps-to-pass-review/",
+		"label": "save"
+	},
+	{
+		"id": "9e5e2b28-fbf4-4b53-b98c-6d4d6c462635",
+		"url": "https://youtube.com/watch?v=LKrwhjOI8Nc",
+		"label": "save"
+	},
+	{
+		"id": "d68d3c61-1ebe-4dc5-9ce0-93a245c14420",
+		"url": "https://www.technologyreview.com/2026/10/19/1147095/ai-stranded-claude-virtual-desert-island-play/",
+		"label": "save"
+	},
+	{
+		"id": "4ef3032b-84a5-4e9b-b51f-f19f38002d4b",
+		"url": "https://x.com/i/status/2109223745856348497",
+		"label": "skip"
+	},
+	{
+		"id": "234573f0-964b-4cf8-8074-21d58d39d849",
+		"url": "https://www.wired.com/story/onlyfans-creators-are-pissed-that-meta-lets-muse-talk-dirty/",
+		"label": "save"
+	},
+	{
+		"id": "a007fc4c-db96-459a-9009-b1c75567bb44",
+		"url": "https://techcrunch.com/2026/10/14/gudea-leverages-ai-to-help-organizations-prevent-social-media-crises-before-they-erupt/",
+		"label": "unsure"
+	},
+	{
+		"id": "0a987cc8-67ea-4e99-ad79-26e4e88b1a1e",
+		"url": "https://x.com/i/status/2105819303471976479",
+		"label": "save"
+	},
+	{
+		"id": "9f5b0eac-b35b-4937-9666-aba1d069834b",
+		"url": "https://techcrunch.com/2026/10/07/while-vcs-crowd-into-san-francisco-endeavor-catalyst-raises-320m-for-founders-elsewhere/",
+		"label": "unsure"
+	},
+	{
+		"id": "8978b0f3-c09b-4f30-befa-e060417ae4ac",
+		"url": "https://x.com/i/status/2105967029861953597",
+		"label": "unsure"
+	},
+	{
+		"id": "ea3b9a78-2728-4850-834d-65f9d183d0a8",
+		"url": "https://youtube.com/watch?v=eqOfmtTJD1A",
+		"label": "unsure"
+	},
+	{
+		"id": "0b4ce0a1-5f5a-482d-92a3-c7410b35d932",
+		"url": "https://x.com/i/status/2110663080246132855",
+		"label": "unsure"
+	},
+	{
+		"id": "ccc8210f-d1ae-44c2-9a62-e43a51228d34",
+		"url": "https://x.com/i/status/2110535361013366840",
+		"label": "unsure"
+	}
+]

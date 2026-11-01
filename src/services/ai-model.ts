@@ -133,5 +133,5 @@ export function aiRetryDelay({ ctx, error }: WorkflowDynamicDelayContext): numbe
 }
 
 /** Step retries for Workers AI calls: waits past the per-minute rate window. */
-export const AI_STEP_RETRIES = { limit: 5, delay: aiRetryDelay, backoff: 'constant' } as const;
+const AI_STEP_RETRIES = { limit: 5, delay: aiRetryDelay, backoff: 'constant' } as const;
 export const AI_STEP = { retries: AI_STEP_RETRIES, timeout: '600 seconds' } as const;

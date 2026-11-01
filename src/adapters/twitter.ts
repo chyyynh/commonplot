@@ -509,7 +509,7 @@ async function resolveTweetContent(tweet: Tweet, loadArticle: () => Promise<Twit
 	const quotedUrl = quote && tweetIdOf(quote.url) === quote.id ? quote.url : undefined;
 	// X shows the quote box instead of a link card, so the quote wins.
 	const subjectUrl = quotedUrl ?? linkedContentUrl;
-	const resource = { source: 'Twitter', originalLang: tweet.lang ?? 'und', summary: null, fileType: null };
+	const resource = { source: 'Twitter', summary: null, fileType: null };
 
 	if (longformUrl) {
 		console.info({ tag: 'TWITTER', msg: 'Detected Twitter longform', longformUrl });

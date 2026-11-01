@@ -1,10 +1,12 @@
 import type { WorkflowStep } from 'cloudflare:workers';
 import { NonRetryableError } from 'cloudflare:workflows';
 import type { AcquiredResource, AcquisitionInput, PlatformResource, ReadDocument } from '../contracts/acquired-resource';
-import { normalizeAcquiredResource } from '../contracts/normalize-resource';
+import { type NormalizedResource, normalizeAcquiredResource } from '../contracts/normalize-resource';
 import { paperIdentifiersFromIdentity } from '../contracts/paper-identity';
+import { QUALITY_QUESTION, qualityState } from '../contracts/quality';
 import type { ResourceIdentifier } from '../contracts/resource';
 import type { ResourcePlatform } from '../contracts/resource-kinds';
+import { DETECTED_LANGUAGES } from '../contracts/resource-language';
 import { RESOURCE_PLATFORMS, resolveResourceUrl } from '../contracts/resource-url';
 import { PDF_MIME } from '../contracts/storage-keys';
 import type { WorkCandidate } from '../services/crossref';
@@ -174,15 +176,78 @@ async function stageUrlAcquisition(
 	return stageDocument(env, step, page, input.processingId);
 }
 
-export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep, input: AcquisitionInput, processingId: string) {
-	if (input.kind === 'url')
-		return normalizeAcquiredResource(await stageUrlAcquisition(env, step, { ...input, processingId }), input.sourceHints);
-	const { contentHash, fileName } = input.pdf;
-	const document = await stagePdfDocument(env, step, {
-		url: null,
-		fileName,
-		inputContentHash: contentHash,
-		sourceLabel: `Stored PDF ${input.objectId}`,
+/**
+ * The language an original is written in, as Jev reads its title and text: a detected language, `und` for any other
+ * one or when Jev fails, `zxx` for no prose. Its top answer is taken however sure: on 400 stored originals it was right
+ * wherever it disagreed with the stored language, and its unsure answers split a language with no prose. What a source
+ * declares is not asked: X tags Chinese posts `ja`, and pages often keep a template's `en`.
+ */
+async function stageLanguage(env: CoreEnv, step: WorkflowStep, resource: AcquiredResource, processingId: string): Promise<string> {
+	const text = `${resource.title ?? ''}\n\n${resource.content}`.trim();
+	if (!/\p{L}/u.test(text)) return 'zxx';
+	const answer = await stepJson(step, 'identify-language-v1', IDENTIFY_STEP, async () => {
+		const { answers } = await askJev(env, { feature: 'resource-language', processing_id: processingId }, text.slice(0, JEV_TEXT_CHARS), {
+			language: {
+				type: 'choice',
+				instructions: 'What language is the document mainly written in (its prose, not names, code or quoted terms)?',
+				criteria: { ...DETECTED_LANGUAGES, other: 'Another language', none: 'No prose: code, data, numbers or an empty page' },
+			},
+		});
+		const language = answers.language;
+		return language && 'probabilities' in language ? language.probabilities : {};
+	}).catch((error: unknown) => {
+		console.error({ tag: 'IDENTIFY', event: 'language_failed', processing_id: processingId, error: errorMessage(error) });
+		return {};
 	});
-	return normalizeAcquiredResource(await stageDocument(env, step, document, processingId));
+	const [picked = 'other'] = Object.entries(answer).sort((a, b) => b[1] - a[1])[0] ?? [];
+	return picked === 'other' ? 'und' : picked === 'none' ? 'zxx' : picked;
+}
+
+/**
+ * How likely a thoughtful reader is to save the Resource, judged on its full text up to Jev's limit: null for a private
+ * file, and when Jev fails, so a failure never keeps an entry out.
+ */
+export async function stageQuality(
+	env: CoreEnv,
+	step: WorkflowStep,
+	resource: NormalizedResource,
+	processingId: string,
+): Promise<number | null> {
+	if (resource.url === null) return null;
+	return step
+		.do('judge-quality-v1', IDENTIFY_STEP, async () => {
+			const { answers } = await askJev(
+				env,
+				{ feature: 'resource-quality', processing_id: processingId },
+				qualityState(resource.title, resource.content),
+				{
+					save: QUALITY_QUESTION,
+				},
+			);
+			const save = answers.save;
+			return save && 'noul' in save ? save.noul : null;
+		})
+		.catch((error: unknown) => {
+			console.error({ tag: 'IDENTIFY', event: 'quality_failed', processing_id: processingId, error: errorMessage(error) });
+			return null;
+		});
+}
+
+export async function stageResourceAcquisition(env: CoreEnv, step: WorkflowStep, input: AcquisitionInput, processingId: string) {
+	const resource =
+		input.kind === 'url'
+			? await stageUrlAcquisition(env, step, { ...input, processingId })
+			: await stageDocument(
+					env,
+					step,
+					await stagePdfDocument(env, step, {
+						url: null,
+						fileName: input.pdf.fileName,
+						inputContentHash: input.pdf.contentHash,
+						sourceLabel: `Stored PDF ${input.objectId}`,
+					}),
+					processingId,
+				);
+	const originalLang = await stageLanguage(env, step, resource, processingId);
+	return normalizeAcquiredResource(resource, originalLang, input.kind === 'url' ? input.sourceHints : undefined);
 }

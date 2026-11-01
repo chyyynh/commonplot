@@ -1,8 +1,8 @@
 {
 	"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
-	"name": "newsence",
-	"version": "1.5.0",
-	"description": "Save the articles, papers, posts and videos the assistant recommends to your commonplot library with one tap, search and ask about what you saved, your notebooks and your documents, and put notes into a notebook when you ask.",
+	"name": "commonplot",
+	"version": "2.2.0",
+	"description": "Save the articles, papers, posts and videos the assistant recommends to your commonplot library with one tap, search and ask about what you saved, your notebooks and your documents, and work in your notebooks when you ask.",
 	"author": {
 		"name": "commonplot",
 		"url": "https://www.commonplot.co"
@@ -20,7 +20,7 @@
 			"interface": {
 				"displayName": "commonplot",
 				"shortDescription": "Save reads, ask your library",
-				"longDescription": "commonplot shows the articles, papers, posts and videos the assistant recommends as cards. Press Save on a card to keep it in your commonplot library and public profile; nothing is saved without your press. Ask what you saved this week, or about a saved item, a notebook or a document you wrote, and the assistant reads it from your commonplot. When you ask, it can also write notes into one of your notebooks or add saves to it; it never edits or deletes what is there.",
+				"longDescription": "commonplot shows the articles, papers, posts and videos the assistant recommends as cards. Press Save on a card to keep it in your commonplot library and public profile; nothing is saved without your press. Ask what you saved this week, or about a saved item, a notebook or a document you wrote, and the assistant reads it from your commonplot. When you ask, it can also work in your notebooks: create them, write and edit documents, and add or remove sources (filing an item saves it). Each kind of change needs your separate permission, and it can delete only an empty notebook.",
 				"developerName": "commonplot",
 				"category": "Productivity",
 				"capabilities": [

@@ -4,7 +4,6 @@ import { cleanText, parseMarkdown } from './markdown';
 import { isPaperIdentifierScheme } from './paper-identity';
 import { ResourceIdentifiersSchema } from './resource';
 import { RESOURCE_KINDS, RESOURCE_PLATFORM_KINDS, ResourceCreatorsSchema } from './resource-kinds';
-import { detectResourceLanguage, ResourceLanguageSchema } from './resource-language';
 import { resolveResourceUrl } from './resource-url';
 
 /** Remove a duplicate heading only after Core has resolved the resource title. */
@@ -20,9 +19,9 @@ function withoutDuplicateResourceTitle(markdown: string, title: string): string 
 
 /**
  * The one normalization every adapter output passes through, before any paid enrichment: trims text, fills source
- * hints, resolves language, date, URLs, and checks the identity invariants the database also enforces.
+ * hints, resolves date, URLs, and checks the identity invariants the database also enforces.
  */
-export function normalizeAcquiredResource(resource: AcquiredResource, hints?: SourceHints) {
+export function normalizeAcquiredResource(resource: AcquiredResource, originalLang: string, hints?: SourceHints) {
 	const title = resource.title?.trim() || null;
 	const summary = resource.summary?.trim() || hints?.summary?.trim() || null;
 	if (RESOURCE_KINDS[resource.kind].titled ? !title : title !== null || summary !== null) {
@@ -54,7 +53,6 @@ export function normalizeAcquiredResource(resource: AcquiredResource, hints?: So
 	if (resource.url !== null && !resolvedUrl) throw new TypeError('Resource URL must be HTTP(S) without credentials');
 	const subject = resolveResourceUrl(resource.subjectUrl);
 	if (resource.subjectUrl !== null && !subject) throw new TypeError('Subject URL must be HTTP(S) without credentials');
-	const declaredLang = ResourceLanguageSchema.safeParse(resource.originalLang).data;
 	const parsedDate = Date.parse(resource.publishedDate ?? '');
 	const publishedDate = Number.isNaN(parsedDate) ? (hints?.publishedDate ?? null) : new Date(parsedDate).toISOString();
 	// A date in the future is a provider error; the Resource was published by today at the latest.
@@ -68,9 +66,7 @@ export function normalizeAcquiredResource(resource: AcquiredResource, hints?: So
 		resourceIdentifiers: identifiers,
 		creators: ResourceCreatorsSchema.parse(resource.creators),
 		kindMetadata,
-		originalLang: ResourceLanguageSchema.parse(
-			detectResourceLanguage(content, declaredLang && declaredLang !== 'und' ? declaredLang : (hints?.originalLang ?? 'und')),
-		),
+		originalLang,
 		publishedDate: publishedDate && publishedDate.slice(0, 10) > today ? new Date(today).toISOString() : publishedDate,
 		url: resolvedUrl?.url ?? null,
 		normalizedUrl: resolvedUrl?.normalizedUrl ?? null,

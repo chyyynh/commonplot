@@ -1,17 +1,11 @@
 import { z } from 'zod';
-import { ResourceLanguageSchema } from './resource-language';
 import { ResourceUrlSchema } from './resource-url';
 
 const ResourceDraftTargetSchema = z.strictObject({
 	kind: z.literal('draft'),
 	url: ResourceUrlSchema.max(2_048),
-	sourceHints: z
-		.strictObject({
-			summary: z.string().max(20_000).optional(),
-			originalLang: ResourceLanguageSchema.optional().catch(undefined),
-			publishedDate: z.iso.datetime().optional(),
-		})
-		.optional(),
+	// Not strict: a request queued before hints lost `originalLang` still carries it.
+	sourceHints: z.object({ summary: z.string().max(20_000).optional(), publishedDate: z.iso.datetime().optional() }).optional(),
 });
 
 const StoredBlobTargetSchema = z.strictObject({
@@ -31,13 +25,16 @@ const RequestTargetSchema = z.discriminatedUnion('kind', [StoredBlobTargetSchema
 
 export type RequestTarget = z.infer<typeof RequestTargetSchema>;
 
-const requestId = { requestId: z.uuid() };
+/** Who asked for a Resource: a monitor, a carrier for its subject, a user's import or upload, or a resync. */
+export const REQUESTERS = ['monitor', 'subject', 'user', 'resync'] as const;
+
+const lead = { requestId: z.uuid(), requester: z.enum(REQUESTERS) };
 
 /** A workflow acquires for the request it leads, and settles every request waiting on the same key. */
 export const ResourceProcessingTargetSchema = z.discriminatedUnion('kind', [
-	StoredBlobTargetSchema.extend(requestId),
-	ReacquireTargetSchema.extend(requestId),
-	ResourceDraftTargetSchema.extend(requestId),
+	StoredBlobTargetSchema.extend(lead),
+	ReacquireTargetSchema.extend(lead),
+	ResourceDraftTargetSchema.extend(lead),
 ]);
 
 export type ResourceProcessingTarget = z.infer<typeof ResourceProcessingTargetSchema>;
@@ -48,16 +45,12 @@ export const ImportWorkflowIdSchema = z.string().pipe(z.templateLiteral([IMPORT_
 
 export const ResourceImportDispatchSchema = z.strictObject({
 	workflowId: ImportWorkflowIdSchema,
-	payload: z.discriminatedUnion('kind', [
-		ResourceDraftTargetSchema.pick({ kind: true, url: true }).extend({
-			saveTarget: z.strictObject({
-				kind: z.literal('resourceSave'),
-				userId: z.string().min(1).max(128),
-				notebookId: z.uuid().nullable(),
-			}),
-		}),
-		StoredBlobTargetSchema,
-	]),
+	userId: z.string().min(1).max(128),
+	/** Where Web files the Resource; null is the library. */
+	notebookId: z.uuid().nullable(),
+	/** What the inbox shows until the Resource has a title. */
+	label: z.string().min(1).max(240),
+	payload: z.discriminatedUnion('kind', [ResourceDraftTargetSchema.pick({ kind: true, url: true }), StoredBlobTargetSchema]),
 });
 
 export const SourceResourceDraftSchema = ResourceDraftTargetSchema.pick({ url: true, sourceHints: true });

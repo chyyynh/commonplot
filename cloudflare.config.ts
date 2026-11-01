@@ -24,9 +24,9 @@ export const coreWorker = defineWorker(({ mode }) => ({
 	entrypoint,
 	workersDev: false,
 	/**
-	 * A rebuild of 500k resources enqueues 10k sync batches, then lists and
-	 * prunes 10k search item pages; the sync queue does the uploads.
-	 * Workflows count subrequests per instance, so keep headroom.
+	 * A vectors backfill of 500k resources runs 10k pages, each embedding and
+	 * writing its Resources' vectors. Workflows count subrequests per
+	 * instance, so keep headroom.
 	 */
 	limits: {
 		cpuMs: 180000,
@@ -48,11 +48,9 @@ export const coreWorker = defineWorker(({ mode }) => ({
 		},
 	},
 	triggers: [
-		// RSS monitor, incl. YouTube channel feeds (every 5 minutes)
+		// Due monitors, derivations and stalled requests (every 5 minutes)
 		triggers.scheduled({ schedule: '*/5 * * * *' }),
-		// Twitter monitor (every 6 hours)
-		triggers.scheduled({ schedule: '0 */6 * * *' }),
-		/** AI Search is a derived index; this Queue keeps it off canonical Resource Workflows. */
+		/** The corpus vectors are a derived index; this Queue keeps them off canonical Resource Workflows. */
 		triggers.queue({
 			name: named(mode, 'resource-search-sync'),
 			maxBatchSize: 10,
@@ -80,10 +78,6 @@ export const coreWorker = defineWorker(({ mode }) => ({
 		/** Finds the named entities each original is about. */
 		FASTINO_API_KEY: bindings.secret(),
 		AI: bindings.ai({}),
-		AI_SEARCH: bindings.aiSearch({
-			name: named(mode, 'newsence-corpus-v7'),
-			dev: { remote: true },
-		}),
 		/** Hyperdrive — PlanetScale PostgreSQL connection pooling. */
 		HYPERDRIVE: bindings.hyperdrive({
 			id: mode === 'staging' ? STAGING_HYPERDRIVE_ID : '5d7b16cf287e4dcc8b36d43461ccbf5c',
@@ -97,8 +91,8 @@ export const coreWorker = defineWorker(({ mode }) => ({
 		 */
 		R2: bindings.r2({ name: named(mode, 'newsence') }),
 		RESOURCE_SEARCH_SYNC_QUEUE: bindings.queue({ name: named(mode, 'resource-search-sync') }),
-		/** One bge-m3 vector per searchable corpus Resource, written by the search sync queue, for recommendations. */
-		RESOURCE_VECTORS: bindings.vectorize({ name: named(mode, 'newsence-resources-v1') }),
+		/** The public corpus as bge-m3 vectors: one per Resource (`<id>:d`) plus its text's chunks (`<id>:<n>`). */
+		CORPUS_VECTORS: bindings.vectorize({ name: named(mode, 'newsence-corpus-vectors-v1') }),
 		APP: bindings.worker({
 			worker: named(mode, 'newsence-web-tanstack'),
 			exportName: 'DomainRpc',
@@ -108,6 +102,7 @@ export const coreWorker = defineWorker(({ mode }) => ({
 		/** Code reaches these Durable Objects and Workflows through `exports` from `cloudflare:workers`. */
 		ZoteroSdt: exports.durableObject({ storage: 'sqlite', container: zoteroSdt }),
 		YouTubeCaptionFetcher: exports.durableObject({ storage: 'sqlite' }),
+		PageFetcher: exports.durableObject({ storage: 'sqlite' }),
 		ResourceProcessingV2Workflow: exports.workflow({
 			name: named(mode, 'newsence-resource-processing-v2'),
 		}),
@@ -120,9 +115,9 @@ export const coreWorker = defineWorker(({ mode }) => ({
 			name: named(mode, 'newsence-resource-translation-v2'),
 			defaultRetention: { successRetention: '7 days', errorRetention: '7 days' },
 		}),
-		/** 500k resources need 10k enqueue steps before pruning and readiness checks. */
-		SearchIndexRebuildWorkflow: exports.workflow({
-			name: named(mode, 'newsence-search-index-rebuild'),
+		/** Writes every corpus Resource's vectors, a page per step. */
+		CorpusVectorsBackfillWorkflow: exports.workflow({
+			name: named(mode, 'newsence-corpus-vectors-backfill'),
 			limits: { steps: 25000 },
 		}),
 	},

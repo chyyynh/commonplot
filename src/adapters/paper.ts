@@ -280,7 +280,6 @@ export async function stagePaper(
 		summary: abstract?.trim() || null,
 		content,
 		references: fullText?.references ?? [],
-		originalLang: fullText?.originalLang ?? 'und',
 		publishedDate: publishedDate && !Number.isNaN(publishedDate.getTime()) ? publishedDate.toISOString() : null,
 		creators: authors?.length ? authors.map((literal) => ({ role: 'author', literal })) : (fullText?.creators ?? []),
 		kindMetadata,
@@ -291,7 +290,7 @@ export async function stagePaper(
 
 /** What a paper's full text gives it, from its PDF or arXiv's HTML. */
 type FullText = Pick<AcquiredResource, 'title' | 'content' | 'creators'> &
-	Partial<Pick<AcquiredResource, 'references' | 'fileType' | 'pdfHash' | 'originalLang'>>;
+	Partial<Pick<AcquiredResource, 'references' | 'fileType' | 'pdfHash'>>;
 
 const MAX_WORK_CANDIDATES = 6;
 
