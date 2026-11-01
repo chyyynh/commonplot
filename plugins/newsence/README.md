@@ -15,9 +15,10 @@ This plugin connects your commonplot library to Claude or ChatGPT.
   your saves and answers from their stored text.
 - **Read your notebooks and documents**, once you allow it.
 - **Write into a notebook when you ask.** "Put a summary of this chat in my
-  research notebook" creates a new document there, and saved items can be
-  added to a notebook as sources. The plugin only adds; it never edits or
-  deletes anything in commonplot.
+  research notebook" creates a new document there, and commonplot items can be
+  added to a notebook as sources; an item you had not saved is saved when it
+  is filed. The plugin only adds; it never edits or deletes anything in
+  commonplot.
 
 ## What's inside
 

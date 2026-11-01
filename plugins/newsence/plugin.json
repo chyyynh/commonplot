@@ -1,7 +1,7 @@
 {
 	"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
 	"name": "newsence",
-	"version": "1.5.0",
+	"version": "1.5.1",
 	"description": "Save the articles, papers, posts and videos the assistant recommends to your commonplot library with one tap, search and ask about what you saved, your notebooks and your documents, and put notes into a notebook when you ask.",
 	"author": {
 		"name": "commonplot",
@@ -20,7 +20,7 @@
 			"interface": {
 				"displayName": "commonplot",
 				"shortDescription": "Save reads, ask your library",
-				"longDescription": "commonplot shows the articles, papers, posts and videos the assistant recommends as cards. Press Save on a card to keep it in your commonplot library and public profile; nothing is saved without your press. Ask what you saved this week, or about a saved item, a notebook or a document you wrote, and the assistant reads it from your commonplot. When you ask, it can also write notes into one of your notebooks or add saves to it; it never edits or deletes what is there.",
+				"longDescription": "commonplot shows the articles, papers, posts and videos the assistant recommends as cards. Press Save on a card to keep it in your commonplot library and public profile; nothing is saved without your press. Ask what you saved this week, or about a saved item, a notebook or a document you wrote, and the assistant reads it from your commonplot. When you ask, it can also write notes into one of your notebooks or file items there, which saves any you had not saved; it never edits or deletes what is there.",
 				"developerName": "commonplot",
 				"category": "Productivity",
 				"capabilities": [
