@@ -14,11 +14,15 @@ This plugin connects your commonplot library to Claude or ChatGPT.
   evaluation paper I saved and summarize it." The assistant searches and reads
   your saves and answers from their stored text.
 - **Read your notebooks and documents**, once you allow it.
-- **Write into a notebook when you ask.** "Put a summary of this chat in my
-  research notebook" creates a new document there, and commonplot items can be
-  added to a notebook as sources; an item you had not saved is saved when it
-  is filed. The plugin only adds; it never edits or deletes anything in
-  commonplot.
+- **Work in your notebooks when you ask.** "Put a summary of this chat in my
+  research notebook", "start a notebook on agent evaluation and add these two
+  papers", "make a podcast from it", "brief me every Monday on what is new
+  there". The assistant can create and rename notebooks, write and edit their
+  documents, add and remove sources, start podcasts and reports, and set up
+  routines. An item you had not saved is saved when it is filed. It deletes a
+  document, a source from a notebook or a routine only when you ask, and it
+  can delete only a notebook that is empty; your host asks you before each
+  change.
 
 ## What's inside
 
@@ -27,7 +31,7 @@ This plugin connects your commonplot library to Claude or ChatGPT.
 | `.mcp.json`, `mcp.json` | The commonplot MCP server at `https://www.commonplot.co/api/mcp` |
 | `skills/recommend-reads` | When to show recommendations as save cards |
 | `skills/my-saves` | How to find and answer from your saves, notebooks and documents |
-| `skills/write-to-notebook` | When and how to write into a notebook |
+| `skills/notebooks` | When and how to work in a notebook |
 | `.claude-plugin/plugin.json` | Claude manifest |
 | `plugin.json` | ChatGPT manifest and listing |
 
@@ -37,9 +41,10 @@ above, over HTTPS, signed in with OAuth.
 ## Connect
 
 You need a commonplot account. When you first use the plugin, the assistant
-asks you to sign in to commonplot and allow the connection. You choose
-whether to also allow reading notebooks and documents, and adding to
-notebooks; the assistant asks the first time it needs either.
+asks you to sign in to commonplot and allow the connection. Reading
+notebooks and documents, adding to notebooks, and changing them are three
+separate permissions; depending on the app, you grant them when you connect or
+the first time the assistant needs one.
 
 Disconnect any time in commonplot under **Settings → Account → Connected
 apps**, which ends access immediately.

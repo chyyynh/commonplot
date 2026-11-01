@@ -1,8 +1,8 @@
 {
 	"name": "commonplot",
 	"displayName": "commonplot",
-	"version": "2.0.1",
-	"description": "Save the articles, papers, posts and videos Claude recommends to your commonplot library with one tap, search and ask about what you saved, and put notes into a notebook when you ask.",
+	"version": "2.1.0",
+	"description": "Save the articles, papers, posts and videos Claude recommends to your commonplot library with one tap, search and ask about what you saved, and work in your notebooks when you ask.",
 	"author": {
 		"name": "commonplot",
 		"url": "https://www.commonplot.co"
