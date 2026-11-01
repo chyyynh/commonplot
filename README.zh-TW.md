@@ -10,7 +10,7 @@
 [![MCP](https://img.shields.io/badge/MCP-Compatible-8A2BE2?logo=anthropic&logoColor=white)](https://www.commonplot.co/api/mcp)
 [![Website](https://img.shields.io/badge/commonplot.co-live-00c853)](https://www.commonplot.co)
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/chyyynh/newsence)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/chyyynh/commonplot)
 
 [English](README.md) | [繁體中文](README.zh-TW.md)
 
