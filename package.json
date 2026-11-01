@@ -1,6 +1,7 @@
 {
 	"name": "commonplot-core",
 	"version": "0.0.0",
+	"license": "PolyForm-Noncommercial-1.0.0",
 	"private": true,
 	"packageManager": "pnpm@11.9.0",
 	"type": "module",

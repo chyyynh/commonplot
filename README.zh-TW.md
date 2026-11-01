@@ -4,6 +4,7 @@
 
 **[commonplot.co](https://www.commonplot.co) 背後的內容處理引擎**
 
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-orange.svg)](LICENSE.md)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![Website](https://img.shields.io/badge/commonplot.co-live-00c853)](https://www.commonplot.co)
 
@@ -156,3 +157,8 @@ Workflow、寫入和後續工作都不用改。
 commonplot 的 MCP server 在 `https://www.commonplot.co/api/mcp`（用 commonplot
 帳號登入）。[plugin](plugins/commonplot) 另外附上 skill，告訴助理什麼時候該用它。
 說明：[docs.commonplot.co](https://docs.commonplot.co/user/chatgpt-and-claude/)。
+
+## 授權
+
+引擎以 [PolyForm Noncommercial License 1.0.0](LICENSE.md) 公開原始碼：個人、研究、教育與非營利用途可以免費使用，不允許商業用途。
+[plugin](plugins/commonplot) 採用 [MIT](plugins/commonplot/LICENSE)。

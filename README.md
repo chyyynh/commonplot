@@ -4,6 +4,7 @@
 
 **The ingestion engine behind [commonplot.co](https://www.commonplot.co)**
 
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/License-PolyForm%20Noncommercial-orange.svg)](LICENSE.md)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![Website](https://img.shields.io/badge/commonplot.co-live-00c853)](https://www.commonplot.co)
 
@@ -164,3 +165,10 @@ commonplot's MCP server is at `https://www.commonplot.co/api/mcp` (sign in with
 a commonplot account). The [plugin](plugins/commonplot) adds the skills that
 tell the assistant when to use it. Guide:
 [docs.commonplot.co](https://docs.commonplot.co/user/chatgpt-and-claude/).
+
+## License
+
+The engine is source-available under the
+[PolyForm Noncommercial License 1.0.0](LICENSE.md): free for personal,
+research, educational and nonprofit use; commercial use is not permitted.
+The [plugin](plugins/commonplot) is [MIT](plugins/commonplot/LICENSE).
