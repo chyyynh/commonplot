@@ -1,13 +1,14 @@
 {
 	"name": "commonplot",
 	"displayName": "commonplot",
-	"version": "2.2.1",
+	"version": "2.2.2",
 	"description": "Save the articles, papers, posts and videos Claude recommends to your commonplot library with one tap, search and ask about what you saved, and work in your notebooks when you ask.",
 	"author": {
 		"name": "commonplot",
 		"url": "https://www.commonplot.co"
 	},
 	"homepage": "https://www.commonplot.co",
+	"repository": "https://github.com/chyyynh/commonplot",
 	"license": "MIT",
-	"privacyPolicyUrl": "https://www.commonplot.co/privacy"
+	"keywords": ["reading", "bookmarks", "research", "papers", "notes", "notebooks"]
 }
