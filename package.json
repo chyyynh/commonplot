@@ -1,5 +1,5 @@
 {
-	"name": "newsence-core",
+	"name": "commonplot-core",
 	"version": "0.0.0",
 	"private": true,
 	"packageManager": "pnpm@11.9.0",

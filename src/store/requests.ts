@@ -145,7 +145,7 @@ export async function recordRequests(db: NodePgDatabase, requests: readonly Reso
 	return db.transaction(async (tx) => {
 		await lockKeys(
 			tx,
-			'newsence:request:',
+			'commonplot:request:',
 			keyed.map(({ key }) => key),
 		);
 		const leads: RequestLead[] = [];
@@ -267,7 +267,7 @@ export async function judgeMonitorRequests(db: NodePgDatabase, requestId: string
 		const { rows } = await tx.execute<{ key: string }>(sql`SELECT target_key AS key FROM resource_requests WHERE id = ${requestId}::uuid`);
 		const key = rows[0]?.key;
 		if (!key) return [];
-		await lockKeys(tx, 'newsence:request:', [key]);
+		await lockKeys(tx, 'commonplot:request:', [key]);
 		const { rows: waiting } = await tx.execute<{ id: string; requester: Requester['requester']; monitorId: string | null }>(sql`
 			SELECT id::text, requester, monitor_id::text AS "monitorId" FROM resource_requests
 			WHERE target_key = ${key} AND status = 'pending' FOR UPDATE
@@ -313,7 +313,7 @@ export async function promoteOrphanRequests(db: NodePgDatabase, limit: number) {
 	return db.transaction(async (tx) => {
 		await lockKeys(
 			tx,
-			'newsence:request:',
+			'commonplot:request:',
 			rows.map(({ targetKey }) => targetKey),
 		);
 		const leads: RequestLead[] = [];

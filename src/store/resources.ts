@@ -343,7 +343,7 @@ async function claimRow(
 	];
 	await lockKeys(
 		tx,
-		'newsence:resource:',
+		'commonplot:resource:',
 		identities.flatMap(({ normalizedUrl, identifiers }) => [
 			...(normalizedUrl ? [`url:${normalizedUrl}`] : []),
 			...identifiers.map(({ scheme, value }) => `id:${scheme}:${value}`),

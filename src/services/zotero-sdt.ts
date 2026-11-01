@@ -39,7 +39,7 @@ const MAX_SOURCE_CROP_ALT_CHARS = 500;
 const MAX_SOURCE_CROPS = 64;
 const MAX_REF_PATH_DEPTH = 16;
 const PRINTED_MARKER = /^(?:[[(]?[\d\s,;–-]+[\])]?|[*†‡§¶]+)$/u;
-export const ZOTERO_SDT_ARTIFACT_VERSION = 'newsence-zotero-sdt-v2-02100446';
+export const ZOTERO_SDT_ARTIFACT_VERSION = 'commonplot-zotero-sdt-v2-02100446';
 
 type RefPath = readonly number[];
 

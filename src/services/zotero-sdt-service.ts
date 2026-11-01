@@ -19,7 +19,7 @@ import {
 } from './zotero-sdt.ts';
 
 const MAX_ERROR_BODY_BYTES = 4_096;
-const SOURCE_CROP_ARTIFACT_VERSION = 'newsence-zotero-source-crop-v2';
+const SOURCE_CROP_ARTIFACT_VERSION = 'commonplot-zotero-source-crop-v2';
 const ZOTERO_SDT_CONTAINER_NAME = 'structured-pdf-v1';
 const ZOTERO_SDT_MAX_RESPONSE_BYTES = 32 * 1024 * 1024;
 const CROP_BATCH_SIZE = 8;
