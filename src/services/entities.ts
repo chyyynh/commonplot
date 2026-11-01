@@ -353,7 +353,7 @@ const MATCH_BATCH = 300;
 const MATCH_CONCURRENCY = 4;
 /** How sure Jev must be before two entities merge, since a wrong merge moves Resources and followers. */
 const MERGE_CONFIDENCE = 0.8;
-/** Jev gives Claude or Llama about 0.7 as a product's name, and Pro, v4 or Studio under 0.4. */
+/** Asked from the name alone, Jev gives Claude 0.7 and GPT 0.55 as a product's name, and Pro, v4 or Studio under 0.4. */
 const PRODUCT_LINE_NAMED = 0.5;
 
 type UnmatchedAccount = UnmatchedEntity & { scheme: EntityKeyScheme; value: string };
@@ -439,31 +439,42 @@ async function matchAccount(env: CoreEnv, db: NodePgDatabase, account: Unmatched
 	return 1;
 }
 
-/** Questions asking whether a product is a version of each product line its name starts with, and whether that line's name is a product's at all. */
+/** Questions asking whether a product is a version of each product line its name starts with. */
 function productLineQuestions(name: string, lines: readonly { name: string }[]): Record<string, JevQuestion> {
 	return Object.fromEntries(
-		lines.flatMap((line, index) => [
-			[
-				`line${index}`,
-				{
-					type: 'choice',
-					instructions: `What is "${name}"?`,
-					criteria: {
-						version: `A model, version, tier, size or edition of ${line.name} itself`,
-						separate: `A separate app, tool, feature, service, platform or program that carries the ${line.name} name`,
-						unrelated: 'Something unrelated that only shares the name',
-					},
+		lines.map((line, index) => [
+			`line${index}`,
+			{
+				type: 'choice',
+				instructions: `What is "${name}"?`,
+				criteria: {
+					version: `A model, version, tier, size or edition of ${line.name} itself`,
+					separate: `A separate app, tool, feature, service, platform or program that carries the ${line.name} name`,
+					unrelated: 'Something unrelated that only shares the name',
 				},
-			],
-			[
-				`named${index}`,
-				{
-					type: 'noul',
-					instructions: `Is "${line.name}" on its own the name of one specific product or product line, rather than a generic word, tier or version number?`,
-				},
-			],
+			},
 		]),
 	);
+}
+
+/** How sure Jev is that each product line's name is a product's, asked once a sweep from the name alone. */
+type LineNames = Map<string, Promise<number>>;
+
+/** Whether a product line's name is a product's (Claude, GPT) rather than a generic word (Pro, v4); asked apart from any version, which would sway it. */
+function lineNamed(env: CoreEnv, named: LineNames, line: { id: string; name: string }) {
+	let sure = named.get(line.id);
+	if (!sure) {
+		sure = askJev(env, { feature: 'entity-matching', processing_id: line.id }, `"${line.name}", a product name.`, {
+			named: {
+				type: 'noul',
+				instructions: `Is "${line.name}" on its own the name of one specific product or product line, rather than a generic word, tier or version number?`,
+			},
+		}).then(({ answers }) => (answers.named && 'noul' in answers.named ? answers.named.noul : 0));
+		// A failed question is asked again by the next entity.
+		sure.catch(() => named.delete(line.id));
+		named.set(line.id, sure);
+	}
+	return sure;
 }
 
 /**
@@ -492,7 +503,7 @@ async function matchFullName(env: CoreEnv, db: NodePgDatabase, entity: Unmatched
  * Jev is sure are the same merge into the most named of them, and the rest are recorded as different. A product that
  * is a version of a product line its name starts with (Claude Opus 4.5 of Claude) merges into that line instead.
  */
-async function matchNamedEntity(env: CoreEnv, db: NodePgDatabase, entity: UnmatchedEntity) {
+async function matchNamedEntity(env: CoreEnv, db: NodePgDatabase, entity: UnmatchedEntity, named: LineNames) {
 	if (entity.type === 'person' && !/\s/u.test(entity.name)) {
 		const merged = await matchFullName(env, db, entity);
 		if (merged) return merged;
@@ -515,7 +526,10 @@ async function matchNamedEntity(env: CoreEnv, db: NodePgDatabase, entity: Unmatc
 		),
 		...productLineQuestions(entity.name, lines),
 	};
-	const { answers } = await askJev(env, { feature: 'entity-matching', processing_id: entity.id }, describeEntity(entity), questions);
+	const [{ answers }, lineSure] = await Promise.all([
+		askJev(env, { feature: 'entity-matching', processing_id: entity.id }, describeEntity(entity), questions),
+		Promise.all(lines.map((line) => lineNamed(env, named, line))),
+	]);
 	const sure = (id: string) => {
 		const answer = answers[id];
 		return answer && 'noul' in answer ? answer.noul : 0;
@@ -523,7 +537,7 @@ async function matchNamedEntity(env: CoreEnv, db: NodePgDatabase, entity: Unmatc
 	const line = lines.find((_, index) => {
 		const answer = answers[`line${index}`];
 		const version = answer && 'probabilities' in answer ? (answer.probabilities.version ?? 0) : 0;
-		return version >= MERGE_CONFIDENCE && sure(`named${index}`) >= PRODUCT_LINE_NAMED;
+		return version >= MERGE_CONFIDENCE && lineSure[index] >= PRODUCT_LINE_NAMED;
 	});
 	const same = candidates.filter((_, index) => sure(`c${index}`) >= MERGE_CONFIDENCE);
 	console.info({
@@ -556,11 +570,12 @@ async function matchNamedEntity(env: CoreEnv, db: NodePgDatabase, entity: Unmatc
 export async function matchEntities(env: CoreEnv, db: NodePgDatabase) {
 	const entities = await claimUnmatchedEntities(db, MATCH_BATCH);
 	const limit = pLimit(MATCH_CONCURRENCY);
+	const named: LineNames = new Map();
 	const merged = await Promise.all(
 		entities.map((entity) =>
 			limit(async () => {
 				try {
-					return await (entity.scheme ? matchAccount(env, db, entity as UnmatchedAccount) : matchNamedEntity(env, db, entity));
+					return await (entity.scheme ? matchAccount(env, db, entity as UnmatchedAccount) : matchNamedEntity(env, db, entity, named));
 				} catch (error) {
 					await releaseEntity(db, entity.id);
 					console.warn({ tag: 'AI', event: 'entity_match_failed', entity_id: entity.id, error: String(error) });
