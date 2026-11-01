@@ -1,7 +1,7 @@
 {
 	"$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
 	"name": "commonplot",
-	"version": "2.2.0",
+	"version": "2.2.1",
 	"description": "Save the articles, papers, posts and videos the assistant recommends to your commonplot library with one tap, search and ask about what you saved, your notebooks and your documents, and work in your notebooks when you ask.",
 	"author": {
 		"name": "commonplot",
