@@ -1,6 +1,6 @@
 ---
 name: notebooks
-description: Work in the user's commonplot notebooks when they ask - create or rename a notebook, write or edit its documents, add or remove its sources, make a podcast or report from it, or set up a routine that reports on it. Use only when the user asks to put, change or remove something in commonplot or in a notebook.
+description: Work in the user's commonplot notebooks when they ask - create or rename a notebook, write or edit its documents, or add or remove its sources. Use only when the user asks to put, change or remove something in commonplot or in a notebook.
 ---
 
 1. Find the notebook: call `list` with `target: "notebooks"` and match the name
@@ -8,7 +8,7 @@ description: Work in the user's commonplot notebooks when they ask - create or r
    pick for them. Create one with `save_notebook` only when the user asks for a
    new notebook.
 2. Before changing anything in it, `fetch` the notebook: it lists the
-   documents and sources (with their ids), its outputs and its routines.
+   documents and sources with their ids.
 3. Do only what the user asked:
    - Notes or a report from this chat: `add_notebook_document` with a short
      title and the whole body in Markdown, at most 16,000 characters (split a
@@ -23,11 +23,6 @@ description: Work in the user's commonplot notebooks when they ask - create or r
    - Remove: `remove_notebook_resource` takes sources out (they stay saved);
      `delete_notebook_document` deletes a document. Name what will go before
      you call them.
-   - A podcast or a research report: `generate_notebook_output`. It runs in
-     the background and uses the user's AI credits; say where it will appear.
-   - Keep the user posted on a topic: `save_notebook_routine`. Confirm the
-     cadence and the user's time zone first. `delete_notebook_routine` stops
-     one.
    - `delete_notebook` deletes only a notebook with no documents or outputs;
      for any other, tell the user to delete it in commonplot.
 4. Say what changed and link the document or notebook from the result.

@@ -16,11 +16,9 @@ This plugin connects your commonplot library to Claude or ChatGPT.
 - **Read your notebooks and documents**, once you allow it.
 - **Work in your notebooks when you ask.** "Put a summary of this chat in my
   research notebook", "start a notebook on agent evaluation and add these two
-  papers", "make a podcast from it", "brief me every Monday on what is new
-  there". The assistant can create and rename notebooks, write and edit their
-  documents, add and remove sources, start podcasts and reports, and set up
-  routines. An item you had not saved is saved when it is filed. It deletes a
-  document, a source from a notebook or a routine only when you ask, and it
+  papers". The assistant can create and rename notebooks, write and edit
+  their documents, and add and remove sources. An item you had not saved is saved when it is filed. It deletes a
+  document or a source from a notebook only when you ask, and it
   can delete only a notebook that is empty; your host asks you before each
   change.
 
